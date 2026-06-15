@@ -1,0 +1,1 @@
+The full internal picture of gnx — the design surface, built before the tool. Twelve concept docs and the ground truth they trace to. Each records what is established, what was decided, and what is open. The public docs will be narrower: pragmatics only, bounded to registry and marketplace usage with Claude Code.
