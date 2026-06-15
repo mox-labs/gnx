@@ -1,0 +1,58 @@
+<script lang="ts">
+	import Commentable from '$lib/components/Commentable.svelte';
+
+	let { data } = $props();
+
+	const concepts = $derived(data.docs.filter((d: { section: string }) => d.section === 'concepts'));
+	const appendix = $derived(data.docs.filter((d: { section: string }) => d.section === 'appendix'));
+	const first = $derived(concepts[0]);
+</script>
+
+<svelte:head>
+	<title>gnx · genesis dossier</title>
+</svelte:head>
+
+<div class="cover">
+	<header>
+		<div class="kicker">genesis dossier · internal · 2026-06</div>
+		<h1>gnx</h1>
+		<p class="sub">component registry · Claude Code marketplace · agentic CLI</p>
+	</header>
+
+	<div class="cover-body doc">
+		<Commentable doc="cover" blocks={data.cover.blocks} threads={data.threads} />
+	</div>
+
+	<aside class="gate-note">
+		Every doc was ship-gated by an out-of-family evaluator against a written rubric. Read those
+		first — the <a href="/docs/rubric">rubric</a> and the <a href="/evaluation">evaluation</a> are
+		reviewable too. A verdict you disagree with means the rubric needs adjusting, not the doc.
+	</aside>
+
+	{#if first}
+		<p><a class="start" href="/docs/{first.slug}">Start reading → {first.title}</a></p>
+	{/if}
+
+	<h2 class="toc-label">Contents</h2>
+	<ol class="doclist">
+		{#each concepts as doc (doc.slug)}
+			<li>
+				<span class="num">{String(doc.order).padStart(2, '0')}</span>
+				<a href="/docs/{doc.slug}">{doc.title}</a>
+				{#if data.counts.perDoc[doc.slug]}
+					<span class="count">{data.counts.perDoc[doc.slug]} open</span>
+				{/if}
+			</li>
+		{/each}
+		{#each appendix as doc (doc.slug)}
+			<li>
+				<span class="num">A</span>
+				<a href="/docs/{doc.slug}">{doc.title}</a>
+				<span class="muted appendix-tag">appendix</span>
+				{#if data.counts.perDoc[doc.slug]}
+					<span class="count">{data.counts.perDoc[doc.slug]} open</span>
+				{/if}
+			</li>
+		{/each}
+	</ol>
+</div>

@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 520" role="img" aria-label="Platform triad diagram: slick grammar, gnx vocabulary, geist.sh execution layers, with samsara world above">
+  <title>Platform Triad — slick / gnx / geist.sh / samsara</title>
+  <desc>Three-layer platform stack. Bottom to top: slick (grammar, shipped v0.2.0), gnx (vocabulary, this repo), geist.sh (execution, partial). Above all: samsara, the inhabited Construct, connected by marks (TypedStructs). Arrows between layers indicate that vocabulary conforms to grammar, and vocabulary installs into execution.</desc>
+
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#9ca3af"/>
+    </marker>
+  </defs>
+
+  <!--
+    Layer rects: x=60, width=380, right edge=440
+      samsara  y=28  h=68  bottom=96
+      geist.sh y=140 h=80  bottom=220
+      gnx      y=256 h=80  bottom=336
+      slick    y=372 h=80  bottom=452
+
+    Arrows (arrowhead = marker-end, so the line END has the head):
+      samsara→geist.sh: dashed, y1=96  y2=140 arrowhead at 140 (marks flow down into triad)
+      gnx→geist.sh:     solid,  y1=256 y2=220 arrowhead at 220 (vocabulary installs into execution)
+      slick→gnx:        solid,  y1=372 y2=336 arrowhead at 336 (grammar conforms-to by vocabulary)
+
+    x=250 is the midpoint of the layer rects (60+380/2=250). Arrow labels at x=258.
+  -->
+
+  <!-- ═══ samsara ════════════════════════════════════════════════════ -->
+  <rect x="60" y="28" width="380" height="68" rx="4"
+        fill="none" stroke="#9ca3af" stroke-width="1" stroke-dasharray="6 3"/>
+  <text x="76" y="48"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        letter-spacing="0.08em">THE WORLD</text>
+  <text x="76" y="71"
+        font-family="system-ui, sans-serif" font-size="18" font-weight="600" fill="#6b7280">samsara</text>
+  <text x="76" y="87"
+        font-family="system-ui, sans-serif" font-size="12" fill="#9ca3af">the inhabited Construct — append-only ledger of typed marks</text>
+
+  <!-- samsara → geist.sh: marks flow downward into the triad -->
+  <line x1="250" y1="96" x2="250" y2="140"
+        stroke="#9ca3af" stroke-width="1" stroke-dasharray="4 3"
+        marker-end="url(#arr)"/>
+  <text x="258" y="122"
+        font-family="system-ui, sans-serif" font-size="11" fill="#9ca3af" font-style="italic">marks (TypedStructs)</text>
+
+  <!-- ═══ geist.sh ════════════════════════════════════════════════════ -->
+  <rect x="60" y="140" width="380" height="80" rx="4"
+        fill="none" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="76" y="160"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        letter-spacing="0.08em">EXECUTION</text>
+  <!-- status badge -->
+  <rect x="408" y="147" width="44" height="16" rx="2"
+        fill="none" stroke="#9ca3af" stroke-width="1"/>
+  <text x="412" y="159"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af">PARTIAL</text>
+  <text x="76" y="183"
+        font-family="system-ui, sans-serif" font-size="18" font-weight="600" fill="#6b7280">geist.sh</text>
+  <text x="76" y="202"
+        font-family="system-ui, sans-serif" font-size="12" fill="#9ca3af">geist-edge · matrix · mox.hud</text>
+
+  <!-- vocabulary installs into execution -->
+  <line x1="250" y1="256" x2="250" y2="220"
+        stroke="#9ca3af" stroke-width="1.5"
+        marker-end="url(#arr)"/>
+  <text x="258" y="242"
+        font-family="system-ui, sans-serif" font-size="11" fill="#9ca3af">installs into</text>
+
+  <!-- ═══ gnx ══════════════════════════════════════════════════════════ -->
+  <rect x="60" y="256" width="380" height="80" rx="4"
+        fill="rgba(224,93,68,0.04)" stroke="#e05d44" stroke-width="2"/>
+  <text x="76" y="276"
+        font-family="system-ui, sans-serif" font-size="10" fill="#e05d44"
+        letter-spacing="0.08em">VOCABULARY · THIS REPO</text>
+  <!-- status badge -->
+  <rect x="408" y="263" width="44" height="16" rx="2"
+        fill="none" stroke="#e05d44" stroke-width="1"/>
+  <text x="412" y="275"
+        font-family="system-ui, sans-serif" font-size="10" fill="#e05d44">NAMED</text>
+  <text x="76" y="299"
+        font-family="system-ui, sans-serif" font-size="18" font-weight="600" fill="#e05d44">gnx</text>
+  <text x="76" y="318"
+        font-family="system-ui, sans-serif" font-size="12" fill="#9ca3af">registry · marketplace · CLI</text>
+
+  <!-- annotation: Claude Code primary distribution surface -->
+  <circle cx="440" cy="296" r="2" fill="#9ca3af"/>
+  <line x1="442" y1="296" x2="484" y2="296"
+        stroke="#9ca3af" stroke-width="1" stroke-dasharray="3 2"/>
+  <text x="492" y="291"
+        font-family="system-ui, sans-serif" font-size="11" fill="#9ca3af">Claude Code =</text>
+  <text x="492" y="305"
+        font-family="system-ui, sans-serif" font-size="11" fill="#9ca3af">current primary</text>
+  <text x="492" y="319"
+        font-family="system-ui, sans-serif" font-size="11" fill="#9ca3af">distribution surface</text>
+
+  <!-- grammar conforms to (vocabulary conforms to grammar) -->
+  <line x1="250" y1="372" x2="250" y2="336"
+        stroke="#9ca3af" stroke-width="1.5"
+        marker-end="url(#arr)"/>
+  <text x="258" y="358"
+        font-family="system-ui, sans-serif" font-size="11" fill="#9ca3af">conforms to</text>
+
+  <!-- ═══ slick ══════════════════════════════════════════════════════ -->
+  <rect x="60" y="372" width="380" height="80" rx="4"
+        fill="none" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="76" y="392"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        letter-spacing="0.08em">GRAMMAR · SHIPPED</text>
+  <!-- version badge -->
+  <rect x="408" y="379" width="44" height="16" rx="2"
+        fill="none" stroke="#9ca3af" stroke-width="1"/>
+  <text x="412" y="391"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af">v0.2.0</text>
+  <text x="76" y="415"
+        font-family="system-ui, sans-serif" font-size="18" font-weight="600" fill="#6b7280">slick</text>
+  <text x="76" y="433"
+        font-family="system-ui, sans-serif" font-size="12" fill="#9ca3af">Manifest · 4 kinds · TypedStruct · TypedRegistry</text>
+
+  <!-- reading guide -->
+  <text x="60" y="476"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af">arrows point toward the layer that depends on the one below</text>
+
+</svg>
