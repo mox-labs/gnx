@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+      - uses: extractions/setup-just@v2
+      - name: install docsite deps
+        run: cd docs/experience && bun install --frozen-lockfile
+      - name: docsite check (svelte-check + tsc)
+        run: just docs-check
+      - name: secret scan
+        uses: gitleaks/gitleaks-action@v2
+
+  commit-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: validate conventional commits
+        run: |
+          base="origin/${{ github.base_ref || 'main' }}"
+          git rev-parse "$base" >/dev/null 2>&1 || { echo "no base $base; skipping"; exit 0; }
+          fail=0
+          for sha in $(git rev-list "$base"..HEAD); do
+            msg=$(git log -1 --format=%s "$sha")
+            case "$msg" in
+              Merge*) ;;
+              *) echo "$msg" | grep -qE '^(feat|fix|docs|refactor|test|chore|perf|ci|build|style|revert)(\(.+\))?!?: .+' \
+                   || { echo "❌ $sha: $msg"; fail=1; } ;;
+            esac
+          done
+          exit $fail
