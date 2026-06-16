@@ -6,8 +6,8 @@
     Final position: 4 valknuts = 36 points = mastery of 36 chambers
   -->
 
-  <!-- Background: Transparent (page provides the void) -->
-  <rect width="800" height="800" fill="none"/>
+  <!-- Background: Void black -->
+  <rect width="800" height="800" fill="#0a0a0a"/>
 
   <!-- 36 Chamber divisions (10° each) -->
   <g opacity="0.12">

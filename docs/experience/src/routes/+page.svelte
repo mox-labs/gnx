@@ -3,9 +3,19 @@
 
 	let { data } = $props();
 
-	const concepts = $derived(data.docs.filter((d: { section: string }) => d.section === 'concepts'));
-	const appendix = $derived(data.docs.filter((d: { section: string }) => d.section === 'appendix'));
-	const first = $derived(concepts[0]);
+	// The dossier proper (numbered Design docs) + the appendix (ground truth, order >= 90).
+	const dossier = $derived(
+		data.docs.filter(
+			(d: { section: string; order: number }) => d.section === 'design' && d.order < 90
+		)
+	);
+	const appendix = $derived(
+		data.docs.filter(
+			(d: { section: string; order: number }) => d.section === 'design' && d.order >= 90
+		)
+	);
+	// "Start reading" points at the public front door.
+	const first = $derived(data.docs.find((d: { section: string }) => d.section === 'start'));
 </script>
 
 <svelte:head>
@@ -14,6 +24,7 @@
 
 <div class="cover">
 	<header>
+		<img class="sigil" src="/sigil.svg" alt="" width="76" height="76" />
 		<div class="kicker">genesis dossier · internal · 2026-06</div>
 		<h1>gnx</h1>
 		<p class="sub">component registry · Claude Code marketplace · agentic CLI</p>
@@ -33,9 +44,9 @@
 		<p><a class="start" href="/docs/{first.slug}">Start reading → {first.title}</a></p>
 	{/if}
 
-	<h2 class="toc-label">Contents</h2>
+	<h2 class="toc-label">The dossier</h2>
 	<ol class="doclist">
-		{#each concepts as doc (doc.slug)}
+		{#each dossier as doc (doc.slug)}
 			<li>
 				<span class="num">{String(doc.order).padStart(2, '0')}</span>
 				<a href="/docs/{doc.slug}">{doc.title}</a>

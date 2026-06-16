@@ -135,16 +135,18 @@
 		font-weight: 600;
 		white-space: nowrap;
 	}
+	/* maturity badges wired to the brand's evidence-brightness scale:
+	   shipped ≈ strong, planned ≈ moderate, proposed ≈ speculative */
 	.status-shipped {
-		background: color-mix(in oklab, green 22%, transparent);
-		color: color-mix(in oklab, green 70%, currentColor);
+		background: var(--ev-strong-bg);
+		color: var(--ev-strong);
 	}
 	.status-planned {
-		background: color-mix(in oklab, #c98a00 24%, transparent);
-		color: color-mix(in oklab, #c98a00 78%, currentColor);
+		background: var(--ev-moderate-bg);
+		color: var(--ev-moderate);
 	}
 	.status-proposed {
-		background: color-mix(in oklab, currentColor 10%, transparent);
-		opacity: 0.6;
+		background: var(--ev-speculative-bg);
+		color: var(--ev-speculative);
 	}
 </style>

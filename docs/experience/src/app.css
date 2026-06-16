@@ -1,28 +1,25 @@
-:root {
-	--bg: #fcfbf9;
-	--fg: #21232a;
-	--muted: #6b7280;
-	--line: #e7e4de;
-	--panel: #f3f1ec;
-	--accent: #e05d44;
-	--accent-soft: rgba(224, 93, 68, 0.14);
-	--resolved: #5a8a64;
-	--resolved-soft: rgba(90, 138, 100, 0.14);
-	--mono: ui-monospace, 'SF Mono', Menlo, monospace;
-	--serif: 'Charter', 'Iowan Old Style', Georgia, 'Times New Roman', serif;
-	--sans: system-ui, -apple-system, sans-serif;
-}
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;600&display=swap');
+@import './lib/brand/tokens.css';
 
-@media (prefers-color-scheme: dark) {
-	:root {
-		--bg: #17191c;
-		--fg: #d8d5cf;
-		--muted: #8b919a;
-		--line: #2c2f33;
-		--panel: #1f2225;
-		--accent-soft: rgba(224, 93, 68, 0.22);
-		--resolved-soft: rgba(90, 138, 100, 0.22);
-	}
+/* gnx docsite — themed on the lifted cix brand layer. Dark-first dao neutrals,
+   trichrome used BY ROLE (Spark = links/emphasis/open marks, Constraint =
+   boundaries/RETURN, Emergence = code/SHIP/resolved), mono-led type
+   (cix·operator: "monospace body signals tool-ness"). The gnx semantic names
+   below alias the cix tokens so the existing component styles re-skin in place. */
+:root {
+	--bg: var(--dao-bg);
+	--fg: var(--dao-text);
+	--muted: var(--dao-muted);
+	--line: var(--dao-border);
+	--panel: var(--dao-surface-2);
+	--accent: var(--ci-blue);
+	--accent-soft: oklch(62% 0.15 240 / 0.16);
+	--resolved: var(--ci-green);
+	--resolved-soft: oklch(70% 0.18 145 / 0.16);
+	--constraint: var(--ci-red);
+	--mono: var(--font-mono);
+	--sans: var(--font-sans);
+	--serif: var(--font-mono);
 }
 
 * {
@@ -33,7 +30,8 @@ body {
 	margin: 0;
 	background: var(--bg);
 	color: var(--fg);
-	font: 16px/1.6 var(--sans);
+	font: 0.95rem/1.6 var(--mono);
+	-webkit-font-smoothing: antialiased;
 }
 
 a {
@@ -156,9 +154,16 @@ main > * {
 /* ---- the reading surface ---- */
 
 .doc {
-	font-family: var(--serif);
-	font-size: 1.075rem;
-	line-height: 1.72;
+	font-family: var(--mono);
+	font-size: 1rem;
+	line-height: 1.7;
+}
+
+.doc h1,
+.doc h2,
+.doc h3 {
+	font-family: var(--sans);
+	letter-spacing: -0.01em;
 }
 
 .doc h1 {
@@ -496,10 +501,18 @@ mark.annot:hover {
 /* ---- cover ---- */
 
 .cover {
-	font-family: var(--serif);
-	font-size: 1.075rem;
+	font-family: var(--mono);
+	font-size: 1rem;
 	line-height: 1.7;
 	padding-top: 2rem;
+}
+
+.cover .sigil {
+	display: block;
+	width: 76px;
+	height: 76px;
+	margin-bottom: 1.4rem;
+	opacity: 0.95;
 }
 
 .cover .kicker {

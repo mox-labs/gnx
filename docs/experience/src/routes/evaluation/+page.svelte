@@ -147,12 +147,12 @@
 		border: 1px solid var(--resolved);
 	}
 	.verdict.tighten {
-		color: #b8860b;
-		border: 1px solid #b8860b;
+		color: var(--ev-weak);
+		border: 1px solid var(--ev-weak);
 	}
 	.verdict.return {
-		color: var(--accent);
-		border: 1px solid var(--accent);
+		color: var(--constraint);
+		border: 1px solid var(--constraint);
 	}
 	td.score {
 		font-family: var(--mono);
@@ -162,14 +162,14 @@
 		color: var(--resolved);
 	}
 	td.score.mid {
-		color: #b8860b;
+		color: var(--ev-weak);
 	}
 	td.score.fail {
 		color: var(--muted);
 	}
 	td.score.gate-fail {
 		color: #fff;
-		background: var(--accent);
+		background: var(--constraint);
 	}
 	td.score.na {
 		color: var(--line);
@@ -202,13 +202,13 @@
 		background: var(--resolved);
 	}
 	.sw.mid {
-		background: #b8860b;
+		background: var(--ev-weak);
 	}
 	.sw.fail {
 		background: var(--muted);
 	}
 	.sw.gate-fail {
-		background: var(--accent);
+		background: var(--constraint);
 	}
 	.back {
 		margin-top: 2rem;
