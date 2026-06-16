@@ -11,8 +11,6 @@ fidelity: tarmac
 
 The maturity lookup for the whole catalog. **shipped** runs today; **planned** is designed, build starting; **proposed** has no build behind it. No page on this site commands a planned capability as if it ran.
 
-This page is the source of truth for the badges throughout the docs.
-
 ---
 
 ## Shipped — runs today
@@ -22,7 +20,7 @@ This page is the source of truth for the badges throughout the docs.
 | **slick** grammar (v0.2.0) | The 5-field Manifest, TypedStruct, TypedRegistry. Ships as the `slickit` crate (Rust) and Python package — the types every component is written against. |
 | **cix plugin family** | Installs into Claude Code today via `extraKnownMarketplaces`. See the versions below. |
 
-### The cix plugins, installable now
+### The cix plugins
 
 | Plugin | Version | Gives you |
 |--------|---------|-----------|
@@ -58,5 +56,5 @@ Versions are the installed (`plugin.json`) versions — the cache key Claude Cod
 ## See also
 
 - **[What gnx is](/docs/what-is-gnx)** — the shipped/designed line, in prose.
-- **[Install a plugin](/docs/install-a-plugin)** — install the shipped cix family today.
+- **[Install a plugin](/docs/install-a-plugin)** — install the cix family.
 - **[gnx CLI reference](/docs/cli-reference)** — the planned command surface in full.

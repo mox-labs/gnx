@@ -9,7 +9,7 @@ fidelity: tarmac
 
 # The primary reader is an agent
 
-**gnx is built for an agent to read first, and a human to browse second.** That single inversion shapes the rest. A package registry optimizes for a person scanning a list. gnx optimizes for a reasoner deciding, from declarations alone, what to compose and how to drive it — because the primary consumer is Claude Code, reaching for capability mid-task, not a developer reading docs over coffee.
+**gnx is built for an agent to read first, and a human to browse second.** That single inversion shapes the rest. A package registry optimizes for a person scanning a list. gnx optimizes for a reasoner deciding, from declarations alone, what to compose and how to drive it — the primary consumer is Claude Code, reaching for capability mid-task, not a developer reading docs over coffee.
 
 Take the inversion seriously and three design choices stop being optional.
 
@@ -19,11 +19,11 @@ An agent decides whether two components fit before running either. So the surfac
 
 ## Every Capability describes itself in the agent's language
 
-A human reads a man page; an agent reads a skill. So every Capability in the catalog ships an embedded skill and exposes `--skill` — it emits the SKILL.md an agent needs to drive it: what it does, how to invoke it, when to reach for it. A capability that can't describe itself to an agent isn't agent-operable, and the catalog won't certify it. gnx holds itself to the rule: `gnx --skill` is its own front door.
+A human reads a man page; an agent reads a skill. So every Capability in the catalog ships an embedded skill and exposes `--skill` — it emits the SKILL.md an agent needs to drive it: what it does, how to invoke it, when to reach for it. A capability that can't describe itself to an agent isn't agent-operable. gnx holds itself to the rule: `gnx --skill` is its own front door.
 
 ## Discovery returns structure, not prose
 
-When an agent searches the catalog, it gets back machine-parseable structure — the matching components and their declared surfaces — not a paragraph to skim. The same holds for the whole doc surface: an index an agent can fetch first to enumerate what exists, and a clean structured form per page, so a cold agent maps the territory before reading a word of rendered HTML.
+When an agent searches the catalog, it gets back machine-parseable structure — the matching components and their declared surfaces — not a paragraph to skim. The same holds for the whole doc surface: an index an agent can fetch first to enumerate what exists, and a clean structured form per page.
 
 ## The test behind all three
 

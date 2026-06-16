@@ -9,7 +9,7 @@ fidelity: tarmac
 
 # Grammar reference
 
-Lookup for the component grammar. Each entry marks **shipped** (in slick v0.2.0) or **designed** (gnx's to define; not yet built). Verify against the shipped source before relying on a field; doctrine and shipped code are marked apart here on purpose.
+Lookup for the component grammar. Each entry marks **shipped** (in slick v0.2.0) or **designed** (gnx's to define; not yet built). Verify against the shipped source before relying on a field; doctrine and shipped code are marked apart.
 
 ---
 
@@ -40,13 +40,13 @@ cix.skills.v1.RustMastery
 slick.dev.v1.Aboot
 ```
 
-`type_url` is the one join key across the system: it bridges the Manifest to the runtime type and, in the designed model, to the schema in `api/`.
+`type_url` bridges the Manifest to the runtime type and, in the designed model, to the schema in `api/`. One join key across the system.
 
 ---
 
 ## The four kinds
 
-The grammar's vocabulary: every component is one of four kinds. Open string, not an enum — the constraint is type-level consequences, not an exhaustive list. **established** (reaffirmed 2026-06-10); enforced as a **designed** gnx registration rule.
+Every component is one of four kinds. Open string, not an enum — the constraint is type-level consequences, not an exhaustive list. **established** (reaffirmed 2026-06-10); enforced as a **designed** gnx registration rule.
 
 | Kind | What it is | Ports | Skill |
 |------|------------|-------|-------|
@@ -75,7 +75,7 @@ Portability class — Universal / Specialized / Vendor-Specific / Multi-Vendor (
 
 ## Discovery vs topology — the open seam
 
-In shipped slick, `requires` and `provides` are the ports. The designed model splits the roles: `provides` becomes the semantic discovery surface, and typed topology moves to `produces` / `consumes`. The final field names land in a future slick release. **open seam** — what is settled is the distinction (discovery is matched before composition; topology is matched at build); the field names are not.
+In shipped slick, `requires` and `provides` are the ports. The designed model splits the roles: `provides` becomes the semantic discovery surface, and typed topology moves to `produces` / `consumes`. **open seam** — what is settled is the distinction (discovery is matched before composition; topology is matched at build); the field names are not.
 
 | Role | shipped field | designed field |
 |------|---------------|----------------|
@@ -87,7 +87,7 @@ In shipped slick, `requires` and `provides` are the ports. The designed model sp
 
 ## On-disk format — designed
 
-slick ships JSON in memory with no on-disk file convention. gnx defines the on-disk format. The lean is `manifest.yaml`, JSON-aligned underneath; not yet fixed. **designed (open).** The designed on-disk manifest adds `apiVersion`, `kind`, and `metadata` over the shipped five fields; `spec.*` carries the in-memory fields.
+slick ships JSON in memory with no on-disk file convention. gnx defines the on-disk format. The lean is `manifest.yaml`, JSON-aligned underneath; not yet fixed. **designed (open).** The designed on-disk manifest adds `apiVersion`, `kind`, and `metadata`; `spec.*` carries the in-memory fields.
 
 ---
 

@@ -9,7 +9,7 @@ fidelity: tarmac
 
 # gnx CLI reference
 
-**Status: planned.** The gnx CLI is designed, not yet built. This page describes the designed command surface — what each command does, what it accepts, what it emits. Every entry is the intended contract, not current behavior. Nothing here runs today.
+**Status: planned.** The gnx CLI is designed, not yet built. Every entry is the intended contract, not current behavior. Nothing here runs today.
 
 ---
 
@@ -17,7 +17,7 @@ fidelity: tarmac
 
 Self-describe to agents.
 
-**What it emits.** A complete `SKILL.md` — activation frontmatter plus an intent→command table. Claude Code reads this file to know what `gnx` does and how to drive it. Every command in this reference surfaces in that table. The designed shape:
+**What it emits.** A complete `SKILL.md` — activation frontmatter plus an intent→command table. Claude Code reads this file to know what `gnx` does and how to drive it. The designed shape:
 
 ```markdown
 ---
@@ -53,9 +53,7 @@ Genesis: set up a project through conversation.
 - `dao/` — the agentic organization: charter, guild roles, ratchet
 - `.gnx/` — the tooling layer: installed components, projection state
 
-It installs a curated component set — chosen through conversation, not from a fixed menu.
-
-**Two modes, same binary.** `gnx init` works from a bare terminal before Claude Code is configured. It works equally as a tool driven by Claude Code from inside an existing project. The caller changes; the behavior doesn't. The Agent SDK handles the interview in both modes.
+**Two modes, same binary.** `gnx init` works from a bare terminal before Claude Code is configured. It works equally as a tool driven by Claude Code from inside an existing project. The caller changes; the behavior doesn't.
 
 **What it does not do.** It does not write to the gnx registry. The init session proposes a component selection; deterministic code installs what was agreed. The agentic phase ends at the proposal.
 
@@ -125,7 +123,7 @@ Agent-facing discovery.
 
 **`gnx search <tag>`**
 
-Queries the `provides` discovery surface. Returns components whose declared `provides` match the query. Output is structured and machine-parseable — not prose. Claude Code reads this output to decide what to compose. Discovery is how an agent finds what's available before deciding to compose.
+Queries the `provides` discovery surface. Returns components whose declared `provides` match the query. Output is structured and machine-parseable — not prose. Claude Code reads this output to decide what to compose.
 
 **`gnx inspect <component>`**
 
@@ -151,7 +149,7 @@ Strict registration gate.
 | Namespace scope | `slick.dev/v1` for core; vendor-namespaced extensions under their own `apiVersion` |
 | Embedded skill | Every `kind: Capability` must expose `--skill` |
 
-**Strict, not forgiving.** Validate does not accept an ambiguous manifest and infer intent — it rejects it. Strictness at the boundary is the property that makes the catalog trustworthy as a composition surface.
+**Strict, not forgiving.** Validate does not accept an ambiguous manifest and infer intent — it rejects it.
 
 **Inputs.** Path to a component directory. Defaults to current directory.
 
@@ -167,7 +165,7 @@ Generate installable plugins from one source — write each plugin directory and
 
 **What it does.**
 
-For each component in the project's authored sources (`components/`, `extensions/`), `gnx build`:
+For each component in `components/` and `extensions/`, `gnx build`:
 
 1. Resolves dependencies
 2. Writes a self-contained plugin directory under `plugins/`
@@ -180,9 +178,9 @@ One source. Two generated manifests. The dual-manifest version drift that plague
 
 Dry-run for CI. Verifies that committed generated files match what `gnx build` would produce. Exits non-zero on any drift. CI placement: after every authored change.
 
-**Committed output.** Plugin directories are generated and committed — not generated at install time. Claude Code copies the plugin subdirectory in isolation, bans `..` path traversal, and has no install-time build hook. Self-contained at authoring time is the requirement.
+**Committed output.** Plugin directories are generated and committed — not generated at install time. Claude Code copies the plugin subdirectory in isolation, bans `..` path traversal, and has no install-time build hook.
 
-**Inputs.** None required. Reads authored sources from the project root.
+**Inputs.** None required.
 
 **Outputs.**
 - `plugins/<name>/` — self-contained plugin directory, one per component
@@ -193,6 +191,6 @@ Dry-run for CI. Verifies that committed generated files match what `gnx build` w
 
 ## The two invariants behind the surface
 
-**1. `--skill` is not a convention.** It is the operability gate. A `kind: Capability` without an embedded skill cannot be driven by Claude Code and does not clear the curation bar. `gnx validate` enforces it. `gnx --skill` demonstrates it on gnx itself.
+**1. `--skill` is not a convention.** It is the operability gate. `gnx validate` enforces it. `gnx --skill` demonstrates it on gnx itself.
 
 **2. The ledger is deterministic.** SDK sessions — the `gnx init` interview, curation assistance — propose. Deterministic code validates and writes. These roles never swap. If the agent could write to the registry directly, gnx would become part of the loop it exists to break — it could no longer be the fixed outside reference point the system checks itself against. Dumb boundaries, smart interiors; intelligence never lives in the channel.

@@ -9,9 +9,9 @@ fidelity: tarmac
 
 # What gnx is
 
-**gnx is a catalog your agent builds from.** Every project rebuilds the same things — the same skills, the same review panels, the same scaffolds and guardrails. gnx makes them reusable: a library of **cognitive extensions** that an agent finds and composes, instead of rebuilding from scratch each time.
+**gnx is a catalog your agent builds from.** Every project rebuilds the same things — the same skills, the same review panels, the same scaffolds and guardrails. gnx makes them reusable: a library of **cognitive extensions** that an agent finds and composes.
 
-The hard part was never storing capability. It is letting an agent **assemble capabilities it has never run** — from what each one declares about itself, before any of them execute. That is the one thing gnx is built to do: make a capability legible enough to compose without running it first.
+The hard part was never storing capability. It is letting an agent **assemble capabilities it has never run** — from what each one declares about itself, before any of them execute. gnx is built to do one thing: make a capability legible enough to compose without running it first.
 
 Two roles, kept separate: **your agent composes capability from the catalog; you govern what goes into it.** The catalog grows through agents — and stays trustworthy because a person, not an agent, mints what it is allowed to compose from.
 
@@ -26,7 +26,7 @@ Two roles, kept separate: **your agent composes capability from the catalog; you
 
 You stop paying for two things.
 
-**Rebuilding.** Capability stops being trapped in one project. Distill an agent skill, a review discipline, a scaffold once — then compose it into any project that declares it needs it. The catalog is how distilled work travels.
+**Rebuilding.** Capability stops being trapped in one project. Distill an agent skill, a review discipline, a scaffold once — then compose it into any project that needs it.
 
 **Lock-in.** gnx is vendor-neutral by structure, not by good intentions. A capability is described in a way no single agent runtime owns. Claude Code is the Target that ships today; a second runtime is a new adapter, not a rewrite. Your tooling is not welded to an SDK that gets deprecated next quarter.
 

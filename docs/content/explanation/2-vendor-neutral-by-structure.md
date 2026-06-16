@@ -9,9 +9,9 @@ fidelity: tarmac
 
 # Vendor-neutral by structure
 
-**Claude Code is the only runtime gnx targets today — so why describe components in a way no runtime owns?** Because the alternative has a known ending. Agent SDKs redefine how tools register, how memory works, how agents talk to each other, and they do it every few quarters. Couple your capabilities to one SDK's shape and you inherit its churn: the day it re-architects, your catalog re-architects with it.
+**Claude Code is the only runtime gnx targets today — so why describe components in a way no runtime owns?** Because the alternative has a known ending. Agent SDKs redefine how tools register, how memory works, how orchestration works — every few quarters. Couple your capabilities to one SDK's shape and you inherit its churn.
 
-Vendor-neutral by structure is the hedge. A component declares what it is in a form no single runtime defines. A second runtime is then a new **adapter**, not a rewrite of everything you've built.
+Vendor-neutral by structure is the hedge. A component declares what it is in a form no single runtime defines. A second runtime is then a new **adapter**, not a rewrite.
 
 ## The namespace is the vendor scope
 
@@ -30,7 +30,7 @@ direct:    N × M
 mediated:  N + M + B
 ```
 
-For any catalog worth having, `N + M + B` is far smaller than `N × M`. The boundary earns its place by collapsing the integration surface — that's the test it has to pass to exist. A boundary that adds surface instead of removing it is the thing the objection warns about, and gnx is built to fail that test loudly if it ever stops holding.
+For any catalog worth having, `N + M + B` is far smaller than `N × M`. The boundary earns its place by collapsing the integration surface. A boundary that adds surface instead of removing it fails that test — gnx is built to fail it loudly.
 
 ## By structure, not by good intentions
 

@@ -15,7 +15,7 @@ fidelity: tarmac
 
 ## One directory, one join key
 
-Everything with a declared type lives under `api/`, keyed by `type_url`: data types, component config schemas, and protocol config schemas all sit in one place, joined by the same key the Manifest uses.
+Everything with a declared type lives under `api/`, keyed by `type_url`: data types, component config schemas, and protocol config schemas all in one place.
 
 ```
 api/
@@ -25,7 +25,7 @@ api/
     └── <ProtocolConfig>.schema    # e.g. an MCP or HTTP transport config
 ```
 
-The directory mirrors the apiVersion namespace, so where a schema lives on disk is its vendor scope — the same invariant that governs `components/` and `extensions/`.
+The directory mirrors the apiVersion namespace: where a schema lives on disk is its vendor scope, the same invariant that governs `components/` and `extensions/`.
 
 ---
 
@@ -38,7 +38,7 @@ A config is either **defined** or **opaque**, and the difference is whether gnx 
 | **defined** | yes | yes — checked at `gnx validate` |
 | **opaque** | no | no — travels as an unvalidated blob |
 
-A generated component produces its own schema, so **defined** is the natural default: the config surface is mechanics (it belongs in `api/`), distinct from the component's semantics. Opaque is the escape hatch for a config gnx has no schema for yet — it still travels, it just isn't checked.
+A generated component produces its own schema, so **defined** is the natural default: the config surface is mechanics, distinct from the component's semantics. Opaque is the escape hatch for a config gnx has no schema for yet.
 
 ---
 

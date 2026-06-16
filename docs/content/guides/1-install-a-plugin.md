@@ -28,9 +28,9 @@ Open `~/.claude/settings.json` and add an `extraKnownMarketplaces` entry pointin
 }
 ```
 
-The key (`"cix"`) becomes the marketplace identifier — Claude Code uses it as the namespace suffix in `enabledPlugins`: `"craft-rhetoric@cix"`, `"ci-scaffolds@cix"`, and so on.
+The key (`"cix"`) becomes the marketplace identifier — the namespace suffix in `enabledPlugins`: `"craft-rhetoric@cix"`, `"ci-scaffolds@cix"`, etc.
 
-Two source types work. A `directory` source reads a local path — the verified path today, pointing at a clone of the repo. A `github` source (`"source": "github", "repo": "<owner>/<repo>"`) clones a public repo by the same mechanism, once the repo is published. The example uses a directory source, which runs now.
+Two source types work. A `directory` source reads a local path. A `github` source (`"source": "github", "repo": "<owner>/<repo>"`) clones a public repo by the same mechanism, once the repo is published. The example uses a directory source.
 
 ---
 
@@ -49,7 +49,7 @@ The cix marketplace ships these plugins today:
 | `craft-research` | 0.3.0 | Research synthesis — literature analysis, evidence-grounded claims |
 | `recon` | 0.7.0 | Reconnaissance — surface a codebase or system before you act on it |
 
-Versions are the installed (`plugin.json`) versions — the ones Claude Code caches and resolves. These are the catalog's first cognitive extensions.
+Versions are the installed (`plugin.json`) versions — what Claude Code caches and resolves.
 
 ---
 
@@ -67,7 +67,7 @@ In `~/.claude/settings.json`, add to `enabledPlugins`:
 
 Claude Code copies the plugin subdirectory into a versioned cache at `~/.claude/plugins/cache/cix/craft-rhetoric/0.3.0/`. The plugin is self-contained — no build step, no traversal outside its directory. Restart Claude Code and the plugin is active.
 
-Install several from the same marketplace by adding each:
+Install several by adding each:
 
 ```json
 {
@@ -83,9 +83,9 @@ Install several from the same marketplace by adding each:
 
 ## Claude Code drives a plugin through its skills
 
-Claude Code loads the plugin's skills — for craft-rhetoric, `rhetoric`, `discourse`, `voicing`, `evaluating`, and others. Each is a SKILL.md file Claude reads at activation.
+Claude Code loads the plugin's skills — for craft-rhetoric, `rhetoric`, `discourse`, `voicing`, `evaluating`, and others. Each is a SKILL.md file.
 
-A plugin's `description` (in `plugin.json`) is what Claude Code matches against to decide *when* to activate it — craft-rhetoric's is *"Crafts content that teaches and persuades… Use when: user asks to 'write docs', 'explain this', 'create a tutorial'…"*. Claude loads the skill and drives the behavior from it. The skill is the interface — not a command, not a menu. Every plugin in the catalog follows that pattern.
+A plugin's `description` (in `plugin.json`) is what Claude Code matches against to decide *when* to activate it — craft-rhetoric's is *"Crafts content that teaches and persuades… Use when: user asks to 'write docs', 'explain this', 'create a tutorial'…"*. Claude loads the skill and drives the behavior from it. The skill is the interface — not a command, not a menu.
 
 ---
 
@@ -98,7 +98,7 @@ gnx build                   # planned — projection CLI not built
 gnx search                  # planned — discovery CLI not built
 ```
 
-The gnx CLI is designed. Until it ships, the `extraKnownMarketplaces` entry in `settings.json` is the install path — and it's all you need to install what exists today.
+Until the CLI ships, the `extraKnownMarketplaces` entry in `settings.json` is the install path.
 
 ---
 
