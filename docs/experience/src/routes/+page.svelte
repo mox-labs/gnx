@@ -25,9 +25,13 @@
 
 <div class="cover">
 	<header class="hero">
-		<Sigil maxSize="clamp(180px, 30vh, 280px)" />
+		<div class="atmosphere" aria-hidden="true"></div>
+		<Sigil maxSize="clamp(200px, 34vh, 320px)" />
 		<h1>gnx</h1>
-		<p class="sub">component registry · Claude Code marketplace · agentic CLI</p>
+		<p class="sub">an extensions marketplace for agents</p>
+		{#if first}
+			<a class="enter" href="/docs/{first.slug}">Enter the dossier → {first.title}</a>
+		{/if}
 		<div class="kicker">genesis dossier · internal · 2026-06</div>
 	</header>
 
@@ -40,10 +44,6 @@
 		first — the <a href="/docs/rubric">rubric</a> and the <a href="/evaluation">evaluation</a> are
 		reviewable too. A verdict you disagree with means the rubric needs adjusting, not the doc.
 	</aside>
-
-	{#if first}
-		<p><a class="start" href="/docs/{first.slug}">Start reading → {first.title}</a></p>
-	{/if}
 
 	<h2 class="toc-label">The dossier</h2>
 	<ol class="doclist">

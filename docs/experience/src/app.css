@@ -508,14 +508,48 @@ mark.annot:hover {
 }
 
 .cover .hero {
+	position: relative;
+	min-height: min(84vh, 720px);
 	display: flex;
 	flex-direction: column;
 	align-items: center;
+	justify-content: center;
 	text-align: center;
-	gap: 0.5rem;
-	padding: 1.5rem 0 2.5rem;
-	margin-bottom: 1.6rem;
+	gap: 0.7rem;
+	padding: 2rem 0 3rem;
+	margin-bottom: 2rem;
 	border-bottom: 1px solid var(--line);
+	overflow: hidden;
+}
+
+.cover .hero .atmosphere {
+	position: absolute;
+	inset: -4rem;
+	pointer-events: none;
+	z-index: 0;
+	background:
+		radial-gradient(ellipse 55% 45% at 50% 32%, var(--spark-atmosphere) 0%, transparent 62%),
+		radial-gradient(ellipse 75% 55% at 50% 100%, var(--emergence-atmosphere) 0%, transparent 55%);
+}
+
+.cover .hero > * {
+	position: relative;
+	z-index: 1;
+}
+
+.cover .enter {
+	font: 0.9rem var(--mono);
+	text-decoration: none;
+	color: var(--ci-green);
+	border: 1px solid color-mix(in oklab, var(--ci-green) 38%, transparent);
+	border-radius: 6px;
+	padding: 0.5rem 1.1rem;
+	margin-top: 0.5rem;
+}
+
+.cover .enter:hover {
+	border-color: var(--ci-green);
+	background: color-mix(in oklab, var(--ci-green) 10%, transparent);
 }
 
 .cover .kicker {
