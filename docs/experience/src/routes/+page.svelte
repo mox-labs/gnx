@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Commentable from '$lib/components/Commentable.svelte';
+	import Sigil from '$lib/components/Sigil.svelte';
 
 	let { data } = $props();
 
@@ -24,7 +25,7 @@
 
 <div class="cover">
 	<header>
-		<img class="sigil" src="/sigil.svg" alt="" width="76" height="76" />
+		<div class="sigil"><Sigil maxSize="80px" /></div>
 		<div class="kicker">genesis dossier · internal · 2026-06</div>
 		<h1>gnx</h1>
 		<p class="sub">component registry · Claude Code marketplace · agentic CLI</p>

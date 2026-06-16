@@ -508,11 +508,7 @@ mark.annot:hover {
 }
 
 .cover .sigil {
-	display: block;
-	width: 76px;
-	height: 76px;
 	margin-bottom: 1.4rem;
-	opacity: 0.95;
 }
 
 .cover .kicker {

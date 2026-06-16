@@ -215,6 +215,13 @@ export function getDoc(slug: string): (DocMeta & { blocks: DocBlock[] }) | null 
 	return { ...meta, blocks: parseBlocks(body) };
 }
 
+/** Raw markdown body (frontmatter stripped) — the clean .md twin an agent fetches. */
+export function getDocSource(slug: string): string | null {
+	const entry = entries().find((d) => d.slug === slug);
+	if (!entry) return null;
+	return parseFrontmatter(readFileSync(entry.file, 'utf-8')).body.trim();
+}
+
 export interface EvalRecord {
 	file: string;
 	verdict: 'SHIP' | 'TIGHTEN' | 'RETURN';
