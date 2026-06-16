@@ -5,11 +5,11 @@
 
 ---
 
-## Correctness vs trust: two separate authorities
+## gnx ships correctness; x.uma ships trust
 
 gnx ships *correctness*: structure validates, port contracts hold, namespaces are
 well-formed. x.uma + geist-edge ship *trust*: FIS enforcement, autonomy ceilings,
-mediation. These are complementary authority layers, not overlapping ones.
+mediation.
 
 The load-bearing consequence: gnx accreditation is *data that x.uma's FIS reads*, not a
 trust judgment gnx issues. Accredited compositions get higher autonomy ceilings upstream.
@@ -21,10 +21,9 @@ The clearest statement of what gnx cannot do: a manifest declaring
 unless something above gnx enforces info-flow policy. gnx is not the leak-stopper. gnx is
 the record that makes the leak attributable.
 
-This split is not a gap in gnx's design. It is the design. Collapsing correctness and
-trust into one authority would mean gnx must understand semantics it cannot validate.
-That is the same category error as making `provides` tags proofs rather than discovery
-surfaces (§4, intent-hardening gradient).
+Collapsing correctness and trust into one authority would mean gnx must understand
+semantics it cannot validate. That is the same category error as making `provides` tags
+proofs rather than discovery surfaces (§4, intent-hardening gradient).
 
 ---
 
@@ -38,12 +37,11 @@ The escape requires an *exogenous* anchor — a source of authority the LLM can 
 cannot mint. gnx accreditation is the nominated anchor: human-ratified status that
 persists in the catalog and is available to any composer that reads the registry.
 
-The operational constraint this places on gnx is stated in §3: registry and ledger
-operations stay deterministic and auditable. SDK sessions (agentic) *propose*; deterministic
-code validates and writes. If gnx's own verdicts were LLM-minted, the anchor would
-dissolve into the loop it exists to break. This is why "dumb boundaries, smart interiors"
-is not an architecture preference — it is what preserves gnx's exogenous-anchor
-property.
+Registry and ledger operations stay deterministic and auditable (§3). SDK sessions
+(agentic) *propose*; deterministic code validates and writes. If gnx's own verdicts were
+LLM-minted, the anchor would dissolve into the loop it exists to break. This is why
+"dumb boundaries, smart interiors" is not an architecture preference — it is what
+preserves gnx's exogenous-anchor property.
 
 Position as of 2026-06-12: formally ratifying gnx in this role is open (§10.2). Everything
 in the June corpus leans yes.
@@ -72,9 +70,7 @@ on its structure is settled: authority disjoint from author.
 
 ---
 
-## Two-axis verdicts
-
-Verdicts in the catalog are **grounding ⊥ warrant**, never a single boolean.
+## Verdicts are grounding ⊥ warrant, never a single boolean
 
 The prosecuted counterexample: `Frame.asserted:bool`. Treating a verdict as a boolean
 collapses two independent axes into one bit. A frame can be:
@@ -96,11 +92,10 @@ behavioral proof.
 
 ---
 
-## The catalog as governed commons
+## The catalog's existential failure mode is pollution, not injection
 
-The existential failure mode for the catalog is not malicious injection. It is
-*pollution*: confident, schema-shaped, low-grounding agent traces that look like
-components because they pass structural validation.
+Confident, schema-shaped, low-grounding agent traces that pass structural validation
+look like components — and pollute the catalog without triggering any gate.
 
 The catalog is only as useful as its signal-to-noise ratio. A registry full of
 well-formed manifests pointing at generated artifacts with no grounding is worse than an
@@ -127,9 +122,7 @@ The budget is part of the catalog's operational design.
 ## Ranking by adoption creates an echo-trap
 
 Ranking by raw adoption counts is wrong-signed (2026-05-29). It rewards echo: a component
-adopted frequently because it appears first in search results ranks higher, which pushes
-it higher in search results. This is a feedback loop that selects for presence, not
-quality.
+that appears first ranks higher, which keeps it first — presence, not quality.
 
 The REP-022 resonance rerank breaks this by separating recall position from quality
 signal. Cheap recall surfaces candidates; resonance scoring re-orders them on evidence

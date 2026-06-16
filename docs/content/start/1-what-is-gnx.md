@@ -13,6 +13,8 @@ fidelity: tarmac
 
 The hard part was never storing capability. It is letting an agent **assemble capabilities it has never run** — from what each one declares about itself, before any of them execute. That is the one thing gnx is built to do: make a capability legible enough to compose without running it first.
 
+Two roles, kept separate: **your agent composes capability from the catalog; you govern what goes into it.** The catalog grows through agents — and stays trustworthy because a person, not an agent, mints what it is allowed to compose from.
+
 ## What you can do with it
 
 - **Set up a project.** `gnx init` stands up a Claude Code project with a curated set of agents, skills, and scaffolds — chosen in conversation, not picked off a fixed menu. *(planned)*

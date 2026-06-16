@@ -34,13 +34,13 @@ The SDK Frontier enters through Stasis:
 
 gnx is an SDK Frontier instance. The switching cost accumulates from day one, before any backlog exists to create Drag. The temptation is to pick one vendor and ride. The structural answer is to install the boundary before the cycle gets purchase.
 
-Once inside the cycle, the entry channel stops mattering. The cycle is self-reinforcing regardless of where it started.
+Once inside the cycle, the entry channel stops mattering.
 
 ---
 
-## ACES as Structural Inversion
+## Each ACES Property Breaks One Decay Channel
 
-Each ACES property breaks a specific channel through a specific mechanism. The properties reinforce each other — break any one channel and the ratchet loses pressure on the others.
+The properties reinforce each other — break any one channel and the ratchet loses pressure on the others.
 
 | Property | gnx mechanism | Channel broken |
 |---|---|---|
@@ -87,13 +87,11 @@ The aboot component makes this concrete: the vendor-neutral core (`slick.dev/v1`
 
 ---
 
-## Both Payoff Shapes Point Up at Once
-
-Both apply simultaneously. They are not the same shape.
+## The Boundary Earns Network-Effect and Antifragile Payoffs — and They Are Not the Same Shape
 
 **Network-effect payoff.** Each component written to the slickit Manifest becomes available to every Target adapter that consumes it. Value is superadditive in boundary-aligned component count. Compounds under stable conditions.
 
-**Antifragile convexity.** $\partial^2 V / \partial \sigma^2 > 0$. Each new vendor, runtime, or SDK version arrives as adapter work at the boundary, not as a rewrite — volatility in the agent-SDK ecosystem becomes capability expansion. Both payoff shapes point up simultaneously, which is part of why reported returns look implausible at first reading.
+**Antifragile convexity.** $\partial^2 V / \partial \sigma^2 > 0$. Each new vendor, runtime, or SDK version arrives as adapter work at the boundary, not as a rewrite — volatility in the agent-SDK ecosystem becomes capability expansion. This is part of why reported returns look implausible at first reading.
 
 Two affordances emerge from ACES-shaped systems. Not mechanisms to engineer — affordances to observe:
 
@@ -110,7 +108,7 @@ Two affordances emerge from ACES-shaped systems. Not mechanisms to engineer — 
 
 The cycle is what happens when the right semantic levels do not exist: costs become illegible because the architecture has no vocabulary to describe them. ACES is what those levels look like when they do: a wire protocol that describes runtime interaction, a schema that describes extension behavior, a state contract that describes composed behavior.
 
-For gnx specifically: the slickit Manifest + apiVersion namespacing + Target adapters + `requires`/`provides` ports are the semantic levels in which the agent SDK ecosystem's costs and compositions can be precisely described. Without them, the cycle runs. With them, the cycle's first two channels are inverted and the third has a place to be made legible — the catalog itself.
+For gnx specifically: the slickit Manifest + apiVersion namespacing + Target adapters + `requires`/`provides` ports are the semantic levels in which the agent SDK ecosystem's costs and compositions can be precisely described. With them, the cycle's first two channels are inverted and the third has a place to be made legible — the catalog itself.
 
 ---
 

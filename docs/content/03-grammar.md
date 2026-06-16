@@ -30,13 +30,12 @@ The namespace split follows the Kubernetes CRD pattern:
 | Claude Code commands | `commands.claude.anthropic.com/v1` |
 
 Portability class (Universal / Specialized / Vendor-Specific / Multi-Vendor) is
-**registry-computed**, not declared in the manifest. A component does not self-assert
-portability; gnx derives it from the apiVersions present in the manifest and its
-relations.
+**registry-computed**, not declared. gnx derives it from the apiVersions present in the
+manifest and its relations.
 
-This is the degeneration-watch #1 invariant in structural form: the core namespace cannot
-accrete vendor semantics because `slick.dev/v1` and `hooks.claude.anthropic.com/v1` are
-distinct strings. Vendor vocabulary lives in vendor namespaces by construction.
+This is degeneration-watch #1 in structural form: the core namespace cannot accrete
+vendor semantics because `slick.dev/v1` and `hooks.claude.anthropic.com/v1` are distinct
+strings. Vendor vocabulary lives in vendor namespaces by construction.
 
 aboot is the first real test of this split — its continuity-artifact core belongs in
 `slick.dev/v1`; its Claude Code hook bindings (SessionStart, SessionEnd, PreCompact,
@@ -55,9 +54,8 @@ semantic distinction is fixed.
 | `produces` | matrix at build time | DAG topology — what this component emits |
 | `consumes` | matrix at build time | DAG topology — what this component requires from the graph |
 
-These are not aliases. A component whose `provides` tags match a composition query may
-still fail DAG validation if `produces`/`consumes` don't align. The search layer and the
-wiring layer operate independently.
+A component whose `provides` tags match a composition query may still fail DAG validation
+if `produces`/`consumes` don't align. Search and wiring are independent layers.
 
 A component with neither `provides` nor `produces`/`consumes` is invisible to both
 layers and should not exist in the catalog.
@@ -80,7 +78,7 @@ be a representable type error.
 
 A kind label that carries no structural enforcement re-opens the Kubernetes homonym
 problem: `kind: Pod` means something in Kubernetes only because the controller enforces
-it. A label-only kind is decoration.
+it.
 
 The rule: every kind implies a set of fields that are valid, required, or forbidden.
 Violation is a type error at registration, not a warning.
@@ -88,9 +86,8 @@ Violation is a type error at registration, not a warning.
 Concrete corollary: a Skill declaring `produces` or `consumes` is a type error. The
 kind forbids those fields. gnx's validator enforces this, not just lint.
 
-The same logic constrains future kinds. Before any new kind enters the catalog, the
-question is not "what shall we call it?" but "what field-level consequences does it
-carry, and can gnx enforce them?"
+Before any new kind enters the catalog, the question is not "what shall we call it?" but
+"what field-level consequences does it carry, and can gnx enforce them?"
 
 ---
 
@@ -120,8 +117,8 @@ they do not get silently coerced into something plausible.
 This composes with "calibration not correctness" without contradiction. gnx's structural
 validator is strict (is this manifest well-formed? does the kind's type contract hold?)
 while gnx never promises semantic correctness (does this composition do what you
-intend?). Those are different claims at different layers. Postel-liberalism at the
-grammar boundary would make the structural claim meaningless.
+intend?). Postel-liberalism at the grammar boundary would make the structural claim
+meaningless.
 
 ---
 
@@ -181,8 +178,7 @@ What the catalog can promise depends on the tier of intent:
 The gradient is not a quality ladder — it describes what kind of claim is being made.
 A component's `provides: ["episodic-memory"]` is a tag, not a proof that the component
 correctly implements episodic memory. The registry makes the tag searchable; geist.sh /
-x.uma enforce behavioral envelopes above it; nothing in the stack proves semantic
-correctness.
+x.uma enforce behavioral envelopes above it.
 
 Catalog surfaces should expose which tier each claim sits in. A component card that
 presents a `provides` tag with the same visual weight as a validation badge is

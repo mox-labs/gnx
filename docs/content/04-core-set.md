@@ -10,7 +10,7 @@ This also means the interview is not a one-time UX decision. It's the curation b
 
 ## The function tier names the founding members
 
-These are the founding members — what the catalog needs to cover for a project to start well.
+These are the founding members.
 
 | Function | Component(s) | Status |
 |---|---|---|
@@ -28,16 +28,16 @@ Status distinguishes three readiness classes: **port as-is** (already componenti
 
 ## The organ tier: enters as deposited
 
-A second tier of founding members enters without needing to be built — it enters as deposited:
+A second tier enters as deposited — already designed, enough manifest surface to register:
 
 ```
 memex      recon      radix (text + multimodal)
 luminex    post       slick-as-plugin
 ```
 
-"Deposited" has a specific meaning here. These artifacts exist, are designed, and have enough manifest surface to register. They don't need componentizing from raw patterns. They need the gnx on-disk format to settle (§4, §10.3) and then registration. luminex is the most design-complete manifest in the corpus; it enters first — with one blocker: the luminex name collision (§10.8 — the legibility surface and the veritas-side gate share the name) must resolve before the catalog carries two luminexes.
+"Deposited" has a specific meaning here: these artifacts don't need componentizing from raw patterns. They need the gnx on-disk format to settle (§4, §10.3) and then registration. luminex is the most design-complete manifest in the corpus; it enters first — with one blocker: the luminex name collision (§10.8 — the legibility surface and the veritas-side gate share the name) must resolve before the catalog carries two luminexes.
 
-The paths to catalog entry differ. Function-tier entries require a componentizing pass (manifest + embedded skill + tests, kind-aware — `gnx component init` is the scaffold for that). Organ-tier entries require a registration pass once gnx's manifest.yaml format is finalized.
+Function-tier entries require a componentizing pass (manifest + embedded skill + tests, kind-aware — `gnx component init` is the scaffold for that). Organ-tier entries require a registration pass once gnx's manifest.yaml format is finalized.
 
 ## dao-corpus: the public expertise wing
 
@@ -45,7 +45,7 @@ The paths to catalog entry differ. Function-tier entries require a componentizin
 
 **corpora/rust** is CLOSED: 12/12 milestones, ~150 Frames, 11 patterns. Named next: py, ts, rust-py-ts (FFI/dual-publish), experience.
 
-A corpus enters the catalog as a **Skill component** — `kind: Skill` in slick's 4-kind taxonomy. The mechanism is the Skill's semantic position in proof-search: Skills are provides-only, meaning Dagstra can match on them but they carry no DAG topology (no produces/consumes). They are axioms — the base layer the composition search reasons from. A corpus Skill declares its expertise in `provides`; any project composition that needs that expertise reaches it.
+A corpus enters the catalog as a **Skill component** — `kind: Skill` in slick's 4-kind taxonomy. Skills are provides-only: Dagstra matches on them but they carry no DAG topology (no produces/consumes). They are axioms — the base layer the composition search reasons from. A corpus Skill declares its expertise in `provides`; any project composition that needs that expertise reaches it.
 
 ```yaml
 # sketch — manifest.yaml for a corpus binding (format not hard-decided)
@@ -59,11 +59,11 @@ relations:
   frames: dao-corpus/corpora/rust/frames/
 ```
 
-"Mastery distilled once, grounded in Frames, composed into any project by reading its mark." The mark is the provides entry. The Frame is the grounding artifact. The Skill component is the catalog surface that makes those two things composable.
+"Mastery distilled once, traceable to its sources, composed into any project by reading its mark." The mark is the provides entry; the source Frame is the grounding artifact behind it.
 
 ## gnx init gnx: the keystone dual-role move
 
-`gnx init gnx` is the first project gnx initializes. gnx is both the tool and its own first subject.
+`gnx init gnx` is the first project gnx initializes — the tool, run on itself.
 
 This is the Engelbart dual-role condition: using the tool you're building to build it. The bootstrap claim — "gnx works" — only holds under active developer-as-primary-user practice. The 2026-05-15 verdict was "conditionally satisfied — requires deliberate institutional practice." Conditionally, not automatically.
 

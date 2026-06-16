@@ -1,10 +1,10 @@
 # What gnx is
 
-gnx is three things that share one catalog: a component **registry**, a **Claude Code marketplace**, and an **agentic CLI**. The catalog is the center. The three functions are access patterns on it.
+gnx is three things that share one catalog: a component **registry**, a **Claude Code marketplace**, and an **agentic CLI**. The three functions are access patterns on it.
 
 ## The registry answers one question: can these two compose without running them?
 
-The registry holds components declared under slick manifests: validated at registration, accredited, indexed for search. Dagstra performs semantic proof-search over `provides` tags; Claude reads declared surfaces to decide whether two components compose. The registry surface is designed to answer one question for a capable reasoner: *can I compose these two without running them?*
+The registry holds components declared under slick manifests: validated at registration, accredited, indexed for search. Dagstra performs semantic proof-search over `provides` tags; Claude reads declared surfaces to decide whether two components compose.
 
 Registration is strict, not Postel-liberal. A component without `provides` is invisible to composition search and doesn't belong in the catalog. Portability class (Universal / Specialized / Vendor-Specific / Multi-Vendor) is registry-computed from the `apiVersion` namespace. Components don't self-declare it.
 
@@ -16,7 +16,7 @@ Projection happens at authoring time. `gnx build` writes plugin dirs and generat
 
 ## The CLI initializes projects through discussion, not fixed menus
 
-`gnx init` initializes a project: `claude` (agent + CLAUDE.md constitution) + `dao` (agentic organization) + `.gnx/` (installed catalog components). Component selection happens through discussion with the user — no fixed menus. `gnx component init [kind]` scaffolds a new lexicon entry (manifest + skill + tests, kind-aware).
+`gnx init` initializes a project: `claude` (agent + CLAUDE.md constitution) + `dao` (agentic organization) + `.gnx/` (installed catalog components). `gnx component init [kind]` scaffolds a new lexicon entry (manifest + skill + tests, kind-aware).
 
 The keystone: `gnx init gnx`. gnx is the first project initialized by its own CLI, running its own core set.
 
@@ -26,7 +26,7 @@ The keystone: `gnx init gnx`. gnx is the first project initialized by its own CL
 
 gnx is the registry the system's self-extension runs through. Dagstra searches the registry on `provides`; HADES generates new components into it; whatever enters the catalog immediately extends what the next composition search reaches. The samsara audit named this autopoietic closure its strongest KEEP signal (2026-06-06): *"Bodhi sharpens → Dagstra searches → HADES generates into the registry → extends the next search."*
 
-gnx is one node in that loop, not the whole loop. The loop is the design frame; the registry is gnx's contribution to it.
+The loop is the design frame; the registry is gnx's contribution to it.
 
 ## The catalog keeps two registers distinct: a curated core set, an at-large marketplace
 
@@ -44,7 +44,7 @@ Two registers, kept distinct. The **core set** is what `gnx init` curates from �
 
 The **at-large marketplace** carries those plus everything that enters as deposited: slick (grammar as plugin), radix (multi-modal comprehension), luminex (Flow — most design-complete manifest in the corpus; carries the §10.8 name collision, unresolved), memex and recon (memory and reconnaissance organs), post (publication surface), craft-research, craft-rhetoric.
 
-**cortex** is roadmap-only. REP-015 is proposed with no research behind it. The program's ruling (2026-06-12): don't accept it to complete the picture. It is not in the founding catalog.
+**cortex** is roadmap-only. REP-015 is proposed with no research behind it. The program's ruling (2026-06-12): don't accept it to complete the picture.
 
 ## Claude and agents are the primary consumer; humans browse second
 
@@ -56,7 +56,7 @@ The live risk: the CC Target adapter becoming de-facto spec because no second Ta
 
 ## Each component is useful without the rest of the stack
 
-The universe ships in phases. Each component — including gnx itself — is useful without the rest of the stack.
+The universe ships in phases; each component — including gnx itself — is useful without the rest of the stack.
 
 Add the Claude Code marketplace without `gnx init`. Run `gnx init` without Dagstra in the loop. Register components without geist.sh running. GTM work starts the week of 2026-06-15.
 

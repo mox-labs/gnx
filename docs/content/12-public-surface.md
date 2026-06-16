@@ -5,7 +5,7 @@ GTM work beginning the week of 2026-06-15.
 
 ---
 
-## The premise: phases and standalone value
+## gnx ships standalone — before samsara, geist.sh, or Treya surface
 
 The mox universe ships in phases. geist.sh is partial. samsara is designed but not public.
 Treya is named. gnx is the first component of the catalog layer with enough surface to
@@ -25,7 +25,7 @@ None of these require geist.sh running, samsara inhabited, or Treya instantiated
 
 ---
 
-## Two audiences, one bounded domain
+## Two readers, one bounded scope: component registry pragmatics
 
 The public gnx docsite has two audiences (§11, §2, §3):
 
@@ -44,9 +44,9 @@ pragmatics**.
 
 ---
 
-## Public docs cover only usage pragmatics
+## Public docs cover the pragmatic loop and the legible boundary — nothing else
 
-### User-facing: the pragmatic loop
+### User-facing docs are the pragmatic loop: install, init, compose, build
 
 | Topic | Commands / artifacts | Notes |
 |---|---|---|
@@ -66,7 +66,7 @@ gnx build                        # writes plugin/ dir and marketplace.json entry
 # submit to catalog: [open — registration flow not yet designed]
 ```
 
-### Agent-facing: the legible boundary
+### Agent-facing docs are the legible boundary: what Claude reads at runtime
 
 The agent-facing "docs" are partly not docs at all. They are the outputs Claude reads at
 runtime:
@@ -84,7 +84,7 @@ interpretation — so a developer authoring components knows what Claude will se
 
 ---
 
-## Cosmology and architecture are deferred
+## Cosmology is deferred — one load-bearing sentence maximum, then a link
 
 These topics are load-bearing for the full architecture but are not user-actionable at
 GTM. They get at most one sentence + a link out to design docs or the research corpus.
@@ -117,11 +117,11 @@ Example of what is NOT a load-bearing sentence (do not publish):
 
 ---
 
-## The operating constraint: do not confuse devs
+## Every public sentence must be actionable without ecosystem context
 
-§11 states this explicitly. The failure mode is: a dev lands on the gnx site, reads about
-"the inhabited Construct" or "Treya's ilm · kalā · kriya", and concludes that gnx is a
-research project, not a tool they can install today.
+The failure mode is: a dev lands on the gnx site, reads about "the inhabited Construct" or
+"Treya's ilm · kalā · kriya", and concludes that gnx is a research project, not a tool
+they can install today.
 
 The test for any candidate public sentence: can a developer who has never heard of mox
 read this sentence and still know what to do next? If not, it belongs in the internal
@@ -133,7 +133,7 @@ world-ontology. The skill surface must be self-contained.
 
 ---
 
-## The two-register boundary, made explicit
+## The register split: what goes public, what stays internal
 
 ```
 PUBLIC docsite (both user + agent facing)
@@ -198,4 +198,3 @@ a resolved version of this list.
 
 Invite comment on specific blocks — the in/out table and the deferred-topic table are the
 load-bearing cells; those are where the line gets drawn.
-

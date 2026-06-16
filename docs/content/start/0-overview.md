@@ -13,7 +13,7 @@ fidelity: tarmac
 
 **Designed for any agent. Claude Code today.**
 
-Capability stops being trapped in the project that first built it; your tooling stops being welded to one runtime. That is what the catalog buys you.
+The shape of it in one line: **your agent composes capability from the catalog, and you govern what it composes from.** Capability stops being trapped in the project that first built it; your tooling stops being welded to one runtime; and what your agent assembles is drawn from a catalog a person curates, not one an agent quietly rewrites.
 
 ## cix and slick ship today; gnx is designed
 

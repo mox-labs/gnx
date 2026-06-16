@@ -102,12 +102,10 @@ check.
 
 **Default-to-hold.** Uncertainty resolves toward hold, not ship.
 
-### April live-run verdict grammar
+### The Sabha ran a three-tier graded verdict in practice — field-proven, in no draft
 
 *Recovered 2026-06-12 from the April conversation dumps. Exists in no draft. The live
 Sabha run appears in the 2026-04-22/23 mox-rnd attachment.*
-
-The verdict grammar the Sabha used in practice:
 
 - **SHIP** — clears all gates; evaluator consensus on warrant and grounding
 - **SHIP-WITH-TIGHTENING** — shippable; named required-vs-optional tightening items
@@ -169,7 +167,7 @@ spec-only as of 2026-06-12 (§10.13).
 doctrine. The ziran Sabha is the second live instance (deliberation pattern; not a
 service wing).
 
-### Structure on disk
+### Three phases, no triage seat — artisans' on-disk anatomy
 
 ```
 artisans/
@@ -195,10 +193,10 @@ Three phases: design trio (davinci / director / roark) → makers (generator / p
 / craftsperson) → consciences (veritas / labcoat). Triage is a routing workflow step,
 not a practitioner.
 
-### The two-family eval panel
+### The two-family eval panel is the third ship-gate anchor
 
-Third anchor of the ship gate alongside veritas and labcoat. Evaluators from a
-different model family, read-only, scoring against the ticket's acceptance criteria.
+Evaluators from a different model family, read-only, scoring against the ticket's
+acceptance criteria.
 
 Current panel: gemini (Google) + mlx-lm running Qwen3-8B. Claude is **excluded** —
 same family as the makers. Gemma is avoided (collapses into Gemini's family). The
@@ -267,7 +265,7 @@ after surviving the governance stack.** That is the lineage argument for
 validation-at-registration and accreditation-as-exogenous-anchor (ground-truth §9's
 pollution doctrine). The dao is the stack those artifacts must survive.
 
-## The pre-generative-constitution argument
+## The dao charter must be pre-generative, not post-hoc
 
 The "why" under the Constitution component in the core set (§5) has a dated origin:
 2026-04-19 conversation "Claude's admission about following rules over intent"
@@ -286,7 +284,7 @@ truth: onboarding is reading, disagreement is an edit, drift is visible. *"Chart
 the compiled, stable culture; ratchet = the learning loop by which lived experience
 edits the charter."*
 
-## Open questions
+## Four questions remain open in the corpus
 
 **§10.12 — Which dao sense does gnx init scaffold?** The corpus carries three senses
 with supersessions never recorded. Init scaffolds the June standing-bench sense — the

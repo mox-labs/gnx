@@ -46,19 +46,19 @@ kind: Skill
 produces: [analysis-report]   # gnx validate: kind:Skill may not declare produces/consumes
 ```
 
-### 2.2 Registrations require a verified owner identity
+### 2.2 Owner identity is a first-class schema field, not a convention
 
-Every registration carries an owner identity. The registry schema treats authorship identity
-as a first-class field — not a convention, not a comment. This is §9's "make-or-break":
-until minting a registration is structurally restricted to an authority disjoint from the
-mark's author, every accreditation record is forgeable.
+The registry schema treats authorship identity as a first-class field — not a convention, not
+a comment. This is §9's "make-or-break": until minting a registration is structurally
+restricted to an authority disjoint from the mark's author, every accreditation record is
+forgeable.
 
-Concretely: `gnx validate` must be able to verify the registrant's identity against the
-component's declared namespace. The exact schema field is [open] (§10 item 1 — relation on
-Manifest vs `kind: AccreditationRecord` vs side-table), but the constraint is not open:
-the wall ships before accreditation is used as an autonomy signal by x.uma.
+`gnx validate` must verify the registrant's identity against the component's declared
+namespace. The exact schema field is [open] (§10 item 1 — relation on Manifest vs
+`kind: AccreditationRecord` vs side-table), but the constraint is not open: the wall ships
+before accreditation is used as an autonomy signal by x.uma.
 
-### 2.3 Accreditation as append-only, human-mintable only
+### 2.3 Accreditation is append-only and human-mintable only
 
 Accreditation records are written by `gnx accredit` and are human-initiated. The SDK
 session inside `gnx init` may *propose* a curation set; deterministic code validates and
@@ -84,12 +84,12 @@ Not a warning — a rejection.
 
 ---
 
-## 3. Locus 2 — Scaffolds: projects born ACE
+## 3. Locus 2 — Scaffolds make the non-ACE shape unproducible
 
 `gnx init` generates the project structure. The generated structure is the enforcement
 mechanism — not the documentation that comes with it.
 
-### 3.1 The cix lesson, fixed structurally
+### 3.1 cix shipped unwired hooks; gnx init wires them in code
 
 cix shipped `.githooks/pre-commit` and `.githooks/commit-msg`. Neither was ever wired.
 The hooks exist at `/Users/yza.vyas/mox/products/cix/.githooks/` but `.git/config` carries
@@ -116,7 +116,7 @@ check: lint test   # mirrors CI; hook calls `just lint`
 
 The hook calls `just lint`. The CI job calls `just lint`. They cannot drift.
 
-### 3.2 Stack skeletons
+### 3.2 Each tier ships one skeleton with pre-wired gates
 
 Three tier shapes, one discipline:
 
@@ -129,7 +129,7 @@ Three tier shapes, one discipline:
 "Leaf crate" for Rust means: no binary-crate logic in a lib crate, no circular workspace
 dependencies, each crate compiles independently. This is the vaani/x.uma precedent.
 
-### 3.3 Scaffold file tree (Python tier, sketch)
+### 3.3 Python tier scaffold file tree
 
 ```
 my-project/
@@ -169,16 +169,13 @@ developer fills in content; the structure is pre-wired.
 
 ## 4. Locus 3 — The dao runs process enforcement at defined trigger points
 
-Process enforcement is the softest locus but still code-and-gates, not advice. The dao
-components run at defined trigger points.
+Process enforcement is the softest locus but still code-and-gates, not advice.
 
-### 4.1 Guild review runs on file-pattern triggers
+### 4.1 Guild review fires on file-pattern triggers, not discretion
 
 guild-arch runs on design proposals, not on implementation PRs. The trigger is a design
 doc or manifest commit to `docs/` or `manifests/`. The pre-commit hook can fire
 guild-arch's trust-boundaries scanner; the CI job gates merge.
-
-This is not "run guild-arch when you feel like it." The hook fires on the file pattern.
 
 ### 4.2 Antifragile reviews proposed abstractions
 
@@ -219,7 +216,7 @@ and npm is native.
 
 ---
 
-## 6. The hard catalog rule, summarized
+## 6. The hard catalog rule: three conditions, no exceptions
 
 Every `kind: Capability` in gnx:
 
@@ -267,4 +264,3 @@ as "hardest to retrofit" in §9).
 
 Comment on specific blocks — particularly §2.2 (produce-authority), §3.1 (hook-wiring
 implementation), and the v1 priority question in Open questions.
-
