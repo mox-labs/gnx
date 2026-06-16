@@ -507,8 +507,15 @@ mark.annot:hover {
 	padding-top: 2rem;
 }
 
-.cover .sigil {
-	margin-bottom: 1.4rem;
+.cover .hero {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	text-align: center;
+	gap: 0.5rem;
+	padding: 1.5rem 0 2.5rem;
+	margin-bottom: 1.6rem;
+	border-bottom: 1px solid var(--line);
 }
 
 .cover .kicker {
@@ -516,25 +523,32 @@ mark.annot:hover {
 	letter-spacing: 0.12em;
 	text-transform: uppercase;
 	color: var(--muted);
-	margin-bottom: 1.2rem;
+	margin: 0;
 }
 
 .cover h1 {
-	font-size: 3.4rem;
+	font-size: clamp(3.5rem, 9vw, 6rem);
 	line-height: 1;
-	letter-spacing: -0.02em;
-	margin: 0 0 0.6rem;
+	letter-spacing: -0.03em;
+	margin: 0.6rem 0 0;
+	color: var(--spark-core);
+	text-shadow:
+		0 0 4px oklch(75% 0.18 240),
+		0 0 16px oklch(62% 0.15 240 / 0.55),
+		0 0 44px oklch(55% 0.12 240 / 0.3),
+		0 0 90px oklch(50% 0.08 240 / 0.12);
 }
 
 .cover h1::after {
 	content: '.';
-	color: var(--accent);
+	color: var(--ci-green);
+	text-shadow: 0 0 16px oklch(70% 0.18 145 / 0.5);
 }
 
 .cover .sub {
-	font: 0.92rem var(--mono);
+	font: 0.95rem var(--mono);
 	color: var(--muted);
-	margin: 0 0 2.4rem;
+	margin: 0;
 }
 
 .cover-body {

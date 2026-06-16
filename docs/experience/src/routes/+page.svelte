@@ -24,11 +24,11 @@
 </svelte:head>
 
 <div class="cover">
-	<header>
-		<div class="sigil"><Sigil maxSize="80px" /></div>
-		<div class="kicker">genesis dossier · internal · 2026-06</div>
+	<header class="hero">
+		<Sigil maxSize="clamp(180px, 30vh, 280px)" />
 		<h1>gnx</h1>
 		<p class="sub">component registry · Claude Code marketplace · agentic CLI</p>
+		<div class="kicker">genesis dossier · internal · 2026-06</div>
 	</header>
 
 	<div class="cover-body doc">

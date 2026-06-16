@@ -52,7 +52,7 @@
 		</g>
 		<g transform="rotate({heptagonRotation}, 100, 100)">
 			<path d="M 100.00 40.00 L 146.91 62.59 L 158.49 113.35 L 126.03 154.05 L 73.97 154.05 L 41.51 113.35 L 53.09 62.59 Z" fill="none" stroke-width="3.50" stroke-linejoin="round" opacity="0.9" class="heptagon" />
-			<path d="M 100.00 40.00 L 158.49 113.35 L 73.97 154.05 L 53.09 62.59 L 146.91 62.59 L 126.03 154.05 L 41.51 113.35 Z" fill="none" stroke-width="1.05" stroke-linejoin="round" opacity="0.2" class="heptagon" />
+			<path d="M 100.00 40.00 L 158.49 113.35 L 73.97 154.05 L 53.09 62.59 L 146.91 62.59 L 126.03 154.05 L 41.51 113.35 Z" fill="none" stroke-width="1.6" stroke-linejoin="round" opacity="0.55" class="heptagon" />
 		</g>
 		<g transform="rotate({sparkRotation}, 100, 100)">
 			{#each sparkRays as ray (ray.x2)}
