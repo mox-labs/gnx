@@ -84,7 +84,7 @@ The rule: every kind implies a set of fields that are valid, required, or forbid
 Violation is a type error at registration, not a warning.
 
 Concrete corollary: a Skill declaring `produces` or `consumes` is a type error. The
-kind forbids those fields. gnx's validator enforces this, not just lint.
+kind forbids those fields. gnx's validator will enforce this at registration, not leave it to lint.
 
 Before any new kind enters the catalog, the question is not "what shall we call it?" but
 "what field-level consequences does it carry, and can gnx enforce them?"
@@ -131,7 +131,7 @@ type_url   string
 source     string
 requires   []string
 provides   []string
-relations  map[string]string
+relations  map[string][]string
 ```
 
 JSON, in-memory only. **No `kind`, no `apiVersion`, no `metadata.name` on disk.** No
@@ -208,9 +208,4 @@ future kind addition and what the amendment process looks like.
 **Leash declaration syntax**: The condensation + leash design is settled in direction;
 the exact syntax for declaring a leash in a Flow manifest is pending. `gnx component
 init flow` will need to scaffold this. What does a leash declaration look like on disk?
-
----
-
-Mark specific blocks where the framing is wrong or incomplete — especially §10.3 and the
-manifest sketch above.
 

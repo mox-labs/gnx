@@ -108,14 +108,14 @@ Projection happens at authoring time because Claude Code's install mechanics lea
 
 ## Registration is human-curated, not self-serve
 
-The catalog is human-curated. Submissions go through curation review before the ledger is updated.
+The catalog is human-curated. Submissions go through curation review before the registry is updated.
 
-The registration flow is not yet specified. The submission must contain a passing `gnx validate`, a committed `gnx build` output, and for Capabilities a verified `--skill` surface. Registration produces an accreditation record on the append-only ledger, human-mintable only.
+The registration flow is not yet specified. The submission must contain a passing `gnx validate`, a committed `gnx build` output, and for Capabilities a verified `--skill` surface. Registration produces an accreditation record, human-minted only.
 
 ---
 
 ## Format, registration, and portability remain open
 
 - **On-disk manifest format**: `manifest.yaml` is the lean; the final field names resolve with slick's next grammar pass. The authoring loop here holds regardless of the final filename.
-- **Registration flow mechanics**: how a validated component moves to the registry ledger is not yet specified. The curation-bar requirements (validate passing, build output committed, `--skill` verified for Capabilities) are specified; the submission and review mechanics are open.
+- **Registration flow mechanics**: how a validated component moves into the registry is not yet specified. The curation-bar requirements (validate passing, build output committed, `--skill` verified for Capabilities) are specified; the submission and review mechanics are open.
 - **Portability classes** are registry-computed, not declared — the exact computation rules are not yet specified.

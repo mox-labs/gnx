@@ -1,5 +1,7 @@
 # Hard ACE — Enforcement by Code and Gates
 
+> **Design register.** gnx is pre-build (NAMED — doctrine shaped, build starting). Present tense below states the design, not shipped behavior. What runs today: [status](/docs/status).
+
 > §7 decided 2026-06-12. Three loci: catalog boundary, scaffolds, process. None of these are
 > guidelines. Each is a gate that rejects or a scaffold that makes the wrong shape impossible to
 > produce.
@@ -54,8 +56,8 @@ restricted to an authority disjoint from the mark's author, every accreditation 
 forgeable.
 
 `gnx validate` must verify the registrant's identity against the component's declared
-namespace. The exact schema field is [open] (§10 item 1 — relation on Manifest vs
-`kind: AccreditationRecord` vs side-table), but the constraint is not open: the wall ships
+namespace. The exact schema field is [open] (§9; see Open questions item 1 — field name,
+format, verification mechanism), but the constraint is not open: the wall ships
 before accreditation is used as an autonomy signal by x.uma.
 
 ### 2.3 Accreditation is append-only and human-mintable only

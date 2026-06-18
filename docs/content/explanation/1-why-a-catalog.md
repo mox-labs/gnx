@@ -21,13 +21,13 @@ That is what a registry buys that a folder of plugins does not. Each entry decla
 
 ## Why a marketplace on top
 
-A registry is where components are declared and found. A marketplace is how they reach a runtime. For Claude Code, that means installable plugins — the catalog projected into the form Claude Code installs and loads. The registry holds the truth; the marketplace is a view of it, generated and shipped so an agent can install what it found.
+A registry is where components are declared and found. A marketplace is how they reach a runtime. For Claude Code, that means installable plugins — the catalog projected into the form Claude Code installs and loads. The registry holds the truth; the marketplace is a view of it — generated and shipped so an agent can install what it found. That projection is how the catalog is designed to reach Claude Code; today only the standalone plugins ship, with the generation-and-install pipeline still being built.
 
 ## Why curated, not open-write
 
-The catalog is human-curated, and that is a feature, not friction. An agent composes from what the catalog says — so what the catalog says has to be trustworthy. Accreditation in gnx is human-minted: a status an agent can read and build on, but cannot mint for itself. The catalog grows through agents; it stays trustworthy because those who build what they compose from govern what enters it.
+The catalog is human-curated, and that is a feature, not friction. An agent composes from what the catalog says — so what the catalog says has to be trustworthy. Accreditation in gnx is human-minted: a status an agent can read and build on, but cannot mint for itself. The catalog grows through agents; it is designed to stay trustworthy because those who build what they compose from govern what enters it.
 
-This is the split that keeps the catalog honest: it certifies **structure** — that a component is well-formed, that its ports satisfy, that its namespace is in scope — and leaves **trust** to be minted by a human. A component that declares it handles sensitive data and emits logs composes cleanly; whether that composition is *safe* is a judgment a person signs, not one the catalog fabricates.
+This is the split designed to keep the catalog honest: it is meant to certify **structure** — that a component is well-formed, that its ports satisfy, that its namespace is in scope — and leave **trust** to be minted by a human. A component that declares it handles sensitive data and emits logs composes cleanly; whether that composition is *safe* is a judgment a person signs, not one the catalog fabricates.
 
 ## Standalone value is the premise
 

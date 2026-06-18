@@ -1,5 +1,7 @@
 # What gnx is
 
+> **Design register.** gnx is pre-build (NAMED — doctrine shaped, build starting). Present tense below states the design, not shipped behavior. What runs today: [status](/docs/status).
+
 gnx is three things that share one catalog: a component **registry**, a **Claude Code marketplace**, and an **agentic CLI**. The three functions are access patterns on it.
 
 ## The registry answers one question: can these two compose without running them?

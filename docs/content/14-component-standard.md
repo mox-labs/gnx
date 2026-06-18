@@ -1,5 +1,7 @@
 # The component standard — the bar every component is held to
 
+> **Design register.** gnx is pre-build (NAMED — doctrine shaped, build starting). Present tense below states the design, not shipped behavior. What runs today: [status](/docs/status).
+
 > Promoted from §7 (Hard ACE), §7a (the antifragile doctrine), and §8 (the degeneration
 > watch). This is the standard each component page is written against: which decay channel its
 > shape breaks, how it survives the Boundary Test, what would degenerate it. A component that
@@ -111,7 +113,7 @@ the test, has not met the standard — regardless of how polished the prose is.
 
 ## How the standard is enforced, not just stated
 
-The standard is held by the same three loci that hold Hard ACE (§8): the **catalog boundary**
+The standard is held by the same three loci that hold Hard ACE (§7): the **catalog boundary**
 (`gnx validate` rejects non-compliant shapes — kind consequences, namespace isolation, the
 embedded-skill rule, the produce-authority wall), **scaffolds** (`gnx component init` generates
 the compliant shape so the wrong shape is harder to produce than the right one), and the

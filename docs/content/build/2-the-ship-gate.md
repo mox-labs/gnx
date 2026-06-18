@@ -9,7 +9,7 @@
 
 ## The instrument: a rubric with hard gates
 
-`docs/RUBRIC.md` is the standard, and it is reviewable like any other page. It defines criteria — voice, no-LLM-tells, no-register-announcing, factual fidelity, propagation, tightness, legibility, and the register extension's maturity / task-orientation / grammar-accuracy — with some marked **hard gates**. A register profile says which criteria gate which kind of page: a public guide is gated on task orientation, an internal design doc on factual fidelity and depth.
+`docs/RUBRIC.md` is the standard, and it is reviewable like any other page. It defines criteria — voice, no-LLM-tells, no-register-announcing, factual fidelity, propagation, tightness, legibility, and — in the rubric extension still being merged into it — maturity / task-orientation / grammar-accuracy — with some marked **hard gates**. The register profile (the extension layer being merged into RUBRIC.md) says which criteria gate which kind of page: a public guide is gated on task orientation, an internal design doc on factual fidelity and maturity honesty.
 
 The verdict grammar is three-valued. **SHIP** — all applicable hard gates clear, nothing below a 3. **TIGHTEN** — gates clear, one non-gate sits at 3; fix the named passage and it ships. **RETURN** — a hard gate fails, or any criterion hits 1 or 2; the page goes back with the failing passage named.
 

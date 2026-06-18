@@ -45,7 +45,7 @@ The properties reinforce each other — break any one channel and the ratchet lo
 | Property | gnx mechanism | Channel broken |
 |---|---|---|
 | **Adaptability** | Manifest as wire-equivalent; apiVersion namespaces; adapter capability negotiation — same catalog, different Target adapters per runtime | **Stasis** — new vendors/runtimes absorbed as namespaces + adapters, not rewrites; switching cost stays bounded |
-| **Extensibility** | Typed Manifest schema; vendor extensions via namespace, never core changes; O(1) validation at the catalog boundary | **Drag** — extension doesn't queue behind a gnx maintainer; platform validates schema, not internals |
+| **Extensibility** | Typed Manifest schema; vendor extensions via namespace, never core changes; O(1) validation at the catalog boundary (designed) | **Drag** — extension doesn't queue behind a gnx maintainer; platform validates schema, not internals |
 | **Composability** | `requires`/`provides` port declarations; declared composition; Skills travel via `relations`, not implicit prompt injection | **Opacity** — composed behavior predictable from Manifest declarations before execution |
 
 **June 2026 caution (grammar-of-computation audit):** the composability leg as stated adds little over classical modularity. The load-bearing argument is info-hiding, dependency-inversion, and antifragility — not composability-as-novelty. Write and reason from those foundations.
@@ -75,7 +75,7 @@ The degeneration condition in one sentence: does the protocol surface stay runti
 
 ## Conway's Ratchet Makes the Org Resist the Fix
 
-37:1 return on labor in year one, measured against identical capability. The boundary was built, the evidence was clear, the organization resisted.
+The trilogy's case study: 37:1 return on labor in year one, measured against identical capability. The boundary was built, the evidence was clear, the organization resisted.
 
 Why? Conway's Law is bidirectional. The architecture the org produces reflects the org's communication patterns. The architecture it produced then creates roles, budgets, teams, and career paths that depend on it staying the way it is. The fragility is load-bearing for the careers built on managing it. Nobody needs to conspire — the incentive gradient does the work automatically.
 
@@ -89,7 +89,7 @@ The aboot component makes this concrete: the vendor-neutral core (`slick.dev/v1`
 
 ## The Boundary Earns Network-Effect and Antifragile Payoffs — and They Are Not the Same Shape
 
-**Network-effect payoff.** Each component written to the slickit Manifest becomes available to every Target adapter that consumes it. Value is superadditive in boundary-aligned component count. Compounds under stable conditions.
+**Network-effect payoff.** Each component written to the slickit Manifest becomes available to every Target adapter that consumes it — structurally; only the Claude Code Target ships today, so the network effect is installed, not yet realized. Value is superadditive in boundary-aligned component count. Compounds under stable conditions.
 
 **Antifragile convexity.** $\partial^2 V / \partial \sigma^2 > 0$. Each new vendor, runtime, or SDK version arrives as adapter work at the boundary, not as a rewrite — volatility in the agent-SDK ecosystem becomes capability expansion. This is part of why reported returns look implausible at first reading.
 
@@ -114,7 +114,7 @@ For gnx specifically: the slickit Manifest + apiVersion namespacing + Target ada
 
 ## Open Questions
 
-1. **Public exposure.** Does this doc — or a compressed form — belong in the public docs, given §11's bounded-domain ruling? The argument for: ACES is engineering doctrine, not mox cosmology, and gnx's vendor-neutrality claim is unintelligible without the mechanism behind it. The argument against: §11 explicitly says "do not overload devs," and the 87x / Conway's Ratchet material is background, not usage. A possible resolution: one load-bearing paragraph on the public surface with a link out to the trilogy directly — the catalog as demonstration, the trilogy as the explanation for anyone who wants the physics.
+1. **Public exposure.** Does this doc — or a compressed form — belong in the public docs, given §11's bounded-domain ruling? The argument for: ACES is engineering doctrine, not mox cosmology, and gnx's vendor-neutrality claim is unintelligible without the mechanism behind it. The argument against: §11 explicitly says "do not overload devs," and the 37:1 / Conway's Ratchet material is background, not usage. A possible resolution: one load-bearing paragraph on the public surface with a link out to the trilogy directly — the catalog as demonstration, the trilogy as the explanation for anyone who wants the physics.
 
 ---
 

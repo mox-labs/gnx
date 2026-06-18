@@ -82,8 +82,8 @@ In the shipped slick manifest these ports are `requires` (inputs) and `provides`
 | Question | Surface (shipped → designed) | Consumer | When |
 |----------|------------------------------|----------|------|
 | What can do X? | `provides` → discovery tags | agents, `gnx search` | before composition |
-| What's the input? | `requires` → `consumes` | runtime (matrix) | at build, wiring the pipeline |
-| What's the output? | `provides` → `produces` | runtime (matrix) | at build, matching upstream |
+| What's the input? | `requires` → `consumes` | runtime | at build, wiring the pipeline |
+| What's the output? | `provides` → `produces` | runtime | at build, matching upstream |
 
 A component whose discovery tags match a query can still fail to wire if its ports don't align with the graph. Discovery is necessary, not sufficient. A component with neither tags nor ports is invisible to both, and should not exist in the catalog.
 

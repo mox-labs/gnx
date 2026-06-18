@@ -10,7 +10,7 @@ This also means the interview is not a one-time UX decision. It's the curation b
 
 ## The function tier names the founding members
 
-These are the founding members.
+The Status column encodes each member's readiness class — where it sits between proven pattern and registered component.
 
 | Function | Component(s) | Status |
 |---|---|---|
@@ -31,7 +31,7 @@ Status distinguishes three readiness classes: **port as-is** (already componenti
 A second tier enters as deposited — already designed, enough manifest surface to register:
 
 ```
-memex      recon      radix (text + multimodal)
+memex      recon      radix (text built; multimodal designed)
 luminex    post       slick-as-plugin
 ```
 

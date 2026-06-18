@@ -51,8 +51,8 @@ The seed pipeline is an `ix` evaluation: a probe and a subject (no dependencies,
 
 The principal's examples are not metaphors. Each is a real mechanic:
 
-- **"matrix composed over for agent judges"** — proven in the code today. `ix`'s grader builds its judge from the same registry that builds the subject: `registry.create("matrix.agent.claude", {...})`. The LLM-judge runs through the identical Agent protocol as the thing it judges, so its tokens and cost are observable. The judge is a component resolved by name, loaded into the engine.
-- **"when we use ix, we provide the lab and the experiments"** — the configurability thesis. A *lab* is a directory of experiments; an *experiment* is `experiment.yaml` + `tasks/*.md` (probes) + `subjects/*.md` (subjects). The file format is the interface; no Python to add a probe or a subject. The decisive proof from the ACES journal: the *same DAG engine* ran code-intelligence and the eval harness — "because a grader follows the same Component protocol as an encoder." Different subject, different components loaded, same engine.
+- **"matrix composed over for agent judges"** — proven in cix's code today (`tools/ix/src/ix/eval/sensors_deepeval.py`). `ix`'s grader builds its judge from the same registry that builds the subject: `registry.create("matrix.agent.claude", {...})`. The LLM-judge runs through the identical Agent protocol as the thing it judges, so its tokens and cost are observable. The judge is a component resolved by name, loaded into the engine.
+- **"when we use ix, we provide the lab and the experiments"** — the configurability thesis. A *lab* is a directory of experiments; an *experiment* is `experiment.yaml` + `tasks/*.md` (probes) + `subjects/*.md` (subjects). The file format is the interface; no Python to add a probe or a subject. From the ACES journal: the *same DAG engine* ran code-intelligence and the eval harness — "because a grader follows the same Component protocol as an encoder." Different subject, different components loaded, same engine.
 - **"rubrix is a composition over ix"** — the worked exercise above. The pattern is fully present in cix (the sensor registry, the injectable scoring module, the judge-agent build); the `rubrix` tool itself is not built. It is one new sensor type registered in one map.
 
 ## Protocols: absorbing transport diversity
@@ -158,7 +158,7 @@ Three ways, and the right one shifts with context — toggle the scenarios:
 }
 ```
 
-The synthesis: ports are never hand-declared (that is the drift trap). The code is the source of truth. For a trusted local project, gnx can read them by loading — that is matrix today. For the marketplace, `gnx build` **generates** the manifest's topology from the component, the same seam that emits `--skill`. One mechanism, two projections: a skill for agents, ports for the compiler. "Compose without running" survives because what Dagstra reads is the generated artifact, not the live module.
+The synthesis: ports are never hand-declared (that is the drift trap). The code is the source of truth. For a trusted local project, gnx can read them by loading — that is matrix today. For the marketplace, `gnx build` **will generate** the manifest's topology from the component, the same seam that emits `--skill`. One mechanism, two projections: a skill for agents, ports for the compiler. "Compose without running" survives because what Dagstra reads is the generated artifact, not the live module.
 
 ## Open questions
 

@@ -2,14 +2,14 @@
 title: Grammar reference
 section: reference
 mode: reference
-status: planned
+status: mixed
 register: public
 fidelity: tarmac
 ---
 
 # Grammar reference
 
-Lookup for the component grammar. Each entry marks **shipped** (in slick v0.2.0) or **designed** (gnx's to define; not yet built). Verify against the shipped source before relying on a field; doctrine and shipped code are marked apart.
+Lookup for the component grammar. Each entry is marked **shipped** (in slick v0.2.0), **established** (decided doctrine, not yet built), **designed** (gnx's to define), or **open seam** (the distinction is settled but the field names are not). Verify against the shipped source before relying on a field; doctrine and shipped code are marked apart.
 
 ---
 

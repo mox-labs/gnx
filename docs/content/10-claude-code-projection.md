@@ -1,5 +1,7 @@
 # The Claude Code projection
 
+> **Design register.** gnx is pre-build (NAMED — doctrine shaped, build starting). Present tense below states the design, not shipped behavior. What runs today: [status](/docs/status).
+
 The Claude Code marketplace is not a runtime target — it is a projection surface. gnx writes to it at authoring time, commits the output, and enforces freshness in CI.
 
 ---
@@ -17,7 +19,7 @@ gnx/
 ├── extensions/              # vendor-namespaced kinds + concrete vendor facade impls
 │   └── claude-code/         #   hooks.claude.anthropic.com/v1, commands.…/v1
 ├── .claude-plugin/marketplace.json   # GENERATED (root — CC requires it here)
-└── plugins/                # GENERATED, COMMITTED — Target-side projections
+└── plugins/                # GENERATED (commit policy open) — Target-side projections
 ```
 
 The split is the load-bearing line: **`api/` + `components/` + `extensions/` are authored; `marketplace.json` + `plugins/` are generated and committed.** A plugin references components by type_url; `gnx build` resolves them into a self-contained plugin dir, because Claude Code copies each subdir in isolation and bans traversal (below). Plugins pull from the catalog; they own nothing — which is the structural cure for cix's per-plugin duplication.
@@ -39,7 +41,7 @@ When a user adds a marketplace via the Marketplace tab, Claude Code (CC) clones 
 
 The `directory`-source marketplace path (how yzavyas consumes his own marketplace locally) introduces a further ambiguity: symlink behavior for directory-source marketplaces is not specified, and the whole mechanism is Windows-hostile regardless.
 
-The conclusion is not "we should use a different install mechanism." The conclusion is: **projection happens at authoring time; the output is committed.** `gnx build` writes the plugin dirs. `gnx build --check` runs in CI to verify the committed state is current.
+The conclusion is not "we should use a different install mechanism." The conclusion is: **projection happens at authoring time; output is generated and (policy TBD, see open questions) committed.** `gnx build` writes the plugin dirs. `gnx build --check` runs in CI to verify the committed state is current.
 
 ---
 
@@ -76,8 +78,9 @@ An explicit bump to the source version = a release. The commit of the generated 
 │   └── ci-scaffolds/
 │       └── plugin.json
 └── components/
-    └── slick/
-        └── manifest.yaml         # source (format leaning, §10.3); `gnx build` reads this
+    └── skills/
+        └── <name>/
+            └── manifest.yaml     # source (format leaning, §10.3); `gnx build` reads this
 ```
 
 The on-disk manifest format isn't settled — `manifest.yaml` is the lean, not a decision (§10.3). The projection mechanics below hold regardless of what the source file is finally called.

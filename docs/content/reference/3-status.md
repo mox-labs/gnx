@@ -17,7 +17,7 @@ The maturity lookup for the whole catalog. **shipped** runs today; **planned** i
 
 | Capability | Detail |
 |------------|--------|
-| **slick** grammar (v0.2.0) | The 5-field Manifest, TypedStruct, TypedRegistry. Ships as the `slickit` crate (Rust) and Python package — the types every component is written against. |
+| **slick** grammar (v0.2.0) | The 5-field Manifest, TypedStruct, TypedRegistry. Ships as the `slickit` crate (Rust) — the types every component is written against. (Python binding in progress.) |
 | **cix plugin family** | Installs into Claude Code today via `extraKnownMarketplaces`. See the versions below. |
 
 ### The cix plugins

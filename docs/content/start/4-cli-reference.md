@@ -127,7 +127,7 @@ Queries the `provides` discovery surface. Returns components whose declared `pro
 
 **`gnx inspect <component>`**
 
-Returns the full manifest surface for a named component: `type_url`, `source`, `requires`, `provides`, `relations`, and the registry-computed portability class (Universal / Specialized / Vendor-Specific / Multi-Vendor — the last still future). Structured output.
+Returns the full manifest surface for a named component: `type_url`, `source`, `requires`, `provides`, `relations`, and the registry-computed portability class (Universal / Specialized / Vendor-Specific / Multi-Vendor). Structured output.
 
 The test for `inspect` output: can a capable reasoner decide to compose this component with another, from this output alone? If not, the output is insufficient.
 
@@ -165,7 +165,7 @@ Generate installable plugins from one source — write each plugin directory and
 
 **What it does.**
 
-For each component in `components/` and `extensions/`, `gnx build`:
+For each plugin definition, `gnx build` resolves the referenced components and:
 
 1. Resolves dependencies
 2. Writes a self-contained plugin directory under `plugins/`
@@ -183,7 +183,7 @@ Dry-run for CI. Verifies that committed generated files match what `gnx build` w
 **Inputs.** None required.
 
 **Outputs.**
-- `plugins/<name>/` — self-contained plugin directory, one per component
+- `plugins/<name>/` — self-contained plugin directory, one per plugin (each bundling one or more components by type_url)
 - `plugins/<name>/plugin.json` — generated
 - `.claude-plugin/marketplace.json` — generated root marketplace manifest
 
@@ -193,4 +193,4 @@ Dry-run for CI. Verifies that committed generated files match what `gnx build` w
 
 **1. `--skill` is not a convention.** It is the operability gate. `gnx validate` enforces it. `gnx --skill` demonstrates it on gnx itself.
 
-**2. The ledger is deterministic.** SDK sessions — the `gnx init` interview, curation assistance — propose. Deterministic code validates and writes. These roles never swap. If the agent could write to the registry directly, gnx would become part of the loop it exists to break — it could no longer be the fixed outside reference point the system checks itself against. Dumb boundaries, smart interiors; intelligence never lives in the channel.
+**2. Registration is deterministic.** SDK sessions — the `gnx init` interview, curation assistance — propose. Deterministic code validates and writes. These roles never swap — so the catalog stays a surface the agent reads, not one it can rewrite. If SDK sessions could write to the registry directly, a non-deterministic step would sit on the registration path. Keeping writes in deterministic code keeps the registry auditable and reproducible.

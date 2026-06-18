@@ -1,5 +1,7 @@
 # The ecosystem
 
+> **Design register.** gnx is pre-build (NAMED — doctrine shaped, build starting). Present tense below states the design, not shipped behavior. What runs today: [status](/docs/status).
+
 ## The platform is a strict triad
 
 Three repos, one separation:

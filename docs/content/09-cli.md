@@ -1,10 +1,12 @@
 # The gnx CLI
 
+> **Design register.** gnx is pre-build (NAMED — doctrine shaped, build starting). Present tense below states the design, not shipped behavior. What runs today: [status](/docs/status).
+
 The CLI is the third face of gnx — the agentic tool that initializes projects, manages the registry, and, by its own structure, demonstrates the pattern every Capability in the catalog must follow.
 
 ## Every Capability must self-describe via `--skill`
 
-Every Capability ships its skill **inside the artifact**. `memex --skill` emits a complete SKILL.md — activation frontmatter plus intent→command table. Claude Code loads it to drive the tool. gnx does the same: `gnx --skill` is its own front door.
+Every Capability ships its skill **inside the artifact**. `memex --skill` emits a complete SKILL.md — activation frontmatter plus intent→command table. Claude Code loads it to drive the tool. gnx will do the same: `gnx --skill` as its own front door.
 
 The convention enforces a property: a Capability that cannot self-describe is not agent-operable. Claude Code can't read a man page; it reads a skill. If the skill isn't there, composition fails at discovery.
 

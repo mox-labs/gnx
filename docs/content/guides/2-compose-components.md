@@ -46,7 +46,7 @@ gnx inspect <name>     # read the declared ports + portability           (planne
 gnx add <name>         # install into .gnx/, resolving requires/provides (planned)
 ```
 
-`gnx add` resolves the ports the way the composer resolves edges — it refuses a component whose `requires` nothing in the installation can satisfy. Same compile-time check, run at install instead of in a diagram. Until the CLI ships, [install a plugin](/docs/install-a-plugin) through Claude Code's marketplace.
+`gnx add` resolves the ports the way the composer resolves edges — it refuses a component whose `consumes` nothing in the installation produces. Same compile-time check, run at install instead of in a diagram. Until the CLI ships, [install a plugin](/docs/install-a-plugin) through Claude Code's marketplace.
 
 ---
 

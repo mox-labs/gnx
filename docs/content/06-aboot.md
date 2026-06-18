@@ -21,9 +21,9 @@ tooling across three locations:
 | continuity discipline | research repo | `next-session-brief.md`, handoff-on-a-branch, continuity dumps |
 | session-context pattern | scratch | Per-session context file read at start |
 
-Componentization lifts this from personal scripts into a registered Capability
-component with a declared surface, embedded skill, and `bin/aboot --skill`. None of
-the underlying logic is new.
+Componentization (planned) will lift this from personal scripts into a registered
+Capability component with a declared surface, embedded skill, and `bin/aboot --skill`.
+None of the underlying logic is new.
 
 ## The namespace split is the sharpest first test of the universal/vendor architecture
 
@@ -37,8 +37,8 @@ universal protocol to CC's hook system. A future harness (geist.sh, a different 
 plugin, a CI runner) binds the same universal core to its own event names without
 touching the core manifest.
 
-The split is structural: `gnx validate` enforces that a `slick.dev/v1` component
-cannot carry `hooks.claude.anthropic.com/v1` semantics in its `provides` tags. The namespace IS the enforcement boundary. If
+The split is structural: `gnx validate` will enforce that a `slick.dev/v1` component
+cannot carry `hooks.claude.anthropic.com/v1` semantics in its `provides` tags. The namespace is designed to be the enforcement boundary. If
 SessionStart leaks into the core manifest's `provides`, it enters Dagstra's search
 index. The catalog's composition graph becomes CC-shaped even for non-CC consumers. That is degeneration watch #1, and it is irreversible once the catalog
 grows on a polluted index.
@@ -102,10 +102,8 @@ not proof it works.
 
 ## Open questions
 
-None beyond the namespace-discipline watch. The universal/vendor cut itself is the
-load-bearing claim to pressure.
-
-Specific open questions:
+The load-bearing claim to pressure is the universal/vendor cut itself. Open questions
+cluster around it:
 
 1. **The universal provides vocabulary.** What tags belong in the universal core's
    `provides`? The split is only enforceable if the tag vocabulary is defined. This is
@@ -125,8 +123,4 @@ Specific open questions:
    defensible but empirically unproven until a second runtime (geist.sh, a CI hook,
    anything not CC) binds the universal core. Is there a planned forcing function, or
    does this wait for organic demand?
-
----
-
-Comment on specific blocks.
 

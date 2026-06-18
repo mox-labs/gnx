@@ -25,7 +25,7 @@ Write these fully; the design is settled enough to hold a page.
 | Component | What it is | Status | Channel it breaks |
 |-----------|------------|--------|-------------------|
 | **aboot** | Session-continuity capability — briefs, handoffs, resume state. The sharpest test of the universal/vendor namespace split. | raw material shipped; componentization planned | Stasis — continuity core is runtime-agnostic; CC hooks are a vendor binding |
-| **luminex** | A Flow — the legibility surface; the most design-complete manifest in the corpus. | planned (name collision open, §10.8) | Opacity — makes composed behavior legible |
+| **luminex** | A Flow — the legibility surface; the most design-complete manifest in the corpus. | planned — design-complete manifest, no plugin yet (name collision open, §10.8) | Opacity — makes composed behavior legible |
 | **slick-as-plugin** | slick's grammar projected as an installable plugin face. | crate shipped; plugin face planned | Adaptability — the grammar travels to any Target |
 | **ci-scaffolds** | Collaboration scaffolds — claim verification, decision frameworks, mastery-oriented review. | **shipped** v0.6.0 | Opacity — keeps the human able to predict and check |
 | **guild-arch** | Multi-perspective architecture review — deliberate pushback before a decision sets. | **shipped** v0.2.0 | Drag — review is a composed panel, not a platform bottleneck |
@@ -34,7 +34,7 @@ Write these fully; the design is settled enough to hold a page.
 | **craft-research** | Research synthesis — literature analysis, evidence-grounded claims. | **shipped** v0.3.0 | Opacity — claims trace to sources |
 | **craft-rhetoric** | Comprehension, rhetoric, explanation — docs, tutorials, diagrams. | **shipped** v0.3.0 | Opacity — makes understanding propagate |
 
-The shipped cix family installs into Claude Code today — see [Install a plugin](/docs/install-a-plugin).
+The shipped cix plugins listed above install into Claude Code today — see [Install a plugin](/docs/install-a-plugin).
 
 ---
 

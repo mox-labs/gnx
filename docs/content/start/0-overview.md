@@ -9,7 +9,7 @@ fidelity: tarmac
 
 # gnx
 
-**gnx is where your agent gets its capabilities** — reusable, composable cognitive extensions for an agent to find, install, and assemble.
+**gnx is where your agent gets its capabilities** — reusable, composable cognitive extensions an agent can find, install, and assemble.
 
 **Designed for any agent. Claude Code today.**
 

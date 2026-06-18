@@ -1,5 +1,7 @@
 # The dao
 
+> **Design register.** gnx is pre-build (NAMED — doctrine shaped, build starting). Present tense below states the design, not shipped behavior. What runs today: [status](/docs/status).
+
 `gnx init` sets up three things: `claude`, `dao`, and `.gnx/` tooling. The dao leg
 is the agentic organization a project runs through, distinct from the tooling that
 scaffolds it and the runtime that enforces it.

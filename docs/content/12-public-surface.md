@@ -1,5 +1,7 @@
 # The public surface
 
+> **Design register.** gnx is pre-build (NAMED — doctrine shaped, build starting). Present tense below states the design, not shipped behavior. What runs today: [status](/docs/status).
+
 The boundary: what gnx says publicly, and what it defers. This is the artifact that feeds
 GTM work beginning the week of 2026-06-15.
 
@@ -147,7 +149,7 @@ PUBLIC docsite (both user + agent facing)
   └── [load-bearing sentences + links] for: catalog curation model,
       runtime-neutral design intent, execution environment
 
-DESIGN docs (this series, 01–10)
+DESIGN docs (this series, 01–15)
   ├── Full ecosystem triad (slick / gnx / geist.sh)
   ├── samsara world-model, stigmergic coordination
   ├── Treya (ilm · kalā · kriya)
