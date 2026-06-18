@@ -49,6 +49,10 @@
 			<a href="/" class:active={page.url.pathname === '/'}><b>gnx</b> · genesis dossier</a>
 		</div>
 
+		<details class="nav-body">
+			<summary>Browse the dossier</summary>
+			<div class="nav-links">
+
 		{#if publicGroups.length}
 			<div class="register-label">Public</div>
 			{#each publicGroups as g (g.section)}
@@ -107,6 +111,9 @@
 				{#if data.counts.total}<span class="count">{data.counts.total}</span>{/if}
 			</a>
 		</div>
+
+			</div>
+		</details>
 	</aside>
 	<main>
 		{@render children()}
