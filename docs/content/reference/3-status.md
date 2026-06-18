@@ -9,7 +9,7 @@ fidelity: tarmac
 
 # What's real vs planned
 
-The maturity lookup for the whole catalog. **shipped** runs today; **planned** is designed, build starting; **proposed** has no build behind it. No page on this site commands a planned capability as if it ran.
+The maturity lookup for the whole catalog. **shipped** runs today; **planned** is designed, build starting. (A third marker, **proposed** — no build behind it — appears on individual pages where it applies.) No page on this site describes a planned capability as if it shipped.
 
 ---
 

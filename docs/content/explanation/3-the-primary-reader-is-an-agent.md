@@ -19,11 +19,11 @@ An agent decides whether two components fit before running either. So the surfac
 
 ## Every Capability describes itself in the agent's language
 
-A human reads a man page; an agent reads a skill. So every Capability in the catalog must ship an embedded skill and expose `--skill` — it emits the SKILL.md an agent needs to drive it: what it does, how to invoke it, when to reach for it. A capability that can't describe itself to an agent isn't agent-operable. gnx holds itself to the same rule: `gnx --skill` is its own front door.
+A human reads a man page; an agent reads a skill. So every Capability in the catalog must ship an embedded skill and expose `--skill` — it emits the SKILL.md an agent needs to drive it: what it does, how to invoke it, when to reach for it. A Capability that can't describe itself to an agent isn't agent-operable. gnx is designed to hold itself to the same rule: `gnx --skill` as its own front door.
 
 ## Discovery returns structure, not prose
 
-When an agent searches the catalog, it gets back machine-parseable structure — the matching components and their declared surfaces — not a paragraph to skim. The same principle should hold for the doc surface itself: an index an agent can fetch first to enumerate what exists, and a structured form per page.
+When an agent searches the catalog, it will get back machine-parseable structure — the matching components and their declared surfaces — not a paragraph to skim. The same principle should hold for the doc surface itself: an index an agent can fetch first to enumerate what exists, and a structured form per page.
 
 ## The test behind all three
 

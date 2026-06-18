@@ -17,7 +17,7 @@ fidelity: tarmac
 
 ## One catalog, three ways in
 
-A **registry** declares, validates, and finds components; a **marketplace** projects them into installable Claude Code plugins; a **CLI** (`gnx`) sets up projects and scaffolds new components. The grammar underneath is slick — its five-field manifest ships today (v0.2.0), and the four kinds (Capability, Agent, Skill, Flow) are its established vocabulary. The three functions above it are designed.
+A **registry** is where components are declared, validated, and found; a **marketplace** projects them into installable Claude Code plugins; a **CLI** (`gnx`) sets up projects and scaffolds new components. The grammar underneath is slick — its five-field manifest ships today (v0.2.0), and the four kinds (Capability, Agent, Skill, Flow) are its established vocabulary. The three functions named above are designed.
 
 ## Where to go
 
