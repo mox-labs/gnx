@@ -507,83 +507,8 @@ mark.annot:hover {
 	padding-top: 2rem;
 }
 
-.cover .hero {
-	position: relative;
-	min-height: min(84vh, 720px);
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	text-align: center;
-	gap: 0.7rem;
-	padding: 2rem 0 3rem;
-	margin-bottom: 2rem;
-	border-bottom: 1px solid var(--line);
-	overflow: hidden;
-}
-
-.cover .hero .atmosphere {
-	position: absolute;
-	inset: -4rem;
-	pointer-events: none;
-	z-index: 0;
-	background:
-		radial-gradient(ellipse 55% 45% at 50% 32%, var(--spark-atmosphere) 0%, transparent 62%),
-		radial-gradient(ellipse 75% 55% at 50% 100%, var(--emergence-atmosphere) 0%, transparent 55%);
-}
-
-.cover .hero > * {
-	position: relative;
-	z-index: 1;
-}
-
-.cover .enter {
-	font: 0.9rem var(--mono);
-	text-decoration: none;
-	color: var(--ci-green);
-	border: 1px solid color-mix(in oklab, var(--ci-green) 38%, transparent);
-	border-radius: 6px;
-	padding: 0.5rem 1.1rem;
-	margin-top: 0.5rem;
-}
-
-.cover .enter:hover {
-	border-color: var(--ci-green);
-	background: color-mix(in oklab, var(--ci-green) 10%, transparent);
-}
-
-.cover .kicker {
-	font: 0.72rem var(--mono);
-	letter-spacing: 0.12em;
-	text-transform: uppercase;
-	color: var(--muted);
-	margin: 0;
-}
-
-.cover h1 {
-	font-size: clamp(3.5rem, 9vw, 6rem);
-	line-height: 1;
-	letter-spacing: -0.03em;
-	margin: 0.6rem 0 0;
-	color: var(--spark-core);
-	text-shadow:
-		0 0 4px oklch(75% 0.18 240),
-		0 0 16px oklch(62% 0.15 240 / 0.55),
-		0 0 44px oklch(55% 0.12 240 / 0.3),
-		0 0 90px oklch(50% 0.08 240 / 0.12);
-}
-
-.cover h1::after {
-	content: '.';
-	color: var(--ci-green);
-	text-shadow: 0 0 16px oklch(70% 0.18 145 / 0.5);
-}
-
-.cover .sub {
-	font: 0.95rem var(--mono);
-	color: var(--muted);
-	margin: 0;
-}
+/* The immersive hero moved to the cinematic landing (routes/+page.svelte +
+   lib/components/landing/). The cover class now styles only the /dossier index. */
 
 .cover-body {
 	margin: 0 0 1.6rem;
@@ -609,19 +534,6 @@ mark.annot:hover {
 	padding: 0.7rem 1rem;
 	border-radius: 0 6px 6px 0;
 	margin: 0 0 1.6rem;
-}
-
-.cover .start {
-	display: inline-block;
-	margin: 0.4rem 0 0.5rem;
-	font: 0.9rem var(--mono);
-	text-decoration: none;
-	color: var(--accent);
-}
-
-.cover .start:hover {
-	text-decoration: underline;
-	text-decoration-color: var(--accent);
 }
 
 .appendix-tag {

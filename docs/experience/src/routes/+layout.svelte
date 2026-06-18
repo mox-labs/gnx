@@ -15,6 +15,8 @@
 	};
 
 	const isActive = (slug: string) => page.url.pathname === `/docs/${slug}`;
+	// The landing ("/") is immersive — full-bleed, no sidebar chrome.
+	const isImmersive = $derived(page.url.pathname === '/');
 
 	const SECTIONS = ['start', 'guides', 'reference', 'explanation', 'design', 'build'] as const;
 	const LABEL: Record<string, string> = {
@@ -43,10 +45,13 @@
 	<title>gnx · genesis dossier</title>
 </svelte:head>
 
+{#if isImmersive}
+	{@render children()}
+{:else}
 <div class="shell">
 	<aside class="nav">
 		<div class="brand">
-			<a href="/" class:active={page.url.pathname === '/'}><b>gnx</b> · genesis dossier</a>
+			<a href="/dossier" class:active={page.url.pathname === '/dossier'}><b>gnx</b> · genesis dossier</a>
 		</div>
 
 		<details class="nav-body">
@@ -119,6 +124,7 @@
 		{@render children()}
 	</main>
 </div>
+{/if}
 
 <style>
 	.register-label {
