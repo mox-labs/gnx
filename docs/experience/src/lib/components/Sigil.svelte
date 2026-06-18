@@ -14,11 +14,12 @@
 		<path class="heptagon" d="M 100 40 L 146.91 62.59 L 158.49 113.35 L 126.03 154.05 L 73.97 154.05 L 41.51 113.35 L 53.09 62.59 Z" fill="none" stroke-width="3.5" stroke-linejoin="round" opacity="0.9" />
 		<path class="heptagon" d="M 100 40 L 158.49 113.35 L 73.97 154.05 L 53.09 62.59 L 146.91 62.59 L 126.03 154.05 L 41.51 113.35 Z" fill="none" stroke-width="1.6" stroke-linejoin="round" opacity="0.55" />
 
-		<!-- Emergence — green triskelion (three arms) -->
-		<g class="emergence" fill="none" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
-			<path d="M 100 100 L 100 60 Q 100 50 113 54" transform="rotate(60 100 100)" />
-			<path d="M 100 100 L 100 60 Q 100 50 113 54" transform="rotate(180 100 100)" />
-			<path d="M 100 100 L 100 60 Q 100 50 113 54" transform="rotate(300 100 100)" />
+		<!-- Emergence — green triskelion: a circle + three arms -->
+		<g class="emergence" fill="none" stroke-linecap="round" stroke-linejoin="round">
+			<circle cx="100" cy="100" r="34.4" stroke-width="4" />
+			<path d="M 100 65.6 Q 100 28 126 22" stroke-width="4.5" transform="rotate(0 100 100)" />
+			<path d="M 100 65.6 Q 100 28 126 22" stroke-width="4.5" transform="rotate(120 100 100)" />
+			<path d="M 100 65.6 Q 100 28 126 22" stroke-width="4.5" transform="rotate(240 100 100)" />
 		</g>
 
 		<!-- Spark — blue rays + core -->
