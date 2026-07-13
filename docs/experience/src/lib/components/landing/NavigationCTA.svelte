@@ -1,17 +1,18 @@
 <script lang="ts">
-	// East panel — the ways in. The dossier is the primary CTA; the rest are
-	// the public front doors (human + agent).
+	// East panel — the ways in. The public front doors lead (human + agent);
+	// the dossier is the one discreet seam to the internal register.
 	const links = [
-		{ href: '/dossier', label: 'Enter the dossier', primary: true },
-		{ href: '/docs/what-is-gnx', label: 'What is gnx' },
+		{ href: '/docs/what-is-gnx', label: 'What is gnx', primary: true },
+		{ href: '/catalog', label: 'Browse the catalog' },
 		{ href: '/docs/install-a-plugin', label: 'Install a plugin' },
-		{ href: '/llms.txt', label: 'For agents — llms.txt' }
+		{ href: '/llms.txt', label: 'For agents — llms.txt' },
+		{ href: '/dossier', label: 'the dossier · internal', muted: true }
 	];
 </script>
 
 <nav class="cta">
 	{#each links as l (l.href)}
-		<a href={l.href} class:primary={l.primary}>
+		<a href={l.href} class:primary={l.primary} class:muted={l.muted}>
 			{l.label}<span class="arrow">→</span>
 		</a>
 	{/each}
@@ -59,6 +60,11 @@
 	}
 	.cta a.primary:hover {
 		color: var(--resolved);
+	}
+	.cta a.muted {
+		font-size: var(--type-xs, 0.72rem);
+		opacity: 0.55;
+		margin-top: var(--space-2);
 	}
 	@media (max-width: 768px) {
 		.cta {

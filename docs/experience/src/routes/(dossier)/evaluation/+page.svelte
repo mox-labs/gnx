@@ -24,18 +24,29 @@
 		return HARD.has(letter) ? 'gate-fail' : 'fail';
 	}
 	const docName = (f: string) => f.replace(/^\d+-/, '').replace(/\.md$/, '').replace(/_/g, '');
-	const slug = (f: string) =>
-		f.startsWith('_') ? '' : '/docs/' + f.replace(/^\d+-/, '').replace(/\.md$/, '');
+	// Only link to docs that are still live in the site. The superseded design docs (01–15) are
+	// retired from the nav and /docs, so their scorecard rows render as plain text (provenance only).
+	const liveDocs = $derived(
+		new Map((data.docs as { slug: string; register: string }[]).map((d) => [d.slug, d.register]))
+	);
+	const slug = (f: string) => {
+		if (f.startsWith('_')) return '';
+		const s = f.replace(/^\d+-/, '').replace(/\.md$/, '');
+		const register = liveDocs.get(s);
+		if (!register) return '';
+		// internal docs live in the dossier's appendix; public docs in the public wing
+		return register === 'public' ? '/docs/' + s : '/dossier/appendix/' + s;
+	};
 </script>
 
-<svelte:head><title>Evaluation · gnx genesis</title></svelte:head>
+<svelte:head><title>Evaluation · gnx dossier</title></svelte:head>
 
 <div class="doc">
 	<h1>Evaluation</h1>
 
 	<p>
 		Every doc was ship-gated by an out-of-family evaluator (gemini, a different model family from
-		the optimizer) against the <a href="/docs/rubric">rubric</a>. This is the result. The scores
+		the optimizer) against the <a href="/dossier/appendix/rubric">rubric</a>. This is the result. The scores
 		are gemini's, not the author's — the point of an out-of-family gate is that the maker doesn't
 		grade its own work.
 	</p>
@@ -99,7 +110,7 @@
 		</p>
 	{/if}
 
-	<p class="back"><a href="/docs/rubric">→ Read the rubric</a></p>
+	<p class="back"><a href="/dossier/appendix/rubric">→ Read the rubric</a></p>
 </div>
 
 <style>

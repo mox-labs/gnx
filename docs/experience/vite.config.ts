@@ -3,6 +3,8 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+	// allow importing the canonical convergence surface (docs/convergence/) from outside the app root
+	server: { fs: { allow: ['..'] } },
 	plugins: [
 		sveltekit({
 			compilerOptions: {

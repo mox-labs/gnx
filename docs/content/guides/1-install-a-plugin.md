@@ -9,100 +9,90 @@ fidelity: tarmac
 
 # Install a plugin
 
-**This runs today.** No gnx CLI required — the marketplace mechanism is Claude Code's own feature; gnx supplies the content. The cix plugin family installs now. `gnx init`, `gnx add`, and `gnx build` are designed but unbuilt — they do not appear in these steps.
+This is the one gnx path that runs today. The plugins install through Claude Code's own marketplace mechanism — clone the catalog, register the marketplace, pick a plugin, enable it.
 
 ---
 
-## Step 1 — Add the marketplace
+## Step 1 — Clone the catalog
 
-Open `~/.claude/settings.json` and add an `extraKnownMarketplaces` entry pointing at a local clone of the catalog:
+Clone the catalog repository. Its root holds the marketplace manifest at `.claude-plugin/marketplace.json`:
+
+```sh
+git clone https://github.com/mox-labs/gnx.git
+```
+
+---
+
+## Step 2 — Register the marketplace
+
+Open `~/.claude/settings.json` and add an `extraKnownMarketplaces` entry pointing at your clone:
 
 ```json
 {
   "extraKnownMarketplaces": {
-    "cix": {
-      "source": { "source": "directory", "path": "/path/to/cix" },
+    "gnx": {
+      "source": { "source": "directory", "path": "/path/to/gnx" },
       "autoUpdate": true
     }
   }
 }
 ```
 
-The key (`"cix"`) becomes the marketplace identifier — the namespace suffix in `enabledPlugins`: `"craft-rhetoric@cix"`, `"ci-scaffolds@cix"`, etc.
-
-Two source types work. A `directory` source reads a local path. A `github` source (`"source": "github", "repo": "<owner>/<repo>"`) clones a public repo by the same mechanism, once the repo is published. The example uses a directory source.
+The key — `"gnx"` here — is yours to choose; it becomes the marketplace identifier and the suffix in `enabledPlugins`: `intent-hardening@gnx`, `rational-inquiry@gnx`. Two source types work: a `directory` source reads a local path (used above), and a `github` source (`"source": "github", "repo": "<owner>/<repo>"`) clones a public repo once it is published.
 
 ---
 
-## Step 2 — See what's available
+## Step 3 — Pick a plugin
 
-The cix marketplace ships these plugins today:
+Two plugins are projected and installable today:
 
-| Plugin | Version | What it gives you |
-|--------|---------|-------------------|
-| `craft-rhetoric` | 0.3.0 | Comprehension, rhetoric, explanation — docs, tutorials, discourse, diagrams |
-| `ci-scaffolds` | 0.6.0 | Collaboration scaffolds — claim verification, decision frameworks, mastery-oriented review |
-| `guild-arch` | 0.2.0 | Architectural reasoning — design review, threat modeling, security-by-design |
-| `antifragile` | 0.1.0 | ACES boundary review — adaptability, composability, extensibility checks |
-| `craft-extensions` | 0.1.0 | Lexicon extension — vocabulary and concept growth |
-| `craft-evals` | 0.3.0 | Evaluation — activation suites, methodology rubrics |
-| `craft-research` | 0.3.0 | Research synthesis — literature analysis, evidence-grounded claims |
-| `recon` | 0.7.0 | Reconnaissance — surface a codebase or system before you act on it |
+| Plugin | What it gives you |
+|--------|-------------------|
+| `intent-hardening` | Hardens a loose ask into something the catalog can act on — an adhikaraṇa-structured exchange that reports how far the intent can honestly sharpen |
+| `rational-inquiry` | The inference-validity gate — tests whether a "therefore" holds against named defeat conditions |
 
-Versions are the installed (`plugin.json`) versions — what Claude Code caches and resolves.
+The wider set — craft-rhetoric, ci-scaffolds, guild-arch, and more — is being ported into the catalog as components. Current installed versions live in **[what's real vs planned](/docs/status)**, so this page never drifts from that record.
 
 ---
 
-## Step 3 — Install one
+## Step 4 — Enable it
 
 In `~/.claude/settings.json`, add to `enabledPlugins`:
 
 ```json
 {
   "enabledPlugins": {
-    "craft-rhetoric@cix": true
+    "intent-hardening@gnx": true
   }
 }
 ```
 
-Claude Code copies the plugin subdirectory into a versioned cache at `~/.claude/plugins/cache/cix/craft-rhetoric/0.3.0/`. The plugin is self-contained — no build step, no traversal outside its directory. Restart Claude Code and the plugin is active.
-
-Install several by adding each:
+Claude Code copies the plugin subdirectory into a versioned cache at `~/.claude/plugins/cache/gnx/intent-hardening/<version>/`. The plugin is self-contained — no build step, no traversal outside its directory. Restart Claude Code and it is active. Install several by adding each:
 
 ```json
 {
   "enabledPlugins": {
-    "craft-rhetoric@cix": true,
-    "ci-scaffolds@cix": true,
-    "guild-arch@cix": true
+    "intent-hardening@gnx": true,
+    "rational-inquiry@gnx": true
   }
 }
 ```
 
 ---
 
-## Claude Code drives a plugin through its skills
+## Step 5 — Verify
 
-Claude Code loads the plugin's skills — for craft-rhetoric, `rhetoric`, `discourse`, `voicing`, `evaluating`, and others. Each is a SKILL.md file.
-
-A plugin's `description` (in `plugin.json`) is what Claude Code matches against to decide *when* to activate it — craft-rhetoric's is *"Crafts content that teaches and persuades… Use when: user asks to 'write docs', 'explain this', 'create a tutorial'…"*. Claude loads the skill and drives the behavior from it. The skill is the interface — not a command, not a menu.
+Run `/plugin` in Claude Code and confirm the `gnx` marketplace and the plugin appear. If the marketplace fails to register, the `extraKnownMarketplaces` path is wrong, or `.claude-plugin/marketplace.json` is missing at the clone root.
 
 ---
 
-## What does not run yet
+## How Claude Code activates a plugin
 
-```
-gnx add craft-rhetoric      # planned — gnx CLI not built
-gnx init                    # planned — project genesis not built
-gnx build                   # planned — projection CLI not built
-gnx search                  # planned — discovery CLI not built
-```
-
-Until the CLI ships, the `extraKnownMarketplaces` entry in `settings.json` is the install path.
+Claude Code loads the plugin's skills — each a `SKILL.md` file. A plugin's `description` (in its `plugin.json`) is what Claude Code matches against to decide *when* to activate it; it loads the matching skill and drives the behaviour from there. The skill is the interface — not a command, not a menu. This is the shipped end of a general rule: an agent reaches a component through the skill that travels inside it.
 
 ---
 
 ## Where to go next
 
-- **[How components work](/docs/how-components-work)** — the grammar behind what you installed: four kinds, the manifest, `provides` and `requires`.
+- **[How components work](/docs/how-components-work)** — the grammar behind what you installed: the kinds, the manifest, `provides` and `requires`.
 - **[Compose components](/docs/compose-components)** — assemble installed pieces into a pipeline from their declared surfaces alone.

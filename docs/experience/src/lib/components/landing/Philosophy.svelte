@@ -5,7 +5,7 @@
 <div class="philosophy">
 	<p class="lede">A component registry is a catalog of decisions.</p>
 	<p class="claim">
-		Your agent composes capability from the catalog. You govern what it composes from.
+		Your agent wears extensions to do more, and composes them to reach further. What it builds folds back into the catalog — through you.
 	</p>
 </div>
 

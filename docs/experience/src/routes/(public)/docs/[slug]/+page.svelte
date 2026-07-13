@@ -3,14 +3,15 @@
 
 	let { data } = $props();
 
-	const reading = $derived(data.docs);
+	// the pager walks the public register only — the appendix is the dossier's, not this wing's
+	const reading = $derived(data.docs.filter((d: { register: string }) => d.register === 'public'));
 	const idx = $derived(reading.findIndex((d: { slug: string }) => d.slug === data.doc.slug));
 	const prev = $derived(idx > 0 ? reading[idx - 1] : null);
 	const next = $derived(idx >= 0 && idx < reading.length - 1 ? reading[idx + 1] : null);
 </script>
 
 <svelte:head>
-	<title>{data.doc.title} · gnx genesis</title>
+	<title>{data.doc.title} · gnx</title>
 </svelte:head>
 
 <article class="doc">
@@ -62,6 +63,14 @@
 	.status-proposed {
 		background: color-mix(in oklab, currentColor 12%, transparent);
 		opacity: 0.7;
+	}
+	.status-mixed {
+		background: linear-gradient(
+			90deg,
+			color-mix(in oklab, green 22%, transparent) 50%,
+			color-mix(in oklab, #c98a00 24%, transparent) 50%
+		);
+		color: color-mix(in oklab, currentColor 80%, transparent);
 	}
 	.doc-meta .mode,
 	.doc-meta .sec {

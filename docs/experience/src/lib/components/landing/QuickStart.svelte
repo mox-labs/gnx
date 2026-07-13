@@ -1,12 +1,12 @@
 <script lang="ts">
 	// South panel — the honest "what runs today" line, so the immersive surface
-	// never overclaims. The cix plugins ship; the gnx CLI is designed, not built.
+	// never overclaims. The plugins ship; the gnx CLI is designed, not built.
 </script>
 
 <div class="quickstart">
 	<span class="badge">shipped today</span>
 	<p>
-		The cix plugin family installs into Claude Code now. The gnx CLI is designed, not yet built —
+		The plugin components install into Claude Code now. The gnx CLI is designed, not yet built —
 		<a href="/docs/status">what's real vs planned</a>.
 	</p>
 </div>

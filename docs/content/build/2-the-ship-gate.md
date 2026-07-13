@@ -1,3 +1,12 @@
+---
+title: "The ship-gate"
+section: build
+register: internal
+mode: explanation
+status: shipped
+fidelity: cobblestone
+---
+
 # The ship-gate
 
 > Every page on this site was graded by a model from a different family than the one that wrote
@@ -45,5 +54,5 @@ The discipline that keeps this from becoming thrash: take the genuine catches (t
 
 ## See also
 
-- **[Read the rubric](/docs/rubric)** — the instrument itself.
-- **[The collaboration method](/docs/the-collaboration-method)** — the discipline the gate sits inside.
+- **[Read the rubric](/dossier/appendix/rubric)** — the instrument itself.
+- **[The collaboration method](/dossier/appendix/the-collaboration-method)** — the discipline the gate sits inside.

@@ -2,6 +2,7 @@
 	// A client-side model of gnx's composition: components declare consumes/produces,
 	// the DAG is compiled from declarations alone (no execution), topology is validated,
 	// parallel batches fall out. This is "compose without running them" made tactile.
+	import { compile } from '$lib/dag';
 
 	interface Comp {
 		id: string;
@@ -18,7 +19,7 @@
 		{ id: 'probe', label: 'probe', lang: 'md', consumes: [], produces: ['probe.stimulus'], note: 'a task file', enabled: true },
 		{ id: 'subject', label: 'subject', lang: 'md', consumes: [], produces: ['subject.config'], note: 'the thing under test', enabled: true },
 		{ id: 'ix.trial', label: 'ix.trial', lang: 'py', consumes: ['probe.stimulus', 'subject.config'], produces: ['trial.observation'], note: 'runs the subject on the probe', enabled: true },
-		{ id: 'ix.sensor.activation', label: 'ix.sensor.activation', lang: 'py', consumes: ['trial.observation'], produces: ['sensor.reading'], note: 'a grader (did the skill fire?)', enabled: true }
+		{ id: 'ix.sensor.activation', label: 'ix.sensor.activation', lang: 'py', consumes: ['trial.observation'], produces: ['sensor.reading'], note: 'a sensor (did the skill fire?)', enabled: true }
 	];
 
 	let comps = $state<Comp[]>(seed.map((c) => ({ ...c })));
@@ -36,7 +37,7 @@
 			lang: 'py',
 			consumes: ['trial.observation'],
 			produces: ['rubric.score'],
-			note: 'a grader stacked on ix — composes a judge agent (matrix.agent.claude)',
+			note: 'a sensor stacked on ix — composes a judge agent (matrix.agent.claude)',
 			removable: true,
 			enabled: true
 		});
@@ -51,53 +52,8 @@
 		comps = comps.filter((c) => c.id !== id);
 	}
 
-	// ---- the DAG compiler (declarations only) ----
-	interface Compiled {
-		batches: string[][];
-		errors: string[];
-		producerOf: Record<string, string[]>;
-	}
-
-	const compiled = $derived.by<Compiled>(() => {
-		const live = comps.filter((c) => c.enabled);
-		const errors: string[] = [];
-
-		// producer index + duplicate-output detection
-		const producerOf: Record<string, string[]> = {};
-		for (const c of live)
-			for (const t of c.produces) (producerOf[t] ??= []).push(c.id);
-		for (const [t, ps] of Object.entries(producerOf))
-			if (ps.length > 1) errors.push(`duplicate output: "${t}" produced by ${ps.join(', ')}`);
-
-		// edges: each consume must have a producer
-		const deps: Record<string, Set<string>> = {};
-		for (const c of live) {
-			deps[c.id] = new Set();
-			for (const t of c.consumes) {
-				const ps = producerOf[t];
-				if (!ps) errors.push(`missing producer: ${c.id} consumes "${t}" — nothing produces it`);
-				else for (const p of ps) if (p !== c.id) deps[c.id].add(p);
-			}
-		}
-
-		// Kahn's algorithm → parallel batches; leftover = cycle
-		const batches: string[][] = [];
-		const remaining = new Set(live.map((c) => c.id));
-		const satisfied = new Set<string>();
-		while (remaining.size) {
-			const ready = [...remaining].filter((id) => [...deps[id]].every((d) => satisfied.has(d)));
-			if (ready.length === 0) {
-				errors.push(`cycle: ${[...remaining].join(' → ')} cannot be ordered`);
-				break;
-			}
-			batches.push(ready);
-			for (const id of ready) {
-				remaining.delete(id);
-				satisfied.add(id);
-			}
-		}
-		return { batches, errors, producerOf };
-	});
+	// ---- the DAG compiler (declarations only) — shared with the catalog view ----
+	const compiled = $derived(compile(comps.filter((c) => c.enabled)));
 
 	const byId = $derived(Object.fromEntries(comps.map((c) => [c.id, c])));
 	const LANG: Record<string, string> = { py: 'Python', rust: 'Rust', ts: 'TS', md: 'file' };

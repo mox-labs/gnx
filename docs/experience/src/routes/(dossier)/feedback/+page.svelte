@@ -14,10 +14,31 @@
 	}
 
 	const docs = $derived(Object.entries(data.threads));
+
+	// Feedback ledgers are keyed by their reading surface: `dossier-<slug>` for a concept folio,
+	// otherwise a markdown doc slug. Map the key back to the route it actually lives at.
+	const internalSection = $derived(
+		new Map(
+			(data.docs as { slug: string; register: string; section: string }[])
+				.filter((d) => d.register !== 'public')
+				.map((d) => [d.slug, d.section])
+		)
+	);
+	const hrefFor = (doc: string) => {
+		if (doc === 'dossier-summit') return '/dossier';
+		if (doc.startsWith('dossier-')) return `/dossier/${doc.slice('dossier-'.length)}`;
+		const section = internalSection.get(doc);
+		if (!section) return `/docs/${doc}`;
+		return section === 'spec' ? `/dossier/spec/${doc}` : `/dossier/appendix/${doc}`;
+	};
+	const labelFor = (doc: string) => {
+		if (doc === 'dossier-summit') return 'the map · dossier';
+		return doc.startsWith('dossier-') ? `${doc.slice('dossier-'.length)} · dossier` : doc;
+	};
 </script>
 
 <svelte:head>
-	<title>feedback · gnx design</title>
+	<title>Feedback · gnx dossier</title>
 </svelte:head>
 
 <div class="doc">
@@ -37,13 +58,13 @@
 		{@const visible = threads.filter((t) => showResolved || t.status === 'open')}
 		{#if visible.length}
 			<section class="inbox-doc">
-				<h2><a href="/docs/{doc}">{doc}</a></h2>
+				<h2><a href={hrefFor(doc)}>{labelFor(doc)}</a></h2>
 				{#each visible as t (t.id)}
 					<div class="panel" style="border-left-color: {t.status === 'resolved' ? 'var(--resolved)' : 'var(--accent)'}">
 						<div class="meta">
 							<span class="status {t.status}">{t.status}</span>
 							<span>{new Date(t.ts).toLocaleString()}</span>
-							<a href="/docs/{doc}#{t.bid}">→ block</a>
+							<a href="{hrefFor(doc)}#{t.bid}">→ block</a>
 						</div>
 						<div class="quote">{t.quote}</div>
 						{#each t.items as item, i (i)}

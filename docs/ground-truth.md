@@ -35,12 +35,31 @@ components). (2026-06-10.)
 The pipeline through a project: comprehend (radix) → envision (bodhi → [roadmap GAP] →
 dagstra) → do (matrix → rubrix) → show (luminex → mox.hud) → human re-grounds.
 
-**The gnx loop** — the samsara audit's strongest KEEP (2026-06-06): *"Bodhi sharpens →
-Dagstra searches → HADES generates into the registry → extends the next search — IS
-autopoietic closure in the precise sense. Build the frame on this joint."* gnx is the
-registry the system's self-extension runs through. Dagstra performs semantic proof-search
-over the registry (matching on `provides`); HADES writes generated components into it;
-whatever enters the catalog immediately extends what the next composition search reaches.
+**The gnx loop** — the self-extension joint (samsara audit's strongest KEEP, 2026-06-06):
+*Bodhi sharpens → Dagstra searches → HADES generates into the registry → whatever enters
+extends the next search.* gnx is the registry the system's self-extension runs through:
+Dagstra performs semantic proof-search over the registry (matching on `provides`); HADES
+writes generated components into it; whatever enters the catalog immediately extends what
+the next composition search reaches.
+
+**On "autopoietic" — the honest ceiling (H1, reframed 2026-07-06).** The audit called this
+loop *"autopoietic closure in the precise sense."* That overclaims, and REP-020 already
+refuted the strong form: measured against the Maturana-Varela definition, two of three
+criteria fail — the boundary is not self-produced (a trust boundary's accrediting authority
+must be *disjoint* from what it bounds, the logical negation of self-production), and
+components are human-catalyzed, not self-produced. The precise statement: the loop is
+**sympoietic — made-with**, not autopoietic — made-of-itself. Deontically, it is
+*operationally closing on the correctness axis* (deterministic validation is the system's
+own perception; it self-originates reliability-entitlement) but *anchored on the trust axis*
+(no detector for adversarial / out-of-distribution value can exist — Rice's theorem — so
+trust-entitlement must originate exogenously, in a human **avowal** and a Sybil-resistant
+authority disjoint from the marketplace it bounds). The one frame under which "autopoietic"
+holds: draw the unity as the **collective** — human + primary agent + catalog — in which the
+human is *constitutive, not external*. That is exactly what *generative noetic extensions
+**of the collective*** names: gnx is the organ through which a human-and-agent collective
+extends its own cognition. So — the *collective* is the autopoietic unity; gnx is where it
+self-extends. Keep the loop; drop the solo-machine autopoiesis claim. (Supersedes the
+2026-06-12 §1 wording that enshrined "autopoietic closure in the precise sense.")
 
 **Primary consumer: Claude/agents** (decided by yzavyas 2026-06-12; consistent with UC1,
 2026-04-01: "Claude Code → gnx (discover) → slickit (types) → matrix (execute). Claude IS
@@ -54,9 +73,9 @@ it requires legible surfaces.)
 **Mission (the product framing, public):** gnx provides **cognitive extensions** —
 reusable, composable components any agent can use — plus the **slick plugin** agents use
 to compose them. As a product/package, **gnx is a marketplace + registry**, full stop.
-The ecosystem connection (the registry the autopoietic loop runs through; feeding
-geist.sh / samsara; Bodhi-Dagstra-HADES) is **internal detail — the *why*, not the
-product** — and lives only in the internal Design register. "For any agent" is the
+The ecosystem connection (the registry the collective's sympoietic self-extension loop runs
+through; feeding geist.sh / samsara; Bodhi-Dagstra-HADES) is **internal detail — the *why*,
+not the product** — and lives only in the internal Design register. "For any agent" is the
 *structural* promise (vendor-neutral by namespace + adapter negotiation); **Claude Code
 is the only Target that ships today** — frame it "designed for any agent; Claude Code
 today."
@@ -435,7 +454,7 @@ in-process function, WASM) yet compose through one grammar. The design handles t
 2. **Transport → the Protocol (the M of MSG: "how to reach a component").** The April
    proto draft (NOT shipped — shipped Manifest is 5 fields) modeled it as
    `repeated Protocol protocols` on the Manifest, each `Protocol = { type_url
-   ("slick.protocol.v1.Mcp"), config: TypedStruct }`; a component may declare **multiple
+   ("slick.protocol.v1.mcp"), config: TypedStruct }`; a component may declare **multiple
    protocols** (`ProtocolServer` = what it exposes, `ProtocolClient` = what the runtime
    speaks). The later gnx settlement (historical-context:146) moved this *inside*
    `Capability.spec.implementation` and routed vendor-specificity to the apiVersion
@@ -475,7 +494,7 @@ type error" (Dijkstra).
 type_url'd schemas → they live in `api/` alongside data-type and component-config
 schemas (one join key, type_url). Defined-vs-opaque applies to protocol configs too: a
 *defined* protocol config gets a schema in `api/` (gnx can validate it); an *opaque* one
-travels as an unvalidated blob. Two notes: "slick.protocol.v1.Mcp" appears in the April
+travels as an unvalidated blob. Two notes: "slick.protocol.v1.mcp" appears in the April
 deliberation but the May settlement leans away from Protocol-as-type toward
 implementation-config — unresolved; and MCP may *ride* the HTTP/CLI adapters
 (session-based JSON-RPC over stdio/SSE/HTTP) rather than being a fifth adapter.

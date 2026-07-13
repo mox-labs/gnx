@@ -2,30 +2,30 @@
 title: The api/ schema index
 section: reference
 mode: reference
-status: planned
+status: proposed
 register: public
 fidelity: tarmac
 ---
 
 # The api/ schema index
 
-**designed.** No schemas exist yet — this is the planned shape, recorded so authoring and tooling can be built against it. The join key throughout is `type_url`.
+`api/` is the designed home for every typed surface's schema in the catalog. The join key throughout is `type_url`. **This directory does not exist yet** — no schemas are populated today, so every config in the catalog is currently *opaque* (below). This page describes the shape it will take.
 
 ---
 
-## One directory, one join key
+## What lives in `api/`
 
-Everything with a declared type lives under `api/`, keyed by `type_url`: data types, component config schemas, and protocol config schemas all in one place.
+Three categories of schema share one directory, all keyed by `type_url`:
 
 ```
 api/
-└── slick.dev/v1/
-    ├── <DataType>.schema          # the shape of a typed payload
-    ├── <ComponentConfig>.schema   # a component's config surface
-    └── <ProtocolConfig>.schema    # e.g. an MCP or HTTP transport config
+└── gnx.dev/v1/
+    ├── <data-type>.schema          # the shape of a typed payload
+    ├── <component-config>.schema   # a component's config surface
+    └── <transport-config>.schema   # how a Capability is reached
 ```
 
-The directory mirrors the apiVersion namespace: where a schema lives on disk is its vendor scope, the same invariant that governs `components/` and `extensions/`.
+The directory mirrors the namespace — the same invariant the rest of the catalog tree follows. Where a schema file lives on disk *is* its scope: core schemas under `gnx.dev`, anything runtime-specific under that runtime's namespace.
 
 ---
 
@@ -33,29 +33,30 @@ The directory mirrors the apiVersion namespace: where a schema lives on disk is 
 
 A config is either **defined** or **opaque**, and the difference is whether gnx can validate it.
 
-| | Has a schema in `api/`? | gnx can validate it? |
+| | Has a schema in `api/`? | Can gnx validate it? |
 |---|---|---|
 | **defined** | yes | yes — checked at `gnx validate` |
 | **opaque** | no | no — travels as an unvalidated blob |
 
-A generated component produces its own schema, so **defined** is the natural default: the config surface is mechanics, distinct from the component's semantics. Opaque is the escape hatch for a config gnx has no schema for yet.
+Opaque is the onboarding ramp; defined is the destination. A config rides as an opaque typed value until a schema for its `type_url` lands in `api/`, at which point validation switches on with no change to the identity. Neither state blocks the other — a composition of opaque configs still compiles from its ports; only the config *contents* go unchecked. Today, with `api/` unpopulated, everything is opaque.
 
 ---
 
-## The type-url convention
+## The `type_url` convention
 
-`type_url` follows the same `type.googleapis.com`-style fully-qualified convention used across the stack — one identity that names the type in the Manifest, names the runtime type, and names the schema in `api/`. A single key, three surfaces, no drift between them.
+`type_url` follows a fully-qualified, package-tree convention — one string standing for one type across every surface: the manifest at authoring time, the runtime type at execution, and the schema file in `api/`. There is no drift between them because they share a key, not a copy. Look up a component's `type_url` and you have found its schema.
 
 ---
 
 ## Open edges
 
-- **Protocol as a Manifest field vs implementation config.** Whether transport (`Protocol`) is a top-level Manifest field or lives inside a component's implementation config is genuinely unresolved. The schema index holds either way — protocol config schemas are `type_url`'d and live in `api/` regardless.
-- **MCP as a fifth adapter vs riding HTTP/CLI.** MCP may ride the existing transports (session JSON-RPC over stdio/SSE/HTTP) rather than being its own adapter. Affects how its config schema is organized, not whether it lives in `api/`.
+- **Transport location.** Whether a Capability's transport config is a top-level field or lives inside its implementation config is unresolved. The index holds either way: a transport config schema is `type_url`'d and lives in `api/` regardless of where the manifest points at it.
+- **Schema format.** The concrete schema language and how normalization is defined (so a hash of a schema is stable) are unspecified.
 
 ---
 
 ## See also
 
-- **[Grammar reference](/docs/grammar-reference)** — the Manifest fields the schemas back.
+- **[Grammar reference](/docs/grammar-reference)** — the manifest fields the schemas back.
 - **[How components work](/docs/how-components-work)** — `type_url` as the join key, in prose.
+- **[What's real vs planned](/docs/status)** — where the `api/` layer sits on the shipped/designed line.

@@ -1,7 +1,7 @@
 ---
 title: Compose components
 section: guides
-mode: how-to
+mode: explanation
 status: planned
 register: public
 fidelity: tarmac
@@ -9,48 +9,51 @@ fidelity: tarmac
 
 # Compose components
 
-**Composing means assembling pieces from what they declare — before running any of them.** Each component states what it consumes and what it produces. From those declarations alone, a pipeline either compiles or it doesn't. No execution, no trial and error.
+Composing is how the suit assembles its parts. An agent reads declared surfaces, matches ports, and knows what runs together before anything executes. Each component declares what it takes and what it emits; from those declarations alone, a pipeline either compiles or it does not. And every part added to the catalog widens what the agent can reach for — composed, the parts assemble into working sets larger than their sum, the move [what gnx is](/docs/what-is-gnx) names.
 
-The interactive model below runs in your browser today. The `gnx` CLI that performs this for an agent — `gnx add`, `gnx search` — is planned.
+The interactive composer below runs in your browser — the same kind of check `gnx add` is designed to run at install.
 
 ---
 
 ## Try it
 
-Each card is a component with declared ports. Edit a port, toggle a card off, add one, or stack a new grader — the pipeline recompiles instantly from the declarations. Break an edge and it rejects, with the reason.
+Each card is a component with declared ports. Edit a port, toggle a card off, add one, or stack a new sensor — the pipeline recompiles instantly from the declarations. Break an edge and it rejects, with the reason.
 
 ```composer
 ```
 
-**Parallel batches fall out for free**: components with no dependency edge between them land in the same batch and run at once — the topology computed it, you didn't declare it. **A broken wire is caught at compile time**: a consumed port with no producer, or two components claiming the same output, is rejected before anything runs. That rejection is the point — the orchestrator never starts an invalid graph.
+Two things fall out:
+
+- **Parallel batches** — components with no dependency edge between them land in the same batch and run concurrently. The topology computed that; you did not declare it.
+- **Compile-time rejection** — a required port with no provider, or two components claiming the same output, is rejected before anything runs. The composer decides *fit* and projects the plan; it never runs anything. Execution belongs to whatever runtime loads the composition — and the design guarantees a runtime never receives an invalid graph. (Composition is proposed, not shipped: no runtime executes a Flow today; Claude Code is the designed first target.)
 
 ---
 
-## Why this works without running anything
+## Why the check requires no execution
 
-A component's `produces` and `consumes` are typed declarations. Composition is matching outputs to inputs across those declarations and checking the result is a valid DAG — pure graph work over the manifests. The components stay unopened.
+Both port roles ride the shipped `requires` and `provides` fields, and the composer's `produces` / `consumes` labels are just readable names for them. Composing is graph work over manifests — matching what one component provides against what another requires, checking the graph is valid — with the components themselves never opened.
 
-A capable reasoner — an agent — can decide whether two components fit from their declared surfaces alone. The composer above does by hand what an agent does from the registry: read the ports, compile the graph, see what's parallel, catch what's broken.
+(Every cycle is rejected today. A rule that would admit a loop with a *declared bound* — how long it may run, how it converges — is proposed, not settled. Until it lands, first compositions are acyclic by choice.)
 
-A surface has to be legible for this to hold. `produces: [trial.observation]` against a typed schema is something to reason from. `produces: ["does stuff"]` is not — it compiles to nothing an agent can wire. That's the bar a component meets to be composable at all.
+The check decides *fit*, not quality. A component's tests and evals ground the behavioural claims — [why a catalog](/docs/why-a-catalog) covers how the catalog keeps structure, behaviour, and meaning on separate axes. The composer does by hand what an agent does from the registry: read the ports, compile the graph, catch what is broken. The legibility bar a surface must clear is [the primary reader's test](/docs/the-primary-reader-is-an-agent).
 
 ---
 
 ## An agent runs the same three moves
 
-When the CLI ships, an agent's loop is the same three moves the composer makes:
+The agent's loop mirrors the composer's three steps:
 
 ```
-gnx search <tag>       # find components whose provides match the need   (planned)
-gnx inspect <name>     # read the declared ports + portability           (planned)
-gnx add <name>         # install into .gnx/, resolving requires/provides (planned)
+gnx search <tag>       # find components whose provides match the need
+gnx inspect <name>     # read the declared ports + the computed portability
+gnx add <name>         # install into .gnx/, resolving requires against provides
 ```
 
-`gnx add` resolves the ports the way the composer resolves edges — it refuses a component that `consumes` something nothing in the installation `produces`. Same compile-time check, run at install instead of in a diagram. Until the CLI ships, [install a plugin](/docs/install-a-plugin) through Claude Code's marketplace.
+`gnx add` resolves ports the way the composer resolves edges — it refuses a component that `requires` something nothing in the installation `provides`. Same compile-time check, run at install instead of in a diagram. These three commands are designed; today's runnable install path is [a plugin through Claude Code's marketplace](/docs/install-a-plugin).
 
 ---
 
 ## Where to go next
 
-- **[How components work](/docs/how-components-work)** — the manifest model behind each card: four kinds, `provides` vs the typed ports.
+- **[How components work](/docs/how-components-work)** — the manifest model behind each card: the kinds, and ports vs tags.
 - **[Authoring a component](/docs/author-a-component)** — give your own component a legible surface so it composes like these do.

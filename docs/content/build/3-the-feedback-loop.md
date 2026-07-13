@@ -1,3 +1,12 @@
+---
+title: "The feedback loop"
+section: build
+register: internal
+mode: explanation
+status: shipped
+fidelity: cobblestone
+---
+
 # The feedback loop
 
 > The comment mechanism on this site is not a docs feature bolted on. It is the first running
@@ -35,5 +44,5 @@ A pull-request review optimizes for approve/request-changes on a diff. This opti
 
 ## See also
 
-- **[How this site works](/docs/how-this-site-works)** — the content-hash anchors the marks ride on.
-- **[The collaboration method](/docs/the-collaboration-method)** — the loop as one move in a larger discipline.
+- **[How this site works](/dossier/appendix/how-this-site-works)** — the content-hash anchors the marks ride on.
+- **[The collaboration method](/dossier/appendix/the-collaboration-method)** — the loop as one move in a larger discipline.

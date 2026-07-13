@@ -3,7 +3,7 @@
 		brand?: string;
 		tagline?: string;
 	}
-	let { brand = 'gnx', tagline = 'an extensions marketplace for agents' }: Props = $props();
+	let { brand = 'gnx', tagline = 'a mech suit for agents' }: Props = $props();
 </script>
 
 <div class="brand-hero">

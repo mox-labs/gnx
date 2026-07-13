@@ -1,3 +1,12 @@
+---
+title: "Evaluation rubric"
+section: build
+register: internal
+mode: reference
+status: shipped
+fidelity: cobblestone
+---
+
 # GNX Genesis Dossier — Evaluation Rubric
 
 This rubric is read before evaluating any doc in the gnx genesis dossier (`docs/content/`). The dossier is an internal design surface — full picture, for feedback, before public launch. Its register was established once (`_brief.md` and `ground-truth.md §11`). Evaluators apply this rubric per-doc; optimizers fix against the specific criteria that fail. Seven criteria. Hard gates as marked. One verdict.

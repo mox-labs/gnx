@@ -7,19 +7,50 @@ import { marked, type Token } from 'marked';
 const DOCS_ROOT = path.resolve(process.cwd(), '..');
 const CONTENT_DIR = path.join(DOCS_ROOT, 'content');
 
+// Hard gate for public deploys (gh-pages): GNX_PUBLIC_BUILD=1 removes every
+// internal-register doc from the content graph at the source — nav, /docs,
+// dossier loaders, llms.txt, /raw all inherit the exclusion. The internal wing
+// exists only in local/dev builds. (D17: internal must never ship publicly.)
+const PUBLIC_ONLY = process.env.GNX_PUBLIC_BUILD === '1';
+
 // Two registers, cut by need (not audience). Public sections lead; internal trail.
 // Order here is the canonical nav + reading order.
-export type Section = 'start' | 'guides' | 'reference' | 'explanation' | 'design' | 'build';
+export type Section =
+	| 'start'
+	| 'guides'
+	| 'reference'
+	| 'explanation'
+	| 'gep'
+	| 'ecosystem'
+	| 'spec'
+	| 'design'
+	| 'build';
 export type Register = 'public' | 'internal';
-export type Status = 'shipped' | 'planned' | 'proposed';
+export type Status = 'shipped' | 'planned' | 'proposed' | 'mixed';
 export type Mode = 'tutorial' | 'how-to' | 'reference' | 'explanation';
 
-const SECTIONS: Section[] = ['start', 'guides', 'reference', 'explanation', 'design', 'build'];
+// gep is PUBLIC (D17): open design in the open — proposals ship with the product docs.
+// ecosystem is the internal alignment wing (D17): semantic architecture, vision,
+// integrations — gnx-the-product stays standalone; users never need the cosmology.
+const SECTIONS: Section[] = [
+	'start',
+	'guides',
+	'reference',
+	'explanation',
+	'gep',
+	'ecosystem',
+	'spec',
+	'design',
+	'build'
+];
 const REGISTER_OF: Record<Section, Register> = {
 	start: 'public',
 	guides: 'public',
 	reference: 'public',
 	explanation: 'public',
+	gep: 'public',
+	ecosystem: 'internal',
+	spec: 'internal',
 	design: 'internal',
 	build: 'internal'
 };
@@ -28,6 +59,9 @@ export const SECTION_LABEL: Record<Section, string> = {
 	guides: 'Guides',
 	reference: 'Reference',
 	explanation: 'Explanation',
+	gep: 'Proposals',
+	ecosystem: 'Ecosystem',
+	spec: 'Specs',
 	design: 'Design',
 	build: 'The Build'
 };
@@ -80,7 +114,7 @@ function isSection(s: string | undefined): s is Section {
 	return !!s && (SECTIONS as string[]).includes(s);
 }
 function isStatus(s: string | undefined): s is Status {
-	return s === 'shipped' || s === 'planned' || s === 'proposed';
+	return s === 'shipped' || s === 'planned' || s === 'proposed' || s === 'mixed';
 }
 function isMode(s: string | undefined): s is Mode {
 	return s === 'tutorial' || s === 'how-to' || s === 'reference' || s === 'explanation';
@@ -142,22 +176,22 @@ function entries(): DocEntry[] {
 	const gt = path.join(DOCS_ROOT, 'ground-truth.md');
 	if (existsSync(gt)) out.push(readEntry(gt, { section: 'design', order: 99, slug: 'ground-truth' }));
 
-	return out.sort((a, b) => {
-		const sa = SECTIONS.indexOf(a.section);
-		const sb = SECTIONS.indexOf(b.section);
-		return sa !== sb ? sa - sb : a.order - b.order;
-	});
+	// The numbered design docs (01–15) are superseded by the dossier concepts — the single source of
+	// truth (docs/convergence/surface.json). They're retired from the live site (nav, pager, /docs,
+	// llms.txt) so there's no second, stale copy; ground-truth (order 99) stays as the appendix. The
+	// .md files remain on disk.
+	return out
+		.filter((d) => !(d.section === 'design' && d.order < 90))
+		.filter((d) => !PUBLIC_ONLY || d.register === 'public')
+		.sort((a, b) => {
+			const sa = SECTIONS.indexOf(a.section);
+			const sb = SECTIONS.indexOf(b.section);
+			return sa !== sb ? sa - sb : a.order - b.order;
+		});
 }
 
 export function listDocs(): DocMeta[] {
 	return entries().map(({ file: _file, ...meta }) => meta);
-}
-
-/** The cover-page abstract (docs/content/_landing.md), rendered to HTML. Empty string until it exists. */
-export function landingAbstract(): string {
-	const f = path.join(CONTENT_DIR, '_landing.md');
-	if (!existsSync(f)) return '';
-	return marked.parse(parseFrontmatter(readFileSync(f, 'utf-8')).body) as string;
 }
 
 function parseBlocks(src: string, variant?: string): DocBlock[] {
@@ -207,6 +241,12 @@ function parseBlocks(src: string, variant?: string): DocBlock[] {
 	return blocks;
 }
 
+/** Turn an arbitrary markdown string into annotatable blocks (content-hash anchored), reusing the
+ *  same pipeline the file-backed docs use. The dossier folio builds a concept's blocks through this. */
+export function blocksFromMarkdown(src: string, variant?: string): DocBlock[] {
+	return parseBlocks(src, variant);
+}
+
 export function getDoc(slug: string): (DocMeta & { blocks: DocBlock[] }) | null {
 	const entry = entries().find((d) => d.slug === slug);
 	if (!entry) return null;
@@ -237,12 +277,3 @@ export function getEvaluation(): EvalRecord[] {
 	return JSON.parse(readFileSync(f, 'utf-8')) as EvalRecord[];
 }
 
-/** The cover's commentable content: the abstract (_landing.md, lede) + the brief (_brief.md). */
-export function getCover(): { blocks: DocBlock[] } {
-	const blocks: DocBlock[] = [];
-	const landing = path.join(CONTENT_DIR, '_landing.md');
-	if (existsSync(landing)) blocks.push(...parseBlocks(parseFrontmatter(readFileSync(landing, 'utf-8')).body, 'lede'));
-	const brief = path.join(CONTENT_DIR, '_brief.md');
-	if (existsSync(brief)) blocks.push(...parseBlocks(parseFrontmatter(readFileSync(brief, 'utf-8')).body));
-	return { blocks };
-}

@@ -3,8 +3,8 @@
    Monospace body signals: "This is a tool, not a magazine."
    =========================================== */
 
-/* --- Font Imports (Google Fonts) --- */
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;600&display=swap');
+/* Fonts are self-hosted via fontsource, imported once in app.css — do not re-import here
+   (the duplicate remote @import was the source of the hard-refresh typeface flip). */
 
 /* --- Base Typography --- */
 body {
