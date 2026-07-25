@@ -4,7 +4,6 @@ section: start
 mode: explanation
 status: mixed
 register: public
-fidelity: tarmac
 ---
 
 # How gnx components work
@@ -33,7 +32,7 @@ That is the entire shipped type: JSON, in memory, five fields. There is no `kind
 
 ## gnx adds a thin on-disk overlay
 
-slick ships no on-disk file convention. gnx defines one: the same five slick fields, written as flat YAML, plus a short overlay it owns. Two overlay fields are written in every real component today — `kind` and `maturity` — and a third, `version`, is proposed. Here is a real component as it sits on disk (comment header and two sibling tags trimmed):
+slick ships no on-disk file convention. gnx defines one: the same five slick fields, written as flat YAML, plus a short overlay it owns. Two overlay fields are written in every real component today — `kind` and `maturity` — and a third, `version`, is proposed. This is the file you write by hand when you author a component: not the in-memory shape an agent parses, the shape you commit. Here is a real component as it sits on disk (comment header and two sibling tags trimmed):
 
 ```yaml
 type_url: gnx.dev.v1.intent-hardening   # kebab-case resource
@@ -68,7 +67,7 @@ Every component declares one kind. The kind tells an agent what to do with it �
 | `Skill` | A `provides`-only axiom — read into reasoning, not wired | none | is the skill |
 | `Flow` | Composes other components as its members | derived from its members | — |
 
-`Capability`, `Agent`, `Skill`, `Flow` are the current set — but `kind` is an **open literal, not a closed enum**: a component may declare a kind outside the four when its behaviour genuinely differs (one of the three real components declares `kind: Processor` — a comprehension processor whose typed topology is design-intent; its shipped manifest declares discovery tags only, `requires: []`). The constraint is not an exhaustive list; it is behavioural consequence. Each kind implies which fields are valid, required, or forbidden. A Skill that declared a transport would be a category error, the same as a verb in a noun slot — not a lint warning.
+`Capability`, `Agent`, `Skill`, `Flow` are the current set. But `kind` is an **open literal, not a closed enum**: a component may declare a kind outside the four when its behaviour genuinely differs (one of the three real components declares `kind: Processor` — a comprehension processor whose typed topology is design-intent; its shipped manifest declares discovery tags only, `requires: []`). The constraint is not an exhaustive list; it is behavioural consequence. Each kind implies which fields are valid, required, or forbidden. A Skill that declared a transport would be a category error, the same as a verb in a noun slot — not a lint warning.
 
 Because `kind` never appears inside the `type_url`, a component can be reclassified without breaking its identity. That is deliberate: the kind count is still open, and keeping it out of the join key keeps reclassification a cheap, reversible move.
 

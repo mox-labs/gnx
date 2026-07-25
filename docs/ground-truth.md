@@ -23,9 +23,9 @@ The platform is a strict triad (settled 2026-06-09/10, `mox-system-model/system-
 | Execution | geist.sh (geist-edge + matrix + mox.hud) | Governed runtime that hosts components and mediates agent tool calls | PARTIAL |
 
 Above the triad, the world-ontology (settled 2026-06-04/05): **samsara** is the world —
-the inhabited Construct, an append-only ledger of typed marks (slick TypedStructs) plus
-per-domain private projections, where humans and agents coordinate *stigmergically* by
-reading each other's marks. **Treya** is the framework that acts (ilm · kalā · kriya).
+the inhabited Construct, an append-only ledger of typed attestations (slick TypedStructs;
+renamed from "marks", D19) plus per-domain private projections, where humans and agents
+coordinate *stigmergically* by reading each other's attestations. **Treya** is the framework that acts (ilm · kalā · kriya).
 A **Locus** is a bounded view. geist.sh is the world's execution organ, not the world.
 
 A **project** = `claude` (agent + CLAUDE.md constitution) + `dao` (the agentic
@@ -207,7 +207,7 @@ tooling lives elsewhere (its own principle #5). corpora/rust is CLOSED (12/12 mi
 ~150 Frames, 11 patterns); py, ts, rust-py-ts (FFI/dual-publish), experience are named
 next. A corpus enters the catalog as a **Skill component whose relations point into the
 corpus** — provides-only, an axiom in proof-search. Mastery distilled once, grounded in
-Frames, composed into any project by reading its mark.
+Frames, composed into any project by reading its manifest.
 
 ## 6. aboot (corrected definition, yzavyas 2026-06-12)
 
@@ -267,7 +267,7 @@ source studies Ostrom-for-agent-daos directly"): chartered named membership for 
 insider monitoring; graduated sanctions as a 3-rung drift ladder (gate flag → RATCHET
 entry → human; never skip to 3); a **conjunctive ship-gate** (any single conscience's
 refusal-to-ship holds; the human is the defined escape valve); the **inspector-general
-invariant** (a maker may not mark its own work shipped; overrides only from the human,
+invariant** (a maker may not attest its own work shipped; overrides only from the human,
 logged). Three accountability axes: vertical (human), horizontal (same-family
 consciences), diagonal (out-of-family evaluator — non-negotiable). The prescribed
 dirt-road landings ("three lines in dao.md") were never written anywhere (§10.13).
@@ -513,7 +513,7 @@ implementation-config — unresolved; and MCP may *ride* the HTTP/CLI adapters
   formally ratify gnx taking this role. Everything in the June corpus leans yes.)
 - **Produce-authority is the make-or-break** (2026-06-05): TypedRegistry has no owner
   concept; geist keys on self-declared agent_id; "until minting a warrant is structurally
-  restricted to an authority disjoint from the mark's author, every warrant is forgeable.
+  restricted to an authority disjoint from the attestation's author, every warrant is forgeable.
   Build that wall first." gnx owns the registry → authorship identity is one of its
   earliest schema decisions.
 - Verdicts are **two-axis** (grounding ⊥ warrant), never a single bool — the

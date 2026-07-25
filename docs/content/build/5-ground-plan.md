@@ -4,7 +4,6 @@ section: build
 mode: reference
 status: proposed
 register: internal
-fidelity: dirt-road
 ---
 
 # The ecosystem ground plan
@@ -26,7 +25,7 @@ The rulings this ledger gates on are now drafted: **GEP-0001** (identity), **GEP
 
 slick declares — the typed skeleton (5 fields); the *semantic* half rides in source-referenced payloads (SKILL.md / `--skill`), not the struct; legibility is an empirical open question (MF4, the calibration cliff), not a premise. gnx catalogs — overlay + intake + projection; the control plane. **matrix IS the runtime** (ruled 2026-04-01, reaffirmed 06-09/10, no asserting override anywhere); geist-edge is a sibling (adapters/dispatch), not the executor. Claude Code is the near-term data plane via committed projection. The whole shape is xDS: catalog = management server, runtimes = data planes, type_url = the join key, config is data never code, Flow members = TypedExtensionConfigs.
 
-The organizing invariant is **MSG**, carried in manifest.rs's own header: **M** — the Manifest, pure structure (identity, source, ports, relations); **S** — Skills, natural language, referenced via `relations["skills"]` (S rides in payloads by design — the open S problems are legibility MF4 + the calibration cliff, not a missing field); **G** — Governance, **external, never on the Manifest** (the overlay, the maturity gate, and the wall are gnx-side *by construction*, not by our preference). Every ruling below keeps to its plane: pressure to grow the slick core is answered by the overlay (G), the payload (S), or the runtime (M) — never by new core fields.
+The organizing invariant is **MSG — Mechanics, Semantics, Governance** (pinned by yzavyas 2026-07-24, resolving the M ×2½ collision recorded in §6; M is the *plane*, not the artifact). Three planes of every component, per samsara's grid: **M — Mechanics**, the decidable skeleton — identity, source, ports, relations, and how a component is reached (the transport axis); the Manifest is mechanics' primary expression, not its definition. **S — Semantics**, natural language, referenced via `relations["skills"]` and carried in `description` (S rides in payloads by design — the open S problems are legibility MF4 + the calibration cliff, not a missing field). **G — Governance**, **external, never on the Manifest** (the overlay, the maturity gate, and the wall are gnx-side *by construction*, not by our preference). Every ruling below keeps to its plane: pressure to grow the slick core is answered by the overlay (G), the payload (S), or the runtime (M) — never by new core fields.
 
 ## 1. SHIPPED CODE
 
@@ -54,7 +53,7 @@ One-way doors first; everything else is a two-way convention that needs to be *n
 - **slick itself** — the first dogfood. Two-level: crate Capability (identity/version anchor, foreign source, Apache-2.0/Yashodeep Vyas — projector passthrough required) + its skills via `relations["skills"]`; a curated rewrite of maintainer-audience frontmatter, not a copy. Acceptance test (kavi lineage): an agent projects/composes from the manifest alone, without reading crate source.
 - **8 cix plugins** at plugin grain + the tools (recon = ONE component, registrations as aliases; assay and parked radix arrive via the sweep). Round two re-cuts into four-kind units later — plugin-grain type_urls stay valid and gain `superseded/related` edges when sub-components mint.
 - **The generative-loop bench, dirt-road grade** (PR6 answered in discourse 2026-07-04 — pending ratification): **Bodhi** = exists as an agent, manifest work only. **Dagstra** = an Agent + a composition-methodology Skill driving the matrix Capability (no formalism at this grade). **HADES** = an Agent emitting component *candidates*, admission-gated (GV11), never registering its own output.
-- **The slick plugin** (a Flow): the authoring kit (manifest-model, registry-patterns) + the operators above. The loop as catalog citizen — the RQ1 self-referential-use test made artifact. **Invariant: the wall stays outside the plugin. Operators emit marks; none mint warrants (GV1/GV3).**
+- **The slick plugin** (a Flow): the authoring kit (manifest-model, registry-patterns) + the operators above. The loop as catalog citizen — the RQ1 self-referential-use test made artifact. **Invariant: the wall stays outside the plugin. Operators emit attestations; none mint warrants (GV1/GV3; noun per D19).**
 - **First-composition members:** 2–3 components authored against the SHIPPED matrix protocol.
 - **The composer:** Claude + the slick plugin — a prompt/skill mapping catalog manifests → matrix Container registrations `[(type_url, config), …]`. No Dagstra-formal, no slickr, no matrix changes.
 
@@ -91,7 +90,7 @@ Verified from three directions: **NO slickit changes needed** (slick has no orch
 - **Construct ×2:** the matrix runtime board (the one this ledger means) vs radix's gated-write comprehension board.
 - **TypedStruct ×2:** slick's factory INPUT vs matrix's component OUTPUT — same xDS root, opposite lifecycle ends.
 - **ACES ×2:** the REP-001 antifragile doctrine vs the multi-agent case-study system. Noticed 2026-07-04.
-- **MSG's "M" ×2½:** the shipped header glosses **M = Manifest** in the bullet but says "pure *Mechanics*" in the same sentence; the June transport-axis docs use M = "how to reach a component" (protocol); samsara's grid applies mechanics/semantics/governance as three planes *of each kind*. S and G are stable; pin M's expansion when the header next gets touched.
+- ~~**MSG's "M" ×2½**~~ **RESOLVED 2026-07-24 (yzavyas margin, ground-plan):** M = **Mechanics**. The Manifest is mechanics' primary expression; the June transport-axis reading ("how to reach a component") is *also* mechanics, not a rival gloss. samsara's grid stands: M/S/G are three planes *of each kind*, which is the reading the header now carries.
 - **luminex ×3** (CT5) and the **GNX expansion itself** (GR15/H6) — both unresolved, both mint-once.
 
 ## 7. Ratification & bookkeeping debt — cheap, honest, lands with the first population commit

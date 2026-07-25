@@ -1,10 +1,8 @@
 ---
 title: gnx CLI reference
 section: start
-mode: reference
 status: planned
 register: public
-fidelity: tarmac
 ---
 
 # gnx CLI reference

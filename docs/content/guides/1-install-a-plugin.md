@@ -4,12 +4,11 @@ section: guides
 mode: how-to
 status: shipped
 register: public
-fidelity: tarmac
 ---
 
 # Install a plugin
 
-This is the one gnx path that runs today. The plugins install through Claude Code's own marketplace mechanism — clone the catalog, register the marketplace, pick a plugin, enable it.
+This is the one gnx path that runs today. If you already run Claude Code and want `intent-hardening` and `rational-inquiry` working in your own setup — without waiting for the CLI that installs them later — this is it: clone the catalog, register the marketplace, pick a plugin, enable it.
 
 ---
 
@@ -38,7 +37,9 @@ Open `~/.claude/settings.json` and add an `extraKnownMarketplaces` entry pointin
 }
 ```
 
-The key — `"gnx"` here — is yours to choose; it becomes the marketplace identifier and the suffix in `enabledPlugins`: `intent-hardening@gnx`, `rational-inquiry@gnx`. Two source types work: a `directory` source reads a local path (used above), and a `github` source (`"source": "github", "repo": "<owner>/<repo>"`) clones a public repo once it is published.
+If `settings.json` already carries other entries under `extraKnownMarketplaces` or `enabledPlugins` — from plugins you've installed before — add the `gnx` key alongside them; the block above is the whole file only if this is the first marketplace you've registered.
+
+The key — `"gnx"` here — is yours to choose; it becomes the marketplace identifier and the suffix in `enabledPlugins`: `intent-hardening@gnx`, `rational-inquiry@gnx`. Two source types work: a `directory` source reads a local path (used above), and a `github` source (`"source": "github", "repo": "<owner>/<repo>"`) clones a public repo — for this catalog, `"repo": "mox-labs/gnx"`.
 
 ---
 
@@ -51,7 +52,7 @@ Two plugins are projected and installable today:
 | `intent-hardening` | Hardens a loose ask into something the catalog can act on — an adhikaraṇa-structured exchange that reports how far the intent can honestly sharpen |
 | `rational-inquiry` | The inference-validity gate — tests whether a "therefore" holds against named defeat conditions |
 
-The wider set — craft-rhetoric, ci-scaffolds, guild-arch, and more — is being ported into the catalog as components. Current installed versions live in **[what's real vs planned](/docs/status)**, so this page never drifts from that record.
+A wider set is being ported into the catalog as components; **[what's real vs planned](/docs/status)** is the canonical record of what's installed and what's next, so this page never drifts from it.
 
 ---
 

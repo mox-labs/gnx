@@ -3,18 +3,17 @@ title: "The ecosystem map"
 section: ecosystem
 status: mixed
 mode: explanation
-fidelity: cobblestone
 ---
 
 # The ecosystem map
 
-*Internal. The product decomposition as ruled in discourse 2026-07-06. Each product is one component; each ships `--skill` beside `--help`. Maturity marks are load-bearing — most of this map is direction, not shipped code.*
+*The product decomposition as ruled in discourse 2026-07-06. Each product is one component; each ships `--skill` beside `--help`. Maturity marks are load-bearing — most of this map is direction, not shipped code. Read the marks before picking what to build next: they're the difference between extending shipped code and building on a design that hasn't landed yet.*
 
 ## The products
 
 **slick** — the semantic LLM-interpretable component kit. Three faces of one thing: the **library** (the slickit crate — Rust core, Python/TypeScript crusts — carrying the five primitives as types), the **CLI** (`slick validate`, `--skill`), and the **CC plugin** (the authoring surface an agent uses to produce new components). Apache-2.0, deliberately catalog-independent: gnx is the home catalog that speaks slick, not the owner of slick. *Maturity: crate shipped (v0.2.0, five-field Manifest + TypedStruct + TypedRegistry); the CLI, real validation, and the plugin are design — and the Python crust is broken (ImportError) with an unpinned ABI.*
 
-**gnx** — generative noetic extensions: the package manager, registry, and marketplace. Scaffolds projects (`gnx init`), validates and admits components (the wall), projects the catalog into installable form per Target, and carries governance (overlay, maturity gates, accreditation). *Maturity: three components and a directory marketplace ship; the CLI is a prototype that cannot yet execute the population; the pipeline is being rebuilt against the ratified contract.*
+**gnx** — generative noetic extensions: the package manager, registry, and marketplace. Scaffolds projects (`gnx init`), validates and admits components (the wall), projects the catalog into installable form per Target, and carries governance (overlay, maturity gates, accreditation). *Maturity: two components ship as installable plugins (a third, radix, is design-stage) and the directory marketplace ships; the CLI is a prototype that cannot yet execute the population; the pipeline is being rebuilt against the ratified contract.*
 
 **geist.sh** — the distribution. Packages three parts into a Tauri shell and/or a deployable container (HUD optional):
 - **geistr** — the runtime for agents. Defining property: it reaches the world *only* through geist-edge — capability-based, no ambient authority. *Maturity: direction ruled 2026-07-06; the shipped geist-run chat CLI is the pre-geistr prototype it replaces (that prototype holds ambient file authority, violating the thesis its own docs state).*

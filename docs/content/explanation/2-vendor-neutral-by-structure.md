@@ -1,10 +1,8 @@
 ---
 title: Vendor-neutral by structure
 section: explanation
-mode: explanation
 status: planned
 register: public
-fidelity: tarmac
 ---
 
 # Vendor-neutral by structure
@@ -15,7 +13,7 @@ Vendor-neutral by structure is the hedge. A component declares what it is in a f
 
 ## The namespace is the vendor scope
 
-The mechanism is plain: a component's namespace says who owns its semantics. Core components live in the vendor-neutral `gnx.dev` namespace; anything specific to one runtime — a hook, a command, a serving surface that only that runtime understands — lives under that runtime's namespace instead. The core never learns a runtime's vocabulary; the runtime-specific surface extends alongside it.
+A component's namespace says who owns its semantics. Core components live in the vendor-neutral `gnx.dev` namespace; anything specific to one runtime — a hook, a command, a serving surface that only that runtime understands — lives under that runtime's namespace instead. The core never learns a runtime's vocabulary; the runtime-specific surface extends alongside it.
 
 Portability is not a label a component claims. It is **computed** from the namespaces a component actually uses. An author cannot call a component portable if it depends on a runtime-specific surface — the computation will not allow it. The claim and the structure cannot drift apart, because the claim is not made by the author at all.
 
@@ -38,7 +36,7 @@ For any catalog worth having, `N + M + B` is far smaller than `N × M`. The boun
 
 Neutrality is enforced, not promised. The core namespace is structurally unable to accrete one runtime's semantics — a runtime-specific field on a core component is rejected, not merely discouraged. The reason is blunt: if the neutral core quietly becomes "Claude Code with extra steps," the hedge is gone and nobody notices until the next churn arrives.
 
-This is the live risk, stated honestly. Claude Code is the only runtime target that ships today, so its adapter accumulates all the practice. Vendor-neutral by structure means the structure refuses the drift — not editorial vigilance that has to hold forever.
+This is the live risk. Claude Code is the only runtime target that ships today, so its adapter accumulates all the practice — and every component registered in that stretch is a bet that the neutral core holds before there is a second runtime to test it against. Vendor-neutral by structure means the structure refuses the drift — not editorial vigilance that has to hold forever. If the structure holds, a component built against it today still composes when the runtime under it is gone.
 
 ## Where to go next
 

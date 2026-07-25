@@ -1,10 +1,8 @@
 ---
 title: The primary reader is an agent
 section: explanation
-mode: explanation
 status: mixed
 register: public
-fidelity: tarmac
 ---
 
 # The primary reader is an agent
@@ -19,11 +17,11 @@ An agent decides whether two components fit from their declared surfaces, before
 
 ## Every Capability describes itself in the agent's language
 
-A human reads a man page; an agent reads a skill. So every Capability in the catalog must ship an embedded skill and expose `--skill` — it emits the `SKILL.md` an agent needs to drive it: what it does, how to invoke it, when to reach for it. A Capability without `--skill` is opaque to an agent: it would sit in the catalog with no way for an agent to reason about how to use it — reachable, but not operable. gnx holds itself to the same rule: `gnx --skill` is its own front door. This is already the shipped mechanism — it is exactly how Claude Code activates the two installed plugins, loading the skill inside each and driving behaviour from it.
+A human reads a man page; an agent reads a skill. So every Capability in the catalog must ship an embedded skill and expose `--skill` — it emits the `SKILL.md` an agent needs to drive it: what it does, how to invoke it, when to reach for it. A Capability without `--skill` is opaque to an agent: it would sit in the catalog with no way for an agent to reason about how to use it — reachable, but not operable. gnx holds itself to the same rule: `gnx --skill`, designed with the rest of the CLI, is its own front door. The convention itself already ships: Claude Code activates the two installed plugins by loading the skill inside each and driving behaviour from it.
 
 ## Discovery returns structure, not prose
 
-When an agent searches the catalog, it needs machine-parseable output — the matching components and their declared surfaces — not a paragraph to skim. The same principle carries through to the documentation surface itself, and that part is **live today**: [/llms.txt](/llms.txt) is the index an agent fetches first to enumerate what exists, and every page has a markdown twin at `/raw/<slug>`. The surface carries its own maturity, too — each `/llms.txt` entry is tagged with the page's status marker (`shipped`, `planned`, `proposed`, or `mixed`), and every `/raw` twin opens with a status line. An agent should read those markers before treating anything a page describes as executable: a `planned` or `proposed` surface is something to reason about, not something to run. The doc surface already works the way the catalog's discovery tooling is designed to.
+When an agent searches the catalog, it needs machine-parseable output — the matching components and their declared surfaces — not a paragraph to skim. The same principle carries through to the documentation surface itself, and that part is **live today**: [/llms.txt](/llms.txt) is the index an agent fetches first to enumerate what exists, and every page has a markdown twin at `/raw/<slug>`. The surface carries its own maturity, too — each `/llms.txt` entry is tagged with the page's status marker (`shipped`, `planned`, `proposed`, or `mixed`), and every `/raw` twin opens with a status line. An agent should read those markers before treating anything a page describes as executable: a `planned` or `proposed` surface is something to reason about, not something to run. The doc surface already works the way the catalog's discovery tooling is designed to. This page is one of those twins right now: a `mixed` status line, an `/llms.txt` entry, a `/raw` copy at `/raw/the-primary-reader-is-an-agent` for whatever reads it next: built once, not re-explained by a person each time an agent needs it.
 
 ## The test behind all three
 

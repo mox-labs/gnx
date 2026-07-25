@@ -3,12 +3,11 @@ title: "Reliability, and its honest ceiling"
 section: ecosystem
 status: mixed
 mode: explanation
-fidelity: cobblestone
 ---
 
 # Reliability, and its honest ceiling
 
-*Internal. Why generating into the grammar makes an agent's work more reliable — stated with the argued-vs-extended ledger attached, because the previous drafts of this story kept drifting into overclaim. The ceiling is the first-class fact here, not a footnote.*
+*Why generating into the grammar makes an agent's work more reliable — stated with the argued-vs-extended ledger attached, because the previous drafts of this story kept drifting into overclaim. The ceiling is the first-class fact here, not a footnote. Read this before repeating any reliability claim in a pitch, a doc, or a design decision — the ledger below is what stops "more reliable" from drifting into "correct."*
 
 ## The causal chain, link by link
 
@@ -42,6 +41,6 @@ This split is also why the two runtimes exist: matrix needs only the correctness
 - **90% token reduction / 525× variance reduction** (Ye 2026, Agent Contracts) — **imported prior art**, measured for resource-constraint enforcement alone; the extrapolation to fuller envelopes is a design argument, not a result.
 - **"Autopoietic"** — refuted in the strong form (two of three Maturana-Varela criteria fail). The honest claim is **sympoietic — made-with**: operationally closing on the correctness axis (deterministic validation self-originates reliability-entitlement) but anchored on the trust axis (no detector for adversarial/out-of-distribution value can exist — Rice — so trust-entitlement must originate exogenously, in a human avowal and a Sybil-resistant authority disjoint from the marketplace it bounds). The word "autopoietic" holds only at one scope: the **collective** (human + primary agent + catalog) as the unity, with the human *constitutive, not external* — which is what *generative noetic extensions of the collective* names. A track-record ledger extends the system's perceptual reach on correctness (earned standing, default-and-challenge with history) but never manufactures a trust-detector: it records the past; a sleeper's past is spotless until it defects. See ground-truth §1 for the H1 doctrine.
 
-## What this buys gnx, said once and plainly
+## What this buys gnx
 
 The grammar makes an agent's composition **checkable before execution** and its authored components **compose-by-construction**; the catalog's wall makes structural failure **cheap and early** instead of expensive and late; and the discipline of pushing determinism down makes the *system* around the agent more reliable than the agent itself. It does not make the agent's content true, its components safe, or its judgment trustworthy — those take verification, accreditation, and policy, which is what the rest of the ecosystem is for.

@@ -4,7 +4,6 @@ section: start
 mode: explanation
 status: planned
 register: public
-fidelity: tarmac
 ---
 
 # Authoring a component
@@ -29,7 +28,7 @@ These are not editorial preferences — the designed `gnx validate` checks both 
 
 ## The scaffold
 
-`gnx component init [kind]` produces a kind-aware tree:
+You start from something that already works somewhere else — a skill you wrote for one project, a capability you keep rebuilding by hand. `gnx component init [kind]` produces a kind-aware tree:
 
 - `manifest.yaml` — the component's declaration; what the registry reads
 - `SKILL.md` — the embedded skill; what an agent reads to drive the component
@@ -85,7 +84,7 @@ The two plugins installable today are exactly this: committed projections of two
 
 The catalog is human-curated. A submission goes through curation review before the registry is updated. The bar is a passing `gnx validate`, a committed `gnx build` output, and — for Capabilities — a verified `--skill` surface. The submission mechanics beyond that bar are not yet specified.
 
-**Registration and accreditation are separate axes.** Passing validation gets a component into the catalog as a structurally sound entry. **Accreditation** is a trust status minted on top — by a person, never self-serve, never automatic with registration. A component can be registered and unaccredited; what it cannot be is accredited by the agent that authored it. Why structure and trust stay on separate axes — machine-checked versus human-minted — is [why a catalog](/docs/why-a-catalog)'s argument.
+**Registration and accreditation are separate axes.** Passing validation gets a component into the catalog as a structurally sound entry. **Accreditation** is a trust status minted on top: by a person, never self-serve, never automatic with registration. A component can be registered and unaccredited; what it cannot be is accredited by the agent that authored it. Why structure and trust stay on separate axes — machine-checked versus human-minted — is [why a catalog](/docs/why-a-catalog)'s argument.
 
 ---
 
@@ -96,7 +95,7 @@ The catalog is human-curated. A submission goes through curation review before t
 - **Registration flow** — how a validated component moves from submission to the registry, including where the authoring loop runs relative to the catalog repository, is unspecified.
 - **Curation refusal and accreditation** — what a refusal looks like, and how accreditation is later requested, is not yet specified.
 
-What you register, the next search reaches. The catalog grows through this loop — one component at a time, each one narrowing the gap an agent has to fill by itself.
+What you register, every later search reaches. The catalog grows through this loop — one component at a time, each one narrowing the gap an agent has to fill by itself.
 
 ## Where to go next
 

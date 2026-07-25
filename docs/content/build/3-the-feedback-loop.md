@@ -4,7 +4,6 @@ section: build
 register: internal
 mode: explanation
 status: shipped
-fidelity: cobblestone
 ---
 
 # The feedback loop
@@ -38,7 +37,7 @@ The comment is the human's interpretant exposed; the revision is the agent's res
 
 ## Why this shape, and not a review tool
 
-A pull-request review optimizes for approve/request-changes on a diff. This optimizes for **shared understanding** on a living surface. The doc set is the design surface; the comment loop is how two minds reconcile their models of it. That a human and an agent can coordinate this way — stigmergically, by reading each other's marks rather than messaging — is the thing the ecosystem is built to scale. The docsite proves it on the smallest possible instance first.
+A pull-request review optimizes for approve/request-changes on a diff. This optimizes for **shared understanding** on a living surface. The doc set is the design surface; the comment loop is how two minds reconcile their models of it. That a human and an agent can coordinate this way — stigmergically, by reading each other's marks rather than messaging — is the thing the ecosystem is built to scale. The docsite proves it on the smallest possible instance first; whoever builds the next mark-reading surface — a board, a ledger — starts from a pattern that already ran.
 
 ---
 

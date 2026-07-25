@@ -1,10 +1,8 @@
 ---
 title: What's real vs planned
 section: reference
-mode: reference
 status: shipped
 register: public
-fidelity: tarmac
 ---
 
 # What's real vs planned
@@ -70,7 +68,8 @@ These are the `plugin.json` versions — the cache key Claude Code resolves on. 
 | **Flow composition** | A `members` list of `(type_url, config)` pairs with derived topology — proposed |
 | **The on-disk overlay** | `kind` and `maturity` (on disk today) plus a proposed `version` field, with a projection gate — proposed |
 
-These are open design decisions tracked in the public GEP register.
+These are open design decisions tracked in the public GEP register — start at
+[GEP-0000](/docs/gep-0000), the process and the full gap list.
 
 ---
 

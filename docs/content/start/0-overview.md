@@ -4,12 +4,11 @@ section: start
 mode: explanation
 status: mixed
 register: public
-fidelity: tarmac
 ---
 
 # gnx
 
-**gnx is a mech suit for your agent.** It is a governed catalog of parts — skills, capabilities, agents, whole workflows — that your agent wears to do more, and composes into working sets that reach further than any part alone. When the catalog has nothing that fits, your agent builds the missing part, and what it builds folds back into the catalog through you. gnx is short for *generative noetic extensions*.
+**gnx is a mech suit for your agent.** It is a governed catalog of parts — skills, capabilities, agents, whole workflows — that your agent wears to do more, and composes into working sets that reach further than any part alone. When the catalog has nothing that fits, your agent builds the missing part, and what it builds folds back into the catalog only when you decide it belongs there. The next project starts with the parts the last one built. gnx is short for *generative noetic extensions*.
 
 [What gnx is](/docs/what-is-gnx) unpacks the framing and the self-extension loop. For the line between what runs today and what is designed, see **[what's real vs planned](/docs/status)**.
 

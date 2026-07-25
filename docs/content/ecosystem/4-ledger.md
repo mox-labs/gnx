@@ -3,12 +3,11 @@ title: "Supersessions, errata, and the name registry"
 section: ecosystem
 status: shipped
 mode: reference
-fidelity: cobblestone
 ---
 
 # Supersessions, errata, and the name registry
 
-*Internal. The corrections layer: rulings deliberately overridden, claims that failed verification, and names that collide. A future session that trusts a superseded claim re-derives a dead end — this page exists so that never happens silently. Verified 2026-07-06 by five independent deep-reads against the shipped artifacts.*
+*The corrections layer: rulings deliberately overridden, claims that failed verification, and names that collide. A future session that trusts a superseded claim re-derives a dead end — this page exists so that never happens silently. Verified 2026-07-06 by five independent deep-reads against the shipped artifacts.*
 
 ## Deliberate supersessions (rulings overridden on purpose)
 

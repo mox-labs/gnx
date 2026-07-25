@@ -4,27 +4,26 @@ section: start
 mode: explanation
 status: mixed
 register: public
-fidelity: tarmac
 ---
 
 # What gnx is
 
-**gnx is a mech suit for your agent** — *generative noetic extensions*, said in full once and then left plain. Your agent puts the suit on and stops being a bare generalist. It wears a governed catalog of extensions: skills, capabilities, agents, whole workflows. Two moves, named plainly:
+**gnx is a mech suit for your agent** — *generative noetic extensions*. Your agent puts the suit on and stops being a bare generalist — solving each task from a blank prompt, the same way, every time. It wears a governed catalog of extensions: skills, capabilities, agents, whole workflows. Two moves:
 
 - **Wear an extension** and the agent gains one new thing it can do.
-- **Compose extensions** and the working sets it can assemble multiply — more than the sum of the parts.
+- **Compose extensions** and the working sets it can assemble multiply.
 
 Adding parts extends what your agent *can do*; composing parts widens what it *can reach for*. The suit does not replace you. It hands you parts — inspectable, swappable, checked before anything bolts on — and you decide which ones it wears.
 
 ## The suit is generative
 
-This is the loop gnx exists for. Your agent meets a task, composes what fits from the catalog, and when nothing fits it **builds the missing part**. What it builds folds back into the catalog **through you**. The loop is not self-producing — it closes through human governance, and that is the design, not a shortfall. A part your agent builds for itself today, once you let it in, is discoverable by every agent tomorrow.
+This is the loop gnx exists for. Your agent meets a task, composes what fits from the catalog, and when nothing fits it **builds the missing part**. What it builds folds back into the catalog **through you**. The loop is not self-producing — it closes through human governance, and that is the design, not a shortfall. A part your agent builds for itself today, once you let it in, is discoverable by every agent tomorrow — including agents you'll never see.
 
 Two roles stay structurally separate: **your agent composes and builds; you govern what enters and what is trusted.** The catalog grows through agents yet stays trustworthy because the machine only checks structure and only a person mints trust. An agent can author and submit a well-formed component; it cannot accredit one. Why that split holds is [why a catalog](/docs/why-a-catalog); how a component gets registered is [authoring a component](/docs/author-a-component). The suit never certifies its own parts.
 
 ## The hard problem is legibility
 
-The hard problem underneath is not storage — any package manager stores things. It is **legibility**: whether an agent can decide two components fit from what they *declare*, before running either. That bet — composition from declaration, not from execution — is what the catalog is built on. [Why a catalog](/docs/why-a-catalog) makes the case; [how components work](/docs/how-components-work) shows the mechanism.
+The hard problem underneath is not storage. Any package manager stores things. It is **legibility**: whether an agent can decide two components fit from what they *declare*, before running either. That bet — composition from declaration, not from execution — is what the catalog is built on. [Why a catalog](/docs/why-a-catalog) makes the case; [how components work](/docs/how-components-work) shows the mechanism.
 
 ## What you do with it
 
@@ -35,7 +34,7 @@ The hard problem underneath is not storage — any package manager stores things
 
 ## Why it matters
 
-The two moves compound. Each part your agent builds — once you let it in — becomes a part every later agent composes without rebuilding it, and because reach comes from composition, a catalog of parts is worth more than the parts summed. Two costs fall away as the catalog grows:
+The two moves compound. Each part your agent builds — once you let it in — becomes a part every later agent composes without rebuilding it, and because reach comes from composition, a catalog of parts is worth more than the same parts kept apart. Two costs fall away as the catalog grows:
 
 **Rebuilding.** A part distilled once composes into any project that declares it needs it — the argument in [why a catalog](/docs/why-a-catalog).
 

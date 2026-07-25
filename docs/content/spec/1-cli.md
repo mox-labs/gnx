@@ -4,7 +4,6 @@ section: spec
 mode: reference
 status: planned
 register: internal
-fidelity: cobblestone
 ---
 
 # Spec: the gnx CLI

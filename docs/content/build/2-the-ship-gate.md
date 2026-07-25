@@ -4,7 +4,6 @@ section: build
 register: internal
 mode: explanation
 status: shipped
-fidelity: cobblestone
 ---
 
 # The ship-gate
@@ -26,13 +25,15 @@ The verdict grammar is three-valued. **SHIP** — all applicable hard gates clea
 
 ## The diagonal: out-of-family by construction
 
-Claude writes the content, so Claude cannot be the judge — it would be grading its own family. The evaluator is **gemini**, a different model family. This is one of three accountability axes the dao doctrine names: vertical (the human), horizontal (same-family review), and **diagonal** (an out-of-family evaluator). The diagonal is the non-negotiable one — it catches the failure modes a same-family reviewer shares the blind spot for.
+Claude writes the content, so Claude cannot be the judge — it would be grading its own family. For the passes that built this site, the evaluator was **gemini**, a different model family, run read-only. This follows one of three accountability axes the dao doctrine names: vertical (the human), horizontal (same-family review), and **diagonal** (an out-of-family evaluator) — the axis that catches the failure modes a same-family reviewer shares the blind spot for.
 
-The evaluator is told the page's register so it loads the right profile, and is run read-only:
+The evaluator is told the page's register so it loads the right profile:
 
 ```
 gemini -p "<rubric + register profile + the page>" --approval-mode plan --skip-trust
 ```
+
+The owner has since waived the diagonal (2026-07-13): pages that cleared it once are not re-gated out-of-family on revision, and same-family review carries the tightening that follows.
 
 ---
 

@@ -4,7 +4,6 @@ section: build
 register: internal
 mode: explanation
 status: shipped
-fidelity: cobblestone
 ---
 
 # The collaboration method
@@ -40,9 +39,9 @@ Two mechanisms keep the work coherent across the gaps between sessions. A persis
 
 ---
 
-## The method is the product, recursively
+## The method applies to gnx itself
 
-gnx's founding move will be `gnx init gnx` — the catalog initialized by its own CLI, running its own core set. This doc set is the same move at the documentation layer: built with the cix family (the discipline, the review panel, the rhetoric components) that the catalog is meant to distribute. The bet is that a method good enough to build the thing is a method worth packaging — and the evidence is whether what you're reading holds up.
+gnx will be the first project the `gnx init` command sets up, running its own core set. This doc set applies the same discipline at the documentation layer: built with the cix family (the discipline, the review panel, the rhetoric components) that the catalog is meant to distribute. The bet is that a method good enough to build the thing is a method worth packaging — and the evidence is whether what you're reading holds up.
 
 ---
 

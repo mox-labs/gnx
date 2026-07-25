@@ -1,10 +1,8 @@
 ---
 title: The api/ schema index
 section: reference
-mode: reference
 status: proposed
 register: public
-fidelity: tarmac
 ---
 
 # The api/ schema index

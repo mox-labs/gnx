@@ -1,10 +1,8 @@
 ---
 title: Why a catalog
 section: explanation
-mode: explanation
 status: mixed
 register: public
-fidelity: tarmac
 ---
 
 # Why a catalog
@@ -15,7 +13,7 @@ A catalog is the place to put it: distill a capability once, register it in a fo
 
 ## Why a registry, specifically
 
-Storing capability is easy. The hard part is **composition before execution** — an agent deciding two components fit without ever having run either.
+Storing capability is easy. The hard part is **composition before execution** — an agent deciding two components fit without ever having run either, because it is choosing among candidates, not testing one, and running each to find out would cost more than the task is worth.
 
 That is what a registry buys that a folder of plugins does not. Each entry declares its surface — what it provides, what it requires, how it is reached — in a form legible enough to reason over. An agent reads those declarations and decides what composes, with no trial-and-error execution. The registry exists to keep those declared surfaces legible and trustworthy enough to build on.
 
@@ -23,9 +21,9 @@ This is the structural bet: composition from declaration, not from execution. An
 
 ## What the structure actually buys — and where it stops
 
-The reliability gain from this is real, and it is worth stating precisely so it is not oversold. Because every component declares a typed surface — what it takes, what it emits — a composition is **checkable before anything executes**: a mis-wire fails when the graph is compiled, not at runtime, not in production. And a component authored *into* that grammar is **compose-by-construction** — a structurally non-conformant artifact fails validation at the boundary instead of composing wrong and failing later. That is what makes the self-extension loop survivable: when an agent authors a missing part, the part either declares a legible surface or it does not clear the gate.
+The reliability gain from this is real. Because every component declares a typed surface — what it takes, what it emits — a composition is **checkable before anything executes**: a mis-wire fails when the graph is compiled, not at runtime, not in production. And a component authored *into* that grammar is **compose-by-construction** — a structurally non-conformant artifact fails validation at the boundary instead of composing wrong and failing later. That is what makes the self-extension loop survivable: when an agent authors a missing part, the part either declares a legible surface or it does not clear the gate.
 
-Here is the ceiling, stated plainly: **this makes structure checkable; it does not make generated content correct.** A manifest that declares clean ports still says nothing about whether the component's output is *true*, or its judgment sound. Structural conformance is calibration — it makes fit cheap to check and failure early — not correctness. A component that declares it handles sensitive data and one that declares it writes logs compose cleanly at the structural level and can still leak: whether that composition is *safe* is a separate question, and the catalog does not pretend to answer it by checking shape.
+The ceiling: **this makes structure checkable; it does not make generated content correct.** A manifest that declares clean ports still says nothing about whether the component's output is *true*, or its judgment sound. Structural conformance is calibration — it makes fit cheap to check and failure early — not correctness. A component that declares it handles sensitive data and one that declares it writes logs compose cleanly at the structural level and can still leak: whether that composition is *safe* is a separate question, and the catalog does not pretend to answer it by checking shape.
 
 ## Structure is machine-checked; trust is human-minted
 
@@ -37,13 +35,13 @@ gnx certifies **structure** — that a component is well-formed, that its declar
 
 ## Why curated, not open-write
 
-The catalog is human-curated, and that is a feature, not friction. An agent composes from what the catalog says — so what the catalog says has to be trustworthy. **Accreditation** is human-mintable: a status an agent can read and build on, but cannot mint for itself. The catalog grows through agents; it stays trustworthy because accreditation is structurally external to the agent doing the composing.
+The catalog is human-curated, and that is a feature, not friction. An agent composes from what the catalog says — so what the catalog says has to be trustworthy. **Accreditation** — designed with the registry — is human-mintable: a status an agent can read and build on, but cannot mint for itself. The catalog grows through agents; it stays trustworthy because accreditation is structurally external to the agent doing the composing.
 
 Accreditation is advisory, not a gate. An unaccredited component still installs and still composes — nothing blocks it. What accreditation changes is the agent's *decision*: a human-signed status it weighs when choosing what to build on. This separation is also what lets the loop stay safe — because trust is external, an agent can author and submit a new part without ever vouching for its own. A person does that. That generative loop is where [what gnx is](/docs/what-is-gnx) begins.
 
 ## Standalone value is the premise
 
-A component earns the catalog by being useful on its own — installable and worth installing without the rest of the stack. The two plugins install into Claude Code today and do real work with nothing else present. Each piece stands alone; the catalog is how they find each other, and how the next project picks them up without rebuilding them.
+A component earns the catalog by being useful on its own — installable and worth installing without the rest of the stack. The catalog's two shipped components — intent-hardening and rational-inquiry — install into Claude Code today and do real work with nothing else present. Each piece stands alone; the catalog is how they find each other, and how the next project picks them up without rebuilding them. A person decided each one was worth keeping before it ever composed with anything else; every later entry enters the same way.
 
 The boundary cuts the other way too: a capability that never leaves its project and composes with nothing does not need the catalog — a project-local skill file is fine. gnx starts paying the moment a second project would rebuild it, or a second component must reason about it from its declaration.
 

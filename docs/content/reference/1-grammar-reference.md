@@ -1,10 +1,8 @@
 ---
 title: Grammar reference
 section: reference
-mode: reference
 status: mixed
 register: public
-fidelity: tarmac
 ---
 
 # Grammar reference
@@ -124,7 +122,7 @@ Core, vendor-neutral components live under `gnx.dev`; anything specific to one r
 
 ## Cycles
 
-Cycles are **rejected** today, in the derived topology. **shipped semantics** (via the runtime the shape derives from). A rule accepting a loop only with a *declared bound* — a run budget or convergence condition — is **proposed**, not settled.
+Reject-all-cycles is the baseline: a composition's derived topology must be acyclic. **ruled** (the enforcing validator is not built). A rule accepting a loop only with a *declared bound* — a run budget or convergence condition — is **proposed**, not settled.
 
 ---
 

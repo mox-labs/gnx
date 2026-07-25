@@ -4,12 +4,11 @@ section: guides
 mode: explanation
 status: planned
 register: public
-fidelity: tarmac
 ---
 
 # Start a project with gnx init
 
-`gnx init` suits up a whole project for an agent: a context layer, an agentic working set, and tooling — all chosen through a conversation, not off a fixed menu. ([Installing a plugin](/docs/install-a-plugin) covers adding individual plugins to a setup you already have.) The command is **designed**; this page describes what it will do.
+`gnx init` suits up a whole project for an agent, from nothing: a context layer, an agentic working set, and tooling — all chosen through a conversation, not off a fixed menu. Reach for it at the start of a new project, before there is a setup to add anything to; once one exists, [installing a plugin](/docs/install-a-plugin) covers adding individual pieces to it. The command is **designed**; this page describes what it will do.
 
 ---
 
@@ -29,7 +28,7 @@ dao/            # agentic organization — charter, agent roles
 
 ## How components get selected
 
-Before installing anything, `gnx init` runs an interview. The Claude Agent SDK drives the conversation: it asks what you are building and what discipline the project needs, then proposes a component set — agents, skills, scaffolds — drawn from the catalog. You refine the proposal; when you agree, `init` installs what you confirmed.
+Before installing anything, `gnx init` runs an interview. The Claude Agent SDK drives the conversation: it asks what you are building and what discipline the project needs, then proposes a component set — agents, skills, scaffolds — drawn from the catalog. You push back on what doesn't fit; when you agree, `init` installs what you confirmed.
 
 No two projects need the same set — a research tool and a web service start from different components even when both use `gnx init`. The boundary between the interview and the install is hard: **the SDK session proposes; deterministic code installs.** The agentic phase ends at the proposal, and validated, auditable code does the write — so the catalog stays a surface agents read, not one they can quietly rewrite.
 

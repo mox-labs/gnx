@@ -3,12 +3,11 @@ title: "The bootstrap plan"
 section: ecosystem
 status: planned
 mode: explanation
-fidelity: dirt-road
 ---
 
 # The bootstrap plan
 
-*Internal. What has to exist for gnx to boot as a real package manager — in dependency order, converged 2026-07-06. Phases 0 and the rulings inside it landed the same day (D13–D16); the rest is build work. geist.sh/geistr are deliberately out of scope here.*
+*What has to exist for gnx to boot as a real package manager — in dependency order, converged 2026-07-06. Phases 0 and the rulings inside it landed the same day (D13–D16); the rest is build work. geist.sh/geistr are deliberately out of scope here.*
 
 ## Definition of done
 
@@ -51,3 +50,5 @@ The never-run **bridge proof**: a catalog manifest → a CC-composed Flow manife
 ## The shape of the effort
 
 Phase 0 is decision-hours (mostly done). Phase 1 is the real engineering — days, not weeks, *because* Phase 0 landed first: validation can't be written against unruled grammar. Phase 2 is a small tool rebuilt against a now-stable contract. Phase 3 is population plus one proof-run. The long pole is slick, exactly as assumed — and it is also the highest-leverage work, because every later consumer (both runtimes, the viewer, every component author, every future catalog) inherits it.
+
+For whoever picks this up next: start at Phase 1. It carries none of Phase 3's visible progress — no new components, no population — but starting at Phase 3 instead means building population on a validator that doesn't exist yet.

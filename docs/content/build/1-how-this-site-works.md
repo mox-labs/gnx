@@ -4,7 +4,6 @@ section: build
 register: internal
 mode: explanation
 status: shipped
-fidelity: cobblestone
 ---
 
 # How this site works
@@ -25,7 +24,7 @@ Each block gets a **content-hash anchor** — an id derived from the block's tex
 
 ## Frontmatter carries the register and the maturity
 
-Each page declares `section`, `register`, `mode`, `status`, and `fidelity`. `status` (shipped / planned / proposed / mixed) renders as the badge in the nav — the honesty gate made visible. `register` decides which side of the public/internal line a page sits on. `mode` is its Diátaxis need-type. The frontmatter is how the gate's profile is selected: a page tells the evaluator which bar to apply.
+Each page declares `section`, `mode`, and `status`; `register` is declared or derived from its section. The set is closed and checked — `bun run check:docs` rejects a key nothing parses, a value that fails its type guard, or a key restating what another key already determines, and flags any parsed field no component renders. (`fidelity` was such a field, and was deleted rather than documented — D29.) `status` (shipped / planned / proposed / mixed) renders as the badge in the nav — the honesty gate made visible. `register` decides which side of the public/internal line a page sits on. `mode` is its Diátaxis need-type. The frontmatter is how the gate's profile is selected: the evaluator is told the page's register and applies that register's bar — get `register` wrong on a new page and it is graded against the wrong standard, and it lands on the wrong side of the public/internal line when the site deploys.
 
 ---
 
@@ -34,7 +33,7 @@ Each page declares `section`, `register`, `mode`, `status`, and `fidelity`. `sta
 Most blocks are rendered markdown. Two fenced blocks become interactive components instead:
 
 - ` ```composer ` mounts the composition model — components with declared ports, a DAG compiled from the declarations alone, parallel batches and compile-time rejection. "Compose without running" made tactile. It's used in [Compose components](/docs/compose-components).
-- ` ```decision ` mounts a decision explorer from a JSON payload — alternatives scored across criteria, used in the Design docs to make an open fork manipulable rather than described.
+- ` ```decision ` mounts a ruling card from a JSON payload — options with mandatory consequences, assumptions with their failure implications, calibration chips, and a response menu whose rulings write into the feedback store. One-way decisions render with engineered friction. Its sibling ` ```decision-matrix ` mounts a comparison table with per-cell epistemic marks and no aggregate row. Both come from the dossier grammar (`~/mox/research/drafts/dossier-grammar/`); the pilot is [the craft-rhetoric intake](/dossier/ecosystem/craft-rhetoric-intake).
 
 The islands are the show-don't-tell surface: a diagram a reader can drive beats a paragraph about composition.
 
