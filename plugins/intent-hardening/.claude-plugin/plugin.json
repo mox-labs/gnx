@@ -1,0 +1,16 @@
+{
+  "name": "intent-hardening",
+  "version": "0.1.0",
+  "description": "Intent is not extracted from an utterance \u2014 it is HARDENED through structured discourse against a substrate that pre-conditions both interlocutors. Use when a fuzzy ask, goal, or requirement must be turned into something the catalog/composition can act on: a vague request (\"make it better\", \"build X\"), an open decision that needs settling, a requirement whose real shape is uncertain, or any point where you'd otherwise guess the intent. Runs the ask through an adhikara\u1e47a-structured exchange (locus \u2192 doubt \u2192 steelmanned opposition \u2192 resolution \u2192 what-changes-downstream), terminates at trigu\u1e47a-completeness (the interpreter's state, not the text's), and reports how far the intent can honestly harden per the gnx gradient (structural / behavioral / semantic). Use when: the principal asks to \"harden this intent\", \"what do they actually mean\", \"sharpen this\", \"is this ready to build\", \"what's the real ask here\"; a requirement is load-bearing and underspecified; an open decision needs converging; bodhi's envision step runs. Pairs with `rational-inquiry` (the validity gate inside the resolution step) and is the discipline `bodhi` operationalises.",
+  "author": {
+    "name": "Mox Labs",
+    "email": "mox.rnd@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "intent.hardening",
+    "intent.adhikarana-protocol",
+    "intent.triguna-halt",
+    "intent.gradient"
+  ]
+}

@@ -1,0 +1,13 @@
+# gnx component manifest — on-disk format (slick's 5 fields + the kind gnx adds).
+# Skill = provides-only axiom: it advertises discovery tags; it has no produces/consumes topology.
+type_url: gnx.dev.v1.rational-inquiry
+kind: Skill
+source: ./SKILL.md
+provides:
+  - inquiry.inference-validity
+  - inquiry.fallacy-gate
+  - inquiry.defeat-conditions
+requires: []
+relations: {}
+maturity: shipped  # the SKILL.md exists and installs via the directory marketplace today
+description: The inference-validity gate — tests whether a "therefore" holds against named defeat conditions. # D23 overlay field

@@ -1,0 +1,17 @@
+# gnx component manifest — on-disk format (slick's 5 fields + the kind gnx adds).
+# Skill = provides-only axiom. `relations.uses` records the soft dependency: intent-hardening
+# runs rational-inquiry inside its uttarapakṣa (resolution) step.
+type_url: gnx.dev.v1.intent-hardening
+kind: Skill
+source: ./SKILL.md
+provides:
+  - intent.hardening
+  - intent.adhikarana-protocol
+  - intent.triguna-halt
+  - intent.gradient
+requires: []
+relations:
+  uses:
+    - gnx.dev.v1.rational-inquiry
+maturity: shipped  # the SKILL.md exists and installs via the directory marketplace today
+description: Hardens a loose ask into something the catalog can act on — an adhikaraṇa-structured exchange reporting how far the intent can honestly sharpen. # D23 overlay field
