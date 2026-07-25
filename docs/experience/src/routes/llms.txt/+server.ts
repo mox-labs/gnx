@@ -63,3 +63,6 @@ export function GET() {
 		headers: { 'content-type': 'text/plain; charset=utf-8' }
 	});
 }
+
+// static builds ship this file too (D22)
+export const prerender = true;

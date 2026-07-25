@@ -5,7 +5,9 @@ import { randomUUID } from 'node:crypto';
 // Append-only JSONL event ledger per doc; threads are a derived projection.
 const FEEDBACK_DIR = path.resolve(process.cwd(), '..', 'feedback');
 
-export type EventKind = 'comment' | 'reply' | 'resolve' | 'reopen';
+// question/spawn are the review surface's additions (D20): a question is a root mark like a
+// comment; a spawn is a reply that cuts the question into a separate mission.
+export type EventKind = 'comment' | 'reply' | 'resolve' | 'reopen' | 'question' | 'spawn';
 
 export interface FeedbackEvent {
 	id: string;
@@ -77,7 +79,8 @@ function readEvents(doc: string): FeedbackEvent[] {
 function reduce(events: FeedbackEvent[]): Thread[] {
 	const threads = new Map<string, Thread>();
 	for (const e of events) {
-		if (e.kind === 'comment') {
+		// comment and question both open a thread; the root kind (items[0].kind) distinguishes them.
+		if (e.kind === 'comment' || e.kind === 'question') {
 			threads.set(e.thread, {
 				id: e.thread,
 				doc: e.doc,
@@ -101,12 +104,17 @@ function reduce(events: FeedbackEvent[]): Thread[] {
 	return [...threads.values()];
 }
 
+// The annotation ledger is internal discourse (D22): public static builds ship
+// pages, never threads — gated here so every consumer inherits it.
+const PUBLIC_ONLY = process.env.GNX_PUBLIC_BUILD === '1';
+
 export function threadsFor(doc: string): Thread[] {
+	if (PUBLIC_ONLY) return [];
 	return reduce(readEvents(doc));
 }
 
 export function allThreads(): Record<string, Thread[]> {
-	if (!existsSync(FEEDBACK_DIR)) return {};
+	if (PUBLIC_ONLY || !existsSync(FEEDBACK_DIR)) return {};
 	const out: Record<string, Thread[]> = {};
 	for (const f of readdirSync(FEEDBACK_DIR).sort()) {
 		if (!f.endsWith('.jsonl')) continue;

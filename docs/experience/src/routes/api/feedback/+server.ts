@@ -2,7 +2,9 @@ import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { allThreads, appendEvent, threadsFor, type EventKind } from '$lib/server/feedback';
 
-const KINDS: EventKind[] = ['comment', 'reply', 'resolve', 'reopen'];
+const KINDS: EventKind[] = ['comment', 'reply', 'resolve', 'reopen', 'question', 'spawn'];
+// root marks open a thread (need bid + body); the rest act on an existing thread (need thread).
+const ROOT_KINDS: EventKind[] = ['comment', 'question'];
 
 export const GET: RequestHandler = ({ url }) => {
 	const doc = url.searchParams.get('doc');
@@ -14,9 +16,9 @@ export const POST: RequestHandler = async ({ request }) => {
 	const kind = b.kind as EventKind;
 	if (!KINDS.includes(kind)) throw error(400, `kind must be one of ${KINDS.join(', ')}`);
 	if (!b.doc) throw error(400, 'doc required');
-	if (kind === 'comment' && (!b.bid || !b.body)) throw error(400, 'comment requires bid + body');
-	if (kind !== 'comment' && !b.thread) throw error(400, `${kind} requires thread`);
-	if (kind === 'reply' && !b.body) throw error(400, 'reply requires body');
+	if (ROOT_KINDS.includes(kind) && (!b.bid || !b.body)) throw error(400, `${kind} requires bid + body`);
+	if (!ROOT_KINDS.includes(kind) && !b.thread) throw error(400, `${kind} requires thread`);
+	if ((kind === 'reply' || kind === 'spawn') && !b.body) throw error(400, `${kind} requires body`);
 
 	const event = appendEvent({
 		doc: b.doc,

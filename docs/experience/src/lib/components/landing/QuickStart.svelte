@@ -1,13 +1,14 @@
 <script lang="ts">
 	// South panel — the honest "what runs today" line, so the immersive surface
 	// never overclaims. The plugins ship; the gnx CLI is designed, not built.
+	import { base } from '$app/paths';
 </script>
 
 <div class="quickstart">
 	<span class="badge">shipped today</span>
 	<p>
 		The plugin components install into Claude Code now. The gnx CLI is designed, not yet built —
-		<a href="/docs/status">what's real vs planned</a>.
+		<a href="{base}/docs/status">what's real vs planned</a>.
 	</p>
 </div>
 

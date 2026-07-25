@@ -52,9 +52,13 @@
 
 				<!-- THE DOSSIER — the spine: the map, then each region → its concepts -->
 				<a class="map" href="/dossier" class:active={page.url.pathname === '/dossier'}>The map</a>
+				<!-- All regions open by default: the tree fits on screen, so disclosure was
+				     pure click-tax (and the old reactive `open` re-closed regions on every
+				     navigation). `open` is static — after first render the toggles are the
+				     reader's, and the layout persists across client-side navs. -->
 				{#each dossier as region (region.id)}
-					<details class="region" open={region.id === activeRegion}>
-						<summary>{region.title}</summary>
+					<details class="region" open>
+						<summary class:here={region.id === activeRegion}>{region.title}</summary>
 						<ol>
 							{#each region.concepts as c (c.slug)}
 								<li>
@@ -96,6 +100,16 @@
 						{/if}
 					</ol>
 				{/each}
+
+				<div class="inbox">
+					<a
+						href="/review"
+						class:active={page.url.pathname.startsWith('/review')}
+						style="display:flex;gap:.5rem;align-items:baseline;text-decoration:none;font-size:.85rem"
+					>
+						<span>Review</span>
+					</a>
+				</div>
 
 				<div class="inbox">
 					<a
@@ -168,6 +182,9 @@
 	}
 	.region > summary:hover {
 		background: var(--panel);
+	}
+	.region > summary.here {
+		color: var(--accent, var(--fg));
 	}
 	.region ol {
 		margin: 0.1rem 0 0.3rem;

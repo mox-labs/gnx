@@ -1,7 +1,8 @@
 <script lang="ts">
 	import Block from '$lib/components/Block.svelte';
 	import Composer from '$lib/components/Composer.svelte';
-	import Decision from '$lib/components/Decision.svelte';
+	import DecisionCard from '$lib/components/DecisionCard.svelte';
+	import DecisionMatrix from '$lib/components/DecisionMatrix.svelte';
 	import { offsetsOfRange, quoteAt } from '$lib/client/anchor';
 	import type { DocBlock } from '$lib/server/content';
 	import type { Thread } from '$lib/server/feedback';
@@ -9,8 +10,9 @@
 	let {
 		doc,
 		blocks,
-		threads = []
-	}: { doc: string; blocks: DocBlock[]; threads?: Thread[] } = $props();
+		threads = [],
+		reviewMode = false
+	}: { doc: string; blocks: DocBlock[]; threads?: Thread[]; reviewMode?: boolean } = $props();
 
 	interface PendingSelection {
 		bid: string;
@@ -86,11 +88,14 @@
 		{#if block.variant === 'composer'}
 			<Composer />
 		{:else if block.variant === 'decision'}
-			<Decision data={block.data as never} />
+			<DecisionCard {doc} data={block.data as never} threads={threadsByBlock.get(block.id) ?? []} />
+		{:else if block.variant === 'decision-matrix'}
+			<DecisionMatrix data={block.data as never} />
 		{:else}
 			<Block
 				{doc}
 				{block}
+				{reviewMode}
 				threads={threadsByBlock.get(block.id) ?? []}
 				pending={pending?.bid === block.id ? pending : null}
 				onConsumed={() => (pending = null)}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { base } from '$app/paths';
 
 	let { data, children } = $props();
 
@@ -13,17 +14,18 @@
 	};
 
 	// Only the cinematic landing is full-bleed; the docs share the public shell.
-	const isImmersive = $derived(page.url.pathname === '/');
+	const isImmersive = $derived(page.url.pathname === `${base}/` || page.url.pathname === base);
 
 	// The public wing is the preview of the public gnx docsite: pragmatics only,
 	// Diataxis sections, no internal register in the spine.
 	// orientation → action → understanding → verify (vyasa, ia-two-wings)
-	const SECTIONS = ['start', 'guides', 'explanation', 'reference'] as const;
+	const SECTIONS = ['start', 'guides', 'explanation', 'reference', 'gep'] as const;
 	const LABEL: Record<string, string> = {
 		start: 'Start',
 		guides: 'Guides',
 		explanation: 'Concepts',
-		reference: 'Reference'
+		reference: 'Reference',
+		gep: 'Proposals'
 	};
 
 	const groups = $derived(
@@ -34,7 +36,7 @@
 		})).filter((g) => g.docs.length)
 	);
 
-	const isDoc = (slug: string) => page.url.pathname === `/docs/${slug}`;
+	const isDoc = (slug: string) => page.url.pathname === `${base}/docs/${slug}`;
 </script>
 
 <svelte:head>
@@ -47,7 +49,7 @@
 	<div class="shell">
 		<aside class="nav">
 			<div class="brand">
-				<a href="/"><b>gnx</b></a>
+				<a href="{base}/"><b>gnx</b></a>
 			</div>
 
 			<details class="nav-body">
@@ -57,7 +59,7 @@
 					<div class="section-label">Catalog</div>
 					<ol>
 						<li>
-							<a href="/catalog" class:active={page.url.pathname === '/catalog'}>
+							<a href="{base}/catalog" class:active={page.url.pathname === `${base}/catalog`}>
 								<span class="t">Browse the catalog</span>
 							</a>
 						</li>
@@ -68,7 +70,7 @@
 						<ol>
 							{#each g.docs as doc (doc.slug)}
 								<li>
-									<a href="/docs/{doc.slug}" class:active={isDoc(doc.slug)}>
+									<a href="{base}/docs/{doc.slug}" class:active={isDoc(doc.slug)}>
 										<span class="t">{doc.title}</span>
 										<!-- badge "shipped" only: most docs are planned, and badging every nav item
 										     announces construction everywhere. The status page carries the full picture. -->
@@ -84,9 +86,11 @@
 
 					<!-- the one seam to the internal register: discreet, at the foot.
 					     Labeled "Design" — an external audience won't know the term "dossier". -->
-					<div class="seam">
-						<a href="/dossier">Design →</a>
-					</div>
+					{#if !data.publicOnly}
+						<div class="seam">
+							<a href="/dossier">Design →</a>
+						</div>
+					{/if}
 				</div>
 			</details>
 		</aside>

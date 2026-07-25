@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { CatalogEntry } from './+page.server';
+	import { base } from '$app/paths';
 
 	let { data } = $props();
 
@@ -93,7 +94,7 @@
 				No wired compositions yet — every registered component is a Skill, and Skills are read,
 				not wired. The first Capability to register brings the pipeline view with it. To feel
 				how port-graph composition works meanwhile, the
-				<a href="/docs/compose-components">composer</a> runs the same compiler on a live example.
+				<a href="{base}/docs/compose-components">composer</a> runs the same compiler on a live example.
 			</p>
 		{/if}
 	</section>

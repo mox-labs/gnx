@@ -17,12 +17,15 @@
 		block,
 		threads = [],
 		pending = null,
+		reviewMode = false,
 		onConsumed
 	}: {
 		doc: string;
 		block: DocBlock;
 		threads?: Thread[];
 		pending?: PendingSelection | null;
+		/** review surface: root marks can be questions, and question replies can spawn a mission */
+		reviewMode?: boolean;
 		onConsumed?: () => void;
 	} = $props();
 
@@ -34,6 +37,8 @@
 	let author = $state((browser && localStorage.getItem('gnx-fb-author')) || 'yash');
 	let busy = $state(false);
 	let focused = $state<string | null>(null);
+	// review-mode root-mark kind; ignored (stays 'comment') on non-review surfaces.
+	let rootKind = $state<'comment' | 'question'>('comment');
 
 	const mine = $derived(pending && pending.bid === block.id ? pending : null);
 	const openCount = $derived(threads.filter((t) => t.status === 'open').length);
@@ -88,7 +93,8 @@
 		const anchor = mine
 			? { quote: mine.quote, prefix: mine.prefix, suffix: mine.suffix }
 			: { quote: block.excerpt };
-		await send({ kind: 'comment', bid: block.id, body: body.trim(), ...anchor });
+		const kind = reviewMode ? rootKind : 'comment';
+		await send({ kind, bid: block.id, body: body.trim(), ...anchor });
 		body = '';
 		composing = false;
 		onConsumed?.();
@@ -98,6 +104,14 @@
 		const text = (replyBodies[thread] ?? '').trim();
 		if (!text) return;
 		await send({ kind: 'reply', thread, body: text });
+		replyBodies[thread] = '';
+	}
+
+	// review surface: cut a question into a separate mission — the body carries the mission slug.
+	async function spawn(thread: string) {
+		const text = (replyBodies[thread] ?? '').trim();
+		if (!text) return;
+		await send({ kind: 'spawn', thread, body: text });
 		replyBodies[thread] = '';
 	}
 
@@ -166,6 +180,16 @@
 					</div>
 					<div class="row">
 						<button disabled={busy} onclick={() => reply(t.id)}>reply</button>
+						{#if reviewMode && t.items[0]?.kind === 'question'}
+							<button
+								class="spawn"
+								disabled={busy}
+								title="cut this question into a separate mission (reply body = mission slug)"
+								onclick={() => spawn(t.id)}
+							>
+								spawn
+							</button>
+						{/if}
 						{#if t.status === 'open'}
 							<button disabled={busy} onclick={() => send({ kind: 'resolve', thread: t.id })}>
 								resolve
@@ -181,6 +205,16 @@
 
 			{#if composing || threads.length === 0}
 				<div class="thread">
+					{#if reviewMode}
+						<div class="kindpick">
+							<button class="linkish" class:on={rootKind === 'comment'} onclick={() => (rootKind = 'comment')}>
+								comment
+							</button>
+							<button class="linkish" class:on={rootKind === 'question'} onclick={() => (rootKind = 'question')}>
+								question
+							</button>
+						</div>
+					{/if}
 					{#if mine}
 						<div class="quote">{mine.quote}</div>
 					{/if}
@@ -191,7 +225,7 @@
 					<div class="row">
 						<input type="text" bind:value={author} title="author" />
 						<button class="primary" disabled={busy || !body.trim()} onclick={comment}>
-							comment
+							{reviewMode ? rootKind : 'comment'}
 						</button>
 						<button disabled={busy} onclick={cancel}>cancel</button>
 					</div>

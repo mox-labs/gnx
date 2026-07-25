@@ -1,13 +1,16 @@
 <script lang="ts">
 	// East panel — the ways in. The public front doors lead (human + agent);
-	// the dossier is the one discreet seam to the internal register.
-	const links = [
-		{ href: '/docs/what-is-gnx', label: 'What is gnx', primary: true },
-		{ href: '/catalog', label: 'Browse the catalog' },
-		{ href: '/docs/install-a-plugin', label: 'Install a plugin' },
-		{ href: '/llms.txt', label: 'For agents — llms.txt' },
-		{ href: '/dossier', label: 'the dossier · internal', muted: true }
-	];
+	// the dossier is the one discreet seam to the internal register — local only (D22).
+	import { base } from '$app/paths';
+	import { page } from '$app/state';
+
+	const links = $derived([
+		{ href: `${base}/docs/what-is-gnx`, label: 'What is gnx', primary: true },
+		{ href: `${base}/catalog`, label: 'Browse the catalog' },
+		{ href: `${base}/docs/install-a-plugin`, label: 'Install a plugin' },
+		{ href: `${base}/llms.txt`, label: 'For agents — llms.txt' },
+		...(page.data.publicOnly ? [] : [{ href: '/dossier', label: 'the dossier · internal', muted: true }])
+	]);
 </script>
 
 <nav class="cta">

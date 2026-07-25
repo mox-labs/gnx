@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { marked, type Token } from 'marked';
+import { base as basePath } from '$app/paths';
 
 // The app runs from docs/experience; content lives one level up.
 const DOCS_ROOT = path.resolve(process.cwd(), '..');
@@ -86,7 +87,6 @@ export interface DocMeta {
 	status?: Status;
 	/** Diataxis need-type — one per page */
 	mode?: Mode;
-	fidelity?: string;
 }
 
 interface DocEntry extends DocMeta {
@@ -133,7 +133,6 @@ function readEntry(file: string, fb: { section: Section; order: number; slug: st
 		register,
 		status: isStatus(fm.status) ? fm.status : undefined,
 		mode: isMode(fm.mode) ? fm.mode : undefined,
-		fidelity: fm.fidelity || undefined,
 		file
 	};
 }
@@ -141,9 +140,11 @@ function readEntry(file: string, fb: { section: Section; order: number; slug: st
 function entries(): DocEntry[] {
 	const out: DocEntry[] = [];
 
-	// The Build surface: the rubric is reviewable like any doc.
+	// The Build surface: the rubric and the voice instrument are reviewable like any doc.
 	const rubric = path.join(DOCS_ROOT, 'RUBRIC.md');
 	if (existsSync(rubric)) out.push(readEntry(rubric, { section: 'build', order: -2, slug: 'rubric' }));
+	const voice = path.join(DOCS_ROOT, 'VOICE.md');
+	if (existsSync(voice)) out.push(readEntry(voice, { section: 'build', order: -1, slug: 'voice' }));
 
 	if (existsSync(CONTENT_DIR)) {
 		for (const name of readdirSync(CONTENT_DIR).sort()) {
@@ -194,40 +195,23 @@ export function listDocs(): DocMeta[] {
 	return entries().map(({ file: _file, ...meta }) => meta);
 }
 
-function parseBlocks(src: string, variant?: string): DocBlock[] {
+function parseBlocks(
+	src: string,
+	opts: { variant?: string; splitListItems?: boolean } = {}
+): DocBlock[] {
+	const { variant, splitListItems } = opts;
 	const tokens = marked.lexer(src);
 	const seen = new Map<string, number>();
 	const blocks: DocBlock[] = [];
-	for (const token of tokens as Token[]) {
-		if (token.type === 'space') continue;
-		// Fenced islands: ```composer (no payload) and ```decision (JSON payload).
-		const lang = (token as { lang?: string }).lang;
-		if (token.type === 'code' && lang === 'composer') {
-			blocks.push({ id: 'composer', html: '', excerpt: '', variant: 'composer' });
-			continue;
-		}
-		if (token.type === 'code' && lang === 'decision') {
-			let data: unknown = null;
-			try {
-				data = JSON.parse((token as { text?: string }).text ?? '{}');
-			} catch {
-				data = { question: 'malformed decision JSON', alternatives: [], criteria: [], matrix: {} };
-			}
-			const q = (data as { question?: string })?.question ?? 'decision';
-			blocks.push({
-				id: 'decision-' + createHash('sha1').update(q).digest('hex').slice(0, 8),
-				html: '',
-				excerpt: '',
-				variant: 'decision',
-				data
-			});
-			continue;
-		}
-		const html = (marked.parser([token] as never) as string) ?? '';
-		if (!html.trim()) continue;
-		const raw = (token as { raw?: string }).raw?.trim() ?? '';
-		// Content-hash anchors: stable across reorders, change when the block changes —
-		// a comment pointing at a changed block is itself signal in the feedback loop.
+
+	// Content-hash anchors: stable across reorders, change when the block changes — a comment
+	// pointing at a changed block is itself signal in the feedback loop. Emit one block from a
+	// rendered html + its raw source (the hash preimage).
+	const emit = (html: string, raw: string) => {
+		if (!html.trim()) return;
+		// Root-absolute links in the markdown (/docs/x, /catalog) need the deploy base
+		// prefix on gh-pages (D22). Hashes use `raw`, so anchors are unaffected.
+		if (basePath) html = html.replace(/href="\/(?!\/)/g, `href="${basePath}/`);
 		const base = createHash('sha1').update(raw).digest('hex').slice(0, 10);
 		const n = (seen.get(base) ?? 0) + 1;
 		seen.set(base, n);
@@ -237,14 +221,91 @@ function parseBlocks(src: string, variant?: string): DocBlock[] {
 			excerpt: raw.replace(/\s+/g, ' ').slice(0, 160),
 			...(variant ? { variant } : {})
 		});
+	};
+
+	for (const token of tokens as Token[]) {
+		if (token.type === 'space') continue;
+		// Fenced islands: ```composer (no payload) and ```decision (JSON payload).
+		const lang = (token as { lang?: string }).lang;
+		if (token.type === 'code' && lang === 'composer') {
+			blocks.push({ id: 'composer', html: '', excerpt: '', variant: 'composer' });
+			continue;
+		}
+		// Dossier-grammar islands: a ```decision ruling card (G2/G3/G6) and a
+		// ```decision-matrix comparison figure (G5). Both carry a JSON payload;
+		// malformed JSON is passed through so the island renders an inline error
+		// box (never a crash). Validation of the parsed shape lives in the component
+		// so the error is visible on the reading surface.
+		if (token.type === 'code' && (lang === 'decision' || lang === 'decision-matrix')) {
+			const raw = (token as { text?: string }).text ?? '{}';
+			let data: unknown;
+			try {
+				data = JSON.parse(raw);
+			} catch (e) {
+				data = { __malformed: (e as Error).message, raw };
+			}
+			if (lang === 'decision') {
+				// bid convention: rulings on a card attach to "decision:<id>" (DecisionCard
+				// derives ruled/open state from threads on this bid). Keep the block id equal
+				// to that bid so the folio's threadsByBlock lookup feeds the card its threads.
+				const did = (data as { id?: string })?.id;
+				const id =
+					did && /^[A-Za-z0-9][\w-]*$/.test(did)
+						? 'decision:' + did
+						: 'decision:invalid-' + createHash('sha1').update(raw).digest('hex').slice(0, 8);
+				blocks.push({ id, html: '', excerpt: '', variant: 'decision', data });
+			} else {
+				blocks.push({
+					id: 'decision-matrix-' + createHash('sha1').update(raw).digest('hex').slice(0, 8),
+					html: '',
+					excerpt: '',
+					variant: 'decision-matrix',
+					data
+				});
+			}
+			continue;
+		}
+		// Finer anchors for the review surface: a top-level list lexes as ONE token, so a whole
+		// numbered section would be a single block far from its per-item annotations. Split it into
+		// one block per list item — each hashed on its own raw so a margin card can anchor at its
+		// item. Ordered items keep their ordinal via `start`. Off by default (public docs + dossier
+		// block ids must not change); only the review pipeline opts in.
+		if (splitListItems && token.type === 'list') {
+			const list = token as Token & {
+				items: Token[];
+				ordered?: boolean;
+				start?: number;
+			};
+			const startAt = typeof list.start === 'number' ? list.start : 1;
+			list.items.forEach((item, i) => {
+				const raw = (item as { raw?: string }).raw?.trim() ?? '';
+				const single = {
+					...list,
+					items: [item],
+					raw: (item as { raw?: string }).raw,
+					start: list.ordered ? startAt + i : list.start
+				};
+				const html = (marked.parser([single] as never) as string) ?? '';
+				emit(html, raw);
+			});
+			continue;
+		}
+
+		const html = (marked.parser([token] as never) as string) ?? '';
+		const raw = (token as { raw?: string }).raw?.trim() ?? '';
+		emit(html, raw);
 	}
 	return blocks;
 }
 
 /** Turn an arbitrary markdown string into annotatable blocks (content-hash anchored), reusing the
  *  same pipeline the file-backed docs use. The dossier folio builds a concept's blocks through this. */
-export function blocksFromMarkdown(src: string, variant?: string): DocBlock[] {
-	return parseBlocks(src, variant);
+export function blocksFromMarkdown(
+	src: string,
+	variant?: string,
+	opts?: { splitListItems?: boolean }
+): DocBlock[] {
+	return parseBlocks(src, { variant, ...opts });
 }
 
 export function getDoc(slug: string): (DocMeta & { blocks: DocBlock[] }) | null {

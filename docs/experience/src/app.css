@@ -483,6 +483,21 @@ mark.annot:hover {
 	font-style: italic;
 }
 
+/* review surface: root-mark kind toggle (comment | question) + the spawn control */
+.kindpick {
+	display: flex;
+	gap: 0.4rem;
+	margin-bottom: 0.4rem;
+}
+.kindpick .linkish.on {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+.panel .row button.spawn {
+	border-color: var(--constraint);
+	color: var(--constraint);
+}
+
 /* ---- the annotated folio ----
    A concept renders as commentable blocks. On a wide viewport each block becomes a two-column
    grid — the passage on the left, a generous margin on the right where its annotations live
