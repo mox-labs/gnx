@@ -1,7 +1,7 @@
 [project]
 name = "dao"
 version = "0.1.0"
-description = "Stand up and audit a Diverse Agentic Organization for a project — the eleven-component dao spec, made checkable."
+description = "Stand up and audit a Directed Agentic Organization for a project — the eleven-component dao spec, made checkable."
 requires-python = ">=3.12"
 license = "MIT"
 authors = [

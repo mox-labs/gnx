@@ -39,9 +39,9 @@ class ExperimentConfig(BaseModel, frozen=True):
     name: str
     description: str = ""
     subjects: tuple[Subject, ...] = ()
-    agent: dict = {}
-    sensor: dict = {}
-    sensors: tuple[dict, ...] = ()
+    agent: dict[str, Any] = {}
+    sensor: dict[str, Any] = {}
+    sensors: tuple[dict[str, Any], ...] = ()
     trials: int = 5
     repeats: int = 1
     probes: tuple[Probe, ...] = ()

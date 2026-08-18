@@ -237,7 +237,10 @@ hook vocabulary leak into the core manifest).
 **Definition (June, current):** the project's agentic organization — "a thin bench of
 method-distinct agent practitioners + consciences that stewards a project"
 (dao-coordination, 2026-06-09). DAO = Diverse Agentic Organization (sabha.md;
-disambiguation enforced 2026-06-07, research PR #75). The dao leg of project anatomy =
+disambiguation enforced 2026-06-07, research PR #75). **[Superseded 2026-08-18: yzavyas
+ruled the expansion is *Directed* Agentic Organization. The June record is left as written
+— it is what the source said — and the live artifacts (skill, spec, CLI, bundles) carry the
+ruling.]** The dao leg of project anatomy =
 charter, guild, ratchet. Homonym guard: dao ≠ dao-corpus (the public expertise data
 repo). Lineage uses (Treya's old leg name, the IEX triad, samsara's "dao Domain"
 verifier label) are superseded.

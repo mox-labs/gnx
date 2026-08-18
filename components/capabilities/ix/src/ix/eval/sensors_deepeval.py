@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from ix.domain.types import Probe, Reading, Trial
 
 if TYPE_CHECKING:
-    from matrix import AgentResponse
+    from matrix import Agent, AgentResponse
 
 # --- Config ---
 
@@ -36,7 +36,7 @@ class DeepEvalSensorConfig(BaseModel, frozen=True, extra="forbid"):
 # --- Agent Adapter ---
 
 
-def _create_agent_adapter(agent: Any, model_name: str = "ix-agent") -> Any:
+def _create_agent_adapter(agent: Agent, model_name: str = "ix-agent") -> Any:
     """Create a DeepEval model adapter wrapping a Matrix Agent.
 
     Bridges Matrix's Agent protocol (async run(prompt) → AgentResponse)
@@ -46,7 +46,9 @@ def _create_agent_adapter(agent: Any, model_name: str = "ix-agent") -> Any:
     """
     from deepeval.models import DeepEvalBaseLLM
 
-    class AgentModelAdapter(DeepEvalBaseLLM):
+    # deepeval ships no py.typed, so its base class resolves to Any and strict mode
+    # refuses the subclass. Scoped to this one line rather than relaxed for the module.
+    class AgentModelAdapter(DeepEvalBaseLLM):  # type: ignore[misc]
         """Routes DeepEval LLM calls through a Matrix Agent.
 
         DeepEval constructs evaluation prompts internally.
@@ -161,7 +163,7 @@ class DeepEvalSensor:
         model: Any | None = None,
         criteria: str | None = None,
         judge: Any | None = None,
-        ground_truth: dict[str, dict] | None = None,
+        ground_truth: dict[str, dict[str, Any]] | None = None,
     ):
         # Judge agent takes precedence over model string
         if judge is not None:

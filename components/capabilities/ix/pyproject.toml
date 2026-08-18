@@ -60,3 +60,10 @@ python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+# deepeval is an optional extra and ships no stubs (no py.typed). Scoped to that module
+# so the missing-stub allowance can never mask an error in ix's own code — the alternative,
+# a bare `ignore_errors`, would have hidden the two Any-returns fixed in sensors_deepeval.
+[[tool.mypy.overrides]]
+module = ["deepeval.*"]
+ignore_missing_imports = true

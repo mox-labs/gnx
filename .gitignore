@@ -10,3 +10,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
+
+# Eval run output. The experiments (experiment.yaml + tasks/) are the artefact worth
+# reviewing; a summary is a timestamped reading of one machine on one day, and committing
+# them turns every run into a diff. Re-run to reproduce: `ix run <name> --lab lab`.
+lab/*/results/

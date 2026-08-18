@@ -31,15 +31,26 @@ from ix.eval.sensors import (
 from ix.eval.sensors_deepeval import DeepEvalSensor, DeepEvalSensorConfig
 
 if TYPE_CHECKING:
-    from ix.domain.ports import Sensor
+    from collections.abc import Awaitable, Callable
+
+    from matrix import Agent
+    from pydantic import BaseModel
+
+    from ix.domain.ports import Sensor, SensorClass
     from ix.domain.ports import Sensor as _Sensor
     from ix.domain.types import Probe, Reading, Subject
     from ix.eval.models import ExperimentConfig
 
+    # What `make_run_trial` hands the service layer. Named because the service layer
+    # depends on this signature and nothing else about the DAG.
+    RunTrial = Callable[
+        [Probe, Subject, _Sensor, ComponentRegistry, int], Awaitable[list[Reading]]
+    ]
+
 
 # --- Sensor Types ---
 
-_SENSOR_TYPES: dict[str, tuple[type, type]] = {
+_SENSOR_TYPES: dict[str, tuple[SensorClass, type[BaseModel]]] = {
     "ix.sensor.activation": (ActivationSensor, ActivationSensorConfig),
     "ix.sensor.function-test": (FunctionTestSensor, FunctionTestSensorConfig),
     "ix.sensor.deepeval": (DeepEvalSensor, DeepEvalSensorConfig),
@@ -48,14 +59,18 @@ _SENSOR_TYPES: dict[str, tuple[type, type]] = {
 }
 
 
-def _make_sensor_factory(sensor_cls: type, config_cls: type):
+def _make_sensor_factory(
+    sensor_cls: SensorClass, config_cls: type[BaseModel]
+) -> Callable[..., Sensor]:
     """Registry-compatible factory that validates config through Pydantic.
 
     Passes registry to from_config — each sensor resolves its own
     dependencies (e.g. DeepEval creates its judge agent from the registry).
     """
 
-    def factory(*, probes: tuple[Probe, ...] = (), registry: Any = None, **raw_config: Any):
+    def factory(
+        *, probes: tuple[Probe, ...] = (), registry: Any = None, **raw_config: Any
+    ) -> Sensor:
         config = config_cls.model_validate(raw_config)
         return sensor_cls.from_config(config, probes, registry=registry)
 
@@ -65,7 +80,7 @@ def _make_sensor_factory(sensor_cls: type, config_cls: type):
 # --- Agent Factories ---
 
 
-def _anthropic_factory(*, system_prompt: str | None = None, **kw: Any):
+def _anthropic_factory(*, system_prompt: str | None = None, **kw: Any) -> Agent:
     """Factory for AnthropicAgent — single-turn API calls."""
     from matrix.adapters._out.runtime.anthropic_agent import AnthropicAgent
 
@@ -74,7 +89,7 @@ def _anthropic_factory(*, system_prompt: str | None = None, **kw: Any):
     return AnthropicAgent(system_prompt=system_prompt, **kw)
 
 
-def _claude_factory(*, system_prompt: str | None = None, **kw: Any):
+def _claude_factory(*, system_prompt: str | None = None, **kw: Any) -> Agent:
     """Factory for ClaudeAgent — Agent SDK, multi-turn."""
     from matrix.adapters._out.runtime.claude import ClaudeAgent
 
@@ -88,7 +103,8 @@ def _make_mock_factory(
     base_seed: int | None = None,
     expectations: dict[str, bool] | None = None,
     skill_map: dict[str, str] | None = None,
-):
+    responses: dict[str, str] | None = None,
+) -> Callable[..., Agent]:
     """Build a mock factory with captured test config.
 
     Derives per-trial seed from (base_seed, trial_index) so each trial
@@ -96,13 +112,14 @@ def _make_mock_factory(
     for multi-skill experiments.
     """
 
-    def factory(*, trial_index: int = 0, **kw: Any):
+    def factory(*, trial_index: int = 0, **kw: Any) -> Agent:
         effective_seed = (base_seed * 1000 + trial_index) if base_seed is not None else None
         return MockAgent(
             expected_skill=expected_skill,
             seed=effective_seed,
             expectations=expectations or {},
             skill_map=skill_map or {},
+            responses=responses or {},
         )
 
     return factory
@@ -135,6 +152,7 @@ def build_registry(
 
     expectations = _build_expectations(experiment) if experiment and mock else {}
     skill_map = _build_skill_map(experiment) if experiment and mock else {}
+    responses = _build_mock_responses(experiment) if experiment and mock else {}
     registry.register(
         "matrix.agent.mock",
         _make_mock_factory(
@@ -142,6 +160,7 @@ def build_registry(
             base_seed=seed,
             expectations=expectations,
             skill_map=skill_map,
+            responses=responses,
         ),
     )
 
@@ -152,7 +171,7 @@ def build_registry(
 
 
 def _build_one_sensor(
-    sensor_config: dict,
+    sensor_config: dict[str, Any],
     probes: tuple[Probe, ...],
     registry: ComponentRegistry,
     experiment_cwd: str | None = None,
@@ -173,10 +192,11 @@ def _build_one_sensor(
         )
         raise ValueError(f"Unknown sensor type: {sensor_type!r}. Valid types: {', '.join(valid)}")
 
-    return registry.create(
+    sensor: Sensor = registry.create(
         type_url,
         {**sensor_config, "probes": probes, "registry": registry},
     )
+    return sensor
 
 
 def create_sensor(
@@ -203,7 +223,7 @@ def create_sensor(
 # --- Trial Runner ---
 
 
-def make_run_trial(experiment_cwd: str | None = None):
+def make_run_trial(experiment_cwd: str | None = None) -> RunTrial:
     """Build the default trial runner using concrete DAG Components.
 
     This is the composition root's job — wiring concrete implementations.
@@ -228,7 +248,8 @@ def make_run_trial(experiment_cwd: str | None = None):
             ]
         )
         construct = await orchestrator.run()
-        return construct["sensor.reading"]
+        readings: list[Reading] = construct["sensor.reading"]
+        return readings
 
     return _run
 
@@ -291,6 +312,15 @@ def _build_skill_map(experiment: ExperimentConfig) -> dict[str, str]:
         probe.prompt: probe.metadata["expected_skill"]
         for probe in experiment.probes
         if "expected_skill" in probe.metadata
+    }
+
+
+def _build_mock_responses(experiment: ExperimentConfig) -> dict[str, str]:
+    """Map probe prompts to canned responses, for sensors that grade content."""
+    return {
+        probe.prompt: str(probe.metadata["mock_response"])
+        for probe in experiment.probes
+        if "mock_response" in probe.metadata
     }
 
 

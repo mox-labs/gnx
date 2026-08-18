@@ -15,7 +15,7 @@ import signal
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 
     from matrix import AgentResponse
 
+    from ix.domain.ports import Sensor
+
 # --- Composite ---
 
 
@@ -39,7 +41,7 @@ class CompositeSensor:
     Single sensor? Skip the wrapper — it already satisfies the protocol.
     """
 
-    def __init__(self, sensors: list) -> None:
+    def __init__(self, sensors: list[Sensor]) -> None:
         if not sensors:
             raise ValueError("CompositeSensor requires at least one sensor")
         self._sensors = sensors
@@ -116,12 +118,16 @@ class ActivationSensor:
         probes: tuple[Probe, ...] = (),
         **kwargs: Any,
     ) -> ActivationSensor:
-        expectations = {p.id: p.metadata.get("expectation", "must_trigger") for p in probes}
-        expected_skills = {
-            p.id: p.metadata.get("expected_skill", config.expected_skill)
-            for p in probes
-            if p.metadata.get("expected_skill") or config.expected_skill
-        }
+        expectations = {p.id: str(p.metadata.get("expectation", "must_trigger")) for p in probes}
+        # Built as a loop rather than a comprehension because the guard and the value have
+        # to agree: a probe carrying an explicit `expected_skill: null` passed the old
+        # `or config.expected_skill` guard and then stored None, which the measure path
+        # reads as "no expectation" — silently un-scoring that probe.
+        expected_skills: dict[str, str] = {}
+        for p in probes:
+            skill = p.metadata.get("expected_skill") or config.expected_skill
+            if skill:
+                expected_skills[p.id] = str(skill)
         return cls(
             expected_skill=config.expected_skill,
             expectations=expectations,
@@ -201,7 +207,7 @@ class FunctionTestSensor:
     def __init__(
         self,
         *,
-        ground_truth: dict[str, dict] | None = None,
+        ground_truth: dict[str, dict[str, Any]] | None = None,
         timeout: int = 30,
     ):
         self._ground_truth = ground_truth or {}
@@ -293,7 +299,7 @@ class FunctionTestSensor:
         passed: bool,
         score: float,
         details: str = "",
-        metrics: dict | None = None,
+        metrics: dict[str, Any] | None = None,
     ) -> Reading:
         return Reading(
             sensor_name=self.name,
@@ -320,9 +326,12 @@ class FunctionTestSensor:
 
         if text is None:
             return None
+        # `response.content` reaches here untyped (AgentResponse is a TYPE_CHECKING-only
+        # import). re.findall would raise on a non-str anyway, so coerce at the boundary.
+        text = str(text)
 
         # Try ```python blocks first (last block = final version)
-        blocks = re.findall(r"```python\s*\n(.*?)```", text, re.DOTALL)
+        blocks: list[str] = re.findall(r"```python\s*\n(.*?)```", text, re.DOTALL)
         if blocks:
             return blocks[-1].strip()
 
@@ -372,7 +381,7 @@ class FunctionTestSensor:
         result = getattr(module, function_name)
         if not callable(result):
             raise TypeError(f"{function_name!r} in the generated code is not callable")
-        return result
+        return cast("Callable[..., Any]", result)
 
     def _exec_with_timeout(self, fn: Callable[..., Any], *args: Any) -> Any:
         """Execute fn under a SIGALRM timeout.
@@ -417,7 +426,7 @@ class ToolUsageSensor:
     def __init__(
         self,
         expected_tool: str = "memex",
-        expectations: dict[str, dict] | None = None,
+        expectations: dict[str, dict[str, Any]] | None = None,
     ):
         self._expected_tool = expected_tool
         self._expectations = expectations or {}
@@ -509,7 +518,7 @@ class ToolUsageSensor:
 
         return [self._reading(trial, passed=passed, score=score, details=detail)]
 
-    def _find_tool_calls(self, tool_calls: tuple[dict, ...]) -> list[dict]:
+    def _find_tool_calls(self, tool_calls: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
         """Find tool calls matching expected_tool — direct or via Bash.
 
         ClaudeAgent records Bash tool calls like:
@@ -522,7 +531,7 @@ class ToolUsageSensor:
             return direct
 
         # Bash matches (ClaudeAgent style)
-        bash_matches = []
+        bash_matches: list[dict[str, Any]] = []
         for tc in tool_calls:
             if tc.get("name") != "Bash":
                 continue
@@ -535,7 +544,7 @@ class ToolUsageSensor:
                 bash_matches.append({"name": self._expected_tool, "input": parsed})
         return bash_matches
 
-    def _parse_bash_command(self, bash_cmd: str) -> dict | None:
+    def _parse_bash_command(self, bash_cmd: str) -> dict[str, Any] | None:
         """Parse a bash command like 'memex dig "query"' into structured form.
 
         Handles compound commands: 'cd /path && memex dig "query"'
@@ -612,7 +621,7 @@ class OutcomeSensor:
 
     def __init__(
         self,
-        ground_truth: dict[str, dict] | None = None,
+        ground_truth: dict[str, dict[str, Any]] | None = None,
         graders: dict[str, Any] | None = None,
     ):
         self._ground_truth = ground_truth or {}
@@ -657,7 +666,7 @@ class OutcomeSensor:
 
         # Efficiency metrics from AgentResponse
         num_tool_calls = len(response.tool_calls)
-        metrics = {
+        metrics: dict[str, Any] = {
             "num_turns": response.num_turns,
             "num_tool_calls": num_tool_calls,
             "tokens_input": response.tokens_input,
@@ -728,7 +737,7 @@ class OutcomeSensor:
         passed: bool,
         score: float,
         details: str = "",
-        metrics: dict | None = None,
+        metrics: dict[str, Any] | None = None,
     ) -> Reading:
         return Reading(
             sensor_name=self.name,

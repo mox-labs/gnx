@@ -12,14 +12,14 @@ All resolve through ComponentRegistry — no special cases.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from matrix import Construct, TypedStruct
 
 from ix.domain.types import Probe, Reading, Subject, Trial
 
 if TYPE_CHECKING:
-    from matrix import ComponentRegistry
+    from matrix import Agent, ComponentRegistry
 
     from ix.domain.ports import Sensor
 
@@ -86,7 +86,7 @@ class TrialNode:
 
     async def run(self, construct: Construct) -> TypedStruct:
         probe: Probe = construct["probe.stimulus"]
-        subject_config: dict = construct["subject.config"]
+        subject_config: dict[str, Any] = construct["subject.config"]
 
         try:
             agent = self._build_agent(subject_config)
@@ -106,7 +106,7 @@ class TrialNode:
 
         return TypedStruct(type_url="trial.observation", value=trial)
 
-    def _build_agent(self, subject_config: dict):
+    def _build_agent(self, subject_config: dict[str, Any]) -> Agent:
         """Create an Agent from subject config via registry."""
         runtime_config = dict(subject_config.get("runtime", {}))
         runtime_type = runtime_config.pop("type", "anthropic")
@@ -116,7 +116,7 @@ class TrialNode:
         if self._experiment_cwd and "cwd" not in runtime_config:
             runtime_config["cwd"] = self._experiment_cwd
 
-        return self._registry.create(
+        agent: Agent = self._registry.create(
             type_url,
             {
                 "system_prompt": subject_config.get("system_prompt"),
@@ -124,6 +124,7 @@ class TrialNode:
                 **runtime_config,
             },
         )
+        return agent
 
 
 class SensorNode:

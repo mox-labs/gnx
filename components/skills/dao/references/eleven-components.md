@@ -4,7 +4,7 @@
 > `dao check` audits against the same definition this file documents; keeping one of them by hand
 > is how the two drift. Regenerate after changing the spec.
 
-A **dao** is a Diverse Agentic Organization that maintains a project. The components are the
+A **dao** is a Directed Agentic Organization that maintains a project. The components are the
 template; the domain is the fill.
 
 ## Council floor — #1, #5, #6, #7, #10

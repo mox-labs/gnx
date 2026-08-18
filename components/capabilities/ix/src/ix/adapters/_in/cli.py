@@ -4,15 +4,22 @@ Thin driving adapter. Delegates to composition root + service.
 Follows cix CLI pattern: Rich Click, helpful errors, color output.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING, NoReturn
 
 import rich_click as click
 from rich.console import Console
 from rich.table import Table
 
 from ix import __version__
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ix.eval.models import ExperimentResults, ProbeResult
 
 console = Console()
 
@@ -29,7 +36,7 @@ def _status_style(status: str) -> str:
     }.get(status, status.upper())
 
 
-def _print_metrics(results) -> None:
+def _print_metrics(results: ExperimentResults) -> None:
     """Print experiment results."""
     console.print()
     console.rule("[bold]Results[/bold]")
@@ -87,8 +94,12 @@ def _print_metrics(results) -> None:
     console.print()
 
 
-def _cli_error(message: str, fix: str | None = None) -> None:
-    """Print a consistent error message and exit."""
+def _cli_error(message: str, fix: str | None = None) -> NoReturn:
+    """Print a consistent error message and exit.
+
+    `NoReturn`, not `None`: every caller ends control flow here, and typing it as `None`
+    made `_resolve_lab`'s except-branch look like it fell through without a return value.
+    """
     console.print(f"[red]Error:[/red] {message}")
     if fix:
         console.print(f"  [dim]Fix: {fix}[/dim]")
@@ -275,7 +286,7 @@ def run(
         f"{repeats_label}, {runtime_label}{subject_label})"
     )
 
-    def on_probe(probe_result) -> None:
+    def on_probe(probe_result: ProbeResult) -> None:
         status = "[green]PASS[/green]" if probe_result.passed else "[yellow]FAIL[/yellow]"
         console.print(f"  {probe_result.probe_id}: {status} (score={probe_result.score:.0%})")
 

@@ -14,10 +14,28 @@ jobs:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
       - uses: extractions/setup-just@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
       - name: install docsite deps
         run: cd docs/experience && bun install --frozen-lockfile
       - name: docsite check (svelte-check + tsc)
         run: just docs-check
+      # The gates that were declared in `just ci` but never wired here. 405 tests and five
+      # --strict-clean packages are worth nothing if only a local hook runs them.
+      - name: component grammar + payloads
+        run: just grammar payloads
+      - name: projection matches components/
+        run: just projection
+      - name: capability tests
+        run: just capabilities-test
+      - name: capability lint + typecheck
+        run: just capabilities-lint capabilities-typecheck
+      # A smoke test, not a threshold: `ix run` exits 0 whatever it scores, so this proves
+      # the CLI, store, DAG and composition root wire up end to end. The scoring logic
+      # itself is asserted in ix/tests, where a wrong verdict fails a test.
+      - name: evals smoke (mock)
+        run: just evals
       - name: secret scan
         uses: gitleaks/gitleaks-action@v2
 

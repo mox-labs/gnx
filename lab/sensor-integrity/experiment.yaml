@@ -1,0 +1,22 @@
+name: sensor-integrity
+description: >-
+  Does the grading path itself grade correctly? Each probe carries the code a subject
+  "returned", so this measures the sensor rather than a model — extraction from markdown
+  fences, execution under timeout, and scoring against test cases.
+
+  This is also ix's sharpest trust boundary: FunctionTestSensor imports and runs
+  model-generated Python in-process. An eval suite that never exercises it leaves the
+  riskiest code in the package unproven.
+
+subjects:
+  - name: canned
+    description: Responses supplied by the probes; no runtime is consulted.
+
+sensors:
+  - type: function-test
+    timeout: 5
+
+# One trial: the input is fixed, so repeats measure nothing. Determinism is the point —
+# a scoring change shows up as a diff, not as noise.
+trials: 1
+repeats: 1

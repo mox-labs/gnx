@@ -7,6 +7,12 @@ Simulates activation based on probe expectations:
 
 Returns structured AgentResponse with tool call dicts —
 same shape as ClaudeAgent, so sensors work identically in mock and live mode.
+
+A probe may also carry a canned `mock_response`, which the mock returns verbatim. That
+exists so sensors which grade *content* rather than routing — FunctionTestSensor above
+all — are runnable without credentials. The point is not to fake a measurement of the
+model: it is to exercise the sensor, which is where the interesting code (and the trust
+boundary) lives.
 """
 
 import random
@@ -27,11 +33,13 @@ class MockAgent:
         seed: int | None = None,
         expectations: dict[str, bool] | None = None,
         skill_map: dict[str, str] | None = None,
+        responses: dict[str, str] | None = None,
     ):
         self._expected_skill = expected_skill
         self._rng = random.Random(seed)
         self._expectations = expectations or {}
         self._skill_map = skill_map or {}
+        self._responses = responses or {}
 
     def _resolve_skill(self, prompt: str) -> str:
         """Resolve which skill to emit for this prompt."""
@@ -44,6 +52,12 @@ class MockAgent:
         for realistic activation rates. Otherwise, always activate.
         Per-probe skill_map ensures mock emits the correct skill per probe.
         """
+        # A canned response wins outright: the probe has stated exactly what the subject
+        # said, so there is nothing to simulate.
+        canned = self._responses.get(prompt)
+        if canned is not None:
+            return AgentResponse(content=canned)
+
         skill = self._resolve_skill(prompt)
         should_activate = self._expectations.get(prompt)
 

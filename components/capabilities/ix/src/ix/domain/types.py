@@ -16,7 +16,7 @@ class Subject(BaseModel, frozen=True):
 
     name: str
     description: str = ""
-    config: dict = {}
+    config: dict[str, Any] = {}
 
 
 class Probe(BaseModel, frozen=True):
@@ -28,7 +28,7 @@ class Probe(BaseModel, frozen=True):
 
     id: str
     prompt: str
-    metadata: dict = {}
+    metadata: dict[str, Any] = {}
 
 
 class Trial(BaseModel, frozen=True):
@@ -58,5 +58,5 @@ class Reading(BaseModel, frozen=True):
     trial_index: int
     passed: bool
     score: float | None = None
-    metrics: dict = {}
+    metrics: dict[str, Any] = {}
     details: str = ""

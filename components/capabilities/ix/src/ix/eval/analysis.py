@@ -30,13 +30,28 @@ def aggregate_readings(
 
     probe_results: list[ProbeResult] = []
     for probe_id, probe_readings in by_probe.items():
-        trial_scores = tuple(r.score for r in probe_readings)
+        # `Reading.score` is optional: `Sensor` is a Protocol, so a sensor outside this
+        # package may report only `passed`. The docstring's contract — "the sensor is the
+        # grader" — makes the boolean the fallback, and taking it here keeps a third-party
+        # sensor from crashing aggregation on `sum(None, ...)`.
+        trial_scores = tuple(
+            r.score if r.score is not None else (1.0 if r.passed else 0.0)
+            for r in probe_readings
+        )
         score = sum(trial_scores) / len(trial_scores) if trial_scores else 0.0
+
+        # Pass comes from the SENSOR's verdict, not from re-deriving one out of the score.
+        # The two agree for a binary sensor (activation scores 1.0/0.0), and diverge for a
+        # fractional one: a function-test submission failing 1 of 4 cases scores 0.75, and
+        # `score > 0.5` reported it as PASS while the sensor had said otherwise. Aggregation
+        # counts; it does not grade — a majority of trials must have passed.
+        n_passed = sum(1 for r in probe_readings if r.passed)
+        passed = n_passed / len(probe_readings) > 0.5 if probe_readings else False
 
         probe_result = ProbeResult(
             probe_id=probe_id,
             score=score,
-            passed=score > 0.5,
+            passed=passed,
             trial_scores=trial_scores,
             details=tuple(r.details for r in probe_readings if r.details),
         )
@@ -48,7 +63,7 @@ def aggregate_readings(
     return probe_results
 
 
-def compute_metrics(results: list[ProbeResult]) -> dict:
+def compute_metrics(results: list[ProbeResult]) -> dict[str, float]:
     """Compute pass rate and mean score across all probes.
 
     pass_rate: fraction of probes that passed (binary).

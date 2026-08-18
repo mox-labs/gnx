@@ -23,6 +23,37 @@ from typing import Any, Protocol
 
 import yaml
 
+#: Response headers whose *value* is a credential rather than metadata.
+#:
+#: A raw capture exists to prove what the server said (see (b) above), so the key is kept
+#: and only the value is replaced — a reader can still see that the server set a cookie,
+#: without the archive carrying a live session token. This matters because an archive is a
+#: thing people commit, attach to a ticket, or hand to a colleague.
+#:
+#: Matched case-insensitively: HTTP header names are case-insensitive and different clients
+#: normalise them differently.
+SENSITIVE_RESPONSE_HEADERS = frozenset(
+    {
+        "set-cookie",
+        "set-cookie2",
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "x-auth-token",
+        "x-amz-security-token",
+    }
+)
+
+REDACTED = "«redacted by recon»"
+
+
+def redact_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Replace credential-bearing header values, preserving key presence and order."""
+    return {
+        k: (REDACTED if k.lower() in SENSITIVE_RESPONSE_HEADERS else v)
+        for k, v in headers.items()
+    }
+
 
 class RawStore(Protocol):
     """The port: captures raw bytes for a named collector invocation."""
@@ -106,7 +137,7 @@ class FilesystemRawStore:
             "url": url,
             "status": status,
             "content_type": content_type,
-            "headers": {k: v for k, v in headers.items()},
+            "headers": redact_headers(headers),
             "bytes": len(body),
             "sha256": hashlib.sha256(body).hexdigest(),
             "captured_at": datetime.now(UTC).isoformat(),

@@ -1,6 +1,6 @@
 """The dao spec — the eleven components, as data.
 
-A dao is a **Diverse Agentic Organization** that maintains a project: a collective that
+A dao is a **Directed Agentic Organization** that maintains a project: a collective that
 does the work, a charter it declares, habits it keeps, a pragmatics for getting the work
 done, governance that keeps its cognition effective, human direction, and a boundary.
 

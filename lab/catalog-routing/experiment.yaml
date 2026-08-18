@@ -1,0 +1,21 @@
+name: catalog-routing
+description: >-
+  Does the right catalog component fire for a real ask, and stay quiet for a decoy?
+  The catalog's promise is that a description routes correctly; this states that promise
+  as a measurement instead of an assertion.
+
+# One subject: the catalog as installed. A second subject — say, the descriptions as they
+# stood before the 2026-08 intake rewrite — is what turns this from a reading into a
+# comparison. Add it when there is a change worth attributing.
+subjects:
+  - name: catalog-as-shipped
+    description: The gnx marketplace with all plugins installed.
+
+sensors:
+  - type: activation
+
+# 5 trials per probe, 3 repeats of the whole run. The repeats are the point: a single
+# run's pass rate has no error bar, and routing is stochastic. `noise_floor_sd` across
+# repeats is what says whether a difference between two subjects is real.
+trials: 5
+repeats: 3

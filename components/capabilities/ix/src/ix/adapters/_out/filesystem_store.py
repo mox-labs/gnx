@@ -13,6 +13,7 @@ Backward compat: falls back to cases/ if tasks/ doesn't exist.
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import frontmatter
 import yaml
@@ -43,7 +44,7 @@ class FilesystemStore:
         subjects = self._load_subjects(path, config)
 
         # Normalize sensor config: supports both singular and plural forms
-        kwargs: dict = {
+        kwargs: dict[str, Any] = {
             "name": config.get("name", path.name),
             "description": config.get("description", ""),
             "subjects": tuple(subjects),
@@ -79,12 +80,15 @@ class FilesystemStore:
         for md_path in sorted(probe_dir.glob("*.md")):
             post = frontmatter.load(str(md_path))
             metadata = dict(post.metadata)
-            probe_id = metadata.pop("id", md_path.stem)
+            # frontmatter values are untyped YAML: `id: 1` parses to an int, and Probe.id
+            # is the join key the whole ledger indexes on. Coerce rather than let a
+            # non-string id reach the store and mismatch on lookup.
+            probe_id = str(metadata.pop("id", md_path.stem))
             prompt = post.content.strip()
             probes.append(Probe(id=probe_id, prompt=prompt, metadata=metadata))
         return probes
 
-    def _load_subjects(self, exp_path: Path, config: dict) -> list[Subject]:
+    def _load_subjects(self, exp_path: Path, config: dict[str, Any]) -> list[Subject]:
         """Load subjects from subjects/ directory or experiment.yaml config.
 
         subjects/ directory takes precedence. Falls back to YAML subjects list.
@@ -95,8 +99,8 @@ class FilesystemStore:
             for md_path in sorted(subjects_dir.glob("*.md")):
                 post = frontmatter.load(str(md_path))
                 meta = dict(post.metadata)
-                name = meta.pop("name", md_path.stem)
-                description = meta.pop("description", "")
+                name = str(meta.pop("name", md_path.stem))
+                description = str(meta.pop("description", ""))
                 subjects.append(
                     Subject(
                         name=name,
@@ -120,7 +124,7 @@ class FilesystemStore:
 
     def list_experiments(self, base: Path) -> list[Path]:
         """Find all directories containing experiment.yaml."""
-        experiments = []
+        experiments: list[Path] = []
         if not base.exists():
             return experiments
         for candidate in sorted(base.iterdir()):

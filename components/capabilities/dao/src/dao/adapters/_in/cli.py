@@ -32,7 +32,7 @@ _STATUS_STYLE = {"PRESENT": "green", "PARTIAL": "yellow", "ABSENT": "red"}
 @click.group()
 @click.version_option(package_name="dao")
 def main() -> None:
-    """dao — stand up and audit a Diverse Agentic Organization for a project."""
+    """dao — stand up and audit a Directed Agentic Organization for a project."""
 
 
 @main.command("spec")

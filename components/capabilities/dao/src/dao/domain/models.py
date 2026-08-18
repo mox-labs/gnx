@@ -1,4 +1,4 @@
-"""Domain types for standing up a Diverse Agentic Organization.
+"""Domain types for standing up a Directed Agentic Organization.
 
 Pydantic throughout, matching the house pattern (matrix's `Artifact` / `AgentResponse` /
 `MatrixConfig` and recon's models are all pydantic). Two reasons it matters here beyond

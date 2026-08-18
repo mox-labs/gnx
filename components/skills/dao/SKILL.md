@@ -12,9 +12,9 @@ description: >-
   NOT for running work inside an already-standing dao — only for standing one up or auditing one.
 ---
 
-# The dao — standing up a Diverse Agentic Organization
+# The dao — standing up a Directed Agentic Organization
 
-A **dao** is a Diverse Agentic Organization that maintains a project: a collective that does the
+A **dao** is a Directed Agentic Organization that maintains a project: a collective that does the
 work, a charter it declares, habits it keeps, a pragmatics for getting work done, governance that
 keeps its cognition effective, human direction, and a boundary. The human is the non-delegable direction inlet and irreducible arbiter (component #10) —
 autonomy over method, never over accountability.

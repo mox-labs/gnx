@@ -11,9 +11,10 @@ check: docs-check secrets grammar payloads projection
 # The CI gate (mirrors the hook; slow gates are added here as the CLI lands).
 ci: docs-check secrets-all grammar payloads projection capabilities-test capabilities-lint capabilities-typecheck
 
-# The committed plugin projection must match components/ (gnx build --check).
 # `--project` not `--directory`: build reads ./components from the CWD, and
 # --directory would move the CWD into the workspace.
+#
+# The committed plugin projection must match components/ (gnx build --check).
 projection:
     uv --project components/capabilities run gnx build --check
 
@@ -22,9 +23,10 @@ grammar:
     uv --directory components/capabilities run --group dev \
         python {{justfile_directory()}}/harness/check.py {{justfile_directory()}}/components
 
-# Component payloads against Claude Code's documented agent/skill shape.
 # Replaces plugin-dev's validate-agent.sh, which cannot parse a block-scalar
 # description and exits mid-run under `set -e` — see the header of the script.
+#
+# Component payloads against Claude Code's documented agent/skill shape.
 payloads:
     uv --directory components/capabilities run --group dev \
         python {{justfile_directory()}}/harness/validate_payload.py \
@@ -37,13 +39,18 @@ capabilities-lint:
 # Typecheck each capability FROM ITS OWN DIRECTORY. mypy resolves config from the
 # invocation rootdir, so running it from the workspace root silently applies the root
 # [tool.mypy] and ignores each package's scoped overrides (recon needs them for glom +
-# xmltodict, which ship no py.typed). puma's gate does `cd puma && mypy src/xuma` for
-# exactly this reason. matrix and ix are not yet clean and are listed separately below.
+# xmltodict, matrix for opentelemetry, ix for deepeval — none of which ship py.typed).
+# puma's gate does `cd puma && mypy src/xuma` for exactly this reason.
+#
+# All five are clean under --strict as of 2026-08-18. Adding a package here is how it
+# stays that way: the list is the gate, not a wish.
+#
+# Typecheck every capability package under mypy --strict.
 capabilities-typecheck:
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
-    for p in recon dao gnx; do
+    for p in matrix ix recon dao gnx; do
       ( cd components/capabilities/$p && \
         ../.venv/bin/mypy --strict src/$p ) || fail=1
     done
@@ -75,3 +82,12 @@ secrets-all:
 #     uv run mypy --strict src
 # test:
 #     uv run pytest
+
+# `--mock` proves the harness end to end without credentials; a live run needs
+# ANTHROPIC_API_KEY and measures the catalog rather than the plumbing. See lab/README.md
+# for why those are different claims.
+#
+# Run the lab's experiments in mock mode.
+evals:
+    uv --project components/capabilities run ix run catalog-routing --lab lab --mock --seed 42
+    uv --project components/capabilities run ix run sensor-integrity --lab lab --mock

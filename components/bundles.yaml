@@ -110,7 +110,7 @@ plugins:
     keywords: [evals, testing, measurement, agents]
     skills: [build-eval]
 
-  # Stands up a Diverse Agentic Organization for a project. bodhi runs the Discourse phase
+  # Stands up a Directed Agentic Organization for a project. bodhi runs the Discourse phase
   # (intent → calibrated proxy with named uncertainties); hades runs Projection (builds
   # behind declared boundaries, to the ACE triad). The `dao` skill is the conductor and
   # holds the eleven-component spec; the `dao` CLI is its deterministic half.
