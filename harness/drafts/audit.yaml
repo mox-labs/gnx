@@ -1,0 +1,12 @@
+# DRAFT
+type_url: gnx.dev.v1.audit
+kind: Agent
+maturity: shipped
+source: ../../..//mox/products/cix/plugins/craft-research/agents/audit.md
+provides:
+  - gnx.dev.v1.audit-verdict
+  - research.provenance-audit
+requires:
+  - gnx.dev.v1.synthesis-report
+  - gnx.dev.v1.verified-claims
+description: End-to-end provenance audit — ship or return with the chain walked.

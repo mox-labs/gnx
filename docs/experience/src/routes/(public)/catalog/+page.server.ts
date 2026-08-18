@@ -16,6 +16,7 @@ export interface CatalogEntry {
 	kind: string;
 	provides: string[];
 	requires: string[];
+	/** The subset of `provides` / `requires` that are ports — see `isPort`. */
 	produces: string[];
 	consumes: string[];
 	relations: Record<string, string[]>;
@@ -26,6 +27,29 @@ export interface CatalogEntry {
 
 function oneLine(s: string): string {
 	return s.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * GEP-0002's shape rule: an entry that parses under GEP-0001's identity grammar is a PORT
+ * (it joins — topology, `requires` matching, capability closure); anything else is a
+ * discovery TAG (findability only, nothing ever joins on it).
+ *
+ * GEP-0001 §1/§4: dotted lowercase segments, a medial `v[0-9]+`, and a kebab-case resource
+ * after it. Slash-form is rejected (§5); version-terminal is not adopted (§6).
+ *
+ * A manifest never carries `produces:` / `consumes:` — GEP-0009 §4 defers those, because a
+ * runtime speaks that vocabulary and the composer owns the mapping. Topology is derived
+ * here, from the shipped five fields, exactly as a composer would derive it.
+ */
+function isPort(entry: string): boolean {
+	if (entry.includes('/')) return false;
+	const segs = entry.split('.');
+	const vi = segs.findIndex((s) => /^v[0-9]+$/.test(s));
+	if (vi <= 0 || vi === segs.length - 1) return false;
+	return (
+		segs.slice(0, vi).every((s) => /^[a-z][a-z0-9]*$/.test(s)) &&
+		segs.slice(vi + 1).every((s) => /^[a-z0-9]+(-[a-z0-9]+)*$/.test(s))
+	);
 }
 
 /** First sentence of the SKILL.md frontmatter description, if present. */
@@ -41,25 +65,39 @@ function descriptionOf(dir: string): string {
 	return first.slice(0, 180);
 }
 
+/** Every components/<kind-plural>/<slug>/ that holds a manifest (GEP-0009 §1). */
+function componentDirs(root: string): string[] {
+	if (!existsSync(root)) return [];
+	return readdirSync(root)
+		.sort()
+		.map((k) => path.join(root, k))
+		.filter((k) => statSync(k).isDirectory())
+		.flatMap((k) =>
+			readdirSync(k)
+				.sort()
+				.map((s) => path.join(k, s))
+				.filter((d) => statSync(d).isDirectory() && existsSync(path.join(d, 'manifest.yaml')))
+		);
+}
+
 function loadEntries(): CatalogEntry[] {
-	if (!existsSync(COMPONENTS_DIR)) return [];
 	const out: CatalogEntry[] = [];
-	for (const name of readdirSync(COMPONENTS_DIR).sort()) {
-		const dir = path.join(COMPONENTS_DIR, name);
-		if (!statSync(dir).isDirectory()) continue;
+	for (const dir of componentDirs(COMPONENTS_DIR)) {
+		const name = path.basename(dir);
 		const mf = path.join(dir, 'manifest.yaml');
-		if (!existsSync(mf)) continue;
 		const m = parse(readFileSync(mf, 'utf-8')) as Record<string, unknown>;
 		const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 		const type_url = String(m.type_url ?? name);
+		const provides = list(m.provides);
+		const requires = list(m.requires);
 		out.push({
 			slug: name,
 			type_url,
 			kind: String(m.kind ?? ''),
-			provides: list(m.provides),
-			requires: list(m.requires),
-			produces: list(m.produces),
-			consumes: list(m.consumes),
+			provides,
+			requires,
+			produces: provides.filter(isPort),
+			consumes: requires.filter(isPort),
 			relations: Object.fromEntries(
 				Object.entries((m.relations as Record<string, unknown>) ?? {}).map(([k, v]) => [k, list(v)])
 			),
@@ -75,9 +113,10 @@ function loadEntries(): CatalogEntry[] {
 export const load: PageServerLoad = () => {
 	const entries = loadEntries();
 
-	// Compositions: only components with topology ports enter the DAG. Skills are
-	// provides-only axioms — ambient, never wired. Today both real components are
-	// Skills, so this is empty and the page says so honestly.
+	// Compositions: only components with topology ports enter the DAG. Skills carry tags
+	// alone — provides-only axioms, ambient, never wired — so they fall out by the shape
+	// rule rather than by a kind check. An unmet `consumes` compiles to a "missing producer"
+	// error and is shown: an unsatisfiable requirement is a true fact about the catalog.
 	const wired = entries.filter((e) => e.produces.length || e.consumes.length);
 	let composition: Compiled | null = null;
 	if (wired.length) {

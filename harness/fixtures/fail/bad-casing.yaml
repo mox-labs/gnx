@@ -1,0 +1,4 @@
+type_url: gnx.dev.v1.IntentHardening   # PascalCase — the exact drift GEP-0001 ruled out
+kind: Skill
+provides: [intent.hardening]
+requires: []

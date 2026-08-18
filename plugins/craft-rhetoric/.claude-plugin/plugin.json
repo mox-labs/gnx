@@ -1,0 +1,17 @@
+{
+  "name": "craft-rhetoric",
+  "version": "0.3.0",
+  "description": "Explanation, voice, and visual design. Make understanding propagate \u2014 and survive the edit.",
+  "author": {
+    "name": "Mox Labs",
+    "email": "mox.rnd@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "writing",
+    "documentation",
+    "voice",
+    "diagrams",
+    "explanation"
+  ]
+}

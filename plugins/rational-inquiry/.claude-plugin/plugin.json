@@ -1,15 +1,17 @@
 {
   "name": "rational-inquiry",
   "version": "0.1.0",
-  "description": "Inference-validity discipline \u2014 the fallacy / defeat gate. Given an inference, argument, or causal claim (\"X, therefore Y\"), check whether it is VALID by testing it against the named defeat conditions: the Ny\u0101ya hetv\u0101bh\u0101sa catalog (the five fallacious-reason types) plus the defeater apparatus (up\u0101dhi undercutting + tarka reductio). Built to catch the moves a fluent-but-invalid argument makes: a reason that doesn't discriminate, that proves the opposite, that is counterbalanced, that is itself unestablished, or that a stronger source defeats. Use when: a claim rests on an inference and you need to test the inference rather than the conclusion; a \"therefore\" is load-bearing; a causal or universal claim (\"all X are Y\", \"X causes Y\") needs its pervasion checked; an argument feels persuasive but the reason seems weak; the principal asks to \"check this inference\", \"is this valid\", \"what's the fallacy\", \"run the hetv\u0101bh\u0101sa gate\". In gnx: this is the validity gate run INSIDE `intent-hardening`'s uttarapak\u1e63a (resolution) step, and is assigned to the agent `bodhi`. It is element III (named defeat conditions) of the five functional necessities of valid inquiry.",
+  "description": "Inference-validity discipline \u2014 the fallacy and defeat gate. Test whether a \"therefore\" actually holds.",
   "author": {
     "name": "Mox Labs",
     "email": "mox.rnd@gmail.com"
   },
   "license": "MIT",
   "keywords": [
-    "inquiry.inference-validity",
-    "inquiry.fallacy-gate",
-    "inquiry.defeat-conditions"
+    "inference",
+    "logic",
+    "fallacy",
+    "validity",
+    "gnx"
   ]
 }

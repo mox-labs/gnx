@@ -4,7 +4,7 @@ import { parse } from 'yaml';
 import type { PageServerLoad } from './$types';
 
 // The catalog map (D24): nodes are the REAL manifests — components/ (minted) and
-// scratch/composition-validation/drafts/ (proposed) — parsed at load, topology
+// harness/drafts/ (proposed) — parsed at load, topology
 // derived here exactly the way check.py derives it. No hand-kept census to drift.
 
 const KINDS = new Set(['Skill', 'Agent', 'Capability', 'Flow']);
@@ -39,7 +39,7 @@ function collect(): Omit<MapNode, 'x' | 'y'>[] {
 	const roots = [
 		{ dir: path.resolve(process.cwd(), '..', '..', 'components'), status: 'minted' as const, nested: true },
 		{
-			dir: path.resolve(process.cwd(), '..', '..', 'scratch', 'composition-validation', 'drafts'),
+			dir: path.resolve(process.cwd(), '..', '..', 'harness', 'drafts'),
 			status: 'proposed' as const,
 			nested: false
 		}
@@ -47,10 +47,17 @@ function collect(): Omit<MapNode, 'x' | 'y'>[] {
 	const out: Omit<MapNode, 'x' | 'y'>[] = [];
 	for (const r of roots) {
 		if (!existsSync(r.dir)) continue;
+		// Minted components live at components/<kind-plural>/<slug>/manifest.yaml (GEP-0009 §1);
+		// drafts are still flat single-file manifests in the harness.
+		const dirs = (p: string) =>
+			readdirSync(p)
+				.sort()
+				.map((n) => path.join(p, n))
+				.filter((n) => statSync(n).isDirectory());
 		const files = r.nested
-			? readdirSync(r.dir)
-					.filter((d) => statSync(path.join(r.dir, d)).isDirectory())
-					.map((d) => path.join(r.dir, d, 'manifest.yaml'))
+			? dirs(r.dir)
+					.flatMap(dirs)
+					.map((d) => path.join(d, 'manifest.yaml'))
 					.filter(existsSync)
 			: readdirSync(r.dir)
 					.filter((f) => f.endsWith('.yaml'))
@@ -68,7 +75,9 @@ function collect(): Omit<MapNode, 'x' | 'y'>[] {
 			const provides = ((m.provides as string[]) ?? []).map(String);
 			const kind = String(m.kind ?? '?');
 			const flags: string[] = [];
-			if (!KINDS.has(kind)) flags.push(`kind: ${kind} is off-enum`);
+			// D25 ruled the vocabulary open and namespaced, so a kind outside the core four is
+			// legal, not a defect — noted for the eye, never flagged as wrong.
+			if (!KINDS.has(kind)) flags.push(`kind: ${kind} outside the core four`);
 			if (tu.startsWith('slick.')) flags.push('namespace call open (vendor vs adoption)');
 			out.push({
 				id: segs[segs.length - 1],

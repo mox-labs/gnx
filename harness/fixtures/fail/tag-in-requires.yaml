@@ -1,0 +1,5 @@
+type_url: gnx.dev.v1.tag-requirer
+kind: Agent
+provides: [gnx.dev.v1.some-output]
+requires:
+  - intent.hardening                   # a tag — nothing ever joins on a tag (GEP-0002)

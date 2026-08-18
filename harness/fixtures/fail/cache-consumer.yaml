@@ -1,0 +1,4 @@
+type_url: gnx.dev.v1.cache-consumer
+kind: Agent
+provides: [gnx.dev.v1.consumer-output]
+requires: [gnx.dev.v1.dup-cache]

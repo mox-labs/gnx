@@ -3,3 +3,10 @@ scratch/
 .playwright-mcp/
 .claude/settings.local.json
 .claude/resume.sh
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/

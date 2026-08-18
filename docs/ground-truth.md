@@ -70,9 +70,10 @@ it requires legible surfaces.)
 
 ## 2. What gnx is (decided 2026-06-12; positioning sharpened 2026-06-14)
 
-**Mission (the product framing, public):** gnx provides **cognitive extensions** —
-reusable, composable components any agent can use — plus the **slick plugin** agents use
-to compose them. As a product/package, **gnx is a marketplace + registry**, full stop.
+**Mission (the product framing, public):** gnx provides **composable components** —
+reusable units any agent can use — plus the **slick plugin** agents use
+to compose them. ("Cognitive extensions" was the earlier framing; dropped 2026-08-17 as
+fluff — the components are the product, and the adjective was doing no work.) As a product/package, **gnx is a marketplace + registry**, full stop.
 The ecosystem connection (the registry the collective's sympoietic self-extension loop runs
 through; feeding geist.sh / samsara; Bodhi-Dagstra-HADES) is **internal detail — the *why*,
 not the product** — and lives only in the internal Design register. "For any agent" is the

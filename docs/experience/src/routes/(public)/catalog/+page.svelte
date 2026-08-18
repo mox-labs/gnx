@@ -84,16 +84,17 @@
 		{#if data.composition}
 			<!-- port-bearing components exist: the compiled batches render here (CatalogDag) -->
 			<p>
-				{data.composition.batches.length} stages compiled from declared ports.
+				{data.composition.batches.length}
+				{data.composition.batches.length === 1 ? 'stage' : 'stages'} compiled from declared ports.
 				{#if data.composition.errors.length}
 					<span class="err">{data.composition.errors.join(' · ')}</span>
 				{/if}
 			</p>
 		{:else}
 			<p class="empty">
-				No wired compositions yet — every registered component is a Skill, and Skills are read,
-				not wired. The first Capability to register brings the pipeline view with it. To feel
-				how port-graph composition works meanwhile, the
+				No wired compositions yet — every registered component carries discovery tags alone, and
+				tags are searched, not wired. The first component to declare a port brings the pipeline
+				view with it. To feel how port-graph composition works meanwhile, the
 				<a href="{base}/docs/compose-components">composer</a> runs the same compiler on a live example.
 			</p>
 		{/if}

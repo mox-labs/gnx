@@ -1,0 +1,24 @@
+# DRAFT/PROPOSED — the dao envelope's spine: `dao init`.
+#
+# Namespaced `gnx.dao.v1.*` rather than hyphenated under `gnx.dev.v1.*`. Two reasons:
+#   - `gnx.dev.v1.dao.init` does NOT parse — GEP-0001 §4 requires the resource to be
+#     exactly one segment after the version. `dao` therefore belongs in the NAMESPACE,
+#     which is what the namespace-extraction rule exists for.
+#   - It groups the family (init / figures / charter / projection / instance) so the
+#     dao surface is legible as a unit instead of four hyphen-compounds.
+# The `flow-` prefix stays on the filename only (GEP-0001 §3: no kind in an identity).
+#
+# Head is NOT interactive: bodhi's dialogue happens in-session; its project-spec
+# artifact seeds this DAG (seed-input convention, GEP-0003 closed world).
+type_url: gnx.dao.v1.init
+kind: Flow
+maturity: designed
+source: ./flow-dao-init.yaml
+provides:
+  - dao.init
+requires: []
+members:
+  - type_url: gnx.dev.v1.bodhi
+  - type_url: gnx.dao.v1.figures
+  - type_url: gnx.dao.v1.charter
+  - type_url: gnx.dao.v1.projection

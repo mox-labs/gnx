@@ -1,0 +1,64 @@
+# The capabilities workspace.
+#
+# This is a uv workspace root, NOT the repo root. gnx's repo root identity is
+# `.claude-plugin/marketplace.json` — a Claude Code plugin marketplace — and its
+# root `pyproject.toml` is the standalone gnx CLI (py>=3.11). Capabilities are
+# runnables that BACK components (components/INTAKE.md §"Tool binding"), so their
+# Python-ness is scoped here and never leaks up to the marketplace root.
+#
+# Verified on uv 0.9.13: `uv lock`/`uv run` work from this directory and from
+# inside any member; the repo-root lock resolves only `gnx` and is unaffected.
+#
+# radix is excluded: it is a declarative-only Capability (SKILL.md + context/),
+# has no pyproject.toml, and was never a package — cix excluded it the same way.
+
+[tool.uv.workspace]
+members = ["*"]
+exclude = ["radix"]
+
+# uv 0.9+ REQUIRES an explicit source entry for a workspace-internal dependency.
+# `ix` declares a bare `matrix` dep; without this, resolution fails with
+# "`matrix` is included as a workspace member, but is missing an entry in
+# `tool.uv.sources`". cix declared this at its own workspace root, which is why
+# the member pyprojects port over unmodified.
+[tool.uv.sources]
+matrix = { workspace = true }
+ix = { workspace = true }
+recon = { workspace = true }
+gnx = { workspace = true }
+dao = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.8",
+    "types-PyYAML",  # gnx + harness parse YAML; strict mypy needs the stubs
+    "pytz>=2024.1",  # required by DuckDB TIMESTAMPTZ (recon)
+    "opentelemetry-sdk>=1.20",  # matrix/tests/test_orchestrator_tracing.py
+    "matrix",
+    "ix",
+    "recon",
+    "gnx",
+    "dao",
+]
+
+# Members set `asyncio_mode = "auto"` in their own pyprojects; pytest reads the
+# rootdir config, so invoking it from this workspace root needs it declared here
+# too or every async test errors on a missing marker.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true

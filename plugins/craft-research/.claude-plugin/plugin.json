@@ -1,0 +1,17 @@
+{
+  "name": "craft-research",
+  "version": "0.4.0",
+  "description": "Deep research and literature synthesis. Analyze papers, ground claims in evidence, build citation-accurate knowledge.",
+  "author": {
+    "name": "Mox Labs",
+    "email": "mox.rnd@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "research",
+    "synthesis",
+    "provenance",
+    "citations",
+    "verification"
+  ]
+}

@@ -1,0 +1,4 @@
+type_url: gnx.dev.v1.alt-cache
+kind: Capability
+provides: [gnx.dev.v1.dup-cache]
+requires: []

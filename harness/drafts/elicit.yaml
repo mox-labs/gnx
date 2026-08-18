@@ -1,0 +1,10 @@
+# DRAFT — harness-local, nothing here is minted (identity minting is the catalog's, GEP-0001 §2)
+type_url: gnx.dev.v1.elicit
+kind: Agent
+maturity: shipped          # the cix agent exists and runs
+source: ../../..//mox/products/cix/plugins/craft-research/agents/elicit.md
+provides:
+  - gnx.dev.v1.research-scope     # port
+  - research.scoping              # tag
+requires: []                      # entry step — scope comes from human discourse (seed-input convention)
+description: Draws out research scope through discourse — questions, boundaries, known sources.

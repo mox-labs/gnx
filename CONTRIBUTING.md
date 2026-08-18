@@ -1,7 +1,7 @@
 # Contributing to gnx
 
 gnx is the open-source component of the mox stack — a registry, a Claude Code
-marketplace, and an agentic CLI for cognitive extensions. This file is the
+marketplace, and an agentic CLI for composable components. This file is the
 contract for working in the repo.
 
 ## Workflow: GitHub Flow

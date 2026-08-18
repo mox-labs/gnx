@@ -1,0 +1,5 @@
+type_url: gnx.dev.v1.near-miss-carrier
+kind: Agent
+provides:
+  - gnx.dev.v2.Almost_Port             # has a version segment, fails the grammar -> near-miss warn
+requires: []

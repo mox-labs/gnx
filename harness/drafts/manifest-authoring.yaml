@@ -1,0 +1,11 @@
+# DRAFT/PROPOSED — the authoring practice an agent loads: three-tier gradient,
+# L2.5 envelope, shape rule, identity grammar. slick's --skill applied to itself.
+type_url: slick.dev.v1.manifest-authoring
+kind: Skill
+maturity: designed           # practice exists in thesis + GEPs; SKILL.md not yet written
+source: ./SKILL.md
+provides:
+  - slick.manifest-authoring
+  - slick.hardening-gradient
+requires: []
+description: The authoring practice — gradient, envelope, shape rule — loaded by any agent writing manifests (working name).

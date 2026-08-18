@@ -149,27 +149,21 @@ function entries(): DocEntry[] {
 	if (existsSync(CONTENT_DIR)) {
 		for (const name of readdirSync(CONTENT_DIR).sort()) {
 			const full = path.join(CONTENT_DIR, name);
-			if (statSync(full).isDirectory()) {
-				// Sectioned subdir: content/<section>/[NN-]slug.md — the new registers.
-				const dirSection: Section = isSection(name) ? name : 'design';
-				for (const f of readdirSync(full).sort()) {
-					if (!f.endsWith('.md') || f.startsWith('_')) continue;
-					const m = f.match(/^(?:(\d+)-)?(.+)\.md$/);
-					if (!m) continue;
-					out.push(
-						readEntry(path.join(full, f), {
-							section: dirSection,
-							order: m[1] ? Number(m[1]) : 50,
-							slug: m[2]
-						})
-					);
-				}
-				continue;
+			// Content lives in one shape only: content/<section>/[NN-]slug.md.
+			if (!statSync(full).isDirectory()) continue;
+			const dirSection: Section = isSection(name) ? name : 'design';
+			for (const f of readdirSync(full).sort()) {
+				if (!f.endsWith('.md') || f.startsWith('_')) continue;
+				const m = f.match(/^(?:(\d+)-)?(.+)\.md$/);
+				if (!m) continue;
+				out.push(
+					readEntry(path.join(full, f), {
+						section: dirSection,
+						order: m[1] ? Number(m[1]) : 50,
+						slug: m[2]
+					})
+				);
 			}
-			// Flat numbered dossier files → the internal Design register.
-			const m = name.match(/^(\d+)-(.+)\.md$/);
-			if (!m) continue;
-			out.push(readEntry(full, { section: 'design', order: Number(m[1]), slug: m[2] }));
 		}
 	}
 
@@ -177,10 +171,9 @@ function entries(): DocEntry[] {
 	const gt = path.join(DOCS_ROOT, 'ground-truth.md');
 	if (existsSync(gt)) out.push(readEntry(gt, { section: 'design', order: 99, slug: 'ground-truth' }));
 
-	// The numbered design docs (01–15) are superseded by the dossier concepts — the single source of
-	// truth (docs/convergence/surface.json). They're retired from the live site (nav, pager, /docs,
-	// llms.txt) so there's no second, stale copy; ground-truth (order 99) stays as the appendix. The
-	// .md files remain on disk.
+	// The flat numbered dossier (01–15) that used to land in `design` was superseded by the
+	// registers above plus the convergence surface, and is archived out of the tree
+	// (scratch/archive/2026-08-02-retired-dossier-docs/). ground-truth stays as the appendix.
 	return out
 		.filter((d) => !(d.section === 'design' && d.order < 90))
 		.filter((d) => !PUBLIC_ONLY || d.register === 'public')

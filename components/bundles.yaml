@@ -1,0 +1,159 @@
+# Plugin projections — the Target-side bundling declaration.
+#
+# Components are per-unit (D21/D23: one aspect-named unit per directory). Claude Code
+# plugins are coarser: a user installs "guild-arch", not thirteen separate council
+# agents. This file is where that regrouping is *declared* rather than hardcoded in the
+# projector, so adding a plugin is a data change and re-cutting a bundle is a one-line
+# edit. plugins/ is generated output — committed, but never authored by hand.
+#
+# Components own nothing about their projection. A component can appear in more than one
+# bundle; nothing here writes back into components/.
+#
+# Capabilities (matrix, ix, recon) are Python packages, not Claude Code shapes: they are
+# reached over a transport, and the protocol-location question is unresolved (MF7, the
+# ground plan's deferred-design table). So a Capability's *runnable* does not project.
+# Its *semantic surface* can, when it has one — recon ships a real SKILL.md inside its
+# package, and that is projected below from its in-package path.
+
+marketplace:
+  name: gnx
+  owner:
+    name: Mox Labs
+    email: mox.rnd@gmail.com
+  metadata:
+    description: >-
+      A catalog of composable components. Your agent composes capability from the
+      catalog, and you govern it.
+
+# Defaults applied to every plugin that does not override them. The cix inheritance was
+# hardcoded MIT + Mox Labs in the projector, which would have mislabelled anything
+# carrying a different license; here it is a default with an escape hatch.
+defaults:
+  license: MIT
+  author:
+    name: Mox Labs
+    email: mox.rnd@gmail.com
+
+plugins:
+  - name: guild-arch
+    version: 0.2.0
+    category: architecture
+    description: >-
+      Multi-perspective architecture review. Get deliberate pushback on design
+      decisions before they become expensive.
+    keywords: [architecture, design, multi-agent, review, hexagonal, operations]
+    agents: [ace, burner, chesterton, dijkstra, erlang, ixian, k, karman, knuth,
+             lamport, lotfi, taleb, vector]
+    skills: [architecture, design, operations, scaffold, trust-boundaries]
+
+  - name: craft-research
+    version: 0.4.0
+    category: research
+    description: >-
+      Deep research and literature synthesis. Analyze papers, ground claims in
+      evidence, build citation-accurate knowledge.
+    keywords: [research, synthesis, provenance, citations, verification]
+    agents: [claim-extraction, elicit, scrutiny, synthesis, audit]
+    skills: [research, eliciting, extracting, verifying, synthesizing, auditing, collecting]
+
+  - name: craft-rhetoric
+    version: 0.3.0
+    category: writing
+    description: >-
+      Explanation, voice, and visual design. Make understanding propagate — and
+      survive the edit.
+    keywords: [writing, documentation, voice, diagrams, explanation]
+    agents: [socrates, magellan, feynman, sagan, orwell, jobs, tufte, vyasa, ebert]
+    skills: [rhetoric, discourse, mapping, discovering, staging, voicing, figures,
+             arranging, evaluating]
+
+  - name: ci-scaffolds
+    version: 0.6.0
+    category: foundation
+    description: >-
+      Collaboration scaffolds that keep you sharp when working with AI. Verify
+      claims, calibrate trust, stay in the driver's seat.
+    keywords: [collaborative-intelligence, reasoning, verification, security, control]
+    agents: [duck, mrwolf, mudge]
+    # trust-boundaries also ships in guild-arch. A component may appear in several
+    # bundles — that is the point of projection being separate from authoring. mudge's
+    # Scan step invokes trust-boundaries' scan.sh, and install copies only one plugin's
+    # subdirectory, so the skill has to be present HERE for that step to work at all.
+    skills: [crafting, collaborating, problem-solving, whitehat, trust-boundaries]
+
+  - name: antifragile
+    version: 0.2.0
+    category: architecture
+    description: >-
+      Diagnose endogenous structural fragility — the decay a platform generates
+      through its own operation — and apply the inversion.
+    keywords: [architecture, security, aces, platform, fragility]
+    agents: [antifragile-arch, antifragile-sec]
+    skills: [aces, review]
+
+  - name: craft-extensions
+    version: 0.3.0
+    category: tooling
+    description: >-
+      Build Claude Code extensions and developer tools that people actually want
+      to use.
+    keywords: [plugins, skills, developer-experience, tooling, retrieval]
+    agents: [evaluator, optimizer]
+    skills: [craft-plugins, craft-tools, data-store, deep-reasoning]
+
+  - name: craft-evals
+    version: 0.2.0
+    category: tooling
+    description: >-
+      Eval methodology for agents, skills, and multi-agent systems — measure
+      quality instead of asserting it.
+    keywords: [evals, testing, measurement, agents]
+    skills: [build-eval]
+
+  # Stands up a Diverse Agentic Organization for a project. bodhi runs the Discourse phase
+  # (intent → calibrated proxy with named uncertainties); hades runs Projection (builds
+  # behind declared boundaries, to the ACE triad). The `dao` skill is the conductor and
+  # holds the eleven-component spec; the `dao` CLI is its deterministic half.
+  - name: dao
+    version: 0.1.0
+    category: foundation
+    description: >-
+      Stand up an agent organization for a project — discourse the intent, settle what it
+      needs, project the bench and the gate, then audit what was emitted.
+    keywords: [dao, agent-organization, scaffolding, governance, bench]
+    agents: [bodhi, hades]
+    skills: [dao]
+
+  # The two native gnx skills. Single-skill plugins by design: each is one discipline
+  # and is installed on its own.
+  - name: intent-hardening
+    version: 0.1.0
+    category: foundation
+    description: >-
+      Intent is not extracted from an utterance — it is hardened through structured
+      discourse. Turn a fuzzy ask into something the catalog can act on.
+    keywords: [intent, discourse, requirements, gnx]
+    skills: [intent-hardening]
+
+  - name: rational-inquiry
+    version: 0.1.0
+    category: foundation
+    description: >-
+      Inference-validity discipline — the fallacy and defeat gate. Test whether a
+      "therefore" actually holds.
+    keywords: [inference, logic, fallacy, validity, gnx]
+    skills: [rational-inquiry]
+
+  # A Capability's semantic surface. The recon *package* stays a Python runnable under
+  # components/capabilities/recon; only its authored skill projects, from the path where
+  # it lives inside the package.
+  - name: recon
+    version: 0.8.0
+    category: research
+    description: >-
+      Heterogeneous sources in, structured data out. Fetch from APIs, CLIs, and web
+      pages; reshape to uniform JSONL queryable with SQL.
+    keywords: [collection, scraping, apis, duckdb, jsonl]
+    external_skills:
+      - name: recon
+        path: components/capabilities/recon/src/recon/assets/skills/recon

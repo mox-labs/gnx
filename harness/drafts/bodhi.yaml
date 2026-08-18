@@ -1,0 +1,13 @@
+# DRAFT/PROPOSED — bodhi. Naming fork OPEN (morning queue #1):
+#   variant A (this file): intent-elicitation, with the minted intent-hardening
+#   Skill as projected method companion.  variant B: bundle agent+skill into one
+#   intent-hardening component (would duplicate a minted atom — not preferred).
+type_url: gnx.dev.v1.bodhi
+kind: Agent
+maturity: shipped            # bodhi runs today (research/.claude/agents/bodhi.md)
+source: ./agent.md
+provides:
+  - gnx.dev.v1.project-spec  # the calibrated spec w/ named uncertainties — the DAG seed seam
+  - intent.elicitation
+requires: []                 # interactive front: dialogue is a session, not a node
+description: Elicits fuzzy intent into a calibrated spec with named uncertainties (three-tier hardening gradient).

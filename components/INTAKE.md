@@ -7,8 +7,8 @@ it's smuggled.
 
 ## The bench, per import
 
-1. **Draft** — manifest in `scratch/composition-validation/drafts/`, aspect-named per D21.
-2. **Check** — `python3 scratch/composition-validation/check.py` green (identity grammar, shape
+1. **Draft** — manifest in `harness/drafts/`, aspect-named per D21.
+2. **Check** — `python3 harness/check.py` green (identity grammar, shape
    rule, flow compile where applicable).
 3. **Pristine pass** — payload ported self-contained: plugin-relative references resolved or
    bundled; no dangling pointers into cix; no invented relations (an edge you can't evidence is
@@ -25,7 +25,7 @@ it's smuggled.
 |---|---|---|---|
 | `gnx.dev.v1.intent-hardening` | Skill | native | shipped (pre-bench) |
 | `gnx.dev.v1.rational-inquiry` | Skill | native | shipped (pre-bench) |
-| `gnx.dev.v1.radix` | Processor⚠ | native | design; kind outside enum — reclassify or grow enum (harness R4) |
+| `gnx.dev.v1.radix` | Capability | native | design; reclassified 2026-08-02 (processor is a Capability shape, not a kind) — closes harness R4 |
 | `gnx.dev.v1.claim-extraction` | Agent | cix/craft-research `extract` | **ported 2026-07-23 — the bench exemplar**; ports at `designed` pending GEP-0005 |
 
 ## Queue — short names per D23 (names PROPOSED; a name mints only at step 4)

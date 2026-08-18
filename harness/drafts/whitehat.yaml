@@ -1,0 +1,11 @@
+# DRAFT
+type_url: gnx.dev.v1.whitehat
+kind: Skill
+maturity: shipped
+source: ../../..//mox/products/cix/plugins/ci-scaffolds/skills/whitehat/SKILL.md
+provides:
+  - ci.security-finding
+requires: []
+relations:
+  uses:
+    - gnx.dev.v1.trust-boundaries   # "the reasoning counterpart" — soft edge, semantics unruled (G4/G5)
