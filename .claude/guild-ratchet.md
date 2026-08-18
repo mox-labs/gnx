@@ -80,3 +80,53 @@ doctrine.
 - **Namespacing over hyphen-compounds for a family:** `gnx.dev.v1.dao.init` does not parse
   (GEP-0001 §4 — resource is exactly one segment after the version). A family belongs in
   the namespace: `gnx.dao.v1.{init,figures,charter,projection,instance}`.
+
+---
+
+## 2026-08-18 — tarmac pass on the capabilities, and what running the code found
+
+**Ixian.** Three defects reached this pass. Two were found by `mypy --strict`, one by running
+the lab. All three were in the same place — the boundary between what a sensor reports and
+what aggregation records — and all three produced a **silently wrong measurement** rather
+than a crash.
+
+> `aggregate_readings` derived `passed = score > 0.5`, discarding `Reading.passed`. Binary
+> sensors agree; `FunctionTestSensor` does not. A submission failing 1 of 4 tests scored
+> 0.75 and reported PASS while the sensor had already ruled it incorrect.
+
+**In a measurement tool, a wrong verdict is worse than a crash, because a crash gets
+noticed.** The eval harness is the thing every other quality claim rests on; a bug there
+does not announce itself, it just makes every subsequent number a little bit false.
+
+**Taleb.** `mypy --strict` found two of three. The lab found the third, on its first run,
+in a case no reviewer had thought to look at. A type checker proves the shapes agree; only
+execution proves the *semantics* do. The lesson is not "types are insufficient" — it is
+that **the eval suite must exercise its own sharpest path**, and `sensor-integrity` now
+includes code that fails its tests and code that raises, not only code that passes.
+
+**Vector.** recon's raw capture wrote every response header into `meta.yaml` verbatim. A
+`Set-Cookie` put a live credential into the one file whose entire purpose is to be kept,
+committed, and handed to a colleague.
+
+> The audit artefact was the leak. Redaction preserves the key and replaces the value —
+> dropping the header would destroy the evidence the file exists to hold.
+
+**Ace.** CI ran `docs-check` and a secret scan. It did not run the 407 tests, the five
+strict typechecks, the grammar gate, the payload gate, or the projection check — all of
+which `just ci` already declared. **A gate that only a local pre-commit hook runs is a gate
+that protects the author and nobody else.**
+
+### Future Triggers
+- **Any new sensor, or any change to `analysis.py`:** the sensor grades, aggregation counts.
+  Re-deriving a verdict from a score is the defect above; `Reading.passed` is authoritative.
+- **Any new `Sensor` implementation from outside ix:** `Reading.score` is optional by
+  contract. Aggregation must not assume it is populated.
+- **Anything that persists a fetched response** (a new collector, a new store): headers are
+  credential-bearing. Extend `SENSITIVE_RESPONSE_HEADERS` rather than trusting the source.
+- **Before claiming a package is hardened:** run it. `matrix` and `ix` both execute things;
+  `ix`'s `FunctionTestSensor` runs untrusted Python in-process with no sandbox, and on a
+  platform without SIGALRM there is no timeout at all. Both facts are in `SECURITY.md`
+  because an undocumented trust boundary is one nobody reviews.
+- **Adding a gate to the justfile:** wire it into `.github/workflows/ci.yml` in the same
+  commit, or it protects only the machine it was written on.
+
