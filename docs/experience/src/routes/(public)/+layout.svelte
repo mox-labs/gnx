@@ -46,6 +46,15 @@
 {#if isImmersive}
 	{@render children()}
 {:else}
+	<!-- Site-wide, not per-page: gnx is pre-generation-0, the catalog was deliberately cut
+	     back to what has been evaluated, and the docs are being rebuilt around it. A reader
+	     should know that before they read anything else, not after. -->
+	<div class="uc" role="note">
+		<b>Under construction.</b> gnx is pre-generation-0. The catalog is small on purpose —
+		most components sit in <code>incubator/</code> until they are evaluated — and these docs
+		are being rebuilt alongside it.
+	</div>
+
 	<div class="shell">
 		<aside class="nav">
 			<div class="brand">
@@ -135,5 +144,21 @@
 	}
 	.seam a:hover {
 		color: var(--fg);
+	}
+
+	.uc {
+		background: var(--panel);
+		border-bottom: 1px solid var(--line, rgba(128, 128, 128, 0.25));
+		border-left: 3px solid var(--constraint, #b8860b);
+		color: var(--muted);
+		font-size: 0.8rem;
+		line-height: 1.5;
+		padding: 0.6rem 1.1rem;
+	}
+	.uc b {
+		color: var(--fg);
+	}
+	.uc code {
+		font-size: 0.75rem;
 	}
 </style>

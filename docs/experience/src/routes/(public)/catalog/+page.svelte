@@ -152,10 +152,9 @@
 			</p>
 		{:else}
 			<p class="empty">
-				No wired compositions yet — the manifested components carry discovery tags alone, and tags
-				are searched, not wired. The first component to declare a port brings the pipeline view
-				with it. To feel how port-graph composition works meanwhile, the
-				<a href="{base}/docs/compose-components">composer</a> runs the same compiler on a live example.
+				No wired compositions yet — the manifested components carry discovery tags alone, and
+				tags are searched, not wired. The first component to declare a port brings the
+				pipeline view with it.
 			</p>
 		{/if}
 	</section>

@@ -10,41 +10,50 @@ register: public
 
 A marketplace of composable components for Claude Code.
 
-**11 plugins** are installable today, cut from **76 components** in one repository. Browse
-them in [the catalog](/catalog), which reads the component directories live rather than
-repeating a count that would go stale.
+**3 plugins** are installable today, cut from **7 components**. Browse them in
+[the catalog](/catalog), which reads the component directories live rather than repeating
+a count that would go stale.
 
 ## Component, plugin, catalog
 
-A **component** is the unit of authorship — one skill, one agent, or one runnable
-capability, in its own directory.
+A **component** is the unit of authorship — one skill, or one runnable capability, in its
+own directory.
 
 A **plugin** is a bundle of components, and it is what you install. Bundling is declared
 separately from authoring, in `components/bundles.yaml`, so one component can ship in
-several plugins. `trust-boundaries` is in two.
+several plugins.
 
 The **catalog** is every component in the repository, whatever it is bundled into.
 
 | kind | count | what it is |
 |---|---|---|
-| Skill | 35 | a practice, read into context when its trigger matches |
-| Agent | 36 | a named reasoning role with a distinct method |
-| Capability | 5 | a runnable Python package — `matrix`, `ix`, `recon`, `dao`, `gnx` |
-| Flow | 0 | a declared composition of other components — arrives with generation 0 |
+| Skill | 2 | a practice, read into context when its trigger matches |
+| Capability | 5 | a runnable Python package — the package itself is not a plugin |
+| Agent | 0 | a named reasoning role — none in the catalog today |
+| Flow | 0 | a declared composition — arrives with generation 0 |
+
+## The catalog is small on purpose
+
+There were 76 components here. **69 moved to `incubator/`** on 2026-08-19 — intact and
+versioned, but out of the catalog and not projected.
+
+The reason is evidence, not tidiness. A live routing measurement found the `dao` skill
+failing to activate on trigger phrases quoted verbatim in its own description, and 49 of
+those 76 descriptions ran past the length at which a description still reads as a
+description. Shipping all of them would have asserted a quality nobody had checked.
+
+What remains is what has been evaluated. Graduating a component back is a directory move
+and one entry in `bundles.yaml`.
 
 ## Where this is
 
-**Generation 0 — the composition layer — is upcoming.** What exists now is the catalog
-those compositions will draw from.
+**Generation 0 — the composition layer — is upcoming.** Components install and run; they
+do not yet compose. Both catalog skills carry a manifest, the declared identity a composer
+would resolve; the Manifest v1 shape is being settled in
+[slick](https://github.com/mox-labs/slick).
 
-Concretely: components install and run, and they do not yet compose. **3 of 76 carry a
-manifest**, the declared identity a composer would resolve. That is deliberate — the
-Manifest v1 shape is being settled in [slick](https://github.com/mox-labs/slick), and
-minting 76 against a moving spec would mean rewriting 76. The three that exist are the
-pilot that tests the grammar.
-
-[What's real vs planned](/docs/status) is the record, and it is written to be checkable
-rather than encouraging.
+[What's real vs planned](/docs/status) is the record, written to be checkable rather than
+encouraging.
 
 ## Next
 

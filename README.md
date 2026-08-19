@@ -2,11 +2,13 @@
 
 A marketplace of composable components for agents.
 
-Eleven plugins are installable today, cut from 76 components in this repository.
+**Under construction.** gnx is pre-generation-0.
+
+Three plugins are installable today, cut from 7 components.
 
 ```
 /plugin marketplace add mox-labs/gnx
-/plugin install guild-arch@gnx
+/plugin install rational-inquiry@gnx
 ```
 
 Browse the catalog: **[mox-labs.github.io/gnx/catalog](https://mox-labs.github.io/gnx/catalog)**
@@ -15,25 +17,34 @@ Browse the catalog: **[mox-labs.github.io/gnx/catalog](https://mox-labs.github.i
 
 | | | |
 |---|---|---|
-| **Skills** | 35 | a practice, read into context when its trigger matches |
-| **Agents** | 36 | a named reasoning role with a distinct method |
+| **Skills** | 2 | `intent-hardening`, `rational-inquiry` — both manifested |
 | **Capabilities** | 5 | runnable Python packages — `matrix`, `ix`, `recon`, `dao`, `gnx` |
-| **Plugins** | 11 | the installable bundles those components are cut into |
+| **Plugins** | 3 | `intent-hardening`, `rational-inquiry`, `recon` |
 
-A plugin is a bundle; a component is the unit. One component can ship in several plugins,
-because bundling is a projection decision made in `components/bundles.yaml` — separate from
-authoring. `plugins/` is generated output: committed, never hand-edited, and checked by
-`just projection`.
+A plugin is a bundle; a component is the unit. Bundling is a projection decision made in
+`components/bundles.yaml`, separate from authoring. `plugins/` is generated output:
+committed, never hand-edited, and checked by `just projection`.
+
+### The catalog is small on purpose
+
+**69 components moved to `incubator/` on 2026-08-19** — 33 skills and 36 agents, intact and
+versioned, out of the catalog and not projected.
+
+The reason is evidence. A live routing measurement (`lab/catalog-routing`, 24 real agent
+sessions) found the `dao` skill failing to activate on trigger phrases quoted verbatim in
+its own description, and 49 of the 76 descriptions ran past the length at which a
+description still reads as one. Shipping all of them would have asserted a quality nobody
+had checked. Graduating a component back is a directory move plus a `bundles.yaml` entry.
 
 ## Where this is
 
 **Generation 0 — the composition layer — is upcoming.** What exists now is the catalog those
-compositions will draw from, plus the four capabilities that make it work.
+compositions will draw from, plus the capabilities that make it work.
 
-Manifests are deliberately thin: 3 of 76 components carry one. Manifest v1's shape is being
-settled in [slick](https://github.com/mox-labs/slick), and minting 76 manifests against a
-moving spec would mean rewriting 76. The three that exist are the pilot that tests the
-grammar. Until the rest follow, a component is installable but not yet composable — see
+Both catalog skills carry a manifest — the declared identity a composer would resolve.
+Manifest v1's shape is still being settled in [slick](https://github.com/mox-labs/slick),
+which is why the count is two rather than everything. Until the shape stops moving, a
+component is installable but not yet composable — see
 `docs/content/reference/0-status.md` for what is claimed versus what is built.
 
 ## The capabilities
