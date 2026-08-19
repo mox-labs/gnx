@@ -1,0 +1,62 @@
+[project]
+name = "matrix"
+version = "0.1.0"
+description = "Matrix — kind-agnostic DAG orchestration engine"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [
+    { name = "yzavyas", email = "yza.vyas@gmail.com" }
+]
+
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "opentelemetry-api>=1.20",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "opentelemetry-sdk>=1.20"]
+claude = ["claude-agent-sdk>=0.1"]
+otel = [
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/matrix"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+
+[tool.hatch.build]
+include = [
+    "src/matrix/**/*.py",
+    "src/matrix/py.typed",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+# The x.uma/puma house lint set: B (bugbear), SIM, TC on top of the cix selection.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+# The OTLP gRPC exporter ships only with the `otel` extra, and telemetry.py imports it
+# lazily inside configure_telemetry() so matrix runs without it. Scoped to that module.
+[[tool.mypy.overrides]]
+module = ["opentelemetry.exporter.otlp.proto.grpc.trace_exporter"]
+ignore_missing_imports = true

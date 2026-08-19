@@ -1,0 +1,16 @@
+# DRAFT/PROPOSED — slick the crate as catalog citizen. NAMESPACE OPEN (morning
+# queue #2): drafted under slick.dev (vendor door, GEP-0001 §4 — slick is alive
+# and co-owns the grammar); alternative = gnx.dev adoption re-mint.
+# FINDING (kind-fit, third stress case): a library/kit is not "runnable — must
+# expose --skill"; Capability is a squint. Tags-only provides is the honest
+# surface until a library kind (or Capability subclass) is ruled.
+type_url: slick.dev.v1.slick
+kind: Capability
+maturity: shipped            # slickit 0.2.0, cargo + pip, py/wasm crusts
+source: git+https://github.com/mox-labs/slick
+provides:
+  - kit.manifest
+  - kit.typed-registry
+  - kit.typed-struct
+requires: []
+description: The semantic component kit — Manifest, TypedStruct, TypedRegistry; the grammar substrate.

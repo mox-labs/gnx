@@ -1,0 +1,30 @@
+# DRAFT — the first real Flow candidate: the pipeline we actually ran four times in July.
+#
+# `craft-` dropped (GEP-0001: adopted components get gnx-minted names; provenance lives
+# in `source`/`relations`, never the identity — `craft-` is cix plugin-family branding).
+# But NOT minted bare as `research`: the guild ratchet (2026-07-15) names `research` an
+# incoming landgrab and set Lotfi Policy B at 0.83 — proper nouns bare, generic words
+# compound-or-justify, re-mint compound-descriptive before first serialization. Hence
+# `research-pipeline`: the cix prefix is gone, the genericity gate is satisfied.
+# The `flow-` prefix stays on the FILENAME only — GEP-0001 §3 forbids a kind-derived
+# segment in a type_url, which is what keeps a kind reclassification a two-way door
+# (radix went Processor-kind -> Capability-shape on 2026-08-02 without a rename).
+#
+# This identity also settles harness R6: the `research` hub skill IS this Flow (it
+# declares itself "the hub skill... defines the pipeline... orchestration protocol").
+# It mints here as a Flow rather than separately as a Skill — one unit, not two.
+type_url: gnx.dev.v1.research-pipeline
+kind: Flow
+maturity: designed
+source: ./flow-research.yaml
+provides:
+  - research.pipeline               # tag; own-port derivation deferred (GEP-0003 unresolved)
+requires: []
+members:
+  - type_url: gnx.dev.v1.elicit
+  - type_url: gnx.dev.v1.recon
+  - type_url: gnx.dev.v1.claim-extraction
+  - type_url: gnx.dev.v1.verify
+  - type_url: gnx.dev.v1.synthesis
+    config: { model: opus, chunk: 4 }
+  - type_url: gnx.dev.v1.audit

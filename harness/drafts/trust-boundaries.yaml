@@ -1,0 +1,11 @@
+# DRAFT
+type_url: gnx.dev.v1.trust-boundaries
+kind: Skill
+maturity: shipped
+source: ../../..//mox/products/cix/plugins/guild-arch/skills/trust-boundaries/SKILL.md
+provides:
+  - guild.security-by-design
+requires: []
+relations:
+  uses:
+    - gnx.dev.v1.whitehat           # reciprocal — each names the other as its half

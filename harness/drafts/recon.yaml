@@ -1,0 +1,11 @@
+# DRAFT
+type_url: gnx.dev.v1.recon
+kind: Capability                  # recon-backed mechanical collection
+maturity: shipped
+source: ~/mox/products/cix/tools/recon  # the TOOL behind the Capability — binds via source; exposes --skill
+provides:
+  - gnx.dev.v1.source-cache
+  - research.source-collection
+requires:
+  - gnx.dev.v1.research-scope
+description: Mechanical source collection — API-indexed survey runs against a hardened scope.

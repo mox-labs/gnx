@@ -1,0 +1,12 @@
+# DRAFT
+type_url: gnx.dev.v1.synthesis
+kind: Agent
+maturity: shipped
+source: ../../..//mox/products/cix/plugins/craft-research/agents/synthesis.md
+provides:
+  - gnx.dev.v1.synthesis-report
+  - research.cross-source-integration
+requires:
+  - gnx.dev.v1.verified-claims
+  - gnx.dev.v1.research-scope     # synthesis works per research question from scope
+description: Cross-source integration over verified claims — convergence, divergence, gaps.

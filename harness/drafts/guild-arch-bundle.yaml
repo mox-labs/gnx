@@ -1,0 +1,12 @@
+# DRAFT — plugin-grain Capability. NOTE: the SessionStart hook's dependency on
+# .claude/guild-ratchet.md is INEXPRESSIBLE in ports (it is an install-time file
+# dependency, not a typed dataflow) — G4 evidence, logged in RESULTS.md.
+type_url: gnx.dev.v1.guild-arch
+kind: Capability
+maturity: shipped
+source: ../../..//mox/products/cix/plugins/guild-arch
+provides:
+  - guild.architecture-review
+  - guild.production-readiness
+  - guild.service-scaffold
+requires: []

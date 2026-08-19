@@ -1,0 +1,16 @@
+# First D21 intake from cix (2026-07-23). Adopted from
+# cix/plugins/craft-research/agents/extract.md + skills/extracting/ — re-minted
+# under gnx per GEP-0001 (adoption, not impersonation); payload self-contained
+# (method references bundled, the one plugin-relative pointer rewritten).
+type_url: gnx.dev.v1.claim-extraction
+kind: Agent
+maturity: shipped        # the agent runs in production today (four missions, July 2026)
+source: ./agent.md
+provides:
+  - gnx.dev.v1.extraction-set      # port — maturity: designed until GEP-0005 rules the Agent surface
+  - research.claim-extraction      # tag
+requires:
+  - gnx.dev.v1.source-cache        # port — same designed caveat
+# relations: none yet — the verification edge (scrutiny CoVE'd this agent's output
+# across four missions) waits until scrutiny mints; no invented edges.
+description: Claimify extraction — atomic claims with verbatim quotes, locations, and evidence tiers. # D23 overlay field

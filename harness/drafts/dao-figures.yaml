@@ -1,0 +1,14 @@
+# DRAFT/PROPOSED — selects figures/aspects from dao-corpus for a project
+# (the Jan-2026 "unfurl relevant marketplace daos" step, grammar-ized).
+type_url: gnx.dao.v1.figures
+kind: Capability
+maturity: designed
+source: ./dao-figures
+provides:
+  - gnx.dao.v1.figure-set
+  - dao.figures
+requires:
+  # bodhi stays in `gnx.dev` — intent elicitation is general, not dao-specific.
+  # The dao family consumes its output rather than owning it.
+  - gnx.dev.v1.project-spec
+description: Selects figures and aspects from dao-corpus for a project.

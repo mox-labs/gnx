@@ -1,0 +1,20 @@
+# DRAFT/PROPOSED — the ontology steward (yzavyas, 2026-07-24): the semantic-truth
+# guardian promoted from the guild bench to a catalog seat. Reviews names/tags/
+# descriptions at intake (bench step 3), owns the tag lexicon when GEP-0002's
+# curation trigger fires, watches port-type model-reality alignment.
+type_url: gnx.dev.v1.karman
+kind: Agent
+maturity: shipped            # exists today as cix/guild-arch agent
+source: ~/mox/packages/dao-corpus/corpora/agent-craft/domains/karman
+                             # PROJECTION PATH (corpus architecture, verified 2026-07-24):
+                             # agent-craft = one domain per agent/skill; ONE unit distilled
+                             # per domain; aspects assigned at PROJECT level. karman's domain
+                             # does not exist yet (76 domains; dijkstra/knuth/lamport/... do)
+                             # -> intake step 0 for karman: add the domain (raw gathering;
+                             # cix guild-arch agent prose is one input), distill, then project.
+provides:
+  - ontology.stewardship
+  - ontology.naming-review
+  - ontology.tag-lexicon
+requires: []
+description: Guardian of semantic truth — stewards the catalog's soft ontology (names, tags, descriptions) and reviews port-type semantics at intake.

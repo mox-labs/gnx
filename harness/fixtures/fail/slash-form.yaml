@@ -1,0 +1,4 @@
+type_url: slick.dev/v1.some-thing      # slash-form — rejected (GEP-0001 §5)
+kind: Capability
+provides: [some.thing]
+requires: []

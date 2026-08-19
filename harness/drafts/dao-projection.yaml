@@ -1,0 +1,19 @@
+# DRAFT/PROPOSED — populates .claude/ as the instantiated dao.
+#
+# This is the long pole: it emits the eleven components of the dao spec
+# (mox/research/drafts/dao-programme-synthesis.md, settled 2026-06-20) into a target
+# project. The council five {1 bench, 5 practice library, 6 routing, 7 gate,
+# 10 human-accountability} are the floor; the organization five {2 charter,
+# 3 ceremonies, 4 process-encoding, 8 ratchet, 9 membership} arrive crisis-driven
+# per M3's maturation overlay, foundation-before-superstructure.
+type_url: gnx.dao.v1.projection
+kind: Capability
+maturity: designed
+source: ./dao-projection
+provides:
+  - gnx.dao.v1.instance
+  - dao.projection
+requires:
+  - gnx.dao.v1.project-charter
+  - gnx.dao.v1.figure-set
+description: Populates .claude/ as the instantiated dao — bench, routing surface, gates, charter.

@@ -1,0 +1,17 @@
+{
+  "name": "rational-inquiry",
+  "version": "0.1.0",
+  "description": "Inference-validity discipline \u2014 the fallacy and defeat gate. Test whether a \"therefore\" actually holds.",
+  "author": {
+    "name": "Mox Labs",
+    "email": "mox.rnd@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "inference",
+    "logic",
+    "fallacy",
+    "validity",
+    "gnx"
+  ]
+}

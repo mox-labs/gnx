@@ -1,0 +1,12 @@
+# DRAFT — NOTE: the pythea MCP server (uvx strawberry-mcp) is an install
+# dependency on an EXTERNAL, non-catalog artifact. No field can carry it:
+# ports are type_urls, relations has no semantics (G4/G5). Logged in RESULTS.md.
+type_url: gnx.dev.v1.ci-scaffolds
+kind: Capability
+maturity: shipped
+source: ../../..//mox/products/cix/plugins/ci-scaffolds
+provides:
+  - ci.trust-calibration
+  - ci.engineering-craft
+  - ci.structured-problem-solving
+requires: []

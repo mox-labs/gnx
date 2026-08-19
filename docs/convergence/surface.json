@@ -1,0 +1,937 @@
+{
+  "meta": {
+    "generatedFrom": "gnx internal documentation · convergence surface · rebuilt 2026-06-20",
+    "abstract": "gnx is the catalog layer of the slick → gnx → geist triad — slick declares, gnx catalogs, geist runs. This is its internal convergence surface: a map of what gnx is, what is settled, and the decisions still owed before it can be built. Enter a region to read its entries; the open decisions are marked.",
+    "foundationalFork": "t.radix-import — import radix Frame/interpretant as gnx Layer B, or keep gnx as Layer A only",
+    "registers": {
+      "public": "pragmatics (unchanged)",
+      "internal": "Design — the convergence map sits above the 15 concept docs"
+    }
+  },
+  "convergedCore": "gnx is the catalog layer of a strict triad: slick owns the declaration grammar (a 5-field Manifest, strict on structure, silent on semantics — \"slick stores, never interprets\"), gnx owns the vocabulary (the component registry, the Claude Code marketplace, the agentic CLI), geist.sh owns the runtime. That separation is not incidental. Kind was deleted from slick's Rust type system in commit 63678e2 — enforcement of type consequences lives in gnx's validator, which does not yet exist. The field names the docsite describes (requires/provides for discovery, consumes/produces for topology) and the field names the only running engine uses are not the same. This is the honest picture: a grammar that is designed and a grammar that is shipped, and gnx is the layer that closes the distance between them. A two-layer grammar underlies everything: Layer A (declaration — the Manifest) stores a sign-vehicle, type_url, cheap and fixed, whose interpretant is consumer-owned; Layer B (meaning — radix's three-mode monolithic constraint) enforces grounding architecturally at construction. They meet one-way at the registry boundary — radix produces Frames, the corpus-promotion gate converts them into Skill manifests (provides-only axioms), and they enter the catalog. Whether gnx imports radix's full semiotic architecture as first-class grammar or merely consumes its output is the foundational unresolved fork.\n\nComposition runs three levels that must not be collapsed: meaning integration within an artifact (radix's grounding criterion), semantic discovery across the catalog (Dagstra's bipartite proof-search over provides), and runtime execution (matrix's inferred DAG over consumes/produces). The join key across all three is type_url. The invariant across all three: components compose through a shared typed medium — the Construct, an append-only ledger — never by direct call. That is the N+M geometry versus N×M coupling, and it is not a metaphor; the DagCompiler is the operational proof. The loop that makes gnx worth building is autopoietic in the precise sense: Bodhi sharpens intent → Dagstra searches the catalog → HADES generates into the registry → whatever enters the catalog immediately extends what the next search reaches. gnx generates gnx is the keystone bootstrap — the first project initialized by its own CLI, running its own core set. The governance layer makes none of this forgeable: a four-layer external stack (type-shape enforcement, produce-authority wall, external policy, organizational conscience) with verdicts that are two-axis (grounding ⊥ warrant, never a single boolean). \"Until minting a warrant is structurally restricted to an authority disjoint from the mark's author, every warrant is forgeable. Build that wall first.\" That wall is currently unbuilt. The dossier exists to converge the decisions that block it.",
+  "groups": [
+    {
+      "id": "grp.what-gnx-is",
+      "title": "What gnx is",
+      "blurb": "The product identity, the ecosystem position, and the generative loop that makes gnx worth building. A reader who stops here knows what gnx does and why it matters."
+    },
+    {
+      "id": "grp.grammar",
+      "title": "The grammar",
+      "blurb": "The declaration layer gnx inherits from slick and the meaning layer it interfaces with from radix. What components look like, how kinds work, and what type_url carries."
+    },
+    {
+      "id": "grp.composition",
+      "title": "Composition",
+      "blurb": "How components connect without coupling. The categorical distinction between ledger and actor. Three levels of composition stacked above a single invariant."
+    },
+    {
+      "id": "grp.catalog",
+      "title": "The catalog in practice",
+      "blurb": "What using gnx looks like: the CLI, the repo layout whose directory IS the vendor scope, how the Claude Code marketplace projection works, and how heterogeneous transports are absorbed without touching the grammar."
+    },
+    {
+      "id": "grp.governance",
+      "title": "Governance and trust",
+      "blurb": "The external governance stack that makes the catalog a governed commons rather than a forgeable registry. The dao, two-axis verdicts, and the produce-authority wall that everything downstream depends on."
+    }
+  ],
+  "concepts": [
+    {
+      "id": "gnx.field.identity",
+      "term": "what gnx is",
+      "group": "grp.what-gnx-is",
+      "layer": "A-declaration",
+      "status": "settled",
+      "convergedInterpretant": "gnx is the catalog layer of the slick → gnx → geist triad: a component registry, a Claude Code marketplace, and an agentic CLI — three functions, one catalog — whose load-bearing function is governed composition: agents decide to compose components from declared surfaces alone, without running them, while a human-mintable accreditation wall keeps every verdict non-forgeable by breaking the recursion problem where LLMs both compose and validate. Pre-build (NAMED); doctrine shaped.",
+      "body": "gnx is a component registry, a Claude Code marketplace, and an agentic CLI — three functions, one catalog. The registry holds components registered under slick manifests, validates them at registration, and maintains accreditation. The marketplace is a Target-side projection of that catalog into installable Claude Code plugin directories — a read of the registry, not a separate store. The CLI (`gnx`) initializes projects through a curated conversation (`gnx init`) and scaffolds new catalog entries (`gnx component init`). None of the three is primary; all three are the same catalog seen from different positions.\n\nThe value proposition is governed composition. Your agent discovers and composes components from declared surfaces alone — no execution required, no runtime coupling. Components compose through a shared typed medium (type_url as the join key across the triad), never by direct call. The governed half matters as much as the composition half: the catalog is a governed commons, and its existential failure mode is pollution — confident, schema-shaped, low-grounding traces that pass structural validation. The defense is external by design: human-mintable accreditation that the LLM composer can read but cannot mint, a produce-authority wall that keeps authorship and warrant structurally separate, and two-axis verdicts (grounding ⊥ warrant, never a single boolean). The architecture of the governance answers a specific problem — LLMs both compose and validate; an exogenous human-mintable anchor is the only escape from that recursion. \"Until minting a warrant is structurally restricted to an authority disjoint from the mark's author, every warrant is forgeable. Build that wall first.\"\n\nThe triad context: slick (the grammar layer, `~/mox/packages/slick`, crate `slickit`) declares what a component looks like — the 5-field Manifest, strict on structure, silent on semantics: \"slick stores, never interprets.\" gnx (the catalog layer, this repo) governs what enters the vocabulary: the registry, marketplace, and CLI where components come into the world through validation and accreditation. geist.sh (the runtime layer: geist-edge + matrix + mox.hud) executes governed components. Each layer's role is its whole role. gnx is the catalog the autopoietic loop (Bodhi → Dagstra → HADES → registry → extends next search) runs through; it is the layer that closes the distance between the grammar that is designed and the grammar that is shipped.\n\nMaturity, honestly: gnx is pre-build (NAMED). Doctrine is shaped and the build is starting. What ships today: slick grammar v0.2.0 (the grammar gnx inherits, not gnx itself) and the cix plugin family (the future marketplace content, not yet registered under gnx's catalog). The CLI, registry, and marketplace are designed, unbuilt — as is the governance stack (produce-authority wall, accreditation, two-axis verdicts) they depend on. Claude Code is the only Target shipping today; vendor-neutral-by-structure is the structural promise — \"designed for any agent; Claude Code today.\"",
+      "readings": [],
+      "tensions": []
+    },
+    {
+      "id": "gnx.field.triad",
+      "term": "the triad",
+      "group": "grp.what-gnx-is",
+      "layer": "cross",
+      "status": "settled",
+      "convergedInterpretant": "The triad is three non-overlapping roles joined by one string: slick declares component surfaces (5-field Manifest, strict on structure, silent on semantics), gnx governs what enters the catalog (registry + marketplace + CLI, validation-at-registration, accreditation), and geist.sh executes governed components through an adapter-normalized runtime — with type_url threading all three and the autopoietic loop (governed artifacts re-enter the registry, extending the next search) closing the circuit; settled as doctrine, partially materialized in build (slick v0.2.0 shipped, geist.sh partial, gnx named).",
+      "body": "The mox platform is three layers with non-overlapping roles, joined by a single string: **slick** (grammar) → **gnx** (catalog/vocabulary) → **geist.sh** (runtime). slick declares what a component looks like — the 5-field Manifest, TypedStruct, TypedRegistry — and stores, never interprets. gnx catalogs what components exist: the governed registry, marketplace, and agentic CLI where components enter the catalog through validation and accreditation. geist.sh (geist-edge + matrix + mox.hud) executes — it receives governed components, composes them into a DAG on the Construct, and renders through adapters. Each layer's role is its whole role; none subsumes the others.\n\nThe loop closes because each layer's output is the next layer's input, and the direction is feedforward with a governed feedback path: slick's grammar shapes what gnx can validate; gnx's catalog is what geist.sh composes from; what survives governance re-enters the registry, extending what the next composition search reaches. type_url is the join key across all three — authored under slick grammar, indexed through gnx's provides surface, executed by matrix at the Construct. The autopoietic closure (Bodhi sharpens → Dagstra searches → HADES generates → registry → extends the next search) runs through gnx as its registry; the loop only holds while gnx holds.\n\nBuild status, honest: **slick ships** (v0.2.0; Manifest, TypedStruct, TypedRegistry in Rust; Python crust broken at source — ghost Kind/TypedConfig imports → ImportError). **gnx is named** — doctrine is shaped, build starting; the CLI, registry, and marketplace are projected, not present — and so is the governance gate the feedback path runs through (accreditation, produce-authority wall). **geist.sh is partial** — matrix runs (DagCompiler, Construct, the Component protocol), mox.hud exists, geist-edge is the adapter design. The triad is settled as architecture; as build, two of three layers are incomplete.\n\nThe separation discipline is not taste — it's structural defense. slick's \"stores, never interprets\" keeps the grammar thin and vendor-neutral; gnx's governance layer is external by design because the grammar boundary cannot enforce trust (only structure). geist.sh's runtime sits downstream of accreditation: what it composes arrived through the governed catalog, and the adapter contract normalizes protocol heterogeneity without touching core grammar. The Inner Platform objection is answered by the Boundary Test: N components × M runtimes = NM integration points without mediation; under the triad, N + M + B (B = manifest spec + catalog + validation). The boundary earns its place for any non-trivial N, M.",
+      "readings": [],
+      "tensions": []
+    },
+    {
+      "id": "gnx.field.autopoietic-loop",
+      "term": "the gnx loop",
+      "group": "grp.what-gnx-is",
+      "layer": "cross",
+      "status": "contested",
+      "convergedInterpretant": "The gnx loop exhibits partial operational closure: Bodhi sharpens intent, Dagstra proof-searches the registry's `provides` index for composability gaps, HADES generates components that fill them, and each new entry extends the search space for the next cycle — the loop's outputs become its own inputs. That self-extension is the load-bearing reason gnx is the catalog layer rather than a static repository. But it is NOT autopoiesis in the precise sense, and the design's own research says so: REP-020 (2026-06-07) shows two of the three autopoietic criteria fail — the registry's boundary is externally configured (by human-mintable accreditation) and its components are not self-produced. The exogenous governance anchor that makes verdicts non-forgeable is exactly the un-closed arc. Contested: ground-truth §1 still carries the stronger \"autopoietic closure in the precise sense\" (2026-06-12) — stale against its own theory (REP-020 is five days older). Reconcile toward \"partial operational closure.\"",
+      "body": "The loop has four nodes. Bodhi sharpens intent — removes ambiguity, narrows scope until a composition goal is precise enough to search against. Dagstra performs semantic proof-search over the registry's `provides` index, not to find what exists but to find what's missing: the composability gaps between what the sharpened intent requires and what the current catalog can supply. HADES generates components that fill those gaps and writes them into the registry. The registry, now larger, becomes the search space for the next Dagstra run. That's the closure: the loop's output is the system's next input.\n\nThe precise word is *partial operational closure*, not \"autopoietic\" — and the distinction is the design's own, not an outside objection. The samsara audit (2026-06-06) first named the loop \"autopoietic closure in the precise sense,\" then REP-020 (2026-06-07) tested that against Maturana & Varela's three criteria and found two fail: a system is autopoietic only if it produces its own components AND produces its own boundary. The gnx loop is a candidate for the first (HADES generates entries into the registry) but fails the second — the registry's boundary is set by human-mintable accreditation, externally. What is real, and load-bearing, is the weaker property: the loop self-extends (a static repository does not), so its output is genuinely its own next input. That is enough to make gnx a catalog layer rather than a package store. It is not enough to call the system alive.\n\nThe loop's position in the triad makes the dependency explicit: slick provides the declaration grammar that gives every registry entry its identity (type_url); geist.sh executes the governed components the catalog holds; gnx is the medium the loop runs through. Without gnx holding the catalog, Dagstra has no index to search and HADES has no registry to write into. The loop's autopoietic claim is inseparable from gnx's catalog role.\n\nGovernance sits inside the loop, and it is *why* the closure is only partial — by design. The edge from HADES to the registry is not direct: artifacts promote only after surviving the governance stack, and no component bypasses accreditation and the produce-authority wall. That anchor is human-mintable precisely so the composer cannot mint its own warrant (the recursion REC1–3 names). But a human-set boundary is an *exogenous* boundary — exactly the criterion autopoiesis requires the system to produce for itself. So the loop is productive AND governed, and those two ARE in tension at the level of closure: full self-production would mean self-validation, which is the forgeability trap gnx exists to escape. gnx deliberately trades autopoietic closure for a governed boundary. The falsifying test REP-020 leaves open: does a HADES-generated component ever become a primitive a later, unrelated composition depends on, with no human in that loop? Until that holds, claim partial operational closure, never autopoiesis.\n\n`gnx init gnx` is the keystone bootstrap. When gnx is initialized by its own CLI, it must find its own components in the catalog — which means the loop must have run enough cycles to populate the core set. The temporal dependency is explicit: complete slick first (the grammar floor), then register components against it, then run the bootstrap. The Engelbart dual-role condition (the tool built by the tool it builds) is conditionally satisfied — requires deliberate institutional practice, not automatic. (`gnx init gnx` is a future milestone; see §5 of ground-truth.md.)\n\nMaturity: the loop is doctrine, not yet a running pipeline. Bodhi, Dagstra, and HADES are named and their roles are settled; none exist as integrated components. The governance gate they promote through — accreditation, the produce-authority wall — is equally designed, not built; the exogenous anchor that would make registry verdicts non-forgeable does not yet exist (see §9 of ground-truth.md). The graph proposal in the convergence surface carries confidence: medium. The loop is the frame gnx is built on — it is not yet the frame gnx runs on.",
+      "readings": [],
+      "tensions": []
+    },
+    {
+      "id": "gnx.field.two-layer-grammar",
+      "term": "the two-layer grammar",
+      "group": "grp.grammar",
+      "layer": "cross",
+      "status": "contested",
+      "convergedInterpretant": "Grammar names two distinct rule-sets at different layers. Layer A = the declaration grammar (5-field Manifest + kind-type-consequences + strict registration validation) — the rule-set for component legibility, what gnx owns. Layer B = the meaning grammar (three-mode monolithic constraint + the guṇa gradient) — the rule-set for comprehension certification, what radix owns. Unqualified uses of \"grammar\" must default to Layer A.",
+      "body": "Two distinct rule-sets share the word \"grammar\" — and conflating them is the most reliable way to produce false agreement. Layer A is the declaration grammar: slick's five-field Manifest (type_url, source, requires, provides, relations), strict on structure, silent on semantics. \"slick stores, never interprets.\" type_url is the load-bearing sign-vehicle — the one fixed identity string that threads authoring, discovery, and runtime together. Every new component is a lexicon entry; nothing a component author does touches the grammar itself. Layer B is the meaning grammar: radix's three-mode monolithic constraint (Base / Relations / Interpretations), where the mutual grounding is enforced architecturally — an UngroundedModelError at construction means you cannot have one mode without all three. This is the rule-set for comprehension certification, not declaration legibility.\n\nThey meet one-way at the registry boundary. radix produces Frames; a corpus-promotion gate filters them; those that survive enter Layer A as Skill components under the provides-only axiom — axioms in the proof-search space, invisible to DAG validation by design. After that crossing, Layer B is silent. gnx operates entirely in Layer A space downstream. Neither layer subsumes the other; they live in separate codebases and are BOTH shipped (slickit v0.2.0 for Layer A; radix-text-built for Layer B).\n\nThe contested ground is the foundational fork: does gnx formally import Layer B's semiotic architecture — making the Peircean trichotomy (immediate / dynamic / final interpretant) first-class in gnx's own grammar and dossier design — or does gnx simply consume Layer B's output, treating radix as a friendly upstream that hands off grounded Frames at the boundary? Import means gnx's grammar is genuinely two-layer and Peircean. Consume-only means \"two-layer grammar\" describes the ecosystem, not gnx's own design surface. Everything else hangs off this fork (surface.ts meta: foundationalFork).\n\nTwo live tensions are independent of the fork. The field-name split (t.fieldnames) is entirely a Layer A problem: doctrine says provides/produces-consumes, slickit ships requires/provides, running matrix code uses consumes/produces — three vocabularies for the same grammar, none of them the same. A component authored to doctrine fails to parse against slickit's Manifest today. The kind-locus tension (t.kind-locus) is also Layer A: Kind was deleted from slickit (commit 63678e2) and currently lives only as convention; whether gnx's validator owns Kind enforcement permanently or defers to a future slickit field is an open ownership question, not a semantic one. Maturity note: gnx is pre-build (NAMED). Slickit v0.2.0 is the only shipped Layer A artifact; the gnx validator enforcing kind-type-consequences does not yet exist.",
+      "readings": [
+        {
+          "vein": "radix-construct",
+          "reading": "Grammar = the three-mode monolithic constraint; a settling MUST co-produce Base+Relations+Interpretations or it is confabulated/parsed, not comprehended. A semantics of composition, not a syntax of declaration.",
+          "provenance": [
+            "01-frame-and-modes.md L79, L93-101"
+          ]
+        },
+        {
+          "vein": "gnx-doctrine",
+          "reading": "Grammar = what slick owns and gnx inherits without reopening: 4 kinds as open string with type consequences; provides (discovery) vs produces/consumes (topology) as independent layers; \"new component = lexicon entry, never a grammar edit\".",
+          "provenance": [
+            "ground-truth.md §4 L127-159",
+            "03-grammar.md L17-18"
+          ]
+        },
+        {
+          "vein": "slick-built",
+          "reading": "Grammar IS the Manifest struct: exactly five string fields; NO Kind enum (deleted, commit 63678e2); no semantic validation; \"slick stores, never interprets\". An output target for an LLM, not a human DSL.",
+          "provenance": [
+            "manifest.rs:37-60",
+            "README.md:24"
+          ]
+        },
+        {
+          "vein": "composition-built",
+          "reading": "Grammar surfaces as the Component protocol (name/consumes/produces/run) + DagCompiler static rules. Critically: docs say requires/provides; running code uses consumes/produces — the grammar's vocabulary has not converged inside cix.",
+          "provenance": [
+            "matrix/domain/types.py:131-146",
+            "compiler.py:36-71"
+          ]
+        },
+        {
+          "vein": "radix-ecosystem",
+          "reading": "Grammar = slick, the contracts layer between mechanical API signatures and LLM-orchestrator composition. Conformance = exactly five fields. Thin by design; richness lives in relations keys, never new core fields.",
+          "provenance": [
+            "03-ecosystem.md L72-79"
+          ]
+        }
+      ],
+      "tensions": [
+        "t.fieldnames",
+        "t.kind-locus"
+      ]
+    },
+    {
+      "id": "gnx.field.component-kinds",
+      "term": "component kinds",
+      "group": "grp.grammar",
+      "layer": "A-declaration",
+      "status": "contested",
+      "convergedInterpretant": "Component Kind names two things at once: a semantic role (Capability/Agent/Skill/Flow, settled) and a type-enforcement regime (kind must carry behavioral consequences, aspirational until gnx's validator ships) — the gap between them is the live contested terrain; Kind is an open string in slick's shipped Manifest (commit 63678e2 deleted the enum), so enforcement currently belongs entirely to the unbuilt gnx registry validator, making portability class computation (registry-derived, never self-declared) the only currently-structural Kind-adjacent guarantee.",
+      "body": "Four kinds, settled April 2026 and reaffirmed June 10: **Capability / Agent / Skill / Flow**. The 7-kind (2025-10) and 8-kind (early 2026) taxonomies did not survive compression. Kind is an open string, not an enum — the grammar stores it but does not constrain it at the slick layer.\n\nThe doctrine is unambiguous: Kind must carry type-level consequences, not just labels. The clearest case is Skills — a Skill is provides-only, carries no protocol, and is invisible to DAG validation by design. \"KIND_SKILL + protocols is a representable type error.\" The catalog rule for Capabilities reinforces this: a Capability without an embedded skill is not agent-operable and does not clear the curation bar. These behavioral discriminators ARE the type consequences. Without them, gnx re-opens the refuted Kubernetes homonym: same kind label, incompatible behavioral contracts.\n\nThe enforcement gap is the live tension. Kind was deleted from slick's Rust type system (commit 63678e2). The shipped Manifest is five stringly-typed fields; no Kind field exists on-disk; no on-disk file convention exists — gnx defines the on-disk format. Kind-as-type-enforcement lives in gnx's validator, which is unbuilt. Until it exists, Kind is aspirational doctrine, not structural constraint.\n\nVendor namespaces follow Kubernetes-CRD style: core components in `slick.dev/v1`; vendor-specific surfaces in e.g. `hooks.claude.anthropic.com/v1`. Portability classes (Universal / Specialized / Vendor-Specific / Multi-Vendor) are registry-computed from which namespaces a component touches — never declared by the author. Structural computation from namespace usage eliminates the author's incentive to over-claim portability. An adapter declares the namespaces it supports; the registry computes the intersection per Target.",
+      "readings": [
+        {
+          "vein": "radix-construct",
+          "reading": "Grammar = the three-mode monolithic constraint; a settling MUST co-produce Base+Relations+Interpretations or it is confabulated/parsed, not comprehended. A semantics of composition, not a syntax of declaration.",
+          "provenance": [
+            "01-frame-and-modes.md L79, L93-101"
+          ]
+        },
+        {
+          "vein": "gnx-doctrine",
+          "reading": "Grammar = what slick owns and gnx inherits without reopening: 4 kinds as open string with type consequences; provides (discovery) vs produces/consumes (topology) as independent layers; \"new component = lexicon entry, never a grammar edit\".",
+          "provenance": [
+            "ground-truth.md §4 L127-159",
+            "03-grammar.md L17-18"
+          ]
+        },
+        {
+          "vein": "slick-built",
+          "reading": "Grammar IS the Manifest struct: exactly five string fields; NO Kind enum (deleted, commit 63678e2); no semantic validation; \"slick stores, never interprets\". An output target for an LLM, not a human DSL.",
+          "provenance": [
+            "manifest.rs:37-60",
+            "README.md:24"
+          ]
+        },
+        {
+          "vein": "composition-built",
+          "reading": "Grammar surfaces as the Component protocol (name/consumes/produces/run) + DagCompiler static rules. Critically: docs say requires/provides; running code uses consumes/produces — the grammar's vocabulary has not converged inside cix.",
+          "provenance": [
+            "matrix/domain/types.py:131-146",
+            "compiler.py:36-71"
+          ]
+        },
+        {
+          "vein": "radix-ecosystem",
+          "reading": "Grammar = slick, the contracts layer between mechanical API signatures and LLM-orchestrator composition. Conformance = exactly five fields. Thin by design; richness lives in relations keys, never new core fields.",
+          "provenance": [
+            "03-ecosystem.md L72-79"
+          ]
+        }
+      ],
+      "tensions": [
+        "t.fieldnames",
+        "t.kind-locus"
+      ]
+    },
+    {
+      "id": "gnx.field.type-url",
+      "term": "type_url as sign-vehicle",
+      "group": "grp.grammar",
+      "layer": "cross",
+      "status": "open",
+      "convergedInterpretant": "type_url is the minimal sign-vehicle — cheap, fixed, shared; the interpretant is expensive, variable, consumer-owned (\"interpretation determined by the type_url consumer\", registry.rs:18). radix already operationalizes the Peircean interpretant rigorously (\"Interpretations\" was renamed from \"Models\" to be collision-free and Peircean). Whether gnx imports radix's full immediate/dynamic/final trichotomy as first-class dossier and grammar architecture is the foundational open fork.",
+      "body": "A single string sits at the load-bearing joint of the entire two-layer grammar. `type_url` is the identity primitive on both the slick Manifest (authoring face) and the TypedStruct (runtime face); `manifest.rs` tests exactly one invariant — that these two match. `registry.rs:18` states the consequence almost verbatim in Peircean terms: \"interpretation determined by the type_url consumer.\" The sign is cheap, fixed, and shared. The interpretant is expensive, variable, and consumer-owned — and this asymmetry is not imported philosophy, it is structurally forced. If interpretation were baked into the declaration, you could not do what gnx exists to do: let agents compose components they have never run, from declared surfaces alone. The sign has to be minimal because the interpretant cannot be.\n\nThree consumers produce three structurally distinct interpretants from the same string. The TypedRegistry maps it to a factory and instantiates a typed T — a dynamic interpretant in the strict Peircean sense. Dagstra runs proof-search over the `provides` index using type_urls as the join key — a legibility interpretant. An agent reasoning about whether two components compose reads the same type_url as a composability signal — a meaning-formation interpretant. None of these interpretants is settled into the other; none is owned by slick. This is the \"stores, never interprets\" axiom with its mechanism named.\n\nradix has already operationalized the Peircean interpretant rigorously. \"Interpretations\" was renamed from \"Models\" on 2026-06-09 specifically to be collision-free and Peircean. The Mode produces interpretants gated through a grounding status (UNJUDGED → ASSERTED | DISSOLVED); the immediate/dynamic/final trichotomy is architecturally present in the build. gnx-doctrine, slick-built, composition-built, and dao-research do their load-bearing work without explicitly invoking the trichotomy — but the structure is there regardless of whether it is named.\n\nThe foundational fork (`t.radix-import`) turns on exactly this: does gnx import radix's full immediate/dynamic/final architecture as first-class Layer B, making the grammar genuinely two-layer and Peircean? Or does gnx remain Layer A (declaration grammar) only, with radix as a separate upstream that hands off Frames at the registry boundary? Everything else in the convergence surface — whether the dossier itself is an instance of the sign/interpretant structure, whether a radix Frame can promote into the catalog as a Skill component, whether the convergence trajectory (immediate → dynamic → final) is design doctrine or metaphor — hangs off this decision. It is the last foundational question, and it is open.",
+      "readings": [
+        {
+          "vein": "slick-built",
+          "reading": "type_url is the sign; the registered factory is the act of interpretation; the instantiated T is the dynamic interpretant. \"interpretation determined by the type_url consumer.\"",
+          "provenance": [
+            "registry.rs:18"
+          ]
+        },
+        {
+          "vein": "radix-construct",
+          "reading": "\"Interpretations\" (renamed from \"Models\", 2026-06-09) is explicitly Peircean — \"the interpretant is the meaning that arises from sign + object.\" The interpretant is gated (UNJUDGED→ASSERTED|DISSOLVED).",
+          "provenance": [
+            "01-frame-and-modes.md L64-72"
+          ]
+        },
+        {
+          "vein": "interpretant-theory",
+          "reading": "What is \"stored\" is a schema (reconstruction template), not a fixed rule; meanings are rebuilt fresh per instance — the dynamic-interpretant problem in all but name. The triadic retrieval proposal (Sign/Object/Interpretant as three vectors) maps onto the convergence-surface structure. NOTE: this vein collapses interpretant to one thing; the immediate/dynamic/final trichotomy is gnx's enrichment.",
+          "provenance": [
+            "concepts.md L13-15"
+          ]
+        }
+      ],
+      "tensions": [
+        "t.radix-import"
+      ]
+    },
+    {
+      "id": "gnx.field.construct-vs-component",
+      "term": "construct vs component",
+      "group": "grp.composition",
+      "layer": "cross",
+      "status": "converged",
+      "convergedInterpretant": "Construct ≠ Component, categorically — the clearest convergence in the map. The Construct (capital C) = the append-only ledger / coordination medium components compose through; the Component = the governed catalog unit / actor. A gnx component is ONE thing with three faces: catalog face (lexicon entry / manifest record), grammar face (Manifest ↔ TypedStruct, bridged by type_url), execution face (the consumes/produces protocol node on the Construct). gnx's \"component\" maps to radix's Component (board-actor), NOT to radix's Frame (comprehension artifact) or Construct (ledger).",
+      "body": "Construct ≠ Component is the clearest convergence in the map — all six technically-grounded veins hold it independently, and three make the operational rule explicit: components compose through the board, never by calling each other. The distinction is categorical, not merely terminological. The Construct (capital C) is the coordination medium: an append-only, type_url-keyed ledger where every mark is a TypedStruct. Nobody owns it; it is the substrate through which actors coordinate stigmergically. A Component is an actor on that substrate — the governed catalog unit that reads and writes typed marks.\n\nThe economic argument for the separation is exact. Direct component-to-component calls create N×M coupling: each new component must know the interface of every component it touches. Routing through the Construct collapses this to N+M: each component knows one contract — the type system — and the Construct mediates the rest. This is the antifragile composability bet made structural.\n\nA gnx component is one thing with three faces, depending on vantage. The catalog face: a lexicon entry — a slick Manifest record in the registry, what Dagstra searches and what an agent decides to compose from. The grammar face: the Manifest's five fields at authoring time, the TypedStruct at runtime, bridged by one identity string — type_url. The execution face: a consumes/produces protocol node — it reads type_urls off the Construct and writes a typed result back; it never holds a reference to another component. The three faces describe the same entity from three positions; no single source in the corpus names the structure in one place. That gap is the divergence the convergence surface is resolving.\n\nOne false-friend warning for radix readers: in radix, \"Construct\" is the blackboard (SQLite HEARSAY-II working memory) and the composable unit is the Frame, not the Construct. gnx's \"Component\" maps to radix's Component actor (KS-equivalent, board-only), not to radix's Frame. The naming is compatible; the referents differ across layers.\n\nMaturity note: the catalog face and execution face are as-built (manifest.rs, matrix/domain/types.py). The grammar face — specifically Kind-enforcement — is aspirational: slick deleted Kind from the Rust type system (commit 63678e2) and the gnx validator that would enforce kind-type-consequences is unbuilt. The three-face model is architecturally settled; its grammar-face enforcement is not.",
+      "readings": [
+        {
+          "vein": "radix-construct",
+          "reading": "No entity literally named \"construct\" is the unit — the unit is the FRAME. \"Construct\" (capital C) is the blackboard/ledger Frames are deposited onto. Explicit false-friend warning for gnx convergence: the composable unit is the Frame, not the Construct.",
+          "provenance": [
+            "01-frame-and-modes.md",
+            "02-construct.md"
+          ]
+        },
+        {
+          "vein": "composition-built",
+          "reading": "Both are running classes. Construct = the append-only execution ledger (\"IS the trace\"); Component = a typing.Protocol with four members (name/consumes/produces/run). Categorically distinct, non-overlapping: actor vs medium. \"One contract. Four fields. No base class.\"",
+          "provenance": [
+            "matrix/domain/types.py:131-146"
+          ]
+        },
+        {
+          "vein": "gnx-doctrine",
+          "reading": "Component = a lexicon entry under a slick manifest (4 kinds), registered/indexed/projectable. Construct = the inhabited samsara ledger of typed marks. Explicit guard: \"the convergence task must not conflate the two.\"",
+          "provenance": [
+            "ground-truth.md §1, §2"
+          ]
+        },
+        {
+          "vein": "slick-built",
+          "reading": "A component is two-faced, bridged by one string: Manifest (5 fields) at authoring, TypedStruct (type_url + opaque value) at runtime; sole enforced invariant Manifest.type_url == TypedStruct.type_url. No Construct type in slickit. Kind deleted (commit 63678e2).",
+          "provenance": [
+            "manifest.rs",
+            "registry.rs"
+          ]
+        },
+        {
+          "vein": "radix-text-built",
+          "reading": "Construct = a SQLite HEARSAY-II blackboard (working memory AND output of a comprehension run). Component = a KS-equivalent that only touches the board, never another Component. Categorically distinct: actor vs coordination output.",
+          "provenance": [
+            "METHODOLOGY.md"
+          ]
+        }
+      ],
+      "tensions": [
+        "t.kind-locus"
+      ]
+    },
+    {
+      "id": "gnx.field.composition-levels",
+      "term": "three levels of composition",
+      "group": "grp.composition",
+      "layer": "cross",
+      "status": "contested",
+      "convergedInterpretant": "Composition is a THREE-LEVEL stack, never to be collapsed: (1) meaning integration (radix Compositor, within-artifact, grounding criterion, dissolve rule); (2) semantic discovery (gnx catalog, Dagstra proof-of-composability over provides, legibility criterion); (3) runtime execution (matrix DagCompiler over consumes/produces, DAG criterion). Join key across all three: type_url. Invariant: compose THROUGH a shared typed medium (the Construct), never by direct call.",
+      "body": "Composition in gnx is not one thing — it is three things at three different layers, each with its own criterion, and collapsing them produces false agreement. Layer 1 (radix Compositor, within-artifact): meaning integration, criterion is grounding — if a higher Frame cannot produce grounded Interpretations from a lower one, DISSOLVE. Layer 2 (gnx catalog, Dagstra over the `provides` index): semantic discovery, criterion is legibility — can a capable reasoner decide two components compose without running them, from declared surfaces alone? Layer 3 (matrix DagCompiler, over `consumes`/`produces`): runtime execution, criterion is DAG validity — topology is inferred from declarations, cycles are rejected before any node runs. The join key across all three is `type_url`. The invariant across all three: components compose *through* a shared typed medium (the Construct, an append-only type_url-keyed ledger), never by direct call. That invariant is the engineering bet — N×M direct couplings collapse to N+M under shared-substrate composition.\n\nThe sequencing matters. L2 (catalog) does not compose — it *proves composability* from declared surfaces and hands matched components forward. L3 (matrix) does not compose either — it receives an already-composed list and validates topology. Composition in the active sense happens at the catalog layer, before execution. Matrix is the validator and executor of decisions made upstream.\n\nThe load-bearing gap: no Compositor-equivalent exists at L2 or L3. Radix's dissolve rule (the semantic criterion) lives only at L1. At L2 and L3, structural type_url closure is the only check — and structural validity can be semantically empty. A catalog full of schema-shaped, low-grounding agent traces passes structural validation cleanly. This is the existential failure mode (pollution), and there is currently no architectural defense at the composition layer above L1.\n\nThe field-name split is the live unresolved tension: the slick Manifest ships `requires`/`provides`; the matrix Component protocol uses `consumes`/`produces`; doctrine treats them as two independent layers (discovery vs topology) with different semantics. Until resolved, a component authored to doctrine fails to parse against slickit's Manifest, and the grammar the docsite describes differs from the grammar slick ships. Converge on the code: `consumes`/`produces` is what runs. Flow cycles add a third gap — doctrine specifies SCC condensation + leashes; the only running engine (matrix DagCompiler) rejects all cycles. These are not minor inconsistencies; they are load-bearing decisions owed.",
+      "readings": [
+        {
+          "vein": "radix-construct",
+          "reading": "Composition = upward integration of lower Frames into a higher Frame where unifying form holds; criterion is grounding-defined — if the higher Frame can't produce grounded Interpretations, DISSOLVE. The only vein giving composition a meaning-criterion.",
+          "provenance": [
+            "02-construct.md"
+          ]
+        },
+        {
+          "vein": "gnx-doctrine",
+          "reading": "Composition = deciding two components combine WITHOUT running them, from declared surfaces alone. Two independent layers (discovery/topology). Cycles: flat-DAG rejection is stale (2026-06-02); Flow uses SCC condensation + leashes. The gnx loop IS composition in the autopoietic sense.",
+          "provenance": [
+            "ground-truth.md §4, §8b"
+          ]
+        },
+        {
+          "vein": "composition-built",
+          "reading": "matrix does NOT compose — it receives an already-composed list and runs it. DagCompiler infers edges from consumes/produces, validates topology, rejects cycles BEFORE any node runs. Construct is the append-only type_url-keyed ledger components read/write through. DOC↔CODE drift: docs requires/provides, code consumes/produces.",
+          "provenance": [
+            "matrix/domain/types.py",
+            "compiler.py:36-71"
+          ]
+        },
+        {
+          "vein": "radix-text-built",
+          "reading": "Two levels in shipped code: within-Frame integration (Compositor; no integrating structure → DISSOLVED) is built; cross-artifact composition is DELIBERATELY NOT BUILT (\"relating them is R6\"). Components compose through the board, never directly (HEARSAY-II isolation).",
+          "provenance": [
+            "METHODOLOGY.md §12"
+          ]
+        },
+        {
+          "vein": "dao-research",
+          "reading": "Inter-agent communication scales super-linearly (exponent 1.724) → low-communication topologies (shared substrate) dominate — the empirical base for the stigmergic bet. Composition value is conditional: +80.8% divergent/parallel, −70.1% sequential/state-dependent.",
+          "provenance": [
+            "findings.md",
+            "synthesis"
+          ]
+        },
+        {
+          "vein": "slick-built",
+          "reading": "Composition as built = pure structural string-matching on opaque type_urls; slickit never wires anything (deferred to \"the Composer\"/geist-edge). The shipped primitive is create_all — a flat ordered Vec<T>, not a DAG.",
+          "provenance": [
+            "lib.rs",
+            "manifest.rs"
+          ]
+        }
+      ],
+      "tensions": [
+        "t.fieldnames",
+        "t.flow-cycles",
+        "t.compositor-equivalent"
+      ]
+    },
+    {
+      "id": "gnx.field.graph-topology",
+      "term": "graph / topology",
+      "group": "grp.composition",
+      "layer": "cross",
+      "status": "contested",
+      "convergedInterpretant": "The system is THREE distinct graph layers (meaning DAG per artifact / catalog bipartite-matching graph / runtime inferred DAG), never conflated. Across all: edges are INFERRED from component declarations, never hand-wired; geometry is N+M, not N×M. Cross-artifact composition is the explicitly-deferred frontier (R6 in radix; the gnx loop is the named mechanism for crossing it at catalog scale).",
+      "body": "Three distinct graph layers exist in gnx, and conflating them is the principal design error to avoid. Layer one is radix's per-artifact meaning DAG: a terminating grounding chain (Interpretation → Edge → BaseUnit → Artifact.content_hash) plus a composition tree across scales (parent_frame_id), with the dissolve rule enforced — a parent Frame that cannot ground in a child Frame is rejected at construction, not discovered at runtime. Layer two is the catalog's bipartite-matching graph: Dagstra performs semantic proof-search over `provides` indexes, N+M geometry, never NxM. Layer three is the runtime inferred DAG: matrix's DagCompiler reads `consumes`/`produces` declarations and derives edges — no hand-wiring, ever. The join key across all three is type_url.\n\nCross-artifact composition is the explicitly deferred frontier. Radix labels it R6 and has no cross-artifact edges built. The gnx autopoietic loop (Bodhi → Dagstra → HADES → registry → extends next search) is the named mechanism for crossing it at catalog scale — but that loop is doctrine, not running code.\n\nThe doctrine-vs-as-built gap on cycles is unresolved and load-bearing. Doctrine (2026-06-02) specifies SCC condensation plus declared leashes (fuel+convergence vs guardedness) for Flows that contain cycles. The only running engine — matrix's DagCompiler — rejects all cycles before any node runs (CompilationError). Leash syntax is undefined; Mission C / S9 is unrun. Two positions exist: gnx ships its own SCC-aware Flow validator independent of matrix, or Flow+cycles block on Mission C. Until resolved, any Flow with a cycle is unregisterable against the only running engine regardless of what doctrine says.\n\nA secondary tension runs beneath the topology: the field-name split between `requires`/`provides` (slick Manifest as shipped) and `consumes`/`produces` (matrix DagCompiler as built) means the discovery layer and the topology layer are nominally the same field in slickit but functionally distinct in the running code. This is not just a naming issue — it determines whether the catalog's provides-index and the runtime's DAG inference read the same field or different ones. That remains open (t.fieldnames).\n\n[Feynman trace]\nComprehension: Three-layer structure established from surface.ts + ground-truth §4. Flow-cycles tension is the load-bearing unresolved question — doctrine and the only running engine directly contradict each other. Field-name drift (t.fieldnames) is a secondary tension affecting which layer reads which field.\nEntry: Door 3 — the DagCompiler as the concrete, running instance of the inferred-not-authored principle.\nShift: Door 3 > Door 1 at \"The join key across all three is type_url\" — from the operational mechanism to the architectural invariant.\nAll doors: Door 1 via \"conflating them is the principal design error to avoid\" (the principle); Door 2 via \"gnx ships its own SCC-aware Flow validator... or Flow+cycles block on Mission C\" (the decision owed, for whom it matters); Door 3 via \"DagCompiler reads consumes/produces declarations and derives edges — no hand-wiring, ever\" (the running artifact).\nSocrates loops: 2 — first probe found Door 2 absent (no decision context for the cycles tension); re-encoded via the Mission C / S9 options and the field-name consequence.",
+      "readings": [
+        {
+          "vein": "composition-built",
+          "reading": "DagCompiler infers edges from consumes/produces; rejects missing-producer/duplicate/cycle before any node runs. Runtime double-entry check (result.type_url == produces). Flat-DAG-only enforced — conflicts with doctrine's SCC+leashes.",
+          "provenance": [
+            "compiler.py:36-71"
+          ]
+        },
+        {
+          "vein": "radix-construct",
+          "reading": "Per-artifact: terminating grounding DAG (Model→Edge→BaseUnit→Artifact.content_hash, must terminate) + a composition tree (parent_frame_id) with the dissolve rule. No cross-artifact edges until R6.",
+          "provenance": [
+            "01-frame-and-modes.md L104-120, L199-202"
+          ]
+        },
+        {
+          "vein": "gnx-doctrine",
+          "reading": "provides = bipartite discovery match (N+M); produces/consumes = inferred DAG topology. Flow validation by SCC condensation + leashes (2026-06-02). The autopoietic loop is the catalog-scale cross-component graph.",
+          "provenance": [
+            "ground-truth.md §4"
+          ]
+        }
+      ],
+      "tensions": [
+        "t.flow-cycles"
+      ]
+    },
+    {
+      "id": "gnx.field.cli-and-layout",
+      "term": "the CLI and repo layout",
+      "group": "grp.catalog",
+      "layer": "A-declaration",
+      "status": "settled",
+      "convergedInterpretant": "The gnx CLI and repo layout encode one structural invariant: directory = vendor scope — `api/` + `components/` + `extensions/` are authored (the catalog), `plugins/` + `marketplace.json` are generated and committed from them (the CC projection); the `components/` ↔ `extensions/` boundary enforces degeneration-watch #2 structurally once the validator ships; and the CLI splits along the same line — `gnx init` is agentic (Claude Agent SDK drives the interview), registry and ledger operations are deterministic (SDK sessions propose, deterministic code validates and writes), preserving the exogenous governance anchor the whole stack depends on.",
+      "body": "The gnx repo is simultaneously the catalog (authored) and the Claude Code marketplace (generated projection). The directory tree mirrors the apiVersion namespace directly — where a component lives on disk is its vendor scope: `api/` holds all type_url schemas (data types, component configs, protocol configs — one join key, type_url); `components/` holds the vendor-neutral vocabulary (4 kinds under `slick.dev/v1`); `extensions/` holds vendor-namespaced kinds and concrete vendor facade implementations (e.g. `claude-code/` for `hooks.claude.anthropic.com/v1`). This is not convention — it is portability made computable. The catalog does not carry a declared portability field; it reads portability from namespace, and namespace lives in path. A vendor-specific field that migrates from `extensions/` into a `components/` schema corrupts that computation by construction. The `components/` ↔ `extensions/` directory boundary IS the degeneration-watch #2 enforcement surface — structural once the gnx validator ships, aspirational until then.\n\n`plugins/` and `.claude-plugin/marketplace.json` are generated and committed — not authored. A plugin references components by type_url; `gnx build` resolves them into self-contained, committed plugin directories. Projection happens at authoring time because Claude Code copies plugin subdirs in isolation and bans `..` traversal with no install-time build hook (§8). This eliminates cix's chronic dual-manifest drift: version lives in one place, plugins are reads of the catalog, never owners of content.\n\nThe command surface: `gnx --skill` (self-description to agents — the hard catalog rule requires every `kind:Capability` to expose this; gnx's own front door); `gnx init` (genesis: SDK-driven interview → scaffold `claude + dao + .gnx/` → install curated component set, selected by conversation not fixed menus); `gnx component init [kind]` (scaffold a lexicon entry: manifest + embedded skill + tests, kind-aware); `gnx add / rm / update` (install into project or user scope); `gnx search / inspect` (agent-facing discovery, provides-index first); `gnx validate` (strict registration gate — manifest, ports, kind rules, namespace); `gnx build [--check]` (generate `plugins/` and `marketplace.json`; `--check` keeps CI honest).\n\nInit is agentic internally — the Claude Agent SDK drives the interview. Registry and ledger operations stay deterministic and auditable. SDK sessions propose; deterministic code validates and writes. The split is load-bearing: gnx accreditation is the exogenous anchor that breaks the recursion problem (LLMs both compose and validate the catalog — if gnx's own verdicts were LLM-minted, the anchor would dissolve into the loop it exists to break). \"Dumb boundaries, smart interiors — intelligence never lives in the channel.\" (ground-truth.md §3, 2026-06-10.)\n\nIn the slick → gnx → geist triad, the CLI and layout are where slick's grammar becomes gnx's catalog surface. slick declares what a component looks like; gnx defines the on-disk format, enforces kind-type-consequences at the registration boundary, and projects the result to Targets. The directory layout is the physical instantiation of that role: `components/` is the slick.dev/v1 vocabulary gnx owns, `extensions/` is vendor territory gnx hosts but does not define, `api/` is the type_url join key that threads authoring, discovery, and runtime together across the full triad.\n\nMaturity: command surface and directory design are doctrine, not running code. gnx is NAMED — pre-build. The cix plugin family (shipped) demonstrates the CC projection mechanics gnx will formalize. Open edges: whether plugin definitions (which components each bundle) live in `marketplace.json` entries or a separate `distributions/` layer (lean: distributions, so a plugin's composition is itself a reviewable authored artifact — not settled); CLI language (Python leaning — inherits cix's hexagonal core, sits next to matrix, distributes via `uv tool install`; TS named alternative); on-disk manifest format (manifest.yaml leaning, not decided). Landmine inherited: slickit v0.2.0's Python crust is broken at source (ghost `Kind`/`TypedConfig` imports → ImportError) — gnx parses manifest JSON directly until that's fixed upstream.",
+      "readings": [],
+      "tensions": []
+    },
+    {
+      "id": "gnx.field.cc-projection",
+      "term": "Claude Code projection mechanics",
+      "group": "grp.catalog",
+      "layer": "A-declaration",
+      "status": "settled",
+      "convergedInterpretant": "Claude Code's install constraints — no build hook at install, no path traversal, cached subdirs must be self-contained — are not an obstacle gnx works around but a forcing function it converts into doctrine: plugins are Target-specific projections of the catalog, generated and committed at authoring time by `gnx build`; one source produces both generated manifests (plugin.json + marketplace.json), making version drift structurally impossible; and the `components/` ↔ `extensions/claude-code/` directory split enforces vendor-neutrality structurally while CC remains the only live Target.",
+      "body": "Claude Code's install model forces the design. When a user runs `claude mcp add`, CC clones the marketplace repo but copies only the plugin subdirectory to a versioned cache. No build hook fires at install time. Path traversal out of that subdir is banned. The plugin must be self-contained — no symlinks into a shared parent, no deferred dependency resolution. That constraint propagates upstream: anything that needs to be in the plugin must be there before install. Projection happens at authoring time; the output is committed.\n\n`gnx build` is the step that does the resolution. The gnx repo has two kinds of content: authored (`api/`, `components/`, `extensions/`) and generated-and-committed (`plugins/`, `.claude-plugin/marketplace.json`). A plugin in `plugins/` is a read of the catalog — it holds references to components by `type_url`, and `gnx build` resolves those into a self-contained directory that CC can copy in isolation. The plugin directory owns nothing; the catalog owns the source. This kills cix's chronic pain: cix plugins each owned their own copies, which drifted. Under gnx, there is one source.\n\nOne source produces two generated manifests: `plugin.json` (inside the plugin subdir — the CC version cache key) and the root `marketplace.json` entry. Both come from the same component/distribution source. Version drift between them is structurally impossible — if the source changes, both regenerate together. Version lives in one place; an explicit bump is a release. `gnx build --check` in CI catches any committed output that doesn't match what the sources would generate, keeping the generated artifacts honest.\n\nCC is currently the only Target, which makes this concept the live location of gnx's vendor-neutrality claim. The degeneration watch (§8 of ground-truth) is active here: the CC adapter must not become the de-facto spec by attrition. The repo layout enforces the separation structurally — vendor-specific content goes in `extensions/claude-code/` under its own apiVersion namespace, never in `components/`; the `components/` ↔ `extensions/` boundary is the machine-enforceable line between the vendor-neutral catalog vocabulary (slick → gnx) and the Claude Code projection of it (gnx → geist.sh via the CC Target). The generated `plugins/` dir mirrors that structure but is never the source of truth.\n\nMaturity note: gnx is pre-build (NAMED). The `gnx build` command and the distribution concept — whether plugin composition is defined in `marketplace.json` entries or a thin `distributions/` layer — are designed but not yet shipped.",
+      "readings": [],
+      "tensions": []
+    },
+    {
+      "id": "gnx.field.protocol-diversity",
+      "term": "protocol diversity",
+      "group": "grp.catalog",
+      "layer": "A-declaration",
+      "status": "settled",
+      "convergedInterpretant": "Protocol diversity is the structural answer to a single threat — transport heterogeneity corrupting the Manifest grammar — solved by assigning each axis of variation (vendor scope, transport, dispatch) to a distinct home so that no axis ever forces a grammar change; Skills are the proof-case, with `protocols:[]` a type consequence of their provides-only role, and the design-time/runtime split (gnx owns declaration; geist-edge owns dispatch normalization) is the load-bearing seam.",
+      "body": "Components are reached by heterogeneous transports — MCP, HTTP, CLI, gRPC, in-process function, WASM — yet compose through one grammar. That's the tension. The failure mode isn't complexity in the transport layer; it's transport heterogeneity leaking upward into the Manifest grammar. If it does, `slick.dev/v1` accretes vendor semantics, portability computation breaks, and degeneration-watch #1 fires. The three-axis separation is the structural answer.\n\n**Axis 1 — vendor scope → apiVersion namespace.** A Claude Code hook is a vendor kind (`ClaudeCodeHook` under `hooks.claude.anthropic.com/v1`), not a \"protocol.\" New vendors declare themselves at the namespace boundary; the core Manifest at `slick.dev/v1` never accretes vendor semantics. Portability class follows from registry inspection — Universal / Specialized / Vendor-Specific / Multi-Vendor — computed, never declared. This is Adaptability against Stasis: new vendors absorbed as namespaces, not rewrites.\n\n**Axis 2 — transport → Protocol.** The April proto draft modeled this as `repeated Protocol protocols` on the Manifest, each Protocol a typed config struct. The June settlement moved protocol config inside `Capability.spec.implementation` and routed vendor specificity to the namespace instead — \"no new Protocol types needed.\" Where Protocol lives — Manifest field vs implementation config — remains genuinely open (the Burner vs K deliberation). One design consequence already settled: protocol config schemas are type_url'd structs that live in `api/` alongside all other schemas; the join key is type_url throughout. Process isolation rides the protocol: user components run out-of-process, reached via their transport — a segfault from an embedded compiled extension would take down the whole runtime (the reason Taleb blocked embedded PyO3).\n\n**Axis 3 — dispatch → adapter contract (runtime, not gnx).** Four adapters — HTTP / CLI / gRPC / function — normalize protocol-specific I/O into typed enrichments on the Construct. A component doesn't see the transport; the adapter abstracts it. This is the Envoy `ext_proc` pattern, with lineage from 59 plugin migrations at zero rewrites. This contract lives in **geist-edge**, not gnx. That boundary is the design-time/runtime split: gnx owns the declaration surface; geist-edge owns dispatch normalization. Nothing from axis 3 reaches the Manifest grammar.\n\n**The Universal Facade is how the portability promise is delivered.** A vendor-neutral interface lives in `components/` (under `slick.dev/v1`) and N vendor-specific implementations live in `extensions/<target>/` (under their own apiVersion namespaces), bound by matching `provides`/`requires` ports (type_urls in `api/`). The runtime selects a concrete implementation by adapter capability negotiation. No single file is \"the facade\" — it's a two-location construct in the repo layout.\n\n**Skills are the boundary case.** A Skill declares `provides` tags — axioms in Dagstra's proof-search — and nothing else. `protocols: []` for Skills is a type-enforced consequence: a Skill declaring a Protocol is a representable type error, the same category mistake as a verb in a noun slot. Skills travel via `relations`, are read not invoked, and are invisible to DAG validation by design. The three-axis structure is visible here at its cleanest: axis 2 (transport) simply does not apply to one whole kind.\n\nMaturity: gnx is NAMED (pre-build). The three-axis separation, the Universal Facade, and the `api/` protocol-config-schema convention are designed doctrine. geist-edge is the adapter design — the four adapters (HTTP / CLI / gRPC / function) do not yet run, and the `components/` + `extensions/<target>/` facade is a layout convention, not a populated tree.",
+      "readings": [],
+      "tensions": []
+    },
+    {
+      "id": "gnx.field.governance-architecture",
+      "term": "governance architecture",
+      "group": "grp.governance",
+      "layer": "A-declaration",
+      "status": "open",
+      "convergedInterpretant": "Governance is external by design and must be built in at every seam — the four-layer stack (type-shape / produce-authority / external policy / conscience) exists because none of {information fidelity, dissent, unbiased evaluation, governance itself} passes through architectural seams automatically; the two-axis verdict (grounding ⊥ warrant) is a constitutional invariant, not a preference; and the exogenous human-mintable anchor is the only escape from the recursion problem where LLMs both compose and validate — without it, the entire accreditation stack is theater.",
+      "body": "Governance is not a property of the manifest — it is the layer above, external by design. The Manifest carries zero policy fields by construction; slickit's registry exposes a single governance-adjacent behavior (panic on duplicate type_url) and delegates everything else outward. This is intentional: the grammar that stores must not interpret, and a manifest field for trust would conflate two logically independent questions. Empirical corroboration sits underneath the principle — across ~2,000 MCP servers surveyed, none had authentication; governance is absent by default and must be deliberately installed at every seam.\n\nThe stack has four layers. Type-shape enforcement (does the manifest parse, do ports satisfy, does kind carry type-level consequences?) is gnx's own layer — structural, machine-validated at registration. Produce-authority (is the author authorized to write this warrant?) sits immediately above it and is the make-or-break: TypedRegistry currently has no owner concept; geist-edge keys on self-declared agent_id; until minting a warrant is structurally restricted to an authority disjoint from the mark's author, every warrant is forgeable. External policy (x.uma + geist-edge, FIS, autonomy ceilings, info-flow enforcement) sits above that — gnx accreditation is data that layer reads, not a claim gnx makes itself. Organizational conscience (the structurally separate dao conscience) is the outermost layer — the one the one law gates (\"a ritual only helps if it injects signal the agent could not have fabricated\").\n\nVerdicts are two-axis — grounding ⊥ warrant — never a single boolean. The Frame.asserted:bool incident (PR #74, 2026-06-07) proved the point: collapsing two orthogonal questions into one flag was prosecuted as a constitutional violation and replaced by a GroundingStatus enum. A component can be well-grounded but from an unauthorized author, or from an authorized author with low-grounding traces. Those are different failures requiring different remedies; any schema reintroducing valid:bool or accredited:bool reopens the same violation.\n\nThe existential threat the stack defends against is commons pollution: confident, schema-shaped, low-grounding agent traces that pass structural validation and enter the catalog. The catalog is a governed commons — once pollution takes hold, adoption metrics become wrong-signed (rewarding echo, favoring stale). The governance stack's cures are in doctrine: chartered membership for writers (Ostrom 1A ≡ the produce-authority wall), validation-at-registration, curation budget from day one. The exogenous human-mintable anchor (accreditation status the LLM composer can read but cannot mint) is the fulcrum that makes the stack non-forgeable — escape from the recursion problem where LLMs both compose and validate. As of now, that anchor is designed but unbuilt: the produce-authority wall is the first thing to build. The accreditation record shape (relation on the Flow Manifest / kind:AccreditationRecord / side-table) and whether the warrant axis is binary or graded remain open schema decisions that block the first gnx validate write.",
+      "readings": [
+        {
+          "vein": "gnx-doctrine",
+          "reading": "gnx ships correctness; x.uma ships trust. Produce-authority is the make-or-break (§9). Verdicts are grounding ⊥ warrant, never one boolean. Ostrom 1A chartered membership == produce-authority wall.",
+          "provenance": [
+            "ground-truth.md §9, §11.accreditation"
+          ]
+        },
+        {
+          "vein": "slick-built",
+          "reading": "MSG framing: Governance is external (CIX, x.uma), not on the Manifest. Zero policy/permission/governance fields shipped. register_unique (panic on duplicate type_url) is the only governance-adjacent behavior.",
+          "provenance": [
+            "registry.rs"
+          ]
+        },
+        {
+          "vein": "radix-text-built",
+          "reading": "Two-gate epistemic governance: grounding (fidelity-to-source) and judgement (configuration-integrity) at different logical types, neither subsumes the other; \"no unanchored self-certification anywhere.\" D-JUDGE was escalated to the principal — the operational analog of \"human as irreducible arbiter.\"",
+          "provenance": [
+            "DECISIONS.md"
+          ]
+        },
+        {
+          "vein": "dao-research",
+          "reading": "~2,000 MCP servers, all lacked authentication; governance covers ≤19% of needed functions at internet scale. Empirical proof that governance is absent by default and must be deliberately placed.",
+          "provenance": [
+            "findings.md"
+          ]
+        }
+      ],
+      "tensions": [
+        "t.produce-authority",
+        "t.accreditation-shape"
+      ]
+    },
+    {
+      "id": "gnx.field.dao",
+      "term": "the dao",
+      "group": "grp.governance",
+      "layer": "cross",
+      "status": "contested",
+      "convergedInterpretant": "The dao is a governed composition surface — thin router + method-distinct bench + structurally-separate conscience under Sabha governance — whose value is entirely structural: it addresses three failure modes (information loss, sycophantic consensus, biased evaluation) that architectural seams cannot prevent, because all three are training-origin or topology-origin problems that prompts cannot fix, only structure can.",
+      "body": "Architectural seams — kind enforcement, port matching, namespace scoping — prevent structural composition errors. They do not prevent three failures that surface only when agents run: information loss at handoffs (deep process isolation strips context that no schema preserves), sycophantic consensus when same-family instantiations evaluate each other (sycophancy is training-origin, not instruction-escapable — Shapira et al., SETTLED), and evaluation bias when the evaluator shares a training distribution with what it evaluates. The dao is the governed composition surface that addresses all three by structure, not by prompt.\n\nStructure follows function. The bench must be method-distinct — not just multi-member. The DMAD test: a seat is earned only by a distinct reasoning method; medium is a skill parameter, never a seat. The conscience must be a structurally separate instantiation, not a role change within the same instance. The one law (Huang et al. ICLR 2024): a ritual only helps if it injects signal the agent could not have fabricated. The out-of-family evaluator — the diagonal axis — is non-negotiable; same-family consciences prove self-consistency, not independence. The artisans dao is the one live, proven instance: a two-family eval panel (Gemini + mlx-lm Qwen; Claude excluded as same-family-as-makers) that caught a fabricated quote same-model self-review passed.\n\nSabha is the governance grammar: peers-in-inquiry, asymmetric-in-accountability. Decision logs carry DECISION / ACTOR / SCOPE / WHY / WHAT-WOULD-CHANGE-IT / HUMAN-NOTIFIED. A conjunctive ship-gate — any single conscience's refusal-to-ship holds; the human is the defined escape valve. The inspector-general invariant: a maker may not mark its own work shipped. Three accountability axes: vertical (human apex), horizontal (same-family consciences), diagonal (out-of-family evaluator). The ratchet edits the charter — the dao improves its own governance through the record of what it got wrong.\n\nThe dao is Hard ACE's process locus. Its equipment is catalog components wired at defined trigger points: guild review on designs, antifragile boundary test on proposed abstractions, evals on flows, ratchet across sessions. Dao membership, the produce-authority wall, and Ostrom 1A chartered membership are one design at three loci. The gnx loop's autopoietic claim depends on this: artifacts promote into the registry only after surviving the governance stack.\n\nMaturity is honest about four gaps. The separate-conscience delta has directional support but its magnitude is unmeasured — the \"17x/4x\" coordination/consolidation numbers from the second law are unverified (source unlocated; direction confirmed, not the figure). The produce-authority wall is unbuilt — every warrant is currently forgeable; this is the make-or-break. Three dao supersessions (Q1 trinity council / April task-scoped lifecycle / June standing bench) are real evolution but unrecorded; the April compounding lifecycle — the mechanism that grounds the autopoietic claim — is unintegrated into the June shape. No dao genesis spec exists; gnx init scaffolds June, but what lands in dao/ is undocumented. The stigmergy-vs-typed-messaging question cuts through dao mechanics directly: the industry's direction of travel is against the default.",
+      "readings": [
+        {
+          "vein": "dao-research",
+          "reading": "A dao = standing assembly of (thin router + method-distinct bench + structurally-separate conscience) whose properties must be deliberately built in at the seam. SETTLED: sycophancy training-origin (Shapira et al.), same-family eval bias (perplexity-familiarity, 0.520). TRIAL: the separate-conscience delta is unmeasured.",
+          "provenance": [
+            "findings.md",
+            "audit/report.md"
+          ]
+        },
+        {
+          "vein": "gnx-doctrine",
+          "reading": "dao = \"a thin bench of method-distinct practitioners + consciences that stewards a project\" (June, current). One leg of project anatomy (claude + dao + .gnx), scaffolded by gnx init. Dao membership == produce-authority wall == §9 chartered membership (Ostrom 1A). Three supersessions named open.",
+          "provenance": [
+            "ground-truth.md §6a"
+          ]
+        },
+        {
+          "vein": "radix-ecosystem",
+          "reading": "dao is a PEER Domain of samsara (rational-inquiry stack), not a layer above radix; a private projection of the inhabited Construct. Dagstra's composition proof is explicitly NOT the dao's defeasible-inference question.",
+          "provenance": [
+            "03-ecosystem.md:185-186"
+          ]
+        },
+        {
+          "vein": "composition-built",
+          "reading": "Uses \"dao\" only as decomposition/domain-ownership (ix decomposes, matrix executes). The conscience's nearest analog: a SensorNode (measures fit against properties) rather than a grader (binary pass/fail).",
+          "provenance": [
+            "ix/domain/ports.py"
+          ]
+        },
+        {
+          "vein": "slick-built",
+          "reading": "No dao concept. MSG framing places Governance entirely outside the Manifest — zero policy/permission fields. Governance is \"not owned by slickit.\"",
+          "provenance": [
+            "lib.rs"
+          ]
+        }
+      ],
+      "tensions": [
+        "t.april-lifecycle",
+        "t.cemri"
+      ]
+    },
+    {
+      "id": "gnx.field.accreditation",
+      "term": "accreditation and produce-authority",
+      "group": "grp.governance",
+      "layer": "A-declaration",
+      "status": "open",
+      "convergedInterpretant": "Governance is NOT a property of the manifest/component — it is the layer above, external by design, and must be deliberately built in (all 7 veins). It is a four-layer stack: type-shape enforcement → produce-authority wall → external policy → organizational conscience. The verdict is two-axis (grounding ⊥ warrant), never a single boolean — Frame.asserted:bool was prosecuted as a constitutional violation and replaced by a GroundingStatus enum. The exogenous human-mintable anchor (accreditation the LLM composer can read but cannot mint) is the fulcrum; without it every verdict is theater.",
+      "body": "Governance is external by design — not a manifest field, not a convention, but a four-layer stack sitting above the component grammar: type-shape enforcement → produce-authority wall → external policy (x.uma / geist-edge) → organizational conscience. None of this passes through architectural seams automatically. The shipped slickit Manifest has zero governance fields; `register_unique` (panic on duplicate type_url) is the only governance-adjacent behavior in the codebase today.\n\nThe recursion problem is the load-bearing reason accreditation exists: LLMs both compose and validate. A system that generates components and then evaluates them with the same family of model has no exogenous check — every verdict is self-consistent but not source-faithful. gnx accreditation is the nominated break: human-ratified status the LLM composer can read but cannot mint. The Frame.asserted:bool incident (PR #74, 2026-06-07) is the lived proof that schema collapse matters — a single boolean lets any generator assert a convincing warrant, which is why the verdict is two-axis (grounding ⊥ warrant) rather than a single flag. Any schema reintroducing valid:bool or accredited:bool re-opens that violation.\n\nThe produce-authority wall is the structural expression of \"cannot mint\": minting a warrant must be restricted to an authority disjoint from the component's author. Without it, every warrant is forgeable — the catalog's existential failure mode, pollution, becomes architectural: confident, schema-shaped, low-grounding traces that pass structural validation and carry fabricated accreditations. TypedRegistry has no owner concept today. geist-edge keys on self-declared agent_id. The wall is unbuilt, and it is the make-or-break.\n\nTwo schema decisions are both unchosen and both block the first `gnx validate` write. First, credential form — what makes an authority legitimate (signing key / mox identity / human-confirmed session token); the constraint (authority disjoint from author) is settled, the mechanism is not. Second, accreditation record shape — whether accreditation lives as a relation on the Flow Manifest, a `kind:AccreditationRecord` component, or a side-table; the warrant axis also unresolved (binary conjunctive gate vs the artisans dao's graded grammar: SHIP / SHIP-WITH-TIGHTENING / REVISE). These two decisions are independent but equally blocking. Build the wall first.",
+      "readings": [
+        {
+          "vein": "gnx-doctrine",
+          "reading": "gnx ships correctness; x.uma ships trust. Produce-authority is the make-or-break (§9). Verdicts are grounding ⊥ warrant, never one boolean. Ostrom 1A chartered membership == produce-authority wall.",
+          "provenance": [
+            "ground-truth.md §9, §11.accreditation"
+          ]
+        },
+        {
+          "vein": "slick-built",
+          "reading": "MSG framing: Governance is external (CIX, x.uma), not on the Manifest. Zero policy/permission/governance fields shipped. register_unique (panic on duplicate type_url) is the only governance-adjacent behavior.",
+          "provenance": [
+            "registry.rs"
+          ]
+        },
+        {
+          "vein": "radix-text-built",
+          "reading": "Two-gate epistemic governance: grounding (fidelity-to-source) and judgement (configuration-integrity) at different logical types, neither subsumes the other; \"no unanchored self-certification anywhere.\" D-JUDGE was escalated to the principal — the operational analog of \"human as irreducible arbiter.\"",
+          "provenance": [
+            "DECISIONS.md"
+          ]
+        },
+        {
+          "vein": "dao-research",
+          "reading": "~2,000 MCP servers, all lacked authentication; governance covers ≤19% of needed functions at internet scale. Empirical proof that governance is absent by default and must be deliberately placed.",
+          "provenance": [
+            "findings.md"
+          ]
+        }
+      ],
+      "tensions": [
+        "t.produce-authority",
+        "t.accreditation-shape"
+      ]
+    }
+  ],
+  "graphs": [
+    {
+      "id": "graph.declaration",
+      "name": "Declaration graph (Layer A — slick/gnx)",
+      "status": "proposed",
+      "confidence": "high",
+      "nodes": [
+        {
+          "id": "Manifest",
+          "note": "type_url, source, requires:[type_url], provides:[tag], relations:map<key,[str]>"
+        },
+        {
+          "id": "TypedStruct",
+          "note": "type_url, value:JSON — runtime face of the same identity"
+        },
+        {
+          "id": "TypedRegistry",
+          "note": "type_url → factory → T (the interpretation machine)"
+        },
+        {
+          "id": "ComponentProtocol",
+          "note": "name, consumes:frozenset, produces:str, run(Construct)->TypedStruct"
+        },
+        {
+          "id": "DagCompiler",
+          "note": "infers edges from consumes/produces; rejects missing/duplicate/cycle"
+        },
+        {
+          "id": "gnxValidator",
+          "note": "enforces kind-type-consequences at registration — UNBUILT"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Manifest",
+          "to": "TypedStruct",
+          "label": "type_url == type_url (sole tested invariant)"
+        },
+        {
+          "from": "Manifest.provides",
+          "to": "Dagstra",
+          "label": "discovery surface (independent of topology)"
+        },
+        {
+          "from": "ComponentProtocol",
+          "to": "DagCompiler",
+          "label": "consumes/produces → inferred DAG edges"
+        }
+      ],
+      "note": "Bipartite: authoring face (Manifest) + runtime face (TypedStruct/Protocol) joined by type_url. Two edge families kept independent: provides=discovery, produces/consumes=topology."
+    },
+    {
+      "id": "graph.meaning",
+      "name": "Meaning graph (Layer B — radix, per-artifact)",
+      "status": "proposed",
+      "confidence": "high",
+      "nodes": [
+        {
+          "id": "Artifact",
+          "note": "content_hash — object of attention, OUTSIDE the Frame"
+        },
+        {
+          "id": "Frame",
+          "note": "frame_id, artifact_id, content_hash, scale, kind, grounding:GroundingStatus, parent_frame_id"
+        },
+        {
+          "id": "BaseUnit",
+          "note": "typed, char-ranged, no parse payload"
+        },
+        {
+          "id": "Edge",
+          "note": "SpanRefs ≥1"
+        },
+        {
+          "id": "Interpretation",
+          "note": "head, frame_elements, constraints, illocutionary_tag, anchoring_spans (Fillmore-shaped)"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Interpretation",
+          "to": "Edge",
+          "label": "anchoring_spans"
+        },
+        {
+          "from": "Edge",
+          "to": "BaseUnit",
+          "label": "SpanRefs"
+        },
+        {
+          "from": "BaseUnit",
+          "to": "Artifact",
+          "label": "char_range → content_hash (chain MUST terminate)"
+        },
+        {
+          "from": "Frame",
+          "to": "Frame",
+          "label": "parent_frame_id — admitted iff higher grounds in lower, else DISSOLVE"
+        }
+      ],
+      "note": "Terminating grounding DAG per artifact + composition tree across scales. No cross-artifact edges until R6."
+    },
+    {
+      "id": "graph.composition-stack",
+      "name": "Three-level composition stack",
+      "status": "proposed",
+      "confidence": "medium",
+      "nodes": [
+        {
+          "id": "L1.meaning",
+          "kind": "level",
+          "note": "radix Compositor — grounding criterion, within-artifact"
+        },
+        {
+          "id": "L2.discovery",
+          "kind": "level",
+          "note": "gnx catalog / Dagstra — legibility criterion, bipartite N+M over provides"
+        },
+        {
+          "id": "L3.execution",
+          "kind": "level",
+          "note": "matrix DagCompiler — DAG criterion over consumes/produces"
+        },
+        {
+          "id": "Construct",
+          "note": "append-only, type_url-indexed shared substrate threading L3"
+        },
+        {
+          "id": "type_url",
+          "kind": "join-key",
+          "note": "the universal join across all three levels"
+        }
+      ],
+      "edges": [
+        {
+          "from": "L1.meaning",
+          "to": "L2.discovery",
+          "label": "handoff: Frame → corpus-promotion gate → Skill Manifest (provides-only axiom)"
+        },
+        {
+          "from": "L2.discovery",
+          "to": "L3.execution",
+          "label": "matched components → compiled DAG"
+        },
+        {
+          "from": "L3.execution",
+          "to": "Construct",
+          "label": "components read/write by type_url, never direct call"
+        }
+      ],
+      "note": "The dissolve rule from L1 should propagate up: structural validity at L2/L3 is necessary but not sufficient. No Compositor-equivalent exists at L2/L3 yet (see t.compositor-equivalent)."
+    },
+    {
+      "id": "graph.autopoietic-loop",
+      "name": "Catalog / autopoietic loop (Layer 3)",
+      "status": "proposed",
+      "confidence": "medium",
+      "nodes": [
+        {
+          "id": "Bodhi",
+          "note": "sharpens intent"
+        },
+        {
+          "id": "Dagstra",
+          "note": "semantic proof-search over provides index"
+        },
+        {
+          "id": "HADES",
+          "note": "generates components into the registry"
+        },
+        {
+          "id": "registry",
+          "note": "persistent state the loop modifies"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Bodhi",
+          "to": "Dagstra",
+          "label": "sharpened intent"
+        },
+        {
+          "from": "Dagstra",
+          "to": "HADES",
+          "label": "composability gaps"
+        },
+        {
+          "from": "HADES",
+          "to": "registry",
+          "label": "new entry == extension of next search space"
+        },
+        {
+          "from": "registry",
+          "to": "Dagstra",
+          "label": "extends the next search (autopoietic closure)"
+        }
+      ],
+      "note": "Boundary Test: |nodes| = N components + M integrations + B (spec + validation) vs N×M direct couplings. The dao is the bottleneck node — no artifact bypasses governance."
+    },
+    {
+      "id": "graph.dao-topology",
+      "name": "Dao topology (three layers + accountability axes)",
+      "status": "proposed",
+      "confidence": "medium",
+      "nodes": [
+        {
+          "id": "L1.bench",
+          "kind": "layer",
+          "note": "thin-router → method-distinct seats → conscience seats (separate instantiation)"
+        },
+        {
+          "id": "L2.governance",
+          "kind": "layer",
+          "note": "decision-log + ratchet chain + escalation table + conjunctive ship-gate"
+        },
+        {
+          "id": "L3.catalog-iface",
+          "kind": "layer",
+          "note": "charter component → accreditation ledger → produce-authority wall"
+        },
+        {
+          "id": "axis.vertical",
+          "kind": "axis",
+          "note": "human apex"
+        },
+        {
+          "id": "axis.horizontal",
+          "kind": "axis",
+          "note": "same-family consciences"
+        },
+        {
+          "id": "axis.diagonal",
+          "kind": "axis",
+          "note": "out-of-family evaluator — NON-NEGOTIABLE (\"no gemma beside gemini\")"
+        }
+      ],
+      "edges": [
+        {
+          "from": "L1.bench",
+          "to": "L2.governance",
+          "label": "fan-in to conscience → conjunctive gate"
+        },
+        {
+          "from": "L2.governance",
+          "to": "L3.catalog-iface",
+          "label": "artifacts that survive governance → promote into registry"
+        },
+        {
+          "from": "axis.diagonal",
+          "to": "L2.governance",
+          "label": "injects unfabricatable signal (the one law)"
+        }
+      ],
+      "note": "Topological invariant: conscience + out-of-family nodes are in DIFFERENT instantiation contexts from maker nodes — a graph property, not a label. Flattening destroys anti-sycophancy by construction."
+    },
+    {
+      "id": "graph.convergence-surface",
+      "name": "Convergence-surface graph (the dossier ITSELF)",
+      "status": "proposed",
+      "confidence": "high",
+      "nodes": [
+        {
+          "id": "SignVehicle",
+          "kind": "node-type",
+          "note": "one per concept (type_url as sign)"
+        },
+        {
+          "id": "Reading",
+          "kind": "node-type",
+          "note": "one per vein per concept (a dynamic interpretant)"
+        },
+        {
+          "id": "Convergence",
+          "kind": "node-type",
+          "note": "where ≥2 readings agree (labelled with the shared claim + confidence)"
+        },
+        {
+          "id": "Tension",
+          "kind": "node-type",
+          "note": "where readings diverge (labelled with the live decision + owner)"
+        }
+      ],
+      "edges": [
+        {
+          "from": "SignVehicle",
+          "to": "Reading",
+          "label": "holds N readings"
+        },
+        {
+          "from": "Reading",
+          "to": "Convergence",
+          "label": "agreeing readings fold into a convergence node"
+        },
+        {
+          "from": "Reading",
+          "to": "Tension",
+          "label": "diverging readings raise a tension node"
+        },
+        {
+          "from": "SignVehicle",
+          "to": "SignVehicle",
+          "label": "cross-concept edges (see crossEdges)"
+        }
+      ],
+      "note": "Solidification trajectory: immediate (bare type_url interpretability) → dynamic (defended reading) → final (converged across veins). The dossier is a snapshot mid-solidification."
+    }
+  ],
+  "tensions": [
+    {
+      "id": "t.fieldnames",
+      "question": "requires/provides vs consumes/produces — where does the grammar boundary sit?",
+      "options": [
+        "Grow the slick Manifest a produces/consumes pair (breaking change to slickit + Python crust + all manifests)",
+        "One provides field that gnx's validator interprets by Kind (Skill provides = discovery; Capability provides = also a port)",
+        "Keep slick's requires/provides; map doctrine's produces/consumes semantics onto them with Kind as discriminator"
+      ],
+      "owner": "principal",
+      "consequence": "Until resolved, the grammar the docsite describes and the grammar slick ships are different things; a component authored to doctrine fails to parse against slickit's Manifest. 2026-07-04 correction (manifest dive): a doctrine-authored manifest PARSES against shipped slickit (serde defaults, no deny_unknown_fields) but silently loses its topology fields — silent loss, not parse failure. The field-name pick is gnx's on-disk decision (zero slick/matrix code changes); GEP-0002 (draft) rules the provides-shape half.",
+      "blocks": "Skill-vs-Capability distinguishability; Dagstra index vs matrix topology reading the same field."
+    },
+    {
+      "id": "t.kind-locus",
+      "question": "Does Kind carry enforcement in the shipped grammar, or only in gnx's overlay validator?",
+      "options": [
+        "gnx's kind contract lives permanently in gnx's validator (gnx owns the on-disk format + its enforcement)",
+        "gnx tracks and defers to a future slickit Kind field (slick owns the grammar, gnx owns the vocabulary)"
+      ],
+      "owner": "principal",
+      "consequence": "Pins down whether \"component\" is a slickit concept with gnx vocabulary, or a gnx concept slickit's grammar serves. Kind is currently deleted from slick (commit 63678e2) — enforcement is aspirational."
+    },
+    {
+      "id": "t.flow-cycles",
+      "question": "Flow cycles: gnx's own SCC-aware validator, or block on Mission C?",
+      "options": [
+        "gnx ships its own SCC-aware Flow validator (condensation + per-SCC leashes) independent of matrix",
+        "Flow+cycles block on Mission C / S9 before gnx can register them"
+      ],
+      "owner": "principal",
+      "consequence": "Doctrine (SCC + leashes, 2026-06-02) contradicts the only running engine (matrix DagCompiler rejects all cycles). Leash syntax is undefined. 2026-07-04: the shape half of G3 is drafted — GEP-0003 proposes Flow = the composition root (members as TypedStructs, topology derived, never declared; triple derivation: ACES case study · matrix container.py · xDS TypedExtensionConfig). The cycle half stands, sharpened: the SCC+leash doctrine's primary source is unlocatable (0 grep hits in the cited 06-02 doc) — recover it from the memex exports or downgrade the override to proposed; reject-all-cycles is the validated baseline (matrix + ACES)."
+    },
+    {
+      "id": "t.compositor-equivalent",
+      "question": "Does gnx need a Compositor-equivalent — an integration criterion beyond type_url closure?",
+      "options": [
+        "gnx validate gains an integration test (the catalog-scale analog of \"the higher Frame must produce grounded Interpretations\")",
+        "Structural type_url closure is sufficient at the catalog layer; integration is left to accreditation after the fact"
+      ],
+      "owner": "principal",
+      "consequence": "Without it, the catalog's existential failure mode (pollution: confident, schema-shaped, low-grounding traces that pass structural validation) has no architectural defense at the composition layer."
+    },
+    {
+      "id": "t.april-lifecycle",
+      "question": "The April task-scoped dao lifecycle (instantiate → run → promote → terminate) — a gnx Flow kind, or retired?",
+      "options": [
+        "It becomes a Flow kind: gnx init scaffolds BOTH a standing dao AND a Flow dao; accreditation/charter carry lifecycle events",
+        "It is retired in favor of the June standing bench: the gnx loop is an organizational metaphor, not a lifecycle event"
+      ],
+      "owner": "principal",
+      "consequence": "The April mechanism is the compounding loop that justifies the catalog's autopoietic claim. Reshapes the gnx init genesis spec, the Flow kind definition, the accreditation record's lifecycle, and the charter's machine-readable shape. Open since 2026-04-28 (§10.12)."
+    },
+    {
+      "id": "t.produce-authority",
+      "question": "Produce-authority credential form — what makes an authority legitimate?",
+      "options": [
+        "Signing key",
+        "mox identity",
+        "human-confirmed session token"
+      ],
+      "owner": "principal",
+      "consequence": "The constraint (authority disjoint from author) is settled (§9); the credential form is not. \"Every warrant is currently forgeable — build that wall first.\" 2026-07-04: narrowed — population needs only the credential form plus an asserting-identity field in the registration schema (the second one-way door: pre-wall registrations carry permanently unsigned provenance); full attested-identity infrastructure stays advisory-first. H2 is now a fork: single external minter vs distributed-disjoint Ostrom commons + ix-monitoring (scratch/autopoiesis-and-commons.md).",
+      "blocks": "The first gnx validate write; x.uma's FIS reading real accreditation data."
+    },
+    {
+      "id": "t.accreditation-shape",
+      "question": "Accreditation record shape, and is the warrant axis binary or graded?",
+      "options": [
+        "relation on the Flow Manifest",
+        "kind:AccreditationRecord component",
+        "side-table",
+        "(orthogonal) graded verdict (SHIP / SHIP-WITH-TIGHTENING / REVISE) vs binary conjunctive gate"
+      ],
+      "owner": "principal",
+      "consequence": "The earliest unmade schema decision (§10.1); blocks gnx validate's first write and prevents x.uma's FIS from reading accreditation data."
+    },
+    {
+      "id": "t.cemri",
+      "question": "The Cemri \"17x/4x\" second law — locate the source, or qualify as direction-only?",
+      "options": [
+        "Locate Cemri et al. as a verified source before the charter ships",
+        "Qualify as direction-only: \"coordination scales with agent count, consolidation does not — direction confirmed, magnitude unverified\""
+      ],
+      "owner": "principal",
+      "consequence": "dao-research verdict: \"Cemri et al. not located — do not cite the number.\" Silently carrying an unverified quantitative claim as doctrine is an honesty failure."
+    },
+    {
+      "id": "t.radix-import",
+      "question": "THE FOUNDATIONAL FORK — import radix's Frame/interpretant architecture as gnx's Layer B meaning-grammar?",
+      "options": [
+        "Import it: gnx's grammar becomes genuinely two-layer and Peircean (immediate/dynamic/final first-class); radix Frames promote into the catalog as Skill components",
+        "Keep gnx as Layer A (declaration) only; treat radix as a separate upstream that hands off Frames at the registry boundary"
+      ],
+      "owner": "principal",
+      "consequence": "Everything else hangs off this — whether the convergence surface and the grammar adopt radix's semiotic architecture, or merely consume its output."
+    }
+  ]
+}

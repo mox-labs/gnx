@@ -1,0 +1,13 @@
+# One flow exercising: missing producer, duplicate producer, cycle
+type_url: gnx.dev.v1.broken-bench
+kind: Flow
+provides: [fixtures.broken]
+requires: []
+members:
+  - type_url: gnx.dev.v1.lone-extract
+  - type_url: gnx.dev.v1.alt-cache
+  - type_url: gnx.dev.v1.alt-cache-two
+  - type_url: gnx.dev.v1.cache-consumer
+  - type_url: gnx.dev.v1.cycle-a
+  - type_url: gnx.dev.v1.cycle-b
+  - type_url: gnx.dev.v1.unresolved-member

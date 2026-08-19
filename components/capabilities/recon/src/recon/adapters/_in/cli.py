@@ -1,0 +1,466 @@
+"""Recon CLI — composition root + commands.
+
+Commands:
+  recon survey <name> [-c config]  → run collection mission
+  recon init <name> [--template]   → scaffold mission from template
+  recon status                     → list missions + archives
+  recon query <name> "SQL"         → DuckDB query on JSONL
+  recon templates                  → list built-in templates
+
+This is the composition root: it wires adapters to the application layer
+via the Collector Protocol registry. Infrastructure transforms ($pdf2text)
+are registered here, not in the application layer.
+
+Mission layout:
+  .cix/recon/<name>/
+    config.yaml
+    archive/
+      2026-04-01-143022/
+        *.jsonl
+        meta.yaml
+"""
+
+from __future__ import annotations
+
+import importlib.resources
+import shutil
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import click
+import yaml
+from rich.console import Console
+from rich.table import Table
+
+from recon import __version__
+from recon import skill as skill_module
+from recon.adapters._out.api_collector import ApiCollector
+from recon.adapters._out.cli_collector import CliCollector
+from recon.adapters._out.http_requester import HttpxRequester
+from recon.adapters._out.markitdown_converter import MarkitdownConverter
+from recon.adapters._out.web_collector import WebCollector
+from recon.application import query as query_module
+from recon.application.query import available_tables
+from recon.application.recon import run as recon_run
+from recon.application.transforms import register_transform
+from recon.application.utilization import RateLimiter
+from recon.domain.exceptions import ReconError
+from recon.domain.models import ReconConfig
+
+if TYPE_CHECKING:
+    from recon.domain.collector import Collector
+
+# --- Composition: build collector registry ---
+
+
+def _build_collectors() -> dict[str, Collector]:
+    """Wire adapter implementations to type names.
+
+    One Requester (httpx + rate limiter) is shared by api and web collectors
+    so hitting the same source from both respects a single rate limit. Rate
+    limiting lives inside the Requester — paginated collectors can't forget
+    to acquire per-page. The DocumentConverter (markitdown) handles HTML,
+    PDF, DOCX, PPTX, XLSX, EPub, images, audio, etc. uniformly.
+    """
+    requester = HttpxRequester(RateLimiter())
+    converter = MarkitdownConverter()
+    return {
+        "cli": CliCollector(),
+        "api": ApiCollector(requester),
+        "web": WebCollector(requester, converter),
+    }
+
+
+# --- Composition: register infrastructure transforms ---
+
+
+def _markitdown_path(path: str) -> str:
+    """Convert any markitdown-supported local file to markdown.
+
+    Handles PDF, DOCX, PPTX, XLSX, EPub, images (OCR), audio (transcription),
+    CSV, JSON, XML, ZIP, HTML. Returns empty string on any failure —
+    transforms are best-effort leaves of the pipeline.
+    """
+    try:
+        from markitdown import MarkItDown
+
+        result = MarkItDown().convert(path)
+        return getattr(result, "text_content", "") or ""
+    except Exception:
+        return ""
+
+
+register_transform("$markitdown", _markitdown_path)
+
+
+# --- Project root + mission directory ---
+
+
+console = Console(stderr=True)
+
+
+def _cli_event(event: dict[str, object]) -> None:
+    """Render a dispatch-loop outcome event to stderr."""
+    kind = event.get("kind")
+    name = event.get("name", "?")
+    if kind == "ok":
+        console.print(f"[dim]  {name}: {event.get('records', 0)} records[/]")
+    elif kind == "error":
+        console.print(f"[red]  {name}: ERROR — {event.get('reason', '')}[/]")
+    elif kind == "archive_warning":
+        console.print(
+            f"[yellow]  WARNING: archive finalization issue — {event.get('reason', '')}[/]"
+        )
+
+
+def _find_project_root() -> Path:
+    """Walk up from cwd looking for .git/."""
+    current = Path.cwd()
+    while True:
+        if (current / ".git").exists():
+            return current
+        parent = current.parent
+        if parent == current:
+            return Path.cwd()
+        current = parent
+
+
+def _recon_dir() -> Path:
+    """Resolve .cix/recon/ directory at project root."""
+    return _find_project_root() / ".cix" / "recon"
+
+
+def _mission_dir(name: str) -> Path:
+    """Resolve mission directory at <project>/.cix/recon/<name>/."""
+    return _recon_dir() / name
+
+
+def _list_templates() -> list[str]:
+    """List built-in config templates from the package."""
+    try:
+        configs = importlib.resources.files("recon.configs")
+        return sorted(
+            p.name.removesuffix(".yaml")
+            for p in configs.iterdir()
+            if hasattr(p, "name") and p.name.endswith(".yaml")
+        )
+    except (FileNotFoundError, ModuleNotFoundError):
+        return []
+
+
+def _load_template(name: str) -> str | None:
+    """Load a built-in template by name."""
+    try:
+        ref = importlib.resources.files("recon.configs").joinpath(f"{name}.yaml")
+        return ref.read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError, TypeError):
+        return None
+
+
+# --- Commands ---
+
+
+@click.group(invoke_without_command=True)
+@click.option("--skill", is_flag=True, help="Output skill documentation for Claude")
+@click.option("--reference", "-r", help="Specific skill reference (use with --skill)")
+@click.version_option(__version__, prog_name="recon")
+@click.pass_context
+def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
+    """Recon — mechanical collection system.
+
+    Config-driven data collection from HTTP APIs, CLI tools, and web pages
+    into queryable JSONL. Intelligence lives outside — write the config,
+    run the survey, reason over the results.
+
+    \b
+    Quick start:
+      recon init my-scan --template code-forensics
+      # edit .cix/recon/my-scan/config.yaml
+      recon survey my-scan
+      recon query my-scan "SELECT line FROM todo_files LIMIT 20"
+    """
+    if skill:
+        click.echo(skill_module.get_skill(reference))
+        ctx.exit(0)
+
+
+@main.command()
+@click.argument("name")
+@click.option(
+    "-t",
+    "--template",
+    default="code-forensics",
+    help="Built-in template to use (default: code-forensics). See `recon templates`.",
+)
+@click.option(
+    "--from",
+    "from_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Scaffold from a config file (overrides --template).",
+)
+@click.pass_context
+def init(
+    ctx: click.Context,
+    name: str,
+    template: str,
+    from_file: Path | None,
+) -> None:
+    """Scaffold a new mission from a built-in template or an external config.
+
+    \b
+    Examples:
+      recon init my-scan
+      recon init gh-audit --template github-audit
+      recon init review --from path/to/literature-catalog.yaml
+    """
+    mission = _mission_dir(name)
+    config_path = mission / "config.yaml"
+
+    if config_path.exists():
+        console.print(f"[yellow]Mission '{name}' already exists:[/] {config_path}")
+        raise SystemExit(1)
+
+    content: str | None
+    if from_file is not None:
+        content = from_file.read_text()
+    else:
+        # Deprecation alias: the `research` template moved to craft-research
+        # in recon 0.8.0. Point users at the new location instead of silently
+        # failing with "template not found".
+        if template == "research":
+            console.print(
+                "[yellow]The 'research' template moved to craft-research in recon 0.8.0.[/]"
+            )
+            console.print(
+                f"[dim]Use: recon init {name} --from "
+                "plugins/craft-research/skills/collecting/references/"
+                "literature-catalog.yaml[/]"
+            )
+            raise SystemExit(1)
+
+        # Announce when the default is being used — prevents silent surprises
+        # (recon 0.7.x defaulted to `research`; 0.8.x defaults to
+        # `code-forensics`, a different capability entirely).
+        source = ctx.get_parameter_source("template")
+        if source == click.core.ParameterSource.DEFAULT:
+            console.print(f"[dim]No --template specified, using default: {template}[/]")
+
+        content = _load_template(template)
+        if content is None:
+            available = ", ".join(_list_templates()) or "(none)"
+            console.print(f"[red]Template not found:[/] {template}")
+            console.print(f"[dim]Available: {available}[/]")
+            raise SystemExit(1)
+
+    mission.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(content)
+    console.print(f"[green]Created:[/] {config_path}")
+    console.print(f"[dim]Edit the config to set placeholders, then run: recon survey {name}[/]")
+    console.print("[dim]For config syntax help: recon --skill[/]")
+
+
+@main.command()
+@click.argument("name")
+@click.option(
+    "-c",
+    "--config",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Config file override (default: .cix/recon/<name>/config.yaml).",
+)
+def survey(name: str, config: Path | None) -> None:
+    """Run a collection mission.
+
+    \b
+    Examples:
+      recon survey attention-papers
+      recon survey my-scan -c custom-config.yaml
+    """
+    mission = _mission_dir(name)
+
+    if config:
+        config_path = config
+        # Copy override config into mission dir for reproducibility
+        mission.mkdir(parents=True, exist_ok=True)
+        dest = mission / "config.yaml"
+        if config_path != dest:
+            shutil.copy2(config_path, dest)
+    else:
+        config_path = mission / "config.yaml"
+
+    if not config_path.exists():
+        console.print(f"[red]No config found:[/] {config_path}")
+        hint = mission / "config.yaml"
+        console.print(f"[dim]Run `recon init {name}` or write config to {hint}[/]")
+        raise SystemExit(1)
+
+    try:
+        raw = yaml.safe_load(config_path.read_text())
+        parsed = ReconConfig.model_validate(raw)
+    except Exception as exc:
+        console.print(f"[red]Config error:[/] {exc}")
+        raise SystemExit(1) from exc
+
+    collectors = _build_collectors()
+
+    console.print(
+        f"[dim]Mission: {name} — "
+        f"{len(parsed.collectors)} collector(s), "
+        f"{len(parsed.catalog)} source(s)[/]"
+    )
+
+    try:
+        archive_dir, _results = recon_run(parsed, collectors, mission, on_event=_cli_event)
+    except ReconError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise SystemExit(1) from exc
+
+    # Print archive path to stdout (for piping)
+    click.echo(str(archive_dir))
+
+
+@main.command()
+def status() -> None:
+    """List missions and their archives.
+
+    \b
+    Example:
+      recon status
+    """
+    recon_dir = _recon_dir()
+
+    if not recon_dir.exists():
+        console.print("[dim]No missions found. Run `recon init <name>` to get started.[/]")
+        return
+
+    missions = sorted(d for d in recon_dir.iterdir() if d.is_dir() and (d / "config.yaml").exists())
+
+    if not missions:
+        console.print("[dim]No missions found. Run `recon init <name>` to get started.[/]")
+        return
+
+    table = Table(show_header=True, header_style="dim")
+    table.add_column("Mission")
+    table.add_column("Archives", justify="right")
+    table.add_column("Latest")
+    table.add_column("State")
+
+    for m in missions:
+        archive_dir = m / "archive"
+        if archive_dir.exists():
+            runs = sorted(d for d in archive_dir.iterdir() if d.is_dir())
+            count = str(len(runs))
+            if runs:
+                latest_dir = runs[-1]
+                latest = latest_dir.name
+                state = "[yellow]incomplete[/]" if (latest_dir / ".incomplete").exists() else "ok"
+            else:
+                latest = "—"
+                state = "—"
+        else:
+            count = "0"
+            latest = "—"
+            state = "—"
+        table.add_row(m.name, count, latest, state)
+
+    console.print(table)
+
+
+@main.command()
+@click.argument("name")
+@click.argument("sql")
+@click.option("--run", "run_id", default=None, help="Specific archive timestamp.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON (for piping).")
+def query(name: str, sql: str, run_id: str | None, as_json: bool) -> None:
+    """Query mission data with SQL via DuckDB.
+
+    \b
+    Examples:
+      recon query my-research "SELECT title, year FROM s2_search LIMIT 10"
+      recon query my-research "SELECT * FROM arxiv_search" --json
+      recon query my-research "SELECT count(*) FROM s2_search" --run 2026-04-01-143022
+    """
+    mission = _mission_dir(name)
+    archive = mission / "archive"
+
+    if not archive.exists():
+        console.print(f"[red]No archives for mission '{name}'[/]")
+        raise SystemExit(1)
+
+    if run_id:
+        run_dir = archive / run_id
+        if not run_dir.exists():
+            console.print(f"[red]Archive not found:[/] {run_id}")
+            available = sorted(d.name for d in archive.iterdir() if d.is_dir())
+            if available:
+                console.print(f"[dim]Available: {', '.join(available)}[/]")
+            raise SystemExit(1)
+    else:
+        runs = sorted(d for d in archive.iterdir() if d.is_dir())
+        if not runs:
+            console.print(f"[red]No archives for mission '{name}'[/]")
+            raise SystemExit(1)
+        run_dir = runs[-1]
+
+    if (run_dir / ".incomplete").exists():
+        console.print(
+            f"[yellow]Archive '{run_dir.name}' is marked incomplete — "
+            "one or more collectors failed. Query proceeds, but results may be partial. "
+            "See meta.yaml for per-collector status.[/]"
+        )
+
+    try:
+        columns, rows = query_module.execute(run_dir, sql)
+    except ReconError as exc:
+        # SQL error already includes "Available tables: ..." from the application layer.
+        console.print(f"[red]{exc}[/]")
+        raise SystemExit(1) from exc
+
+    if not columns and not rows:
+        tables = ", ".join(available_tables(run_dir))
+        console.print(f"[yellow]No results. Available tables: {tables}[/]")
+        return
+
+    if as_json:
+        import json
+
+        # strict=True, not False. `columns` and `rows` come from the same query execution,
+        # so a width mismatch is a programming or driver error — never a normal condition.
+        # strict=False would silently emit JSON records with fields dropped, which is worse
+        # than failing: the caller gets plausible-looking output that is missing data.
+        records = [dict(zip(columns, row, strict=True)) for row in rows]
+        click.echo(json.dumps(records, indent=2, default=str))
+    else:
+        out_table = Table()
+        for col in columns:
+            out_table.add_column(col)
+        for row in rows:
+            out_table.add_row(*(str(v) for v in row))
+        Console().print(out_table)
+
+
+@main.command()
+def templates() -> None:
+    """List available built-in config templates.
+
+    \b
+    Example:
+      recon templates
+      recon init my-mission --template code-forensics
+    """
+    names = _list_templates()
+    if not names:
+        console.print("[dim]No built-in templates found[/]")
+        return
+
+    for name in names:
+        content = _load_template(name)
+        # Extract first comment line as description
+        desc = ""
+        if content:
+            for line in content.splitlines():
+                if line.startswith("#") and not line.startswith("##"):
+                    desc = line.lstrip("# ").strip()
+                    break
+        console.print(f"  [bold]{name}[/]  {desc}")

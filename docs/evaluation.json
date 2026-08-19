@@ -1,0 +1,570 @@
+[
+  {
+    "file": "0-overview.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 8,
+    "reeval": true
+  },
+  {
+    "file": "1-what-is-gnx.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 4,
+      "F": 5,
+      "G": 5,
+      "H": 5,
+      "J": 5
+    },
+    "edits": 1,
+    "reeval": true
+  },
+  {
+    "file": "3-how-components-work.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5,
+      "J": 5
+    },
+    "edits": 13,
+    "reeval": true
+  },
+  {
+    "file": "4-cli-reference.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5,
+      "J": 5
+    },
+    "edits": 9,
+    "reeval": true
+  },
+  {
+    "file": "5-author-a-component.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5,
+      "J": 5
+    },
+    "edits": 15,
+    "reeval": true
+  },
+  {
+    "file": "1-install-a-plugin.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5,
+      "I": 5,
+      "J": 5
+    },
+    "edits": 2,
+    "reeval": true
+  },
+  {
+    "file": "2-compose-components.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5,
+      "I": 5,
+      "J": 5
+    },
+    "edits": 2,
+    "reeval": true
+  },
+  {
+    "file": "3-gnx-init.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5,
+      "I": 5
+    },
+    "edits": 2,
+    "reeval": true
+  },
+  {
+    "file": "1-why-a-catalog.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 0,
+    "reeval": false
+  },
+  {
+    "file": "2-vendor-neutral-by-structure.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 0,
+    "reeval": false
+  },
+  {
+    "file": "3-the-primary-reader-is-an-agent.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 0,
+    "reeval": false
+  },
+  {
+    "file": "1-grammar-reference.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5,
+      "J": 5
+    },
+    "edits": 0,
+    "reeval": false
+  },
+  {
+    "file": "2-api-schema-index.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5,
+      "J": 5
+    },
+    "edits": 0,
+    "reeval": false
+  },
+  {
+    "file": "3-status.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5,
+      "J": 5
+    },
+    "edits": 3,
+    "reeval": true
+  },
+  {
+    "file": "_landing.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5
+    },
+    "edits": 0,
+    "reeval": false
+  },
+  {
+    "file": "_brief.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5
+    },
+    "edits": 0,
+    "reeval": false
+  },
+  {
+    "file": "01-ecosystem.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 5,
+    "reeval": true
+  },
+  {
+    "file": "02-what-gnx-is.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 3,
+    "reeval": true
+  },
+  {
+    "file": "03-grammar.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 3,
+    "reeval": true
+  },
+  {
+    "file": "04-core-set.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 4,
+    "reeval": true
+  },
+  {
+    "file": "05-dao.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 6,
+    "reeval": true
+  },
+  {
+    "file": "06-aboot.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 7,
+    "reeval": true
+  },
+  {
+    "file": "07-antifragile.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 2,
+    "reeval": true
+  },
+  {
+    "file": "08-hard-ace.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 4,
+    "reeval": true
+  },
+  {
+    "file": "09-cli.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 6,
+    "reeval": true
+  },
+  {
+    "file": "10-claude-code-projection.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 5,
+    "reeval": true
+  },
+  {
+    "file": "11-accreditation.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 3,
+    "reeval": true
+  },
+  {
+    "file": "12-public-surface.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 8,
+    "reeval": true
+  },
+  {
+    "file": "13-composing.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 0,
+    "reeval": true
+  },
+  {
+    "file": "14-component-standard.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 1,
+    "reeval": true
+  },
+  {
+    "file": "15-component-catalog.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 0,
+    "reeval": true
+  },
+  {
+    "file": "1-how-this-site-works.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 0,
+    "reeval": false
+  },
+  {
+    "file": "2-the-ship-gate.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 0,
+    "reeval": false
+  },
+  {
+    "file": "3-the-feedback-loop.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 0,
+    "reeval": false
+  },
+  {
+    "file": "4-the-collaboration-method.md",
+    "verdict": "SHIP",
+    "scores": {
+      "A": 5,
+      "B": 5,
+      "C": 5,
+      "D": 5,
+      "E": 5,
+      "F": 5,
+      "G": 5,
+      "H": 5
+    },
+    "edits": 0,
+    "reeval": false
+  }
+]

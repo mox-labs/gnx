@@ -1,0 +1,12 @@
+# DRAFT
+type_url: gnx.dev.v1.verify
+kind: Agent
+maturity: shipped
+source: ../../..//mox/products/cix/plugins/craft-research/agents/scrutiny.md
+provides:
+  - gnx.dev.v1.verified-claims
+  - research.claim-verification
+requires:
+  - gnx.dev.v1.extraction-set
+  - gnx.dev.v1.source-cache       # CoVE re-reads the source independently
+description: Independent verification of extracted claims against their sources (CoVE); domain-general by method.

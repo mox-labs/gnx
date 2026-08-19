@@ -1,0 +1,14 @@
+# DRAFT/PROPOSED — "the charter is the compiler" (roll-up #2): the constitution of
+# normative commitments (dao component #2), drafted from spec + figures, amendable
+# by its practitioners, ratchet-fed (#8).
+type_url: gnx.dao.v1.charter
+kind: Capability
+maturity: designed
+source: ./dao-charter
+provides:
+  - gnx.dao.v1.project-charter
+  - dao.charter
+requires:
+  - gnx.dev.v1.project-spec
+  - gnx.dao.v1.figure-set
+description: Compiles the project constitution from spec and figures; amendable, ratchet-fed.

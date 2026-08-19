@@ -1,0 +1,66 @@
+[project]
+name = "recon"
+version = "0.8.0"
+description = "Mechanical collection system — collect, normalize, query via parquet + DuckDB"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [
+    { name = "yzavyas", email = "yza.vyas@gmail.com" }
+]
+
+dependencies = [
+    "httpx>=0.27",
+    "rich>=13.0",
+    "click>=8.1",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "xmltodict>=0.13",
+    "duckdb>=1.0",
+    "glom>=23.0",
+    "tenacity>=9.0",
+    "markitdown[all]>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+recon = "recon.adapters._in.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/recon"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+
+[tool.hatch.build]
+include = [
+    "src/recon/**/*.py",
+    "src/recon/configs/*.yaml",
+    "src/recon/**/*.md",
+    "src/recon/py.typed",
+]
+
+# The x.uma/puma house lint set: B (bugbear), SIM, TC on top of the cix selection.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+# glom and xmltodict ship no py.typed marker, so strict mode cannot analyze them.
+# Scoped to these modules only; everything else stays strict.
+[[tool.mypy.overrides]]
+module = ["glom", "xmltodict"]
+ignore_missing_imports = true

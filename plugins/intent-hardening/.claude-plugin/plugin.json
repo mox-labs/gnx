@@ -1,0 +1,16 @@
+{
+  "name": "intent-hardening",
+  "version": "0.1.0",
+  "description": "Intent is not extracted from an utterance \u2014 it is hardened through structured discourse. Turn a fuzzy ask into something the catalog can act on.",
+  "author": {
+    "name": "Mox Labs",
+    "email": "mox.rnd@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "intent",
+    "discourse",
+    "requirements",
+    "gnx"
+  ]
+}

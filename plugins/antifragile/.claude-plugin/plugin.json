@@ -1,0 +1,17 @@
+{
+  "name": "antifragile",
+  "version": "0.2.0",
+  "description": "Diagnose endogenous structural fragility \u2014 the decay a platform generates through its own operation \u2014 and apply the inversion.",
+  "author": {
+    "name": "Mox Labs",
+    "email": "mox.rnd@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "architecture",
+    "security",
+    "aces",
+    "platform",
+    "fragility"
+  ]
+}

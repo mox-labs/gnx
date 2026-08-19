@@ -1,0 +1,4 @@
+type_url: gnx.dev.v1.cycle-a
+kind: Agent
+provides: [gnx.dev.v1.port-a]
+requires: [gnx.dev.v1.port-b]

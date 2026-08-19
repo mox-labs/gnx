@@ -1,0 +1,206 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 560"
+     role="img" aria-label="The antifragile decay cycle and its ACES inversion. Three nodes — Stasis, Drag, Opacity — feed each other in a compounding loop. Three break-arrows in accent color show how Adaptability severs Stasis, Extensibility severs Drag, and Composability severs Opacity.">
+  <title>Decay Cycle — ACES Inversion</title>
+  <desc>
+    Equilateral triangle of decay: Stasis (system-to-terrain coupling, top), Drag
+    (contributor-to-platform, lower-right), Opacity (behavior-to-integration, lower-left).
+    Cycle arrows run Opacity to Stasis, Stasis to Drag, Drag to Opacity — multiplicative,
+    self-compounding. Opacity carries a self-loop labeled self-concealing. Three external
+    break-arrows in #e05d44 each cross one cycle channel: Adaptability crosses the
+    Opacity-to-Stasis channel, Extensibility crosses the Stasis-to-Drag channel,
+    Composability crosses the Drag-to-Opacity channel.
+  </desc>
+
+  <defs>
+    <!-- Arrowhead for cycle (gray) -->
+    <marker id="arr-cycle" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#9ca3af"/>
+    </marker>
+    <!-- Arrowhead for break-arrows (accent) -->
+    <marker id="arr-break" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#e05d44"/>
+    </marker>
+    <!-- Arrowhead for self-loop (gray, smaller) -->
+    <marker id="arr-self" markerWidth="6" markerHeight="5" refX="5" refY="2.5" orient="auto">
+      <polygon points="0 0, 6 2.5, 0 5" fill="#9ca3af"/>
+    </marker>
+  </defs>
+
+  <!--
+    ═══════════════════════════════════════════════════════════════
+    GEOMETRY (all measurements in SVG units)
+
+    Triangle center: (350, 285)  circumradius: 152
+    Stasis      (top):          (350, 133)
+    Drag        (lower-right):  (482, 367)
+    Opacity     (lower-left):   (218, 367)
+
+    Node circle radius: 42
+
+    Cycle arrows — direction unit vectors:
+      Opacity → Stasis:  dir=(0.500, -0.866)
+        start=(239, 331)  cross=(283, 249)  end=(329, 169)
+        gap seg1 end=(280, 255)  gap seg2 start=(286, 244)
+      Stasis  → Drag:    dir=(0.500,  0.866)
+        start=(371, 169)  cross=(416, 249)  end=(461, 331)
+        gap seg1 end=(413, 244)  gap seg2 start=(419, 255)
+      Drag    → Opacity: dir=(-1, 0)
+        start=(440, 367)  cross=(350, 367)  end=(260, 367)
+        gap seg1 end=(356, 367)  gap seg2 start=(344, 367)
+
+    Break-arrows (accent, cross respective cycle channel):
+      Adaptability:  (140, 150) → (322, 283)  crosses Opacity→Stasis at (283,249)
+      Extensibility: (564, 150) → (378, 283)  crosses Stasis→Drag at (416,249)
+      Composability: (350, 506) → (350, 349)  crosses Drag→Opacity at (350,367)
+
+    Opacity self-loop: arc on lower-left of Opacity node
+    ═══════════════════════════════════════════════════════════════
+  -->
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- BREAK-ARROWS (drawn first so they appear under cycle arrows) -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+
+  <!-- Adaptability — severs Opacity→Stasis channel -->
+  <line x1="140" y1="150" x2="322" y2="283"
+        stroke="#e05d44" stroke-width="2"
+        marker-end="url(#arr-break)"/>
+
+  <!-- Extensibility — severs Stasis→Drag channel -->
+  <line x1="564" y1="150" x2="378" y2="283"
+        stroke="#e05d44" stroke-width="2"
+        marker-end="url(#arr-break)"/>
+
+  <!-- Composability — severs Drag→Opacity channel -->
+  <line x1="350" y1="506" x2="350" y2="349"
+        stroke="#e05d44" stroke-width="2"
+        marker-end="url(#arr-break)"/>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- CYCLE ARROWS — mid-gray, gap where break-arrow crosses       -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+
+  <!-- Opacity → Stasis  (gap at ≈ (283, 249)) -->
+  <line x1="239" y1="331" x2="280" y2="255"
+        stroke="#6b7280" stroke-width="1.5"/>
+  <line x1="286" y1="244" x2="329" y2="169"
+        stroke="#6b7280" stroke-width="1.5"
+        marker-end="url(#arr-cycle)"/>
+
+  <!-- Stasis → Drag  (gap at ≈ (416, 249)) -->
+  <line x1="371" y1="169" x2="413" y2="244"
+        stroke="#6b7280" stroke-width="1.5"/>
+  <line x1="419" y1="255" x2="461" y2="331"
+        stroke="#6b7280" stroke-width="1.5"
+        marker-end="url(#arr-cycle)"/>
+
+  <!-- Drag → Opacity  (gap at (350, 367)) -->
+  <line x1="440" y1="367" x2="356" y2="367"
+        stroke="#6b7280" stroke-width="1.5"/>
+  <line x1="344" y1="367" x2="260" y2="367"
+        stroke="#6b7280" stroke-width="1.5"
+        marker-end="url(#arr-cycle)"/>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- CYCLE EDGE LABELS                                            -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+
+  <!-- feeds label on Opacity→Stasis (midpoint ≈ (284,250), offset right of arrow) -->
+  <text x="268" y="242"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        text-anchor="end">feeds</text>
+
+  <!-- feeds label on Stasis→Drag -->
+  <text x="436" y="242"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        text-anchor="start">feeds</text>
+
+  <!-- feeds label on Drag→Opacity -->
+  <text x="350" y="360"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        text-anchor="middle">feeds</text>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- NODES                                                         -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+
+  <!-- Stasis (top) -->
+  <circle cx="350" cy="133" r="42"
+          fill="rgba(107,114,128,0.04)" stroke="#6b7280" stroke-width="1.5"/>
+  <text x="350" y="129"
+        font-family="system-ui, sans-serif" font-size="14" font-weight="600"
+        fill="#6b7280" text-anchor="middle">Stasis</text>
+  <text x="350" y="146"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        text-anchor="middle">system · terrain</text>
+
+  <!-- Drag (lower-right) -->
+  <circle cx="482" cy="367" r="42"
+          fill="rgba(107,114,128,0.04)" stroke="#6b7280" stroke-width="1.5"/>
+  <text x="482" y="363"
+        font-family="system-ui, sans-serif" font-size="14" font-weight="600"
+        fill="#6b7280" text-anchor="middle">Drag</text>
+  <text x="482" y="380"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        text-anchor="middle">contributor · platform</text>
+
+  <!-- Opacity (lower-left) -->
+  <circle cx="218" cy="367" r="42"
+          fill="rgba(107,114,128,0.04)" stroke="#6b7280" stroke-width="1.5"/>
+  <text x="218" y="363"
+        font-family="system-ui, sans-serif" font-size="14" font-weight="600"
+        fill="#6b7280" text-anchor="middle">Opacity</text>
+  <text x="218" y="380"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        text-anchor="middle">behavior · integration</text>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- OPACITY SELF-LOOP (self-concealing)                          -->
+  <!-- Arc curves from lower-left of Opacity node back to itself    -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <path d="M 190,385 C 148,430 148,480 190,420 Q 196,405 200,396"
+        fill="none" stroke="#9ca3af" stroke-width="1" stroke-dasharray="3 2"
+        marker-end="url(#arr-self)"/>
+  <text x="148" y="450"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        text-anchor="middle" font-style="italic">self-concealing</text>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- BREAK-ARROW LABELS                                           -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+
+  <!-- Adaptability (upper-left) -->
+  <text x="128" y="138"
+        font-family="system-ui, sans-serif" font-size="13" font-weight="600"
+        fill="#e05d44" text-anchor="middle">Adaptability</text>
+  <text x="128" y="153"
+        font-family="system-ui, sans-serif" font-size="10" fill="#e05d44"
+        text-anchor="middle" opacity="0.75">breaks Stasis</text>
+
+  <!-- Extensibility (upper-right) -->
+  <text x="576" y="138"
+        font-family="system-ui, sans-serif" font-size="13" font-weight="600"
+        fill="#e05d44" text-anchor="middle">Extensibility</text>
+  <text x="576" y="153"
+        font-family="system-ui, sans-serif" font-size="10" fill="#e05d44"
+        text-anchor="middle" opacity="0.75">breaks Drag</text>
+
+  <!-- Composability (bottom) -->
+  <text x="350" y="522"
+        font-family="system-ui, sans-serif" font-size="13" font-weight="600"
+        fill="#e05d44" text-anchor="middle">Composability</text>
+  <text x="350" y="537"
+        font-family="system-ui, sans-serif" font-size="10" fill="#e05d44"
+        text-anchor="middle" opacity="0.75">breaks Opacity</text>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- CENTER ANNOTATION: multiplicative cycle                      -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <text x="350" y="279"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        text-anchor="middle" letter-spacing="0.05em">multiplicative</text>
+  <text x="350" y="294"
+        font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af"
+        text-anchor="middle" letter-spacing="0.05em">three no's compound</text>
+
+</svg>

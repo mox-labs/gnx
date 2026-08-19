@@ -1,0 +1,17 @@
+{
+  "name": "recon",
+  "version": "0.8.0",
+  "description": "Heterogeneous sources in, structured data out. Fetch from APIs, CLIs, and web pages; reshape to uniform JSONL queryable with SQL.",
+  "author": {
+    "name": "Mox Labs",
+    "email": "mox.rnd@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "collection",
+    "scraping",
+    "apis",
+    "duckdb",
+    "jsonl"
+  ]
+}

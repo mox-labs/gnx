@@ -1,0 +1,4 @@
+type_url: gnx.dev.intent-hardening.v1  # version-terminal — flagged-not-adopted (GEP-0001 §6)
+kind: Skill
+provides: [intent.hardening-alt]
+requires: []

@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 470" role="img" aria-label="The gnx self-extension loop: Bodhi sharpens intent and passes to Dagstra. Dagstra performs proof-search on provides over the registry. When a gap is found, HADES generates a new component and writes it into the registry. The registry validates at registration; whatever enters immediately extends the next Dagstra search, closing the loop. Human-ratified accreditation enters the registry from outside — composers read it but cannot mint it.">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6b7280"/>
+    </marker>
+    <marker id="arr-ext" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#9ca3af"/>
+    </marker>
+  </defs>
+
+  <!-- ── Registry: central, emphasized ──────────────────────────────── -->
+  <circle cx="300" cy="240" r="52"
+          fill="rgba(224,93,68,0.05)"
+          stroke="#e05d44" stroke-width="1.8"/>
+  <text x="300" y="234"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="15" font-weight="600"
+        fill="#e05d44">gnx registry</text>
+  <text x="300" y="251"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="11"
+        fill="#e05d44" opacity="0.75">validated at registration</text>
+
+  <!-- ── Outer nodes ─────────────────────────────────────────────────── -->
+
+  <!-- Bodhi: cx=108 cy=108 rx=74 ry=26 -->
+  <ellipse cx="108" cy="108" rx="74" ry="26"
+           fill="none" stroke="#6b7280" stroke-width="1.4"/>
+  <text x="108" y="104"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="14" font-weight="500"
+        fill="#374151">Bodhi</text>
+  <text x="108" y="119"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="11"
+        fill="#6b7280">sharpens intent</text>
+
+  <!-- Dagstra: cx=512 cy=108 rx=92 ry=26 -->
+  <ellipse cx="512" cy="108" rx="92" ry="26"
+           fill="none" stroke="#6b7280" stroke-width="1.4"/>
+  <text x="512" y="104"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="14" font-weight="500"
+        fill="#374151">Dagstra</text>
+  <text x="512" y="119"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="11"
+        fill="#6b7280">proof-search on provides</text>
+
+  <!-- HADES: cx=512 cy=362 rx=74 ry=26 -->
+  <ellipse cx="512" cy="362" rx="74" ry="26"
+           fill="none" stroke="#6b7280" stroke-width="1.4"/>
+  <text x="512" y="358"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="14" font-weight="500"
+        fill="#374151">HADES</text>
+  <text x="512" y="373"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="11"
+        fill="#6b7280">generates component</text>
+
+  <!-- ── Cycle edges ──────────────────────────────────────────────────── -->
+
+  <!-- Bodhi → Dagstra (top horizontal)
+       Bodhi right edge (182,108) → Dagstra left edge (420,108)          -->
+  <line x1="182" y1="108" x2="416" y2="108"
+        stroke="#6b7280" stroke-width="1.3"
+        marker-end="url(#arr)"/>
+
+  <!-- Dagstra → HADES (right vertical)
+       Dagstra bottom (512,134) → HADES top (512,336)                     -->
+  <line x1="512" y1="134" x2="512" y2="332"
+        stroke="#6b7280" stroke-width="1.3"
+        marker-end="url(#arr)"/>
+  <!-- edge label: gap found -->
+  <text x="554" y="236"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="12"
+        fill="#6b7280">gap found</text>
+
+  <!-- HADES → Registry (diagonal up-left)
+       HADES exit at 210°: (512 + 74×cos210°, 362 + 26×sin210°)
+         cos210° = −0.866  →  512 − 64 = 448
+         sin210° = −0.500  →  362 − 13 = 349
+       Registry entry at 30°: (300 + 52×cos30°, 240 + 52×sin30°)
+         cos30° = 0.866   →  300 + 45 = 345
+         sin30° = 0.500   →  240 + 26 = 266                              -->
+  <line x1="448" y1="349" x2="348" y2="268"
+        stroke="#6b7280" stroke-width="1.3"
+        marker-end="url(#arr)"/>
+  <!-- label below-right of midpoint (398,308) -->
+  <text x="436" y="328"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="12"
+        fill="#6b7280">writes to registry</text>
+
+  <!-- Registry → Dagstra (diagonal up-right — the closure arrow)
+       Direction: dx=212, dy=−132  angle≈−31.9°
+       Registry exit at −31.9°: cos≈0.849, sin≈−0.529
+         300 + 52×0.849 = 344    240 + 52×(−0.529) = 212
+       Dagstra entry at 148°: cos≈−0.848, sin≈0.530
+         512 + 92×(−0.848) = 434   108 + 26×0.530 = 122                  -->
+  <line x1="344" y1="212" x2="430" y2="124"
+        stroke="#6b7280" stroke-width="1.3"
+        marker-end="url(#arr)"/>
+  <!-- label: above line midpoint (387,168), text-anchor end so it sits left of midpoint -->
+  <text x="374" y="156"
+        text-anchor="end"
+        font-family="system-ui,sans-serif"
+        font-size="12"
+        fill="#6b7280">extends next search</text>
+
+  <!-- ── External: human-ratified accreditation ─────────────────────── -->
+  <!-- Dashed line from left margin (x=52) to registry left edge (x=248, y=240) -->
+  <line x1="52" y1="240" x2="244" y2="240"
+        stroke="#9ca3af" stroke-width="1.3" stroke-dasharray="5,4"
+        marker-end="url(#arr-ext)"/>
+  <text x="148" y="228"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="12"
+        fill="#6b7280">human-ratified accreditation</text>
+  <text x="148" y="256"
+        text-anchor="middle"
+        font-family="system-ui,sans-serif"
+        font-size="11"
+        fill="#9ca3af">read, never minted, by composers</text>
+
+</svg>

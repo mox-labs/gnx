@@ -1,0 +1,4 @@
+type_url: gnx.dev.v1.lone-extract
+kind: Agent
+provides: [gnx.dev.v1.lone-output]
+requires: [gnx.dev.v1.nonexistent-cache]

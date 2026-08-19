@@ -1,0 +1,14 @@
+# DRAFT/PROPOSED — HADES, the building half: reads manifest-ledger entries,
+# builds implementations; writes back only through bodhi (one-way flow).
+type_url: slick.dev.v1.hades
+kind: Agent
+maturity: designed
+source: ./agent.md
+provides:
+  - slick.dev.v1.component-implementation
+  - slick.construction
+requires:
+  - gnx.dev.v1.project-spec   # consumes hardened entries — bodhi's output type; SEAM QUESTION:
+                              # is the ledger entry the same type as project-spec, or its own
+                              # slick.dev.v1.manifest-entry? Flagged for the bench.
+description: The building half — reads manifest-ledger entries and constructs implementations; writes back only through bodhi.

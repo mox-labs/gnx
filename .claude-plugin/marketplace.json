@@ -1,0 +1,220 @@
+{
+  "name": "gnx",
+  "owner": {
+    "name": "Mox Labs",
+    "email": "mox.rnd@gmail.com"
+  },
+  "metadata": {
+    "description": "A catalog of composable components. Your agent composes capability from the catalog, and you govern it."
+  },
+  "plugins": [
+    {
+      "name": "guild-arch",
+      "source": "./plugins/guild-arch",
+      "description": "Multi-perspective architecture review. Get deliberate pushback on design decisions before they become expensive.",
+      "version": "0.2.0",
+      "category": "architecture",
+      "keywords": [
+        "architecture",
+        "design",
+        "multi-agent",
+        "review",
+        "hexagonal",
+        "operations"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "craft-research",
+      "source": "./plugins/craft-research",
+      "description": "Deep research and literature synthesis. Analyze papers, ground claims in evidence, build citation-accurate knowledge.",
+      "version": "0.4.0",
+      "category": "research",
+      "keywords": [
+        "research",
+        "synthesis",
+        "provenance",
+        "citations",
+        "verification"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "craft-rhetoric",
+      "source": "./plugins/craft-rhetoric",
+      "description": "Explanation, voice, and visual design. Make understanding propagate \u2014 and survive the edit.",
+      "version": "0.3.0",
+      "category": "writing",
+      "keywords": [
+        "writing",
+        "documentation",
+        "voice",
+        "diagrams",
+        "explanation"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "ci-scaffolds",
+      "source": "./plugins/ci-scaffolds",
+      "description": "Collaboration scaffolds that keep you sharp when working with AI. Verify claims, calibrate trust, stay in the driver's seat.",
+      "version": "0.6.0",
+      "category": "foundation",
+      "keywords": [
+        "collaborative-intelligence",
+        "reasoning",
+        "verification",
+        "security",
+        "control"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "antifragile",
+      "source": "./plugins/antifragile",
+      "description": "Diagnose endogenous structural fragility \u2014 the decay a platform generates through its own operation \u2014 and apply the inversion.",
+      "version": "0.2.0",
+      "category": "architecture",
+      "keywords": [
+        "architecture",
+        "security",
+        "aces",
+        "platform",
+        "fragility"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "craft-extensions",
+      "source": "./plugins/craft-extensions",
+      "description": "Build Claude Code extensions and developer tools that people actually want to use.",
+      "version": "0.3.0",
+      "category": "tooling",
+      "keywords": [
+        "plugins",
+        "skills",
+        "developer-experience",
+        "tooling",
+        "retrieval"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "craft-evals",
+      "source": "./plugins/craft-evals",
+      "description": "Eval methodology for agents, skills, and multi-agent systems \u2014 measure quality instead of asserting it.",
+      "version": "0.2.0",
+      "category": "tooling",
+      "keywords": [
+        "evals",
+        "testing",
+        "measurement",
+        "agents"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "dao",
+      "source": "./plugins/dao",
+      "description": "Stand up an agent organization for a project \u2014 discourse the intent, settle what it needs, project the bench and the gate, then audit what was emitted.",
+      "version": "0.1.0",
+      "category": "foundation",
+      "keywords": [
+        "dao",
+        "agent-organization",
+        "scaffolding",
+        "governance",
+        "bench"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "intent-hardening",
+      "source": "./plugins/intent-hardening",
+      "description": "Intent is not extracted from an utterance \u2014 it is hardened through structured discourse. Turn a fuzzy ask into something the catalog can act on.",
+      "version": "0.1.0",
+      "category": "foundation",
+      "keywords": [
+        "intent",
+        "discourse",
+        "requirements",
+        "gnx"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "rational-inquiry",
+      "source": "./plugins/rational-inquiry",
+      "description": "Inference-validity discipline \u2014 the fallacy and defeat gate. Test whether a \"therefore\" actually holds.",
+      "version": "0.1.0",
+      "category": "foundation",
+      "keywords": [
+        "inference",
+        "logic",
+        "fallacy",
+        "validity",
+        "gnx"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "recon",
+      "source": "./plugins/recon",
+      "description": "Heterogeneous sources in, structured data out. Fetch from APIs, CLIs, and web pages; reshape to uniform JSONL queryable with SQL.",
+      "version": "0.8.0",
+      "category": "research",
+      "keywords": [
+        "collection",
+        "scraping",
+        "apis",
+        "duckdb",
+        "jsonl"
+      ],
+      "author": {
+        "name": "Mox Labs",
+        "email": "mox.rnd@gmail.com"
+      },
+      "license": "MIT"
+    }
+  ]
+}
