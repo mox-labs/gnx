@@ -17,9 +17,17 @@ Browse the catalog: **[mox-labs.github.io/gnx/catalog](https://mox-labs.github.i
 
 | | | |
 |---|---|---|
-| **Skills** | 2 | `intent-hardening`, `rational-inquiry` — both manifested |
-| **Capabilities** | 5 | runnable Python packages — `matrix`, `ix`, `recon`, `dao`, `gnx` |
+| **Skills** | 2 | `intent-hardening`, `rational-inquiry` |
+| **Capabilities** | 5 | Python packages — `matrix`, `ix`, `recon`, `dao`, `gnx` |
 | **Plugins** | 3 | `intent-hardening`, `rational-inquiry`, `recon` |
+
+**Two distribution channels, not one.** Skills and agents install as Claude Code plugins.
+Capabilities are Python packages and install with `uv`/`pip` — they are not plugins and are
+not reached through the marketplace. The `recon` plugin sits across the seam: it ships the
+skill, while `recon` the CLI is the package, which is why that skill opens by saying so.
+
+Neither is published to PyPI: `matrix`, `ix`, `recon` and `dao` are all taken there by
+unrelated projects, so a capability installs from this repository today.
 
 A plugin is a bundle; a component is the unit. Bundling is a projection decision made in
 `components/bundles.yaml`, separate from authoring. `plugins/` is generated output:
@@ -41,11 +49,10 @@ had checked. Graduating a component back is a directory move plus a `bundles.yam
 **Generation 0 — the composition layer — is upcoming.** What exists now is the catalog those
 compositions will draw from, plus the capabilities that make it work.
 
-Both catalog skills carry a manifest — the declared identity a composer would resolve.
-Manifest v1's shape is still being settled in [slick](https://github.com/mox-labs/slick),
-which is why the count is two rather than everything. Until the shape stops moving, a
-component is installable but not yet composable — see
-`docs/content/reference/0-status.md` for what is claimed versus what is built.
+Components install and run; they do not yet compose. The declared-identity layer that a
+composer would resolve is deferred until its shape settles in
+[slick](https://github.com/mox-labs/slick) — see `docs/content/reference/0-status.md` for
+what is claimed versus what is built.
 
 ## The capabilities
 

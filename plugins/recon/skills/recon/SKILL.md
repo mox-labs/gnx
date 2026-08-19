@@ -6,6 +6,19 @@ version: 0.8.0
 
 # Recon
 
+> **Prerequisite — the `recon` CLI is not installed by this plugin.** The plugin ships this
+> skill; the runnable is a separate Python package. Every command below assumes `recon` is on
+> PATH. Check with `recon --version`.
+>
+> ```
+> uv tool install "recon @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/recon"
+> ```
+>
+> Not on PyPI: the name is taken by an unrelated project, so install from the repository.
+> If the command is missing, say so rather than improvising an equivalent with curl and jq —
+> the archive layout and the DuckDB query surface are what make the output reusable.
+
+
 **Recon is the structured-data bridge.** Point it at any source — HTTP APIs, CLI tools, web pages, local filesystems — and it fetches responses, reshapes them into uniform JSONL, and makes the result queryable via DuckDB SQL. The reshape is declarative (normalize specs), not code. Claude writes the config, recon does the mechanical work, Claude reasons over the structured output.
 
 ## The Capability
