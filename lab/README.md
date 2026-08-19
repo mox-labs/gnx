@@ -75,8 +75,31 @@ is 859 and fires only a third of the time. `aces` is 909 and fires reliably, so 
 alone is not the explanation — but these are the two worst offenders against the 260-char
 catalog target and the two that fail, which is where I would look first.
 
+**Follow-up, same day — `dao` only routes on its own jargon.** Four phrasings, one session
+each, `max_turns: 1`:
+
+| | prompt | fired |
+|---|---|---|
+| A | "Here's a new project. Set up the harness for it — I want a bench and a verification gate…" | — |
+| B | "Set up this project with a harness." | — |
+| C | "Set up a **dao** for this project." | `dao:dao` |
+| D | "Stand up an **agent organization** for this project." | `dao:dao` |
+
+The skill fires only when the asker already names it. Both plain-language forms fail —
+including "set up the harness for this project", which is quoted verbatim in `dao`'s own
+description as a trigger.
+
+That is worse than a low pass rate. **A catalog entry that only routes for people who
+already know its name is undiscoverable**, and discovery is the entire job of a catalog
+description. The listed triggers are decoration; the jargon is doing all the work.
+
 This is the reading the C14 listing-budget note predicted, now with behavioural evidence
-rather than budget arithmetic. It has not been acted on.
+rather than budget arithmetic, and it lands on exactly the pragmatic-terminology point:
+`dao`'s description spends its length on the four-phase method and the eleven-component
+spec, so the plain-language triggers at the front are buried under doctrine.
+
+Not yet acted on. When it is, this experiment is how we find out whether the fix worked —
+which is the reason to write the measurement before the fix, not after.
 
 ### sensor-integrity
 
