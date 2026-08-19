@@ -5,44 +5,125 @@ on:
     branches: [main, "feat/**"]
   pull_request:
 
+# This repo's Actions policy is `allowed_actions: selected` with `sha_pinning_required`,
+# and the allowlist is vaani's — actions/*, dtolnay/rust-toolchain, the cargo-* family.
+# gnx needs just, uv, bun and gitleaks, none of which are on it. Every `uses:` must
+# therefore resolve to `actions/*`, pinned to a full commit SHA.
+#
+# So the toolchain installs from pinned release URLs with SHA256 verification instead.
+# That is a stronger position than an action reference, not a weaker one: the version and
+# the bytes are both fixed here, in a reviewed file, rather than behind a tag that can move.
+#
+# These four blocks are the intended body of a shared `mox-labs/ci/setup` composite action.
+# When that exists, this becomes one `uses:` and the pins live in one repo instead of
+# seventeen. Keep them in a shape that lifts cleanly.
+
+permissions:
+  contents: read
+
+env:
+  JUST_VERSION: "1.58.0"
+  JUST_SHA256: "4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d"
+  UV_VERSION: "0.12.5"
+  UV_SHA256: "68a509da24b06b4223a1c0175fb5eb5bc79342b76cbeff0cfe51ac3f5b17b6b2"
+  BUN_VERSION: "1.3.14"
+  BUN_SHA256: "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
 jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-      - uses: oven-sh/setup-bun@v2
-      - uses: extractions/setup-just@v2
-      - uses: astral-sh/setup-uv@v5
+
+      # Cached on the pinned versions, so a bump is a cache miss by construction and a
+      # tampered cache entry cannot survive the checksum step below.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: toolcache
         with:
-          enable-cache: true
+          path: ~/.gnx-tools
+          key: gnx-tools-${{ runner.os }}-just${{ env.JUST_VERSION }}-uv${{ env.UV_VERSION }}-bun${{ env.BUN_VERSION }}-gitleaks${{ env.GITLEAKS_VERSION }}
+
+      - name: toolchain (just, uv, bun, gitleaks — pinned + checksummed)
+        run: |
+          set -euo pipefail
+          BIN="$HOME/.gnx-tools"
+          mkdir -p "$BIN" "$RUNNER_TEMP/dl"
+          cd "$RUNNER_TEMP/dl"
+
+          # Verify BEFORE unpacking: a checksum checked after extraction has already let
+          # the archive touch the filesystem.
+          fetch() { # url  expected-sha256  filename
+            curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$3" "$1"
+            echo "$2  $3" | sha256sum -c -
+          }
+
+          if [ ! -x "$BIN/just" ]; then
+            fetch "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+                  "$JUST_SHA256" just.tar.gz
+            tar -xzf just.tar.gz just && mv just "$BIN/"
+          fi
+
+          if [ ! -x "$BIN/uv" ]; then
+            fetch "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+                  "$UV_SHA256" uv.tar.gz
+            tar -xzf uv.tar.gz --strip-components=1 -C "$BIN" uv-x86_64-unknown-linux-gnu/uv uv-x86_64-unknown-linux-gnu/uvx
+          fi
+
+          if [ ! -x "$BIN/bun" ]; then
+            fetch "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
+                  "$BUN_SHA256" bun.zip
+            unzip -qo bun.zip && mv bun-linux-x64/bun "$BIN/"
+          fi
+
+          if [ ! -x "$BIN/gitleaks" ]; then
+            fetch "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+                  "$GITLEAKS_SHA256" gitleaks.tar.gz
+            tar -xzf gitleaks.tar.gz gitleaks && mv gitleaks "$BIN/"
+          fi
+
+          chmod +x "$BIN"/*
+          echo "$BIN" >> "$GITHUB_PATH"
+
+      - name: versions
+        run: just --version && uv --version && bun --version && gitleaks version
+
       - name: install docsite deps
         run: cd docs/experience && bun install --frozen-lockfile
+
       - name: docsite check (svelte-check + tsc)
         run: just docs-check
-      # The gates that were declared in `just ci` but never wired here. 405 tests and five
-      # --strict-clean packages are worth nothing if only a local hook runs them.
+
+      # The gates `just ci` already declared but this workflow never ran. 407 tests and five
+      # --strict-clean packages are worth nothing if only a local pre-commit hook runs them.
       - name: component grammar + payloads
         run: just grammar payloads
+
       - name: projection matches components/
         run: just projection
+
       - name: capability tests
         run: just capabilities-test
+
       - name: capability lint + typecheck
         run: just capabilities-lint capabilities-typecheck
+
       # A smoke test, not a threshold: `ix run` exits 0 whatever it scores, so this proves
       # the CLI, store, DAG and composition root wire up end to end. The scoring logic
       # itself is asserted in ix/tests, where a wrong verdict fails a test.
       - name: evals smoke (mock)
         run: just evals
-      - name: secret scan
-        uses: gitleaks/gitleaks-action@v2
+
+      - name: secret scan (full history)
+        run: just secrets-all
 
   commit-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       - name: validate conventional commits
