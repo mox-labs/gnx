@@ -20,6 +20,7 @@ import { compile, type Compiled } from '$lib/dag';
 const REPO_ROOT = path.resolve(process.cwd(), '..', '..');
 const COMPONENTS_DIR = path.join(REPO_ROOT, 'components');
 const MARKETPLACE = path.join(REPO_ROOT, '.claude-plugin', 'marketplace.json');
+const BUNDLES = path.join(COMPONENTS_DIR, 'bundles.yaml');
 
 /** A component kind directory → the Kind it holds and the file carrying its prose. */
 const KIND_DIRS = [
@@ -45,6 +46,12 @@ export interface CatalogEntry {
 	maturity: 'shipped' | 'designed';
 	/** Which installable plugins ship this component. */
 	plugins: string[];
+	/**
+	 * For a Capability: the plugins that ship its *skill*, if any. A capability's runnable
+	 * does not project — it is a Python package reached over a transport — so borrowing its
+	 * skill's membership into `plugins` would claim you can install the package. You cannot.
+	 */
+	surfaceIn: string[];
 }
 
 export interface PluginEntry {
@@ -117,49 +124,68 @@ function subdirs(root: string): string[] {
 		.filter((d) => statSync(d).isDirectory());
 }
 
-/** name → the plugins that ship it, from bundles.yaml via the generated marketplace. */
-function loadPlugins(): { plugins: PluginEntry[]; shipsAgent: Map<string, string[]>; shipsSkill: Map<string, string[]> } {
-	const shipsAgent = new Map<string, string[]>();
-	const shipsSkill = new Map<string, string[]>();
-	if (!existsSync(MARKETPLACE)) return { plugins: [], shipsAgent, shipsSkill };
+/**
+ * Plugin metadata + which plugins ship which component.
+ *
+ * Membership comes from `components/bundles.yaml`, not from the projected filenames.
+ * A component's identity is its DIRECTORY (`components/agents/claim-extraction/`), but the
+ * projector names the emitted file from the agent's frontmatter `name:` — which for that
+ * component is `extract`. Keying on the emitted filename therefore reported a bundled
+ * component as unbundled. bundles.yaml is the bundling declaration and is directory-keyed,
+ * so it is the honest source for this edge.
+ *
+ * Plugin version/description still come from the generated marketplace.json — that is what
+ * a user actually installs, and `just projection` keeps the two in agreement.
+ */
+function loadPlugins(): {
+	plugins: PluginEntry[];
+	ships: Map<string, string[]>;
+} {
+	const ships = new Map<string, string[]>();
+	const plugins: PluginEntry[] = [];
+	if (!existsSync(BUNDLES)) return { plugins, ships };
 
-	const mk = JSON.parse(readFileSync(MARKETPLACE, 'utf-8')) as {
+	const bundles = parse(readFileSync(BUNDLES, 'utf-8')) as {
 		plugins?: Array<Record<string, unknown>>;
 	};
-	const plugins: PluginEntry[] = [];
 
-	for (const p of mk.plugins ?? []) {
-		const name = String(p.name ?? '');
-		const source = String(p.source ?? '');
-		const dir = path.join(REPO_ROOT, source.replace(/^\.\//, ''));
-		// Count and attribute from the projected plugin tree — the thing a user installs,
-		// rather than the declaration of what should be in it. An agent is a .md file; a
-		// skill is a directory holding SKILL.md (plugin-structure's discovery rules).
-		const agentsDir = path.join(dir, 'agents');
-		const agents = existsSync(agentsDir)
-			? readdirSync(agentsDir)
-					.filter((f) => f.endsWith('.md'))
-					.map((f) => f.replace(/\.md$/, ''))
-					.sort()
+	const installable = new Map<string, Record<string, unknown>>();
+	if (existsSync(MARKETPLACE)) {
+		const mk = JSON.parse(readFileSync(MARKETPLACE, 'utf-8')) as {
+			plugins?: Array<Record<string, unknown>>;
+		};
+		for (const p of mk.plugins ?? []) installable.set(String(p.name ?? ''), p);
+	}
+
+	for (const b of bundles.plugins ?? []) {
+		const name = String(b.name ?? '');
+		const names = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
+		const agents = names(b.agents);
+		const skills = names(b.skills);
+		// `external_skills` are {name, path} entries for a skill authored inside a
+		// capability package rather than under components/skills/.
+		const external = Array.isArray(b.external_skills)
+			? (b.external_skills as Array<Record<string, unknown>>).map((e) => String(e.name ?? ''))
 			: [];
-		const skills = subdirs(path.join(dir, 'skills')).map((d) => path.basename(d));
-		for (const a of agents) shipsAgent.set(a, [...(shipsAgent.get(a) ?? []), name]);
-		for (const s of skills) shipsSkill.set(s, [...(shipsSkill.get(s) ?? []), name]);
 
+		for (const c of [...agents, ...skills, ...external])
+			ships.set(c, [...(ships.get(c) ?? []), name]);
+
+		const mkt = installable.get(name);
 		plugins.push({
 			name,
-			description: oneLine(String(p.description ?? '')),
-			version: String(p.version ?? ''),
-			category: String(p.category ?? ''),
-			keywords: Array.isArray(p.keywords) ? p.keywords.map(String) : [],
+			description: oneLine(String(mkt?.description ?? b.description ?? '')),
+			version: String(mkt?.version ?? b.version ?? ''),
+			category: String(b.category ?? ''),
+			keywords: names(b.keywords),
 			agents: agents.length,
-			skills: skills.length
+			skills: skills.length + external.length
 		});
 	}
-	return { plugins, shipsAgent, shipsSkill };
+	return { plugins, ships };
 }
 
-function loadEntries(shipsAgent: Map<string, string[]>, shipsSkill: Map<string, string[]>): CatalogEntry[] {
+function loadEntries(ships: Map<string, string[]>): CatalogEntry[] {
 	const out: CatalogEntry[] = [];
 
 	for (const { dir, kind, body } of KIND_DIRS) {
@@ -195,7 +221,8 @@ function loadEntries(shipsAgent: Map<string, string[]>, shipsSkill: Map<string, 
 					])
 				),
 				maturity: m?.maturity === 'shipped' ? 'shipped' : 'designed',
-				plugins: (kind === 'Agent' ? shipsAgent.get(slug) : shipsSkill.get(slug)) ?? []
+				plugins: kind === 'Capability' ? [] : (ships.get(slug) ?? []),
+				surfaceIn: kind === 'Capability' ? (ships.get(slug) ?? []) : []
 			});
 		}
 	}
@@ -203,8 +230,8 @@ function loadEntries(shipsAgent: Map<string, string[]>, shipsSkill: Map<string, 
 }
 
 export const load: PageServerLoad = () => {
-	const { plugins, shipsAgent, shipsSkill } = loadPlugins();
-	const entries = loadEntries(shipsAgent, shipsSkill);
+	const { plugins, ships } = loadPlugins();
+	const entries = loadEntries(ships);
 
 	// Compositions: only components with topology ports enter the DAG. Skills carry tags
 	// alone — provides-only axioms, ambient, never wired — so they fall out by the shape

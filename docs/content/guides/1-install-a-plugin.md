@@ -8,92 +8,57 @@ register: public
 
 # Install a plugin
 
-This is the one gnx path that runs today. If you already run Claude Code and want `intent-hardening` and `rational-inquiry` working in your own setup — without waiting for the CLI that installs them later — this is it: clone the catalog, register the marketplace, pick a plugin, enable it.
+Two commands, in Claude Code:
 
----
-
-## Step 1 — Clone the catalog
-
-Clone the catalog repository. Its root holds the marketplace manifest at `.claude-plugin/marketplace.json`:
-
-```sh
-git clone https://github.com/mox-labs/gnx.git
+```
+/plugin marketplace add mox-labs/gnx
+/plugin install dao@gnx
 ```
 
----
+The first registers the marketplace — Claude Code clones the repository and reads
+`.claude-plugin/marketplace.json` from its root. The second installs one plugin. Both were
+run against this repository to confirm they work as written.
 
-## Step 2 — Register the marketplace
+The same thing from a terminal:
 
-Open `~/.claude/settings.json` and add an `extraKnownMarketplaces` entry pointing at your clone:
-
-```json
-{
-  "extraKnownMarketplaces": {
-    "gnx": {
-      "source": { "source": "directory", "path": "/path/to/gnx" },
-      "autoUpdate": true
-    }
-  }
-}
+```
+claude plugin marketplace add mox-labs/gnx
+claude plugin install dao@gnx
+claude plugin list
 ```
 
-If `settings.json` already carries other entries under `extraKnownMarketplaces` or `enabledPlugins` — from plugins you've installed before — add the `gnx` key alongside them; the block above is the whole file only if this is the first marketplace you've registered.
+## What you can install
 
-The key — `"gnx"` here — is yours to choose; it becomes the marketplace identifier and the suffix in `enabledPlugins`: `intent-hardening@gnx`, `rational-inquiry@gnx`. Two source types work: a `directory` source reads a local path (used above), and a `github` source (`"source": "github", "repo": "<owner>/<repo>"`) clones a public repo — for this catalog, `"repo": "mox-labs/gnx"`.
+Eleven plugins. [The catalog](/catalog) lists them with what each contains, and lists every
+component with the plugins that ship it.
 
----
+Swap `dao` for any plugin name: `guild-arch`, `craft-research`, `craft-rhetoric`,
+`ci-scaffolds`, `antifragile`, `craft-extensions`, `craft-evals`, `intent-hardening`,
+`rational-inquiry`, `recon`.
 
-## Step 3 — Pick a plugin
+## Using it
 
-Two plugins are projected and installable today:
+Skills activate on their own when a request matches what they describe — there is nothing
+to invoke. Agents are dispatched by Claude Code when a task fits their role, and can be
+asked for by name.
 
-| Plugin | What it gives you |
-|--------|-------------------|
-| `intent-hardening` | Hardens a loose ask into something the catalog can act on — an adhikaraṇa-structured exchange that reports how far the intent can honestly sharpen |
-| `rational-inquiry` | The inference-validity gate — tests whether a "therefore" holds against named defeat conditions |
+One honest caveat: **activation is not guaranteed.** A measurement of this catalog found
+that a skill whose description lists a trigger phrase does not always fire on it. The
+`dao` skill, for instance, reliably activates on "set up a dao" and not on "set up the
+harness for this project", which its own description names as a trigger. If a skill does
+not engage, naming it directly works.
 
-A wider set is being ported into the catalog as components; **[what's real vs planned](/docs/status)** is the canonical record of what's installed and what's next, so this page never drifts from it.
+## If it does not appear
 
----
+Run `/plugin` and check the `gnx` marketplace is listed. If registration failed, the repo
+was unreachable or `.claude-plugin/marketplace.json` was not found at its root.
 
-## Step 4 — Enable it
+Installed plugins are copied to `~/.claude/plugins/cache/gnx/<plugin>/<version>/`. The
+version is the cache key, so an update lands when the version is bumped.
 
-In `~/.claude/settings.json`, add to `enabledPlugins`:
+## Removing
 
-```json
-{
-  "enabledPlugins": {
-    "intent-hardening@gnx": true
-  }
-}
 ```
-
-Claude Code copies the plugin subdirectory into a versioned cache at `~/.claude/plugins/cache/gnx/intent-hardening/<version>/`. The plugin is self-contained — no build step, no traversal outside its directory. Restart Claude Code and it is active. Install several by adding each:
-
-```json
-{
-  "enabledPlugins": {
-    "intent-hardening@gnx": true,
-    "rational-inquiry@gnx": true
-  }
-}
+claude plugin uninstall dao@gnx
+claude plugin marketplace remove gnx
 ```
-
----
-
-## Step 5 — Verify
-
-Run `/plugin` in Claude Code and confirm the `gnx` marketplace and the plugin appear. If the marketplace fails to register, the `extraKnownMarketplaces` path is wrong, or `.claude-plugin/marketplace.json` is missing at the clone root.
-
----
-
-## How Claude Code activates a plugin
-
-Claude Code loads the plugin's skills — each a `SKILL.md` file. A plugin's `description` (in its `plugin.json`) is what Claude Code matches against to decide *when* to activate it; it loads the matching skill and drives the behaviour from there. The skill is the interface — not a command, not a menu. This is the shipped end of a general rule: an agent reaches a component through the skill that travels inside it.
-
----
-
-## Where to go next
-
-- **[How components work](/docs/how-components-work)** — the grammar behind what you installed: the kinds, the manifest, `provides` and `requires`.
-- **[Compose components](/docs/compose-components)** — assemble installed pieces into a pipeline from their declared surfaces alone.

@@ -7,7 +7,7 @@
 	// Kind is a type-level constraint, not a color. Shape-primary sigils; Skill last
 	// because it's axiomatic, not pipeline. (tufte, catalog-viz-design)
 	const KINDS = [
-		{ kind: 'Capability', sigil: '□', gloss: 'runnable — a Python package reached over a transport' },
+		{ kind: 'Capability', sigil: '□', gloss: 'a runnable Python package, reached over a transport — the package itself is not a plugin' },
 		{ kind: 'Agent', sigil: '○', gloss: 'a named reasoning role with a distinct method' },
 		{ kind: 'Flow', sigil: '→', gloss: 'a declared composition of other components' },
 		{ kind: 'Skill', sigil: '◇', gloss: 'a practice, read into context when its trigger matches' }
@@ -104,7 +104,15 @@
 							</td>
 							<td class="tags">
 								{#each e.plugins as p (p)}<code class="tag">{p}</code>{/each}
-								{#if !e.plugins.length}<span class="unbundled">not bundled</span>{/if}
+								{#if e.kind === 'Capability'}
+									<span class="unbundled">
+										runnable — not installable{#if e.surfaceIn.length}; its skill ships in
+											{#each e.surfaceIn as p (p)}<code class="tag">{p}</code>{/each}
+										{/if}
+									</span>
+								{:else if !e.plugins.length}
+									<span class="unbundled">not bundled</span>
+								{/if}
 							</td>
 							<td>
 								{#if e.type_url}

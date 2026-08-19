@@ -2,57 +2,51 @@
 title: What gnx is
 section: start
 mode: explanation
-status: mixed
+status: shipped
 register: public
 ---
 
 # What gnx is
 
-**gnx is a mech suit for your agent** — *generative noetic extensions*. Your agent puts the suit on and stops being a bare generalist — solving each task from a blank prompt, the same way, every time. It wears a governed catalog of extensions: skills, capabilities, agents, whole workflows. Two moves:
+A marketplace of composable components for Claude Code.
 
-- **Wear an extension** and the agent gains one new thing it can do.
-- **Compose extensions** and the working sets it can assemble multiply.
+**11 plugins** are installable today, cut from **76 components** in one repository. Browse
+them in [the catalog](/catalog), which reads the component directories live rather than
+repeating a count that would go stale.
 
-Adding parts extends what your agent *can do*; composing parts widens what it *can reach for*. The suit does not replace you. It hands you parts — inspectable, swappable, checked before anything bolts on — and you decide which ones it wears.
+## Component, plugin, catalog
 
-## The suit is generative
+A **component** is the unit of authorship — one skill, one agent, or one runnable
+capability, in its own directory.
 
-This is the loop gnx exists for. Your agent meets a task, composes what fits from the catalog, and when nothing fits it **builds the missing part**. What it builds folds back into the catalog **through you**. The loop is not self-producing — it closes through human governance, and that is the design, not a shortfall. A part your agent builds for itself today, once you let it in, is discoverable by every agent tomorrow — including agents you'll never see.
+A **plugin** is a bundle of components, and it is what you install. Bundling is declared
+separately from authoring, in `components/bundles.yaml`, so one component can ship in
+several plugins. `trust-boundaries` is in two.
 
-Two roles stay structurally separate: **your agent composes and builds; you govern what enters and what is trusted.** The catalog grows through agents yet stays trustworthy because the machine only checks structure and only a person mints trust. An agent can author and submit a well-formed component; it cannot accredit one. Why that split holds is [why a catalog](/docs/why-a-catalog); how a component gets registered is [authoring a component](/docs/author-a-component). The suit never certifies its own parts.
+The **catalog** is every component in the repository, whatever it is bundled into.
 
-## The hard problem is legibility
+| kind | count | what it is |
+|---|---|---|
+| Skill | 35 | a practice, read into context when its trigger matches |
+| Agent | 36 | a named reasoning role with a distinct method |
+| Capability | 5 | a runnable Python package — `matrix`, `ix`, `recon`, `dao`, `gnx` |
+| Flow | 0 | a declared composition of other components — arrives with generation 0 |
 
-The hard problem underneath is not storage. Any package manager stores things. It is **legibility**: whether an agent can decide two components fit from what they *declare*, before running either. That bet — composition from declaration, not from execution — is what the catalog is built on. [Why a catalog](/docs/why-a-catalog) makes the case; [how components work](/docs/how-components-work) shows the mechanism.
+## Where this is
 
-## What you do with it
+**Generation 0 — the composition layer — is upcoming.** What exists now is the catalog
+those compositions will draw from.
 
-- **Install from the catalog.** Two components — intent-hardening and rational-inquiry — are projected as plugins and install into Claude Code today. The wider set is being ported into the [catalog](https://github.com/mox-labs/gnx) as components.
-- **Set up a project.** `gnx init` (designed) stands up a Claude Code project with a curated set of agents, skills, and scaffolds — chosen in conversation with you, not off a fixed menu.
-- **Compose capabilities** (designed). An agent searches the catalog and assembles a working set from declared surfaces — no trial-and-error execution.
-- **Extend the suit** (designed; authoring works today, the registration tooling is planned). Build the part that is missing, register it, and it becomes discoverable and composable — by any developer, by any agent, including the one that built it.
+Concretely: components install and run, and they do not yet compose. **3 of 76 carry a
+manifest**, the declared identity a composer would resolve. That is deliberate — the
+Manifest v1 shape is being settled in [slick](https://github.com/mox-labs/slick), and
+minting 76 against a moving spec would mean rewriting 76. The three that exist are the
+pilot that tests the grammar.
 
-## Why it matters
+[What's real vs planned](/docs/status) is the record, and it is written to be checkable
+rather than encouraging.
 
-The two moves compound. Each part your agent builds — once you let it in — becomes a part every later agent composes without rebuilding it, and because reach comes from composition, a catalog of parts is worth more than the same parts kept apart. Two costs fall away as the catalog grows:
+## Next
 
-**Rebuilding.** A part distilled once composes into any project that declares it needs it — the argument in [why a catalog](/docs/why-a-catalog).
-
-**Lock-in.** A component is described in a form no runtime owns; a second runtime is an adapter, not a rewrite — [vendor-neutral by structure](/docs/vendor-neutral-by-structure).
-
-## How it is organized
-
-Three functions, one catalog:
-
-- the **registry** — where a component is declared, validated, and found;
-- the **marketplace** — the catalog projected into installable Claude Code plugins;
-- the **CLI** (`gnx`) — the tool that initializes projects and scaffolds new components.
-
-The manifest grammar each component is written in — **slick** — ships today (the `slickit` crate, v0.2.0). The registry, marketplace pipeline, and CLI are designed; build is starting. [What's real vs planned](/docs/status) is the canonical record.
-
-## Where to go from here
-
-- **[Install a plugin](/docs/install-a-plugin)** — the part that runs today.
-- **[How components work](/docs/how-components-work)** — the grammar an agent reads to compose: the kinds, the manifest, what a component declares about itself.
-- **[Authoring a component](/docs/author-a-component)** — the loop for building and registering your own.
-- **[gnx CLI reference](/docs/cli-reference)** — the full designed command surface.
+- **[Install a plugin](/docs/install-a-plugin)** — the two commands.
+- **[The catalog](/catalog)** — every component, and which plugins ship it.

@@ -84,13 +84,13 @@ These are the `plugin.json` versions — the cache key Claude Code resolves on. 
 | **Flow composition** | A `members` list of `(type_url, config)` pairs with derived topology — proposed |
 | **The on-disk overlay** | `kind` and `maturity` (on disk today) plus a proposed `version` field, with a projection gate — proposed |
 
-These are open design decisions tracked in the public GEP register — start at
-[GEP-0000](/docs/gep-0000), the process and the full gap list.
+These are open design decisions. The GEP register that tracks them is not published while
+the shape is still moving; the decisions above are the summary that is safe to rely on.
 
 ---
 
 ## See also
 
 - **[What gnx is](/docs/what-is-gnx)** — the shipped/designed line, in prose.
-- **[Install a plugin](/docs/install-a-plugin)** — install the plugins.
-- **[gnx CLI reference](/docs/cli-reference)** — the designed command surface in full.
+- **[Install a plugin](/docs/install-a-plugin)** — the two commands.
+- **[The catalog](/catalog)** — every component, read live from the repository.
