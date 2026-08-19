@@ -4,12 +4,49 @@ description: >-
   The catalog's promise is that a description routes correctly; this states that promise
   as a measurement instead of an assertion.
 
-# One subject: the catalog as installed. A second subject — say, the descriptions as they
-# stood before the 2026-08 intake rewrite — is what turns this from a reading into a
-# comparison. Add it when there is a change worth attributing.
+# Two subjects, and the difference between them is the whole point.
+#
+#   mock   — simulates a 90/10 activation split. Proves the harness: DAG, store,
+#            aggregation, confusion matrix. Measures NOTHING about the catalog.
+#   live   — the real Claude Agent SDK with the projected plugins loaded. This is the
+#            one that actually measures whether the descriptions route.
+#
+# Run the live one with:  ix run catalog-routing --lab lab --subject catalog-live --trials 1
 subjects:
-  - name: catalog-as-shipped
-    description: The gnx marketplace with all plugins installed.
+  - name: catalog-mock
+    description: Simulated activation; harness check only.
+    config:
+      runtime:
+        type: mock
+
+  - name: catalog-live
+    description: The gnx marketplace as shipped, loaded into a real agent session.
+    config:
+      runtime:
+        type: claude
+        # One turn: the Skill call happens in the first assistant turn, and stopping there
+        # measures routing rather than paying for the agent to perform the whole task.
+        max_turns: 1
+        # Hermetic — no ambient ~/.claude plugins leak in, so what is measured is this
+        # repo's projected catalog and nothing else. Without this the reading is
+        # contaminated by whatever the operator happens to have installed.
+        setting_sources: []
+        # Unattended: no human is present to confirm a tool call. Requested explicitly,
+        # logged at WARNING by the runtime — see matrix/SECURITY.md M-1.
+        permission_mode: bypassPermissions
+        # Relative to the experiment directory, so this file stays machine-independent.
+        plugins:
+          - { type: local, path: ../../plugins/guild-arch }
+          - { type: local, path: ../../plugins/antifragile }
+          - { type: local, path: ../../plugins/ci-scaffolds }
+          - { type: local, path: ../../plugins/craft-research }
+          - { type: local, path: ../../plugins/craft-rhetoric }
+          - { type: local, path: ../../plugins/craft-extensions }
+          - { type: local, path: ../../plugins/craft-evals }
+          - { type: local, path: ../../plugins/dao }
+          - { type: local, path: ../../plugins/intent-hardening }
+          - { type: local, path: ../../plugins/rational-inquiry }
+          - { type: local, path: ../../plugins/recon }
 
 sensors:
   - type: activation
@@ -17,5 +54,7 @@ sensors:
 # 5 trials per probe, 3 repeats of the whole run. The repeats are the point: a single
 # run's pass rate has no error bar, and routing is stochastic. `noise_floor_sd` across
 # repeats is what says whether a difference between two subjects is real.
+#
+# Override with `--trials 1` for a live run — 8 probes x 5 x 3 is 120 agent sessions.
 trials: 5
 repeats: 3
