@@ -21,13 +21,16 @@ Browse the catalog: **[mox-labs.github.io/gnx/catalog](https://mox-labs.github.i
 | **Capabilities** | 5 | Python packages — `matrix`, `ix`, `recon`, `dao`, `gnx` |
 | **Plugins** | 3 | `intent-hardening`, `rational-inquiry`, `recon` |
 
-**Two distribution channels, not one.** Skills and agents install as Claude Code plugins.
-Capabilities are Python packages and install with `uv`/`pip` — they are not plugins and are
-not reached through the marketplace. The `recon` plugin sits across the seam: it ships the
-skill, while `recon` the CLI is the package, which is why that skill opens by saying so.
+**`gnx` is the only package that publishes.** It is the CLI — the registry, the marketplace
+projector, and the thing that installs everything else. The capabilities are its inventory,
+managed by gnx rather than published independently, so their PyPI names never matter.
 
-Neither is published to PyPI: `matrix`, `ix`, `recon` and `dao` are all taken there by
-unrelated projects, so a capability installs from this repository today.
+Skills and agents install as Claude Code plugins through the marketplace. Capabilities are
+Python packages that gnx resolves and installs.
+
+The install surface is not built yet: `gnx` today does `build` and `list`. Until `gnx add`
+lands, a capability installs from this repository directly — which is why the `recon` skill
+opens by saying the CLI is a separate package and how to get it.
 
 A plugin is a bundle; a component is the unit. Bundling is a projection decision made in
 `components/bundles.yaml`, separate from authoring. `plugins/` is generated output:

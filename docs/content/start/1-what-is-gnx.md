@@ -49,13 +49,15 @@ and one entry in `bundles.yaml`.
 
 Skills and agents install as **Claude Code plugins**, through the marketplace.
 
-Capabilities are **Python packages** — `matrix`, `ix`, `recon`, `dao`, `gnx`. They install
-with `uv` or `pip`, not through the marketplace, and none is on PyPI (every one of those
-names is taken there by an unrelated project), so today they install from this repository.
+Capabilities are **Python packages** — `matrix`, `ix`, `recon`, `dao`. They are gnx's
+inventory: gnx manages and installs them, so they are not published independently.
 
-The `recon` plugin sits across that seam: the plugin ships the skill, and `recon` the CLI is
-the package. The skill says so in its first paragraph rather than assuming a command that
-may not be there.
+`gnx` itself is the one package that publishes. It is the registry, the marketplace
+projector, and the installer.
+
+That installer is not built yet — `gnx` today does `build` and `list`. Until `gnx add`
+lands, a capability installs from this repository directly, which is why the `recon` skill
+opens by saying its CLI is a separate package and how to get it.
 
 ## Where this is
 

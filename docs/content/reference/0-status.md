@@ -35,9 +35,9 @@ to fire on trigger phrases from its own description, and 49 of 76 descriptions e
 catalog-scale target. The catalog now holds what has been evaluated; graduating a component
 back is a directory move plus a `bundles.yaml` entry.
 
-Capabilities are Python packages rather than plugins — they install with `uv`/`pip`, from
-this repository, since `matrix`, `ix`, `recon` and `dao` are all taken on PyPI by unrelated
-projects. The declared-identity layer is deferred until its shape settles in slick.
+Capabilities are Python packages rather than plugins, and they are gnx's inventory: gnx
+manages them, so they are not published independently. `gnx` is the package that publishes.
+The declared-identity layer is deferred until its shape settles in slick.
 That is the deliberate state, not a backlog: Manifest v1's shape is being settled in slick,
 and minting 76 against a moving spec would mean rewriting 76. The three are the pilot that
 tests the grammar. Until the rest follow, a component is **installable but not composable**.
