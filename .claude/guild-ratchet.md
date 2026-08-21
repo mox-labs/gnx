@@ -130,3 +130,46 @@ that protects the author and nobody else.**
 - **Adding a gate to the justfile:** wire it into `.github/workflows/ci.yml` in the same
   commit, or it protects only the machine it was written on.
 
+---
+
+## The curation discipline (imported 2026-08-21 from `research/drafts/ratchet-curation`)
+
+This file is append-only and has been growing since June without a curation rule. The
+`ratchet-curation` mission settled one and it had never been folded back into the thing it was
+written about — a ratchet about keeping memory net-positive that never reached the memory.
+
+Its spine finding: **naive cumulative accumulation is a mis-specified quality signal.** An
+append-only log that only grows reports health by volume while losing competence silently.
+Organizational decay measured ~62% departure-without-transfer and ~38% aging-in-place, and
+aggregate flow metrics understate both.
+
+The six rules, as they apply here:
+
+1. **Dedup at entry.** Admission is the cheap place to curate. Before appending, check whether
+   an existing entry already carries the finding; if so, extend it rather than adding a
+   near-duplicate. Storing everything is itself the failure mode (Finding 5).
+2. **Staleness marks, not erasure.** When an entry's referent drifts — a file moves, a ruling
+   is superseded — mark it stale in place. Never delete: the entry is evidence of what was
+   believed when.
+3. **Consolidation as appends.** Supersession is a new entry that names what it supersedes.
+   Never rewrite history; the 2026-08-18 entry on the three ix defects stays exactly as
+   written even though the code has moved on.
+4. **Competence-weighted retention.** Value, not flow counts. An entry earns its place by the
+   decision it would change, not by being recent.
+5. **Diversity preservation.** Keep niche occupancy, not top-k. Entries covering rare failure
+   modes are the ones a top-k pass would drop and the ones most worth keeping — top-k recovers
+   short-term quality while collapsing diversity (Finding 3).
+6. **Departing threads must transfer.** The turnover lever. When a line of work ends — a
+   mission closes, a component is benched — its findings transfer into this file *before* the
+   context is gone, or they are lost with it.
+
+### Future trigger
+
+- **Before appending here:** rule 1. Check for an existing entry on the same finding.
+- **When a component moves to `incubator/` or a mission closes:** rule 6. The transfer is the
+  point at which the knowledge either survives or does not.
+- **This file has no eviction policy and does not need one yet.** Rule 2 forbids deletion, so
+  growth is bounded by rules 1 and 4 at the entry point instead. If it ever stops being
+  readable end-to-end, that is the signal to revisit — and the mission's PART 3 lists what
+  would falsify each rule, which is where to start rather than improvising.
+

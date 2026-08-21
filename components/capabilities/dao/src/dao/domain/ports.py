@@ -67,10 +67,15 @@ class ProjectionTarget(Protocol):
 class IndependentGate(Protocol):
     """An externally-anchored check on work the maker produced.
 
-    `is_out_of_family` is part of the contract, not metadata. M1-H2 measured a
-    same-family reviewer as adding nothing over a cold re-read, so an implementation must
-    declare which of the two it is and the audit reports it honestly rather than letting
-    a same-family gate present itself as independent.
+    `is_out_of_family` is part of the contract, not metadata — but as a RECORD, not a
+    ranking. M1-H2 measured a two-pass cold re-read as sufficient on everything it tested and
+    refuted the broad justification for a separate gate; it did not measure out-of-family as
+    superior. That comparison is run-03 in `verifier-error-correlation/DESIGN.md`, unrun, and
+    its refutation condition explicitly permits "rung 2 buys nothing".
+
+    The flag travels so a stored verdict cannot lose its provenance, and so the eventual
+    measurement has something to correlate against. Nothing here should be read as scoring
+    one kind of gate above the other.
     """
 
     @property

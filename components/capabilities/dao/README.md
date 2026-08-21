@@ -53,9 +53,17 @@ validated it.
 
 ## Two properties worth not breaking
 
-**`GateVerdict.out_of_family` travels with the verdict, not the gate.** M1-H2 measured a
-same-family reviewer as adding nothing over a cold re-read, so a verdict that sheds its
-provenance can later be mistaken for the stronger kind. The flag rides along.
+**`GateVerdict.out_of_family` travels with the verdict, not the gate** — as a record, not a
+ranking. M1-H2 refuted the broad justification for a separate gate by measuring a two-pass
+cold re-read as sufficient on everything tested. It did **not** measure out-of-family as
+better; that is run-03, specified in `verifier-error-correlation/DESIGN.md` and never run.
+The flag rides along so a stored verdict keeps its provenance and so the eventual
+measurement has something to correlate against.
+
+Phase 1 of that protocol did run (2026-08-21) and produced one number gate design should
+consume now: **two verifiers fail together ~1.4× more often than independence predicts from
+item difficulty alone**, before model family enters the picture. Stacking gates buys less
+than naive composition implies.
 
 **Thresholds are a declared `POLICY` map**, surfaced by `dao policy`. A threshold buried in
 code is a governance decision hidden from governance.

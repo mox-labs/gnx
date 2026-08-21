@@ -169,16 +169,24 @@ def _check_gate(root: Path) -> tuple[bool, list[str], list[str]]:
     evidence = ([f"gate seat(s): {', '.join(gate_seat)}"] if gate_seat
                 else ["gate named in CLAUDE.md"])
     gaps: list[str] = []
-    # M1-H2 is the sharpest test in the whole spec: a same-family "independent reviewer"
-    # is the refuted claim wearing a new hat.
+    # M1-H2 refuted the BROAD justification for component #7 — "fresh eyes catch what the
+    # maker misses" — by measuring a two-pass cold re-read as sufficient on everything tested.
+    # What it did NOT establish is that an out-of-family gate is better. That is run-03, which
+    # is specified in `verifier-error-correlation/DESIGN.md` and has never been run; its own
+    # refutation condition explicitly allows "rung 2 buys nothing".
+    #
+    # So this check requires an honest LABEL, not a particular kind of gate. A cold-reread
+    # gate that says so passes. What fails is a gate claiming independence it has not
+    # characterised — which is the one thing the evidence does support flagging.
     out_of_family = re.search(r"out-of-family|different model|cross-family|mlx|non-claude",
                               text, re.I)
     cold_reread = re.search(r"cold re-?read|fresh eyes|second pass|two-pass", text, re.I)
     if not out_of_family and not cold_reread:
         gaps.append(
-            "gate claims independence without either an out-of-family anchor or an "
-            "honest cold-reread label — M1-H2 refuted the broad "
-            "'fresh eyes catch more bugs' justification for a same-family gate"
+            "gate claims independence without saying which kind it is — name an "
+            "out-of-family anchor or label it an honest cold re-read. M1-H2 refuted the "
+            "broad 'fresh eyes catch more bugs' justification; whether out-of-family beats "
+            "a cold re-read is unrun (run-03), so neither label is scored above the other"
         )
     return True, evidence, gaps
 
