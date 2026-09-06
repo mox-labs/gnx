@@ -111,6 +111,13 @@ jobs:
       - name: capability lint + typecheck
         run: just capabilities-lint capabilities-typecheck
 
+      # Installs each capability ALONE, outside the workspace, from only its own
+      # declared dependencies — the `uv tool install` / `uvx` path. Every gate above
+      # runs inside the workspace, where the dev group supplies the union of all five
+      # packages' dependencies and an under-declared one cannot be seen.
+      - name: capability standalone install
+        run: just capabilities-standalone
+
       # A smoke test, not a threshold: `ix run` exits 0 whatever it scores, so this proves
       # the CLI, store, DAG and composition root wire up end to end. The scoring logic
       # itself is asserted in ix/tests, where a wrong verdict fails a test.

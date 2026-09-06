@@ -753,6 +753,7 @@ version = "0.1.0"
 source = { editable = "dao" }
 dependencies = [
     { name = "click" },
+    { name = "pydantic" },
     { name = "rich" },
 ]
 
@@ -764,6 +765,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "rich", specifier = ">=13" },
 ]
@@ -1210,6 +1212,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-frontmatter" },
     { name = "pyyaml" },
+    { name = "rich" },
     { name = "rich-click" },
 ]
 
@@ -1237,6 +1240,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "python-frontmatter", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13" },
     { name = "rich-click", specifier = ">=1.8" },
 ]
 provides-extras = ["dev", "claude", "deepeval"]

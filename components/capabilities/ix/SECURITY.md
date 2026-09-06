@@ -117,6 +117,42 @@ what its own docstring says it does.
 Found by `lab/sensor-integrity` on its first run, not by review. Regression:
 `ix/tests/ix/test_strict_regressions.py`.
 
+### I-6 — a bare `matrix` dependency resolves to a stranger's package (open, 2026-09-06)
+
+`ix` declares `matrix` in `[project.dependencies]` with no source. Inside this repository
+the workspace root's `[tool.uv.sources]` maps that name to the local package, so every
+gate resolves it correctly. **Outside the workspace it does not.** `matrix` is a real
+name on PyPI — an unrelated config-parsing library, currently 3.0.0 — and
+`uv tool install ix`, `uvx ix` or `pip install ix` silently installs that instead.
+
+Verified 2026-09-06 by copying `ix/` out of the workspace and installing it alone:
+
+```
+dist version: 3.0.0
+origin: PyPI
+ImportError: cannot import name 'AgentResponse' from 'matrix'
+```
+
+Two properties make this worse than a missing dependency:
+
+1. **It installs successfully and `ix --help` works.** click renders help without touching
+   matrix, so the first signal is an `ImportError` from `mock_runtime` at the moment an
+   experiment actually runs — long after the install looked fine.
+2. **The resolved package is chosen by whoever owns the name on the public index**, not by
+   this repository. Today's `matrix` is a benign 2015-era library; the shape is the one
+   dependency-confusion exploits, and the mitigation does not depend on today's owner
+   being benign.
+
+Not yet fixed, because the fix is a naming decision rather than a typo: publishing under a
+distinct distribution name, pinning a direct URL, or declaring that `ix` is
+workspace-only and failing loudly outside it are three different answers with different
+consequences for the marketplace. `matrix` and `ix` are both intended to be gnx-internal —
+only `gnx` goes to PyPI — which argues for the third, but that is yzavyas's call.
+
+Until it is settled, `ix` is excluded from the `capabilities-standalone` gate, and that
+exclusion is written into the recipe so it cannot be forgotten.
+
+
 ## Not covered
 
 - ix does not sandbox generated code. See boundary 1.

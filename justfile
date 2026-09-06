@@ -9,7 +9,7 @@ set shell := ["bash", "-uc"]
 check: docs-check secrets grammar payloads projection
 
 # The CI gate (mirrors the hook; slow gates are added here as the CLI lands).
-ci: docs-check secrets-all grammar payloads projection capabilities-test capabilities-lint capabilities-typecheck
+ci: docs-check secrets-all grammar payloads projection capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone
 
 # `--project` not `--directory`: build reads ./components from the CWD, and
 # --directory would move the CWD into the workspace.
@@ -91,3 +91,36 @@ secrets-all:
 evals:
     uv --project components/capabilities run ix run catalog-routing --lab lab --mock --seed 42
     uv --project components/capabilities run ix run sensor-integrity --lab lab --mock
+
+# Every capability, installed ALONE from only its own declared dependencies —
+# the `uv tool install` / `uvx` path, which nothing else here exercises.
+#
+# `just ci` runs inside the workspace, where the dev group installs all five
+# packages and the UNION of their dependencies. An under-declared dependency is
+# therefore invisible to every other gate: dao imported pydantic in its domain
+# layer and declared only click and rich, and every gate passed while
+# `uv tool install dao` died on import (fixed 2026-09-06).
+#
+# The copy to a temp dir is load-bearing, not hygiene: uv discovers the workspace
+# from the package path and applies the root's [tool.uv.sources], so testing in
+# place resolves workspace-internal deps and gives a false pass.
+#
+# ix is NOT in this list. It declares a bare `matrix`, which resolves to the
+# UNRELATED PyPI `matrix` 3.0.0 outside the workspace — installing silently and
+# failing later at `from matrix import AgentResponse`. That is a naming decision,
+# not a typo; see SECURITY.md in ix. Add ix here once it is settled.
+capabilities-standalone:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    tmp="$(mktemp -d)"; trap 'rip "$tmp" 2>/dev/null || true' EXIT
+    fail=0
+    for p in matrix recon gnx dao; do
+      cp -R components/capabilities/$p "$tmp/$p"
+      if [ "$p" = matrix ]; then probe=(python -c "import matrix"); else probe=("$p" --help); fi
+      if ( cd "$tmp" && uv run --isolated --no-project --quiet --with ./$p "${probe[@]}" >/dev/null ); then
+        echo "  $p standalone OK"
+      else
+        echo "  $p standalone FAIL — an import is not in [project.dependencies]"; fail=1
+      fi
+    done
+    exit $fail
