@@ -117,41 +117,50 @@ what its own docstring says it does.
 Found by `lab/sensor-integrity` on its first run, not by review. Regression:
 `ix/tests/ix/test_strict_regressions.py`.
 
-### I-6 — a bare `matrix` dependency resolves to a stranger's package (open, 2026-09-06)
+### I-6 — a bare `matrix` dependency is safe only because the workspace travels with it (2026-09-06)
 
-`ix` declares `matrix` in `[project.dependencies]` with no source. Inside this repository
-the workspace root's `[tool.uv.sources]` maps that name to the local package, so every
-gate resolves it correctly. **Outside the workspace it does not.** `matrix` is a real
-name on PyPI — an unrelated config-parsing library, currently 3.0.0 — and
-`uv tool install ix`, `uvx ix` or `pip install ix` silently installs that instead.
+`ix` declares `matrix` in `[project.dependencies]` with no source. `matrix` is also a real
+name on PyPI — an unrelated config-parsing library, currently 3.0.0 — so the name is
+ambiguous and what resolves depends entirely on whether the resolver can see this
+repository's workspace root.
 
-Verified 2026-09-06 by copying `ix/` out of the workspace and installing it alone:
+**On the distribution path gnx actually uses, it resolves correctly.** Verified
+2026-09-06 against `origin/main`:
 
 ```
-dist version: 3.0.0
-origin: PyPI
-ImportError: cannot import name 'AgentResponse' from 'matrix'
+$ uvx --from "git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/ix" ...
+Building matrix @ git+https://github.com/mox-labs/gnx@a4658f8#subdirectory=components/capabilities/matrix
+Building ix     @ git+https://github.com/mox-labs/gnx@a4658f8#subdirectory=components/capabilities/ix
+matrix version: 0.1.0
 ```
 
-Two properties make this worse than a missing dependency:
+uv clones the whole repository to build the subdirectory, discovers
+`components/capabilities/pyproject.toml` as the workspace root, and applies its
+`[tool.uv.sources]`. Both packages are built from the same pinned commit. Every ix module
+imports cleanly.
 
-1. **It installs successfully and `ix --help` works.** click renders help without touching
-   matrix, so the first signal is an `ImportError` from `mock_runtime` at the moment an
-   experiment actually runs — long after the install looked fine.
-2. **The resolved package is chosen by whoever owns the name on the public index**, not by
-   this repository. Today's `matrix` is a benign 2015-era library; the shape is the one
-   dependency-confusion exploits, and the mitigation does not depend on today's owner
-   being benign.
+**It resolves to the stranger only when the package is severed from the repository** — a
+path install of a copied `ix/`, or `pip install ix` — where the workspace root is not
+present. Then uv takes PyPI's `matrix` 3.0.0, installs successfully, renders `ix --help`
+without complaint (click never touches matrix), and fails later at
+`from matrix import AgentResponse`. Verified by copying `ix/` outside the tree.
 
-Not yet fixed, because the fix is a naming decision rather than a typo: publishing under a
-distinct distribution name, pinning a direct URL, or declaring that `ix` is
-workspace-only and failing loudly outside it are three different answers with different
-consequences for the marketplace. `matrix` and `ix` are both intended to be gnx-internal —
-only `gnx` goes to PyPI — which argues for the third, but that is yzavyas's call.
+So this is a **latent** finding, not a live one: the exposure is real but no supported
+install path reaches it. Two things keep it on the list rather than closed:
 
-Until it is settled, `ix` is excluded from the `capabilities-standalone` gate, and that
-exclusion is written into the recipe so it cannot be forgotten.
+1. The safety comes from a property of the *transport* (git clones the whole repo), not
+   from anything ix declares. A future path that publishes ix's wheel on its own — or any
+   consumer who vendors the directory — loses the guarantee silently.
+2. The failure mode is silent-then-late rather than an install error, and the package that
+   fills the gap is chosen by whoever owns the name on the public index.
 
+Not fixed, because the fix is a naming decision rather than a typo. Options: publish under
+a distinct distribution name, pin a direct git URL in ix's own dependency list, or declare
+ix repository-only and fail loudly when the workspace is absent. yzavyas's call.
+
+`ix` is excluded from `just capabilities-standalone` for the same reason — that gate
+severs the package from the repository on purpose, which is the one condition under which
+ix legitimately cannot resolve. It is not a defect the gate is entitled to flag.
 
 ## Not covered
 

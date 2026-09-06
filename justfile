@@ -105,10 +105,19 @@ evals:
 # from the package path and applies the root's [tool.uv.sources], so testing in
 # place resolves workspace-internal deps and gives a false pass.
 #
-# ix is NOT in this list. It declares a bare `matrix`, which resolves to the
-# UNRELATED PyPI `matrix` 3.0.0 outside the workspace — installing silently and
-# failing later at `from matrix import AgentResponse`. That is a naming decision,
-# not a typo; see SECURITY.md in ix. Add ix here once it is settled.
+# This models the real distribution path — `uv tool install`/`uvx` against a
+# git+subdirectory URL — for every package with no workspace-internal dependency.
+# uv clones the whole repo to build a subdirectory, so it sees the workspace root
+# and its [tool.uv.sources]; what it does NOT do is widen a package's own declared
+# dependency set. Confirmed against origin/main: dao installed from a git URL failed
+# on pydantic exactly as the local install did.
+#
+# ix is NOT in this list, and its absence is not a defect. ix depends on `matrix`,
+# which the repository resolves on every supported path because the clone carries
+# the workspace root. Severing the package from the repo — what this recipe does on
+# purpose — is the one condition under which ix legitimately cannot resolve, and
+# PyPI's unrelated `matrix` 3.0.0 then fills the gap. See ix/SECURITY.md I-6; ix is
+# checked on the git path instead.
 capabilities-standalone:
     #!/usr/bin/env bash
     set -uo pipefail
