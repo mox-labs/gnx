@@ -54,13 +54,15 @@ class TestContainer:
     def test_exposes_registry(self, container, registry):
         assert container.registry is registry
 
-    def test_exposes_runtime(self, config, registry):
+    def test_exposes_runtimes_and_agents(self, config, registry):
         runtime = object()
-        container = Container(config=config, registry=registry, runtime=runtime)
-        assert container.runtime is runtime
+        container = Container(config=config, registry=registry, runtimes={"r": runtime})
+        assert container.runtime("r") is runtime
+        assert container.agents == {}
 
-    def test_runtime_defaults_none(self, container):
-        assert container.runtime is None
+    def test_unknown_runtime_lists_configured(self, container):
+        with pytest.raises(KeyError, match=r"no runtime named 'x'"):
+            container.runtime("x")
 
     def test_create_component(self, container):
         component = container.create_component("test.probe")
@@ -133,6 +135,6 @@ class TestDIPattern:
             )
 
         registry = ComponentRegistry().register("test.runtime-probe", make_runtime_probe)
-        container = Container(config=config, registry=registry, runtime=captured_runtime)
+        container = Container(config=config, registry=registry)
         component = container.create_component("test.runtime-probe")
         assert component._data == f"used-runtime-{id(captured_runtime)}"

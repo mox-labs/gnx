@@ -9,11 +9,14 @@ from typing import Any
 
 import yaml
 
+from matrix.domain.errors import ConfigError
+
 
 class YamlConfigSource:
     """Reads a single YAML file as a config source.
 
-    Returns empty dict if the file doesn't exist or is empty.
+    Returns empty dict if the file doesn't exist or is empty. A file that exists but is not a
+    YAML mapping is an error naming the file — previously it was silently read as empty.
     """
 
     def __init__(self, path: Path) -> None:
@@ -23,6 +26,15 @@ class YamlConfigSource:
         """Read and parse YAML. Empty dict if file missing or empty."""
         if not self._path.exists():
             return {}
-        with open(self._path) as f:
-            data = yaml.safe_load(f)
-        return data if isinstance(data, dict) else {}
+        try:
+            with open(self._path) as f:
+                data = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise ConfigError(f"{self._path}: not valid YAML: {e}") from e
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            raise ConfigError(
+                f"{self._path}: top level must be a mapping, got {type(data).__name__}"
+            )
+        return data

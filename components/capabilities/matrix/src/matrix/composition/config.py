@@ -9,9 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from matrix.domain.config import Config, MatrixConfig
+from matrix.domain.errors import ConfigError
 
 C = TypeVar("C", bound=BaseModel)
 
@@ -57,7 +58,7 @@ def load_config(  # noqa: UP047
     client_key: str,
     sources: list[Path] | None = None,
 ) -> Config[C]:
-    """Load and validate composed config.
+    """Load and validate composed config. Raises ConfigError naming key paths and sources.
 
     Args:
         client_type: Pydantic model class for client config section.
@@ -74,15 +75,30 @@ def load_config(  # noqa: UP047
         sources = discover_sources(client_key)
 
     merged: dict[str, Any] = {}
+    consulted: list[str] = []
     for path in sources:
         tier_data = YamlConfigSource(path).read()
+        consulted.append(str(path) + ("" if tier_data else " (absent/empty)"))
         if tier_data:
             merged = deep_merge(merged, tier_data)
 
-    matrix_data = merged.get("matrix", {})
-    client_data = merged.get(client_key, {})
-
-    matrix_config = MatrixConfig.model_validate(matrix_data)
-    client_config = client_type.model_validate(client_data)
-
+    matrix_config = _validate(MatrixConfig, merged.get("matrix", {}), "matrix", consulted)
+    client_config = _validate(client_type, merged.get(client_key, {}), client_key, consulted)
     return Config(matrix=matrix_config, client=client_config)
+
+
+def _validate(model: type[C], data: Any, section: str, consulted: list[str]) -> C:  # noqa: UP047
+    """Validate one section; on failure name the key path and every file consulted."""
+    try:
+        return model.model_validate(data)
+    except ValidationError as e:
+        lines = [
+            f"  {section}.{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
+            for err in e.errors()
+        ]
+        raise ConfigError(
+            "invalid config:\n"
+            + "\n".join(lines)
+            + "\nsources (lowest priority first): "
+            + "; ".join(consulted)
+        ) from None

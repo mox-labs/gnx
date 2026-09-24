@@ -1,179 +1,111 @@
-# Running an Experiment
+# Running experiments
 
-Set up and run an ix experiment from scratch.
+From an empty directory to a result with an error bar. Every command here is ix's CLI as it
+exists; `ix <command> --help` has the rest.
 
+## 1. Create a lab and an experiment
+
+```bash
+ix lab init lab
+ix experiment init routing --lab lab
+```
+
+```
+lab/
+└── routing/
+    ├── experiment.yaml        # name, engine, sensor, trials
+    ├── tasks/                 # probes go here
+    └── subjects/agent.md      # a starter subject on the simulator (runtime: mock)
+```
+
+A new experiment runs as soon as it has one probe, on the simulator, before any model is
+configured.
+
+## 2. Write probes
+
+One markdown file per probe in `tasks/`. Frontmatter is metadata the sensor reads; the body is
+the prompt, sent verbatim.
+
+```markdown
 ---
-
-## 1. Create a Lab
-
-A lab is a directory that holds experiments.
-
-```bash
-ix lab init ci-lab
+id: vague-ask
+expectation: must_trigger          # activation: must_trigger | should_not_trigger | acceptable
+expected_skill: intent-hardening
+---
+I want to make our onboarding better somehow. Where do I start?
 ```
 
-## 2. Scaffold an Experiment
+Write decoys too — `should_not_trigger` probes pitched near a skill's vocabulary without
+needing it. A routing measurement with no decoys cannot tell a good description from a greedy
+one.
 
-```bash
-ix experiment init skill-activation --lab ci-lab
-```
+## 3. Choose who answers
 
-This creates:
-
-```
-ci-lab/
-└── skill-activation/
-    ├── experiment.yaml
-    └── cases/              # empty, you'll add cases here
-```
-
-## 3. Configure the Experiment
-
-Edit `experiment.yaml`:
+A subject is an agent definition plus the runtime that plays it. Edit `subjects/agent.md`, or
+list subjects in `experiment.yaml`:
 
 ```yaml
-name: skill-activation
-description: Test build-eval skill activation
-skill: build-eval
-trials: 5
-```
-
-`skill:` is shorthand — ix infers the subject, sensor, and evaluation pipeline from it. For full control:
-
-```yaml
-name: skill-activation
-description: Test build-eval skill activation
-sensor: activation
-trials: 5
-
 subjects:
-  - name: build-eval
-    description: The skill under test
+  - name: live
+    config:
+      max_turns: 1
+      runtime:
+        type: claude-sdk
+        setting_sources: []                # hermetic: nothing from ~/.claude leaks in
+        permission_mode: bypassPermissions # unattended — logged at WARNING
+        plugins: [{type: local, path: ../../plugins/intent-hardening}]
+  - name: local
+    config:
+      system_prompt: Answer briefly.
+      tools: []
+      runtime: {type: model}               # uses the experiment's `models:` registry
 ```
 
-## 4. Write Cases
-
-Each case is a markdown file in `cases/` — YAML frontmatter with the expectation, body is the prompt.
-
-**Must trigger** — skill should activate:
-
-```markdown
----
-id: must-001
-expectation: must_trigger
-rationale: Direct question about writing evals.
----
-How do I write evals for my coding agent?
-```
-
-**Should not trigger** — skill must stay quiet:
-
-```markdown
----
-id: not-001
-expectation: should_not_trigger
-rationale: General coding question, no eval intent.
----
-How do I sort a list in Python?
-```
-
-**Acceptable** — either outcome is fine (excluded from metrics):
-
-```markdown
----
-id: edge-001
-expectation: acceptable
-rationale: Ambiguous — mentions testing but not evals specifically.
----
-How do I test my AI assistant?
-```
-
-File naming convention: `must-001.md`, `not-001.md`, `edge-001.md`.
-
-## 5. Validate
+## 4. Validate, then run on the simulator
 
 ```bash
-ix experiment validate skill-activation --lab ci-lab
-# Valid: skill-activation (28 cases)
+ix experiment validate routing --lab lab
+ix run routing --lab lab --mock --seed 42
 ```
 
-## 6. Run (Mock)
+`--mock` swaps every subject onto the simulator: canned `mock_response`s where a probe has one,
+otherwise a seeded 90/10 activation split. **It proves the harness, not the thing.** A
+simulated pass rate says the pipeline works; it says nothing about your catalog.
 
-Mock mode uses a local runtime that simulates tool calls. No API keys needed.
+## 5. Run for real
 
 ```bash
-ix run skill-activation --lab ci-lab --mock
+ix run routing --lab lab --subject live --trials 1        # one trial per probe to start
+ix run routing --lab lab --subject live                   # the configured trials × repeats
+ix run routing --lab lab --subject local --engine inspect # same experiment on Inspect AI
 ```
 
-Add `--seed 42` for deterministic results across runs.
+Set `repeats: 3` or more before you compare two subjects. One run's pass rate has no error
+bar; the **noise floor** — the spread of pass rates across repeats — is what says whether a
+difference between two subjects is bigger than the run-to-run wobble.
 
-## 7. Run (Live)
-
-Live mode sends prompts to Claude and observes actual behavior.
+## 6. Read the results
 
 ```bash
-export ANTHROPIC_API_KEY=sk-...
-ix run skill-activation --lab ci-lab --live
+ix results routing --lab lab
+ix results routing --lab lab --format json
 ```
 
-Override trial count from the command line:
+| Metric | Meaning |
+|--------|---------|
+| **Pass rate** | fraction of probes where a majority of trials passed, by the sensor's own verdict |
+| **Mean / min / max score** | over per-probe mean trial scores |
+| **Noise floor (sd)** | standard deviation of per-repeat pass rates — compare differences against it |
+| **Confusion matrix** | activation only: expected skill × the skill that actually fired |
 
-```bash
-ix run skill-activation --lab ci-lab --mock --trials 3
-```
+On the Inspect engine each repeat also leaves an `.eval` log in `results/inspect/` with every
+prompt, response and score; `inspect view` opens it, and the path is recorded in the summary's
+`engine_artifacts`.
 
-## 8. Read Results
+## When it disagrees with you
 
-```bash
-ix results skill-activation --lab ci-lab
-```
-
-```
-────────────── Results ──────────────
-  Precision    100.0%
-  Recall        93.3%
-  F1            96.6%
-
-Confusion Matrix:
-  TP=14  FP=0
-  FN=1   TN=10
-
-Status: EXCELLENT
-```
-
-JSON output:
-
-```bash
-ix results skill-activation --lab ci-lab --format json
-```
-
-Results live in `ci-lab/skill-activation/results/`:
-
-| File | Contents |
-|------|----------|
-| `trials.jsonl` | One verdict per trial, appended each run |
-| `summary-latest.json` | Aggregate metrics from the most recent run |
-| `summary-{timestamp}.json` | Archived snapshots |
-
-See [Experiment Format](../reference/experiment-format.md) for the complete schema.
-
----
-
-## Interpreting Results
-
-| Metric | What It Tells You |
-|--------|-------------------|
-| **Precision** | Of cases that activated, how many *should* have? Low = false positives. |
-| **Recall** | Of cases that *should* activate, how many did? Low = false negatives. |
-| **F1** | Harmonic mean of precision and recall. The single number to watch. |
-
-| Status | F1 Threshold |
-|--------|-------------|
-| Excellent | >= 0.85 |
-| Good | >= 0.70 |
-| Needs work | >= 0.50 |
-| Poor | < 0.50 |
-
-**Low precision?** The skill activates when it shouldn't. Tighten the skill description or add negative keywords.
-
-**Low recall?** The skill doesn't activate when it should. Broaden the skill description or add trigger patterns.
+- **A must-trigger probe fails** — read the confusion matrix. A different skill firing is a
+  description collision; nothing firing is a description that does not say when to use it.
+- **A decoy fires** — the description is greedy. Narrow its trigger phrasing.
+- **Results swing between runs** — raise `repeats` and look at the noise floor before
+  concluding anything.

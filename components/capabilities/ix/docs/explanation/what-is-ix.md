@@ -71,7 +71,7 @@ class Subject(BaseModel, frozen=True):
     config: dict = {}
 ```
 
-A subject is pure identity. It holds a system prompt, runtime configuration (which model, how many turns, what tools are available), and any other properties that define one variant. In a 2x2 experiment, you have four subjects. In an A/B test, two. The subject does not know how to run itself -- it is data, not behavior.
+A subject is pure identity: an agent definition (system prompt, model, tools, turn budget) plus the runtime that plays it (`runtime.type` — `claude-sdk`, `model`, `mock` — and that runtime's options). The composition root binds the two into a matrix agent, so moving a subject between the Claude SDK and a local model is a config change. In a 2x2 experiment, you have four subjects. In an A/B test, two. The subject does not know how to run itself -- it is data, not behavior.
 
 **Trial** -- one execution of a probe against a subject.
 
@@ -114,18 +114,20 @@ ProbeNode ──┐
 SubjectNode ┘
 ```
 
-This is a DAG, not a pipeline. ProbeNode and SubjectNode have no dependency on each other -- they can run concurrently. TrialNode depends on both. SensorNode depends on TrialNode. The topology is declared through `consumes` and `produces` sets on each node:
+This is a DAG, not a pipeline. ProbeNode and SubjectNode have no dependency on each other -- they can run concurrently. TrialNode depends on both. SensorNode depends on TrialNode. The topology is declared through `requires` and `provides` on each node, and matrix enforces the reads:
 
 | Node | Consumes | Produces |
 |------|----------|----------|
-| ProbeNode | nothing | `probe.stimulus` |
-| SubjectNode | nothing | `subject.config` |
-| TrialNode | `probe.stimulus`, `subject.config` | `trial.observation` |
-| SensorNode | `trial.observation` | `sensor.reading` |
+| ProbeNode | nothing | `ix.v1/probe.stimulus` |
+| SubjectNode | nothing | `ix.v1/subject` |
+| TrialNode | `ix.v1/probe.stimulus`, `ix.v1/subject` | `ix.v1/trial.observation` |
+| SensorNode | `ix.v1/trial.observation` | `ix.v1/sensor.readings` |
 
-TrialNode is where agent execution happens. It reads the subject's runtime config, resolves an agent from a ComponentRegistry (e.g., `matrix.agent.claude` or `matrix.agent.mock`), calls `agent.run(prompt)`, and wraps the response in a Trial. If the agent fails, the Trial captures the error. Either way, SensorNode gets a Trial to measure.
+TrialNode is where agent execution happens. It asks the agent factory for the subject's agent — a definition bound to a runtime resolved by type URL (`matrix.v1/runtime.claude-sdk`, `matrix.v1/runtime.model`, `ix.v1/runtime.mock`) — calls `agent.run(prompt)`, and wraps the response in a Trial. If the agent fails, the Trial captures the error. Either way, SensorNode gets a Trial to measure.
 
 SensorNode delegates to the Sensor protocol. If the trial has an error, it produces a failed reading without calling the sensor. If the sensor itself throws, it catches the exception and produces a failed reading with the error message. Failures propagate as data, not as exceptions that abort the experiment.
+
+This DAG is the **native engine**. The **Inspect engine** runs the same repeat as an Inspect AI task — probes as samples, trials as epochs, the subject as a solver, the sensor as a scorer — and leaves an `.eval` log per repeat. Aggregation belongs to the experiment, not the engine, so the same experiment gives the same results either way.
 
 The DAG runs on Matrix's Orchestrator. Matrix is the Agentic Data Plane -- it provides the agent runtimes, the component registry, and the DAG execution engine. ix provides the experiment semantics: what to test, how to grade, how to aggregate. The dependency is one-way: ix depends on Matrix. Matrix knows nothing about experiments or sensors.
 
@@ -210,7 +212,7 @@ An experiment is a directory with three parts:
 
 1. **`experiment.yaml`** -- name, sensors, trial count, subject references
 2. **`tasks/*.md`** -- one probe per file, YAML frontmatter for id and metadata, prompt as body
-3. **`subjects/*.md`** -- one subject per file, YAML frontmatter for name and runtime config, system prompt as body
+3. **`subjects/*.md`** -- one subject per file: frontmatter for name, definition fields and `runtime`, system prompt as body
 
 No Python required to define an experiment. The file format is the interface. Version-control your experiments, diff them, review them. Start with `--mock` to validate structure before spending API budget.
 
@@ -224,9 +226,9 @@ ix results my-experiment --lab ci-lab       # View results
 
 ## The composition root
 
-One question the architecture must answer: who wires concrete implementations together? The composition root (`ix.composition`) does this once, at startup. It builds a unified `ComponentRegistry` that resolves both agent runtimes (`matrix.agent.claude`, `matrix.agent.mock`) and sensors (`ix.sensor.activation`, `ix.sensor.function-test`) through the same `type_url -> factory` pattern.
+One question the architecture must answer: who wires concrete implementations together? The composition root (`ix.composition`) does this once, at startup. It builds one `ComponentRegistry` that resolves agent runtimes (`matrix.v1/runtime.claude-sdk`, `matrix.v1/runtime.model`, `ix.v1/runtime.mock`), sensors (`ix.v1/sensor.activation`, ...) and engines (`ix.v1/engine.native`, `ix.v1/engine.inspect`) through the same `type_url -> factory` pattern, plus any `matrix.components` or `ix.components` entry point.
 
-The `Experiment` class never imports a concrete node class or agent implementation. It receives a `run_trial` callable from the composition root -- a closure that knows how to build the inner DAG from concrete components. This inversion means the experiment loop is testable in isolation, mock mode works by swapping one registry entry, and new agent runtimes or sensor types plug in without touching the experiment code.
+The `Experiment` class never imports a concrete engine, node or runtime. It receives an engine and an agent factory from the composition root. This inversion means the experiment loop is testable in isolation, `--mock` works by swapping the runtime the factory binds, and new runtimes, sensors or engines plug in without touching the experiment code.
 
 ---
 
@@ -236,4 +238,4 @@ ix 0.0.1-alpha means the core loop works and real experiments have run (CEP-001)
 
 Known gaps: no built-in statistical significance testing (Bayesian methods are documented in experiment proposals but not automated), no pass@k metric, no load-testing sensor. The architecture supports all three -- the Sensor protocol generalizes -- but they do not exist yet.
 
-If you are evaluating ix: run an experiment in `ci-lab/`. The structure there is what the file format looks like. If it fits your use case, ix is worth trying.
+If you are evaluating ix: run an experiment in gnx's `lab/`. The structure there is what the file format looks like. If it fits your use case, ix is worth trying.

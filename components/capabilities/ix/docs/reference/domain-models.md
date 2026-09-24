@@ -58,9 +58,25 @@ Measures a trial and produces readings.
 | Member | Signature | Description |
 |--------|-----------|-------------|
 | `name` | `@property -> str` | Sensor identifier (appears in `Reading.sensor_name`) |
-| `sense` | `(trial: Trial) -> list[Reading]` | Measures one trial |
+| `measure` | `(trial: Trial) -> list[Reading]` | Measures one trial |
 
-**Note:** Agent execution uses `matrix.Agent` protocol directly (`run(prompt) -> AgentResponse`). No separate `ExperimentRuntime` protocol — Matrix's Agent IS the runtime.
+### `AgentFactory` (Protocol)
+
+`(subject: Subject, trial_index: int, run_index: int = 0) -> matrix.Agent`. Built by the
+composition root: splits the subject's config into a matrix `AgentDefinition` (`system_prompt`,
+`model`, `tools`, `max_turns`) and a runtime (`runtime.type` + options), and binds them.
+Seeded simulated runtimes draw per `(run_index, trial_index)`, so repeats are independent.
+
+### `Engine` (Protocol)
+
+`name: str`; `async run(run: EngineRun) -> EngineOutcome`. Executes one repeat — every probe ×
+trial — and returns `EngineOutcome(readings, artifacts)`. `EngineRun` carries `experiment`,
+`probes`, `subject`, `sensor`, `agents` (an AgentFactory), `trials`, `run_index`.
+
+| engine | type URL | executes a repeat as |
+|---|---|---|
+| native | `ix.v1/engine.native` | one four-node matrix DAG per probe × trial |
+| inspect | `ix.v1/engine.inspect` | one Inspect AI task: probes → samples, trials → epochs, subject → solver, sensor → scorer; `artifacts["inspect_log"]` is the `.eval` path |
 
 ---
 
@@ -188,23 +204,27 @@ ProbeNode ──┐
             ├──▶ TrialNode ──▶ SensorNode
 SubjectNode ┘
 
-ProbeNode:   consumes: ∅                              produces: "probe.stimulus"      (Probe)
-SubjectNode: consumes: ∅                              produces: "subject.config"       (dict)
-TrialNode:   consumes: {probe.stimulus, subject.config} produces: "trial.observation"  (Trial)
-SensorNode:  consumes: {trial.observation}             produces: "sensor.reading"      (list[Reading])
+ProbeNode:   requires: ∅                          provides: ix.v1/probe.stimulus    (Probe)
+SubjectNode: requires: ∅                          provides: ix.v1/subject           (Subject)
+TrialNode:   requires: {probe.stimulus, subject}  provides: ix.v1/trial.observation (Trial)
+SensorNode:  requires: {trial.observation}        provides: ix.v1/sensor.readings   (list[Reading])
 ```
 
-Experiment loops over probes × trials, runs the inner DAG each iteration. Post-loop: aggregate all readings → metrics. Status is derived from pass_rate via computed property.
+The native engine runs this DAG per probe × trial; reads are declared and enforced by matrix.
+The Experiment runs `repeats` repeats through the engine, then aggregates. Status is derived
+from pass_rate via computed property.
 
-All components resolve through a unified `ComponentRegistry` via `type → type_url → factory`. Sensors, agent runtimes — same pattern, no special cases.
+All components resolve through one `ComponentRegistry` by type URL: `matrix.v1/runtime.*`,
+`ix.v1/runtime.mock`, `ix.v1/sensor.*`, `ix.v1/engine.*`, plus `matrix.components` and
+`ix.components` entry points.
 
 ## Type Flow
 
 ```
-Probe (stimulus) + Subject.config (identity + runtime)
+Probe (stimulus) + Subject (definition fields + runtime)
     |
-TrialNode: registry.create("matrix.agent.{type}", config) → Agent
-           Agent.run(prompt) → AgentResponse
+AgentFactory: AgentDefinition + registry.create("matrix.v1/runtime.<type>", options) → BoundAgent
+              BoundAgent.run(prompt) → AgentResponse (content, tool_calls, usage, family)
     |
 Trial(probe_id, trial_index, response, error)
     |

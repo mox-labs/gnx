@@ -34,7 +34,7 @@ payloads:
 
 # Lint the capability packages (the puma/x.uma house set: + B, SIM, TC).
 capabilities-lint:
-    uv --directory components/capabilities run ruff check matrix ix recon dao gnx
+    uv --directory components/capabilities run ruff check modelrt matrix ix recon dao gnx
 
 # Typecheck each capability FROM ITS OWN DIRECTORY. mypy resolves config from the
 # invocation rootdir, so running it from the workspace root silently applies the root
@@ -42,7 +42,7 @@ capabilities-lint:
 # xmltodict, matrix for opentelemetry, ix for deepeval — none of which ship py.typed).
 # puma's gate does `cd puma && mypy src/xuma` for exactly this reason.
 #
-# All five are clean under --strict as of 2026-08-18. Adding a package here is how it
+# All six are clean under --strict as of 2026-09-24 (modelrt joined). Adding a package here is how it
 # stays that way: the list is the gate, not a wish.
 #
 # Typecheck every capability package under mypy --strict.
@@ -50,16 +50,16 @@ capabilities-typecheck:
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
-    for p in matrix ix recon dao gnx; do
+    for p in modelrt matrix ix recon dao gnx; do
       ( cd components/capabilities/$p && \
         ../.venv/bin/mypy --strict src/$p ) || fail=1
     done
     exit $fail
 
-# The capability packages: matrix, ix, recon, dao (gnx CLI has no tests yet).
+# The capability packages: modelrt, matrix, ix, recon, dao (gnx CLI has no tests yet).
 capabilities-test:
     uv --directory components/capabilities run --group dev \
-        python -m pytest matrix/tests ix/tests recon/tests dao/tests -q
+        python -m pytest modelrt/tests matrix/tests ix/tests recon/tests dao/tests -q
 
 # The docsite: svelte-kit sync + svelte-check + tsc --noEmit.
 docs-check:
@@ -87,10 +87,12 @@ secrets-all:
 # ANTHROPIC_API_KEY and measures the catalog rather than the plumbing. See lab/README.md
 # for why those are different claims.
 #
-# Run the lab's experiments in mock mode.
+# Run the lab's experiments offline, on both engines: the native matrix DAG and Inspect AI.
+# Same experiment, same readings — the engine parity test asserts it.
 evals:
     uv --project components/capabilities run ix run catalog-routing --lab lab --mock --seed 42
-    uv --project components/capabilities run ix run sensor-integrity --lab lab --mock
+    uv --project components/capabilities run ix run sensor-integrity --lab lab
+    uv --project components/capabilities run ix run sensor-integrity --lab lab --engine inspect
 
 # Every capability, installed ALONE from only its own declared dependencies —
 # the `uv tool install` / `uvx` path, which nothing else here exercises.
@@ -123,7 +125,7 @@ capabilities-standalone:
     set -uo pipefail
     tmp="$(mktemp -d)"; trap 'rip "$tmp" 2>/dev/null || true' EXIT
     fail=0
-    for p in matrix recon gnx dao; do
+    for p in modelrt matrix recon gnx dao; do
       cp -R components/capabilities/$p "$tmp/$p"
       if [ "$p" = matrix ]; then probe=(python -c "import matrix"); else probe=("$p" --help); fi
       if ( cd "$tmp" && uv run --isolated --no-project --quiet --with ./$p "${probe[@]}" >/dev/null ); then

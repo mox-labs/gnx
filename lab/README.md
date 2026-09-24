@@ -6,9 +6,13 @@ claims instead of asserting them.
 
 ```
 ix run catalog-routing  --lab lab --mock --seed 42
-ix run sensor-integrity --lab lab --mock
+ix run sensor-integrity --lab lab                      # its subject is the simulator
+ix run sensor-integrity --lab lab --engine inspect     # same experiment on Inspect AI
 ix results catalog-routing --lab lab
 ```
+
+Either engine gives the same readings for the same experiment; `inspect` also leaves an
+`.eval` log per repeat under `results/inspect/` (open with `inspect view`).
 
 Run from the repo root, with the capabilities workspace:
 
@@ -32,6 +36,11 @@ ix run catalog-routing --lab lab --subject catalog-live --trials 1
 ```
 
 ### catalog-routing
+
+> **Known gap (2026-09-24).** Five of the eight probes expect skills that left the catalog on
+> 2026-08-19 — `aces`, `trust-boundaries` and `dao` are in `incubator/`. The live subject loads
+> the three plugins that ship, so a live run fails those probes by construction. The
+> measurement below predates the cut.
 
 The catalog's whole promise is that a description makes the right component fire at the
 right moment. That is a measurable claim, and this is the measurement: `must_trigger`

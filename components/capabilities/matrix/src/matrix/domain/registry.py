@@ -1,15 +1,36 @@
-"""ComponentRegistry — type URL to factory mapping.
+"""ComponentRegistry — type URL to factory, with typed config and discovery.
 
-Inspired by x.uma's xds typed config registry: type URL string maps to
-a factory callable that takes a config dict and returns a Component instance.
+Inspired by x.uma's xDS typed config registry: a type URL maps to a factory that builds a
+component from config. Two registration forms:
 
-Simple things first: the factory is any callable(**config) -> Component.
-Typed config validation (Pydantic per-component) is a future evolution.
+* ``register(type_url, factory)`` — ``factory(**config)``. A config key the factory does not
+  accept is reported as a ConfigError naming the type URL and the offending keys, not as a
+  bare ``TypeError: unexpected keyword argument``.
+* ``register_typed(type_url, config_cls, build)`` — the config dict is validated through a
+  pydantic model first, then ``build(validated)``. A typo in YAML fails at validation with the
+  key path and the source it came from.
+
+Extensions register themselves: :meth:`discover` loads every ``matrix.components`` entry
+point, each a callable ``register(registry) -> None``. A duplicate type URL still raises —
+discovery never silently overrides.
 """
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+import inspect
+from importlib.metadata import entry_points
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
+
+from pydantic import BaseModel, ValidationError
+
+from .errors import ConfigError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+ENTRY_POINT_GROUP = "matrix.components"
+
+C = TypeVar("C", bound=BaseModel)
 
 
 @runtime_checkable
@@ -20,41 +41,86 @@ class ComponentFactory(Protocol):
 
 
 class ComponentRegistry:
-    """Type URL → Component factory mapping.
+    """Type URL → component factory.
 
     Usage::
 
         registry = (
             ComponentRegistry()
-            .register("ix.probe.prompt", PromptProbe)
-            .register("ix.sensor.activation", ActivationSensor)
+            .register("ix.v1/probe.prompt", PromptProbe)
+            .register_typed("ix.v1/sensor.activation", ActivationConfig, ActivationSensor)
         )
-
-        probe = registry.create("ix.probe.prompt", {"template": "..."})
+        probe = registry.create("ix.v1/probe.prompt", {"template": "..."})
     """
 
     def __init__(self) -> None:
-        self._factories: dict[str, ComponentFactory] = {}
+        self._factories: dict[str, Callable[[dict[str, Any], str], Any]] = {}
 
     def register(self, type_url: str, factory: ComponentFactory) -> ComponentRegistry:
-        """Register a factory for a type URL. Returns self for chaining.
+        """Register ``factory(**config)``. Raises ValueError on duplicate type URL."""
 
-        Raises ValueError on duplicate registration.
-        """
+        def create(config: dict[str, Any], source: str) -> Any:
+            try:
+                return factory(**config)
+            except TypeError as e:
+                problem = _unaccepted_keys(factory, config)
+                if problem is None:
+                    raise
+                raise ConfigError(f"{source}: {type_url}: {problem}") from e
+
+        return self._add(type_url, create)
+
+    def register_typed(
+        self, type_url: str, config_cls: type[C], build: Callable[[C], Any]
+    ) -> ComponentRegistry:
+        """Register a builder whose config is validated through ``config_cls`` first."""
+
+        def create(config: dict[str, Any], source: str) -> Any:
+            try:
+                validated = config_cls.model_validate(config)
+            except ValidationError as e:
+                lines = [
+                    f"  {source}: {type_url}: {'.'.join(str(p) for p in err['loc']) or '(root)'}: "
+                    f"{err['msg']}"
+                    for err in e.errors()
+                ]
+                raise ConfigError("invalid component config:\n" + "\n".join(lines)) from None
+            return build(validated)
+
+        return self._add(type_url, create)
+
+    def _add(
+        self, type_url: str, create: Callable[[dict[str, Any], str], Any]
+    ) -> ComponentRegistry:
         if type_url in self._factories:
             raise ValueError(f"Duplicate registration: {type_url!r} is already registered")
-        self._factories[type_url] = factory
+        self._factories[type_url] = create
         return self
 
-    def create(self, type_url: str, config: dict[str, Any] | None = None) -> Any:
-        """Create a component instance from type URL + config dict.
+    def create(
+        self, type_url: str, config: dict[str, Any] | None = None, *, source: str = "<config>"
+    ) -> Any:
+        """Create a component. ``source`` names where the config came from, for errors.
 
-        Raises KeyError if type URL is not registered.
+        Raises KeyError (listing registered type URLs) if ``type_url`` is unknown.
         """
-        factory = self._factories.get(type_url)
-        if factory is None:
-            raise KeyError(f"Unknown component type: {type_url!r}")
-        return factory(**(config or {}))
+        create = self._factories.get(type_url)
+        if create is None:
+            known = ", ".join(sorted(self._factories)) or "(none)"
+            raise KeyError(f"Unknown component type: {type_url!r}. Registered: {known}")
+        return create(dict(config or {}), source)
+
+    def discover(self, group: str = ENTRY_POINT_GROUP) -> ComponentRegistry:
+        """Load every entry point in ``group``; each is ``register(registry) -> None``."""
+        for ep in entry_points(group=group):
+            register = ep.load()
+            if not callable(register):
+                raise ConfigError(
+                    f"entry point {ep.name!r} ({ep.value}) in {group!r} is not callable; "
+                    "expected register(registry) -> None"
+                )
+            register(self)
+        return self
 
     def __contains__(self, type_url: str) -> bool:
         return type_url in self._factories
@@ -65,3 +131,31 @@ class ComponentRegistry:
     def types(self) -> frozenset[str]:
         """Return all registered type URLs."""
         return frozenset(self._factories)
+
+
+def _unaccepted_keys(factory: Callable[..., Any], config: dict[str, Any]) -> str | None:
+    """Explain a TypeError from ``factory(**config)`` in config terms, or None if unrelated."""
+    try:
+        params = inspect.signature(factory).parameters
+    except (TypeError, ValueError):
+        return None
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return None
+    accepted = {
+        n
+        for n, p in params.items()
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    unknown = sorted(set(config) - accepted)
+    if unknown:
+        return f"unknown config key(s) {unknown}. Accepted: {sorted(accepted)}"
+    required = {
+        n
+        for n, p in params.items()
+        if p.default is inspect.Parameter.empty
+        and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    missing = sorted(required - set(config))
+    if missing:
+        return f"missing required config key(s) {missing}"
+    return None

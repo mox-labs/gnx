@@ -10,7 +10,10 @@ description: >-
 
 subjects:
   - name: canned
-    description: Responses supplied by the probes; no runtime is consulted.
+    description: Responses supplied by the probes (mock_response); no model is consulted.
+    config:
+      runtime:
+        type: mock
 
 sensors:
   - type: function-test

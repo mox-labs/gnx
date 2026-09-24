@@ -203,7 +203,15 @@ def lab_list() -> None:
 @click.option("--lab", "lab_name", help="Lab name (auto-detected if omitted)")
 @click.option("--subject", "subject_name", help="Subject to test (runs first subject if omitted)")
 @click.option("--trials", type=int, help="Override trial count")
-@click.option("--mock", is_flag=True, default=False, help="Dry-run with MockAgent (no API calls)")
+@click.option(
+    "--mock", is_flag=True, default=False, help="Dry-run on the simulated runtime (no API calls)"
+)
+@click.option(
+    "--engine",
+    type=click.Choice(["native", "inspect"]),
+    default=None,
+    help="Override the experiment's engine: native (matrix DAG) or inspect (Inspect AI task)",
+)
 @click.option("--seed", type=int, help="Random seed for deterministic mock runs")
 @click.option("--format", "fmt", type=click.Choice(["table", "json"]), default="table")
 def run(
@@ -212,6 +220,7 @@ def run(
     subject_name: str | None,
     trials: int | None,
     mock: bool,
+    engine: str | None,
     seed: int | None,
     fmt: str,
 ) -> None:
@@ -221,6 +230,7 @@ def run(
 
     Examples:
         ix run skill-activation --lab ci-lab --mock
+        ix run catalog-routing --lab lab --mock --engine inspect
         ix run cep-001 --lab ci-lab --subject help-only
         ix run cep-001 --lab ci-lab --trials 5
     """
@@ -265,6 +275,7 @@ def run(
             seed=seed,
             experiment=experiment,
             experiment_cwd=str(exp_path.resolve()),
+            engine=engine,
         )
     except ValueError as e:
         _cli_error(str(e))
@@ -273,17 +284,18 @@ def run(
 
     subject_label = f", subject={subject.name}" if subject else ""
     if mock:
-        runtime_label = "mock"
+        runtime_label = "simulated"
     elif subject:
-        runtime_label = subject.config.get("runtime", {}).get("type", "anthropic")
+        runtime_label = str(subject.config.get("runtime", {}).get("type", "unset"))
     else:
-        runtime_label = "anthropic"
+        runtime_label = "unset"
+    engine_label = engine or str(experiment.engine.get("type", "native"))
     repeats_label = f", {experiment.repeats} repeats" if experiment.repeats > 1 else ""
     console.print(
         f"Running [bold cyan]{experiment.name}[/bold cyan] "
         f"in lab [cyan]{lab_path.name}[/cyan] "
         f"({len(experiment.probes)} probes, {experiment.trials} trials"
-        f"{repeats_label}, {runtime_label}{subject_label})"
+        f"{repeats_label}, {runtime_label}{subject_label}, engine={engine_label})"
     )
 
     def on_probe(probe_result: ProbeResult) -> None:
@@ -294,14 +306,17 @@ def run(
         console.print(f"  [dim]run {run_idx + 1}/{experiment.repeats}: {pass_rate:.1%}[/dim]")
 
     on_run_cb = on_run if experiment.repeats > 1 else None
-    exp_results = asyncio.run(
-        service.run(
-            experiment,
-            subject=subject,
-            on_probe_complete=on_probe,
-            on_run_complete=on_run_cb,
+    try:
+        exp_results = asyncio.run(
+            service.run(
+                experiment,
+                subject=subject,
+                on_probe_complete=on_probe,
+                on_run_complete=on_run_cb,
+            )
         )
-    )
+    except ValueError as e:  # ix.domain.errors.ConfigError: a subject or runtime is misconfigured
+        _cli_error(str(e))
 
     if fmt == "json":
         console.print(exp_results.model_dump_json(indent=2))
@@ -326,8 +341,8 @@ def experiment_init(name: str, lab_name: str | None) -> None:
     Creates the experiment directory with experiment.yaml, tasks/ and subjects/.
 
     Examples:
-        ix experiment init skill-activation --lab ci-lab
-        ix experiment init code-gen --lab ci-lab
+        ix experiment init skill-activation --lab lab
+        ix experiment init code-gen --lab lab
     """
     lab_path = _resolve_lab(lab_name)
     exp_path = lab_path / name
@@ -340,11 +355,17 @@ def experiment_init(name: str, lab_name: str | None) -> None:
     (exp_path / "tasks").mkdir()
     (exp_path / "subjects").mkdir()
     (exp_path / "experiment.yaml").write_text(
-        f'name: {name}\ndescription: ""\nsensor: activation\ntrials: 5\n'
+        f'name: {name}\ndescription: ""\nengine: native\nsensor: activation\ntrials: 5\n'
+    )
+    # A starter subject on the simulator, so a new experiment runs before any model is
+    # configured. Change runtime.type to claude-sdk or model for a real measurement.
+    (exp_path / "subjects" / "agent.md").write_text(
+        "---\nname: agent\ndescription: Starter subject on the simulator.\n"
+        "runtime:\n  type: mock\n---\nYou are a helpful assistant.\n"
     )
     console.print(f"[green]Created experiment:[/green] [cyan]{name}[/cyan]")
     console.print(f"  [dim]Add tasks: {exp_path}/tasks/must-001.md[/dim]")
-    console.print(f"  [dim]Add subjects: {exp_path}/subjects/agent.md[/dim]")
+    console.print(f"  [dim]Subject: {exp_path}/subjects/agent.md (runtime: mock)[/dim]")
 
 
 @experiment.command("list")

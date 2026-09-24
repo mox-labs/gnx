@@ -60,9 +60,20 @@ does not gain authority.
 
 ### 4. Optional third-party evaluators
 
-`DeepEvalSensor` is behind an optional extra. When enabled it routes judge calls through a
-matrix `Agent` adapter and hands prompts to deepeval. deepeval's own network behaviour is
-outside ix's control.
+`DeepEvalSensor` is behind an optional extra. With `judge: <model>` set, judge calls run
+through matrix's model runtime — so where the judge's prompts go is decided by the modelrt
+registry row (modelrt/SECURITY.md). Without a judge, deepeval calls its own default provider.
+
+See I-7 for deepeval's telemetry.
+
+### 5. The Inspect engine
+
+`engine: inspect` runs each repeat as an Inspect AI task with `model="none"`: Inspect's own
+model is never called, and the subject runs through ix's agent factory exactly as on the
+native engine. Inspect writes an `.eval` log per repeat under `results/inspect/` containing
+**every prompt and every response** — treat the directory like the results it is. The
+engine defaults `max_samples: 1` because concurrent `claude-sdk` subjects race on a
+process-global environment variable (matrix/SECURITY.md M-3).
 
 ## Findings
 
@@ -161,6 +172,18 @@ ix repository-only and fail loudly when the workspace is absent. yzavyas's call.
 `ix` is excluded from `just capabilities-standalone` for the same reason — that gate
 severs the package from the repository on purpose, which is the one condition under which
 ix legitimately cannot resolve. It is not a defect the gate is entitled to flag.
+
+### I-7 — deepeval sends usage telemetry by default (mitigated 2026-09-24)
+
+deepeval reports usage telemetry unless `DEEPEVAL_TELEMETRY_OPT_OUT` is set, and installing it
+registers a pytest plugin that opens a telemetry capture on every test session in the
+environment — including suites that never touch deepeval.
+
+Mitigated: `_build_metric` sets `DEEPEVAL_TELEMETRY_OPT_OUT=1` with `setdefault` before
+deepeval is first imported, so the default is off and an operator's explicit choice still
+wins. The workspace and ix pytest configs pass `-p no:deepeval`. Residual: this is a
+process-global environment default, and deepeval's `__init_subclass__` hook wraps the judge
+adapter's `generate` in deepeval's tracing, which reports only when a Confident AI key is set.
 
 ## Not covered
 

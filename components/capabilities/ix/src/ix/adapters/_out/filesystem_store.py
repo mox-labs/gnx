@@ -18,8 +18,23 @@ from typing import Any
 import frontmatter
 import yaml
 
+from ix.domain.errors import ConfigError
 from ix.domain.types import Probe, Subject
 from ix.eval.models import ExperimentConfig, ExperimentResults, TrialRecord
+
+_EXPERIMENT_KEYS = frozenset(
+    {
+        "name",
+        "description",
+        "subjects",
+        "sensor",
+        "sensors",
+        "engine",
+        "models",
+        "trials",
+        "repeats",
+    }
+)
 
 
 class FilesystemStore:
@@ -38,20 +53,29 @@ class FilesystemStore:
             raise FileNotFoundError(f"No experiment.yaml in {path}")
 
         with open(config_path) as f:
-            config = yaml.safe_load(f)
+            config = yaml.safe_load(f) or {}
+        if not isinstance(config, dict):
+            raise ConfigError(f"{config_path}: top level must be a mapping")
 
         probes = self._load_probes(path)
         subjects = self._load_subjects(path, config)
 
         # Normalize sensor config: supports both singular and plural forms
+        unknown = set(config) - _EXPERIMENT_KEYS
+        if unknown:
+            raise ConfigError(
+                f"{config_path}: unknown key(s) {sorted(unknown)}. "
+                f"Legal: {sorted(_EXPERIMENT_KEYS)}"
+            )
         kwargs: dict[str, Any] = {
             "name": config.get("name", path.name),
             "description": config.get("description", ""),
             "subjects": tuple(subjects),
-            "agent": config.get("agent", {}),
             "trials": config.get("trials", 5),
             "repeats": config.get("repeats", 1),
             "probes": tuple(probes),
+            "engine": config.get("engine", "native"),
+            "models": config.get("models"),
         }
 
         if "sensors" in config:
@@ -91,12 +115,16 @@ class FilesystemStore:
     def _load_subjects(self, exp_path: Path, config: dict[str, Any]) -> list[Subject]:
         """Load subjects from subjects/ directory or experiment.yaml config.
 
-        subjects/ directory takes precedence. Falls back to YAML subjects list.
+        A subjects/ directory containing *.md files takes precedence; otherwise the YAML
+        ``subjects:`` list is used.
         """
         subjects_dir = exp_path / "subjects"
-        if subjects_dir.exists():
+        subject_files = sorted(subjects_dir.glob("*.md")) if subjects_dir.is_dir() else []
+        # Only a directory that holds subject files takes precedence. An empty subjects/
+        # (which `ix experiment init` used to create) silently discarded the YAML subjects.
+        if subject_files:
             subjects = []
-            for md_path in sorted(subjects_dir.glob("*.md")):
+            for md_path in subject_files:
                 post = frontmatter.load(str(md_path))
                 meta = dict(post.metadata)
                 name = str(meta.pop("name", md_path.stem))

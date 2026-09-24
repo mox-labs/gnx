@@ -27,6 +27,7 @@ ix = { workspace = true }
 recon = { workspace = true }
 gnx = { workspace = true }
 dao = { workspace = true }
+modelrt = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -38,10 +39,11 @@ dev = [
     "pytz>=2024.1",  # required by DuckDB TIMESTAMPTZ (recon)
     "opentelemetry-sdk>=1.20",  # matrix/tests/test_orchestrator_tracing.py
     "matrix",
-    "ix",
+    "ix[inspect,deepeval]",
     "recon",
     "gnx",
     "dao",
+    "modelrt",
 ]
 
 # Members set `asyncio_mode = "auto"` in their own pyprojects; pytest reads the
@@ -49,6 +51,9 @@ dev = [
 # too or every async test errors on a missing marker.
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# deepeval (ix's deepeval extra) auto-registers a pytest plugin that opens a telemetry
+# capture on every session. ix's tests call deepeval directly and need none of it.
+addopts = "-p no:deepeval"
 
 [tool.ruff]
 line-length = 100

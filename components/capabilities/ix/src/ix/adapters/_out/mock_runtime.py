@@ -1,32 +1,33 @@
-"""MockAgent for dry-run mode. No API calls.
+"""SimulatedRuntime — a dry-run AgentRuntime for skill-activation experiments. No API calls.
 
-Implements Agent protocol (run(prompt) → AgentResponse).
-Simulates activation based on probe expectations:
-- must_trigger probes: 90% chance of Skill tool call in response
-- should_not_trigger probes: 10% chance
+Implements matrix's AgentRuntime (``run(definition, task) -> AgentResponse``), so it binds
+to a subject's definition exactly as a real runtime does and sensors see the same response
+shape in simulated and live runs.
 
-Returns structured AgentResponse with tool call dicts —
-same shape as ClaudeAgent, so sensors work identically in mock and live mode.
+* A probe with a canned ``mock_response`` gets it verbatim — so sensors that grade content
+  (FunctionTestSensor) are exercised without credentials. This exercises the *sensor*; it
+  measures nothing about a model.
+* Otherwise, with activation expectations supplied: must-trigger probes call the Skill tool
+  90% of the time, should-not-trigger probes 10%, seeded per trial.
+* With no expectation for a probe: always activate.
 
-A probe may also carry a canned `mock_response`, which the mock returns verbatim. That
-exists so sensors which grade *content* rather than routing — FunctionTestSensor above
-all — are runnable without credentials. The point is not to fake a measurement of the
-model: it is to exercise the sensor, which is where the interesting code (and the trust
-boundary) lives.
+Type URL: ``ix.v1/runtime.mock`` (shadows matrix's generic mock for ix subjects).
 """
 
+from __future__ import annotations
+
 import random
+from typing import TYPE_CHECKING
 
 from matrix import AgentResponse
 
+if TYPE_CHECKING:
+    from matrix import AgentDefinition
 
-class MockAgent:
-    """Dry-run agent. Simulates realistic activation rates.
+FAMILY = "mock"
 
-    Returns structured AgentResponse (not raw strings). Sensors see the
-    same type in mock and live mode — no divergence.
-    """
 
+class SimulatedRuntime:
     def __init__(
         self,
         expected_skill: str = "build-eval",
@@ -34,47 +35,34 @@ class MockAgent:
         expectations: dict[str, bool] | None = None,
         skill_map: dict[str, str] | None = None,
         responses: dict[str, str] | None = None,
-    ):
+    ) -> None:
         self._expected_skill = expected_skill
         self._rng = random.Random(seed)
         self._expectations = expectations or {}
         self._skill_map = skill_map or {}
         self._responses = responses or {}
 
-    def _resolve_skill(self, prompt: str) -> str:
-        """Resolve which skill to emit for this prompt."""
-        return self._skill_map.get(prompt, self._expected_skill)
-
-    async def run(self, prompt: str) -> AgentResponse:
-        """Simulate an agent interaction.
-
-        If expectations were provided (by composition root), use them
-        for realistic activation rates. Otherwise, always activate.
-        Per-probe skill_map ensures mock emits the correct skill per probe.
-        """
-        # A canned response wins outright: the probe has stated exactly what the subject
-        # said, so there is nothing to simulate.
-        canned = self._responses.get(prompt)
+    async def run(self, definition: AgentDefinition, task: str) -> AgentResponse:
+        canned = self._responses.get(task)
         if canned is not None:
-            return AgentResponse(content=canned)
+            return AgentResponse(content=canned, family=FAMILY, model="simulated")
 
-        skill = self._resolve_skill(prompt)
-        should_activate = self._expectations.get(prompt)
-
+        skill = self._skill_map.get(task, self._expected_skill)
+        should_activate = self._expectations.get(task)
         if should_activate is None:
-            # No expectation mapped — always activate (simple mode)
-            return AgentResponse(
-                content=f"I'll use the Skill tool to invoke {skill} to help with: {prompt[:50]}",
-                tool_calls=({"name": "Skill", "input": {"skill": skill}},),
-            )
-
-        # Stochastic mode: 90/10 split based on expectation
+            return self._activated(skill, task)
         rate = 0.9 if should_activate else 0.1
-        activated = self._rng.random() < rate
+        if self._rng.random() < rate:
+            return self._activated(skill, task)
+        return AgentResponse(
+            content=f"Here's a direct answer about '{task[:40]}'", family=FAMILY, model="simulated"
+        )
 
-        if activated:
-            return AgentResponse(
-                content=f"Let me use the Skill tool with {skill} for '{prompt[:40]}'",
-                tool_calls=({"name": "Skill", "input": {"skill": skill}},),
-            )
-        return AgentResponse(content=f"Here's a direct answer about '{prompt[:40]}'")
+    @staticmethod
+    def _activated(skill: str, task: str) -> AgentResponse:
+        return AgentResponse(
+            content=f"I'll use the Skill tool with {skill} for '{task[:40]}'",
+            tool_calls=({"name": "Skill", "input": {"skill": skill}},),
+            family=FAMILY,
+            model="simulated",
+        )

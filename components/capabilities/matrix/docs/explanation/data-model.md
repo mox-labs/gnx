@@ -16,10 +16,10 @@ An atomic, immutable fact produced by a component. A frozen Pydantic model, not 
 
 ```python
 class Artifact(BaseModel, frozen=True):
-    type_url: str        # "probe.response", "matrix.v1/agent.response", etc.
-    producer: str        # component name that created this
-    data: Any            # the actual value
-    id: str              # uuid4 string
+    type_url: str  # "probe.response", "matrix.v1/agent.response", etc.
+    producer: str  # component name that created this
+    data: Any  # the actual value
+    id: str  # uuid4 string
     timestamp: datetime  # UTC
 ```
 
@@ -79,7 +79,7 @@ lookup, and the `ledger` property for an immutable snapshot.
 ```python
 # Most recent artifact of a type — returns the Artifact, not its data
 artifact = construct.last("probe.response")
-payload  = artifact.data
+payload = artifact.data
 
 # Shorthand for last(...).data
 payload = construct["probe.response"]
@@ -88,13 +88,14 @@ payload = construct["probe.response"]
 all_grades = construct.query("sensor.grade")
 
 # What types exist
-kinds = construct.kinds()          # frozenset({"probe.response", "sensor.grade"})
+kinds = construct.kinds()  # frozenset({"probe.response", "sensor.grade"})
 
 # Presence check
-if "sensor.grade" in construct: ...
+if "sensor.grade" in construct:
+    ...
 
 # Immutable snapshot of everything
-history = construct.ledger         # tuple[Artifact, ...]
+history = construct.ledger  # tuple[Artifact, ...]
 ```
 
 `last()` raises `LookupError` when no artifact of that type exists, and the message lists what
@@ -136,8 +137,11 @@ matters. For typical 2-3 node DAGs it's negligible.
 4. Return construct
 ```
 
-Each component sees the full Construct as of the moment it runs — every upstream artifact is
-available. The Construct grows monotonically. Nothing is removed or overwritten.
+Each component sees the Construct as of the moment it runs, **restricted to the kinds in its
+`requires`**: the Orchestrator hands it a `ConstructView`, and reading any other kind raises
+`ContractError`. That makes `requires` the component's true data dependencies rather than a
+claim about them — the edges the compiler derived are the edges that exist. The Construct
+itself grows monotonically. Nothing is removed or overwritten.
 
 ## Where the Seed Input Enters
 
@@ -149,13 +153,13 @@ and declares `requires = frozenset()`:
 class ProbeNode:
     name = "probe"
     requires: frozenset[str] = frozenset()
-    provides = "probe.stimulus"
+    provides = "ix.v1/probe.stimulus"
 
-    def __init__(self, probe: Probe) -> None:   # ← input enters here
+    def __init__(self, probe: Probe) -> None:  # ← input enters here
         self._probe = probe
 
-    async def run(self, construct: Construct) -> TypedStruct:
-        return TypedStruct(type_url="probe.stimulus", value=self._probe)
+    async def run(self, construct: ConstructReader) -> TypedStruct:
+        return TypedStruct(type_url=self.provides, value=self._probe)
 ```
 
 This is why the runtime needs no notion of what is being processed: the DAG is assembled with

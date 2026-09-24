@@ -10,7 +10,7 @@ from opentelemetry import trace
 
 from .compiler import DagCompiler
 from .scheduler import DagScheduler
-from .types import Artifact, Construct, ContractError
+from .types import Artifact, Construct, ConstructView, ContractError
 
 _tracer = trace.get_tracer("matrix")
 logger = logging.getLogger("matrix.orchestrator")
@@ -59,7 +59,10 @@ class Orchestrator:
                 "matrix.component.provides": component.provides,
             },
         ) as span:
-            result = await component.run(construct)
+            # Each component sees only the kinds it declared — the compiler's edges are
+            # then the true data dependencies, not a claim about them.
+            view = ConstructView(construct, reader=name, allowed=component.requires)
+            result = await component.run(view)
 
             if result.type_url != component.provides:
                 error = ContractError(

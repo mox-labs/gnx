@@ -19,29 +19,31 @@ ACCEPTABLE = "acceptable"
 
 
 class ExperimentConfig(BaseModel, frozen=True):
-    """Experiment definition — loaded from YAML + MD files.
+    """Experiment definition — loaded from experiment.yaml + tasks/*.md + subjects/*.md.
 
-    agent config specifies the runtime:
-      agent:
-        model: sonnet
-        max_tokens: 4096
+    ``sensors`` is a list of config dicts, each with a ``type``::
 
-    sensors is a list of config dicts, each with a type field:
       sensors:
         - type: activation
           expected_skill: build-eval
         - type: function-test
 
-    Single sensor shorthand via `sensor` dict is still supported —
-    normalized to a one-element `sensors` list by the model validator.
+    A single ``sensor`` dict is normalised to a one-element ``sensors`` list.
+
+    ``engine`` selects how a repeat is executed — ``native`` (a matrix DAG per trial, the
+    default) or ``inspect`` (an Inspect AI task per repeat) — plus that engine's options.
+
+    ``models`` is a modelrt registry section (``{default?, models: {...}}``) for subjects on
+    the ``model`` runtime and for judge-backed sensors. ``None`` = modelrt's own tiers.
     """
 
     name: str
     description: str = ""
     subjects: tuple[Subject, ...] = ()
-    agent: dict[str, Any] = {}
     sensor: dict[str, Any] = {}
     sensors: tuple[dict[str, Any], ...] = ()
+    engine: dict[str, Any] = {"type": "native"}
+    models: dict[str, Any] | None = None
     trials: int = 5
     repeats: int = 1
     probes: tuple[Probe, ...] = ()
@@ -52,6 +54,9 @@ class ExperimentConfig(BaseModel, frozen=True):
             data["sensors"] = (data["sensor"],)
         elif not data.get("sensors") and not data.get("sensor"):
             data["sensors"] = ({"type": "activation"},)
+        # Normalize: engine: inspect → engine: {type: inspect}
+        if isinstance(data.get("engine"), str):
+            data["engine"] = {"type": data["engine"]}
         super().__init__(**data)
 
 
@@ -98,6 +103,9 @@ class ExperimentResults(BaseModel, frozen=True):
     confusion_matrix: dict[str, dict[str, int]] = {}
 
     # Provenance — trace results to their source
+    engine: str = "native"
+    #: Engine-specific records a reader can open, e.g. ``inspect_log:<path>`` per repeat.
+    engine_artifacts: tuple[str, ...] = ()
     config_hash: str = ""
     run_timestamp: datetime | None = None
     ix_version: str = ""

@@ -1,52 +1,35 @@
-"""Experiment — inner DAG loop + post-loop aggregation.
+"""Experiment — repeats × engine, then aggregation.
 
-Inner DAG (per probe × trial):
-  ProbeNode → TrialNode ← SubjectNode
-                 ↓
-             SensorNode
+An engine runs every probe × trial of one repeat and returns readings. The Experiment runs
+the configured number of repeats, aggregates across them, computes the noise floor (the
+spread of pass rates across repeats), and persists a summary with provenance.
 
-Experiment loops over probes × trials, runs the inner DAG each time.
-Post-loop: aggregate all readings → metrics.
-
-NOTE: This module does NOT import concrete Components (ProbeNode, TrialNode, etc.).
-Node construction is injected via `run_trial` from the composition root.
+The engine and the agent factory are injected by the composition root. This module imports
+no concrete engine, runtime or DAG node.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
-from matrix import ComponentRegistry
-
 from ix import __version__
-from ix.domain.types import Probe, Reading, Subject
+from ix.domain.ports import EngineRun
+from ix.domain.types import Reading, Subject
 from ix.eval.analysis import (
     aggregate_readings,
     build_confusion_matrix,
     compute_metrics,
     compute_noise_floor,
 )
-from ix.eval.models import (
-    ExperimentConfig,
-    ExperimentResults,
-    ProbeResult,
-    TrialRecord,
-)
+from ix.eval.models import ExperimentConfig, ExperimentResults, ProbeResult, TrialRecord
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
-    from ix.domain.ports import Sensor
-
-# Callable that runs one probe×trial iteration, returns readings.
-# The composition root provides this — it knows the concrete Components.
-RunTrial = Callable[
-    [Probe, Subject, "Sensor", ComponentRegistry, int],
-    Awaitable[list[Reading]],
-]
+    from ix.domain.ports import AgentFactory, Engine, Sensor
 
 
 class Storage(Protocol):
@@ -62,27 +45,15 @@ class Storage(Protocol):
 
 
 class Experiment:
-    """An experiment you run.
-
-    Constructed with infrastructure (registry, sensor, store).
-    The registry resolves agent runtimes from subject config.
-    Call run(config, subject) to execute.
-    """
+    """An experiment you run: ``run(config, subject)`` → ExperimentResults."""
 
     def __init__(
-        self,
-        registry: ComponentRegistry,
-        sensor: Sensor,
-        store: Storage,
-        mock: bool = False,
-        *,
-        run_trial: RunTrial,
+        self, *, sensor: Sensor, store: Storage, engine: Engine, agents: AgentFactory
     ) -> None:
-        self._registry = registry
         self._sensor = sensor
         self._store = store
-        self._mock = mock
-        self._run_trial = run_trial
+        self._engine = engine
+        self._agents = agents
 
     async def run(
         self,
@@ -91,51 +62,34 @@ class Experiment:
         on_probe_complete: Callable[[ProbeResult], None] | None = None,
         on_run_complete: Callable[[int, float], None] | None = None,
     ) -> ExperimentResults:
-        """Execute the experiment: inner DAG loop then post-loop aggregation.
-
-        When config.repeats > 1, runs the full probe×trial matrix N times
-        and computes noise floor (sd of pass_rate across runs) + confusion matrix.
-        """
+        """Run ``config.repeats`` repeats through the engine, then aggregate."""
         active_subject = subject or Subject(name="default")
-
-        # Override runtime to mock if --mock flag
-        if self._mock:
-            subject_config = dict(active_subject.config)
-            subject_config["runtime"] = {"type": "mock"}
-            active_subject = active_subject.model_copy(
-                update={"config": subject_config},
-            )
+        probe_map = {p.id: p for p in config.probes}
 
         all_readings: list[Reading] = []
         per_run_pass_rates: list[float] = []
+        artifacts: list[str] = []
 
         for run_idx in range(config.repeats):
-            run_readings: list[Reading] = []
+            outcome = await self._engine.run(
+                EngineRun(
+                    experiment=config.name,
+                    probes=config.probes,
+                    subject=active_subject,
+                    sensor=self._sensor,
+                    agents=self._agents,
+                    trials=config.trials,
+                    run_index=run_idx,
+                )
+            )
+            all_readings.extend(outcome.readings)
+            artifacts.extend(f"{k}:{v}" for k, v in outcome.artifacts.items())
 
-            for probe in config.probes:
-                for trial_idx in range(config.trials):
-                    trial_readings = await self._run_trial(
-                        probe,
-                        active_subject,
-                        self._sensor,
-                        self._registry,
-                        trial_idx,
-                    )
-                    run_readings.extend(trial_readings)
-
-            all_readings.extend(run_readings)
-
-            # Per-run metrics for noise floor
-            probe_map = {p.id: p for p in config.probes}
-            run_probe_results = aggregate_readings(run_readings, probe_map)
-            run_metrics = compute_metrics(run_probe_results)
+            run_metrics = compute_metrics(aggregate_readings(outcome.readings, probe_map))
             per_run_pass_rates.append(run_metrics["pass_rate"])
-
             if on_run_complete:
                 on_run_complete(run_idx, run_metrics["pass_rate"])
 
-        # Final aggregation across all runs
-        probe_map = {p.id: p for p in config.probes}
         callback = on_probe_complete if config.repeats == 1 else None
         probe_results = aggregate_readings(all_readings, probe_map, callback)
         metrics = compute_metrics(probe_results)
@@ -155,6 +109,8 @@ class Experiment:
             per_run_pass_rates=tuple(per_run_pass_rates),
             noise_floor_sd=compute_noise_floor(per_run_pass_rates),
             confusion_matrix=build_confusion_matrix(all_readings),
+            engine=self._engine.name,
+            engine_artifacts=tuple(artifacts),
             config_hash=config_hash,
             run_timestamp=datetime.now(UTC),
             ix_version=__version__,
