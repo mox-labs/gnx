@@ -8,16 +8,14 @@ register: public
 
 # What gnx is
 
-A marketplace of composable components for Claude Code.
-
-**3 plugins** are installable today, cut from **7 components**. Browse them in
-[the catalog](/catalog), which reads the component directories live rather than repeating
-a count that would go stale.
+A marketplace of composable components for Claude Code. [The catalog](/catalog) lists every
+component and plugin, read from this repository's source at build time — so it is the
+count, and this page never repeats one.
 
 ## Component, plugin, catalog
 
-A **component** is the unit of authorship — one skill, or one runnable capability, in its
-own directory.
+A **component** is the unit of authorship — one skill, one agent, or one runnable
+capability, in its own directory.
 
 A **plugin** is a bundle of components, and it is what you install. Bundling is declared
 separately from authoring, in `components/bundles.yaml`, so one component can ship in
@@ -25,48 +23,29 @@ several plugins.
 
 The **catalog** is every component in the repository, whatever it is bundled into.
 
-| kind | count | what it is |
-|---|---|---|
-| Skill | 2 | a practice, read into context when its trigger matches |
-| Capability | 5 | a Python package, installed with `uv`/`pip` rather than as a plugin |
-| Agent | 0 | a named reasoning role — none in the catalog today |
-| Flow | 0 | a declared composition — arrives with generation 0 |
+| kind | what it is |
+|---|---|
+| Skill | a practice, read into context when its trigger matches |
+| Agent | a named reasoning role with a distinct method |
+| Capability | a Python package, installed with `uv` rather than as a plugin |
+| Flow | a declared composition of other components |
 
-## The catalog is small on purpose
+## The catalog holds what has been evaluated
 
-There were 76 components here. **69 moved to `incubator/`** on 2026-08-19 — intact and
-versioned, but out of the catalog and not projected.
-
-The reason is evidence, not tidiness. A live routing measurement found the `dao` skill
-failing to activate on trigger phrases quoted verbatim in its own description, and 49 of
-those 76 descriptions ran past the length at which a description still reads as a
-description. Shipping all of them would have asserted a quality nobody had checked.
-
-What remains is what has been evaluated. Graduating a component back is a directory move
-and one entry in `bundles.yaml`.
+A component enters the catalog when a measurement says it works — a routing evaluation for
+a skill, its test suite and standalone install for a capability. Components that have not
+been evaluated live in `incubator/`, intact and versioned, and are not projected.
+Graduating one is a directory move and one entry in `bundles.yaml`.
 
 ## Two ways in
 
-Skills and agents install as **Claude Code plugins**, through the marketplace.
+Skills and agents install as **Claude Code plugins**, through the marketplace:
+[Install a plugin](/docs/install-a-plugin).
 
-Capabilities are **Python packages** — `matrix`, `ix`, `recon`, `dao`. They are gnx's
-inventory: gnx manages and installs them, so they are not published independently.
-
-`gnx` itself is the one package that publishes. It is the registry, the marketplace
-projector, and the installer.
-
-That installer is not built yet — `gnx` today does `build` and `list`. Until `gnx add`
-lands, a capability installs from this repository directly, which is why the `recon` skill
-opens by saying its CLI is a separate package and how to get it.
-
-## Where this is
-
-**Generation 0 — the composition layer — is upcoming.** Components install and run; they
-do not yet compose. The declared-identity layer a composer would resolve is deferred until
-its shape settles in [slick](https://github.com/mox-labs/slick).
-
-[What's real vs planned](/docs/status) is the record, written to be checkable rather than
-encouraging.
+Capabilities are **Python packages**. Each one installs from this repository with `uv`, and
+its README carries the command. They are configuration-driven: what a capability composes —
+which models, which agent runtimes, which sensors — is declared in a config file and wired
+by its composition root, so changing it is a config change, not a code change.
 
 ## Next
 

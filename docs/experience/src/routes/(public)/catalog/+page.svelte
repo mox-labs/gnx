@@ -29,7 +29,7 @@
 	<title>Catalog · gnx</title>
 	<meta
 		name="description"
-		content="Every component in the gnx marketplace: eleven installable plugins cut from the component inventory, read live from disk."
+		content="Every component in the gnx marketplace and the plugins that ship them, read from source."
 	/>
 </svelte:head>
 
@@ -37,17 +37,14 @@
 	<h1>The catalog</h1>
 	<p class="lede">
 		gnx is a marketplace of composable components for Claude Code. <b>{plugins.length}</b> plugins
-		are installable today, cut from <b>{entries.length}</b> components read live from this
-		repository. Generation 0 — the composition layer, where components declare ports and a
-		composer wires them — is upcoming; what is here now is the catalog those compositions will
-		draw from.
+		ship <b>{entries.length}</b> components, read from this repository's source.
 	</p>
 
 	<section class="install">
 		<h2>Install</h2>
 		<p class="gloss">Add the marketplace once, then install what you want.</p>
-		<pre><code>/plugin marketplace add moxlabs/gnx
-/plugin install {plugins[0]?.name ?? 'guild-arch'}@gnx</code></pre>
+		<pre><code>/plugin marketplace add mox-labs/gnx
+/plugin install {plugins[0]?.name ?? '<plugin>'}@gnx</code></pre>
 
 		<table>
 			<thead>
@@ -75,9 +72,8 @@
 
 	<h2 class="inventory-head">The component inventory</h2>
 	<p class="gloss inventory-gloss">
-		A plugin is a bundle; a component is the unit. One component may ship in several plugins —
-		<code>trust-boundaries</code> is in two — because bundling is a projection decision, separate
-		from authoring.
+		A plugin is a bundle; a component is the unit. One component may ship in several plugins,
+		because bundling is a projection decision, separate from authoring.
 	</p>
 
 	{#each groups as g (g.kind)}
@@ -106,7 +102,7 @@
 								{#each e.plugins as p (p)}<code class="tag">{p}</code>{/each}
 								{#if e.kind === 'Capability'}
 									<span class="unbundled">
-										runnable — not installable{#if e.surfaceIn.length}; its skill ships in
+										a Python package, installed with uv — not a plugin{#if e.surfaceIn.length}; its skill ships in
 											{#each e.surfaceIn as p (p)}<code class="tag">{p}</code>{/each}
 										{/if}
 									</span>

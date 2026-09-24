@@ -29,11 +29,9 @@ claude plugin list
 
 ## What you can install
 
-Three plugins: `intent-hardening`, `rational-inquiry`, and `recon`. [The catalog](/catalog)
-lists what each contains.
-
-That is a deliberately small set — see [what gnx is](/docs/what-is-gnx) for why 69
-components sit in `incubator/` rather than here.
+[The catalog](/catalog) lists every plugin and what each contains, read from source. It is
+deliberately a small set — [what gnx is](/docs/what-is-gnx) says why components wait in
+`incubator/` until they have been evaluated.
 
 ## Using it
 
@@ -41,10 +39,10 @@ Skills activate on their own when a request matches what they describe — there
 to invoke. Agents are dispatched by Claude Code when a task fits their role, and can be
 asked for by name.
 
-One honest caveat: **activation is not guaranteed.** A live measurement of this catalog
-found skills that did not fire on trigger phrases quoted in their own descriptions — one
-reason most components are in `incubator/` rather than here. If a skill does not engage,
-naming it directly works.
+One honest caveat: **activation is not guaranteed.** Whether a skill fires depends on how
+well its description matches the request, and that is measured rather than assumed — the
+`catalog-routing` experiment in `lab/` is the measurement. If a skill does not engage, naming
+it directly works.
 
 ## If it does not appear
 
