@@ -13,7 +13,7 @@ subjects:
     description: Responses supplied by the probes (mock_response); no model is consulted.
     config:
       runtime:
-        type: mock
+        type: simulated   # replays each probe's mock_response verbatim
 
 sensors:
   - type: function-test

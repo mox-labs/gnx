@@ -11,7 +11,11 @@ shape in simulated and live runs.
   90% of the time, should-not-trigger probes 10%, seeded per trial.
 * With no expectation for a probe: always activate.
 
-Type URL: ``ix.v1/runtime.mock`` (shadows matrix's generic mock for ix subjects).
+The activated skill is the probe's ``expected_skill``, else the experiment's activation
+sensor's, else ``"unspecified"`` — never a hardcoded skill name.
+
+Type URL: ``ix.v1/runtime.simulated``, config ``runtime: {type: simulated}``. Distinct from
+matrix's ``mock`` runtime (canned replies keyed by task), which ix no longer shadows.
 """
 
 from __future__ import annotations
@@ -24,19 +28,20 @@ from matrix import AgentResponse
 if TYPE_CHECKING:
     from matrix import AgentDefinition
 
-FAMILY = "mock"
+FAMILY = "simulated"
+UNSPECIFIED_SKILL = "unspecified"
 
 
 class SimulatedRuntime:
     def __init__(
         self,
-        expected_skill: str = "build-eval",
+        expected_skill: str | None = None,
         seed: int | None = None,
         expectations: dict[str, bool] | None = None,
         skill_map: dict[str, str] | None = None,
         responses: dict[str, str] | None = None,
     ) -> None:
-        self._expected_skill = expected_skill
+        self._expected_skill = expected_skill or UNSPECIFIED_SKILL
         self._rng = random.Random(seed)
         self._expectations = expectations or {}
         self._skill_map = skill_map or {}

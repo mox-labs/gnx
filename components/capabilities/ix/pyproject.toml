@@ -17,7 +17,7 @@ dependencies = [
     "python-frontmatter>=1.0",
     "matrix",
     "hardline",
-    "claude-agent-sdk>=0.1.36",
+    "claude-agent-sdk>=0.1.51",  # see matrix's `claude` extra
 ]
 
 # Extensions add sensors, engines or runtimes without editing ix: each entry point is a

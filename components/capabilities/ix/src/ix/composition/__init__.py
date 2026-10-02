@@ -3,15 +3,19 @@
 One registry, keyed by type URL, holds everything an experiment is composed from:
 
 * matrix's agent runtimes      ``matrix.v1/runtime.{claude-sdk,model,mock}``
-* ix's simulated runtime        ``ix.v1/runtime.mock`` (shadows matrix's for ix subjects)
+* ix's simulator                ``ix.v1/runtime.simulated``
 * ix's sensors                  ``ix.v1/sensor.<type>``
 * ix's engines                  ``ix.v1/engine.{native,inspect}``
 * extensions                    every ``matrix.components`` and ``ix.components`` entry point
 
 A subject becomes an agent by composition: its config splits into an **AgentDefinition**
 (``system_prompt``, ``model``, ``tools``, ``max_turns``) and a **runtime** (``runtime.type`` +
-that runtime's deployment options), bound into a matrix ``BoundAgent``. The same subject can
-move between the Claude SDK, a local model and the simulator by changing ``runtime.type``.
+that runtime's deployment options), bound into a matrix ``BoundAgent``. The same subject
+moves between the Claude SDK, a local model and the simulator by changing ``runtime.type``.
+
+Shared context reaches runtimes through matrix's mechanism (:func:`matrix.with_context`):
+the experiment's ``models`` registry and its directory (``cwd``) go to any runtime whose
+typed config declares those fields and leaves them unset — built-in or third-party alike.
 """
 
 from __future__ import annotations
@@ -19,18 +23,24 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from matrix import AgentDefinition, BoundAgent, ComponentRegistry, default_registry
-from matrix import ConfigError as MatrixConfigError
-from matrix import runtime_type_url as matrix_runtime_url
+from matrix import (
+    AgentDefinition,
+    BoundAgent,
+    ComponentRegistry,
+    MatrixError,
+    default_registry,
+    runtime_type_url,
+    with_context,
+)
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ix.adapters._out.engines.inspect_engine import InspectEngine, InspectEngineConfig
-from ix.adapters._out.engines.native import NativeEngine
+from ix.adapters._out.engines.native import NativeEngine, NativeEngineConfig
 from ix.adapters._out.filesystem_store import FilesystemStore
-from ix.adapters._out.mock_runtime import SimulatedRuntime
+from ix.adapters._out.simulated_runtime import SimulatedRuntime
 from ix.config.settings import find_lab
 from ix.domain import type_urls
-from ix.domain.errors import ConfigError
+from ix.domain.errors import ConfigError, IxError
 from ix.eval.experiment import Experiment
 from ix.eval.models import ACCEPTABLE, MUST_TRIGGER, ExperimentConfig
 from ix.eval.sensors import (
@@ -56,6 +66,7 @@ if TYPE_CHECKING:
     from ix.domain.types import Probe, Subject
 
 EXTENSION_GROUP = "ix.components"
+SIMULATED = "simulated"
 
 _SENSOR_TYPES: dict[str, tuple[SensorClass, type[BaseModel]]] = {
     "activation": (ActivationSensor, ActivationSensorConfig),
@@ -119,33 +130,33 @@ def _definition_name(name: str) -> str:
 def make_agent_factory(
     registry: ComponentRegistry,
     *,
-    mock: bool = False,
-    experiment_cwd: str | None = None,
-    model_section: Callable[[], dict[str, Any] | None] = lambda: None,
+    simulate: bool = False,
+    context: dict[str, Any] | None = None,
 ) -> AgentFactory:
-    """Subject + trial index → a BoundAgent.
+    """Subject + trial → a BoundAgent.
 
-    ``mock`` replaces every subject's runtime with ix's simulator (the ``--mock`` flag).
-    Matrix runtimes are built once per subject and reused across trials; ix's simulated
-    runtime is built per trial so each trial is seeded independently.
+    ``simulate`` swaps every subject onto ix's simulator (the ``--simulate`` flag).
+    ``context`` is the shared context offered to runtimes (``models``, ``cwd``).
+    A matrix runtime is built once per subject and reused across trials; the simulator is
+    built per trial so each trial of each repeat is seeded independently.
     """
     cache: dict[str, AgentRuntime] = {}
+    shared = {k: v for k, v in (context or {}).items() if v is not None}
 
     def build(subject: Subject, trial_index: int, run_index: int = 0) -> Agent:
         spec = subject_spec(subject)
         definition = subject_definition(subject, spec)
         options = dict(spec.runtime)
-        runtime_type = "mock" if mock else options.pop("type", None)
-        if mock:
-            options = {}
+        runtime_type = options.pop("type", None)
+        if simulate:
+            runtime_type, options = SIMULATED, {}
         if not runtime_type:
             raise ConfigError(
                 f"subject {subject.name!r} has no runtime.type. Registered: "
-                f"{', '.join(registered_runtimes(registry))}. For a dry run use --mock."
+                f"{', '.join(registered_runtimes(registry))}. For a dry run use --simulate."
             )
-        return BoundAgent(
-            definition, _runtime(subject, str(runtime_type), options, trial_index, run_index)
-        )
+        runtime = _runtime(subject, str(runtime_type), options, trial_index, run_index)
+        return BoundAgent(definition, runtime)
 
     def _runtime(
         subject: Subject,
@@ -156,13 +167,13 @@ def make_agent_factory(
     ) -> AgentRuntime:
         ix_url = type_urls.runtime(runtime_type)
         if ix_url in registry:
-            runtime: AgentRuntime = registry.create(
+            simulated: AgentRuntime = registry.create(
                 ix_url,
                 {**options, "trial_index": trial_index, "run_index": run_index},
                 source=f"subject {subject.name}",
             )
-            return runtime
-        url = matrix_runtime_url(runtime_type)
+            return simulated
+        url = runtime_type_url(runtime_type)
         if url not in registry:
             raise ConfigError(
                 f"subject {subject.name!r}: runtime.type {runtime_type!r} is not registered. "
@@ -171,17 +182,13 @@ def make_agent_factory(
         cached = cache.get(subject.name)
         if cached is not None:
             return cached
-        if runtime_type == "claude-sdk" and experiment_cwd and "cwd" not in options:
-            options["cwd"] = experiment_cwd
-        if runtime_type == "model" and "models" not in options:
-            section = model_section()
-            if section is not None:
-                options["models"] = section
         try:
             built: AgentRuntime = registry.create(
-                url, options, source=f"subject {subject.name}: runtime"
+                url,
+                with_context(registry, url, options, shared),
+                source=f"subject {subject.name}: runtime",
             )
-        except MatrixConfigError as e:
+        except MatrixError as e:
             raise ConfigError(str(e)) from None
         cache[subject.name] = built
         return built
@@ -219,7 +226,7 @@ def _sensor_factory(sensor_cls: SensorClass, config_cls: type[BaseModel]) -> Cal
 
 
 def _simulated_factory(
-    expected_skill: str,
+    default_skill: str | None,
     base_seed: int | None,
     expectations: dict[str, bool],
     skill_map: dict[str, str],
@@ -234,7 +241,7 @@ def _simulated_factory(
             else None
         )
         return SimulatedRuntime(
-            expected_skill=expected_skill,
+            expected_skill=default_skill,
             seed=seed,
             expectations=expectations,
             skill_map=skill_map,
@@ -244,34 +251,25 @@ def _simulated_factory(
     return factory
 
 
-class _NoOptions(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-def _inspect_engine(config: InspectEngineConfig) -> Engine:
-    return InspectEngine(config)
-
-
 def build_registry(
     *,
-    skill: str = "build-eval",
     seed: int | None = None,
     experiment: ExperimentConfig | None = None,
     discover: bool = True,
 ) -> ComponentRegistry:
-    """matrix runtimes + ix sensors, engines, simulated runtime + discovered extensions."""
+    """matrix runtimes + ix sensors, engines, the simulator + discovered extensions."""
     registry = default_registry(discover=discover)
 
     for kind, (cls, config_cls) in _SENSOR_TYPES.items():
         registry.register(type_urls.sensor(kind), _sensor_factory(cls, config_cls))
 
-    registry.register_typed(type_urls.engine("native"), _NoOptions, lambda _: NativeEngine())
-    registry.register_typed(type_urls.engine("inspect"), InspectEngineConfig, _inspect_engine)
+    registry.register_typed(type_urls.engine("native"), NativeEngineConfig, NativeEngine)
+    registry.register_typed(type_urls.engine("inspect"), InspectEngineConfig, InspectEngine)
 
     registry.register(
-        type_urls.runtime("mock"),
+        type_urls.runtime(SIMULATED),
         _simulated_factory(
-            expected_skill=skill,
+            default_skill=default_skill(experiment) if experiment else None,
             base_seed=seed,
             expectations=_build_expectations(experiment) if experiment else {},
             skill_map=_build_skill_map(experiment) if experiment else {},
@@ -348,7 +346,7 @@ def create_engine(
         options["log_dir"] = str(results_dir / "inspect")
     try:
         engine: Engine = registry.create(url, options, source=f"{experiment.name}: engine")
-    except MatrixConfigError as e:
+    except MatrixError as e:
         raise ConfigError(str(e)) from None
     return engine
 
@@ -375,37 +373,65 @@ def _models_provider(experiment: ExperimentConfig | None) -> Callable[[], ModelR
 
 
 def create_service(
-    mock: bool = False,
-    skill: str = "build-eval",
+    experiment: ExperimentConfig,
+    *,
+    simulate: bool = False,
     lab: Path | None = None,
     seed: int | None = None,
-    experiment: ExperimentConfig | None = None,
     experiment_cwd: str | None = None,
     engine: str | None = None,
 ) -> Experiment:
     """Wire an Experiment from config: registry → sensor, engine, agent factory, store."""
-    registry = build_registry(skill=skill, seed=seed, experiment=experiment)
-    models = _models_provider(experiment)
-    sensor = (
-        create_sensor(experiment, registry, experiment_cwd, models)
-        if experiment
-        else ActivationSensor(expected_skill=skill)
-    )
+    registry = build_registry(seed=seed, experiment=experiment)
+    sensor = create_sensor(experiment, registry, experiment_cwd, _models_provider(experiment))
     workspace = lab or find_lab()
-    results_dir = workspace / experiment.name / "results" if experiment else None
     chosen = create_engine(
-        experiment or ExperimentConfig(name="default"),
+        experiment,
         registry,
         override=engine,
-        results_dir=results_dir,
+        results_dir=workspace / experiment.name / "results",
     )
     agents = make_agent_factory(
         registry,
-        mock=mock,
-        experiment_cwd=experiment_cwd,
-        model_section=lambda: experiment.models if experiment else None,
+        simulate=simulate,
+        context={"models": experiment.models, "cwd": experiment_cwd},
     )
     return Experiment(sensor=sensor, store=FilesystemStore(workspace), engine=chosen, agents=agents)
+
+
+def validate_experiment(
+    experiment: ExperimentConfig,
+    *,
+    experiment_cwd: str | None = None,
+    engine: str | None = None,
+) -> list[str]:
+    """Compose everything a run would — sensors, engine, every subject's runtime — and run
+    nothing. Returns every problem found, not just the first.
+
+    Building a runtime constructs its adapter (an SDK client, a model registry) but makes no
+    call. A subject's runtime that needs an uninstalled extra is reported as a problem.
+    """
+    problems: list[str] = []
+    if not experiment.probes:
+        problems.append("no probes: add tasks/*.md")
+    registry = build_registry(experiment=experiment)
+    try:
+        create_sensor(experiment, registry, experiment_cwd, _models_provider(experiment))
+    except (IxError, MatrixError, ImportError) as e:
+        problems.append(f"sensors: {e}")
+    try:
+        create_engine(experiment, registry, override=engine)
+    except (IxError, MatrixError, ImportError) as e:
+        problems.append(f"engine: {e}")
+    factory = make_agent_factory(
+        registry, context={"models": experiment.models, "cwd": experiment_cwd}
+    )
+    for subject in experiment.subjects:
+        try:
+            factory(subject, 0)
+        except (IxError, MatrixError, ImportError) as e:
+            problems.append(f"subject {subject.name!r}: {e}")
+    return problems
 
 
 def create_store(lab: Path | None = None) -> FilesystemStore:
@@ -413,8 +439,19 @@ def create_store(lab: Path | None = None) -> FilesystemStore:
     return FilesystemStore(lab or find_lab())
 
 
+# --- Simulator inputs ------------------------------------------------------------------
+
+
+def default_skill(experiment: ExperimentConfig) -> str | None:
+    """The skill an activation sensor in this experiment expects, if one names it."""
+    for sensor in experiment.sensors:
+        if sensor.get("type", "activation") == "activation" and sensor.get("expected_skill"):
+            return str(sensor["expected_skill"])
+    return None
+
+
 def _build_expectations(experiment: ExperimentConfig) -> dict[str, bool]:
-    """Map probe prompts to activation expectations for the simulated runtime."""
+    """Map probe prompts to activation expectations for the simulator."""
     return {
         probe.prompt: probe.metadata.get("expectation") == MUST_TRIGGER
         for probe in experiment.probes
@@ -439,14 +476,17 @@ def _build_mock_responses(experiment: ExperimentConfig) -> dict[str, str]:
 
 
 __all__ = [
+    "SIMULATED",
     "SubjectSpec",
     "build_registry",
     "create_engine",
     "create_sensor",
     "create_service",
     "create_store",
+    "default_skill",
     "make_agent_factory",
     "registered_runtimes",
     "subject_definition",
     "subject_spec",
+    "validate_experiment",
 ]

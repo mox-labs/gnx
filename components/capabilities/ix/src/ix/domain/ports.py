@@ -5,10 +5,12 @@ methods, satisfy the contract.
 
 * A **Sensor** measures a trial and produces readings — like an instrument.
 * An **AgentFactory** turns a subject into a runnable agent for one trial.
-* An **Engine** runs every probe × trial of one repeat and returns the readings. The native
-  engine runs each trial as a matrix DAG; the Inspect engine runs the repeat as an Inspect AI
-  task. Aggregation, noise floor and persistence are the same either way — they belong to the
-  Experiment, not the engine.
+* An **Engine** runs every probe × trial of one repeat and returns the trials and their
+  readings. The native engine runs each trial as a matrix DAG; the Inspect engine runs the
+  repeat as an Inspect AI task. Aggregation, noise floor and persistence are the same either
+  way — they belong to the Experiment, not the engine.
+* A **Storage** loads experiments and persists what a run produced: every trial, and a
+  summary per subject.
 """
 
 from __future__ import annotations
@@ -17,9 +19,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from matrix import Agent
 
     from ix.domain.types import Probe, Reading, Subject, Trial
+    from ix.eval.models import ExperimentConfig, ExperimentResults, TrialRecord
 
 
 @runtime_checkable
@@ -80,6 +85,8 @@ class EngineRun:
 @dataclass(frozen=True)
 class EngineOutcome:
     readings: list[Reading]
+    #: Every trial the repeat ran, response or error included — what the readings measured.
+    trials: list[Trial] = field(default_factory=list)
     #: Engine-specific provenance a reader can open — e.g. the Inspect ``.eval`` log path.
     artifacts: dict[str, str] = field(default_factory=dict)
 
@@ -90,3 +97,21 @@ class Engine(Protocol):
     def name(self) -> str: ...
 
     async def run(self, run: EngineRun) -> EngineOutcome: ...
+
+
+class Storage(Protocol):
+    """Persistence boundary: experiments in, trial records and summaries out."""
+
+    def load_experiment(self, path: Path) -> ExperimentConfig: ...
+
+    def list_experiments(self, base: Path) -> list[Path]: ...
+
+    def append_trials(
+        self, experiment: str, subject: str, run_id: str, records: list[TrialRecord]
+    ) -> Path: ...
+
+    def save_summary(self, experiment: str, results: ExperimentResults) -> Path: ...
+
+    def load_summary(self, experiment: str, subject: str) -> ExperimentResults: ...
+
+    def subjects_with_results(self, experiment: str) -> list[str]: ...

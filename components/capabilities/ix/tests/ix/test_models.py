@@ -126,19 +126,24 @@ class TestAgentResponseInMatrix:
 class TestTrialRecord:
     def test_basic(self):
         v = TrialRecord(
+            run_id="r1",
+            run_index=0,
             probe_id="must-001",
-            trial=0,
-            observation=AgentResponse(content="hi"),
-            reading=Reading(
-                sensor_name="activation",
-                probe_id="must-001",
-                trial_index=0,
-                passed=True,
-                score=1.0,
+            trial_index=0,
+            response=AgentResponse(content="hi").model_dump(mode="json"),
+            readings=(
+                Reading(
+                    sensor_name="activation",
+                    probe_id="must-001",
+                    trial_index=0,
+                    passed=True,
+                    score=1.0,
+                ),
             ),
         )
         assert v.probe_id == "must-001"
-        assert v.reading.passed is True
+        assert v.readings[0].passed is True
+        assert v.response["content"] == "hi"
 
 
 class TestExperimentResults:

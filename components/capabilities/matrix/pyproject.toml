@@ -20,7 +20,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "opentelemetry-sdk>=1.20"]
-claude = ["claude-agent-sdk>=0.1"]
+# >=0.1.51: the first release that strips CLAUDECODE from the CLI's environment itself
+# (bisected against PyPI wheels), which is what lets the runtime leave os.environ alone.
+claude = ["claude-agent-sdk>=0.1.51"]
 # The `model` agent runtime: any model family hardline has a registry row for.
 models = ["hardline"]
 otel = [

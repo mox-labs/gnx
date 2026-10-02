@@ -83,14 +83,15 @@ secrets-all:
 # test:
 #     uv run pytest
 
-# `--mock` proves the harness end to end without credentials; a live run needs
-# ANTHROPIC_API_KEY and measures the catalog rather than the plumbing. See lab/README.md
-# for why those are different claims.
+# The simulated subject proves the harness end to end without credentials; the live one
+# needs ANTHROPIC_API_KEY and measures the catalog rather than the plumbing. See
+# lab/README.md for why those are different claims.
 #
 # Run the lab's experiments offline, on both engines: the native matrix DAG and Inspect AI.
 # Same experiment, same readings — the engine parity test asserts it.
 evals:
-    uv --project components/capabilities run ix run catalog-routing --lab lab --mock --seed 42
+    uv --project components/capabilities run ix experiment validate catalog-routing --lab lab
+    uv --project components/capabilities run ix run catalog-routing --lab lab --subject catalog-simulated --seed 42
     uv --project components/capabilities run ix run sensor-integrity --lab lab
     uv --project components/capabilities run ix run sensor-integrity --lab lab --engine inspect
 

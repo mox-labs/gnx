@@ -15,7 +15,7 @@ from matrix import AgentDefinition, BoundAgent
 
 from ix.adapters._out.engines.native import NativeEngine
 from ix.adapters._out.filesystem_store import FilesystemStore
-from ix.adapters._out.mock_runtime import SimulatedRuntime
+from ix.adapters._out.simulated_runtime import SimulatedRuntime
 from ix.domain.types import Probe, Reading, Subject
 from ix.eval.analysis import aggregate_readings, compute_metrics
 from ix.eval.experiment import Experiment
@@ -231,8 +231,8 @@ class TestExperiment:
         )
         await service.run(exp)
 
-        latest = tmp_path / "test-activation" / "results" / "summary-latest.json"
-        assert latest.exists()
+        results_dir = tmp_path / "test-activation" / "results" / "default"
+        assert (results_dir / "summary-latest.json").exists()
 
     async def test_provenance_populated(self, service: Experiment):
         """Results carry config_hash and ix_version for reproducibility."""

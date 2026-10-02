@@ -17,16 +17,22 @@ so a Claude SDK subject, a local-model subject and a simulated one all run uncha
 contributes the log format, the log viewer (``inspect view``), sample-level transcripts, and
 its limits machinery. ``model="none"``: Inspect's own model is never called.
 
+Inspect's progress display is messaging, not output: it is sent to stderr for the duration
+of the eval, so ix's stdout carries only ix's results (``--format json`` stays parseable).
+
 Type URL: ``ix.v1/engine.inspect``. Requires the ``inspect`` extra.
 """
 
 from __future__ import annotations
 
+import contextlib
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ix.domain.errors import EngineError
 from ix.domain.ports import EngineOutcome
 from ix.domain.types import Reading, Trial
 from ix.eval.measure import measure_trial, run_trial
@@ -37,18 +43,13 @@ if TYPE_CHECKING:
 SCORER_NAME = "ix_sensor"
 
 
-class EngineError(RuntimeError):
-    """The Inspect evaluation did not complete; carries the log location when there is one."""
-
-
 class InspectEngineConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     #: Where ``.eval`` logs go. Composition sets ``<lab>/<experiment>/results/inspect``.
     log_dir: str | None = None
-    #: Concurrent samples. **1 by default**: the claude-sdk runtime mutates a process-global
-    #: environment variable per call (matrix SECURITY.md M-3), so concurrent SDK subjects are
-    #: unsafe. Raise it only for subjects on the model or mock runtimes.
+    #: Samples in flight at once. 1 by default, matching the native engine's
+    #: ``concurrency``; raise it when the subject's provider can take parallel calls.
     max_samples: int = Field(default=1, ge=1)
     #: Fail the whole evaluation on the first sample error. ix's own rule is that an errored
     #: trial is a failed reading, so the default keeps going.
@@ -82,6 +83,7 @@ class InspectEngine:
         # responses (AgentResponse.tool_calls); a JSON round trip through the sample store
         # would hand them dicts. The store still gets the JSON, for the log.
         trials: dict[tuple[str, int], Trial] = {}
+        order = {p.id: i for i, p in enumerate(run.probes)}
 
         @solver(name="ix_subject")
         def subject_solver() -> Any:
@@ -137,13 +139,14 @@ class InspectEngine:
                 "ix_run_index": run.run_index,
             },
         )
-        logs = await eval_async(
-            task,
-            model="none",
-            log_dir=self._config.log_dir,
-            max_samples=self._config.max_samples,
-            fail_on_error=self._config.fail_on_error,
-        )
+        with contextlib.redirect_stdout(sys.stderr):
+            logs = await eval_async(
+                task,
+                model="none",
+                log_dir=self._config.log_dir,
+                max_samples=self._config.max_samples,
+                fail_on_error=self._config.fail_on_error,
+            )
         log = logs[0]
         if log.status != "success":
             raise EngineError(
@@ -167,4 +170,9 @@ class InspectEngine:
                 )
                 continue
             readings.extend(Reading.model_validate(r) for r in score.metadata["readings"])
-        return EngineOutcome(readings=readings, artifacts={"inspect_log": str(Path(log.location))})
+        ordered = sorted(trials.values(), key=lambda t: (order[t.probe_id], t.trial_index))
+        return EngineOutcome(
+            readings=readings,
+            trials=ordered,
+            artifacts={"inspect_log": str(Path(log.location))},
+        )

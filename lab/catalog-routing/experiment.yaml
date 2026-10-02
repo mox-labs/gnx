@@ -11,21 +11,22 @@ engine: native
 
 # Two subjects, and the difference between them is the whole point.
 #
-#   mock   — simulates a 90/10 activation split. Proves the harness: DAG, store,
-#            aggregation, confusion matrix. Measures NOTHING about the catalog.
+#   simulated — simulates a 90/10 activation split. Proves the harness: DAG, store,
+#               aggregation, confusion matrix. Measures NOTHING about the catalog, and its
+#               results say so (answered by: simulated).
 #   live   — the real Claude Agent SDK with the projected plugins loaded. This is the
 #            one that actually measures whether the descriptions route.
 #
 # Run the live one with:  ix run catalog-routing --lab lab --subject catalog-live --trials 1
 #
 # A subject is an agent definition (max_turns, system_prompt, model, tools) plus the runtime
-# that plays it (runtime.type + that runtime's options): mock, claude-sdk, or model.
+# that plays it (runtime.type + that runtime's options): simulated, claude-sdk, or model.
 subjects:
-  - name: catalog-mock
+  - name: catalog-simulated
     description: Simulated activation; harness check only.
     config:
       runtime:
-        type: mock
+        type: simulated
 
   - name: catalog-live
     description: The gnx marketplace as shipped, loaded into a real agent session.

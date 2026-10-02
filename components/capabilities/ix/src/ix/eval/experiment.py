@@ -1,18 +1,21 @@
-"""Experiment — repeats × engine, then aggregation.
+"""Experiment — repeats × engine, then aggregation, then persistence.
 
-An engine runs every probe × trial of one repeat and returns readings. The Experiment runs
-the configured number of repeats, aggregates across them, computes the noise floor (the
-spread of pass rates across repeats), and persists a summary with provenance.
+An engine runs every probe × trial of one repeat and returns the trials and their readings.
+The Experiment runs the configured number of repeats, writes every trial to the run's
+``trials.jsonl`` as it goes, aggregates across repeats, computes the probe-sampling standard
+errors and the across-repeat noise floor, and saves a summary under the subject's name.
 
-The engine and the agent factory are injected by the composition root. This module imports
-no concrete engine, runtime or DAG node.
+The engine, the agent factory and the store are injected by the composition root. This
+module imports no concrete engine, runtime or DAG node.
 """
 
 from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel
 
 from ix import __version__
 from ix.domain.ports import EngineRun
@@ -22,26 +25,17 @@ from ix.eval.analysis import (
     build_confusion_matrix,
     compute_metrics,
     compute_noise_floor,
+    standard_errors,
 )
 from ix.eval.models import ExperimentConfig, ExperimentResults, ProbeResult, TrialRecord
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
-    from ix.domain.ports import AgentFactory, Engine, Sensor
+    from ix.domain.ports import AgentFactory, Engine, Sensor, Storage
+    from ix.domain.types import Trial
 
-
-class Storage(Protocol):
-    """Persistence boundary for experiments and eval results."""
-
-    def load_experiment(self, path: Path) -> ExperimentConfig: ...
-
-    def list_experiments(self, base: Path) -> list[Path]: ...
-
-    def append_result(self, experiment_name: str, result: TrialRecord) -> None: ...
-
-    def save_summary(self, experiment_name: str, results: ExperimentResults) -> Path: ...
+DEFAULT_SUBJECT = "default"
 
 
 class Experiment:
@@ -62,20 +56,25 @@ class Experiment:
         on_probe_complete: Callable[[ProbeResult], None] | None = None,
         on_run_complete: Callable[[int, float], None] | None = None,
     ) -> ExperimentResults:
-        """Run ``config.repeats`` repeats through the engine, then aggregate."""
-        active_subject = subject or Subject(name="default")
+        """Run ``config.repeats`` repeats of one subject through the engine, then aggregate."""
+        active = subject or Subject(name=DEFAULT_SUBJECT)
         probe_map = {p.id: p for p in config.probes}
+        started = datetime.now(UTC)
+        run_id = started.strftime("%Y%m%dT%H%M%S%fZ")
 
         all_readings: list[Reading] = []
         per_run_pass_rates: list[float] = []
+        per_run_mean_scores: list[float] = []
         artifacts: list[str] = []
+        families: set[str] = set()
+        trials_log = ""
 
         for run_idx in range(config.repeats):
             outcome = await self._engine.run(
                 EngineRun(
                     experiment=config.name,
                     probes=config.probes,
-                    subject=active_subject,
+                    subject=active,
                     sensor=self._sensor,
                     agents=self._agents,
                     trials=config.trials,
@@ -83,37 +82,84 @@ class Experiment:
                 )
             )
             all_readings.extend(outcome.readings)
+            families.update(f for t in outcome.trials if (f := getattr(t.response, "family", None)))
             artifacts.extend(f"{k}:{v}" for k, v in outcome.artifacts.items())
+            path = self._store.append_trials(
+                config.name,
+                active.name,
+                run_id,
+                _records(run_id, run_idx, outcome.trials, outcome.readings),
+            )
+            trials_log = str(path)
 
             run_metrics = compute_metrics(aggregate_readings(outcome.readings, probe_map))
             per_run_pass_rates.append(run_metrics["pass_rate"])
+            per_run_mean_scores.append(run_metrics["mean_score"])
             if on_run_complete:
                 on_run_complete(run_idx, run_metrics["pass_rate"])
 
         callback = on_probe_complete if config.repeats == 1 else None
         probe_results = aggregate_readings(all_readings, probe_map, callback)
         metrics = compute_metrics(probe_results)
+        pass_se, score_se = standard_errors(probe_results)
 
         config_json = config.model_dump_json(exclude={"probes"})
         config_hash = hashlib.sha256(config_json.encode()).hexdigest()[:16]
 
         results = ExperimentResults(
             experiment_name=config.name,
-            subject=active_subject.name,
+            subject=active.name,
+            run_id=run_id,
             probe_results=tuple(probe_results),
             pass_rate=metrics["pass_rate"],
             mean_score=metrics["mean_score"],
             min_score=metrics["min_score"],
             max_score=metrics["max_score"],
+            n_probes=len(probe_results),
+            pass_rate_stderr=pass_se,
+            mean_score_stderr=score_se,
             repeats=config.repeats,
             per_run_pass_rates=tuple(per_run_pass_rates),
             noise_floor_sd=compute_noise_floor(per_run_pass_rates),
+            per_run_mean_scores=tuple(per_run_mean_scores),
+            score_noise_floor_sd=compute_noise_floor(per_run_mean_scores),
             confusion_matrix=build_confusion_matrix(all_readings),
+            families=tuple(sorted(families)),
             engine=self._engine.name,
             engine_artifacts=tuple(artifacts),
+            trials_log=trials_log,
             config_hash=config_hash,
-            run_timestamp=datetime.now(UTC),
+            run_timestamp=started,
             ix_version=__version__,
         )
         self._store.save_summary(config.name, results)
         return results
+
+
+def _records(
+    run_id: str, run_index: int, trials: list[Trial], readings: list[Reading]
+) -> list[TrialRecord]:
+    by_trial: dict[tuple[str, int], list[Reading]] = {}
+    for reading in readings:
+        by_trial.setdefault((reading.probe_id, reading.trial_index), []).append(reading)
+    return [
+        TrialRecord(
+            run_id=run_id,
+            run_index=run_index,
+            probe_id=trial.probe_id,
+            trial_index=trial.trial_index,
+            response=_serialise(trial.response),
+            error=trial.error,
+            readings=tuple(by_trial.get((trial.probe_id, trial.trial_index), [])),
+        )
+        for trial in trials
+    ]
+
+
+def _serialise(response: Any) -> dict[str, Any] | None:
+    if response is None:
+        return None
+    if isinstance(response, BaseModel):
+        dumped: dict[str, Any] = response.model_dump(mode="json")
+        return dumped
+    return {"content": str(response)}

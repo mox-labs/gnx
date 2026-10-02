@@ -7,7 +7,7 @@ Source: ix/adapters/_out/mock_runtime.py.
 
 from matrix import AgentDefinition, AgentResponse, AgentRuntime
 
-from ix.adapters._out.mock_runtime import SimulatedRuntime
+from ix.adapters._out.simulated_runtime import SimulatedRuntime
 
 D = AgentDefinition(name="subject")
 
@@ -18,7 +18,7 @@ class TestProtocol:
         assert isinstance(runtime, AgentRuntime)
         result = await runtime.run(D, "test")
         assert isinstance(result, AgentResponse)
-        assert result.family == "mock"
+        assert result.family == "simulated"
 
 
 class TestDeterministicMode:

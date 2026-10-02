@@ -11,7 +11,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from .composition.config import config_env_var, discover_sources, load_config
-from .composition.container import Container, compose, default_registry
+from .composition.container import Container, compose, default_registry, with_context
 from .composition.runtimes import runtime_type_url
 from .domain.agent import AgentDefinition, BoundAgent
 from .domain.config import AgentConfig, Config, MatrixConfig, RuntimeConfig
@@ -91,4 +91,5 @@ __all__ = [
     "parse_type_url",
     "runtime_type_url",
     "type_url",
+    "with_context",
 ]

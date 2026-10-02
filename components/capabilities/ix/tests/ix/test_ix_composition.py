@@ -56,37 +56,40 @@ class TestSubjects:
 
 class TestAgentFactory:
     async def test_model_runtime_subject_answers_with_its_family(self):
-        factory = make_agent_factory(build_registry(), model_section=lambda: MODELS)
+        factory = make_agent_factory(build_registry(), context={"models": MODELS})
         agent = factory(_subject(system_prompt="x", runtime={"type": "model"}), 0)
         assert isinstance(agent, BoundAgent)
         response = await agent.run("hi")
         assert (response.family, response.content) == ("qwen", "mock:qwen-8b:hi")
 
     def test_matrix_runtimes_are_built_once_per_subject(self):
-        factory = make_agent_factory(build_registry(), model_section=lambda: MODELS)
+        factory = make_agent_factory(build_registry(), context={"models": MODELS})
         subject = _subject(runtime={"type": "model"})
         assert factory(subject, 0).runtime is factory(subject, 4).runtime
 
-    def test_mock_flag_replaces_any_runtime(self):
-        factory = make_agent_factory(build_registry(), mock=True)
+    def test_simulate_flag_replaces_any_runtime(self):
+        factory = make_agent_factory(build_registry(), simulate=True)
         agent = factory(_subject(runtime={"type": "claude-sdk", "permission_mode": "plan"}), 0)
         assert type(agent.runtime).__name__ == "SimulatedRuntime"
 
-    def test_ix_mock_shadows_matrix_mock(self):
+    def test_simulated_is_ix_and_mock_is_matrix_one_word_one_meaning(self):
         factory = make_agent_factory(build_registry())
-        assert type(factory(_subject(runtime={"type": "mock"}), 0).runtime).__name__ == (
+        assert type(factory(_subject(runtime={"type": "simulated"}), 0).runtime).__name__ == (
             "SimulatedRuntime"
+        )
+        assert type(factory(_subject(runtime={"type": "mock"}), 0).runtime).__name__ == (
+            "MockRuntime"
         )
 
     def test_claude_sdk_runtime_gets_the_experiment_dir_as_cwd(self, tmp_path: Path):
-        factory = make_agent_factory(build_registry(), experiment_cwd=str(tmp_path))
+        factory = make_agent_factory(build_registry(), context={"cwd": str(tmp_path)})
         agent = factory(_subject(runtime={"type": "claude-sdk"}), 0)
         assert agent.runtime.config.cwd == str(tmp_path)
 
     def test_missing_runtime_type_names_the_legal_set(self):
         factory = make_agent_factory(build_registry())
         with pytest.raises(
-            ConfigError, match="no runtime.type. Registered: claude-sdk, mock, model"
+            ConfigError, match="no runtime.type. Registered: claude-sdk, mock, model, simulated"
         ):
             factory(_subject(), 0)
 
@@ -106,8 +109,8 @@ class TestAgentFactory:
         exp = ExperimentConfig(
             name="e", probes=(Probe(id="p", prompt="q", metadata={"expectation": "must_trigger"}),)
         )
-        factory = make_agent_factory(build_registry(seed=42, experiment=exp), mock=True)
-        subject = _subject(runtime={"type": "mock"})
+        factory = make_agent_factory(build_registry(seed=42, experiment=exp), simulate=True)
+        subject = _subject(runtime={"type": "simulated"})
 
         async def draws(run_index: int) -> list[bool]:
             return [
@@ -152,7 +155,7 @@ class TestEngines:
 
 class TestRegistry:
     def test_runtimes_listed_across_namespaces(self):
-        assert registered_runtimes(build_registry()) == ["claude-sdk", "mock", "model"]
+        assert registered_runtimes(build_registry()) == ["claude-sdk", "mock", "model", "simulated"]
 
     def test_sensor_type_urls_are_versioned(self):
         assert "ix.v1/sensor.activation" in build_registry()
@@ -216,4 +219,4 @@ class TestInit:
         )
         result = runner.invoke(main, ["run", "e", "--lab", "lab", "--trials", "1"])
         assert result.exit_code == 0, result.output
-        assert "subject=agent" in result.output
+        assert "subject agent (simulated)" in result.output

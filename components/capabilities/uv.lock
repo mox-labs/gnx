@@ -1484,7 +1484,7 @@ inspect = [
 
 [package.metadata]
 requires-dist = [
-    { name = "claude-agent-sdk", specifier = ">=0.1.36" },
+    { name = "claude-agent-sdk", specifier = ">=0.1.51" },
     { name = "deepeval", marker = "extra == 'deepeval'", specifier = ">=2.0" },
     { name = "hardline", editable = "hardline" },
     { name = "inspect-ai", marker = "extra == 'inspect'", specifier = ">=0.3.100" },
@@ -2043,7 +2043,7 @@ otel = [
 
 [package.metadata]
 requires-dist = [
-    { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.1" },
+    { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.1.51" },
     { name = "hardline", marker = "extra == 'models'", editable = "hardline" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.20" },

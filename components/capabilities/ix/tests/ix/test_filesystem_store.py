@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 
 import pytest
-from matrix import AgentResponse
 
 from ix.adapters._out.filesystem_store import FilesystemStore
+from ix.domain.errors import ConfigError, ResultsError
 from ix.domain.types import Reading
 from ix.eval.models import (
     ExperimentResults,
@@ -79,8 +79,10 @@ class TestLoadExperiment:
         assert exp.probes[0].id == "must-001"
         assert exp.probes[1].id == "not-001"
 
-    def test_missing_config_raises(self, store: FilesystemStore, lab: Path):
-        with pytest.raises(FileNotFoundError):
+    def test_missing_config_is_a_config_error_naming_the_directory(
+        self, store: FilesystemStore, lab: Path
+    ):
+        with pytest.raises(ConfigError, match="no experiment.yaml in .*nonexistent"):
             store.load_experiment(lab / "nonexistent")
 
 
@@ -95,46 +97,38 @@ class TestListExperiments:
         assert experiments == []
 
 
-class TestAppendResult:
-    def test_creates_jsonl(self, store: FilesystemStore, lab: Path):
-        result = TrialRecord(
-            probe_id="must-001",
-            trial=0,
-            observation=AgentResponse(content="test"),
-            reading=Reading(
-                sensor_name="activation",
-                probe_id="must-001",
-                trial_index=0,
-                passed=True,
-            ),
-        )
-        store.append_result("test-exp", result)
+def _record(probe: str, trial: int, run_id: str = "r1") -> TrialRecord:
+    return TrialRecord(
+        run_id=run_id,
+        run_index=0,
+        probe_id=probe,
+        trial_index=trial,
+        response={"content": f"resp-{trial}"},
+        readings=(
+            Reading(sensor_name="activation", probe_id=probe, trial_index=trial, passed=True),
+        ),
+    )
 
-        jsonl_path = lab / "test-exp" / "results" / "trials.jsonl"
-        assert jsonl_path.exists()
-        line = json.loads(jsonl_path.read_text().strip())
+
+class TestAppendTrials:
+    def test_writes_one_line_per_trial_under_subject_and_run(
+        self, store: FilesystemStore, lab: Path
+    ):
+        rel = store.append_trials("test-exp", "baseline", "r1", [_record("must-001", 0)])
+        assert rel == Path("results/baseline/r1/trials.jsonl")
+        line = json.loads((lab / "test-exp" / rel).read_text().strip())
         assert line["probe_id"] == "must-001"
+        assert line["readings"][0]["passed"] is True
 
-    def test_appends_multiple(self, store: FilesystemStore, lab: Path):
+    def test_appends_across_repeats(self, store: FilesystemStore, lab: Path):
         for i in range(3):
-            store.append_result(
-                "test-exp",
-                TrialRecord(
-                    probe_id="must-001",
-                    trial=i,
-                    observation=AgentResponse(content=f"resp-{i}"),
-                    reading=Reading(
-                        sensor_name="activation",
-                        probe_id="must-001",
-                        trial_index=i,
-                        passed=True,
-                    ),
-                ),
-            )
+            store.append_trials("test-exp", "baseline", "r1", [_record("must-001", i)])
+        log = lab / "test-exp" / "results" / "baseline" / "r1" / "trials.jsonl"
+        assert len(log.read_text().strip().split("\n")) == 3
 
-        jsonl_path = lab / "test-exp" / "results" / "trials.jsonl"
-        lines = jsonl_path.read_text().strip().split("\n")
-        assert len(lines) == 3
+    def test_subject_names_become_safe_directory_names(self, store: FilesystemStore, lab: Path):
+        rel = store.append_trials("test-exp", "claude / live!", "r1", [_record("p", 0)])
+        assert rel.parts[1] == "claude---live"
 
 
 class TestSaveSummary:
@@ -152,8 +146,18 @@ class TestSaveSummary:
         assert data["pass_rate"] == 0.95
         assert data["mean_score"] == 0.90
 
-    def test_creates_latest(self, store: FilesystemStore, lab: Path):
-        results = ExperimentResults(experiment_name="test-exp")
-        store.save_summary("test-exp", results)
-        latest = lab / "test-exp" / "results" / "summary-latest.json"
-        assert latest.exists()
+    def test_latest_is_per_subject_so_one_subject_never_overwrites_another(
+        self, store: FilesystemStore, lab: Path
+    ):
+        store.save_summary("test-exp", ExperimentResults(experiment_name="test-exp", subject="a"))
+        store.save_summary(
+            "test-exp", ExperimentResults(experiment_name="test-exp", subject="b", pass_rate=0.5)
+        )
+        assert store.load_summary("test-exp", "a").subject == "a"
+        assert store.load_summary("test-exp", "b").pass_rate == 0.5
+        assert store.subjects_with_results("test-exp") == ["a", "b"]
+
+    def test_missing_subject_results_name_what_exists(self, store: FilesystemStore):
+        store.save_summary("test-exp", ExperimentResults(experiment_name="test-exp", subject="a"))
+        with pytest.raises(ResultsError, match="Subjects with results: a"):
+            store.load_summary("test-exp", "zzz")
