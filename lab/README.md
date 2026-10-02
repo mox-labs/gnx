@@ -5,7 +5,7 @@ A **lab** is a directory of experiments; each experiment is a directory with an
 claims instead of asserting them.
 
 ```
-ix run catalog-routing  --lab lab --mock --seed 42
+ix run catalog-routing  --lab lab --subject catalog-simulated --seed 42
 ix run sensor-integrity --lab lab                      # its subject is the simulator
 ix run sensor-integrity --lab lab --engine inspect     # same experiment on Inspect AI
 ix results catalog-routing --lab lab
@@ -17,7 +17,7 @@ Either engine gives the same readings for the same experiment; `inspect` also le
 Run from the repo root, with the capabilities workspace:
 
 ```
-uv --project components/capabilities run ix run catalog-routing --lab lab --mock --seed 42
+uv --project components/capabilities run ix run catalog-routing --lab lab --subject catalog-simulated --seed 42
 ```
 
 ## The experiments
@@ -28,8 +28,9 @@ uv --project components/capabilities run ix run catalog-routing --lab lab --mock
 | `sensor-integrity` | Does the grading path itself grade correctly? | `function-test` | no |
 
 The live subject needs no API key: the Claude Agent SDK drives the authenticated `claude`
-CLI. `matrix`'s runtime pops `CLAUDECODE` for the duration of a call precisely so this works
-from inside a Claude Code session.
+CLI. The installed SDK (`claude-agent-sdk >= 0.1.51`) strips `CLAUDECODE` from the child
+process itself, so this works from inside a Claude Code session without `matrix`'s runtime
+touching `os.environ` (matrix/SECURITY.md M-3, fixed 2026-10-02).
 
 ```
 ix run catalog-routing --lab lab --subject catalog-live --trials 1
@@ -47,8 +48,8 @@ right moment. That is a measurable claim, and this is the measurement: `must_tri
 probes name a real ask, `should_not_trigger` probes are decoys pitched near a skill's
 vocabulary without needing it.
 
-`--mock` exercises the full harness — DAG, store, aggregation, confusion matrix — on a
-simulated 90/10 activation split. **It does not measure the catalog.** A mock run that
+`--simulate` exercises the full harness — DAG, store, aggregation, confusion matrix — on a
+simulated 90/10 activation split. **It does not measure the catalog.** A simulated run that
 reports 90% tells you the plumbing works; only a live run tells you the descriptions do.
 Both are useful and they are not the same claim.
 

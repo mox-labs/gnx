@@ -103,8 +103,8 @@ history = construct.ledger  # tuple[Artifact, ...]
 compile time, those artifacts are present when it runs — so `last()` on a declared requirement
 won't raise.
 
-One sharp edge: `len(construct)` returns the number of **distinct type_urls**, not the number of
-artifacts. For the artifact count use `len(construct.ledger)`.
+`len(construct)` returns the number of **artifacts** in the ledger. For the number of distinct
+type_urls, use `len(construct.kinds())`.
 
 ### Why Append-Only
 

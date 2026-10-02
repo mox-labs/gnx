@@ -72,8 +72,8 @@ See I-7 for deepeval's telemetry.
 model is never called, and the subject runs through ix's agent factory exactly as on the
 native engine. Inspect writes an `.eval` log per repeat under `results/inspect/` containing
 **every prompt and every response** — treat the directory like the results it is. The
-engine defaults `max_samples: 1` because concurrent `claude-sdk` subjects race on a
-process-global environment variable (matrix/SECURITY.md M-3).
+engine's `max_samples` defaults to 1, matching the native engine's `concurrency` default;
+raise it when the subject's runtime and provider can take parallel calls.
 
 ## Findings
 
@@ -190,8 +190,8 @@ adapter's `generate` in deepeval's tracing, which reports only when a Confident 
 - ix does not sandbox generated code. See boundary 1.
 - ix does not verify experiment provenance. There is no signature on an experiment
   directory.
-- `--mock` uses a seeded PRNG for run reproducibility. It is not a security control and
-  its seed is not a secret.
+- `--simulate` (`--mock` is a deprecated alias) uses a seeded PRNG for run reproducibility.
+  It is not a security control and its seed is not a secret.
 
 ## Reporting
 

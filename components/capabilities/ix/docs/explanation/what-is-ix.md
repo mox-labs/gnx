@@ -71,7 +71,7 @@ class Subject(BaseModel, frozen=True):
     config: dict = {}
 ```
 
-A subject is pure identity: an agent definition (system prompt, model, tools, turn budget) plus the runtime that plays it (`runtime.type` — `claude-sdk`, `model`, `mock` — and that runtime's options). The composition root binds the two into a matrix agent, so moving a subject between the Claude SDK and a local model is a config change. In a 2x2 experiment, you have four subjects. In an A/B test, two. The subject does not know how to run itself -- it is data, not behavior.
+A subject is pure identity: an agent definition (system prompt, model, tools, turn budget) plus the runtime that plays it (`runtime.type` — `claude-sdk`, `model`, `simulated` (ix's simulator), or matrix's own `mock` — and that runtime's options). The composition root binds the two into a matrix agent, so moving a subject between the Claude SDK and a local model is a config change. In a 2x2 experiment, you have four subjects. In an A/B test, two. The subject does not know how to run itself -- it is data, not behavior.
 
 **Trial** -- one execution of a probe against a subject.
 
@@ -123,7 +123,7 @@ This is a DAG, not a pipeline. ProbeNode and SubjectNode have no dependency on e
 | TrialNode | `ix.v1/probe.stimulus`, `ix.v1/subject` | `ix.v1/trial.observation` |
 | SensorNode | `ix.v1/trial.observation` | `ix.v1/sensor.readings` |
 
-TrialNode is where agent execution happens. It asks the agent factory for the subject's agent — a definition bound to a runtime resolved by type URL (`matrix.v1/runtime.claude-sdk`, `matrix.v1/runtime.model`, `ix.v1/runtime.mock`) — calls `agent.run(prompt)`, and wraps the response in a Trial. If the agent fails, the Trial captures the error. Either way, SensorNode gets a Trial to measure.
+TrialNode is where agent execution happens. It asks the agent factory for the subject's agent — a definition bound to a runtime resolved by type URL (`matrix.v1/runtime.claude-sdk`, `matrix.v1/runtime.model`, `matrix.v1/runtime.mock`, `ix.v1/runtime.simulated`) — calls `agent.run(prompt)`, and wraps the response in a Trial. If the agent fails, the Trial captures the error. Either way, SensorNode gets a Trial to measure.
 
 SensorNode delegates to the Sensor protocol. If the trial has an error, it produces a failed reading without calling the sensor. If the sensor itself throws, it catches the exception and produces a failed reading with the error message. Failures propagate as data, not as exceptions that abort the experiment.
 
@@ -190,7 +190,9 @@ After the loop, two pure functions aggregate:
 
 2. **`compute_metrics`** -- takes the list of `ProbeResult`s, computes `pass_rate` (fraction of probes that passed), `mean_score` (mean of continuous per-probe scores), `min_score`, `max_score`.
 
-The final `ExperimentResults` carries provenance: a hash of the config, the run timestamp, and the ix version. Status is a `@computed_field` derived from pass_rate -- not a separate interpretation layer. The numbers speak: >= 1.0 is "excellent", >= 0.85 is "good", >= 0.50 is "needs_work", below is "poor".
+Uncertainty is reported two ways, not conflated. `standard_errors` gives the CLT standard error of `pass_rate` and `mean_score` over the probes sampled -- how much the number would move with a different draw of probes like these. Across `repeats`, `compute_noise_floor` gives the standard deviation of pass rate and mean score run to run -- how much the number moves when nothing changes but the run. `ix compare <experiment> A B` pairs two subjects' results probe by probe and reports the mean delta, its standard error, a 95% CI, and a verdict that stays `inconclusive` unless the CI excludes zero *and* the delta clears the larger subject's noise floor.
+
+The final `ExperimentResults` carries provenance: a hash of the config, the run timestamp, the ix version, and the model `families` that actually answered (read off the trial responses, not asserted by config) -- a subject run under `--simulate` records `("simulated",)` there, never a model family it didn't call. `measured_a_model` is `False` when no real model answered, so a harness check cannot be mistaken for a measurement; `ix compare` surfaces the same warning when either side's results fail that check. Status is a `@computed_field` derived from pass_rate -- not a separate interpretation layer. The numbers speak: >= 1.0 is "excellent", >= 0.85 is "good", >= 0.50 is "needs_work", below is "poor".
 
 ---
 
@@ -214,21 +216,21 @@ An experiment is a directory with three parts:
 2. **`tasks/*.md`** -- one probe per file, YAML frontmatter for id and metadata, prompt as body
 3. **`subjects/*.md`** -- one subject per file: frontmatter for name, definition fields and `runtime`, system prompt as body
 
-No Python required to define an experiment. The file format is the interface. Version-control your experiments, diff them, review them. Start with `--mock` to validate structure before spending API budget.
+No Python required to define an experiment. The file format is the interface. Version-control your experiments, diff them, review them. Start with `--simulate` to validate structure before spending API budget.
 
 ```bash
-ix run my-experiment --lab ci-lab --mock    # Dry run, no API calls
-ix run my-experiment --lab ci-lab           # Real run
-ix results my-experiment --lab ci-lab       # View results
+ix run my-experiment --lab ci-lab --simulate  # Dry run, no API calls
+ix run my-experiment --lab ci-lab             # Real run, every subject
+ix results my-experiment --lab ci-lab         # View results
 ```
 
 ---
 
 ## The composition root
 
-One question the architecture must answer: who wires concrete implementations together? The composition root (`ix.composition`) does this once, at startup. It builds one `ComponentRegistry` that resolves agent runtimes (`matrix.v1/runtime.claude-sdk`, `matrix.v1/runtime.model`, `ix.v1/runtime.mock`), sensors (`ix.v1/sensor.activation`, ...) and engines (`ix.v1/engine.native`, `ix.v1/engine.inspect`) through the same `type_url -> factory` pattern, plus any `matrix.components` or `ix.components` entry point.
+One question the architecture must answer: who wires concrete implementations together? The composition root (`ix.composition`) does this once, at startup. It builds one `ComponentRegistry` that resolves agent runtimes (`matrix.v1/runtime.claude-sdk`, `matrix.v1/runtime.model`, `matrix.v1/runtime.mock`, `ix.v1/runtime.simulated`), sensors (`ix.v1/sensor.activation`, ...) and engines (`ix.v1/engine.native`, `ix.v1/engine.inspect`) through the same `type_url -> factory` pattern, plus any `matrix.components` or `ix.components` entry point.
 
-The `Experiment` class never imports a concrete engine, node or runtime. It receives an engine and an agent factory from the composition root. This inversion means the experiment loop is testable in isolation, `--mock` works by swapping the runtime the factory binds, and new runtimes, sensors or engines plug in without touching the experiment code.
+The `Experiment` class never imports a concrete engine, node or runtime. It receives an engine and an agent factory from the composition root. This inversion means the experiment loop is testable in isolation, `--simulate` works by swapping every subject's runtime for ix's simulator, and new runtimes, sensors or engines plug in without touching the experiment code.
 
 ---
 
@@ -236,6 +238,6 @@ The `Experiment` class never imports a concrete engine, node or runtime. It rece
 
 ix 0.0.1-alpha means the core loop works and real experiments have run (CEP-001). The sensor protocol, the file format, and the CLI commands are stable. Internal model field names may change.
 
-Known gaps: no built-in statistical significance testing (Bayesian methods are documented in experiment proposals but not automated), no pass@k metric, no load-testing sensor. The architecture supports all three -- the Sensor protocol generalizes -- but they do not exist yet.
+Known gaps: no pass@k metric, no load-testing sensor. The architecture supports both -- the Sensor protocol generalizes -- but they do not exist yet. (`ix compare` now gives paired-probe significance -- mean delta, standard error, 95% CI -- between two subjects' results; see "The experiment loop" above.)
 
 If you are evaluating ix: run an experiment in gnx's `lab/`. The structure there is what the file format looks like. If it fits your use case, ix is worth trying.

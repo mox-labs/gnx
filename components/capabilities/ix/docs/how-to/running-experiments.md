@@ -15,7 +15,7 @@ lab/
 └── routing/
     ├── experiment.yaml        # name, engine, sensor, trials
     ├── tasks/                 # probes go here
-    └── subjects/agent.md      # a starter subject on the simulator (runtime: mock)
+    └── subjects/agent.md      # a starter subject on the simulator (runtime: simulated)
 ```
 
 A new experiment runs as soon as it has one probe, on the simulator, before any model is
@@ -65,12 +65,13 @@ subjects:
 
 ```bash
 ix experiment validate routing --lab lab
-ix run routing --lab lab --mock --seed 42
+ix run routing --lab lab --simulate --seed 42
 ```
 
-`--mock` swaps every subject onto the simulator: canned `mock_response`s where a probe has one,
-otherwise a seeded 90/10 activation split. **It proves the harness, not the thing.** A
-simulated pass rate says the pipeline works; it says nothing about your catalog.
+`--simulate` swaps every subject onto the simulator: canned `mock_response`s where a probe has
+one, otherwise a seeded 90/10 activation split (`--mock` still works as a deprecated alias).
+**It proves the harness, not the thing.** A simulated pass rate says the pipeline works; it
+says nothing about your catalog.
 
 ## 5. Run for real
 
@@ -78,7 +79,11 @@ simulated pass rate says the pipeline works; it says nothing about your catalog.
 ix run routing --lab lab --subject live --trials 1        # one trial per probe to start
 ix run routing --lab lab --subject live                   # the configured trials × repeats
 ix run routing --lab lab --subject local --engine inspect # same experiment on Inspect AI
+ix run routing --lab lab                                  # every subject, in turn
 ```
+
+Results are keyed by subject — running one subject never overwrites another's — so running
+every subject is the normal way to set up a comparison.
 
 Set `repeats: 3` or more before you compare two subjects. One run's pass rate has no error
 bar; the **noise floor** — the spread of pass rates across repeats — is what says whether a
@@ -93,14 +98,32 @@ ix results routing --lab lab --format json
 
 | Metric | Meaning |
 |--------|---------|
-| **Pass rate** | fraction of probes where a majority of trials passed, by the sensor's own verdict |
-| **Mean / min / max score** | over per-probe mean trial scores |
-| **Noise floor (sd)** | standard deviation of per-repeat pass rates — compare differences against it |
+| **Pass rate** | fraction of probes where a majority of trials passed, by the sensor's own verdict; reported with ± one standard error over the probes sampled |
+| **Mean / min / max score** | over per-probe mean trial scores; mean score also carries its standard error |
+| **Noise floor (sd)** | standard deviation of per-repeat pass rate / mean score — compare differences against it |
+| **Answered by** | the model families that actually produced the responses measured, read off the responses — `simulated` under `--simulate`, never asserted from config |
 | **Confusion matrix** | activation only: expected skill × the skill that actually fired |
+
+Results live under `results/<subject>/<run_id>/trials.jsonl` (one `TrialRecord` per trial, every
+repeat) and `results/<subject>/summary-latest.json` (the result `ix results` reads); the path to
+that run's trials is in the summary's `trials_log`.
 
 On the Inspect engine each repeat also leaves an `.eval` log in `results/inspect/` with every
 prompt, response and score; `inspect view` opens it, and the path is recorded in the summary's
 `engine_artifacts`.
+
+## 7. Compare two subjects
+
+```bash
+ix compare routing live local
+```
+
+Pairs `live` and `local`'s latest results probe by probe and reports the mean delta (B − A),
+its standard error, a 95% CI, and which probes' verdicts flipped. The verdict is
+`inconclusive` unless the CI excludes zero *and* the delta clears the larger subject's noise
+floor — a difference that looks real on `repeats: 1` is not, by construction, enough. If
+either subject's results show no real model answered (`--simulate`, or matrix's `mock`
+runtime), the comparison carries a warning: it checked the harness, not the subjects.
 
 ## When it disagrees with you
 

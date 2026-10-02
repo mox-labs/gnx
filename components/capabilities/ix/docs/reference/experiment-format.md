@@ -18,14 +18,20 @@ subjects, and a `results/` directory ix writes. Everything here was read off the
     ├── subjects/              # optional; if present, it replaces `subjects:` in the YAML
     │   └── <subject>.md
     └── results/               # written by ix
-        ├── summary-<UTC timestamp>.json
-        ├── summary-latest.json
-        └── inspect/           # engine: inspect only — one .eval log per repeat
+        ├── <subject>/
+        │   ├── <run_id>/
+        │   │   └── trials.jsonl       # one TrialRecord per trial, every repeat
+        │   ├── summary-<run_id>.json
+        │   └── summary-latest.json    # the most recent run's, what `ix results` reads
+        └── inspect/                   # engine: inspect only — one .eval log per repeat
 ```
 
 A lab is any directory containing at least one subdirectory with an `experiment.yaml`. ix
 finds it from `--lab <name>` (relative to the project root) or by walking up from the working
 directory.
+
+Results are keyed by subject: running one subject's experiment never overwrites another
+subject's `summary-latest.json`.
 
 ---
 
@@ -87,16 +93,17 @@ error. Runtime types and their options:
 |---|---|---|
 | `claude-sdk` | `permission_mode` (default `default`), `cwd` (default: the experiment directory), `setting_sources`, `plugins`, `fallback_model`, `agents` | relative plugin paths resolve against `cwd` |
 | `model` | `models`, `default_model`, `temperature`, `max_tokens` | `models` defaults to the experiment's `models` section; refuses subjects that declare tools |
-| `mock` | none | ix's simulator — canned `mock_response`, else a seeded 90/10 activation split |
+| `simulated` | none | ix's simulator — canned `mock_response`, else a seeded 90/10 activation split |
+| `mock` | none | matrix's own deterministic offline runtime — canned replies keyed by task, not ix's simulator |
 
-`--mock` replaces every subject's runtime with the simulator for that run. A subject with no
-`runtime.type` fails, naming the registered types.
+`--simulate` replaces every subject's runtime with ix's simulator for that run (`--mock` is a
+deprecated alias). A subject with no `runtime.type` fails, naming the registered types.
 
 ### Engines
 
 | `engine` | options | executes a repeat as |
 |---|---|---|
-| `native` | none | one four-node matrix DAG per probe × trial |
+| `native` | `concurrency` (default 1, trials in flight at once) | one four-node matrix DAG per probe × trial |
 | `inspect` | `log_dir` (default `results/inspect`), `max_samples` (default 1), `fail_on_error` (default false) | one Inspect AI task: probes → samples, trials → epochs; writes an `.eval` log |
 
 `--engine` overrides the configured engine for a run; the other engine's options are dropped.
@@ -150,20 +157,57 @@ Frontmatter is the subject's config (`name` and `description` lifted out); the b
 
 ---
 
-## Results — `summary-latest.json`
+## Trials — `<run_id>/trials.jsonl`
 
-Written after every run and archived as `summary-<timestamp>.json`.
+One `TrialRecord` per line, for every trial of every repeat — written as the run goes, so a
+summary's numbers can be audited against the evidence they were computed from.
 
 | Field | Description |
 |-------|-------------|
-| `experiment_name`, `subject` | |
+| `run_id`, `run_index` | the run this trial belongs to, and which repeat (0-based) |
+| `probe_id`, `trial_index` | which probe, which trial of that probe |
+| `response` | the agent's response, serialised — content, tool calls, usage, `family`, `model` |
+| `error` | set instead of `response` when the agent raised |
+| `readings` | the sensor's `Reading`s for this trial |
+
+## Results — `results/<subject>/summary-latest.json`
+
+Written after every run of that subject and archived as `summary-<run_id>.json` alongside it.
+`ix results <experiment>` reads every subject's `summary-latest.json`; `ix results <experiment>
+--subject <name>` reads one.
+
+| Field | Description |
+|-------|-------------|
+| `experiment_name`, `subject`, `run_id` | |
 | `probe_results[]` | `probe_id`, `score` (mean trial score), `passed` (a **majority of trials passed**, by the sensor's verdict — never re-derived from the score), `trial_scores`, `details` |
-| `pass_rate` | fraction of probes that passed |
+| `pass_rate`, `n_probes` | fraction of probes that passed, and how many probes that is over |
 | `mean_score`, `min_score`, `max_score` | over probe scores |
-| `repeats`, `per_run_pass_rates` | one pass rate per repeat |
-| `noise_floor_sd` | standard deviation of `per_run_pass_rates`; `null` with one repeat |
+| `pass_rate_stderr`, `mean_score_stderr` | CLT standard error over the `n_probes` probes sampled; `stderr_method` names it (`"clt-over-probes"`); `null` below two probes |
+| `repeats`, `per_run_pass_rates`, `per_run_mean_scores` | one pass rate / mean score per repeat |
+| `noise_floor_sd`, `score_noise_floor_sd` | standard deviation of `per_run_pass_rates` / `per_run_mean_scores` across repeats; `null` with one repeat |
 | `confusion_matrix` | `{expected_skill: {activated_skill: count}}` from activation readings |
+| `families` | the model families that actually answered, read off the trial responses — `("simulated",)` under `--simulate`, never asserted from config |
+| `measured_a_model` | computed: `false` when `families` is empty or only `simulated`/`mock` — a harness check, not a measurement |
 | `engine` | `native` or `inspect` |
 | `engine_artifacts` | e.g. `inspect_log:<path to .eval>`, one per repeat |
+| `trials_log` | this run's `trials.jsonl`, relative to the experiment directory |
 | `config_hash`, `run_timestamp`, `ix_version` | provenance |
 | `status` | computed from `pass_rate`: `excellent` (1.0), `good` (≥ 0.85), `needs_work` (≥ 0.5), `poor` |
+
+## Comparison — `ix compare <experiment> A B`
+
+Not persisted to disk; printed or emitted as JSON (`--format json`) from `compare_results(A, B)`
+over the two subjects' latest `ExperimentResults`.
+
+| Field | Description |
+|-------|-------------|
+| `experiment`, `a`, `b`, `n` | the experiment, the two subject names, and how many probes they share |
+| `pass_rate_a`, `pass_rate_b` | each subject's pass rate over the shared probes |
+| `mean_delta` | mean of (score B − score A) over shared probes |
+| `delta_stderr`, `ci95` | standard error and 95% CI of `mean_delta` (paired, over √n); `null` below two shared probes |
+| `a_only_passed`, `b_only_passed` | probes whose verdict flipped, counted each way |
+| `noise_floor_sd` | the larger of the two subjects' `score_noise_floor_sd`, where measured |
+| `unmatched` | probe ids present in only one subject's results |
+| `warning` | set when either subject's results show `measured_a_model = false` |
+| `probes[]` | per shared probe: `score_a`, `score_b`, `passed_a`, `passed_b`, and computed `delta` |
+| `verdict` | computed: `"b_better"` / `"a_better"` only when the CI excludes 0 *and* `abs(mean_delta)` clears `noise_floor_sd`; otherwise `"inconclusive"` |

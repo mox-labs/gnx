@@ -21,7 +21,7 @@ into the core types, because the same shapes express a benchmark or a load test.
 
 Two things ix is built to protect against, both learned the hard way:
 
-**A simulated run measures the harness, not the thing.** `--mock` proves the pipeline, store
+**A simulated run measures the harness, not the thing.** `--simulate` proves the pipeline, store
 and aggregation work end to end without an API call. It tells you nothing about whether a
 catalog routes or a model can code. Those are different claims and ix keeps them separate.
 
@@ -78,12 +78,13 @@ repeats: 3
 |---|---|
 | `claude-sdk` | a Claude Agent SDK session (cwd defaults to the experiment directory) |
 | `model` | one call to any model in the `models` registry — local MLX, ollama, Gemini, Claude |
-| `mock` | ix's simulator: canned `mock_response`s, or a seeded 90/10 activation split |
+| `simulated` | ix's simulator: canned `mock_response`s, or a seeded 90/10 activation split (`--simulate` swaps every subject onto it) |
+| `mock` | matrix's own deterministic offline runtime — canned replies keyed by task |
 
 A misconfigured experiment fails before anything runs, naming the key and the legal set:
 
 ```
-Error: subject 'claude': runtime.type 'strands' is not registered. Registered: claude-sdk, mock, model
+Error: subject 'claude': runtime.type 'strands' is not registered. Registered: claude-sdk, mock, model, simulated
 Error: experiment.yaml: unknown key(s) ['agent']. Legal: ['description', 'engine', 'models', ...]
 ```
 
@@ -94,7 +95,8 @@ noise floor and persistence belong to the experiment, so **the same experiment g
 results on either engine**; a parity test asserts it.
 
 - **native** — each trial is a four-node matrix DAG (probe → subject → trial → sensor), with
-  every read declared and enforced.
+  every read declared and enforced. `concurrency` (default 1) bounds how many trials run at
+  once; results come back in probe × trial order at any setting.
 - **inspect** — each repeat runs as an [Inspect AI](https://inspect.aisi.org.uk) task: probes
   are samples, trials are epochs, the subject runs as a solver, the sensor as a scorer. Each
   repeat leaves an `.eval` log under `results/inspect/` — open it with `inspect view`. The log
@@ -103,11 +105,12 @@ results on either engine**; a parity test asserts it.
 ## Usage
 
 ```bash
-ix run catalog-routing --lab lab --mock --seed 42          # simulated, native engine
+ix run catalog-routing --lab lab --simulate --seed 42      # simulated, native engine
 ix run sensor-integrity --lab lab --engine inspect         # same experiment, Inspect engine
 ix run local-codegen --lab lab --subject local             # a real model
 ix experiment list --lab lab
 ix results catalog-routing --lab lab --format json
+ix compare local-codegen local claude --lab lab            # is the difference real?
 ```
 
 ## Out of family

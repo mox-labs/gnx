@@ -16,17 +16,26 @@ All public types exported from `matrix`.
 from matrix import (
     # DAG
     Artifact, Component, CompilationError, Construct, ConstructReader, ConstructView,
-    ContractError, DagCompiler, DagScheduler, Orchestrator, TypedStruct,
+    ContractError, Orchestrator, TypedStruct,
+    # errors
+    AgentRuntimeError, ComponentError, ConfigError, MatrixError, NotFoundError,
     # agents
     Agent, AgentDefinition, AgentResponse, AgentRuntime, BoundAgent, DefinitionSource,
     # composition
-    AgentConfig, ComponentRegistry, Config, ConfigError, Container, MatrixConfig, RuntimeConfig,
-    bind_agents, build_runtimes, compose, default_registry, load_definitions,
-    register_builtin_runtimes, runtime_type_url,
+    AgentConfig, ComponentRegistry, Config, Container, MatrixConfig, RuntimeConfig,
+    compose, default_registry, runtime_type_url, with_context,
+    # type URLs
+    TypeUrl, parse_type_url, type_url,
     # config loading, telemetry
-    configure_telemetry, deep_merge, discover_sources, load_config,
+    config_env_var, configure_telemetry, discover_sources, load_config,
 )
 ```
+
+`DagCompiler`, `DagScheduler`, `deep_merge`, `bind_agents`, `build_runtimes`,
+`load_definitions`, and `register_builtin_runtimes` are no longer exported from `matrix`
+top-level; import them from their own modules (`matrix.domain.compiler`,
+`matrix.domain.scheduler`, `matrix.composition.config`, `matrix.composition.container`,
+`matrix.composition.runtimes`) when you need them directly.
 
 ## Core Types
 
@@ -113,7 +122,7 @@ Append-only artifact ledger for one DAG execution. A plain mutable class — **n
 | `kinds` | `() -> frozenset[str]` | Every `type_url` present |
 | `__getitem__` | `(type_url: str) -> Any` | Backward-compat shorthand for `last(type_url).data` |
 | `__contains__` | `(type_url: str) -> bool` | Whether any artifact of the type exists |
-| `__len__` | `() -> int` | **Number of distinct `type_url`s — not the artifact count.** For artifacts, use `len(construct.ledger)` |
+| `__len__` | `() -> int` | **Number of artifacts in the ledger.** For distinct `type_url`s, use `len(construct.kinds())` |
 
 `last()` returns the `Artifact`, not its `data`. Reach through to `.data`, or use the
 `construct["type_url"]` shorthand.
@@ -133,7 +142,22 @@ naming the component, the kind, and what it declared. `kinds()` returns only all
 ### `ContractError`
 
 Raised by the Orchestrator when a component's returned `type_url` doesn't match its declared
-`provides`.
+`provides`, or when a component reads a kind outside its declared `requires`.
+
+### Error hierarchy
+
+Every error matrix raises on purpose is a `MatrixError`; `except MatrixError` catches all of
+them.
+
+| Error | Also | Raised when |
+|---|---|---|
+| `MatrixError` | — | base class |
+| `ConfigError` | `ValueError` | a matrix config, agent definition, component config, or type URL is invalid |
+| `NotFoundError` | `KeyError` | a name or type URL is not registered or configured |
+| `ContractError` | — | a component's output or an undeclared read breaks its contract |
+| `CompilationError` | — | a component graph is malformed (missing producer, duplicate output, cycle) |
+| `ComponentError` | — | a component raised while the DAG ran; carries `component` (its name) and `construct` (the ledger as it stood when it failed, so artifacts produced before the failure are not lost) |
+| `AgentRuntimeError` | — | an agent runtime could not run a definition — every built-in runtime raises this for an execution failure, whatever its backend |
 
 ---
 
@@ -141,33 +165,43 @@ Raised by the Orchestrator when a component's returned `type_url` doesn't match 
 
 ### `Orchestrator`
 
-Compiles and executes a DAG of components sequentially.
+Compiles and executes a DAG of components, batch by batch.
 
 ```python
 orch = Orchestrator([probe, sensor, scorer])
 construct = await orch.run()  # no arguments
+
+orch = Orchestrator([probe, sensor, scorer], concurrency=4, timeout_s=30)
 ```
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `__init__` | `(components: list[Any], on_node: NodeCallback \| None = None)` | Compile topology immediately; optional per-node progress callback |
+| `__init__` | `(components: Sequence[Component], on_node: NodeCallback \| None = None, *, concurrency: int = 1, timeout_s: float \| None = None)` | Compile topology immediately; optional per-node progress callback; `concurrency` caps how many independent members of one batch run at once; `timeout_s` bounds each component's `run` |
 | `run` | `async () -> Construct` | Execute the DAG, return the Construct holding every artifact |
 
 `run()` takes **no** arguments. External input enters through component constructors
 (factory-closure config), not through the run call. Roots declare `requires = frozenset()`.
 
-`on_node` is called as `on_node(name, "start")` as each component begins.
+`on_node` is called as `on_node(name, "start")` as each component begins and `on_node(name,
+"done")` as it finishes.
 
 `__init__` calls `DagCompiler.compile()`, so topology errors surface at construction, not at run.
 
-Execution is sequential, batch by batch. Matrix refuses persistence, retries, and parallelism
-by design — dump `construct.ledger` on the caller side if you need durability.
+Batches run in topological order. Within a batch, `concurrency=1` (the default) runs members
+one at a time; `concurrency > 1` runs up to that many at once via an `asyncio.Semaphore` — the
+ledger order stays batch order regardless of how members finished. A component that raises, or
+that exceeds `timeout_s`, becomes a `ComponentError`; batch siblings that finished before the
+failure are still ledgered. Matrix refuses persistence and retries by design — dump
+`construct.ledger` on the caller side if you need durability.
 
 ### `DagCompiler`
 
-Static topology validation. Call directly when you need edges without execution.
+Static topology validation. Call directly when you need edges without execution. Not exported
+from `matrix` top-level — import from `matrix.domain.compiler`.
 
 ```python
+from matrix.domain.compiler import DagCompiler
+
 registry, edges = DagCompiler.compile([probe, sensor, scorer])
 # registry: {"probe": <Probe>, "sensor": <Sensor>, "scorer": <Scorer>}
 # edges:    {"probe": set(), "sensor": {"probe"}, "scorer": {"sensor"}}
@@ -185,9 +219,12 @@ Raises `CompilationError` on:
 
 ### `DagScheduler`
 
-Yields topological execution batches. Components within a batch are mutually independent.
+Yields topological execution batches. Components within a batch are mutually independent. Not
+exported from `matrix` top-level — import from `matrix.domain.scheduler`.
 
 ```python
+from matrix.domain.scheduler import DagScheduler
+
 scheduler = DagScheduler(registry, edges)
 for batch in scheduler.batches():
     for component in batch:
@@ -241,7 +278,11 @@ Built-ins, registered as `matrix.v1/runtime.<type>`:
 ### `BoundAgent`
 
 `BoundAgent(definition, runtime)`. Properties `name`, `definition`, `runtime`;
-`async run(prompt) -> AgentResponse` delegates to `runtime.run(definition, prompt)`.
+`async run(prompt) -> AgentResponse` delegates to `runtime.run(definition, prompt)`, inside an
+OpenTelemetry span named `invoke_agent {name}` (`gen_ai.operation.name=invoke_agent`,
+`gen_ai.agent.name`, plus `gen_ai.request.model`, `gen_ai.usage.input_tokens`,
+`gen_ai.usage.output_tokens`, and matrix's own `matrix.agent.model` / `matrix.agent.family` when
+the response carries them) — the OpenTelemetry GenAI agent-span conventions.
 
 ### `Agent` (Protocol)
 
@@ -290,12 +331,19 @@ The `matrix:` section. Frozen, `extra="forbid"`.
 
 ### `compose`
 
-`compose(config, *, registry=None, base_dir=None, source="matrix", definition_sources=()) -> Container`
+`compose(config, *, registry=None, base_dir=None, source="matrix", definition_sources=(), context=None) -> Container`
 
 Builds runtimes (each resolved by `runtime_type_url(type)` through the registry, options
 validated by that runtime's typed config), loads definitions, binds agents. Every failure
 is a `ConfigError` naming the key path and the legal values. `registry` defaults to
 `default_registry()` — built-in runtimes plus every `matrix.components` entry point.
+
+**Shared context.** `matrix.models` (and anything passed in `context`, e.g. `{"cwd": ...}`) is
+offered to every runtime whose typed config declares a field of that name and leaves it unset —
+`compose` never names a specific runtime type to do this, so a third-party runtime that declares
+`models` gets the registry the same way the built-in `model` runtime does. `with_context(registry,
+type_url, options, context)` is the function that does the merge, for callers building runtimes
+outside `compose`.
 
 ### `Container`
 
@@ -318,12 +366,12 @@ from matrix import load_config, Config, MatrixConfig
 from pydantic import BaseModel, ConfigDict
 
 
-class IxConfig(BaseModel):
+class MyToolConfig(BaseModel):          # a made-up client model, for illustration
     model_config = ConfigDict(frozen=True)
     default_trials: int = 5
 
 
-config = load_config(IxConfig, client_key="ix")
+config = load_config(MyToolConfig, client_key="mytool")
 config.matrix.runtimes        # {} unless a tier declares some
 config.client.default_trials  # 5
 ```
@@ -344,9 +392,9 @@ file, not an empty tier.
 
 ```python
 config = load_config(
-    client_type=IxConfig,
-    client_key="ix",
-    sources=[Path("ix.yaml")],  # omit for 3-tier discovery
+    client_type=MyToolConfig,
+    client_key="mytool",
+    sources=[Path("mytool.yaml")],  # omit for 3-tier discovery
 )
 ```
 
@@ -362,13 +410,19 @@ Returns paths in priority order (first = lowest precedence):
 1. Pydantic model defaults — no file; built into the schema
 2. User-level — `~/.{tool}/config.yaml`
 3. Project-level — `{project_root}/{tool}.yaml`
+4. Explicit — the file named by `${TOOL}_CONFIG` (e.g. `IX_CONFIG` for `tool="ix"`), when that
+   environment variable is set. Unlike the first three tiers, this one must exist: a variable
+   pointing at a missing file raises `ConfigError`.
 
-Later tiers override earlier ones. Missing files are skipped, not errors.
+Later tiers override earlier ones. Missing user- and project-level files are skipped, not
+errors. `config_env_var(tool)` builds the environment variable name (`"ix"` → `"IX_CONFIG"`,
+`"-"`/`"."` replaced with `"_"`) without constructing the rest of the discovery list.
 
 ### `deep_merge`
 
 `(base: dict, override: dict) -> dict` — recursive merge. Override wins. **Lists replace
-entirely**; they are not concatenated or merged element-wise.
+entirely**; they are not concatenated or merged element-wise. Not exported from `matrix`
+top-level — import from `matrix.composition.config`.
 
 ### Multi-consumer YAML
 
@@ -378,14 +432,14 @@ One file can serve several consumers. Each reads the shared `matrix:` section pl
 matrix:
   runtime:
     model: claude-sonnet-4-5-20250929
-ix:
+mytool:
   default_trials: 5
 memex:
   chunk_size: 512
 ```
 
 ```python
-ix_config = load_config(IxConfig, "ix")  # reads matrix: + ix:
+mytool_config = load_config(MyToolConfig, "mytool")  # reads matrix: + mytool:
 memex_config = load_config(MemexConfig, "memex")  # reads matrix: + memex:
 ```
 
@@ -401,6 +455,7 @@ Spans emitted:
 |------|-----------|
 | `matrix.dag.run` | `matrix.dag.artifact_count` |
 | `matrix.component.run` | `matrix.component.name`, `matrix.component.provides` |
+| `invoke_agent {name}` | `gen_ai.operation.name`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.agent.model`, `matrix.agent.family` — emitted by `BoundAgent.run`, not the DAG orchestrator |
 
 ---
 
@@ -421,15 +476,26 @@ component = registry.create("app.v1/sensor", {"threshold": 3}, source="app.yaml"
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `register` | `(type_url, factory) -> ComponentRegistry` | `factory(**config)`. An unaccepted or missing key raises `ConfigError` naming the type URL and the keys, not a bare `TypeError`. Raises `ValueError` on duplicate |
-| `register_typed` | `(type_url, config_cls, build) -> ComponentRegistry` | Config validated through `config_cls` (pydantic) first; failures raise `ConfigError` with `source`, type URL and key path |
-| `create` | `(type_url, config=None, *, source="<config>") -> Any` | Create. `KeyError` lists registered type URLs when unknown |
+| `register` | `(type_url, factory) -> ComponentRegistry` | `factory(**config)`. An unaccepted or missing key raises `ConfigError` naming the type URL and the keys, not a bare `TypeError`. A malformed `type_url` or a duplicate registration also raises `ConfigError` |
+| `register_typed` | `(type_url, config_cls, build) -> ComponentRegistry` | Config validated through `config_cls` (pydantic) first; failures raise `ConfigError` with `source`, type URL and key path. Same malformed/duplicate `type_url` check as `register` |
+| `create` | `(type_url, config=None, *, source="<config>") -> Any` | Create. `NotFoundError` (a `KeyError`) lists registered type URLs when unknown |
+| `config_class` | `(type_url) -> type[BaseModel] \| None` | The typed config a `register_typed` entry validates against; `None` if untyped or unregistered. What `with_context` reads to decide which shared-context fields a component wants |
 | `discover` | `(group="matrix.components") -> ComponentRegistry` | Load every entry point in `group`; each is `register(registry) -> None` |
 | `types` | `() -> frozenset[str]` | All registered type URLs |
 | `__contains__` / `__len__` | | |
 
 `default_registry(discover=True)` is a registry with the built-in runtimes, plus discovered
 extensions. `runtime_type_url("claude-sdk")` → `"matrix.v1/runtime.claude-sdk"`.
+
+### Type URLs
+
+`type_url(namespace, version, resource) -> str` builds and validates a type URL against the
+`<namespace>.v<version>/<resource>` pattern (lowercase; version like `1`, `1alpha1`, `2beta1`),
+e.g. `type_url("ix", 1, "sensor.activation")` → `"ix.v1/sensor.activation"`. `parse_type_url(url)
+-> TypeUrl` splits one back into its `namespace`, `version`, `resource` fields; both raise
+`ConfigError` naming the expected shape on a malformed URL. `ComponentRegistry` calls
+`parse_type_url` at every registration, so a malformed type URL fails when the extension loads,
+not when a config first names it.
 
 ---
 

@@ -44,8 +44,10 @@ models:
 
 Fields: `backend`, `model`, `family` (required) · `base_url` · `api_key` (`env:`/`file:` only) ·
 `local` · `structured` (`prompt` | `json_object` | `json_schema`) · `max_tokens` · `temperature` ·
-`timeout_s` · `options` (backend-specific, e.g. `token_param: max_completion_tokens` for
-OpenAI's newer models).
+`timeout_s` · `retries` (transient failures only, default 2, full-jitter backoff, honours a
+provider's Retry-After) · `fallbacks` (registry names tried once retries are spent) ·
+`options` (backend-specific, e.g. `token_param: max_completion_tokens` for OpenAI's newer
+models).
 
 A bad row fails at composition, naming the file and the key path:
 
@@ -79,8 +81,8 @@ Another composition root wires hardline from a section of its own config:
 rt = build_runtime(config=ix_config["models"], label="ix.yaml#models")
 ```
 
-CLI: `hardline models` · `hardline check` · `hardline complete <model> "<prompt>" [--json]` ·
-`hardline --skill` (the text an agent reads).
+CLI: `hardline models [--json]` · `hardline check` · `hardline complete <model> "<prompt>" [--json]` ·
+`hardline --skill` (the text an agent reads) · `hardline --version`.
 
 ## Extend
 

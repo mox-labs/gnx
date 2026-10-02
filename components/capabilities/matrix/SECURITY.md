@@ -39,8 +39,10 @@ What does not constrain it: nothing restricts `cwd`. A config naming `cwd: /` ge
 
 ### 2. Ambient environment → session behaviour
 
-The `claude-sdk` runtime pops `CLAUDECODE` from `os.environ` for the duration of a call and
-restores it afterwards. This is process-global mutation (M-3).
+The `claude-sdk` runtime does not touch `os.environ`. It used to pop `CLAUDECODE` for the
+duration of a call (M-3); the installed SDK (`claude-agent-sdk >= 0.1.51`) now strips
+`CLAUDECODE` from the child's own environment itself, so the runtime has nothing left to do
+there — see M-3, fixed.
 
 `setting_sources: []` is the hermetic setting — no ambient `~/.claude` or project plugin
 config leaks into the subprocess. Any evaluation that claims reproducibility should set it.
@@ -70,10 +72,14 @@ Fixed: `AgentDefinition.tools` distinguishes `None` (runtime default) from `()` 
 and the runtime passes `()` as `[]`, which the installed SDK (0.2.139) documents as "disable
 all built-in tools". Regression tests: `test_claude_runtime.py::TestToolsNeverFailOpen`.
 
-### M-3 — `CLAUDECODE` is mutated process-wide (open)
+### M-3 — `CLAUDECODE` is mutated process-wide (fixed 2026-10-02)
 
-Concurrent `claude-sdk` runs in one process race on the variable. Serialise SDK runs within
-a process. ix's Inspect engine defaults `max_samples: 1` for this reason.
+The runtime used to pop `CLAUDECODE` from `os.environ` for the duration of a call, so
+concurrent `claude-sdk` runs in one process raced on the variable. Closed: `claude-agent-sdk
+>= 0.1.51` (the first release that strips `CLAUDECODE` from the child's own environment
+itself, bisected against PyPI wheels) makes the mutation unnecessary, and the runtime no
+longer touches `os.environ` at all. Concurrent `claude-sdk` runs in one process are safe
+with that SDK version installed.
 
 ## Not covered
 

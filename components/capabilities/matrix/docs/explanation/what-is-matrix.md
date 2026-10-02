@@ -18,7 +18,7 @@ Matrix operates in three phases:
 
 **1. Compile** — `DagCompiler` reads each component's `requires` (what artifact kinds it needs) and `provides` (what artifact kind it produces). From these declarations it infers edges, detects missing producers, duplicate outputs, duplicate names, and cycles. The result is a validated registry and adjacency map.
 
-**2. Schedule** — `DagScheduler` generates execution batches via `graphlib.TopologicalSorter`. Components within a batch are independent of each other and could run in parallel. Batches execute sequentially.
+**2. Schedule** — `DagScheduler` generates execution batches via `graphlib.TopologicalSorter`. Components within a batch are independent of each other. Batches execute sequentially; within a batch, members run one at a time by default or, with `Orchestrator(concurrency=N)`, up to `N` at once — the ledger order stays batch order either way.
 
 **3. Execute** — `Orchestrator` drives each component in order. Before a component runs, all its upstream artifacts are available in the `Construct` (an append-only ledger). Each component returns a `TypedStruct`; the Orchestrator checks its `type_url` against the component's declared `provides`, then wraps it in an `Artifact` and appends it.
 
@@ -127,7 +127,7 @@ Topology errors are caught at compile time, before any component runs:
 |-----------|---------------|
 | A component runtime | A workflow engine (no retries, no persistence) |
 | Kind-agnostic | Domain-aware (no probes, sensors, hypotheses) |
-| Sequential execution | Parallel execution (batches are sequential currently) |
+| Batch-sequential, optionally concurrent within a batch (`Orchestrator(concurrency=N)`) | Fully parallel execution |
 | Compile-time validation | Runtime validation (no dynamic re-wiring) |
 | A library | A service (no daemon, no API) |
 

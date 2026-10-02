@@ -26,9 +26,11 @@ echo "long input" | hardline complete qwen3-8b -          # prompt from stdin
 hardline complete qwen3-8b --json "..."                   # full Completion as JSON
 ```
 
-`--json` output carries `family`, `model`, `backend`, `local`, `usage`, `latency_ms`, `attempts`.
-Report the `family` when a second model's answer is used as evidence: a check by the same family
-as the author is not an independent check.
+`--json` output carries `family`, `model`, `backend`, `local`, `usage`, `latency_ms`, `attempts`,
+`retries`, `fallback_from`. Report the `family` when a second model's answer is used as
+evidence: a check by the same family as the author is not an independent check. When
+`fallback_from` is set, the model that answered is not the one asked for — use the `family`
+that actually answered, not the one in `fallback_from`.
 
 ## Choosing a model
 
