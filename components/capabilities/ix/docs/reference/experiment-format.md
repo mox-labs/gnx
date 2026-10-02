@@ -35,7 +35,7 @@ directory.
 name: local-codegen
 description: A local model writes small functions; function-test grades them.
 engine: inspect                  # or native (default), or {type: inspect, max_samples: 1}
-models:                          # a modelrt registry section
+models:                          # a hardline registry section
   default: qwen3-8b
   models:
     qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
@@ -59,7 +59,7 @@ repeats: 3
 | `name` | string | directory name | Experiment identifier; results live under it |
 | `description` | string | `""` | |
 | `engine` | string or mapping | `native` | `native` \| `inspect`, or `{type: ..., <engine options>}` |
-| `models` | mapping | none | modelrt registry for `model`-runtime subjects and judges; absent → modelrt's own config tiers |
+| `models` | mapping | none | hardline registry for `model`-runtime subjects and judges; absent → hardline's own config tiers |
 | `subjects` | list | `[]` | `{name, description?, config}` — see below |
 | `sensors` | list | `[{type: activation}]` | Sensor configs; several are combined into one composite sensor |
 | `sensor` | string or mapping | | Single-sensor shorthand, normalised to `sensors` |

@@ -9,7 +9,7 @@ Example (``ix.yaml``, ``./matrix.yaml``, or any tool that composes matrix)::
 
     matrix:
       definitions: [agents/]                 # *.md agent files, Claude Code format
-      models:                                # a modelrt registry, for `type: model` runtimes
+      models:                                # a hardline registry, for `type: model` runtimes
         default: qwen3-8b
         models:
           qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
@@ -78,9 +78,9 @@ class MatrixConfig(BaseModel):
     definitions: tuple[str, ...] = ()
     runtimes: dict[str, RuntimeConfig] = {}
     agents: dict[str, AgentConfig] = {}
-    #: A modelrt registry section (``{default?, models: {...}}``) handed to every
-    #: ``type: model`` runtime that does not carry its own. ``None`` = modelrt discovers its
-    #: own tiers (``~/.modelrt/config.yaml``, ``./modelrt.yaml``, ``$MODELRT_CONFIG``).
+    #: A hardline registry section (``{default?, models: {...}}``) handed to every
+    #: ``type: model`` runtime that does not carry its own. ``None`` = hardline discovers its
+    #: own tiers (``~/.hardline/config.yaml``, ``./hardline.yaml``, ``$HARDLINE_CONFIG``).
     models: dict[str, Any] | None = None
 
 

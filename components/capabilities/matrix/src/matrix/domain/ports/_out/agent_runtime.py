@@ -1,7 +1,7 @@
 """AgentRuntime — executes a definition against a task.
 
 Adapters: Claude Agent SDK (``matrix.v1/runtime.claude-sdk``), a single model call through
-modelrt (``matrix.v1/runtime.model``), and a mock (``matrix.v1/runtime.mock``). Strands,
+hardline (``matrix.v1/runtime.model``), and a mock (``matrix.v1/runtime.mock``). Strands,
 Google ADK or agy are further adapters behind the same two-argument call.
 
 A runtime that cannot honour part of a definition raises rather than ignoring it: a

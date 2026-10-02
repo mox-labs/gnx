@@ -97,7 +97,7 @@ Immutable fact produced by a component. Frozen Pydantic model.
 rather than the initialiser unless you are deliberately supplying your own.
 
 `type_url` convention: `<namespace>.v<version>/<resource>` — e.g. `matrix.v1/runtime.model`,
-`ix.v1/trial.observation`, `modelrt.v1/completion`.
+`ix.v1/trial.observation`, `hardline.v1/completion`.
 
 ### `Construct`
 
@@ -219,7 +219,7 @@ Frozen Pydantic model, `extra="forbid"`. The same shape as a Claude Code agent f
 | `name` | `str` | required | Slug |
 | `description` | `str` | `""` | |
 | `system_prompt` | `str` | `""` | A markdown file's body |
-| `model` | `str \| None` | `None` | Interpreted by the runtime: SDK alias/id, or a modelrt registry name |
+| `model` | `str \| None` | `None` | Interpreted by the runtime: SDK alias/id, or a hardline registry name |
 | `tools` | `tuple[str, ...] \| None` | `None` | `None` = runtime default; `()` = **no tools** (never collapsed — SECURITY.md M-2) |
 | `max_turns` | `int` | `1` | ≥ 1 |
 | `metadata` | `dict` | `{}` | Keys a source carried that no runtime interprets |
@@ -235,7 +235,7 @@ Built-ins, registered as `matrix.v1/runtime.<type>`:
 | type | config fields | notes |
 |------|---------------|-------|
 | `claude-sdk` | `permission_mode` (default `"default"`), `cwd`, `setting_sources`, `plugins`, `fallback_model`, `agents` | stamps `family="claude"`; relative plugin paths resolve against `cwd` |
-| `model` | `models` (a modelrt registry section), `default_model`, `temperature`, `max_tokens` | one call; refuses definitions with tools; stamps the answering model's family |
+| `model` | `models` (a hardline registry section), `default_model`, `temperature`, `max_tokens` | one call; refuses definitions with tools; stamps the answering model's family |
 | `mock` | `responses`, `default`, `family` | offline; records `calls` |
 
 ### `BoundAgent`
@@ -286,7 +286,7 @@ The `matrix:` section. Frozen, `extra="forbid"`.
 | `definitions` | `tuple[str, ...]` | `()` | Directories of `*.md` agent files, relative to `compose(base_dir=...)` |
 | `runtimes` | `dict[str, RuntimeConfig]` | `{}` | Named runtimes: `{type: <runtime type>, ...options}` |
 | `agents` | `dict[str, AgentConfig]` | `{}` | `{runtime, definition?, description?, system_prompt?, model?, tools?, max_turns?}` |
-| `models` | `dict \| None` | `None` | A modelrt registry section, handed to `type: model` runtimes that carry none |
+| `models` | `dict \| None` | `None` | A hardline registry section, handed to `type: model` runtimes that carry none |
 
 ### `compose`
 
@@ -458,7 +458,7 @@ else in this table was already true in the code and merely mis-documented.
 | Before | After |
 |--------|-------|
 | `ClaudeAgent(system_prompt=..., max_turns=..., allowed_tools=..., permission_mode=...)` | `AgentDefinition(system_prompt=..., max_turns=..., tools=...)` bound to `ClaudeSdkRuntime(ClaudeSdkRuntimeConfig(permission_mode=...))` — or config: `runtimes: {sdk: {type: claude-sdk}}` |
-| `AnthropicAgent` | removed; a single model call is the `model` runtime, through modelrt, for any family |
+| `AnthropicAgent` | removed; a single model call is the `model` runtime, through hardline, for any family |
 | `MockRuntime.invoke(system, messages) -> str` | `MockRuntime.run(definition, task) -> AgentResponse` — now satisfies the port |
 | `MatrixConfig.runtime.model` / `.max_tokens` | removed (nothing consumed them); `MatrixConfig` declares `definitions`, `runtimes`, `agents`, `models` |
 | `Component.run(construct: Construct)` | `run(construct: ConstructReader)`; undeclared reads raise `ContractError` |

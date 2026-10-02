@@ -21,8 +21,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "opentelemetry-sdk>=1.20"]
 claude = ["claude-agent-sdk>=0.1"]
-# The `model` agent runtime: any model family modelrt has a registry row for.
-models = ["modelrt"]
+# The `model` agent runtime: any model family hardline has a registry row for.
+models = ["hardline"]
 otel = [
     "opentelemetry-sdk>=1.20",
     "opentelemetry-exporter-otlp-proto-grpc>=1.20",

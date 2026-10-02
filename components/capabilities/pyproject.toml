@@ -27,7 +27,7 @@ ix = { workspace = true }
 recon = { workspace = true }
 gnx = { workspace = true }
 dao = { workspace = true }
-modelrt = { workspace = true }
+hardline = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -43,7 +43,7 @@ dev = [
     "recon",
     "gnx",
     "dao",
-    "modelrt",
+    "hardline",
 ]
 
 # Members set `asyncio_mode = "auto"` in their own pyprojects; pytest reads the

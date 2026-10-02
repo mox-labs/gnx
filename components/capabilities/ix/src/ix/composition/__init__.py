@@ -49,8 +49,8 @@ from ix.eval.sensors_deepeval import DeepEvalSensor, DeepEvalSensorConfig
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from hardline import ModelRuntime
     from matrix import Agent, AgentRuntime
-    from modelrt import ModelRuntime
 
     from ix.domain.ports import AgentFactory, Engine, Sensor, SensorClass
     from ix.domain.types import Probe, Subject
@@ -358,7 +358,7 @@ def _models_provider(experiment: ExperimentConfig | None) -> Callable[[], ModelR
 
     def provide() -> ModelRuntime:
         if not built:
-            from modelrt import build_runtime
+            from hardline import build_runtime
 
             section = experiment.models if experiment else None
             built.append(

@@ -5,7 +5,7 @@ write, and the **composition of agents** from a definition and a runtime.
 
 ```bash
 uv add "matrix @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/matrix"
-# extras: [claude] the Claude Agent SDK runtime · [models] the model runtime (via modelrt)
+# extras: [claude] the Claude Agent SDK runtime · [models] the model runtime (via hardline)
 ```
 
 ## Components and the DAG
@@ -57,7 +57,7 @@ An **AgentRuntime** is *where and how* it runs:
 | type | type URL | what it runs |
 |---|---|---|
 | `claude-sdk` | `matrix.v1/runtime.claude-sdk` | Claude Agent SDK sessions — tools, turns, plugins, permission mode |
-| `model` | `matrix.v1/runtime.model` | one call to any model modelrt has a registry row for; refuses definitions that declare tools |
+| `model` | `matrix.v1/runtime.model` | one call to any model hardline has a registry row for; refuses definitions that declare tools |
 | `mock` | `matrix.v1/runtime.mock` | deterministic, offline |
 
 Binding one to the other gives a **BoundAgent** (`run(prompt) -> AgentResponse`). Every response
@@ -70,7 +70,7 @@ carries the `family` of the model that produced it.
 ```yaml
 matrix:
   definitions: [agents/]                # *.md agent files
-  models:                               # a modelrt registry, for type: model runtimes
+  models:                               # a hardline registry, for type: model runtimes
     default: qwen3-8b
     models:
       qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",

@@ -52,7 +52,7 @@ runs. Moving a subject from the Claude SDK to a local model is a one-line change
 ```yaml
 name: local-codegen
 engine: inspect                    # native (matrix DAG per trial) | inspect (Inspect AI task)
-models:                            # a modelrt registry, for model-runtime subjects and judges
+models:                            # a hardline registry, for model-runtime subjects and judges
   default: qwen3-8b
   models:
     qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",

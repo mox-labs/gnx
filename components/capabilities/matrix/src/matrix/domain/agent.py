@@ -7,7 +7,7 @@ The split the old ``Agent`` protocol hid:
   (``name``/``description``/``tools``/``model`` frontmatter + a markdown body), so a plugin's
   agents are matrix definitions without translation.
 * **AgentRuntime** — *where and how* it runs: the Claude Agent SDK with a permission mode
-  and a working directory, a single model call through modelrt, a mock. Deployment config.
+  and a working directory, a single model call through hardline, a mock. Deployment config.
 * **BoundAgent** — the component produced by pairing them. It satisfies the ``Agent`` port
   (``run(prompt) -> AgentResponse``), so everything that consumed an agent before still does.
 
@@ -37,7 +37,7 @@ class AgentDefinition(BaseModel):
     description: str = ""
     system_prompt: str = ""
     #: Interpreted by the runtime: an SDK alias or model id for the Claude runtime, a
-    #: modelrt registry name for the model runtime. ``None`` = the runtime's default.
+    #: hardline registry name for the model runtime. ``None`` = the runtime's default.
     model: str | None = None
     #: ``None`` = the runtime's default toolset. ``()`` = **no tools** — never collapsed into
     #: the default (the old ClaudeAgent turned ``[]`` into ``None`` and handed the agent the

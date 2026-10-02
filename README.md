@@ -39,7 +39,7 @@ plus a `bundles.yaml` entry.
 
 | Package | Does | Docs |
 |---|---|---|
-| `modelrt` | one port for every model family — local MLX, ollama, Gemini, Claude — tagged with the family that answered | [README](components/capabilities/modelrt/README.md) · [SECURITY](components/capabilities/modelrt/SECURITY.md) |
+| `hardline` | one port for every model family — local MLX, ollama, Gemini, Claude — tagged with the family that answered | [README](components/capabilities/hardline/README.md) · [SECURITY](components/capabilities/hardline/SECURITY.md) |
 | `matrix` | runs component DAGs with enforced reads, and composes agents from a definition plus a runtime | [README](components/capabilities/matrix/README.md) · [SECURITY](components/capabilities/matrix/SECURITY.md) |
 | `ix` | runs experiments — evals, benchmarks, QoS — on a native engine or Inspect AI | [README](components/capabilities/ix/README.md) · [SECURITY](components/capabilities/ix/SECURITY.md) |
 | `recon` | heterogeneous sources in, structured JSONL out | [SECURITY](components/capabilities/recon/SECURITY.md) |

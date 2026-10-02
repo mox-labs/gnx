@@ -4,7 +4,7 @@ Lazy-imports deepeval to avoid heavy dependency unless explicitly used.
 Install with: uv add ix[deepeval]
 
 With ``judge: <model>`` set, DeepEval's LLM calls go through a matrix agent on the
-``model`` runtime — any family modelrt has a registry row for — and every reading records
+``model`` runtime — any family hardline has a registry row for — and every reading records
 the judge's family next to the subject's, so whether the grading was out of family is
 recorded rather than assumed. Without a judge, DeepEval uses its own default provider.
 """
@@ -23,8 +23,8 @@ from ix.domain.types import Probe, Reading, Trial
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from hardline import ModelRuntime
     from matrix import Agent, AgentResponse
-    from modelrt import ModelRuntime
 
 # --- Config ---
 
@@ -35,7 +35,7 @@ class DeepEvalSensorConfig(BaseModel, frozen=True, extra="forbid"):
     type: str = "deepeval"
     metric: str = "answer_relevancy"
     threshold: float = 0.5
-    #: A modelrt registry name. The judge runs through matrix's model runtime.
+    #: A hardline registry name. The judge runs through matrix's model runtime.
     judge: str | None = None
     criteria: str | None = None  # For GEval custom criteria
 

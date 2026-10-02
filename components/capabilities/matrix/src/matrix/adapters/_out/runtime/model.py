@@ -1,13 +1,13 @@
-"""ModelAgentRuntime — an AgentDefinition run as one model call through modelrt.
+"""ModelAgentRuntime — an AgentDefinition run as one model call through hardline.
 
 For agents that are a prompt and a model and nothing else: triage, extraction, a judge.
-Any model family modelrt has a registry row for — a local MLX model, Gemini, Claude.
+Any model family hardline has a registry row for — a local MLX model, Gemini, Claude.
 
 No tool loop. A definition that declares tools is refused rather than run without them:
 the agent defined and the agent measured would differ, and nothing downstream would know.
 ``max_turns`` is an upper bound, which one call satisfies.
 
-Type URL: ``matrix.v1/runtime.model``. Requires the ``models`` extra (modelrt).
+Type URL: ``matrix.v1/runtime.model``. Requires the ``models`` extra (hardline).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from matrix.domain.errors import ConfigError
 from matrix.domain.types import AgentResponse
 
 if TYPE_CHECKING:
-    from modelrt import ModelRuntime
+    from hardline import ModelRuntime
 
     from matrix.domain.agent import AgentDefinition
 
@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 class ModelAgentRuntimeConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    #: A modelrt registry section. Composition fills this from the top-level ``matrix.models``
-    #: when absent; ``None`` all the way down means modelrt discovers its own tiers.
+    #: A hardline registry section. Composition fills this from the top-level ``matrix.models``
+    #: when absent; ``None`` all the way down means hardline discovers its own tiers.
     models: dict[str, Any] | None = None
     #: Used when a definition names no model. ``None`` = the registry's own default.
     default_model: str | None = None
@@ -47,10 +47,10 @@ class ModelAgentRuntime:
     @classmethod
     def from_config(cls, config: ModelAgentRuntimeConfig) -> ModelAgentRuntime:
         try:
-            from modelrt import build_runtime
+            from hardline import build_runtime
         except ImportError as e:
             raise ImportError(
-                "the model runtime requires 'modelrt'. Install with: uv add 'matrix[models]'"
+                "the model runtime requires 'hardline'. Install with: uv add 'matrix[models]'"
             ) from e
         runtime = (
             build_runtime(config=config.models, label="matrix.models")

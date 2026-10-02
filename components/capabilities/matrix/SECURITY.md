@@ -13,9 +13,9 @@ A `claude-sdk` runtime launches a Claude Agent SDK session as a subprocess. Insi
 session the agent may read and write files, run commands, and reach the network — bounded by
 the runtime's `permission_mode` and `cwd` and by the definition's `tools`.
 
-A `model` runtime makes one model call through modelrt and carries no local authority; it
+A `model` runtime makes one model call through hardline and carries no local authority; it
 refuses any definition that declares tools rather than run it without them. Where that call's
-data goes is decided by the modelrt registry — see modelrt/SECURITY.md.
+data goes is decided by the hardline registry — see hardline/SECURITY.md.
 
 ## Trust boundaries
 

@@ -33,8 +33,8 @@ class ExperimentConfig(BaseModel, frozen=True):
     ``engine`` selects how a repeat is executed — ``native`` (a matrix DAG per trial, the
     default) or ``inspect`` (an Inspect AI task per repeat) — plus that engine's options.
 
-    ``models`` is a modelrt registry section (``{default?, models: {...}}``) for subjects on
-    the ``model`` runtime and for judge-backed sensors. ``None`` = modelrt's own tiers.
+    ``models`` is a hardline registry section (``{default?, models: {...}}``) for subjects on
+    the ``model`` runtime and for judge-backed sensors. ``None`` = hardline's own tiers.
     """
 
     name: str

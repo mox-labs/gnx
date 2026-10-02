@@ -1,6 +1,6 @@
 """Tests for the DeepEval sensor's judge path.
 
-The judge is a matrix agent on the ``model`` runtime, so any family modelrt has a registry
+The judge is a matrix agent on the ``model`` runtime, so any family hardline has a registry
 row for can grade. Every reading records the judge's family next to the subject's, and
 whether the two differ — computed, never assumed.
 """
@@ -11,9 +11,9 @@ import pytest
 
 deepeval = pytest.importorskip("deepeval", reason="deepeval not installed")
 
+from hardline import build_runtime  # noqa: E402
 from matrix import AgentDefinition, AgentResponse, BoundAgent  # noqa: E402
 from matrix.adapters._out.runtime.mock import MockRuntime, MockRuntimeConfig  # noqa: E402
-from modelrt import build_runtime  # noqa: E402
 
 from ix.domain.types import Trial  # noqa: E402
 from ix.eval.sensors_deepeval import (  # noqa: E402

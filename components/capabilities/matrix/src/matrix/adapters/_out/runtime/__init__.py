@@ -1,1 +1,1 @@
-"""AgentRuntime adapters: claude-sdk, model (via modelrt), mock."""
+"""AgentRuntime adapters: claude-sdk, model (via hardline), mock."""

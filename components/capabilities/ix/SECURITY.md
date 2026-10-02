@@ -61,8 +61,8 @@ does not gain authority.
 ### 4. Optional third-party evaluators
 
 `DeepEvalSensor` is behind an optional extra. With `judge: <model>` set, judge calls run
-through matrix's model runtime — so where the judge's prompts go is decided by the modelrt
-registry row (modelrt/SECURITY.md). Without a judge, deepeval calls its own default provider.
+through matrix's model runtime — so where the judge's prompts go is decided by the hardline
+registry row (hardline/SECURITY.md). Without a judge, deepeval calls its own default provider.
 
 See I-7 for deepeval's telemetry.
 

@@ -4,7 +4,7 @@ Kind-agnostic DAG orchestration types + agent response model.
 Artifacts are self-describing data units following xDS TypedExtensionConfig.
 
 Type URL convention: ``<namespace>.v<version>/<resource>`` — e.g. ``matrix.v1/runtime.claude-sdk``,
-``ix.v1/probe.stimulus``, ``modelrt.v1/completion``.
+``ix.v1/probe.stimulus``, ``hardline.v1/completion``.
 """
 
 from __future__ import annotations

@@ -69,7 +69,7 @@ directory — five decisions with two different owners, fused. Matrix splits the
 - an **AgentDefinition** is what the agent *is* — prompt, tools, model, turn budget. Data.
   The same shape as a Claude Code agent file, so a plugin's agents are definitions as-is.
 - an **AgentRuntime** is *where it runs* — the Claude Agent SDK with a permission mode and a
-  sandbox directory, a single model call through modelrt, a mock. Deployment.
+  sandbox directory, a single model call through hardline, a mock. Deployment.
 
 Binding the two is composition, done from config. One definition runs on several runtimes —
 the comparison an evaluation needs — and one runtime serves a bench of definitions. A

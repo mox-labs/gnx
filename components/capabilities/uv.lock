@@ -16,9 +16,9 @@ resolution-markers = [
 members = [
     "dao",
     "gnx",
+    "hardline",
     "ix",
     "matrix",
-    "modelrt",
     "recon",
 ]
 
@@ -26,9 +26,9 @@ members = [
 dev = [
     { name = "dao", editable = "dao" },
     { name = "gnx", editable = "gnx" },
+    { name = "hardline", editable = "hardline" },
     { name = "ix", extras = ["inspect", "deepeval"], editable = "ix" },
     { name = "matrix", editable = "matrix" },
-    { name = "modelrt", editable = "modelrt" },
     { name = "mypy", specifier = ">=1.8" },
     { name = "opentelemetry-sdk", specifier = ">=1.20" },
     { name = "pytest", specifier = ">=8.0" },
@@ -1206,6 +1206,34 @@ wheels = [
 ]
 
 [[package]]
+name = "hardline"
+version = "0.1.0"
+source = { editable = "hardline" }
+dependencies = [
+    { name = "anthropic" },
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = ">=0.40" },
+    { name = "openai", specifier = ">=1.40" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1433,8 +1461,8 @@ version = "0.1.0"
 source = { editable = "ix" }
 dependencies = [
     { name = "claude-agent-sdk" },
+    { name = "hardline" },
     { name = "matrix" },
-    { name = "modelrt" },
     { name = "pydantic" },
     { name = "python-frontmatter" },
     { name = "pyyaml" },
@@ -1458,9 +1486,9 @@ inspect = [
 requires-dist = [
     { name = "claude-agent-sdk", specifier = ">=0.1.36" },
     { name = "deepeval", marker = "extra == 'deepeval'", specifier = ">=2.0" },
+    { name = "hardline", editable = "hardline" },
     { name = "inspect-ai", marker = "extra == 'inspect'", specifier = ">=0.3.100" },
     { name = "matrix", editable = "matrix" },
-    { name = "modelrt", editable = "modelrt" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
@@ -2006,7 +2034,7 @@ dev = [
     { name = "pytest-asyncio" },
 ]
 models = [
-    { name = "modelrt" },
+    { name = "hardline" },
 ]
 otel = [
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -2016,7 +2044,7 @@ otel = [
 [package.metadata]
 requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.1" },
-    { name = "modelrt", marker = "extra == 'models'", editable = "modelrt" },
+    { name = "hardline", marker = "extra == 'models'", editable = "hardline" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", marker = "extra == 'dev'", specifier = ">=1.20" },
@@ -2192,34 +2220,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/03/73/5f5d7a5c0bad6ae5568e3232d8b7bcee9639da0de45f8e664342f22bf682/mmh3-5.3.0-cp315-cp315t-win_amd64.whl", hash = "sha256:1617be1ce93f97513bbf23cafa28a6ab1d20b0928de760054a4c603a89bdab7c", size = 43152, upload-time = "2026-08-26T04:58:17.706Z" },
     { url = "https://files.pythonhosted.org/packages/a2/0a/033fef3d7a486aa369ec11cdf0455bbae6640df13491f6e7d35fd90aa000/mmh3-5.3.0-cp315-cp315t-win_arm64.whl", hash = "sha256:a8389010a2721e568fbe40ba94e7d8f931beabd59b95af2b2ab8238fd40a6b3e", size = 40275, upload-time = "2026-08-26T04:58:18.883Z" },
 ]
-
-[[package]]
-name = "modelrt"
-version = "0.1.0"
-source = { editable = "modelrt" }
-dependencies = [
-    { name = "anthropic" },
-    { name = "openai" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = ">=0.40" },
-    { name = "openai", specifier = ">=1.40" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pyyaml", specifier = ">=6.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "mpmath"
