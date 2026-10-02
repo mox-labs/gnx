@@ -67,6 +67,13 @@ class ModelSpec(BaseModel):
     max_tokens: int = Field(default=1024, gt=0)
     temperature: float | None = Field(default=None, ge=0.0)
     timeout_s: float = Field(default=120.0, gt=0.0)
+    #: Retries of a *transient* failure (rate limit, timeout, unavailable) on this model,
+    #: with exponential backoff and jitter, honouring a provider's Retry-After.
+    retries: int = Field(default=2, ge=0, le=10)
+    #: Registry names tried in order once this model's retries are exhausted on a transient
+    #: failure. Never on a bad key or a malformed request — those are faults to fix, and
+    #: another model would hide them. The Completion names the model that answered.
+    fallbacks: tuple[str, ...] = ()
     options: dict[str, Any] = {}
 
     @field_validator("api_key")
@@ -93,15 +100,23 @@ class Request(BaseModel):
 
 
 class Usage(BaseModel):
+    """Tokens one call (or a sum of calls) cost. Cache fields are 0 where unreported."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     input_tokens: int = 0
     output_tokens: int = 0
+    #: Input tokens served from the provider's prompt cache.
+    cache_read_tokens: int = 0
+    #: Input tokens written to the provider's prompt cache.
+    cache_write_tokens: int = 0
 
     def __add__(self, other: Usage) -> Usage:
         return Usage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
         )
 
 
@@ -118,7 +133,12 @@ class RawCompletion(BaseModel):
 
 
 class Completion(BaseModel):
-    """What a caller gets back. Every field needed to ledger the call."""
+    """What a caller gets back. Every field needed to ledger the call.
+
+    ``name``, ``family``, ``model`` and ``backend`` describe the model that **answered**. When
+    a fallback answered, ``fallback_from`` names the model that was asked for — the family
+    may differ, and an out-of-family judgement must use the one that answered.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -129,10 +149,15 @@ class Completion(BaseModel):
     model: str
     backend: str
     local: bool
+    #: Summed over every call that contributed, retries and repair attempts included.
     usage: Usage
     request_id: str | None
     latency_ms: int
+    #: Schema attempts (1 for a plain completion; up to 1 + schema_retries for extract).
     attempts: int
+    #: Transient-failure retries spent across all attempts and models.
+    retries: int = 0
+    fallback_from: str | None = None
     raw: dict[str, Any] = {}
 
 

@@ -1,21 +1,31 @@
-"""ModelRuntime — resolve, call, validate, tag. The only behaviour hardline owns.
+"""ModelRuntime — resolve, call, retry, fall back, validate, tag. The behaviour hardline owns.
 
-Everything a provider library already does (HTTP, auth headers, transport retries) stays
-in the backend. What no provider library does is here: a registry lookup that fails with
-the legal names, a contract check on what the backend returned, schema validation with
-one repair attempt, and a Completion that carries family, usage and latency so a caller
-can ledger the call and an eval harness can tell whether two calls were out of family.
+Everything a provider library does on the wire (HTTP, auth headers) stays in the backend.
+What is policy lives here, once: a registry lookup that fails with the legal names; retries
+of transient failures with exponential backoff and jitter; fallback to other registry rows
+when a model stays unavailable; a contract check on what the backend returned; schema
+validation with bounded repair; and a Completion carrying the family, usage and latency of
+the model that actually answered.
+
+Retry and fallback are separate mechanisms, as in most model libraries: a retry asks the
+same model again after a transient failure; a fallback asks a different model once retries
+are spent. A non-transient failure (bad key, malformed request) is neither retried nor
+fallen back from — it is raised, because both would hide a fault someone has to fix.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import random
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from hardline.domain.errors import ConfigError, ContractError, SchemaError
+from hardline.domain.errors import BackendError, ConfigError, ContractError, SchemaError
 from hardline.domain.structured import extract_json, retry_instruction, schema_instruction
 from hardline.domain.types import (
     Completion,
@@ -35,6 +45,20 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound=BaseModel)
 
 Messages = str | Sequence[Message]
+
+logger = logging.getLogger("hardline")
+
+_BACKOFF_BASE_S = 0.5
+_BACKOFF_CAP_S = 8.0
+_RETRY_AFTER_CAP_S = 60.0
+
+
+@dataclass(frozen=True)
+class _Answer:
+    raw: RawCompletion
+    spec: ModelSpec  # the model that answered
+    retries: int
+    usage: Usage  # every call this answer cost, failed ones included where reported
 
 
 def _as_messages(messages: Messages, system: str | None) -> tuple[Message, ...]:
@@ -59,9 +83,18 @@ class ModelRuntime:
         *,
         schema_retries: int = 1,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        rng: random.Random | None = None,
     ) -> None:
         problems = []
         for spec in registry:
+            for fallback in spec.fallbacks:
+                if fallback == spec.name or fallback not in registry:
+                    problems.append(
+                        f"  models.{spec.name}.fallbacks: {fallback!r} is "
+                        + ("the model itself" if fallback == spec.name else "not in the registry")
+                        + f". Known: {', '.join(registry.names())}"
+                    )
             backend = backends.get(spec.backend)
             if backend is None:
                 problems.append(
@@ -85,6 +118,8 @@ class ModelRuntime:
         self._secrets = secrets
         self._schema_retries = schema_retries
         self._clock = clock
+        self._sleep = sleep
+        self._rng = rng or random.Random()
 
     @property
     def registry(self) -> ModelRegistry:
@@ -103,8 +138,12 @@ class ModelRuntime:
         spec = self._registry.get(model)
         turns = _as_messages(messages, system)
         started = self._clock()
-        raw = await self._attempt(spec, self._request(spec, turns, None, max_tokens, temperature))
-        return self._completion(spec, raw, raw.usage, attempts=1, started=started)
+        answer = await self._call(
+            spec, lambda s: self._request(s, turns, None, max_tokens, temperature)
+        )
+        return self._completion(
+            spec, answer, answer.usage, attempts=1, retries=answer.retries, started=started
+        )
 
     async def extract(
         self,
@@ -130,23 +169,31 @@ class ModelRuntime:
 
         started = self._clock()
         usage = Usage()
+        retries = 0
         last_text = ""
         last_error = ""
         attempts = 0
         for _ in range(self._schema_retries + 1):
             attempts += 1
-            request = self._request(spec, tuple(turns), schema, max_tokens, temperature)
-            raw = await self._attempt(spec, request)
-            usage = usage + raw.usage
-            last_text = raw.text
+            sent = tuple(turns)
+
+            def build(s: ModelSpec, sent: tuple[Message, ...] = sent) -> Request:
+                return self._request(s, sent, schema, max_tokens, temperature)
+
+            answer = await self._call(spec, build)
+            usage = usage + answer.usage
+            retries += answer.retries
+            last_text = answer.raw.text
             try:
-                value = output.model_validate_json(extract_json(raw.text))
+                value = output.model_validate_json(extract_json(answer.raw.text))
             except (ValueError, ValidationError) as e:
                 last_error = str(e)
-                turns.append(Message(role="assistant", content=raw.text))
+                turns.append(Message(role="assistant", content=answer.raw.text))
                 turns.append(Message(role="user", content=retry_instruction(last_error)))
                 continue
-            completion = self._completion(spec, raw, usage, attempts=attempts, started=started)
+            completion = self._completion(
+                spec, answer, usage, attempts=attempts, retries=retries, started=started
+            )
             return Structured(value=value, completion=completion)
 
         raise SchemaError(
@@ -174,6 +221,56 @@ class ModelRuntime:
             temperature=temperature if temperature is not None else spec.temperature,
         )
 
+    async def _call(self, spec: ModelSpec, build: Callable[[ModelSpec], Request]) -> _Answer:
+        """One logical call: retries on ``spec``, then each fallback, until one answers."""
+        retries = 0
+        last: BackendError | None = None
+        chain = [spec, *(self._registry.get(name) for name in spec.fallbacks)]
+        for candidate in chain:
+            request = build(candidate)
+            for attempt in range(candidate.retries + 1):
+                try:
+                    raw = await self._attempt(candidate, request)
+                except BackendError as e:
+                    if not e.retryable:
+                        raise
+                    last = e
+                    if attempt < candidate.retries:
+                        retries += 1
+                        delay = self._delay(attempt, e.retry_after)
+                        logger.info(
+                            "model %r: %s; retry %d/%d in %.2fs",
+                            candidate.name,
+                            e.reason,
+                            attempt + 1,
+                            candidate.retries,
+                            delay,
+                        )
+                        await self._sleep(delay)
+                    continue
+                return _Answer(raw=raw, spec=candidate, retries=retries, usage=raw.usage)
+            if candidate is not chain[-1]:
+                logger.warning(
+                    "model %r still failing (%s) after %d retries; falling back",
+                    candidate.name,
+                    last.reason if last else "?",
+                    candidate.retries,
+                )
+        assert last is not None  # the loop only falls through after a retryable failure
+        tried = ", ".join(c.name for c in chain)
+        raise BackendError(
+            f"model {spec.name!r}: transient failures exhausted retries"
+            + (f" and fallbacks ({tried})" if len(chain) > 1 else "")
+            + f". Last: {last}",
+            reason=last.reason,
+        ) from last
+
+    def _delay(self, attempt: int, retry_after: float | None) -> float:
+        """Full-jitter exponential backoff; a provider's Retry-After, when given, wins."""
+        if retry_after is not None:
+            return min(retry_after, _RETRY_AFTER_CAP_S)
+        return self._rng.uniform(0, min(_BACKOFF_CAP_S, _BACKOFF_BASE_S * 2**attempt))
+
     async def _attempt(self, spec: ModelSpec, request: Request) -> RawCompletion:
         backend = self._backends[spec.backend]
         api_key = self._secrets.resolve(spec.api_key) if spec.api_key else None
@@ -186,8 +283,16 @@ class ModelRuntime:
         return raw
 
     def _completion(
-        self, spec: ModelSpec, raw: RawCompletion, usage: Usage, *, attempts: int, started: float
+        self,
+        requested: ModelSpec,
+        answer: _Answer,
+        usage: Usage,
+        *,
+        attempts: int,
+        retries: int,
+        started: float,
     ) -> Completion:
+        spec, raw = answer.spec, answer.raw
         return Completion(
             name=spec.name,
             text=raw.text,
@@ -199,5 +304,7 @@ class ModelRuntime:
             request_id=raw.request_id,
             latency_ms=int((self._clock() - started) * 1000),
             attempts=attempts,
+            retries=retries,
+            fallback_from=requested.name if spec.name != requested.name else None,
             raw=raw.raw,
         )

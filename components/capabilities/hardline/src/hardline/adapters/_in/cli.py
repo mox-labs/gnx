@@ -10,21 +10,38 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from typing import TYPE_CHECKING
 
 from hardline.composition import build_runtime, discover_sources, load_registry
-from hardline.domain.errors import ModelRuntimeError
+from hardline.domain.errors import HardlineError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-def _cmd_models(_: argparse.Namespace) -> int:
+_EXAMPLES = """examples:
+  hardline models                                  list the registry (* = default)
+  hardline complete qwen3-8b "Summarise: ..."      call a model, print its text
+  git diff | hardline complete haiku - --system "Review this diff" --json
+  hardline check                                   validate every tier against backends
+"""
+
+
+def _cmd_models(args: argparse.Namespace) -> int:
     registry = load_registry(discover_sources())
+    if args.json:
+        hidden = {"api_key", "options"}
+        listing = [spec.model_dump(mode="json", exclude=hidden) for spec in registry]
+        print(json.dumps({"default": registry.default, "models": listing}, indent=2))
+        return 0
     if not len(registry):
-        print("no models configured")
-        print("looked in: ~/.hardline/config.yaml, ./hardline.yaml, $HARDLINE_CONFIG")
+        print(
+            "no models configured — looked in ~/.hardline/config.yaml, ./hardline.yaml, "
+            "$HARDLINE_CONFIG",
+            file=sys.stderr,
+        )
         return 0
     rows = [("NAME", "FAMILY", "BACKEND", "LOCAL", "MODEL")]
     for spec in registry:
@@ -67,14 +84,21 @@ async def _complete(args: argparse.Namespace) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
+    from hardline import __version__
+
     parser = argparse.ArgumentParser(
         prog="hardline",
         description="One port for every model family. Models are registry rows, not code.",
+        epilog=_EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=f"hardline {__version__}")
     parser.add_argument("--skill", action="store_true", help="print the skill text for agents")
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("models", help="list configured models").set_defaults(func=_cmd_models)
+    models = sub.add_parser("models", help="list configured models")
+    models.add_argument("--json", action="store_true", help="print the registry as JSON")
+    models.set_defaults(func=_cmd_models)
     sub.add_parser("check", help="validate config tiers against installed backends").set_defaults(
         func=_cmd_check
     )
@@ -104,7 +128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.model = None
     try:
         code: int = args.func(args)
-    except ModelRuntimeError as e:
+    except HardlineError as e:
         print(f"hardline: {e}", file=sys.stderr)
         return 1
     return code

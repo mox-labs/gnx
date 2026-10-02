@@ -4,17 +4,24 @@ Row options (all optional)::
 
     options:
       responses: {"<last user message>": "<text>"}   # keyed replies
-      script: ["first attempt", "second attempt"]    # returned in order; last repeats
+      script: ["first attempt", {error: rate_limit}, "third"]   # in order; last repeats
       default: "fallback text"
 
 With nothing configured it echoes ``mock:<model>:<last user message>``, which is enough
 to prove wiring. ``script`` exists to plant failures: a first attempt that is not JSON
-and a second that is proves the runtime's repair path without a network.
+and a second that is proves the runtime's repair path; an ``{error: <reason>}`` entry
+raises a BackendError with that reason, which proves retries and fallbacks — all without a
+network.
 """
 
 from __future__ import annotations
 
+from typing import Any, get_args
+
+from hardline.domain.errors import BackendError, ConfigError, Reason
 from hardline.domain.types import ModelSpec, RawCompletion, Request, Usage
+
+_REASONS = frozenset(get_args(Reason))
 
 
 class MockBackend:
@@ -44,7 +51,7 @@ class MockBackend:
         if isinstance(script, list) and script:
             i = self._cursor.get(spec.name, 0)
             self._cursor[spec.name] = i + 1
-            return str(script[min(i, len(script) - 1)])
+            return _scripted(spec, script[min(i, len(script) - 1)])
         self._cursor[spec.name] = self._cursor.get(spec.name, 0) + 1
         responses = opts.get("responses")
         # Keyed on the first user turn so a structured call, which appends a schema
@@ -57,3 +64,15 @@ class MockBackend:
         if "default" in opts:
             return str(opts["default"])
         return f"mock:{spec.model}:{first_user}"
+
+
+def _scripted(spec: ModelSpec, entry: Any) -> str:
+    if isinstance(entry, dict) and "error" in entry:
+        reason = entry["error"]
+        if reason not in _REASONS:
+            raise ConfigError(
+                f"models.{spec.name}.options.script: error {reason!r}. "
+                f"Legal: {', '.join(sorted(_REASONS))}"
+            )
+        raise BackendError(f"model {spec.name!r} (mock): scripted {reason}", reason=reason)
+    return str(entry)

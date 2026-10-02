@@ -16,8 +16,9 @@ one entry point; hardline is not edited.
 
 from __future__ import annotations
 
+import asyncio
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -33,6 +34,8 @@ from hardline.domain.registry import ModelRegistry
 from hardline.domain.runtime import ModelRuntime
 
 if TYPE_CHECKING:
+    import random
+
     from hardline.domain.ports._out.config_source import ConfigSource
     from hardline.domain.ports._out.secrets import SecretResolver
 
@@ -138,11 +141,14 @@ def build_runtime(
     secrets: SecretResolver | None = None,
     schema_retries: int = 1,
     label: str = "<mapping>",
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    rng: random.Random | None = None,
 ) -> ModelRuntime:
     """Wire a ModelRuntime.
 
     ``config`` wins over ``sources``; with neither, tiers are discovered from disk.
-    ``backends`` defaults to built-ins plus entry points; tests pass their own.
+    ``backends`` defaults to built-ins plus entry points; tests pass their own, and inject
+    ``sleep``/``rng`` to observe retry backoff without waiting.
     """
     if config is not None:
         tiers: Sequence[ConfigSource] = [MappingConfigSource(dict(config), label=label)]
@@ -155,6 +161,8 @@ def build_runtime(
         backends if backends is not None else discover_backends(),
         secrets if secrets is not None else EnvFileSecretResolver(),
         schema_retries=schema_retries,
+        sleep=sleep,
+        rng=rng,
     )
 
 

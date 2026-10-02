@@ -13,12 +13,16 @@ Not an agent runtime: no tool loop, no permissions, no trajectory. Those live on
     s = await rt.extract("haiku", "...", output=MyModel)   # s.value is a validated MyModel
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
 from hardline.composition import build_runtime, discover_backends, discover_sources
 from hardline.domain.errors import (
+    RETRYABLE,
     BackendError,
     ConfigError,
     ContractError,
-    ModelRuntimeError,
+    HardlineError,
+    Reason,
     SchemaError,
     SecretError,
     UnknownModelError,
@@ -41,10 +45,14 @@ from hardline.domain.types import (
     backend_type_url,
 )
 
-__version__ = "0.1.0"
+try:
+    __version__ = version("hardline")
+except PackageNotFoundError:  # running from a source tree that was never installed
+    __version__ = "0+unknown"
 
 __all__ = [
     "COMPLETION_TYPE_URL",
+    "RETRYABLE",
     "NAMESPACE",
     "BackendError",
     "Completion",
@@ -55,7 +63,8 @@ __all__ = [
     "ModelBackend",
     "ModelRegistry",
     "ModelRuntime",
-    "ModelRuntimeError",
+    "HardlineError",
+    "Reason",
     "ModelSpec",
     "RawCompletion",
     "Request",
@@ -65,6 +74,7 @@ __all__ = [
     "Structured",
     "UnknownModelError",
     "Usage",
+    "__version__",
     "backend_type_url",
     "build_runtime",
     "discover_backends",

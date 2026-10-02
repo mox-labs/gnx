@@ -59,13 +59,13 @@ hardline: invalid model registry:
 ```python
 from hardline import build_runtime
 
-rt = build_runtime()                                   # discovers the tiers above
+rt = build_runtime()  # discovers the tiers above
 c = await rt.complete("qwen3-8b", "Summarise in one line: ...")
 c.text, c.family, c.usage, c.latency_ms
 
 s = await rt.extract("haiku", "Is this claim supported? ...", output=Verdict)
-s.value          # a validated Verdict
-s.completion     # the Completion that produced it, attempts included
+s.value  # a validated Verdict
+s.completion  # the Completion that produced it, attempts included
 ```
 
 `extract` states the schema in an instruction (and hands it to the provider when the row's
