@@ -6,6 +6,7 @@ with both Matrix platform settings and their own validated section.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -28,28 +29,34 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return result
 
 
+def config_env_var(tool: str) -> str:
+    """The environment variable naming an explicit config file: ``ix`` → ``IX_CONFIG``."""
+    return tool.upper().replace("-", "_").replace(".", "_") + "_CONFIG"
+
+
 def discover_sources(
     tool: str,
     project_root: Path | None = None,
 ) -> list[Path]:
-    """3-tier config discovery for a tool. Returns paths in priority order (first = lowest).
+    """Config files for a tool, lowest priority first. The convention every capability shares.
 
-    Tier 1: Pydantic model defaults (no file — built into the schema).
-    Tier 2: User-level — ~/.{tool}/config.yaml
-    Tier 3: Project-level — ./{tool}.yaml (or project_root/{tool}.yaml)
+    0. the schema's own defaults (no file)
+    1. user — ``~/.{tool}/config.yaml``
+    2. project — ``./{tool}.yaml`` (or ``project_root/{tool}.yaml``)
+    3. explicit — the file named by ``${TOOL}_CONFIG``, which must exist
 
-    Each tool owns its config location. Matrix provides the pattern,
-    the tool provides the name.
+    Missing user and project files read as empty. Matrix provides the pattern; the tool
+    provides the name. Command-line flags, applied by the tool, sit above all of these.
     """
-    sources: list[Path] = []
-
-    # Tier 2: user-level
-    sources.append(Path.home() / f".{tool}" / "config.yaml")
-
-    # Tier 3: project-level
     root = project_root or Path.cwd()
-    sources.append(root / f"{tool}.yaml")
-
+    sources = [Path.home() / f".{tool}" / "config.yaml", root / f"{tool}.yaml"]
+    variable = config_env_var(tool)
+    explicit = os.environ.get(variable)
+    if explicit:
+        path = Path(explicit).expanduser()
+        if not path.exists():
+            raise ConfigError(f"${variable} points at {path}, which does not exist")
+        sources.append(path)
     return sources
 
 
@@ -77,8 +84,9 @@ def load_config(  # noqa: UP047
     merged: dict[str, Any] = {}
     consulted: list[str] = []
     for path in sources:
-        tier_data = YamlConfigSource(path).read()
-        consulted.append(str(path) + ("" if tier_data else " (absent/empty)"))
+        source = YamlConfigSource(path)
+        tier_data = source.read()
+        consulted.append(source.describe() + ("" if tier_data else " (absent/empty)"))
         if tier_data:
             merged = deep_merge(merged, tier_data)
 

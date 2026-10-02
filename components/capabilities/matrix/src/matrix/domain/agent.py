@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
     from matrix.domain.types import AgentResponse
 
 _SLUG = r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
+
+_tracer = trace.get_tracer("matrix")
 
 
 class AgentDefinition(BaseModel):
@@ -69,4 +72,23 @@ class BoundAgent:
         return self._runtime
 
     async def run(self, prompt: str) -> AgentResponse:
-        return await self._runtime.run(self._definition, prompt)
+        """Run the definition on the runtime, inside an OpenTelemetry ``invoke_agent`` span.
+
+        Span name and attributes follow the OpenTelemetry GenAI agent-span conventions
+        (``invoke_agent {gen_ai.agent.name}``); ``matrix.agent.*`` attributes are matrix's own.
+        """
+        name = self._definition.name
+        with _tracer.start_as_current_span(
+            f"invoke_agent {name}",
+            attributes={"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": name},
+        ) as span:
+            if self._definition.model is not None:
+                span.set_attribute("gen_ai.request.model", self._definition.model)
+            response = await self._runtime.run(self._definition, prompt)
+            span.set_attribute("gen_ai.usage.input_tokens", response.tokens_input)
+            span.set_attribute("gen_ai.usage.output_tokens", response.tokens_output)
+            if response.model is not None:
+                span.set_attribute("matrix.agent.model", response.model)
+            if response.family is not None:
+                span.set_attribute("matrix.agent.family", response.family)
+            return response

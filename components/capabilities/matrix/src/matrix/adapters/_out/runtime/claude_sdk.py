@@ -11,12 +11,12 @@ Type URL: ``matrix.v1/runtime.claude-sdk``. Requires the ``claude`` extra.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from matrix.domain.errors import AgentRuntimeError
 from matrix.domain.types import AgentResponse
 
 if TYPE_CHECKING:
@@ -115,7 +115,12 @@ class ClaudeSdkRuntime:
         """One SDK session. Streams messages; captures text, tool calls, usage and cost.
 
         The SDK may raise during generator cleanup after the ResultMessage has arrived; once
-        the result is in hand that error is non-fatal.
+        the result is in hand that error is non-fatal. Any other failure is an
+        AgentRuntimeError with the SDK's exception as its cause.
+
+        Concurrency-safe: nothing here touches process state. (The CLI refuses to start under
+        a parent Claude Code session; the SDK strips ``CLAUDECODE`` from the child's
+        environment itself, so this runtime no longer edits ``os.environ``.)
         """
         from claude_agent_sdk import (
             AssistantMessage,
@@ -126,9 +131,6 @@ class ClaudeSdkRuntime:
             query,
         )
 
-        # The CLI refuses to start inside another Claude Code session. Process-global: see
-        # SECURITY.md M-3 — runs through one runtime instance are not concurrency-safe.
-        stashed = os.environ.pop("CLAUDECODE", None)
         options = ClaudeAgentOptions(**self.options(definition))
 
         content_parts: list[str] = []
@@ -149,14 +151,13 @@ class ClaudeSdkRuntime:
                 logger.debug("SDK cleanup error (non-fatal, result received): %s", e)
             else:
                 if type(e).__name__ == "CLINotFoundError":
-                    raise RuntimeError(
-                        "Claude Code CLI not found. "
+                    raise AgentRuntimeError(
+                        f"agent {definition.name!r}: Claude Code CLI not found. "
                         "Install: npm install -g @anthropic-ai/claude-code"
                     ) from e
-                raise RuntimeError(f"Claude SDK error: {e}") from e
-        finally:
-            if stashed is not None:
-                os.environ["CLAUDECODE"] = stashed
+                raise AgentRuntimeError(
+                    f"agent {definition.name!r}: Claude SDK error: {type(e).__name__}: {e}"
+                ) from e
 
         usage = getattr(result_msg, "usage", None)
         return AgentResponse(

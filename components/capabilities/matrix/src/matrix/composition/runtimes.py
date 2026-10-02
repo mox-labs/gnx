@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from matrix.domain.type_url import type_url
+
 if TYPE_CHECKING:
     from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime, ClaudeSdkRuntimeConfig
     from matrix.adapters._out.runtime.model import ModelAgentRuntime, ModelAgentRuntimeConfig
@@ -21,7 +23,8 @@ RUNTIME_NAMESPACE = "matrix.v1/runtime."
 
 
 def runtime_type_url(runtime_type: str) -> str:
-    return f"{RUNTIME_NAMESPACE}{runtime_type}"
+    """``claude-sdk`` → ``matrix.v1/runtime.claude-sdk``."""
+    return type_url("matrix", 1, f"runtime.{runtime_type}")
 
 
 def _claude_sdk(config: ClaudeSdkRuntimeConfig) -> ClaudeSdkRuntime:

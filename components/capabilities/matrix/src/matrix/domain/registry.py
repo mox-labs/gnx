@@ -12,7 +12,8 @@ component from config. Two registration forms:
 
 Extensions register themselves: :meth:`discover` loads every ``matrix.components`` entry
 point, each a callable ``register(registry) -> None``. A duplicate type URL still raises —
-discovery never silently overrides.
+discovery never silently overrides. A malformed type URL is refused at registration, so a
+typo surfaces when the extension loads rather than when a config first names it.
 """
 
 from __future__ import annotations
@@ -23,7 +24,8 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ValidationError
 
-from .errors import ConfigError
+from .errors import ConfigError, NotFoundError
+from .type_url import parse_type_url
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -55,9 +57,10 @@ class ComponentRegistry:
 
     def __init__(self) -> None:
         self._factories: dict[str, Callable[[dict[str, Any], str], Any]] = {}
+        self._config_classes: dict[str, type[BaseModel]] = {}
 
     def register(self, type_url: str, factory: ComponentFactory) -> ComponentRegistry:
-        """Register ``factory(**config)``. Raises ValueError on duplicate type URL."""
+        """Register ``factory(**config)``. Raises ConfigError on a duplicate or malformed URL."""
 
         def create(config: dict[str, Any], source: str) -> Any:
             try:
@@ -87,13 +90,16 @@ class ComponentRegistry:
                 raise ConfigError("invalid component config:\n" + "\n".join(lines)) from None
             return build(validated)
 
-        return self._add(type_url, create)
+        self._add(type_url, create)
+        self._config_classes[type_url] = config_cls
+        return self
 
     def _add(
         self, type_url: str, create: Callable[[dict[str, Any], str], Any]
     ) -> ComponentRegistry:
+        parse_type_url(type_url)
         if type_url in self._factories:
-            raise ValueError(f"Duplicate registration: {type_url!r} is already registered")
+            raise ConfigError(f"Duplicate registration: {type_url!r} is already registered")
         self._factories[type_url] = create
         return self
 
@@ -102,13 +108,23 @@ class ComponentRegistry:
     ) -> Any:
         """Create a component. ``source`` names where the config came from, for errors.
 
-        Raises KeyError (listing registered type URLs) if ``type_url`` is unknown.
+        Raises NotFoundError (a KeyError) listing the registered type URLs if ``type_url``
+        is unknown.
         """
         create = self._factories.get(type_url)
         if create is None:
             known = ", ".join(sorted(self._factories)) or "(none)"
-            raise KeyError(f"Unknown component type: {type_url!r}. Registered: {known}")
+            raise NotFoundError(f"Unknown component type: {type_url!r}. Registered: {known}")
         return create(dict(config or {}), source)
+
+    def config_class(self, type_url: str) -> type[BaseModel] | None:
+        """The typed config a ``register_typed`` entry validates against; None if untyped.
+
+        Composition reads it to supply shared context — a ``models`` registry, a working
+        directory — to any component whose config declares that field, without naming the
+        component.
+        """
+        return self._config_classes.get(type_url)
 
     def discover(self, group: str = ENTRY_POINT_GROUP) -> ComponentRegistry:
         """Load every entry point in ``group``; each is ``register(registry) -> None``."""

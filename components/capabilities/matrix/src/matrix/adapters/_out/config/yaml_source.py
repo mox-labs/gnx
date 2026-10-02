@@ -22,6 +22,9 @@ class YamlConfigSource:
     def __init__(self, path: Path) -> None:
         self._path = path
 
+    def describe(self) -> str:
+        return str(self._path)
+
     def read(self) -> dict[str, Any]:
         """Read and parse YAML. Empty dict if file missing or empty."""
         if not self._path.exists():

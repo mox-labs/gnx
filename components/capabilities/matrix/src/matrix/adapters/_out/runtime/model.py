@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
-from matrix.domain.errors import ConfigError
+from matrix.domain.errors import AgentRuntimeError, ConfigError
 from matrix.domain.types import AgentResponse
 
 if TYPE_CHECKING:
@@ -70,13 +70,18 @@ class ModelAgentRuntime:
                 "model runtime makes a single call with no tool loop. Bind it to a claude-sdk "
                 "runtime, or set tools: [] if it needs none."
             )
-        completion = await self._runtime.complete(
-            definition.model or self._config.default_model,
-            task,
-            system=definition.system_prompt or None,
-            max_tokens=self._config.max_tokens,
-            temperature=self._config.temperature,
-        )
+        from hardline import HardlineError
+
+        try:
+            completion = await self._runtime.complete(
+                definition.model or self._config.default_model,
+                task,
+                system=definition.system_prompt or None,
+                max_tokens=self._config.max_tokens,
+                temperature=self._config.temperature,
+            )
+        except HardlineError as e:
+            raise AgentRuntimeError(f"agent {definition.name!r}: {e}") from e
         return AgentResponse(
             content=completion.text,
             tokens_input=completion.usage.input_tokens,

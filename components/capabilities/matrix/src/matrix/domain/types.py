@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from matrix.domain.errors import ContractError
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -31,10 +33,6 @@ class TypedStruct(NamedTuple):
 
     type_url: str
     value: Any
-
-
-class ContractError(Exception):
-    """Component's runtime type_url doesn't match its compile-time declaration."""
 
 
 class Artifact(BaseModel, frozen=True):
@@ -101,17 +99,19 @@ class Construct:
         return tuple(self._ledger)
 
     def __getitem__(self, type_url: str) -> Any:
-        """Backward compat: construct["type_url"] returns last artifact's data."""
+        """The data of the most recent artifact of ``type_url`` — the common read."""
         return self.last(type_url).data
 
     def __contains__(self, type_url: str) -> bool:
         return type_url in self._by_type
 
     def kinds(self) -> frozenset[str]:
+        """The distinct type URLs present in the ledger."""
         return frozenset(self._by_type)
 
     def __len__(self) -> int:
-        return len(self._by_type)
+        """The number of artifacts in the ledger (``len(construct.kinds())`` counts kinds)."""
+        return len(self._ledger)
 
 
 @runtime_checkable

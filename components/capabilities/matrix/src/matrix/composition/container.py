@@ -11,7 +11,13 @@ The only place that combines domain concepts with concrete adapters. ``compose``
 
 Every failure is a ConfigError naming the key path (``agents.triage.runtime``) and the
 legal values. The Container then hands out agents by name and builds DAG orchestrators
-from ``(type_url, config)`` specs, as before.
+from ``(type_url, config)`` specs.
+
+**Shared context.** Some settings belong to the composition, not to one runtime: the
+``matrix.models`` registry, the working directory a host tool runs in. ``compose`` hands each
+of them to every runtime whose typed config declares a field of that name and leaves it
+unset. Composition never names a runtime type to do this, so a third-party runtime that
+declares ``models`` gets the registry exactly as the built-in ``model`` runtime does.
 """
 
 from __future__ import annotations
@@ -20,10 +26,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from matrix.adapters._out.definitions.markdown import MarkdownDefinitionSource
-from matrix.composition.runtimes import register_builtin_runtimes, runtime_type_url
+from matrix.composition.runtimes import (
+    RUNTIME_NAMESPACE,
+    register_builtin_runtimes,
+    runtime_type_url,
+)
 from matrix.domain.agent import AgentDefinition, BoundAgent
 from matrix.domain.config import Config, MatrixConfig
-from matrix.domain.errors import ConfigError
+from matrix.domain.errors import ConfigError, NotFoundError
 from matrix.domain.orchestrator import Orchestrator
 from matrix.domain.registry import ComponentRegistry
 
@@ -76,14 +86,14 @@ class Container:
         agent = self._agents.get(name)
         if agent is None:
             known = ", ".join(sorted(self._agents)) or "(none configured)"
-            raise KeyError(f"no agent named {name!r}. Configured: {known}")
+            raise NotFoundError(f"no agent named {name!r}. Configured: {known}")
         return agent
 
     def runtime(self, name: str) -> AgentRuntime:
         runtime = self._runtimes.get(name)
         if runtime is None:
             known = ", ".join(sorted(self._runtimes)) or "(none configured)"
-            raise KeyError(f"no runtime named {name!r}. Configured: {known}")
+            raise NotFoundError(f"no runtime named {name!r}. Configured: {known}")
         return runtime
 
     def create_component(self, type_url: str, config: dict[str, Any] | None = None) -> Any:
@@ -103,25 +113,53 @@ def default_registry(*, discover: bool = True) -> ComponentRegistry:
     return registry.discover() if discover else registry
 
 
+def shared_context(matrix: MatrixConfig, **extra: Any) -> dict[str, Any]:
+    """The composition-wide settings offered to runtimes: ``models`` plus ``extra``."""
+    context = {k: v for k, v in extra.items() if v is not None}
+    if matrix.models is not None:
+        context.setdefault("models", matrix.models)
+    return context
+
+
+def with_context(
+    registry: ComponentRegistry,
+    type_url: str,
+    options: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """``options`` plus each context value the entry's typed config declares and lacks."""
+    merged = dict(options)
+    config_cls = registry.config_class(type_url)
+    if config_cls is None:
+        return merged
+    for key, value in context.items():
+        if key in config_cls.model_fields and key not in merged:
+            merged[key] = value
+    return merged
+
+
 def build_runtimes(
-    matrix: MatrixConfig, registry: ComponentRegistry, *, source: str = "matrix"
+    matrix: MatrixConfig,
+    registry: ComponentRegistry,
+    *,
+    source: str = "matrix",
+    context: Mapping[str, Any] | None = None,
 ) -> dict[str, AgentRuntime]:
+    shared = shared_context(matrix) if context is None else dict(context)
     runtimes: dict[str, AgentRuntime] = {}
     for name, spec in matrix.runtimes.items():
         type_url = runtime_type_url(spec.type)
         if type_url not in registry:
             legal = sorted(
-                t.removeprefix("matrix.v1/runtime.")
+                t.removeprefix(RUNTIME_NAMESPACE)
                 for t in registry.types()
-                if t.startswith("matrix.v1/runtime.")
+                if t.startswith(RUNTIME_NAMESPACE)
             )
             raise ConfigError(
                 f"{source}: runtimes.{name}.type: {spec.type!r} is not a registered runtime. "
                 f"Registered: {', '.join(legal) or '(none)'}"
             )
-        options = spec.options()
-        if spec.type == "model" and "models" not in options and matrix.models is not None:
-            options["models"] = matrix.models
+        options = with_context(registry, type_url, spec.options(), shared)
         runtimes[name] = registry.create(type_url, options, source=f"{source}: runtimes.{name}")
     return runtimes
 
@@ -185,12 +223,14 @@ def compose(
     base_dir: Path | None = None,
     source: str = "matrix",
     definition_sources: Sequence[DefinitionSource] = (),
+    context: Mapping[str, Any] | None = None,
 ) -> Container:
     """Config → Container with runtimes, definitions and bound agents.
 
     ``base_dir`` anchors relative ``definitions`` directories (the directory of the config
     file that declared them). ``definition_sources`` adds sources beyond the configured
-    directories — a plugin's agents, a mapping from another root.
+    directories — a plugin's agents, a mapping from another root. ``context`` adds shared
+    settings (e.g. ``{"cwd": ...}``) on top of ``matrix.models``; see the module docstring.
     """
     full = config if isinstance(config, Config) else Config[Any](matrix=config, client=None)
     matrix = full.matrix
@@ -201,7 +241,9 @@ def compose(
         for d in matrix.definitions
     ]
     sources.extend(definition_sources)
-    runtimes = build_runtimes(matrix, reg, source=source)
+    runtimes = build_runtimes(
+        matrix, reg, source=source, context=shared_context(matrix, **dict(context or {}))
+    )
     definitions = load_definitions(sources)
     agents = bind_agents(matrix, runtimes, definitions, source=source)
     return Container(full, reg, runtimes=runtimes, definitions=definitions, agents=agents)
