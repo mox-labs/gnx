@@ -220,7 +220,7 @@ def compose(
     config: Config[Any] | MatrixConfig,
     *,
     registry: ComponentRegistry | None = None,
-    base_dir: Path | None = None,
+    base_dir: Path | str | None = None,
     source: str = "matrix",
     definition_sources: Sequence[DefinitionSource] = (),
     context: Mapping[str, Any] | None = None,
@@ -235,7 +235,7 @@ def compose(
     full = config if isinstance(config, Config) else Config[Any](matrix=config, client=None)
     matrix = full.matrix
     reg = registry if registry is not None else default_registry()
-    root = base_dir or Path.cwd()
+    root = Path(base_dir) if base_dir is not None else Path.cwd()
     sources: list[DefinitionSource] = [
         MarkdownDefinitionSource((root / d) if not Path(d).is_absolute() else Path(d))
         for d in matrix.definitions

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from matrix.domain.errors import ContractError
+from matrix.domain.errors import ContractError, NotFoundError
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -86,11 +86,11 @@ class Construct:
         return list(self._by_type.get(type_url, []))
 
     def last(self, type_url: str) -> Artifact:
-        """Most recent artifact of the given type. Raises on missing."""
+        """Most recent artifact of the given type. Raises :class:`NotFoundError` on missing."""
         artifacts = self._by_type.get(type_url)
         if not artifacts:
             available = ", ".join(sorted(self._by_type)) or "(none)"
-            raise LookupError(f"No artifact for type_url {type_url!r}. Available: {available}")
+            raise NotFoundError(f"No artifact for type_url {type_url!r}. Available: {available}")
         return artifacts[-1]
 
     @property
@@ -112,6 +112,11 @@ class Construct:
     def __len__(self) -> int:
         """The number of artifacts in the ledger (``len(construct.kinds())`` counts kinds)."""
         return len(self._ledger)
+
+    def __repr__(self) -> str:
+        """The ledger in order, one producer → kind per artifact — what a debugger needs."""
+        trace = ", ".join(f"{a.producer} → {a.type_url}" for a in self._ledger)
+        return f"Construct({len(self._ledger)} artifacts: {trace})" if trace else "Construct(empty)"
 
 
 @runtime_checkable

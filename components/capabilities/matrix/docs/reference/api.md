@@ -117,7 +117,7 @@ Append-only artifact ledger for one DAG execution. A plain mutable class — **n
 |--------|-----------|-------------|
 | `append` | `(artifact: Artifact) -> None` | Append to the ledger. Mutates in place; returns nothing |
 | `query` | `(type_url: str) -> list[Artifact]` | All artifacts of the type, in append order. Empty list if none |
-| `last` | `(type_url: str) -> Artifact` | Most recent artifact of the type. Raises `LookupError` (message lists available types) |
+| `last` | `(type_url: str) -> Artifact` | Most recent artifact of the type. Raises `NotFoundError`, a `KeyError` (message lists available types) |
 | `ledger` | `property -> tuple[Artifact, ...]` | Immutable snapshot of the full ledger |
 | `kinds` | `() -> frozenset[str]` | Every `type_url` present |
 | `__getitem__` | `(type_url: str) -> Any` | Backward-compat shorthand for `last(type_url).data` |
@@ -153,7 +153,7 @@ them.
 |---|---|---|
 | `MatrixError` | — | base class |
 | `ConfigError` | `ValueError` | a matrix config, agent definition, component config, or type URL is invalid |
-| `NotFoundError` | `KeyError` | a name or type URL is not registered or configured |
+| `NotFoundError` | `KeyError` | a name or type URL is not registered or configured, or a Construct holds no artifact of the kind read |
 | `ContractError` | — | a component's output or an undeclared read breaks its contract |
 | `CompilationError` | — | a component graph is malformed (missing producer, duplicate output, cycle) |
 | `ComponentError` | — | a component raised while the DAG ran; carries `component` (its name) and `construct` (the ledger as it stood when it failed, so artifacts produced before the failure are not lost) |

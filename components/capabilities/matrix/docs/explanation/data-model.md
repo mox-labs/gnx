@@ -98,7 +98,7 @@ if "sensor.grade" in construct:
 history = construct.ledger  # tuple[Artifact, ...]
 ```
 
-`last()` raises `LookupError` when no artifact of that type exists, and the message lists what
+`last()` raises `NotFoundError` (a `KeyError`, so a `LookupError`) when no artifact of that type exists, and the message lists what
 *is* available. The DagCompiler guarantees that if a component's `requires` are satisfiable at
 compile time, those artifacts are present when it runs — so `last()` on a declared requirement
 won't raise.

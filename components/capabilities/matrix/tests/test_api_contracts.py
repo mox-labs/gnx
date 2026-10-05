@@ -240,3 +240,29 @@ class TestRuntimeErrors:
         with pytest.raises(AgentRuntimeError, match="agent 'a'") as e:
             await runtime.run(definition, "hi")
         assert e.value.__cause__ is not None
+
+
+class TestDebuggability:
+    def test_construct_repr_shows_the_ledger_in_order(self):
+        from matrix import Artifact, Construct
+
+        c = Construct()
+        assert repr(c) == "Construct(empty)"
+        c.append(Artifact.create(type_url="t.v1/a", producer="p", data=1))
+        c.append(Artifact.create(type_url="t.v1/b", producer="q", data=2))
+        assert repr(c) == "Construct(2 artifacts: p → t.v1/a, q → t.v1/b)"
+
+    def test_reading_a_missing_kind_is_a_matrix_not_found(self):
+        from matrix import Construct, MatrixError, NotFoundError
+
+        with pytest.raises(NotFoundError, match="Available: \\(none\\)") as e:
+            Construct()["t.v1/missing"]
+        assert isinstance(e.value, MatrixError) and isinstance(e.value, KeyError)
+
+    def test_compose_accepts_a_string_base_dir(self, tmp_path):
+        from matrix import MatrixConfig, compose
+
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "agents" / "rev.md").write_text("---\nname: rev\n---\nReview.\n")
+        container = compose(MatrixConfig(definitions=["agents"]), base_dir=str(tmp_path))
+        assert "rev" in container.definitions
