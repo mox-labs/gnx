@@ -73,7 +73,8 @@ Seeded simulated runtimes draw per `(run_index, trial_index)`, so repeats are in
 trial — and returns `EngineOutcome(readings, trials, artifacts)`: `trials` is every `Trial` the
 repeat ran, response or error included — what `readings` measured, and what `Storage` persists.
 `EngineRun` carries `experiment`, `probes`, `subject`, `sensor`, `agents` (an AgentFactory),
-`trials`, `run_index`.
+`trials`, `run_index`, and an optional `on_trial(trial, readings)` an engine calls as each trial
+is measured — progress only; the outcome stays the source of truth.
 
 ### `Storage` (Protocol)
 

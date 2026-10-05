@@ -55,8 +55,14 @@ class Experiment:
         subject: Subject | None = None,
         on_probe_complete: Callable[[ProbeResult], None] | None = None,
         on_run_complete: Callable[[int, float], None] | None = None,
+        on_trial: Callable[[int, Trial, list[Reading]], None] | None = None,
     ) -> ExperimentResults:
-        """Run ``config.repeats`` repeats of one subject through the engine, then aggregate."""
+        """Run ``config.repeats`` repeats of one subject through the engine, then aggregate.
+
+        Callbacks are for progress: ``on_trial(repeat, trial, readings)`` as each trial is
+        measured, ``on_run_complete(repeat, pass_rate)`` after each repeat, and
+        ``on_probe_complete`` once per probe with its result across all repeats.
+        """
         active = subject or Subject(name=DEFAULT_SUBJECT)
         probe_map = {p.id: p for p in config.probes}
         started = datetime.now(UTC)
@@ -79,6 +85,7 @@ class Experiment:
                     agents=self._agents,
                     trials=config.trials,
                     run_index=run_idx,
+                    on_trial=_bind_repeat(on_trial, run_idx),
                 )
             )
             all_readings.extend(outcome.readings)
@@ -98,8 +105,7 @@ class Experiment:
             if on_run_complete:
                 on_run_complete(run_idx, run_metrics["pass_rate"])
 
-        callback = on_probe_complete if config.repeats == 1 else None
-        probe_results = aggregate_readings(all_readings, probe_map, callback)
+        probe_results = aggregate_readings(all_readings, probe_map, on_probe_complete)
         metrics = compute_metrics(probe_results)
         pass_se, score_se = standard_errors(probe_results)
 
@@ -134,6 +140,18 @@ class Experiment:
         )
         self._store.save_summary(config.name, results)
         return results
+
+
+def _bind_repeat(
+    on_trial: Callable[[int, Trial, list[Reading]], None] | None, run_index: int
+) -> Callable[[Trial, list[Reading]], None] | None:
+    if on_trial is None:
+        return None
+
+    def bound(trial: Trial, readings: list[Reading]) -> None:
+        on_trial(run_index, trial, readings)
+
+    return bound
 
 
 def _records(

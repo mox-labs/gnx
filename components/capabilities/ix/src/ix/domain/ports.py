@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from matrix import Agent
@@ -80,6 +81,10 @@ class EngineRun:
     agents: AgentFactory
     trials: int
     run_index: int = 0
+    #: Called as each trial is measured, in completion order — for progress, not results.
+    #: The outcome is still the source of truth; an engine that cannot report per trial
+    #: may leave it uncalled.
+    on_trial: Callable[[Trial, list[Reading]], None] | None = None
 
 
 @dataclass(frozen=True)

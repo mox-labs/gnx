@@ -56,7 +56,10 @@ class NativeEngine:
                         SensorNode(run.sensor),
                     ]
                 ).run()
-            return construct[type_urls.TRIAL], construct[type_urls.READINGS]
+            trial, readings = construct[type_urls.TRIAL], construct[type_urls.READINGS]
+            if run.on_trial:
+                run.on_trial(trial, readings)
+            return trial, readings
 
         results = await asyncio.gather(*(one(p, t) for p, t in jobs))
         return EngineOutcome(

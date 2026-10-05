@@ -10,6 +10,7 @@ Exit codes: 0 success · 1 an ix/matrix/config error or failed validation · 2 u
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from typing import TYPE_CHECKING, NoReturn
 
@@ -22,9 +23,10 @@ from ix import __version__
 from ix.domain.errors import IxError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
-    from ix.domain.types import Subject
+    from ix.domain.types import Reading, Subject, Trial
     from ix.eval.models import Comparison, ExperimentConfig, ExperimentResults, ProbeResult
 
 out = Console()
@@ -41,6 +43,25 @@ def _status_style(status: str) -> str:
         "needs_work": "[yellow]NEEDS WORK[/yellow]",
         "poor": "[bold red]POOR[/bold red]",
     }.get(status, status.upper())
+
+
+_BARS = "▁▂▃▄▅▆▇█"
+
+
+def _strip(scores: tuple[float, ...]) -> str:
+    """One character per trial, its height the trial's score — 15 trials fit in 15 columns."""
+    return "".join(_BARS[round(max(0.0, min(1.0, s)) * (len(_BARS) - 1))] for s in scores)
+
+
+def _short_path(path: str) -> str:
+    """Relative to the working directory when under it — the full path wraps at 80 columns."""
+    from pathlib import Path
+
+    p = Path(path)
+    try:
+        return str(p.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return path
 
 
 def _pm(value: float | None) -> str:
@@ -69,26 +90,12 @@ def _print_metrics(results: ExperimentResults) -> None:
     table.add_row("Engine", results.engine)
     table.add_row("Answered by", ", ".join(results.families) or "-")
     if results.trials_log:
-        table.add_row("Trials", results.trials_log)
+        table.add_row("Trials", _short_path(results.trials_log))
     out.print(table)
 
     if results.probe_results:
         out.print()
-        probe_table = Table(show_header=True, header_style="bold")
-        probe_table.add_column("Probe")
-        probe_table.add_column("Verdict")
-        probe_table.add_column("Score")
-        probe_table.add_column("Trials")
-        probe_table.add_column("Details")
-        for pr in results.probe_results:
-            probe_table.add_row(
-                pr.probe_id,
-                "[green]PASS[/green]" if pr.passed else "[yellow]FAIL[/yellow]",
-                f"{pr.score:.1%}",
-                ", ".join(f"{s:.0%}" for s in pr.trial_scores),
-                pr.details[0][:60] if pr.details else "",
-            )
-        out.print(probe_table)
+        out.print(_probe_table(results.probe_results, out.width))
 
     if results.confusion_matrix:
         out.print()
@@ -112,9 +119,41 @@ def _print_metrics(results: ExperimentResults) -> None:
     out.print()
 
 
+def _probe_table(probe_results: tuple[ProbeResult, ...], width: int) -> Table:
+    """Probe, verdict, score and one bar per trial always fit; Details takes what is left.
+
+    Sized here rather than left to rich: rich shrinks no-wrap columns before a long one,
+    and at 80 columns that collapsed Score and Trials to an ellipsis.
+    """
+    probe_w = min(32, max(len(pr.probe_id) for pr in probe_results))
+    trials_w = max(6, max(len(pr.trial_scores) for pr in probe_results))
+    # Each column costs its width + 2 padding + 1 border; one more border closes the table.
+    fixed = (probe_w + 3) + (7 + 3) + (6 + 3) + (trials_w + 3) + 1
+    details_w = width - fixed - 3
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Probe", width=probe_w, overflow="ellipsis", no_wrap=True)
+    table.add_column("Verdict", width=7, no_wrap=True)
+    table.add_column("Score", width=6, justify="right", no_wrap=True)
+    table.add_column("Trials", width=trials_w, no_wrap=True)
+    if details_w >= 12:
+        table.add_column("Details", width=min(details_w, 60), overflow="ellipsis", no_wrap=True)
+    for pr in probe_results:
+        row = [
+            pr.probe_id,
+            "[green]PASS[/green]" if pr.passed else "[yellow]FAIL[/yellow]",
+            f"{pr.score:.0%}",
+            _strip(pr.trial_scores),
+        ]
+        if details_w >= 12:
+            row.append(pr.details[0] if pr.details else "")
+        table.add_row(*row)
+    return table
+
+
 def _print_comparison(c: Comparison) -> None:
     out.print()
-    out.rule(f"[bold]{c.experiment}[/bold] · [cyan]{c.b}[/cyan] vs [cyan]{c.a}[/cyan]")
+    out.rule(f"[bold]{c.experiment}[/bold] · [cyan]{c.a}[/cyan] → [cyan]{c.b}[/cyan]")
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("Metric", style="bold")
     table.add_column("Value")
@@ -143,6 +182,53 @@ def _print_comparison(c: Comparison) -> None:
     out.print()
     out.print(f"Verdict: {label}")
     out.print()
+
+
+@contextlib.contextmanager
+def _trial_progress(
+    experiment: ExperimentConfig,
+) -> Iterator[Callable[[int, Trial, list[Reading]], None]]:
+    """A live bar on stderr while trials run — only on a terminal; piped stderr stays quiet.
+
+    It advances as each trial is measured and counts passes and failures, so a long live
+    run shows movement between the per-repeat lines instead of nothing.
+    """
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        TextColumn,
+        TimeElapsedColumn,
+    )
+
+    total = len(experiment.probes) * experiment.trials * experiment.repeats
+    progress = Progress(
+        TextColumn("  {task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn(
+            "[green]{task.fields[passed]} pass[/green] · "
+            "[yellow]{task.fields[failed]} fail[/yellow]"
+        ),
+        TimeElapsedColumn(),
+        console=err,
+        transient=True,
+        disable=not err.is_terminal,
+    )
+    bar = progress.add_task("trials", total=total, passed=0, failed=0)
+    passed = failed = 0
+
+    def on_trial(repeat: int, trial: Trial, readings: list[Reading]) -> None:
+        nonlocal passed, failed
+        if readings and all(r.passed for r in readings):
+            passed += 1
+        else:
+            failed += 1
+        label = f"repeat {repeat + 1}/{experiment.repeats}" if experiment.repeats > 1 else "trials"
+        progress.update(bar, advance=1, description=label, passed=passed, failed=failed)
+
+    with progress:
+        yield on_trial
 
 
 def _cli_error(message: str, fix: str | None = None) -> NoReturn:
@@ -345,17 +431,19 @@ def run(
         def on_run(run_idx: int, pass_rate: float) -> None:
             err.print(f"  [dim]repeat {run_idx + 1}/{experiment.repeats}: {pass_rate:.1%}[/dim]")
 
-        try:
-            result = asyncio.run(
-                service.run(
-                    experiment,
-                    subject=subject,
-                    on_probe_complete=on_probe,
-                    on_run_complete=on_run if experiment.repeats > 1 else None,
+        with _trial_progress(experiment) as on_trial:
+            try:
+                result = asyncio.run(
+                    service.run(
+                        experiment,
+                        subject=subject,
+                        on_probe_complete=on_probe,
+                        on_run_complete=on_run if experiment.repeats > 1 else None,
+                        on_trial=on_trial,
+                    )
                 )
-            )
-        except (IxError, MatrixError) as e:
-            _cli_error(str(e))
+            except (IxError, MatrixError) as e:
+                _cli_error(str(e))
         collected.append(result)
         if fmt == "table":
             _print_metrics(result)

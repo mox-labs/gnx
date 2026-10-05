@@ -89,6 +89,14 @@ Set `repeats: 3` or more before you compare two subjects. One run's pass rate ha
 bar; the **noise floor** — the spread of pass rates across repeats — is what says whether a
 difference between two subjects is bigger than the run-to-run wobble.
 
+While it runs, a terminal shows a bar that advances as each trial is measured, with a running
+count of passes and fails; a line per repeat (`repeat 2/3: 87.5%`) and, at the end, a line per
+probe (`stand-up-an-org: PASS (score=100%)`). All of that goes to stderr, so stdout carries only
+the results. Piped, the bar is omitted and the lines remain.
+
+In the results table, **Trials** draws one bar per trial — its height the trial's score — so
+`█████▁███████▁█` is a probe that failed twice in fifteen. The trial log holds each one in full.
+
 ## 6. Read the results
 
 ```bash

@@ -294,3 +294,67 @@ def test_inspect_engine_json_output_is_clean_stdout(lab: Path):
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["engine"] == "inspect"
+
+
+# --- the run as it happens (the cix experience, kept) ------------------------------------
+
+
+class TestProgress:
+    async def test_every_trial_of_every_repeat_reports_as_it_is_measured(self, tmp_path: Path):
+        exp = ExperimentConfig(name="e", probes=_probes(2), trials=3, repeats=2)
+        service = Experiment(
+            sensor=ActivationSensor(expected_skill="x"),
+            store=FilesystemStore(tmp_path),
+            engine=NativeEngine(),
+            agents=lambda s, t, r=0: BoundAgent(AgentDefinition(name="a"), _Echo()),
+        )
+        seen: list[tuple[int, str, int]] = []
+        await service.run(
+            exp,
+            on_trial=lambda rep, trial, readings: seen.append((rep, trial.probe_id, len(readings))),
+        )
+        assert len(seen) == 2 * 3 * 2
+        assert {rep for rep, _, _ in seen} == {0, 1}
+        assert all(n >= 1 for _, _, n in seen)
+
+    async def test_probe_lines_print_with_repeats_too(self, tmp_path: Path):
+        """cix printed per-probe PASS/FAIL only when repeats == 1; a repeated run said nothing."""
+        exp = ExperimentConfig(name="e", probes=_probes(3), trials=1, repeats=2)
+        service = Experiment(
+            sensor=ActivationSensor(expected_skill="x"),
+            store=FilesystemStore(tmp_path),
+            engine=NativeEngine(),
+            agents=lambda s, t, r=0: BoundAgent(AgentDefinition(name="a"), _Echo()),
+        )
+        completed: list[ProbeResult] = []
+        await service.run(exp, on_probe_complete=completed.append)
+        assert [p.probe_id for p in completed] == ["p0", "p1", "p2"]
+        assert all(len(p.trial_scores) == 2 for p in completed)  # across both repeats
+
+    def test_cli_prints_a_verdict_line_per_probe(self, lab: Path):
+        result = CliRunner().invoke(
+            main, ["run", "e", "--lab", "lab", "--subject", "a", "--repeats", "2", "--seed", "1"]
+        )
+        assert result.exit_code == 0, result.output
+        for i in range(3):
+            assert f"p{i}: " in result.stderr
+        assert "repeat 2/2:" in result.stderr
+
+    def test_compare_header_reads_in_argument_order(self, lab: Path):
+        runner = CliRunner()
+        assert runner.invoke(main, ["run", "e", "--lab", "lab", "--seed", "1"]).exit_code == 0
+        result = runner.invoke(main, ["compare", "e", "a", "b", "--lab", "lab"])
+        assert result.exit_code == 0, result.output
+        assert "a → b" in result.stdout
+
+
+class TestCixConfigKeys:
+    @pytest.mark.parametrize(
+        ("key", "hint"), [("agent", "belong to a subject"), ("skill", "expected_skill")]
+    )
+    def test_a_removed_key_says_where_it_moved(self, lab: Path, key: str, hint: str):
+        path = lab / "e" / "experiment.yaml"
+        path.write_text(path.read_text() + f"{key}: anything\n")
+        result = CliRunner().invoke(main, ["experiment", "validate", "e", "--lab", "lab"])
+        assert result.exit_code == 1
+        assert hint in " ".join(result.stderr.split())  # rich wraps at terminal width

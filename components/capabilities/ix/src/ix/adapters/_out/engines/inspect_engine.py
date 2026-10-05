@@ -111,6 +111,8 @@ class InspectEngine:
                     probe_id=key[0], trial_index=key[1], error="solver produced no trial"
                 )
                 readings = measure_trial(run.sensor, trial)
+                if run.on_trial:
+                    run.on_trial(trial, readings)
                 passed = bool(readings) and all(r.passed for r in readings)
                 scores = [r.score for r in readings if r.score is not None]
                 return Score(

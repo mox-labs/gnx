@@ -33,6 +33,13 @@ if TYPE_CHECKING:
 _FILE_KEYS = frozenset(set(ExperimentConfig.model_fields) - {"probes"} | {"sensor"})
 _LATEST = "summary-latest.json"
 
+#: Keys the cix-era ix accepted, and where each now lives — so an old experiment.yaml fails
+#: with the move to make rather than only a list of what is legal.
+_MOVED = {
+    "agent": "agent settings belong to a subject: subjects: [{name, config: {runtime, ...}}]",
+    "skill": "the expected skill is per probe: `expected_skill:` in each tasks/*.md frontmatter",
+}
+
 
 def subject_dir_name(subject: str) -> str:
     """A subject name as a directory name: anything outside ``[A-Za-z0-9._-]`` becomes ``-``."""
@@ -60,8 +67,10 @@ class FilesystemStore:
             raise ConfigError(f"{config_path}: top level must be a mapping")
         unknown = set(config) - _FILE_KEYS
         if unknown:
+            moved = "".join(f"; {k}: {_MOVED[k]}" for k in sorted(unknown) if k in _MOVED)
             raise ConfigError(
-                f"{config_path}: unknown key(s) {sorted(unknown)}. Legal: {sorted(_FILE_KEYS)}"
+                f"{config_path}: unknown key(s) {sorted(unknown)}. "
+                f"Legal: {sorted(_FILE_KEYS)}{moved}"
             )
         data: dict[str, Any] = {
             **config,
