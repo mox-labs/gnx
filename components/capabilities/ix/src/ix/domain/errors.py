@@ -14,6 +14,17 @@ class ConfigError(IxError, ValueError):
     """An experiment, subject, sensor or engine config is invalid."""
 
 
+class LabNotFoundError(ConfigError, FileNotFoundError):
+    """No lab where one was named or searched for. Still a FileNotFoundError."""
+
+
+class MissingExtraError(IxError, ImportError):
+    """A configured engine or sensor needs an optional extra that is not installed.
+
+    Still an ImportError; the message names the extra and the install command.
+    """
+
+
 class EngineError(IxError):
     """An engine could not complete a repeat (e.g. the Inspect evaluation did not finish).
 

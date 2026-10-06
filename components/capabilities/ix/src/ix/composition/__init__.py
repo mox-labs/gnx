@@ -41,8 +41,8 @@ from ix.adapters._out.simulated_runtime import SimulatedRuntime
 from ix.config.settings import find_lab
 from ix.domain import type_urls
 from ix.domain.errors import ConfigError, IxError
+from ix.eval.activation import expected_skill_of, should_activate
 from ix.eval.experiment import Experiment
-from ix.eval.models import ACCEPTABLE, MUST_TRIGGER, ExperimentConfig
 from ix.eval.sensors import (
     ActivationSensor,
     ActivationSensorConfig,
@@ -64,6 +64,7 @@ if TYPE_CHECKING:
 
     from ix.domain.ports import AgentFactory, Engine, Sensor, SensorClass
     from ix.domain.types import Probe, Subject
+    from ix.eval.models import ExperimentConfig
 
 EXTENSION_GROUP = "ix.components"
 SIMULATED = "simulated"
@@ -414,7 +415,12 @@ def validate_experiment(
     problems: list[str] = []
     if not experiment.probes:
         problems.append("no probes: add tasks/*.md")
-    registry = build_registry(experiment=experiment)
+    try:
+        registry = build_registry(experiment=experiment)
+    except (IxError, MatrixError) as e:
+        # The registry carries the simulator's inputs, read from the probes; a bad probe
+        # stops everything after it, so report it and what was checked.
+        return [*problems, f"probes: {e}"]
     try:
         create_sensor(experiment, registry, experiment_cwd, _models_provider(experiment))
     except (IxError, MatrixError, ImportError) as e:
@@ -451,19 +457,20 @@ def default_skill(experiment: ExperimentConfig) -> str | None:
 
 
 def _build_expectations(experiment: ExperimentConfig) -> dict[str, bool]:
-    """Map probe prompts to activation expectations for the simulator."""
+    """Probe prompt → should it activate, read the way the sensor reads it (one module)."""
     return {
-        probe.prompt: probe.metadata.get("expectation") == MUST_TRIGGER
+        probe.prompt: expected
         for probe in experiment.probes
-        if probe.metadata.get("expectation") != ACCEPTABLE
+        if (expected := should_activate(probe)) is not None
     }
 
 
 def _build_skill_map(experiment: ExperimentConfig) -> dict[str, str]:
+    default = default_skill(experiment)
     return {
-        probe.prompt: probe.metadata["expected_skill"]
+        probe.prompt: skill
         for probe in experiment.probes
-        if "expected_skill" in probe.metadata
+        if (skill := expected_skill_of(probe, default)) is not None
     }
 
 

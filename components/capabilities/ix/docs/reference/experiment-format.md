@@ -135,8 +135,9 @@ Write a function `is_palindrome(s)` that returns True if the string reads the sa
 
 The body is the prompt, sent verbatim. `id` defaults to the file stem and is always coerced to
 a string. Every other frontmatter key goes into the probe's `metadata`, which sensors read:
-`expectation` (`must_trigger` | `should_not_trigger` | `acceptable`) and `expected_skill` for
-activation, `function_name` and `test_cases` for function-test, `mock_response` for the
+`expectation` (`must_trigger` | `should_not_trigger` | `acceptable`; absent means
+`must_trigger`; any other value — including an unquoted `no`, which YAML reads as `false` — is
+a config error) and `expected_skill` for activation, `function_name` and `test_cases` for function-test, `mock_response` for the
 simulator.
 
 ## Subjects — `subjects/*.md`

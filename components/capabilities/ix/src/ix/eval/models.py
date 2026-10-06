@@ -140,6 +140,10 @@ class ExperimentResults(BaseModel, frozen=True):
     per_run_mean_scores: tuple[float, ...] = ()
     score_noise_floor_sd: float | None = None
     confusion_matrix: dict[str, dict[str, int]] = {}
+    #: Readings the sensor never judged because it raised — the experiment's faults, counted
+    #: in the pass rate as failures. Non-zero means the score understates the subject, and
+    #: ``ix compare`` will not call a winner.
+    sensor_faults: int = 0
 
     # Provenance — trace results to their source
     #: The model families that answered, read off the responses (``simulated`` for the
@@ -214,9 +218,14 @@ class Comparison(BaseModel, frozen=True):
     #: Across-repeat SD of mean score — the larger of the subjects' that measured one.
     noise_floor_sd: float | None
     unmatched: tuple[str, ...] = ()
-    #: Set when either side was answered by no real model (simulator or mock).
+    #: Set when either side was answered by no real model (simulator or mock), or when
+    #: either side has sensor faults.
     warning: str | None = None
     probes: tuple[ProbeDelta, ...] = ()
+    #: Sensor faults across both sides. Any at all and the verdict is ``inconclusive``: a
+    #: grader that crashes on one subject's answers moves the delta without the subjects
+    #: differing.
+    sensor_faults: int = 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -224,7 +233,7 @@ class Comparison(BaseModel, frozen=True):
         """``b_better`` / ``a_better`` only when the CI of the mean score delta excludes 0
         *and* the delta is larger than the run-to-run noise floor where one was measured;
         otherwise ``inconclusive``. Never a guess on thin data."""
-        if self.ci95 is None:
+        if self.ci95 is None or self.sensor_faults:
             return "inconclusive"
         low, high = self.ci95
         clears_noise = self.noise_floor_sd is None or abs(self.mean_delta) > self.noise_floor_sd

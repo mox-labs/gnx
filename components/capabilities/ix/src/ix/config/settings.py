@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ix.domain.errors import LabNotFoundError
+
 
 def find_lab(lab_name: str | None = None) -> Path:
     """Resolve a lab directory.
@@ -25,7 +27,7 @@ def find_lab(lab_name: str | None = None) -> Path:
         candidate = root / lab_name
         if candidate.is_dir():
             return candidate
-        raise FileNotFoundError(
+        raise LabNotFoundError(
             f"Lab '{lab_name}' not found at {candidate}.\nCreate it with: ix lab init {lab_name}"
         )
 
@@ -34,7 +36,7 @@ def find_lab(lab_name: str | None = None) -> Path:
         if is_lab(parent):
             return parent
 
-    raise FileNotFoundError("No lab found. Create one with: ix lab init <name>")
+    raise LabNotFoundError("No lab found. Create one with: ix lab init <name>")
 
 
 def is_lab(path: Path) -> bool:

@@ -42,6 +42,7 @@ Result of a sensor evaluating a single interaction. Sensors produce readings lik
 | `score` | `float \| None` | `None` | Numeric score (sensor-defined semantics) |
 | `metrics` | `dict` | `{}` | Additional numeric measurements |
 | `details` | `str` | `""` | Human-readable explanation |
+| `fault` | `"subject" \| "sensor" \| None` | `None` | Set when the sensor never judged the response: the trial errored (`subject`) or the sensor raised (`sensor`) |
 
 ---
 
@@ -108,8 +109,8 @@ Persistence boundary: experiments in, trial records and per-subject summaries ou
 | `ExperimentConfig` | An experiment as loaded: name, subjects, probes, `sensors`, `engine`, `models`, `trials`, `repeats`. `extra="forbid"`; `sensor` (one) and `engine` (a name) are shorthands, and giving both `sensor` and `sensors` is an error. `subject(name)` looks one up or raises `ConfigError` naming the others. |
 | `TrialRecord` | One trial of one probe in one repeat — `run_id`, `run_index`, `probe_id`, `trial_index`, the serialised `response` or the `error`, and its `readings`. One JSON line each in `trials.jsonl`. |
 | `ProbeResult` | One probe aggregated over its trials: mean `score`, `passed` (a majority of trials passed, by the sensor's verdict), `trial_scores`, `details`. |
-| `ExperimentResults` | One subject's run: pass rate and mean score with their standard errors over probes, the across-repeat noise floors, the confusion matrix, the `families` that answered (`measured_a_model` is false for the simulator or mock), and provenance (`run_id`, `engine`, `trials_log`, `config_hash`). |
-| `Comparison` | Subject B against A, paired by probe: `mean_delta` with its SE and 95% CI, verdict flips, the score noise floor, `unmatched` probes, a `warning` when either side measured no model, and a `verdict` of `b_better` / `a_better` / `inconclusive`. |
+| `ExperimentResults` | One subject's run: pass rate and mean score with their standard errors over probes, the across-repeat noise floors, the confusion matrix, `sensor_faults` (readings the sensor crashed on, scored as failures), the `families` that answered (`measured_a_model` is false for the simulator or mock), and provenance (`run_id`, `engine`, `trials_log`, `config_hash`). |
+| `Comparison` | Subject B against A, paired by probe: `mean_delta` with its SE and 95% CI, verdict flips, the score noise floor, `unmatched` probes, a `warning` when either side measured no model or had sensor faults, and a `verdict` of `b_better` / `a_better` / `inconclusive` — always `inconclusive` when `sensor_faults` > 0. |
 
 Activation expectations a probe can declare: `must_trigger`, `should_not_trigger`,
 `acceptable` (constants `MUST_TRIGGER`, `SHOULD_NOT_TRIGGER`, `ACCEPTABLE`).

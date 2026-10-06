@@ -6,7 +6,7 @@ No eval-specific concepts leak here.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -60,3 +60,7 @@ class Reading(BaseModel, frozen=True):
     score: float | None = None
     metrics: dict[str, Any] = {}
     details: str = ""
+    #: Whose failure a failed reading records when the sensor never judged the response:
+    #: ``subject`` (the trial errored) or ``sensor`` (the sensor raised — the experiment's
+    #: bug, not the subject's). ``None`` for an ordinary judgment, pass or fail.
+    fault: Literal["subject", "sensor"] | None = None

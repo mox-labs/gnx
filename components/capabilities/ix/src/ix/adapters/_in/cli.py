@@ -89,6 +89,11 @@ def _print_metrics(results: ExperimentResults) -> None:
             table.add_row("Noise floor, mean score (sd)", f"{results.score_noise_floor_sd:.1%}")
     table.add_row("Engine", results.engine)
     table.add_row("Answered by", ", ".join(results.families) or "-")
+    if results.sensor_faults:
+        table.add_row(
+            "Sensor faults",
+            f"[red]{results.sensor_faults}[/red]  (sensor crashed; scored as failures)",
+        )
     if results.trials_log:
         table.add_row("Trials", _short_path(results.trials_log))
     out.print(table)
@@ -171,6 +176,8 @@ def _print_comparison(c: Comparison) -> None:
     )
     if c.unmatched:
         table.add_row("Unmatched probes", ", ".join(c.unmatched))
+    if c.sensor_faults:
+        table.add_row("Sensor faults", f"[red]{c.sensor_faults}[/red]  (no winner is called)")
     out.print(table)
     if c.warning:
         out.print(f"[yellow]Warning:[/yellow] {c.warning}")

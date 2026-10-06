@@ -8,7 +8,7 @@ details, so one broken grader cannot silently drop trials from the pass rate.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from ix.domain.types import Reading, Trial
 
@@ -22,17 +22,19 @@ logger = logging.getLogger(__name__)
 
 def measure_trial(sensor: Sensor, trial: Trial) -> list[Reading]:
     if trial.error:
-        return [_failed(sensor, trial, f"error: {trial.error}")]
+        return [_failed(sensor, trial, f"error: {trial.error}", "subject")]
     try:
         return sensor.measure(trial)
     except Exception as e:
         logger.warning(
             "Sensor %s failed on trial %s/%d: %s", sensor.name, trial.probe_id, trial.trial_index, e
         )
-        return [_failed(sensor, trial, f"sensor error: {e}")]
+        return [_failed(sensor, trial, f"sensor error: {e}", "sensor")]
 
 
-def _failed(sensor: Sensor, trial: Trial, details: str) -> Reading:
+def _failed(
+    sensor: Sensor, trial: Trial, details: str, fault: Literal["subject", "sensor"]
+) -> Reading:
     return Reading(
         sensor_name=sensor.name,
         probe_id=trial.probe_id,
@@ -40,6 +42,7 @@ def _failed(sensor: Sensor, trial: Trial, details: str) -> Reading:
         passed=False,
         score=0.0,
         details=details,
+        fault=fault,
     )
 
 

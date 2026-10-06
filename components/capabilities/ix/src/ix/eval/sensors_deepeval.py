@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from ix.domain.errors import ConfigError, MissingExtraError
 from ix.domain.types import Probe, Reading, Trial
 
 if TYPE_CHECKING:
@@ -125,7 +126,7 @@ def _build_metric(
     dotpath = _METRIC_BUILDERS.get(metric_name)
     if dotpath is None:
         valid = sorted(_METRIC_BUILDERS)
-        raise ValueError(
+        raise ConfigError(
             f"Unknown DeepEval metric: {metric_name!r}. Valid metrics: {', '.join(valid)}"
         )
 
@@ -140,7 +141,7 @@ def _build_metric(
         mod = importlib.import_module(module_path)
         metric_cls = getattr(mod, class_name)
     except ImportError as e:
-        raise ImportError(
+        raise MissingExtraError(
             "DeepEvalSensor requires 'deepeval'. Install with: uv add ix[deepeval]"
         ) from e
 
@@ -199,7 +200,7 @@ class DeepEvalSensor:
         judge: Agent | None = None
         if config.judge:
             if models is None:
-                raise ValueError(
+                raise ConfigError(
                     f"deepeval judge {config.judge!r} needs a model registry, and none was wired"
                 )
             from matrix import AgentDefinition, BoundAgent

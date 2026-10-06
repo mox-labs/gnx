@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ix.domain.errors import EngineError
+from ix.domain.errors import EngineError, MissingExtraError
 from ix.domain.ports import EngineOutcome
 from ix.domain.types import Reading, Trial
 from ix.eval.measure import measure_trial, run_trial
@@ -63,7 +63,7 @@ class InspectEngine:
         try:
             import inspect_ai  # noqa: F401
         except ImportError as e:
-            raise ImportError(
+            raise MissingExtraError(
                 "the inspect engine requires 'inspect-ai'. Install with: uv add 'ix[inspect]'"
             ) from e
         self._config = config or InspectEngineConfig()
@@ -168,6 +168,7 @@ class InspectEngine:
                         passed=False,
                         score=0.0,
                         details=f"no score recorded: {getattr(sample.error, 'message', '')}",
+                        fault="sensor",
                     )
                 )
                 continue

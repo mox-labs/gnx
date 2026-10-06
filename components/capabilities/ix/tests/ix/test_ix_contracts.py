@@ -358,3 +358,89 @@ class TestCixConfigKeys:
         result = CliRunner().invoke(main, ["experiment", "validate", "e", "--lab", "lab"])
         assert result.exit_code == 1
         assert hint in " ".join(result.stderr.split())  # rich wraps at terminal width
+
+
+# --- canon rulings (software-design-canon, 2026-10-05) -----------------------------------
+
+
+class TestExpectationIsOneVocabulary:
+    @pytest.mark.parametrize("bad", ["should-not-trigger", False, "maybe"])
+    def test_an_unknown_expectation_is_a_config_error_not_a_pass(self, bad):
+        from ix.domain.errors import ConfigError
+
+        probe = Probe(id="p", prompt="q", metadata={"expectation": bad})
+        with pytest.raises(ConfigError, match="expectation"):
+            ActivationSensor.from_config(ActivationSensor.Config(), (probe,))
+
+    def test_validate_reports_it(self, lab: Path):
+        (lab / "e" / "tasks" / "p0.md").write_text("---\nid: p0\nexpectation: no\n---\nq\n")
+        result = CliRunner().invoke(main, ["experiment", "validate", "e", "--lab", "lab"])
+        assert result.exit_code == 1
+        assert "boolean" in " ".join(result.stderr.split())
+
+    def test_sensor_and_simulator_agree_on_every_probe(self):
+        from ix.composition import _build_expectations
+        from ix.eval.activation import expectation_of
+
+        probes = (
+            Probe(id="none", prompt="a"),
+            Probe(id="must", prompt="b", metadata={"expectation": "must_trigger"}),
+            Probe(id="not", prompt="c", metadata={"expectation": "should_not_trigger"}),
+            Probe(id="any", prompt="d", metadata={"expectation": "acceptable"}),
+        )
+        exp = ExperimentConfig(name="e", probes=probes)
+        simulated = _build_expectations(exp)
+        for p in probes:
+            sensor_says = expectation_of(p)
+            if sensor_says == "acceptable":
+                assert p.prompt not in simulated
+            else:
+                assert simulated[p.prompt] == (sensor_says == "must_trigger"), p.id
+
+
+class TestErrorsAreIxErrors:
+    def test_a_missing_lab_is_an_ix_error_and_still_file_not_found(self, tmp_path, monkeypatch):
+        from ix.config.settings import find_lab
+        from ix.domain.errors import IxError
+
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(IxError) as e:
+            find_lab("nope")
+        assert isinstance(e.value, FileNotFoundError)
+
+    def test_an_unimportable_graders_module_fails_loudly(self, tmp_path):
+        from ix.domain.errors import ConfigError
+        from ix.eval.sensors import OutcomeSensor
+
+        with pytest.raises(ConfigError, match="graders_module"):
+            OutcomeSensor._load_graders(str(tmp_path / "graders.txt"))
+
+
+class _Crashes:
+    name = "crashy"
+
+    def measure(self, trial):
+        raise RuntimeError("grader bug")
+
+
+class TestSensorFaults:
+    async def test_a_crashing_sensor_is_counted_as_its_own_fault(self, tmp_path: Path):
+        service = Experiment(
+            sensor=_Crashes(),
+            store=FilesystemStore(tmp_path),
+            engine=NativeEngine(),
+            agents=lambda s, t, r=0: BoundAgent(AgentDefinition(name="a"), _Echo()),
+        )
+        results = await service.run(ExperimentConfig(name="e", probes=_probes(2), trials=2))
+        assert results.sensor_faults == 4
+        assert results.pass_rate == 0.0  # still counted as failures, conservatively
+
+    def test_compare_calls_no_winner_over_sensor_faults(self):
+        a = _results("a", {"p1": 0.0, "p2": 0.0, "p3": 0.0, "p4": 0.0})
+        b = _results("b", {"p1": 1.0, "p2": 1.0, "p3": 1.0, "p4": 1.0})
+        clean = compare_results(a, b)
+        faulted = compare_results(a.model_copy(update={"sensor_faults": 3}), b)
+        assert clean.verdict == "b_better"
+        assert faulted.verdict == "inconclusive"
+        assert "sensor faults" in (faulted.warning or "")

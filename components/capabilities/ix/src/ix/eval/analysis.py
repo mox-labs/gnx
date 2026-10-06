@@ -146,7 +146,8 @@ def compare_results(a: ExperimentResults, b: ExperimentResults) -> Comparison:
         b_only_passed=sum(1 for p in probes if p.passed_b and not p.passed_a),
         noise_floor_sd=max(floors) if floors else None,
         unmatched=unmatched,
-        warning=_simulation_warning(a, b),
+        warning=_comparison_warning(a, b),
+        sensor_faults=a.sensor_faults + b.sensor_faults,
         probes=probes,
     )
 
@@ -178,11 +179,18 @@ def build_confusion_matrix(readings: list[Reading]) -> dict[str, dict[str, int]]
     return {k: dict(v) for k, v in matrix.items()}
 
 
-def _simulation_warning(a: ExperimentResults, b: ExperimentResults) -> str | None:
+def _comparison_warning(a: ExperimentResults, b: ExperimentResults) -> str | None:
+    notes = []
     unmeasured = [r.subject for r in (a, b) if not r.measured_a_model]
-    if not unmeasured:
-        return None
-    return (
-        f"{' and '.join(repr(s) for s in unmeasured)} answered by no real model "
-        "(simulator or mock): this compares the harness, not the subjects"
-    )
+    if unmeasured:
+        notes.append(
+            f"{' and '.join(repr(s) for s in unmeasured)} answered by no real model "
+            "(simulator or mock): this compares the harness, not the subjects"
+        )
+    faulted = [f"{r.subject!r} {r.sensor_faults}" for r in (a, b) if r.sensor_faults]
+    if faulted:
+        notes.append(
+            f"sensor faults ({', '.join(faulted)}): the sensor crashed on some trials, so "
+            "the delta may be the sensor's, not the subjects'"
+        )
+    return "; ".join(notes) or None

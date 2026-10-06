@@ -130,6 +130,7 @@ class Experiment:
             per_run_mean_scores=tuple(per_run_mean_scores),
             score_noise_floor_sd=compute_noise_floor(per_run_mean_scores),
             confusion_matrix=build_confusion_matrix(all_readings),
+            sensor_faults=sum(1 for r in all_readings if r.fault == "sensor"),
             families=tuple(sorted(families)),
             engine=self._engine.name,
             engine_artifacts=tuple(artifacts),
