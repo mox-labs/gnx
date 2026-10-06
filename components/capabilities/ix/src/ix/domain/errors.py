@@ -14,7 +14,11 @@ class ConfigError(IxError, ValueError):
     """An experiment, subject, sensor or engine config is invalid."""
 
 
-class LabNotFoundError(ConfigError, FileNotFoundError):
+class NotFoundError(IxError):
+    """Something named does not exist: a lab, an experiment, a subject, or saved results."""
+
+
+class LabNotFoundError(NotFoundError, FileNotFoundError):
     """No lab where one was named or searched for. Still a FileNotFoundError."""
 
 
@@ -35,3 +39,7 @@ class EngineError(IxError):
 
 class ResultsError(IxError):
     """Results that a command needs are missing or do not line up (e.g. compare)."""
+
+
+class ResultsNotFoundError(ResultsError, NotFoundError):
+    """No saved results for the subject asked for. The message lists those that have some."""

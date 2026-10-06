@@ -196,7 +196,9 @@ class TestExperiment:
             trials=3,
         )
         results = await service.run(exp)
-        assert results.status in ("excellent", "good", "needs_work", "poor")
+        # The simulator answered, so the run measured no model: graded, but not given a status.
+        assert results.grade in ("excellent", "good", "needs_work", "poor")
+        assert results.status == "unmeasured"
 
     async def test_runs_all_probes_regardless_of_metadata(self, service: Experiment):
         """All probes run including non-standard expectation values."""

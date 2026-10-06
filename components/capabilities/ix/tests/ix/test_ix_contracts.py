@@ -235,7 +235,9 @@ class TestCli:
         )
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)  # banners went to stderr
-        assert payload["subject"] == "a"
+        # One shape at any subject count: a list of results, each naming its schema.
+        assert [r["subject"] for r in payload] == ["a"]
+        assert payload[0]["schema"] == "ix.v1/results"
         assert "Running" in result.stderr
 
     def test_compare_two_subjects(self, lab: Path):
@@ -252,17 +254,17 @@ class TestCli:
         assert result.exit_code == 0, result.output
         assert "--mock is deprecated; use --simulate" in result.stderr
 
-    def test_validate_fails_with_exit_1_and_lists_problems(self, lab: Path):
+    def test_validate_fails_with_exit_3_and_lists_problems(self, lab: Path):
         (lab / "e" / "experiment.yaml").write_text(
             "name: e\nsubjects:\n  - name: a\n    config: {runtime: {type: strands}}\n"
         )
         result = CliRunner().invoke(main, ["experiment", "validate", "e", "--lab", "lab"])
-        assert result.exit_code == 1
+        assert result.exit_code == 3
         assert "runtime.type 'strands' is not registered" in result.stderr
 
     def test_unknown_subject_names_the_known_ones(self, lab: Path):
         result = CliRunner().invoke(main, ["run", "e", "--lab", "lab", "--subject", "zz"])
-        assert result.exit_code == 1
+        assert result.exit_code == 4  # not found
         assert "Subjects: a, b" in result.stderr
 
 
@@ -282,7 +284,7 @@ class TestProvenance:
         result = CliRunner().invoke(
             main, ["run", "e", "--lab", "lab", "--subject", "a", "--format", "json"]
         )
-        assert json.loads(result.stdout)["families"] == ["simulated"]
+        assert json.loads(result.stdout)[0]["families"] == ["simulated"]
 
 
 def test_inspect_engine_json_output_is_clean_stdout(lab: Path):
@@ -293,7 +295,7 @@ def test_inspect_engine_json_output_is_clean_stdout(lab: Path):
         ["run", "e", "--lab", "lab", "--subject", "a", "--engine", "inspect", "--format", "json"],
     )
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["engine"] == "inspect"
+    assert json.loads(result.stdout)[0]["engine"] == "inspect"
 
 
 # --- the run as it happens (the cix experience, kept) ------------------------------------
@@ -356,7 +358,7 @@ class TestCixConfigKeys:
         path = lab / "e" / "experiment.yaml"
         path.write_text(path.read_text() + f"{key}: anything\n")
         result = CliRunner().invoke(main, ["experiment", "validate", "e", "--lab", "lab"])
-        assert result.exit_code == 1
+        assert result.exit_code == 3
         assert hint in " ".join(result.stderr.split())  # rich wraps at terminal width
 
 
@@ -375,7 +377,7 @@ class TestExpectationIsOneVocabulary:
     def test_validate_reports_it(self, lab: Path):
         (lab / "e" / "tasks" / "p0.md").write_text("---\nid: p0\nexpectation: no\n---\nq\n")
         result = CliRunner().invoke(main, ["experiment", "validate", "e", "--lab", "lab"])
-        assert result.exit_code == 1
+        assert result.exit_code == 3
         assert "boolean" in " ".join(result.stderr.split())
 
     def test_sensor_and_simulator_agree_on_every_probe(self):

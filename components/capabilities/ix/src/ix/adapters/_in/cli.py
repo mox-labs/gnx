@@ -4,23 +4,52 @@ Thin driving adapter over the composition root. Output discipline (clig.dev): th
 output — a results table, or JSON with ``--format json`` — goes to stdout; banners,
 progress and errors go to stderr, so ``ix results x --format json | jq`` always parses.
 
-Exit codes: 0 success · 1 an ix/matrix/config error or failed validation · 2 usage.
+Exit codes (one scheme, shared with hardline):
+
+    0  success
+    1  failure not otherwise classified (an engine error, a runtime error)
+    2  usage: a bad flag or argument (click)
+    3  config: an invalid experiment, a failed ``experiment validate``, ``experiment list``
+       with an invalid experiment, or a run refused for starting live sessions implicitly
+    4  not found: a lab, experiment, subject or saved results
+    5  transient: a runtime failure whose cause is retryable (rate limit, timeout) — retry
+    6  auth: a runtime failure the provider refused for credentials
+
+With ``--format json`` an error is one line of JSON on stderr::
+
+    {"error": {"kind": "config|not_found|engine|transient|auth|unknown",
+               "message": "...", "fix": "<next command>" | null, "problems": [...]}}
+
+``problems`` appears on ``experiment validate`` only. Usage errors (2) are click's prose.
+Every JSON document on stdout names its shape in a ``schema`` field (``ix.v1/results``, …).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import sys
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import rich_click as click
-from matrix import MatrixError
+from matrix import AgentRuntimeError, MatrixError
+from matrix import ConfigError as MatrixConfigError
+from matrix import NotFoundError as MatrixNotFoundError
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from ix import __version__
-from ix.domain.errors import IxError
+from ix.domain.errors import (
+    ConfigError,
+    EngineError,
+    IxError,
+    LabNotFoundError,
+    MissingExtraError,
+    NotFoundError,
+    ResultsNotFoundError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -31,6 +60,19 @@ if TYPE_CHECKING:
 
 out = Console()
 err = Console(stderr=True)
+
+EXIT_FAILURE = 1
+EXIT_USAGE = 2
+EXIT_CONFIG = 3
+EXIT_NOT_FOUND = 4
+EXIT_TRANSIENT = 5
+EXIT_AUTH = 6
+
+_EXIT_CODES = """\b
+Exit codes: 0 ok · 1 failure · 2 usage · 3 config (incl. failed validate, refused live run)
+· 4 not found · 5 transient, retry · 6 auth.
+With --format json, an error is one JSON line on stderr: {"error": {"kind", "message", "fix"}}.
+"""
 
 
 # --- Output helpers ------------------------------------------------------------------
@@ -116,7 +158,10 @@ def _print_metrics(results: ExperimentResults) -> None:
         out.print(cm_table)
 
     out.print()
-    out.print(f"Status: {_status_style(results.status)}")
+    if results.measured_a_model:
+        out.print(f"Status: {_status_style(results.status)}")
+    else:
+        out.print(f"Status: [yellow]harness only[/yellow] ({_status_style(results.grade)})")
     if not results.measured_a_model:
         out.print(
             "[yellow]No real model answered: this checks the harness, not the subject.[/yellow]"
@@ -238,20 +283,100 @@ def _trial_progress(
         yield on_trial
 
 
-def _cli_error(message: str, fix: str | None = None) -> NoReturn:
-    err.print(f"[red]Error:[/red] {message}")
-    if fix:
-        err.print(f"  [dim]Fix: {fix}[/dim]")
-    raise SystemExit(1)
+# --- Errors and JSON -------------------------------------------------------------------
+
+
+def _json_mode() -> bool:
+    """Whether the running command was asked for ``--format json``."""
+    ctx = click.get_current_context(silent=True)
+    return ctx is not None and ctx.params.get("fmt") == "json"
+
+
+def _emit(doc: dict[str, Any] | list[dict[str, Any]]) -> None:
+    click.echo(json.dumps(doc, indent=2, default=str))
+
+
+def _classify(e: BaseException) -> tuple[str, int]:
+    """(kind, exit code) for an error — what the caller should do next, not where it arose."""
+    if isinstance(e, (NotFoundError, MatrixNotFoundError)):
+        return "not_found", EXIT_NOT_FOUND
+    if isinstance(e, (ConfigError, MissingExtraError, MatrixConfigError)):
+        return "config", EXIT_CONFIG
+    if isinstance(e, AgentRuntimeError):
+        # hardline's BackendError carries `reason` and `retryable`; read them off the cause
+        # chain without importing hardline. A runtime whose cause carries neither (the
+        # claude-sdk runtime reports HTTP status only in prose) stays unclassified.
+        cause = e.__cause__
+        while cause is not None:
+            if getattr(cause, "reason", None) == "auth":
+                return "auth", EXIT_AUTH
+            if getattr(cause, "retryable", False) is True:
+                return "transient", EXIT_TRANSIENT
+            cause = cause.__cause__
+        return "unknown", EXIT_FAILURE
+    if isinstance(e, EngineError):
+        return "engine", EXIT_FAILURE
+    return "unknown", EXIT_FAILURE
+
+
+def _cli_error(
+    message: str,
+    fix: str | None = None,
+    *,
+    kind: str = "unknown",
+    code: int = EXIT_FAILURE,
+    problems: list[str] | None = None,
+) -> NoReturn:
+    """Report a failure and exit. Under ``--format json``: one JSON line on stderr."""
+    if _json_mode():
+        body: dict[str, Any] = {"kind": kind, "message": message, "fix": fix}
+        if problems is not None:
+            body["problems"] = problems
+        click.echo(json.dumps({"error": body}), err=True)
+    else:
+        err.print(f"[red]Error:[/red] {escape(message)}")
+        for problem in problems or ():
+            err.print(f"  [red]-[/red] {escape(problem)}")
+        if fix:
+            err.print(f"  [dim]Fix: {escape(fix)}[/dim]")
+    raise SystemExit(code)
+
+
+def _fail(e: BaseException, fix: str | None = None) -> NoReturn:
+    kind, code = _classify(e)
+    _cli_error(str(e), fix, kind=kind, code=code)
 
 
 def _resolve_lab(lab_name: str | None) -> Path:
-    from ix.config.settings import find_lab
+    from pathlib import Path
+
+    from ix.config.settings import find_lab, find_project_root, is_lab
 
     try:
         return find_lab(lab_name)
-    except FileNotFoundError as e:
-        _cli_error(str(e))
+    except LabNotFoundError:
+        root = find_project_root()
+        labs = [d.name for d in sorted(root.iterdir()) if d.is_dir() and is_lab(d)]
+        message = (
+            f"lab {lab_name!r} not found under {root}"
+            if lab_name
+            else f"no lab found at or above {Path.cwd()}"
+        )
+        create = f"ix lab init {lab_name or '<name>'}"
+        fix = f"--lab {' | '.join(labs)}, or create one: {create}" if labs else create
+        _cli_error(message, fix, kind="not_found", code=EXIT_NOT_FOUND)
+
+
+def _require_experiment(lab_path: Path, name: str) -> Path:
+    exp_path = lab_path / name
+    if not (exp_path / "experiment.yaml").exists():
+        _cli_error(
+            f"experiment {name!r} not found in {lab_path}",
+            f"ix experiment list --lab {lab_path.name}",
+            kind="not_found",
+            code=EXIT_NOT_FOUND,
+        )
+    return exp_path
 
 
 def _load(name: str, lab_name: str | None) -> tuple[Path, Path, ExperimentConfig]:
@@ -259,19 +384,31 @@ def _load(name: str, lab_name: str | None) -> tuple[Path, Path, ExperimentConfig
     from ix.composition import create_store
 
     lab_path = _resolve_lab(lab_name)
-    exp_path = lab_path / name
-    if not (exp_path / "experiment.yaml").exists():
-        _cli_error(f"Experiment not found: {name}", f"ix experiment list --lab {lab_path.name}")
+    exp_path = _require_experiment(lab_path, name)
     try:
         return lab_path, exp_path, create_store(lab=lab_path).load_experiment(exp_path)
     except (IxError, MatrixError) as e:
-        _cli_error(str(e))
+        _fail(e)  # the message names the file and key; validate would only repeat it
+
+
+def _results_doc(results: ExperimentResults) -> dict[str, Any]:
+    return {"schema": "ix.v1/results", **results.model_dump(mode="json")}
+
+
+def _format_option(f: Callable[..., Any]) -> Callable[..., Any]:
+    return click.option(
+        "--format",
+        "fmt",
+        type=click.Choice(["table", "json"]),
+        default="table",
+        help="table to read; json for programs (errors become one JSON line on stderr)",
+    )(f)
 
 
 # --- CLI -------------------------------------------------------------------------------
 
 
-@click.group(invoke_without_command=True)
+@click.group(invoke_without_command=True, epilog=_EXIT_CODES)
 @click.version_option(__version__, prog_name="ix")
 @click.pass_context
 def main(ctx: click.Context) -> None:
@@ -282,8 +419,9 @@ def main(ctx: click.Context) -> None:
     \b
     ix experiment init routing --lab lab     scaffold an experiment
     ix experiment validate routing           compose everything, run nothing
+    ix run routing --plan                    what a run would do, and which of it is live
     ix run routing --simulate --seed 42      prove the harness, no API calls
-    ix run routing                           every subject, for real
+    ix run routing --subject live            one subject, for real
     ix compare routing baseline candidate    is the difference real?
     """
     if ctx.invoked_subcommand is None:
@@ -300,8 +438,9 @@ def lab() -> None:
 
 @lab.command("init")
 @click.argument("name")
-def lab_init(name: str) -> None:
-    """Create a new lab — a directory that holds experiments.
+@_format_option
+def lab_init(name: str, fmt: str) -> None:
+    """Create a new lab — a directory that holds experiments. Never overwrites.
 
     Examples:
         ix lab init ci-lab
@@ -309,44 +448,142 @@ def lab_init(name: str) -> None:
     from ix.config.settings import find_project_root
 
     lab_path = find_project_root() / name
-    if lab_path.exists():
+    created = not lab_path.exists()
+    if created:
+        lab_path.mkdir(parents=True)
+    if fmt == "json":
+        _emit(
+            {
+                "schema": "ix.v1/init",
+                "kind": "lab",
+                "name": name,
+                "path": str(lab_path),
+                "created": created,
+            }
+        )
+        return
+    if not created:
         err.print(f"[yellow]Lab already exists:[/yellow] {lab_path}")
         return
-    lab_path.mkdir(parents=True)
     err.print(f"[green]Created lab:[/green] [cyan]{name}[/cyan] at {lab_path}")
     err.print(f"  [dim]Next: ix experiment init <name> --lab {name}[/dim]")
 
 
 @lab.command("list")
-def lab_list() -> None:
+@_format_option
+def lab_list(fmt: str) -> None:
     """List labs under the project root."""
     from ix.config.settings import find_project_root, is_lab
 
     root = find_project_root()
     labs = [d for d in sorted(root.iterdir()) if d.is_dir() and is_lab(d)]
-    if not labs:
+    rows = [
+        {
+            "name": lab_path.name,
+            "experiments": sum(
+                1 for d in lab_path.iterdir() if d.is_dir() and (d / "experiment.yaml").exists()
+            ),
+            "path": str(lab_path.relative_to(root)),
+        }
+        for lab_path in labs
+    ]
+    if fmt == "json":
+        _emit({"schema": "ix.v1/labs", "labs": rows})
+        return
+    if not rows:
         err.print("[dim]No labs found. Create one with: ix lab init <name>[/dim]")
         return
     table = Table(show_header=True, header_style="bold")
     table.add_column("Lab")
     table.add_column("Experiments")
     table.add_column("Path")
-    for lab_path in labs:
-        count = sum(
-            1 for d in lab_path.iterdir() if d.is_dir() and (d / "experiment.yaml").exists()
-        )
-        table.add_row(f"[cyan]{lab_path.name}[/cyan]", str(count), str(lab_path.relative_to(root)))
+    for row in rows:
+        table.add_row(f"[cyan]{row['name']}[/cyan]", str(row["experiments"]), str(row["path"]))
     out.print(table)
 
 
 # --- Run -------------------------------------------------------------------------------
 
 
-@main.command()
+def _plan(
+    experiment: ExperimentConfig, subjects: list[Subject | None], simulate: bool
+) -> list[dict[str, Any]]:
+    """Per subject: who plays it, how many agent sessions, and whether they are live."""
+    from ix.composition import is_live, results_name, runtime_type
+
+    n = len(experiment.probes)
+    rows = []
+    for subject in subjects:
+        runtime = runtime_type(subject, simulate=simulate)
+        options = (subject.config.get("runtime") or {}) if subject and not simulate else {}
+        rows.append(
+            {
+                "subject": subject.name if subject else "default",
+                "saved_as": results_name(subject, simulate=simulate),
+                "runtime": runtime,
+                "permission_mode": options.get("permission_mode")
+                if isinstance(options, dict)
+                else None,
+                "live": is_live(runtime),
+                "probes": n,
+                "trials": experiment.trials,
+                "repeats": experiment.repeats,
+                "sessions": n * experiment.trials * experiment.repeats,
+            }
+        )
+    return rows
+
+
+def _print_plan(experiment: ExperimentConfig, rows: list[dict[str, Any]], refused: bool) -> None:
+    out.print(f"[bold]{experiment.name}[/bold] · plan (nothing was run)")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Subject")
+    table.add_column("Runtime")
+    table.add_column("Sessions (probes × trials × repeats)")
+    table.add_column("Live")
+    for row in rows:
+        live = "[red]LIVE[/red]" if row["live"] else "offline"
+        if row["live"] and row["permission_mode"]:
+            live += f" ({row['permission_mode']})"
+        table.add_row(
+            f"[cyan]{row['subject']}[/cyan]",
+            str(row["runtime"]),
+            f"{row['probes']} × {row['trials']} × {row['repeats']} = {row['sessions']}",
+            live,
+        )
+    out.print(table)
+    total = sum(r["sessions"] for r in rows)
+    live_total = sum(r["sessions"] for r in rows if r["live"])
+    out.print(f"Total: {total} sessions, {live_total} live")
+    if refused:
+        out.print(
+            "[yellow]Run as given, this would be refused:[/yellow] several subjects with a live "
+            "runtime. Name one with --subject, or pass --all."
+        )
+
+
+@main.command(epilog=_EXIT_CODES)
 @click.argument("name")
 @click.option("--lab", "lab_name", help="Lab name (auto-detected if omitted)")
 @click.option(
-    "--subject", "subject_names", multiple=True, help="Subject to run (repeatable; default: all)"
+    "--subject",
+    "subject_names",
+    multiple=True,
+    help="Subject to run (repeatable; default: all, see --all)",
+)
+@click.option(
+    "--all",
+    "all_subjects",
+    is_flag=True,
+    default=False,
+    help="Run every subject even when several are live (otherwise refused, exit 3)",
+)
+@click.option(
+    "--plan",
+    "show_plan",
+    is_flag=True,
+    default=False,
+    help="Print per subject the runtime, sessions and whether it is live; run nothing",
 )
 @click.option("--trials", type=click.IntRange(min=1), help="Override trials per probe")
 @click.option("--repeats", type=click.IntRange(min=1), help="Override whole-run repeats")
@@ -364,11 +601,13 @@ def lab_list() -> None:
     help="Override the experiment's engine",
 )
 @click.option("--seed", type=int, help="Seed for the simulator")
-@click.option("--format", "fmt", type=click.Choice(["table", "json"]), default="table")
+@_format_option
 def run(
     name: str,
     lab_name: str | None,
     subject_names: tuple[str, ...],
+    all_subjects: bool,
+    show_plan: bool,
     trials: int | None,
     repeats: int | None,
     simulate: bool,
@@ -379,17 +618,26 @@ def run(
 ) -> None:
     """Run an experiment for each subject; results are saved per subject.
 
+    With no --subject, every subject runs — unless more than one would run and any of them
+    is live (a runtime other than simulated or mock): that is refused until you name a
+    --subject or pass --all. A --simulate run of a non-simulated subject is saved as
+    <subject>@simulated, never over that subject's own results. --format json prints a
+    list of results, one per subject.
+
     \b
     Examples:
+        ix run routing --lab lab --plan
         ix run routing --lab lab --simulate --seed 42
         ix run routing --subject baseline --subject candidate
         ix run codegen --engine inspect --repeats 3
     """
-    from ix.composition import create_service
+    from ix.composition import create_service, results_name
 
     if mock_alias:
         err.print("[yellow]--mock is deprecated; use --simulate[/yellow]")
         simulate = True
+    if all_subjects and subject_names:
+        raise click.UsageError("give --subject or --all, not both")
 
     lab_path, exp_path, experiment = _load(name, lab_name)
     overrides = {k: v for k, v in (("trials", trials), ("repeats", repeats)) if v}
@@ -402,6 +650,47 @@ def run(
             if subject_names
             else list(experiment.subjects) or [None]
         )
+    except IxError as e:
+        _fail(e, f"ix experiment show {name} --lab {lab_path.name}")
+
+    plan = _plan(experiment, subjects, simulate)
+    refused = (
+        not subject_names
+        and not all_subjects
+        and len(plan) > 1
+        and any(row["live"] for row in plan)
+    )
+    if show_plan:
+        if fmt == "json":
+            _emit(
+                {
+                    "schema": "ix.v1/plan",
+                    "experiment": experiment.name,
+                    "simulate": simulate,
+                    "subjects": plan,
+                    "total_sessions": sum(r["sessions"] for r in plan),
+                    "live_sessions": sum(r["sessions"] for r in plan if r["live"]),
+                    "refused": refused,
+                }
+            )
+        else:
+            _print_plan(experiment, plan, refused)
+        return
+    if refused:
+        listing = "; ".join(
+            f"{r['subject']} ({r['runtime']}, {r['sessions']} sessions"
+            + (", live)" if r["live"] else ")")
+            for r in plan
+        )
+        _cli_error(
+            f"refusing to run {len(plan)} subjects implicitly when some are live: {listing}",
+            f"name one: ix run {name} --lab {lab_path.name} --subject <name>; or run them all: "
+            f"--all (preview: --plan)",
+            kind="config",
+            code=EXIT_CONFIG,
+        )
+
+    try:
         service = create_service(
             experiment,
             simulate=simulate,
@@ -411,24 +700,19 @@ def run(
             engine=engine,
         )
     except (IxError, MatrixError) as e:
-        _cli_error(str(e), f"ix experiment validate {name} --lab {lab_path.name}")
+        _fail(e, f"ix experiment validate {name} --lab {lab_path.name}")
 
     engine_label = engine or str(experiment.engine.get("type", "native"))
     collected: list[ExperimentResults] = []
-    for subject in subjects:
-        runtime = (
-            "simulated"
-            if simulate
-            else str((subject.config.get("runtime") or {}).get("type", "unset"))
-            if subject
-            else "unset"
-        )
+    for subject, row in zip(subjects, plan, strict=True):
+        saved_as = results_name(subject, simulate=simulate)
         err.print(
             f"Running [bold cyan]{experiment.name}[/bold cyan] · subject "
-            f"[cyan]{subject.name if subject else 'default'}[/cyan] ({runtime}) · "
+            f"[cyan]{row['subject']}[/cyan] ({row['runtime']}) · "
             f"{len(experiment.probes)} probes × {experiment.trials} trials"
             + (f" × {experiment.repeats} repeats" if experiment.repeats > 1 else "")
             + f" · engine={engine_label}"
+            + (f" · saved as {saved_as}" if saved_as != row["subject"] else "")
         )
 
         def on_probe(probe_result: ProbeResult) -> None:
@@ -447,19 +731,17 @@ def run(
                         on_probe_complete=on_probe,
                         on_run_complete=on_run if experiment.repeats > 1 else None,
                         on_trial=on_trial,
+                        save_as=saved_as,
                     )
                 )
             except (IxError, MatrixError) as e:
-                _cli_error(str(e))
+                _fail(e)
         collected.append(result)
         if fmt == "table":
             _print_metrics(result)
 
     if fmt == "json":
-        payload = [r.model_dump(mode="json") for r in collected]
-        import json
-
-        click.echo(json.dumps(payload[0] if len(payload) == 1 else payload, indent=2))
+        _emit([_results_doc(r) for r in collected])
 
 
 # --- Experiment ------------------------------------------------------------------------
@@ -470,82 +752,176 @@ def experiment() -> None:
     """Manage experiments within a lab."""
 
 
+_EXAMPLE_PROBE = """\
+---
+id: example
+# activation sensor: must_trigger | should_not_trigger | acceptable
+expectation: must_trigger
+# the skill that should fire for this prompt (with should_not_trigger: the one that must not)
+expected_skill: my-skill
+---
+Replace this with a prompt a real user would send. One probe per file; the body is sent verbatim.
+"""
+
+
 @experiment.command("init")
 @click.argument("name")
 @click.option("--lab", "lab_name", help="Lab name (auto-detected if omitted)")
-def experiment_init(name: str, lab_name: str | None) -> None:
-    """Scaffold an experiment: experiment.yaml, tasks/, and a starter subject.
+@_format_option
+def experiment_init(name: str, lab_name: str | None, fmt: str) -> None:
+    """Scaffold an experiment: experiment.yaml, an example probe, a starter subject.
+
+    Never overwrites: an existing experiment is reported, not touched.
 
     Examples:
         ix experiment init skill-activation --lab lab
     """
     lab_path = _resolve_lab(lab_name)
     exp_path = lab_path / name
-    if exp_path.exists():
+    created = not exp_path.exists()
+    files: list[str] = []
+    if created:
+        exp_path.mkdir(parents=True)
+        (exp_path / "tasks").mkdir()
+        (exp_path / "subjects").mkdir()
+        scaffold = {
+            "experiment.yaml": (
+                f'name: {name}\ndescription: ""\nengine: native\nsensor: activation\ntrials: 5\n'
+            ),
+            "tasks/example.md": _EXAMPLE_PROBE,
+            # A starter subject on the simulator, so a new experiment runs before any model is
+            # configured. Change runtime.type to claude-sdk or model for a real measurement.
+            "subjects/agent.md": (
+                "---\nname: agent\ndescription: Starter subject on the simulator.\n"
+                "runtime:\n  type: simulated\n---\nYou are a helpful assistant.\n"
+            ),
+        }
+        for rel, text in scaffold.items():
+            (exp_path / rel).write_text(text)
+            files.append(rel)
+    if fmt == "json":
+        _emit(
+            {
+                "schema": "ix.v1/init",
+                "kind": "experiment",
+                "name": name,
+                "path": str(exp_path),
+                "created": created,
+                "files": files,
+            }
+        )
+        return
+    if not created:
         err.print(f"[yellow]Already exists:[/yellow] {exp_path}")
         return
-
-    exp_path.mkdir(parents=True)
-    (exp_path / "tasks").mkdir()
-    (exp_path / "subjects").mkdir()
-    (exp_path / "experiment.yaml").write_text(
-        f'name: {name}\ndescription: ""\nengine: native\nsensor: activation\ntrials: 5\n'
-    )
-    # A starter subject on the simulator, so a new experiment runs before any model is
-    # configured. Change runtime.type to claude-sdk or model for a real measurement.
-    (exp_path / "subjects" / "agent.md").write_text(
-        "---\nname: agent\ndescription: Starter subject on the simulator.\n"
-        "runtime:\n  type: simulated\n---\nYou are a helpful assistant.\n"
-    )
     err.print(f"[green]Created experiment:[/green] [cyan]{name}[/cyan]")
-    err.print(f"  [dim]Add probes: {exp_path}/tasks/<id>.md[/dim]")
+    err.print(f"  [dim]Probe: {exp_path}/tasks/example.md (edit it; one probe per file)[/dim]")
     err.print(f"  [dim]Subject: {exp_path}/subjects/agent.md (runtime: simulated)[/dim]")
 
 
 @experiment.command("list")
 @click.option("--lab", "lab_name", help="Lab name (auto-detected if omitted)")
-def experiment_list(lab_name: str | None) -> None:
-    """List experiments in a lab."""
+@_format_option
+def experiment_list(lab_name: str | None, fmt: str) -> None:
+    """List experiments in a lab. Exits 3 if any of them is invalid (the list still prints)."""
     from ix.composition import create_store
 
     lab_path = _resolve_lab(lab_name)
     store = create_store(lab=lab_path)
-    experiments = store.list_experiments(lab_path)
-    if not experiments:
+    rows: list[dict[str, Any]] = []
+    for exp_path in store.list_experiments(lab_path):
+        try:
+            exp = store.load_experiment(exp_path)
+        except (IxError, MatrixError) as e:
+            rows.append({"name": exp_path.name, "valid": False, "error": str(e)})
+            continue
+        rows.append(
+            {
+                "name": exp.name,
+                "valid": True,
+                "error": None,
+                "probes": len(exp.probes),
+                "trials": exp.trials,
+                "repeats": exp.repeats,
+                "subjects": [s.name for s in exp.subjects],
+                "engine": str(exp.engine.get("type", "native")),
+            }
+        )
+
+    if fmt == "json":
+        _emit({"schema": "ix.v1/experiments", "lab": lab_path.name, "experiments": rows})
+    elif not rows:
         err.print(
             f"[dim]No experiments in {lab_path.name}. "
             f"Create one: ix experiment init <name> --lab {lab_path.name}[/dim]"
         )
-        return
+    else:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Name")
+        table.add_column("Probes")
+        table.add_column("Trials")
+        table.add_column("Subjects")
+        table.add_column("Engine")
+        for row in rows:
+            if not row["valid"]:
+                table.add_row(
+                    f"[red]{row['name']}[/red]", "-", "-", "[red]invalid (see below)[/red]", "-"
+                )
+                continue
+            table.add_row(
+                f"[cyan]{row['name']}[/cyan]",
+                str(row["probes"]),
+                str(row["trials"]),
+                ", ".join(row["subjects"]) or "-",
+                row["engine"],
+            )
+        out.print(table)
 
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Name")
-    table.add_column("Probes")
-    table.add_column("Trials")
-    table.add_column("Subjects")
-    table.add_column("Engine")
-    for exp_path in experiments:
-        try:
-            exp = store.load_experiment(exp_path)
-        except (IxError, MatrixError) as e:
-            table.add_row(f"[red]{exp_path.name}[/red]", "-", "-", f"[red]invalid: {e}[/red]", "-")
-            continue
-        table.add_row(
-            f"[cyan]{exp.name}[/cyan]",
-            str(len(exp.probes)),
-            str(exp.trials),
-            ", ".join(s.name for s in exp.subjects) or "-",
-            str(exp.engine.get("type", "native")),
+    invalid = [row["name"] for row in rows if not row["valid"]]
+    if invalid:
+        _cli_error(
+            f"{len(invalid)} invalid experiment(s): "
+            + "; ".join(f"{row['name']}: {row['error']}" for row in rows if not row["valid"]),
+            f"ix experiment validate {invalid[0]} --lab {lab_path.name}",
+            kind="config",
+            code=EXIT_CONFIG,
         )
-    out.print(table)
 
 
 @experiment.command("show")
 @click.argument("name")
 @click.option("--lab", "lab_name", help="Lab name (auto-detected if omitted)")
-def experiment_show(name: str, lab_name: str | None) -> None:
+@_format_option
+def experiment_show(name: str, lab_name: str | None, fmt: str) -> None:
     """Show an experiment's subjects, sensors, engine and probes."""
+    from ix.composition import is_live, runtime_type
+
     _, _, exp = _load(name, lab_name)
+    if fmt == "json":
+        _emit(
+            {
+                "schema": "ix.v1/experiment",
+                "name": exp.name,
+                "description": exp.description,
+                "engine": exp.engine,
+                "sensors": list(exp.sensors),
+                "trials": exp.trials,
+                "repeats": exp.repeats,
+                "subjects": [
+                    {
+                        "name": s.name,
+                        "description": s.description,
+                        "runtime": runtime_type(s),
+                        "live": is_live(runtime_type(s)),
+                    }
+                    for s in exp.subjects
+                ],
+                "probes": [
+                    {"id": p.id, "prompt": p.prompt, "metadata": p.metadata} for p in exp.probes
+                ],
+            }
+        )
+        return
     out.print(f"[bold]{exp.name}[/bold]")
     if exp.description:
         out.print(f"[dim]{exp.description}[/dim]")
@@ -567,70 +943,121 @@ def experiment_show(name: str, lab_name: str | None) -> None:
         out.print(table)
 
 
-@experiment.command("validate")
+@experiment.command("validate", epilog=_EXIT_CODES)
 @click.argument("name")
 @click.option("--lab", "lab_name", help="Lab name (auto-detected if omitted)")
 @click.option("--engine", type=click.Choice(["native", "inspect"]), default=None)
-def experiment_validate(name: str, lab_name: str | None, engine: str | None) -> None:
+@_format_option
+def experiment_validate(name: str, lab_name: str | None, engine: str | None, fmt: str) -> None:
     """Compose everything a run would — sensors, engine, every subject's runtime — and run
-    nothing. Reports every problem, not just the first.
-    """
-    from ix.composition import validate_experiment
+    nothing. Reports every problem, not just the first, and exits 3 if there are any.
 
-    _, exp_path, exp = _load(name, lab_name)
-    problems = validate_experiment(exp, experiment_cwd=str(exp_path.resolve()), engine=engine)
+    Also checks that local plugin paths (claude-sdk ``runtime.plugins``) exist.
+    """
+    from ix.composition import create_store, validate_experiment
+
+    lab_path = _resolve_lab(lab_name)
+    exp_path = _require_experiment(lab_path, name)
+    try:
+        exp = create_store(lab=lab_path).load_experiment(exp_path)
+    except (IxError, MatrixError) as e:
+        problems = [str(e)]  # a file that does not load stops composition at its first error
+    else:
+        problems = validate_experiment(exp, experiment_cwd=str(exp_path.resolve()), engine=engine)
     if problems:
-        err.print(f"[red]{name}: {len(problems)} problem(s)[/red]")
-        for problem in problems:
-            err.print(f"  [red]-[/red] {problem}")
-        raise SystemExit(1)
-    subjects = ", ".join(s.name for s in exp.subjects) or "default"
-    out.print(f"[green]Valid:[/green] {exp.name} — {len(exp.probes)} probes, subjects: {subjects}")
+        _cli_error(
+            f"{name}: {len(problems)} problem(s)",
+            f"fix each problem, then: ix experiment validate {name} --lab {lab_path.name}",
+            kind="config",
+            code=EXIT_CONFIG,
+            problems=problems,
+        )
+    subjects = [s.name for s in exp.subjects]
+    if fmt == "json":
+        _emit(
+            {
+                "schema": "ix.v1/validation",
+                "experiment": exp.name,
+                "valid": True,
+                "problems": [],
+                "probes": len(exp.probes),
+                "subjects": subjects,
+            }
+        )
+        return
+    out.print(
+        f"[green]Valid:[/green] {exp.name} — {len(exp.probes)} probes, "
+        f"subjects: {', '.join(subjects) or 'default'}"
+    )
 
 
 # --- Results ---------------------------------------------------------------------------
 
 
-@main.command()
+def _missing_results(lab_path: Path, name: str, e: ResultsNotFoundError) -> NoReturn:
+    """A results error whose fix is a command that will work: another subject's results if
+    there are any, else a plan of the run that would make some."""
+    from ix.composition import create_store
+
+    store = create_store(lab=lab_path)
+    if store.subjects_with_results(name):
+        fix = f"ix results {name} --lab {lab_path.name}"
+    else:
+        try:
+            store.load_experiment(lab_path / name)
+            fix = f"ix run {name} --lab {lab_path.name} --plan"
+        except (IxError, MatrixError):
+            fix = f"ix experiment validate {name} --lab {lab_path.name}"
+    _fail(e, fix)
+
+
+@main.command(epilog=_EXIT_CODES)
 @click.argument("name")
 @click.option("--lab", "lab_name", help="Lab name (auto-detected if omitted)")
-@click.option("--subject", "subject_name", help="One subject (default: every subject with results)")
-@click.option("--format", "fmt", type=click.Choice(["table", "json"]), default="table")
+@click.option(
+    "--subject",
+    "subject_name",
+    help="One subject, or <subject>@simulated (default: every subject with results)",
+)
+@_format_option
 def results(name: str, lab_name: str | None, subject_name: str | None, fmt: str) -> None:
-    """Show the latest results of an experiment, per subject."""
+    """Show the latest results of an experiment, per subject.
+
+    --format json prints a list of results, one per subject.
+    """
     from ix.composition import create_store
 
     lab_path = _resolve_lab(lab_name)
+    _require_experiment(lab_path, name)
     store = create_store(lab=lab_path)
     names = [subject_name] if subject_name else store.subjects_with_results(name)
     if not names:
-        _cli_error(f"No results for {name}", f"ix run {name} --lab {lab_path.name} --simulate")
+        _missing_results(lab_path, name, ResultsNotFoundError(f"no results for {name} yet"))
     try:
         loaded = [store.load_summary(name, n) for n in names]
+    except ResultsNotFoundError as e:
+        _missing_results(lab_path, name, e)
     except IxError as e:
-        _cli_error(str(e))
+        _fail(e)
     if fmt == "json":
-        import json
-
-        payload = [r.model_dump(mode="json") for r in loaded]
-        click.echo(json.dumps(payload[0] if len(payload) == 1 else payload, indent=2))
+        _emit([_results_doc(r) for r in loaded])
         return
     for r in loaded:
         _print_metrics(r)
 
 
-@main.command()
+@main.command(epilog=_EXIT_CODES)
 @click.argument("name")
 @click.argument("subject_a")
 @click.argument("subject_b")
 @click.option("--lab", "lab_name", help="Lab name (auto-detected if omitted)")
-@click.option("--format", "fmt", type=click.Choice(["table", "json"]), default="table")
+@_format_option
 def compare(name: str, subject_a: str, subject_b: str, lab_name: str | None, fmt: str) -> None:
     """Compare two subjects' latest results, paired probe by probe.
 
     Reports B − A with a standard error and 95% CI, the probes whose verdict flipped, and
     the noise floor. The verdict is "inconclusive" unless the CI excludes zero and the gap
-    clears the noise floor.
+    clears the noise floor. A subject may be <subject>@simulated.
 
     \b
     Example:
@@ -639,15 +1066,19 @@ def compare(name: str, subject_a: str, subject_b: str, lab_name: str | None, fmt
     from ix.composition import create_store
     from ix.eval.analysis import compare_results
 
-    store = create_store(lab=_resolve_lab(lab_name))
+    lab_path = _resolve_lab(lab_name)
+    _require_experiment(lab_path, name)
+    store = create_store(lab=lab_path)
     try:
         comparison = compare_results(
             store.load_summary(name, subject_a), store.load_summary(name, subject_b)
         )
+    except ResultsNotFoundError as e:
+        _missing_results(lab_path, name, e)
     except IxError as e:
-        _cli_error(str(e))
+        _fail(e)
     if fmt == "json":
-        click.echo(comparison.model_dump_json(indent=2))
+        _emit({"schema": "ix.v1/comparison", **comparison.model_dump(mode="json")})
     else:
         _print_comparison(comparison)
 

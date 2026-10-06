@@ -180,7 +180,7 @@ Written after every run of that subject and archived as `summary-<run_id>.json` 
 | Field | Description |
 |-------|-------------|
 | `experiment_name`, `subject`, `run_id` | |
-| `probe_results[]` | `probe_id`, `score` (mean trial score), `passed` (a **majority of trials passed**, by the sensor's verdict — never re-derived from the score), `trial_scores`, `details` |
+| `probe_results[]` | `probe_id`, `score` (mean trial score), `passed` (a **majority of trials passed**, by the sensor's verdict — never re-derived from the score), `trial_scores`, `details` (at most 3 **distinct** strings, first seen first; every trial's own are in `trials.jsonl`) |
 | `pass_rate`, `n_probes` | fraction of probes that passed, and how many probes that is over |
 | `mean_score`, `min_score`, `max_score` | over probe scores |
 | `pass_rate_stderr`, `mean_score_stderr` | CLT standard error over the `n_probes` probes sampled; `stderr_method` names it (`"clt-over-probes"`); `null` below two probes |
@@ -192,17 +192,27 @@ Written after every run of that subject and archived as `summary-<run_id>.json` 
 | `engine` | `native` or `inspect` |
 | `engine_artifacts` | e.g. `inspect_log:<path to .eval>`, one per repeat |
 | `trials_log` | this run's `trials.jsonl`, relative to the experiment directory |
-| `config_hash`, `run_timestamp`, `ix_version` | provenance |
-| `status` | computed from `pass_rate`: `excellent` (1.0), `good` (≥ 0.85), `needs_work` (≥ 0.5), `poor` |
+| `config_hash`, `run_timestamp`, `ix_version` | provenance; `config_hash` covers the whole config, probes (ids, prompts, metadata) included |
+| `seed`, `simulated` | the simulator's `--seed` (or `null`), and whether the run was made with `--simulate` |
+| `status` | computed: `unmeasured` when `measured_a_model` is false; otherwise from `pass_rate`: `excellent` (1.0), `good` (≥ 0.85), `needs_work` (≥ 0.5), `poor` |
+
+A `--simulate` run of a subject whose own runtime is not `simulated` is saved under
+`<subject>@simulated` (directory `results/<subject>-simulated/`), so it never replaces that
+subject's `summary-latest.json`. `ix results`/`ix compare` accept the `@simulated` name.
+
+`ix results --format json` and `ix run --format json` print a list of these, one per
+subject, each with an added `"schema": "ix.v1/results"`.
 
 ## Comparison — `ix compare <experiment> A B`
 
-Not persisted to disk; printed or emitted as JSON (`--format json`) from `compare_results(A, B)`
-over the two subjects' latest `ExperimentResults`.
+Not persisted to disk; printed or emitted as JSON (`--format json`, with `"schema":
+"ix.v1/comparison"`) from `compare_results(A, B)` over the two subjects' latest
+`ExperimentResults`.
 
 | Field | Description |
 |-------|-------------|
 | `experiment`, `a`, `b`, `n` | the experiment, the two subject names, and how many probes they share |
+| `run_id_a`, `run_id_b` | the `run_id` of each side's summary — which two runs were compared |
 | `pass_rate_a`, `pass_rate_b` | each subject's pass rate over the shared probes |
 | `mean_delta` | mean of (score B − score A) over shared probes |
 | `delta_stderr`, `ci95` | standard error and 95% CI of `mean_delta` (paired, over √n); `null` below two shared probes |

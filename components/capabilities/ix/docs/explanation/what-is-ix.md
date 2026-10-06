@@ -202,7 +202,7 @@ The final `ExperimentResults` carries provenance: a hash of the config, the run 
 
 **ix is not a benchmark suite.** Benchmarks provide standardized tasks and leaderboards. ix provides the experiment structure -- you bring your own probes, your own subjects, your own sensors. ix does not rank models against each other on a canonical task set. It helps you answer YOUR questions about YOUR agents.
 
-**ix is not a CI pipeline.** It can feed a CI pipeline (the exit code reflects pass/fail), but the core value is the experiment: controlled comparison, repeated trials, multi-dimensional measurement. CI is one consumer of experiment results. Research is another. Debugging is a third.
+**ix is not a CI pipeline.** It can feed a CI pipeline (read the JSON results — the exit code says whether the run worked, not whether the subject passed), but the core value is the experiment: controlled comparison, repeated trials, multi-dimensional measurement. CI is one consumer of experiment results. Research is another. Debugging is a third.
 
 ix is an experimentation platform. The distinction matters because it shapes the design: probes are not assertions, sensors are not test fixtures, subjects are not mocks. They are the vocabulary of structured experimentation applied to agent systems.
 
@@ -220,7 +220,8 @@ No Python required to define an experiment. The file format is the interface. Ve
 
 ```bash
 ix run my-experiment --lab ci-lab --simulate  # Dry run, no API calls
-ix run my-experiment --lab ci-lab             # Real run, every subject
+ix run my-experiment --lab ci-lab --plan      # What a real run would start, and what is live
+ix run my-experiment --lab ci-lab --all       # Real run, every subject
 ix results my-experiment --lab ci-lab         # View results
 ```
 

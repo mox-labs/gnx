@@ -42,12 +42,23 @@ class Experiment:
     """An experiment you run: ``run(config, subject)`` → ExperimentResults."""
 
     def __init__(
-        self, *, sensor: Sensor, store: Storage, engine: Engine, agents: AgentFactory
+        self,
+        *,
+        sensor: Sensor,
+        store: Storage,
+        engine: Engine,
+        agents: AgentFactory,
+        seed: int | None = None,
+        simulated: bool = False,
     ) -> None:
         self._sensor = sensor
         self._store = store
         self._engine = engine
         self._agents = agents
+        # Provenance only: the agent factory already carries both. Recorded on the results
+        # so a run can be reproduced, and told apart, from its own summary.
+        self._seed = seed
+        self._simulated = simulated
 
     async def run(
         self,
@@ -56,14 +67,20 @@ class Experiment:
         on_probe_complete: Callable[[ProbeResult], None] | None = None,
         on_run_complete: Callable[[int, float], None] | None = None,
         on_trial: Callable[[int, Trial, list[Reading]], None] | None = None,
+        save_as: str | None = None,
     ) -> ExperimentResults:
         """Run ``config.repeats`` repeats of one subject through the engine, then aggregate.
 
         Callbacks are for progress: ``on_trial(repeat, trial, readings)`` as each trial is
         measured, ``on_run_complete(repeat, pass_rate)`` after each repeat, and
         ``on_probe_complete`` once per probe with its result across all repeats.
+
+        ``save_as`` is the name the results are recorded and saved under (default: the
+        subject's name) — the CLI saves a simulated run of a real subject as
+        ``<name>@simulated`` so it never replaces that subject's measured results.
         """
         active = subject or Subject(name=DEFAULT_SUBJECT)
+        label = save_as or active.name
         probe_map = {p.id: p for p in config.probes}
         started = datetime.now(UTC)
         run_id = started.strftime("%Y%m%dT%H%M%S%fZ")
@@ -93,7 +110,7 @@ class Experiment:
             artifacts.extend(f"{k}:{v}" for k, v in outcome.artifacts.items())
             path = self._store.append_trials(
                 config.name,
-                active.name,
+                label,
                 run_id,
                 _records(run_id, run_idx, outcome.trials, outcome.readings),
             )
@@ -109,12 +126,14 @@ class Experiment:
         metrics = compute_metrics(probe_results)
         pass_se, score_se = standard_errors(probe_results)
 
-        config_json = config.model_dump_json(exclude={"probes"})
+        # The probes are part of what was measured: a reworded prompt or a changed expectation
+        # must change the hash, or two summaries with one hash measured different things.
+        config_json = config.model_dump_json()
         config_hash = hashlib.sha256(config_json.encode()).hexdigest()[:16]
 
         results = ExperimentResults(
             experiment_name=config.name,
-            subject=active.name,
+            subject=label,
             run_id=run_id,
             probe_results=tuple(probe_results),
             pass_rate=metrics["pass_rate"],
@@ -138,6 +157,8 @@ class Experiment:
             config_hash=config_hash,
             run_timestamp=started,
             ix_version=__version__,
+            seed=self._seed,
+            simulated=self._simulated,
         )
         self._store.save_summary(config.name, results)
         return results

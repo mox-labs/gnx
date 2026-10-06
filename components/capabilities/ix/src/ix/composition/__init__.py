@@ -68,6 +68,11 @@ if TYPE_CHECKING:
 
 EXTENSION_GROUP = "ix.components"
 SIMULATED = "simulated"
+#: Runtimes that call no model and spend nothing: ix's simulator and matrix's mock. Every
+#: other runtime is *live* — it may spend money and, on claude-sdk, run tools.
+OFFLINE_RUNTIMES = frozenset({SIMULATED, "mock"})
+#: The suffix a simulated run of a non-simulated subject is saved under.
+SIMULATED_SUFFIX = "@simulated"
 
 _SENSOR_TYPES: dict[str, tuple[SensorClass, type[BaseModel]]] = {
     "activation": (ActivationSensor, ActivationSensorConfig),
@@ -109,6 +114,32 @@ def subject_spec(subject: Subject) -> SubjectSpec:
             f"subject {subject.name!r}: {issues}. Definition keys: system_prompt, model, tools, "
             "max_turns; deployment goes under runtime: {type: ..., <options>}"
         ) from None
+
+
+def runtime_type(subject: Subject | None, *, simulate: bool = False) -> str:
+    """The runtime that will play ``subject``: ``simulated`` under ``--simulate``, else its
+    ``runtime.type``, else ``unset``. Read from config; nothing is built."""
+    if simulate:
+        return SIMULATED
+    runtime = (subject.config.get("runtime") or {}) if subject else {}
+    return str(runtime.get("type") or "unset") if isinstance(runtime, dict) else "unset"
+
+
+def is_live(runtime: str) -> bool:
+    """Whether a runtime may call a real model. ``unset`` counts as live: assume the cost."""
+    return runtime not in OFFLINE_RUNTIMES
+
+
+def results_name(subject: Subject | None, *, simulate: bool) -> str:
+    """The name a run's results are saved under.
+
+    A simulated run of a subject whose own runtime is not the simulator is saved as
+    ``<name>@simulated``, so a harness check never replaces that subject's measured results.
+    """
+    name = subject.name if subject else "default"
+    if simulate and runtime_type(subject) != SIMULATED and not name.endswith(SIMULATED_SUFFIX):
+        return name + SIMULATED_SUFFIX
+    return name
 
 
 def subject_definition(subject: Subject, spec: SubjectSpec | None = None) -> AgentDefinition:
@@ -397,7 +428,14 @@ def create_service(
         simulate=simulate,
         context={"models": experiment.models, "cwd": experiment_cwd},
     )
-    return Experiment(sensor=sensor, store=FilesystemStore(workspace), engine=chosen, agents=agents)
+    return Experiment(
+        sensor=sensor,
+        store=FilesystemStore(workspace),
+        engine=chosen,
+        agents=agents,
+        seed=seed,
+        simulated=simulate,
+    )
 
 
 def validate_experiment(
@@ -437,6 +475,34 @@ def validate_experiment(
             factory(subject, 0)
         except (IxError, MatrixError, ImportError) as e:
             problems.append(f"subject {subject.name!r}: {e}")
+        problems.extend(_missing_plugins(subject, experiment_cwd))
+    return problems
+
+
+def _missing_plugins(subject: Subject, experiment_cwd: str | None) -> list[str]:
+    """Local plugin paths (``runtime.plugins: [{type: local, path}]``) that do not exist.
+
+    Resolved the way the claude-sdk runtime resolves them: against ``runtime.cwd``, which
+    defaults to the experiment directory. The runtime itself never checks, so a dangling
+    path would otherwise surface only inside a live session.
+    """
+    runtime = subject.config.get("runtime")
+    if not isinstance(runtime, dict) or not isinstance(runtime.get("plugins"), list):
+        return []
+    base = Path(str(runtime.get("cwd") or experiment_cwd or "."))
+    problems = []
+    for i, plugin in enumerate(runtime["plugins"]):
+        if not isinstance(plugin, dict) or plugin.get("type", "local") != "local":
+            continue
+        path = plugin.get("path")
+        if not isinstance(path, str):
+            continue
+        resolved = (base / path).resolve()
+        if not resolved.exists():
+            problems.append(
+                f"subject {subject.name!r}: runtime.plugins[{i}].path {path!r} does not exist "
+                f"(resolved against {base}: {resolved})"
+            )
     return problems
 
 
@@ -483,7 +549,9 @@ def _build_mock_responses(experiment: ExperimentConfig) -> dict[str, str]:
 
 
 __all__ = [
+    "OFFLINE_RUNTIMES",
     "SIMULATED",
+    "SIMULATED_SUFFIX",
     "SubjectSpec",
     "build_registry",
     "create_engine",
@@ -491,8 +559,11 @@ __all__ = [
     "create_service",
     "create_store",
     "default_skill",
+    "is_live",
     "make_agent_factory",
     "registered_runtimes",
+    "results_name",
+    "runtime_type",
     "subject_definition",
     "subject_spec",
     "validate_experiment",

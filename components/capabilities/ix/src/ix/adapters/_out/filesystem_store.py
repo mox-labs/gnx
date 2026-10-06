@@ -11,7 +11,9 @@ Directory convention (a lab is a workspace of experiments)::
       summary-<run_id>.json                 that run's ExperimentResults
       summary-latest.json                   the most recent run's, for `ix results`
 
-Results are keyed by subject so running one subject never overwrites another's.
+Results are keyed by subject so running one subject never overwrites another's. The CLI
+saves a ``--simulate`` run of a non-simulated subject as ``<subject>@simulated`` (directory
+``<subject>-simulated``), so a harness check never replaces a measurement's latest summary.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import frontmatter
 import yaml
 from pydantic import ValidationError
 
-from ix.domain.errors import ConfigError, ResultsError
+from ix.domain.errors import ConfigError, ResultsNotFoundError
 from ix.domain.types import Probe, Subject
 from ix.eval.models import ExperimentConfig, ExperimentResults, TrialRecord
 
@@ -179,7 +181,7 @@ class FilesystemStore:
         path = self._results(experiment, subject) / _LATEST
         if not path.exists():
             have = ", ".join(self.subjects_with_results(experiment)) or "none yet"
-            raise ResultsError(
+            raise ResultsNotFoundError(
                 f"no results for subject {subject!r} in {experiment}. Subjects with results: {have}"
             )
         return ExperimentResults.model_validate_json(path.read_text())

@@ -12,7 +12,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from ix.domain.errors import ResultsError
-from ix.eval.models import Comparison, ProbeDelta, ProbeResult
+from ix.eval.models import MAX_DETAILS, Comparison, ProbeDelta, ProbeResult
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -55,7 +55,9 @@ def aggregate_readings(
             score=score,
             passed=passed,
             trial_scores=trial_scores,
-            details=tuple(r.details for r in probe_readings if r.details),
+            details=tuple(dict.fromkeys(r.details for r in probe_readings if r.details))[
+                :MAX_DETAILS
+            ],
         )
         probe_results.append(probe_result)
 
@@ -136,6 +138,8 @@ def compare_results(a: ExperimentResults, b: ExperimentResults) -> Comparison:
         experiment=a.experiment_name,
         a=a.subject,
         b=b.subject,
+        run_id_a=a.run_id,
+        run_id_b=b.run_id,
         n=n,
         pass_rate_a=sum(p.passed_a for p in probes) / n,
         pass_rate_b=sum(p.passed_b for p in probes) / n,

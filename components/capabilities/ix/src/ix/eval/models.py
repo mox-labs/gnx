@@ -71,10 +71,10 @@ class ExperimentConfig(BaseModel):
         for subject in self.subjects:
             if subject.name == name:
                 return subject
-        from ix.domain.errors import ConfigError
+        from ix.domain.errors import NotFoundError
 
         known = ", ".join(s.name for s in self.subjects) or "(none)"
-        raise ConfigError(f"no subject named {name!r} in {self.name}. Subjects: {known}")
+        raise NotFoundError(f"no subject named {name!r} in {self.name}. Subjects: {known}")
 
 
 class TrialRecord(BaseModel):
@@ -96,8 +96,17 @@ class TrialRecord(BaseModel):
     readings: tuple[Reading, ...] = ()
 
 
+#: How many distinct ``details`` strings a ProbeResult keeps. Every trial's own details are in
+#: ``trials.jsonl``; the summary keeps a few distinct ones so it stays small enough to read.
+MAX_DETAILS = 3
+
+
 class ProbeResult(BaseModel, frozen=True):
-    """Aggregated result across all trials for one probe."""
+    """Aggregated result across all trials for one probe.
+
+    ``details`` holds at most :data:`MAX_DETAILS` *distinct* detail strings, in the order they
+    were first seen — not one per trial. The per-trial record is the run's ``trials.jsonl``.
+    """
 
     probe_id: str
     score: float
@@ -155,9 +164,15 @@ class ExperimentResults(BaseModel, frozen=True):
     engine_artifacts: tuple[str, ...] = ()
     #: Where this run's trial records are, relative to the experiment directory.
     trials_log: str = ""
+    #: sha256 (first 16 hex) of the whole experiment config, probes included — their ids,
+    #: prompts and metadata — so two runs with the same hash measured the same thing.
     config_hash: str = ""
     run_timestamp: datetime | None = None
     ix_version: str = ""
+    #: The simulator's seed (``--seed``), or None. With it, a simulated run reproduces.
+    seed: int | None = None
+    #: True when the run was made with ``--simulate``: every subject played by the simulator.
+    simulated: bool = False
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -168,7 +183,16 @@ class ExperimentResults(BaseModel, frozen=True):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def status(self) -> str:
-        """A coarse label of the pass rate, for a glance; the numbers are the result."""
+        """A coarse label of the pass rate, for a glance; the numbers are the result.
+
+        ``unmeasured`` when no real model answered: a harness check earns no grade.
+        """
+        return self.grade if self.measured_a_model else "unmeasured"
+
+    @property
+    def grade(self) -> str:
+        """The pass-rate label whether or not a model answered (the table shows it beside
+        "harness only"; ``status`` withholds it from a run that measured nothing)."""
         if self.pass_rate >= 1.0:
             return "excellent"
         if self.pass_rate >= 0.85:
@@ -207,6 +231,9 @@ class Comparison(BaseModel, frozen=True):
     experiment: str
     a: str
     b: str
+    #: The run each side's results came from — the ``run_id`` of its summary.
+    run_id_a: str = ""
+    run_id_b: str = ""
     n: int
     pass_rate_a: float
     pass_rate_b: float

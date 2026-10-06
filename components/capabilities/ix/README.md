@@ -105,6 +105,7 @@ results on either engine**; a parity test asserts it.
 ## Usage
 
 ```bash
+ix run catalog-routing --lab lab --plan                    # sessions per subject, which are live
 ix run catalog-routing --lab lab --simulate --seed 42      # simulated, native engine
 ix run sensor-integrity --lab lab --engine inspect         # same experiment, Inspect engine
 ix run local-codegen --lab lab --subject local             # a real model
@@ -112,6 +113,40 @@ ix experiment list --lab lab
 ix results catalog-routing --lab lab --format json
 ix compare local-codegen local claude --lab lab            # is the difference real?
 ```
+
+A bare `ix run <experiment>` runs every subject — but when more than one would run and any
+is live (a runtime other than `simulated` or `mock`), it refuses with exit 3 and lists each
+subject's session count. Name a `--subject`, or pass `--all`. A `--simulate` run of a live
+subject is saved as `<subject>@simulated`, never over that subject's measured results.
+
+### For programs and agents
+
+Every command takes `--format json`. Each JSON document names its shape in a `schema` field
+(`ix.v1/results`, `ix.v1/comparison`, `ix.v1/plan`, …). `ix run` and `ix results` always print
+a **list** of results, one per subject, so `jq '.[0].pass_rate'` works at any subject count. A
+results summary keeps at most three distinct `details` strings per probe; every trial's own
+record is in the `trials.jsonl` that `trials_log` points to. `status` is `unmeasured` when no
+real model answered.
+
+With `--format json`, an error is one JSON line on stderr:
+
+```json
+{"error": {"kind": "not_found", "message": "experiment 'nope' not found in /…/lab", "fix": "ix experiment list --lab lab"}}
+```
+
+`kind` is `config`, `not_found`, `engine`, `transient`, `auth` or `unknown`; `fix` is a command
+that will work, or `null`; `experiment validate` adds `problems`. The exit code says what to do
+next:
+
+| Exit | Meaning |
+|------|---------|
+| 0 | success |
+| 1 | failure not otherwise classified (an engine error, a runtime error) |
+| 2 | usage: a bad flag or argument |
+| 3 | config: an invalid experiment, a failed `experiment validate`, `experiment list` with an invalid experiment, or a refused implicit live run |
+| 4 | not found: a lab, experiment, subject or saved results |
+| 5 | transient: a runtime failure whose cause is retryable — retry later |
+| 6 | auth: the provider refused the credentials |
 
 ## Out of family
 

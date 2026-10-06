@@ -14,12 +14,13 @@ ix experiment init routing --lab lab
 lab/
 └── routing/
     ├── experiment.yaml        # name, engine, sensor, trials
-    ├── tasks/                 # probes go here
+    ├── tasks/example.md       # one example probe — edit it, add more beside it
     └── subjects/agent.md      # a starter subject on the simulator (runtime: simulated)
 ```
 
-A new experiment runs as soon as it has one probe, on the simulator, before any model is
-configured.
+The scaffold validates and runs at once, on the simulator, before any model is configured.
+Neither init command overwrites anything; with `--format json` each says `"created": true` or
+`false`.
 
 ## 2. Write probes
 
@@ -73,17 +74,29 @@ one, otherwise a seeded 90/10 activation split (`--mock` still works as a deprec
 **It proves the harness, not the thing.** A simulated pass rate says the pipeline works; it
 says nothing about your catalog.
 
+`ix experiment validate` also checks that every local plugin path a subject loads
+(`runtime.plugins: [{type: local, path}]`) exists, resolved against the experiment directory.
+
 ## 5. Run for real
 
 ```bash
+ix run routing --lab lab --plan                           # what would run; nothing does
 ix run routing --lab lab --subject live --trials 1        # one trial per probe to start
 ix run routing --lab lab --subject live                   # the configured trials × repeats
 ix run routing --lab lab --subject local --engine inspect # same experiment on Inspect AI
-ix run routing --lab lab                                  # every subject, in turn
+ix run routing --lab lab --all                            # every subject, in turn
 ```
 
+`--plan` prints, per subject, its runtime, probes × trials × repeats = sessions, and whether
+it is live — any runtime other than `simulated` or `mock`. With no `--subject`, a run that
+would start more than one subject with any of them live is refused (exit 3) with that list;
+name a `--subject`, or pass `--all` to run them all. One subject, or only simulated ones, runs
+without asking.
+
 Results are keyed by subject — running one subject never overwrites another's — so running
-every subject is the normal way to set up a comparison.
+every subject is the normal way to set up a comparison. A `--simulate` run of a subject whose
+own runtime is not the simulator is saved as `<subject>@simulated`, so a harness check never
+replaces that subject's measured results; `ix results` and `ix compare` take that name too.
 
 Set `repeats: 3` or more before you compare two subjects. One run's pass rate has no error
 bar; the **noise floor** — the spread of pass rates across repeats — is what says whether a
@@ -111,6 +124,12 @@ ix results routing --lab lab --format json
 | **Noise floor (sd)** | standard deviation of per-repeat pass rate / mean score — compare differences against it |
 | **Answered by** | the model families that actually produced the responses measured, read off the responses — `simulated` under `--simulate`, never asserted from config |
 | **Confusion matrix** | activation only: expected skill × the skill that actually fired |
+| **Status** | a grade of the pass rate; `harness only` (JSON `status: "unmeasured"`) when no real model answered |
+
+`--format json` prints a list of results, one per subject, each with `"schema":
+"ix.v1/results"`. A summary keeps at most three distinct `details` strings per probe — the
+per-trial details are in `trials.jsonl`. It also records `seed`, `simulated`, and a
+`config_hash` over the whole config, probes included.
 
 Results live under `results/<subject>/<run_id>/trials.jsonl` (one `TrialRecord` per trial, every
 repeat) and `results/<subject>/summary-latest.json` (the result `ix results` reads); the path to
@@ -132,6 +151,24 @@ its standard error, a 95% CI, and which probes' verdicts flipped. The verdict is
 floor — a difference that looks real on `repeats: 1` is not, by construction, enough. If
 either subject's results show no real model answered (`--simulate`, or matrix's `mock`
 runtime), the comparison carries a warning: it checked the harness, not the subjects.
+
+## Exit codes and errors
+
+| Exit | Meaning | Next step |
+|------|---------|-----------|
+| 0 | success | |
+| 1 | failure not otherwise classified (an engine error, a runtime error) | read the message |
+| 2 | usage: a bad flag or argument | `ix <command> --help` |
+| 3 | config: invalid experiment, failed validate, invalid experiment in `list`, refused live run | fix the file named, or name `--subject` / pass `--all` |
+| 4 | not found: lab, experiment, subject or saved results | the `fix` lists what exists |
+| 5 | transient: a runtime failure whose cause is retryable | retry later |
+| 6 | auth: the provider refused the credentials | fix the key; do not retry |
+
+With `--format json` the error is one JSON line on stderr, after any progress lines:
+`{"error": {"kind", "message", "fix", "problems"?}}`. `fix` is a command that will work, or
+`null` — `ix results nope` points at `ix experiment list`, not at running an experiment that
+does not exist. Usage errors (2) stay click's prose. Trials that fail are failed readings, not
+errors, so a provider's rate limit inside a run lowers the score rather than exiting 5.
 
 ## When it disagrees with you
 
