@@ -46,7 +46,9 @@ class AgentDefinition(BaseModel):
     #: the default (the old ClaudeAgent turned ``[]`` into ``None`` and handed the agent the
     #: full toolset; see matrix/SECURITY.md M-2).
     tools: tuple[str, ...] | None = None
-    max_turns: int = Field(default=1, ge=1)
+    #: ``None`` = the runtime's default (a Claude Code agent file without ``maxTurns`` runs as
+    #: it would in Claude Code). Set it to bound a session — a one-turn routing eval sets 1.
+    max_turns: int | None = Field(default=None, ge=1)
     #: Keys a source carried that no runtime interprets (``color`` in a Claude Code agent
     #: file). Kept so a round trip loses nothing; never read for behaviour.
     metadata: dict[str, Any] = {}
@@ -56,6 +58,11 @@ class BoundAgent:
     """A definition bound to a runtime — the thing a DAG node or an eval actually calls."""
 
     def __init__(self, definition: AgentDefinition, runtime: AgentRuntime) -> None:
+        # A runtime that cannot honour a definition says so here, at binding — not mid-run,
+        # after other agents have spent their budget. ``check`` is optional on the port.
+        check = getattr(runtime, "check", None)
+        if check is not None:
+            check(definition)
         self._definition = definition
         self._runtime = runtime
 

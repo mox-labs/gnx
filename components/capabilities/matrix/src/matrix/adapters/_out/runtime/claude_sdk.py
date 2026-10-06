@@ -92,7 +92,6 @@ class ClaudeSdkRuntime:
         """The ClaudeAgentOptions keyword arguments for one definition. Pure; tested directly."""
         opts: dict[str, Any] = {
             "system_prompt": definition.system_prompt or None,
-            "max_turns": definition.max_turns,
             "plugins": self._plugins(),
             "permission_mode": self._config.permission_mode,
             "cwd": self._config.cwd,
@@ -101,6 +100,8 @@ class ClaudeSdkRuntime:
         # SDK documents as "disable all built-in tools". Never collapse one into the other.
         if definition.tools is not None:
             opts["tools"] = list(definition.tools)
+        if definition.max_turns is not None:
+            opts["max_turns"] = definition.max_turns
         if definition.model is not None:
             opts["model"] = definition.model
         if self._config.fallback_model is not None:
@@ -159,6 +160,20 @@ class ClaudeSdkRuntime:
                     f"agent {definition.name!r}: Claude SDK error: {type(e).__name__}: {e}"
                 ) from e
 
+        if result_msg is None:
+            raise AgentRuntimeError(
+                f"agent {definition.name!r}: the session ended without a result message"
+            )
+        stop = _stop(result_msg)
+        if stop is None:
+            detail = "; ".join(getattr(result_msg, "errors", None) or []) or "no detail"
+            status = getattr(result_msg, "api_error_status", None)
+            raise AgentRuntimeError(
+                f"agent {definition.name!r}: session failed ({result_msg.subtype}"
+                + (f", HTTP {status}" if status else "")
+                + f"): {detail}"
+            )
+
         usage = getattr(result_msg, "usage", None)
         return AgentResponse(
             content="".join(content_parts),
@@ -170,4 +185,22 @@ class ClaudeSdkRuntime:
             num_turns=getattr(result_msg, "num_turns", 0) or 0,
             family=FAMILY,
             model=definition.model,
+            stop=stop,
         )
+
+
+#: Result subtypes that mean "a configured limit was reached" — an ending, not a failure.
+_LIMITS = {
+    "error_max_turns": "max_turns",
+    "error_max_budget_usd": "max_budget_usd",
+    "error_max_structured_output_retries": "max_structured_output_retries",
+}
+
+
+def _stop(result: Any) -> str | None:
+    """Why the session ended, or None if it failed (execution or API error)."""
+    if result.subtype in _LIMITS:
+        return _LIMITS[result.subtype]
+    if result.is_error:
+        return None
+    return "completed"

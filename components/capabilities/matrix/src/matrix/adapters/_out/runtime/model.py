@@ -63,13 +63,17 @@ class ModelAgentRuntime:
     def models(self) -> ModelRuntime:
         return self._runtime
 
-    async def run(self, definition: AgentDefinition, task: str) -> AgentResponse:
+    def check(self, definition: AgentDefinition) -> None:
+        """Refuse, at binding, a definition this runtime would run as a different agent."""
         if definition.tools:
             raise ConfigError(
                 f"agent {definition.name!r} declares tools {list(definition.tools)}, but the "
                 "model runtime makes a single call with no tool loop. Bind it to a claude-sdk "
                 "runtime, or set tools: [] if it needs none."
             )
+
+    async def run(self, definition: AgentDefinition, task: str) -> AgentResponse:
+        self.check(definition)  # run() is reachable without BoundAgent
         from hardline import HardlineError
 
         try:

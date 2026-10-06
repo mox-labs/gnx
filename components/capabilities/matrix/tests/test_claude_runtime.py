@@ -34,11 +34,19 @@ class _FakeResultMessage:
         total_cost_usd: float = 0.01,
         usage: dict | None = None,
         num_turns: int = 1,
+        subtype: str = "success",
+        is_error: bool = False,
+        errors: list[str] | None = None,
+        api_error_status: int | None = None,
     ):
         self.duration_ms = duration_ms
         self.total_cost_usd = total_cost_usd
         self.usage = usage or {"input_tokens": 50, "output_tokens": 30}
         self.num_turns = num_turns
+        self.subtype = subtype
+        self.is_error = is_error
+        self.errors = errors
+        self.api_error_status = api_error_status
 
 
 @pytest.fixture
@@ -228,3 +236,64 @@ class TestPermissionMode:
         with caplog.at_level("WARNING"):
             _runtime()
         assert not caplog.records, "the safe default should be quiet"
+
+
+# --- how a session ended ------------------------------------------------------------------
+
+
+def _install(monkeypatch, *messages):
+    async def fake_query(prompt, options=None):
+        for m in messages:
+            yield m
+
+    sdk = types.ModuleType("claude_agent_sdk")
+    sdk.query = fake_query  # type: ignore[attr-defined]
+    sdk.ClaudeAgentOptions = lambda **kw: kw  # type: ignore[attr-defined]
+    sdk.AssistantMessage = _FakeAssistantMessage  # type: ignore[attr-defined]
+    sdk.TextBlock = _FakeTextBlock  # type: ignore[attr-defined]
+    sdk.ToolUseBlock = _FakeToolUseBlock  # type: ignore[attr-defined]
+    sdk.ResultMessage = _FakeResultMessage  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+
+
+class TestSessionEnding:
+    async def test_a_completed_session_says_so(self, fake_sdk):
+        assert (await _runtime().run(_defn(), "hi")).stop == "completed"
+
+    async def test_a_turn_limit_is_reported_not_raised(self, monkeypatch):
+        """A one-turn routing eval ends at max_turns by design; the Skill call is the result."""
+        _install(
+            monkeypatch,
+            _FakeAssistantMessage([_FakeToolUseBlock("Skill", {"skill": "aces"})]),
+            _FakeResultMessage(subtype="error_max_turns", is_error=True),
+        )
+        response = await _runtime().run(_defn(), "hi")
+        assert response.stop == "max_turns"
+        assert response.tool_calls[0]["name"] == "Skill"
+
+    async def test_a_failed_session_raises_instead_of_answering(self, monkeypatch):
+        from matrix import AgentRuntimeError
+
+        _install(
+            monkeypatch,
+            _FakeAssistantMessage([_FakeTextBlock("partial")]),
+            _FakeResultMessage(
+                subtype="error_during_execution", is_error=True, errors=["tool crashed"]
+            ),
+        )
+        with pytest.raises(AgentRuntimeError, match="error_during_execution.*tool crashed"):
+            await _runtime().run(_defn(), "hi")
+
+    async def test_an_api_error_names_the_status(self, monkeypatch):
+        from matrix import AgentRuntimeError
+
+        _install(monkeypatch, _FakeResultMessage(is_error=True, api_error_status=529))
+        with pytest.raises(AgentRuntimeError, match="HTTP 529"):
+            await _runtime().run(_defn(), "hi")
+
+    async def test_a_stream_with_no_result_raises(self, monkeypatch):
+        from matrix import AgentRuntimeError
+
+        _install(monkeypatch, _FakeAssistantMessage([_FakeTextBlock("cut off")]))
+        with pytest.raises(AgentRuntimeError, match="without a result"):
+            await _runtime().run(_defn(), "hi")

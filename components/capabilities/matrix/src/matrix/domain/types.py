@@ -206,6 +206,11 @@ class AgentResponse(BaseModel, frozen=True):
     family: str | None = None
     #: The model id or registry name the runtime used, when it knows it.
     model: str | None = None
+    #: Why the session ended, when the runtime can say: ``completed``, or the limit it hit
+    #: (``max_turns``, ``max_budget_usd``, ...). A limit is not a failure — a one-turn eval
+    #: stops there by design — so it is reported, not raised; the caller decides what it
+    #: means. A session that *failed* raises AgentRuntimeError instead. ``None``: unknown.
+    stop: str | None = None
 
 
 @runtime_checkable

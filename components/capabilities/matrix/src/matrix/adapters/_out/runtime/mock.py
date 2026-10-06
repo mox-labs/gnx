@@ -48,4 +48,5 @@ class MockRuntime:
             num_turns=1,
             family=self._config.family,
             model=definition.model,
+            stop="completed",
         )

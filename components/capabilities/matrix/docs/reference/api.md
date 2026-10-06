@@ -258,7 +258,7 @@ Frozen Pydantic model, `extra="forbid"`. The same shape as a Claude Code agent f
 | `system_prompt` | `str` | `""` | A markdown file's body |
 | `model` | `str \| None` | `None` | Interpreted by the runtime: SDK alias/id, or a hardline registry name |
 | `tools` | `tuple[str, ...] \| None` | `None` | `None` = runtime default; `()` = **no tools** (never collapsed — SECURITY.md M-2) |
-| `max_turns` | `int` | `1` | ≥ 1 |
+| `max_turns` | `int \| None` | `None` | ≥ 1; `None` = the runtime's default (an agent file without `maxTurns` runs as in Claude Code) |
 | `metadata` | `dict` | `{}` | Keys a source carried that no runtime interprets |
 
 ### `AgentRuntime` (Protocol)
@@ -266,18 +266,19 @@ Frozen Pydantic model, `extra="forbid"`. The same shape as a Claude Code agent f
 | Method | Signature |
 |--------|-----------|
 | `run` | `async (definition: AgentDefinition, task: str) -> AgentResponse` |
+| `check` *(optional)* | `(definition: AgentDefinition) -> None` — raise `ConfigError` for a definition this runtime cannot honour; `BoundAgent` calls it at binding |
 
 Built-ins, registered as `matrix.v1/runtime.<type>`:
 
 | type | config fields | notes |
 |------|---------------|-------|
 | `claude-sdk` | `permission_mode` (default `"default"`), `cwd`, `setting_sources`, `plugins`, `fallback_model`, `agents` | stamps `family="claude"`; relative plugin paths resolve against `cwd` |
-| `model` | `models` (a hardline registry section), `default_model`, `temperature`, `max_tokens` | one call; refuses definitions with tools; stamps the answering model's family |
+| `model` | `models` (a hardline registry section), `default_model`, `temperature`, `max_tokens` | one call; refuses definitions with tools at binding (`check`); stamps the answering model's family |
 | `mock` | `responses`, `default`, `family` | offline; records `calls` |
 
 ### `BoundAgent`
 
-`BoundAgent(definition, runtime)`. Properties `name`, `definition`, `runtime`;
+`BoundAgent(definition, runtime)` — calls `runtime.check(definition)` when the runtime has one. Properties `name`, `definition`, `runtime`;
 `async run(prompt) -> AgentResponse` delegates to `runtime.run(definition, prompt)`, inside an
 OpenTelemetry span named `invoke_agent {name}` (`gen_ai.operation.name=invoke_agent`,
 `gen_ai.agent.name`, plus `gen_ai.request.model`, `gen_ai.usage.input_tokens`,
@@ -303,6 +304,7 @@ Frozen Pydantic model, flat for DataFrame compatibility.
 | `num_turns` | `int` | `0` | |
 | `family` | `str \| None` | `None` | Model family that produced it — what out-of-family checks read |
 | `model` | `str \| None` | `None` | Model id or registry name, when known |
+| `stop` | `str \| None` | `None` | Why the session ended: `completed`, or the limit hit (`max_turns`, `max_budget_usd`). A limit is reported, not raised; a failed session raises `AgentRuntimeError` |
 
 ### `DefinitionSource` (Protocol)
 

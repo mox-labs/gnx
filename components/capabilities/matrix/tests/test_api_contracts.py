@@ -266,3 +266,52 @@ class TestDebuggability:
         (tmp_path / "agents" / "rev.md").write_text("---\nname: rev\n---\nReview.\n")
         container = compose(MatrixConfig(definitions=["agents"]), base_dir=str(tmp_path))
         assert "rev" in container.definitions
+
+
+class TestBindingChecks:
+    def test_a_runtime_refuses_a_definition_at_binding_not_at_first_call(self):
+        from matrix import AgentDefinition, BoundAgent, ConfigError
+
+        class Picky:
+            def check(self, definition):
+                if definition.tools:
+                    raise ConfigError("no tools here")
+
+            async def run(self, definition, task):  # pragma: no cover - never reached
+                raise AssertionError
+
+        with pytest.raises(ConfigError, match="no tools here"):
+            BoundAgent(AgentDefinition(name="a", tools=("Read",)), Picky())
+
+    def test_a_runtime_without_check_binds_as_before(self):
+        from matrix import AgentDefinition, BoundAgent
+
+        class Plain:
+            async def run(self, definition, task):  # pragma: no cover
+                raise AssertionError
+
+        assert BoundAgent(AgentDefinition(name="a", tools=("Read",)), Plain()).name == "a"
+
+    def test_model_runtime_refuses_tools_when_composed(self):
+        from matrix import ConfigError, MatrixConfig, compose
+
+        cfg = MatrixConfig.model_validate(
+            {
+                "runtimes": {"m": {"type": "model", "default_model": "x"}},
+                "agents": {"a": {"runtime": "m", "system_prompt": "s", "tools": ["Read"]}},
+            }
+        )
+        with pytest.raises(ConfigError, match="declares tools"):
+            compose(cfg)
+
+
+class TestMaxTurns:
+    def test_unset_means_the_runtime_default(self):
+        from matrix import AgentDefinition
+        from matrix.adapters._out.runtime.claude_sdk import (
+            ClaudeSdkRuntime,
+            ClaudeSdkRuntimeConfig,
+        )
+
+        opts = ClaudeSdkRuntime(ClaudeSdkRuntimeConfig()).options(AgentDefinition(name="a"))
+        assert "max_turns" not in opts
