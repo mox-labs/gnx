@@ -81,8 +81,42 @@ Another composition root wires hardline from a section of its own config:
 rt = build_runtime(config=ix_config["models"], label="ix.yaml#models")
 ```
 
-CLI: `hardline models [--json]` · `hardline check` · `hardline complete <model> "<prompt>" [--json]` ·
-`hardline --skill` (the text an agent reads) · `hardline --version`.
+CLI: `hardline models [--json]` · `hardline check [--json]` ·
+`hardline complete <model> "<prompt>" [--json]` · `hardline --skill` (the text an agent reads) ·
+`hardline --version`. `--max-tokens` must be > 0 and `--temperature` >= 0, the same bounds as a
+registry row; anything else is a usage error before a call is spent.
+
+### Output contract
+
+Every command that prints a result takes `--json`. The keys below are stable; new keys may be
+added, none removed or renamed without a version bump.
+
+| command | stdout JSON |
+|---|---|
+| `models --json` | `{"default": str\|null, "models": [ModelSpec without api_key, options]}` |
+| `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null}]}` |
+| `complete --json` | the `Completion` without `raw`: `type_url, name, text, family, model, backend, local, usage, request_id, latency_ms, attempts, retries, fallback_from` |
+
+`check` resolves each row's `api_key` reference and reports one that is unset or unreadable as
+that row's `problem` (never the value), and exits 3. Its report is printed before the exit, so
+`check --json` gives both the per-row report on stdout and the error line on stderr.
+
+### Exit codes and errors
+
+Shared with ix. A failure under `--json` is one line on stderr,
+`{"error": {"kind", "message", "retryable", "retry_after", "fix"}}`; without `--json` the same
+message is prose. `retry_after` is the provider's hint in seconds, or `null`. `fix` is a next
+step that can succeed, or `null`.
+
+| exit | meaning | `kind` | raised from |
+|---|---|---|---|
+| 0 | success | — | — |
+| 1 | failure not otherwise classified | `unknown` | `BackendError(reason="unknown")`, `ContractError`, `SchemaError` |
+| 2 | usage error (bad flags or arguments) | — | argparse |
+| 3 | config: change the input | `config`, `bad_request` | `ConfigError`, `UnknownModelError`, `SecretError`, `BackendError(reason="bad_request")` |
+| 4 | not found | `not_found` | reserved; hardline raises none today |
+| 5 | transient: retrying later may succeed | `rate_limit`, `timeout`, `unavailable` | `BackendError` with `retryable` true |
+| 6 | auth: the provider rejected the key | `auth` | `BackendError(reason="auth")` |
 
 ## Extend
 

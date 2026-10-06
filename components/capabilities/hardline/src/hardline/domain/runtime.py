@@ -25,7 +25,13 @@ from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from hardline.domain.errors import BackendError, ConfigError, ContractError, SchemaError
+from hardline.domain.errors import (
+    BackendError,
+    ConfigError,
+    ContractError,
+    SchemaError,
+    SecretError,
+)
 from hardline.domain.structured import extract_json, retry_instruction, schema_instruction
 from hardline.domain.types import (
     Completion,
@@ -124,6 +130,22 @@ class ModelRuntime:
     @property
     def registry(self) -> ModelRegistry:
         return self._registry
+
+    def secret_problems(self) -> dict[str, str]:
+        """Rows whose ``api_key`` reference does not resolve now, as name -> message.
+
+        Resolves through the same resolver a call would use, so a row that passes here will
+        not fail on its key's *existence* at call time (the provider may still reject it).
+        The resolved values are discarded; the messages name the reference, never the value.
+        """
+        problems: dict[str, str] = {}
+        for spec in self._registry:
+            if spec.api_key:
+                try:
+                    self._secrets.resolve(spec.api_key)
+                except SecretError as e:
+                    problems[spec.name] = str(e)
+        return problems
 
     async def complete(
         self,
@@ -263,6 +285,7 @@ class ModelRuntime:
             + (f" and fallbacks ({tried})" if len(chain) > 1 else "")
             + f". Last: {last}",
             reason=last.reason,
+            retry_after=last.retry_after,
         ) from last
 
     def _delay(self, attempt: int, retry_after: float | None) -> float:

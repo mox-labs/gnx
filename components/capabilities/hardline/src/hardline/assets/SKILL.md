@@ -11,8 +11,12 @@ One command for every model the operator has configured. Models are registry row
 
 ```bash
 hardline models          # name, family, backend, local?, model id
-hardline check           # validates every tier; names the file and key of any error
+hardline check           # validates every tier and resolves every api_key reference
+hardline check --json    # {"ok", "tiers": [...], "models": [{"name", "ok", "problem", ...}]}
 ```
+
+`check` exits 0 only when every row would get past composition and find its key. A key the
+provider then rejects is only discovered by a call (exit 6).
 
 If `hardline models` lists nothing, no registry exists yet. Do not invent one — ask the operator
 which models they run.
@@ -31,6 +35,25 @@ hardline complete qwen3-8b --json "..."                   # full Completion as J
 evidence: a check by the same family as the author is not an independent check. When
 `fallback_from` is set, the model that answered is not the one asked for — use the `family`
 that actually answered, not the one in `fallback_from`.
+
+## When a command fails
+
+The exit code is the next move. Pass `--json` and stderr carries one JSON line,
+`{"error": {"kind", "message", "retryable", "retry_after", "fix"}}`; `fix` is a step that can
+succeed, or `null` when there is none.
+
+| exit | kind | do this |
+|---|---|---|
+| 0 | — | use the output |
+| 1 | `unknown` | report the message; do not retry blindly |
+| 2 | — | usage: fix the flags (`hardline <command> --help`) |
+| 3 | `config`, `bad_request` | change the input: the model name, the registry row, the secret |
+| 4 | `not_found` | reserved; hardline raises none today |
+| 5 | `rate_limit`, `timeout`, `unavailable` | retry later, after `retry_after` seconds if set |
+| 6 | `auth` | stop and tell the operator the key was rejected |
+
+The runtime has already spent the row's retries and fallbacks before exit 5, so an immediate
+retry is unlikely to help.
 
 ## Choosing a model
 

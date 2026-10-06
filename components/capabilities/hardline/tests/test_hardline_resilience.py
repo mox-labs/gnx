@@ -98,6 +98,26 @@ async def test_retry_after_from_the_provider_wins_over_backoff() -> None:
     assert sleeps.delays == [3.0]
 
 
+async def test_exhausted_retries_keep_the_providers_retry_after() -> None:
+    # The exhaustion error is what a caller sees; it must still carry the provider's hint.
+    class AlwaysLimited:
+        structured_modes = frozenset({"prompt"})
+
+        async def complete(self, spec: Any, request: Any, api_key: Any) -> Any:
+            raise BackendError("slow down", reason="rate_limit", retry_after=4.0)
+
+    from hardline import build_runtime
+
+    rt = build_runtime(
+        {"models": {"a": {"backend": "limited", "model": "m", "family": "x", "retries": 1}}},
+        backends={"limited": AlwaysLimited()},
+        sleep=Sleeps(),
+    )
+    with pytest.raises(BackendError, match="exhausted retries") as e:
+        await rt.complete("a", "hi")
+    assert e.value.retry_after == 4.0
+
+
 # --- fallbacks -----------------------------------------------------------------------
 
 

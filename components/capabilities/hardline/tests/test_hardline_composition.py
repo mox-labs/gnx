@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
 
-from hardline import ConfigError, SecretError, build_runtime
-from hardline.adapters._in.cli import main
+from hardline import BackendError, ConfigError, SecretError, build_runtime
+from hardline.adapters._in.cli import error_payload, main
 from hardline.adapters._out.secrets import EnvFileSecretResolver
 from hardline.adapters._out.yaml_source import MappingConfigSource, YamlConfigSource
 from hardline.composition import discover_backends, discover_sources, load_registry, merge_tiers
@@ -202,8 +203,190 @@ def test_cli_complete_json(cli_config: Path, capsys: pytest.CaptureFixture[str])
 
 
 def test_cli_error_exit_code(cli_config: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["complete", "missing", "x"]) == 1
+    # An unknown model name is input the caller must change: config, exit 3.
+    assert main(["complete", "missing", "x"]) == 3
     assert "unknown model 'missing'" in capsys.readouterr().err
+
+
+# --- CLI: exit codes, JSON errors, check (agent-drivability F2/F3/F5) ----------------
+
+_ERROR_KEYS = {"kind", "message", "retryable", "retry_after", "fix"}
+
+
+def _scripted_config(tmp_path: Path, reason: str) -> None:
+    _write(
+        tmp_path / "hardline.yaml",
+        {
+            "models": {
+                "s": {
+                    "backend": "mock",
+                    "model": "m",
+                    "family": "mocka",
+                    "retries": 0,  # no backoff sleep: the first failure is final
+                    "options": {"script": [{"error": reason}]},
+                }
+            }
+        },
+    )
+
+
+def _error_line(err: str) -> dict[str, Any]:
+    lines = err.strip().splitlines()
+    assert len(lines) == 1, f"expected one JSON line on stderr, got: {err!r}"
+    payload: dict[str, Any] = json.loads(lines[0])
+    assert set(payload) == {"error"} and set(payload["error"]) == _ERROR_KEYS
+    return payload["error"]
+
+
+@pytest.mark.parametrize(
+    ("reason", "code", "retryable"),
+    [
+        ("rate_limit", 5, True),
+        ("timeout", 5, True),
+        ("unavailable", 5, True),
+        ("auth", 6, False),
+        ("bad_request", 3, False),
+        ("unknown", 1, False),
+    ],
+)
+def test_cli_backend_reason_sets_exit_code_and_json_error(
+    reason: str,
+    code: int,
+    retryable: bool,
+    cli_config: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _scripted_config(tmp_path, reason)
+    assert main(["complete", "s", "x", "--json"]) == code
+    out, err = capsys.readouterr()
+    assert out == ""
+    error = _error_line(err)
+    assert error["kind"] == reason
+    assert error["retryable"] is retryable
+    assert error["retry_after"] is None
+    assert (error["fix"] is None) == (reason == "unknown")
+
+
+def test_cli_backend_error_without_json_is_prose_with_same_code(
+    cli_config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _scripted_config(tmp_path, "auth")
+    assert main(["complete", "s", "x"]) == 6
+    assert capsys.readouterr().err.startswith("hardline: model 's' (mock): scripted auth")
+
+
+def test_error_payload_carries_retry_after() -> None:
+    payload, code = error_payload(BackendError("slow down", reason="rate_limit", retry_after=7.0))
+    assert code == 5
+    assert payload["error"]["retry_after"] == 7.0 and payload["error"]["retryable"] is True
+
+
+def test_cli_unknown_model_json_error(cli_config: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["complete", "missing", "x", "--json"]) == 3
+    error = _error_line(capsys.readouterr().err)
+    assert error["kind"] == "config" and "unknown model 'missing'" in error["message"]
+    assert error["fix"] is not None and "hardline models" in error["fix"]
+
+
+def test_cli_invalid_config_is_exit_3(
+    cli_config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(tmp_path / "hardline.yaml", {"models": {"q": {"backend": "mock", "model": "m"}}})
+    assert main(["models", "--json"]) == 3
+    error = _error_line(capsys.readouterr().err)
+    assert error["kind"] == "config" and "family" in error["message"]
+
+
+def _secret_config(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "hardline.yaml",
+        {
+            "models": {
+                "q": {"backend": "mock", "model": "m", "family": "qwen"},
+                "g": {
+                    "backend": "mock",
+                    "model": "m",
+                    "family": "gemini",
+                    "api_key": "env:HL_TEST_MISSING_KEY",
+                },
+            }
+        },
+    )
+
+
+def test_cli_check_fails_on_unset_env_secret(
+    cli_config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("HL_TEST_MISSING_KEY", raising=False)
+    _secret_config(tmp_path)
+    assert main(["check"]) == 3
+    out, err = capsys.readouterr()
+    assert "ok:" not in out
+    assert "models.g.api_key" in err and "HL_TEST_MISSING_KEY is not set" in err
+
+
+def test_cli_check_json_reports_per_row_and_never_the_value(
+    cli_config: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("HL_TEST_MISSING_KEY", raising=False)
+    _secret_config(tmp_path)
+    assert main(["check", "--json"]) == 3
+    out, err = capsys.readouterr()
+    report = json.loads(out)
+    assert set(report) == {"ok", "tiers", "models"} and report["ok"] is False
+    rows = {row["name"]: row for row in report["models"]}
+    assert rows["q"]["ok"] is True and rows["q"]["problem"] is None
+    assert rows["g"]["ok"] is False and "HL_TEST_MISSING_KEY" in rows["g"]["problem"]
+    assert _error_line(err)["kind"] == "config"
+
+    monkeypatch.setenv("HL_TEST_MISSING_KEY", "sk-very-secret-value")
+    assert main(["check", "--json"]) == 0
+    out, err = capsys.readouterr()
+    assert json.loads(out)["ok"] is True and err == ""
+    assert "sk-very-secret-value" not in out
+
+
+def test_cli_check_json_ok(cli_config: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["check", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is True
+    assert set(report["tiers"][0]) == {"source", "present"}
+    assert set(report["models"][0]) == {"name", "backend", "family", "ok", "problem"}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["complete", "", "x", "--temperature", "-1"],
+        ["complete", "", "x", "--temperature", "nan"],
+        ["complete", "", "x", "--max-tokens", "0"],
+    ],
+)
+def test_cli_numeric_bounds_are_usage_errors(
+    argv: list[str], cli_config: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    assert exc.value.code == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_cli_temperature_zero_is_accepted(cli_config: Path) -> None:
+    assert main(["complete", "", "x", "--temperature", "0"]) == 0
+
+
+def test_cli_help_lists_exit_codes(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    out = capsys.readouterr().out
+    assert "exit codes:" in out and "5 transient" in out and "6 auth" in out
 
 
 def test_cli_skill(capsys: pytest.CaptureFixture[str]) -> None:
