@@ -1,244 +1,154 @@
 # What is ix?
 
-## An experiment, running
-
-You have an agent that picks which tool subcommand to call based on a natural language request. Six subcommands, overlapping semantics. You changed the documentation in the system prompt from terse `--help` text to structured skill-format guidance. Did it help?
-
-Here is what that question looks like as an ix experiment:
-
-```
-ci-lab/cep-001/
-├── experiment.yaml          # 3 subjects, outcome sensor, 6 task probes
-├── tasks/
-│   ├── task-001.md          # Auth token storage — find DuckDB decision
-│   ├── task-002.md          # Rate limiting — extract token bucket config
-│   └── ...                  # 6 probes targeting corpus retrieval + YAML extraction
-└── subjects/
-    ├── help-only.md         # Standard --help output
-    ├── skill-at-tool.md     # Structured skill-format guidance
-    └── help-plus-agent-skill.md  # Both --help and agent-provided skill
-```
-
-```bash
-ix run cep-001 --lab ci-lab
-```
-
-ix sends each probe to a subject, repeated across trials. For every invocation, a sensor grades the agent's response — did it find the right data and produce correct YAML? After all trials complete, ix aggregates: per-probe accuracy, mean scores, rollback triggers.
-
-The output is numbers you can compare, reproduce, and act on. Not "it seemed to work better."
-
-That is what ix does. The rest of this document explains why it is built the way it is.
-
----
-
-## Why ad-hoc evaluation fails for agents
-
-Three properties of agent systems break informal testing:
-
-**Non-determinism.** The same prompt produces different outputs on different runs. Ask an agent to pick `locate` versus `trace` five times and you might get 3/5, then 4/5, then 2/5. A single run tells you almost nothing. You need repeated trials and aggregation to distinguish signal from stochasticity. (Evidence level: Strong -- this is a well-established property of LLM sampling.)
-
-**Multi-dimensional quality.** An agent can get the right tool but wrong arguments. It can get the right answer for the wrong reason. A binary pass/fail misses the structure. You need grading that decomposes quality into the dimensions you actually care about -- command selection accuracy separate from argument quality, activation precision separate from recall.
-
-**Compositional complexity.** Real agent behavior depends on system prompt, model choice, available tools, and temperature interacting simultaneously. Changing one variable and eyeballing the output confounds everything. You need controlled comparison: same probes, same trials, different subjects. A 2x2 factorial design that can separate format effects from content effects, because the interaction might be what matters.
-
-ix provides the structure to handle all three. Repeated trials with aggregation. Multi-dimensional sensors. Controlled multi-subject comparison.
-
----
-
-## The four primitives
-
-Everything in ix is built from four types. They live in `ix.domain.types` and carry no eval-specific assumptions -- they express any experiment.
-
-**Probe** -- the stimulus. An id, a prompt, and a metadata dict.
-
-```python
-class Probe(BaseModel, frozen=True):
-    id: str
-    prompt: str
-    metadata: dict = {}
-```
-
-The probe does not carry an "expectation" field. Ground truth goes in metadata, and the sensor decides how to interpret it. A probe for skill-activation puts `expectation: must_trigger` in metadata. A probe for code generation puts `test_cases` and `function_name`. A probe for tool-usage puts `expected_command` and `expected_args`. The probe is the stimulus; the sensor owns the judgment.
-
-This separation matters. The same probe can mean different things to different sensors. An `ActivationSensor` checks whether a skill fired. A `FunctionTestSensor` extracts code and runs test cases. A `DeepEvalSensor` measures answer relevancy. They all receive the same Trial object -- they just read different keys from the metadata they were configured with at construction.
-
-**Subject** -- the thing being tested. A name and a config dict.
-
-```python
-class Subject(BaseModel, frozen=True):
-    name: str
-    description: str = ""
-    config: dict = {}
-```
-
-A subject is pure identity: an agent definition (system prompt, model, tools, turn budget) plus the runtime that plays it (`runtime.type` — `claude-sdk`, `model`, `simulated` (ix's simulator), or matrix's own `mock` — and that runtime's options). The composition root binds the two into a matrix agent, so moving a subject between the Claude SDK and a local model is a config change. In a 2x2 experiment, you have four subjects. In an A/B test, two. The subject does not know how to run itself -- it is data, not behavior.
-
-**Trial** -- one execution of a probe against a subject.
-
-```python
-class Trial(BaseModel, frozen=True):
-    probe_id: str
-    trial_index: int
-    response: Any = None
-    error: str | None = None
-```
-
-A trial pairs a probe identity with what the agent returned. If the agent raised an exception, `error` captures it and `response` stays `None`. The sensor gets the trial; it never sees the original probe directly. It looks up ground truth by `probe_id` using a registry it was given at construction time.
-
-**Reading** -- the result of a sensor measuring a trial.
-
-```python
-class Reading(BaseModel, frozen=True):
-    sensor_name: str
-    probe_id: str
-    trial_index: int
-    passed: bool
-    score: float | None = None
-    metrics: dict = {}
-    details: str = ""
-```
-
-A reading is what an instrument produces. `passed` is the binary judgment. `score` is the continuous signal. `metrics` holds decomposed measurements (tests_passed, tests_failed). `details` is the human-readable explanation. Every reading traces back to its trial via `probe_id` and `trial_index`, enabling joins and aggregation downstream.
-
-These four types are frozen Pydantic models. Immutable, serializable, no behavior attached. The experiment produces a stream of readings; analysis is just grouping and counting.
-
----
-
-## The inner DAG
-
-Each probe-trial iteration runs as a four-node directed acyclic graph:
-
-```
-ProbeNode ──┐
-            ├──▶ TrialNode ──▶ SensorNode
-SubjectNode ┘
-```
-
-This is a DAG, not a pipeline. ProbeNode and SubjectNode have no dependency on each other -- they can run concurrently. TrialNode depends on both. SensorNode depends on TrialNode. The topology is declared through `requires` and `provides` on each node, and matrix enforces the reads:
-
-| Node | Consumes | Produces |
-|------|----------|----------|
-| ProbeNode | nothing | `ix.v1/probe.stimulus` |
-| SubjectNode | nothing | `ix.v1/subject` |
-| TrialNode | `ix.v1/probe.stimulus`, `ix.v1/subject` | `ix.v1/trial.observation` |
-| SensorNode | `ix.v1/trial.observation` | `ix.v1/sensor.readings` |
-
-TrialNode is where agent execution happens. It asks the agent factory for the subject's agent — a definition bound to a runtime resolved by type URL (`matrix.v1/runtime.claude-sdk`, `matrix.v1/runtime.model`, `matrix.v1/runtime.mock`, `ix.v1/runtime.simulated`) — calls `agent.run(prompt)`, and wraps the response in a Trial. If the agent fails, the Trial captures the error. Either way, SensorNode gets a Trial to measure.
-
-SensorNode delegates to the Sensor protocol. If the trial has an error, it produces a failed reading without calling the sensor. If the sensor itself throws, it catches the exception and produces a failed reading with the error message. Failures propagate as data, not as exceptions that abort the experiment.
-
-This DAG is the **native engine**. The **Inspect engine** runs the same repeat as an Inspect AI task — probes as samples, trials as epochs, the subject as a solver, the sensor as a scorer — and leaves an `.eval` log per repeat. Aggregation belongs to the experiment, not the engine, so the same experiment gives the same results either way.
-
-The DAG runs on Matrix's Orchestrator. Matrix is the Agentic Data Plane -- it provides the agent runtimes, the component registry, and the DAG execution engine. ix provides the experiment semantics: what to test, how to grade, how to aggregate. The dependency is one-way: ix depends on Matrix. Matrix knows nothing about experiments or sensors.
-
----
-
-## Sensors: why "sensor" and not "grader"
-
-A sensor is an instrument that measures a trial and produces readings. The `measure()` protocol:
-
-```python
-@runtime_checkable
-class Sensor(Protocol):
-    @property
-    def name(self) -> str: ...
-    def measure(self, trial: Trial) -> list[Reading]: ...
-```
-
-The name "sensor" comes from the instrumentation metaphor. A grader implies a single correct answer and a binary judgment. A sensor implies measurement -- it can produce continuous scores, multiple metrics, partial credit. The `ToolUsageSensor` gives 1.0 for right command and right args, 0.5 for right command but wrong args, 0.0 for wrong command. That is measurement, not grading.
-
-ix ships four sensors:
-
-**ActivationSensor** -- did the agent invoke the expected tool? Expectation-aware: a `should_not_trigger` probe that correctly stays silent scores `passed=True`. Deterministic, fast, no API calls.
-
-**FunctionTestSensor** -- extracts code from the agent's response, loads it into an isolated module, runs test cases with a timeout. Returns `score = tests_passed / tests_total`. Ground truth (function name, test cases) is injected at construction from probe metadata.
-
-**ToolUsageSensor** -- checks subcommand selection and argument quality. Two-tier scoring.
-
-**DeepEvalSensor** -- wraps any DeepEval metric (answer relevancy, faithfulness, hallucination, bias, toxicity, GEval) as an ix sensor. When a judge agent is provided, LLM grading calls route through Matrix's Agent protocol, making grading costs observable.
-
-Multiple sensors compose via `CompositeSensor`, which runs N sensors and flattens the readings. One experiment, measured from multiple angles. The experiment config declares which sensors to use:
-
-```yaml
-sensors:
-  - type: activation
-    expected_skill: build-eval
-  - type: deepeval
-    metric: answer_relevancy
-    threshold: 0.7
-```
-
-Ground truth is injected into each sensor at construction time by the composition layer, not discovered from the probe at measurement time. The sensor receives a registry of `probe_id -> ground_truth` and looks up what it needs when `measure()` is called. This keeps the Sensor protocol clean: `measure(trial) -> list[Reading]`, nothing else.
-
----
-
-## The experiment loop
-
-The `Experiment` class ties it together. It receives infrastructure (registry, sensor, store) at construction and executes the full matrix when `run()` is called:
-
-```
-for probe in config.probes:
-    for trial_index in range(config.trials):
-        readings += run_trial(probe, subject, sensor, registry, trial_index)
-```
-
-This is the outer loop. Each `run_trial` invocation builds and runs the inner DAG described above. The cross-product of probes and trials produces the complete observation matrix.
-
-After the loop, two pure functions aggregate:
-
-1. **`aggregate_readings`** -- groups readings by `probe_id`, computes pass rate per probe, produces a `ProbeResult` for each. A probe passes if more than half its trials passed (majority vote).
-
-2. **`compute_metrics`** -- takes the list of `ProbeResult`s, computes `pass_rate` (fraction of probes that passed), `mean_score` (mean of continuous per-probe scores), `min_score`, `max_score`.
-
-Uncertainty is reported two ways, not conflated. `standard_errors` gives the CLT standard error of `pass_rate` and `mean_score` over the probes sampled -- how much the number would move with a different draw of probes like these. Across `repeats`, `compute_noise_floor` gives the standard deviation of pass rate and mean score run to run -- how much the number moves when nothing changes but the run. `ix compare <experiment> A B` pairs two subjects' results probe by probe and reports the mean delta, its standard error, a 95% CI, and a verdict that stays `inconclusive` unless the CI excludes zero *and* the delta clears the larger subject's noise floor.
-
-The final `ExperimentResults` carries provenance: a hash of the config, the run timestamp, the ix version, and the model `families` that actually answered (read off the trial responses, not asserted by config) -- a subject run under `--simulate` records `("simulated",)` there, never a model family it didn't call. `measured_a_model` is `False` when no real model answered, so a harness check cannot be mistaken for a measurement; `ix compare` surfaces the same warning when either side's results fail that check. Status is a `@computed_field` derived from pass_rate -- not a separate interpretation layer. The numbers speak: >= 1.0 is "excellent", >= 0.85 is "good", >= 0.50 is "needs_work", below is "poor".
-
----
+## The question it answers
+
+You changed something about an agent: its system prompt, a skill description, the model, the
+tools it may call. Did the change help? Asking the agent once and reading the answer does not
+tell you. The same prompt gives different answers on different runs, an answer can be right
+on one dimension and wrong on another, and a difference you see once may be the run's
+wobble rather than the change.
+
+ix turns the question into an experiment. You write the prompts (probes) and the variants
+(subjects) as files. ix puts every probe to every subject a number of times, has a sensor
+judge each response, and reports how often each subject passed, how sure that number is, and
+whether one subject beat another by more than the uncertainty.
+
+## The four values
+
+Everything ix measures is built from four frozen values in `ix.domain.types`. None of them
+knows about evals in particular; the same shapes describe a benchmark or a load test.
+
+- **Probe**: an `id`, a `prompt`, and `metadata`. The metadata is the probe's ground truth
+  (`expectation: must_trigger`, `test_cases`, `expected_facts`), and only sensors read it.
+- **Subject**: a `name`, a `description` and a `config`. The config names a configured agent
+  or defines one inline. A subject is data; ix's composition root turns it into a runnable
+  matrix agent.
+- **Trial**: one probe put to one subject once. It holds the `response`, or the `error`
+  together with an `error_reason` when the session failed.
+- **Reading**: what a sensor concluded about one trial: `passed`, an optional `score`,
+  `metrics`, `details`, and `fault` when the sensor never judged the response.
+
+## A run, step by step
+
+`ix run` repeats this for each subject:
+
+1. For each of `repeats` repeats, the **engine** runs every probe × trial and returns exactly
+   one Trial for each. It does not judge anything.
+2. The **experiment** measures every trial with its one rule (`ix.eval.measure.measure_trial`
+   over the configured sensors). The rule is memoised per repeat: the Inspect engine calls it
+   while it runs so Inspect's log carries the scores, and the experiment's own pass reuses
+   those readings instead of judging twice.
+3. Every trial, with its response and readings, is appended to the run's `trials.jsonl`.
+4. Readings are aggregated per probe. A probe passes when a majority of its trials passed,
+   by the sensor's own verdict; ix never re-derives a verdict from a score.
+5. The summary is computed (pass rate, mean score, standard errors, noise floors, faults,
+   provenance) and saved as the subject's `summary-latest.json`.
+
+Because the engine only executes, the same experiment is judged the same way on either
+engine. The native engine runs each trial as one run of a matrix flow, compiled once per
+repeat, so matrix's observers (tracing, for one) see every trial. The Inspect engine runs each
+repeat as an Inspect AI task and leaves an `.eval` log you can open with `inspect view`.
+
+## Whose failure is it?
+
+An agent session can fail for reasons that have nothing to do with the agent. Counting a rate
+limit against a subject makes it look worse than it is; dropping the trial silently makes the
+denominator smaller without anyone noticing. ix does neither. A trial that did not produce a
+judgment becomes a failed reading with a `fault`:
+
+| fault | when | in the score? |
+|---|---|---|
+| `subject` | the runtime classified the failure as the agent's own: `failed` (the session ran and broke) or `refused` (the model declined) | yes, as a failure |
+| `harness` | the session never had a fair chance: `rate_limited`, `unavailable`, `timeout` (including a session cut off by the native engine's `trial_timeout_s`), `auth`, `incapable` (the runtime cannot run the definition), `engine` (the engine lost the trial), `setup` (the subject's agent could not be built), `unclassified` (the runtime raised something other than matrix's classified error, an adapter bug) | no |
+| `sensor` | the sensor raised while judging | yes, as a failure |
+
+Harness faults are counted in `harness_faults`. A probe whose every trial was a harness fault
+is listed in `unmeasured_probes` and left out of `n_probes` and every rate. Sensor faults are
+counted in `sensor_faults`. Either kind makes `ix compare` return `inconclusive`: a grader
+that crashes on one subject's answers, or a provider that throttled one run, moves the
+difference without the subjects differing. The fix is to rerun, or to fix the sensor, not to
+read the delta.
+
+A reason a runtime invents beyond these counts as the subject's. A trial whose agent could
+not be built is recorded like any other failed trial, so the trials already run are kept.
+`trial_timeout_s` is a native-engine option.
+
+ix also counts how each completed session ended, in `stops` (`completed`, `max_turns`, ...).
+A session stopped by a limit is still judged as it stood; the results table shows
+"Sessions cut short" when any session ended other than `completed`.
+
+## Two kinds of uncertainty
+
+ix reports two numbers and keeps them apart.
+
+- **Standard error over probes** (`pass_rate_stderr`, `mean_score_stderr`). Probes are a
+  sample of the prompts the agent will meet. This says how much the pass rate would move with
+  a different draw of probes like these. It is shown as `±` in the results table.
+- **Noise floor across repeats** (`noise_floor_sd`, `score_noise_floor_sd`). With
+  `repeats: 2` or more, this is the standard deviation of the pass rate and mean score from
+  repeat to repeat: how much the number moves when nothing changes but the run.
+
+`ix compare <experiment> A B` pairs the two subjects probe by probe and computes the mean of
+(score B − score A), its standard error over the shared probes, and a 95% interval. The
+verdict is `b_better` or `a_better` only when that interval excludes zero **and** the mean
+difference is larger than the larger of the two subjects' noise floors. Otherwise, and
+always when either side has harness or sensor faults or no real model answered on either
+side, it is `inconclusive`. With one repeat
+there is no noise floor, and the comparison says so.
+
+## Measured, or only exercised?
+
+`--simulate` puts every subject on ix's simulator. It returns a probe's canned
+`mock_response` when there is one, and otherwise activates the expected skill 90% of the time
+for must-trigger probes and 10% for should-not-trigger ones. matrix's `mock` runtime returns
+fixed replies from config. Neither calls a model. Both prove that the experiment loads,
+composes, runs, measures and saves; neither says anything about an agent.
+
+ix records which model families actually answered, read off the responses rather than the
+config. When only `simulated` or `mock` answered, `measured_a_model` is false, the status is
+`unmeasured` (the table prints "harness only"), and `ix compare` attaches a warning and
+returns `inconclusive` however large the difference looks (`both_measured` is false). A simulated run
+of a subject whose own runtime is something else is saved as `<subject>@simulated`, so it
+never replaces that subject's real results.
+
+## Configuration is shared
+
+ix does not keep its own list of models and agents. It reads matrix's config tiers, so a
+runtime or agent you configure once in `~/.matrix/config.yaml` or `./matrix.yaml` is available
+to ix and to every other tool built on matrix. ix adds an `ix:` section for its own defaults
+(`trials`, `repeats`, `engine`, `lab`). An experiment's `experiment.yaml` overrides those
+defaults, and command-line flags override the experiment.
+
+A subject either names a configured agent (`agent: reviewer`), which brings its definition
+and its runtime, or defines an agent inline with a `runtime: {type: ...}`. Any definition
+field the subject sets (`system_prompt`, `model`, `tools`, `max_turns`) overrides the named
+agent's. An inline subject gets one turn unless it says otherwise, because most experiments
+measure a single reply.
+
+## Extension points
+
+ix declares two extension points on matrix's registry, `sensor` and `engine`, and registers
+its own sensors and engines there through the same `matrix.extensions` entry point a third
+party uses. ix has no private list of built-ins. A config names a built-in by its short name
+(`type: activation`, which means `ix.v1.sensor.activation`) and anyone else's by its full
+type URL (`type: acme.v1.sensor.brevity`).
+
+An engine entry may declare `observers` (matrix's configured observers) and `results_dir`
+(where the experiment's results go; Inspect writes its logs under it). A sensor entry
+declares what it needs from composition: `probes` (the experiment's probes, to
+read ground truth from) and, for a sensor that asks a model to grade, `judge`. `judge(name)`
+returns a matrix agent: the configured agent of that name, or else that model on matrix's
+`model` runtime. A sensor's build function may also declare `truth_keys`, the probe keys it
+reads; that is how ix refuses a probe key no configured sensor reads. A sensor that does not
+declare them may read anything, and the check is skipped for that experiment.
 
 ## What ix is not
 
-**ix is not a test framework.** pytest asserts deterministic expectations. Agent outputs are stochastic. ix runs N trials and aggregates, because a single assertion on a non-deterministic system is noise.
-
-**ix is not a benchmark suite.** Benchmarks provide standardized tasks and leaderboards. ix provides the experiment structure -- you bring your own probes, your own subjects, your own sensors. ix does not rank models against each other on a canonical task set. It helps you answer YOUR questions about YOUR agents.
-
-**ix is not a CI pipeline.** It can feed a CI pipeline (read the JSON results — the exit code says whether the run worked, not whether the subject passed), but the core value is the experiment: controlled comparison, repeated trials, multi-dimensional measurement. CI is one consumer of experiment results. Research is another. Debugging is a third.
-
-ix is an experimentation platform. The distinction matters because it shapes the design: probes are not assertions, sensors are not test fixtures, subjects are not mocks. They are the vocabulary of structured experimentation applied to agent systems.
-
----
-
-## What you write
-
-An experiment is a directory with three parts:
-
-1. **`experiment.yaml`** -- name, sensors, trial count, subject references
-2. **`tasks/*.md`** -- one probe per file, YAML frontmatter for id and metadata, prompt as body
-3. **`subjects/*.md`** -- one subject per file: frontmatter for name, definition fields and `runtime`, system prompt as body
-
-No Python required to define an experiment. The file format is the interface. Version-control your experiments, diff them, review them. Start with `--simulate` to validate structure before spending API budget.
-
-```bash
-ix run my-experiment --lab ci-lab --simulate  # Dry run, no API calls
-ix run my-experiment --lab ci-lab --plan      # What a real run would start, and what is live
-ix run my-experiment --lab ci-lab --all       # Real run, every subject
-ix results my-experiment --lab ci-lab         # View results
-```
-
----
-
-## The composition root
-
-One question the architecture must answer: who wires concrete implementations together? The composition root (`ix.composition`) does this once, at startup. It builds one `ComponentRegistry` that resolves agent runtimes (`matrix.v1/runtime.claude-sdk`, `matrix.v1/runtime.model`, `matrix.v1/runtime.mock`, `ix.v1/runtime.simulated`), sensors (`ix.v1/sensor.activation`, ...) and engines (`ix.v1/engine.native`, `ix.v1/engine.inspect`) through the same `type_url -> factory` pattern, plus any `matrix.components` or `ix.components` entry point.
-
-The `Experiment` class never imports a concrete engine, node or runtime. It receives an engine and an agent factory from the composition root. This inversion means the experiment loop is testable in isolation, `--simulate` works by swapping every subject's runtime for ix's simulator, and new runtimes, sensors or engines plug in without touching the experiment code.
-
----
-
-## Status: alpha
-
-ix 0.0.1-alpha means the core loop works and real experiments have run (CEP-001). The sensor protocol, the file format, and the CLI commands are stable. Internal model field names may change.
-
-Known gaps: no pass@k metric, no load-testing sensor. The architecture supports both -- the Sensor protocol generalizes -- but they do not exist yet. (`ix compare` now gives paired-probe significance -- mean delta, standard error, 95% CI -- between two subjects' results; see "The experiment loop" above.)
-
-If you are evaluating ix: run an experiment in gnx's `lab/`. The structure there is what the file format looks like. If it fits your use case, ix is worth trying.
+- **Not a test framework.** An assertion on a single run of a stochastic system is noise.
+  ix runs trials and aggregates.
+- **Not a benchmark suite.** It ships no canonical tasks and ranks nothing. You bring the
+  probes, the subjects and, if the built-ins do not fit, the sensor.
+- **Not a sandbox.** The `function-test` sensor runs model-generated Python in the ix
+  process. See SECURITY.md.
+- **Not a pass/fail gate by itself.** `ix run` exits 0 when the run worked, whatever the pass
+  rate. A pipeline that gates on quality reads the JSON results.

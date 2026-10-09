@@ -1,166 +1,244 @@
-# Domain Models
+# Domain models
 
-ix has a two-layer type system. Core types (`ix.domain`) are domain-agnostic — they express any experiment. Eval types (`ix.eval`) are eval-specific vocabulary that flows through the core as `Any`.
-
-All models are frozen Pydantic `BaseModel` unless otherwise noted. Protocols use `typing.Protocol` with `@runtime_checkable`.
+The values, ports and models in `ix.domain`, and how the composition root wires them. Values
+are frozen pydantic models; ports are `typing.Protocol`s, so an implementation needs no base
+class.
 
 ---
 
-## Core Types
+## Values: `ix.domain.types`
 
-**Import path**: `ix.domain.types`
+### `Probe`
+
+The stimulus.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | `str` | required | the join key for every trial and reading |
+| `prompt` | `str` | required | sent to the subject verbatim |
+| `metadata` | `dict` | `{}` | ground truth; read by sensors by the keys they declare |
 
 ### `Subject`
 
-A Subject Under Test — one variant being compared.
+One variant under test.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | `str` | required | Identifier for this subject |
-| `description` | `str` | `""` | Human-readable description |
-| `config` | `dict` | `{}` | Adapter-specific configuration |
+| `name` | `str` | required | results are saved under it |
+| `description` | `str` | `""` | |
+| `config` | `dict` | `{}` | `agent: <name>`, or an inline definition and `runtime`; validated as `SubjectSpec` |
 
 ### `Trial`
 
-One execution of a probe against a subject. Pairs probe identity with the response (or error). The sensor gets `trial.response`; analysis uses `trial.probe_id` to look up ground truth.
+One probe put to one subject once.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `probe_id` | `str` | required | Which probe was executed |
-| `trial_index` | `int` | required | Which trial this belongs to (0-indexed) |
-| `response` | `Any \| None` | `None` | What the SUT returned |
-| `error` | `str \| None` | `None` | Error message if invocation failed |
+| `probe_id` | `str` | required | |
+| `trial_index` | `int` | required | 0-based, within the repeat |
+| `response` | `Any` | `None` | matrix's `AgentResponse` when the session completed |
+| `error` | `str \| None` | `None` | set when the session failed |
+| `error_reason` | `str \| None` | `None` | why the session failed: the runtime's classified reason (`rate_limited`, `auth`, `failed`, ...), or ix's own (`timeout`, `engine`, `setup`, `unclassified`); decides whose fault the failure is |
 
 ### `Reading`
 
-Result of a sensor evaluating a single interaction. Sensors produce readings like instruments.
+What a sensor concluded about one trial.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `sensor_name` | `str` | required | Name of the sensor that produced this reading |
-| `passed` | `bool` | required | Whether this interaction passed the sensor's criteria |
-| `score` | `float \| None` | `None` | Numeric score (sensor-defined semantics) |
-| `metrics` | `dict` | `{}` | Additional numeric measurements |
-| `details` | `str` | `""` | Human-readable explanation |
-| `fault` | `"subject" \| "sensor" \| None` | `None` | Set when the sensor never judged the response: the trial errored (`subject`) or the sensor raised (`sensor`) |
+| `sensor_name` | `str` | required | |
+| `probe_id`, `trial_index` | `str`, `int` | required | the trial it measured |
+| `passed` | `bool` | required | the sensor's verdict; aggregation counts it and never re-derives it |
+| `score` | `float \| None` | `None` | when absent, aggregation uses 1.0 or 0.0 from `passed` |
+| `metrics` | `dict` | `{}` | decomposed measurements (`tests_passed`, `expected_skill`, `judge_family`, ...) |
+| `details` | `str` | `""` | a human-readable reason |
+| `fault` | `"subject" \| "harness" \| "sensor" \| None` | `None` | set when the response was never judged; see below |
+
+| `fault` | Set when | Scored? |
+|---|---|---|
+| `subject` | the session failed on the agent's account: the runtime said `failed` or `refused` (or a reason of its own beyond the harness list) | yes, as a failure |
+| `harness` | `unavailable`, `rate_limited`, `timeout`, `auth`, `incapable` from the runtime; `timeout` from `trial_timeout_s`; `engine` (the engine lost the trial); `setup` (the subject's agent could not be built); `unclassified` (the runtime raised something other than `AgentRuntimeError`) | no; counted in `harness_faults` |
+| `sensor` | the sensor raised | yes, as a failure; counted in `sensor_faults` |
+
+The rule lives in `ix.eval.measure`: `HARNESS_REASONS`, `fault_of(trial)` and
+`measure_trial(sensor, trial)`. `run_trial(agent, probe_id, prompt, trial_index, *,
+timeout_s=None)` puts one probe to an agent and turns a failure into an errored Trial: an
+`AgentRuntimeError` keeps its reason, any other exception is `unclassified`, and a session
+past `timeout_s` is `timeout`.
 
 ---
 
-## Core Protocols
-
-**Import path**: `ix.domain.ports`
-
-All protocols are `@runtime_checkable`. Implement the methods — no base classes, no inheritance.
+## Ports: `ix.domain.ports`
 
 ### `Sensor`
 
-Measures a trial and produces readings.
+| Member | Signature | Description |
+|--------|-----------|-------------|
+| `name` | `str` (attribute or property) | appears in `Reading.sensor_name` |
+| `measure` | `(trial: Trial) -> list[Reading]` | judge one trial; called only for trials with a response |
+
+### `SensorClass`
+
+What ix's built-in sensors are: a class with `Config` (its pydantic config model),
+`truth_keys: frozenset[str]` (the probe keys it reads) and
+`from_config(config, probes, *, judge=None) -> Sensor`. ix wraps each in a registry build
+function with `ix.composition.builtins.sensor_builder`. A third-party sensor does not have to
+follow this shape; it registers any build function (see Registry entries).
+
+### `AgentFactory`
+
+`(subject: Subject, trial_index: int, run_index: int = 0) -> matrix.Agent`. Built by
+`ix.composition.make_agent_factory`. A subject naming an agent gets that agent's definition,
+overridden by the subject's own fields, and its runtime. An inline subject gets its own
+definition (one turn by default) on a runtime built once per subject from `runtime.type`.
+On the native engine, a subject whose agent cannot be built still yields a Trial, with
+`error_reason: setup`; on the Inspect engine the sample fails and the trial is filled in with
+`error_reason: engine`. Either way it is a harness fault and earlier trials are kept.
+Under `--simulate`, every subject gets a fresh simulator seeded per repeat and trial, so
+repeats of a seeded run differ.
+
+### `Engine`
 
 | Member | Signature | Description |
 |--------|-----------|-------------|
-| `name` | `@property -> str` | Sensor identifier (appears in `Reading.sensor_name`) |
-| `measure` | `(trial: Trial) -> list[Reading]` | Measures one trial |
+| `name` | `str` | recorded in `ExperimentResults.engine` |
+| `run` | `async (run: EngineRun) -> EngineOutcome` | execute one repeat |
 
-### `AgentFactory` (Protocol)
+An engine executes and never judges. If it needs a score while it runs (Inspect's scorer
+does), it calls `run.measure`, the experiment's own rule. It must return exactly one Trial
+per probe × trial index, in probe × trial order; a failed session is a Trial with an error,
+never a missing one.
 
-`(subject: Subject, trial_index: int, run_index: int = 0) -> matrix.Agent`. Built by the
-composition root: splits the subject's config into a matrix `AgentDefinition` (`system_prompt`,
-`model`, `tools`, `max_turns`) and a runtime (`runtime.type` + options), and binds them.
-Seeded simulated runtimes draw per `(run_index, trial_index)`, so repeats are independent.
+`EngineRun` (frozen dataclass):
 
-### `Engine` (Protocol)
+| Field | Type | Description |
+|-------|------|-------------|
+| `experiment` | `str` | the experiment's name |
+| `probes` | `tuple[Probe, ...]` | |
+| `subject` | `Subject` | |
+| `agents` | `AgentFactory` | builds the subject's agent for a trial |
+| `trials` | `int` | trials per probe |
+| `measure` | `(Trial) -> list[Reading]` | the experiment's measuring rule, memoised per repeat |
+| `run_index` | `int` | which repeat, 0-based |
+| `on_trial` | `(Trial) -> None \| None` | call as each trial completes; progress only |
+| `sensor_name` | `str` | the sensors' combined name, for engines that label their own logs |
 
-`name: str`; `async run(run: EngineRun) -> EngineOutcome`. Executes one repeat — every probe ×
-trial — and returns `EngineOutcome(readings, trials, artifacts)`: `trials` is every `Trial` the
-repeat ran, response or error included — what `readings` measured, and what `Storage` persists.
-`EngineRun` carries `experiment`, `probes`, `subject`, `sensor`, `agents` (an AgentFactory),
-`trials`, `run_index`, and an optional `on_trial(trial, readings)` an engine calls as each trial
-is measured — progress only; the outcome stays the source of truth.
+`EngineOutcome` (frozen dataclass):
 
-### `Storage` (Protocol)
+| Field | Type | Description |
+|-------|------|-------------|
+| `trials` | `list[Trial]` | one per probe × trial index |
+| `artifacts` | `dict[str, str]` | records a reader can open, e.g. `{"inspect_log": "<path>"}` |
 
-**Import path**: `ix.domain.ports`
-
-Persistence boundary: experiments in, trial records and per-subject summaries out.
+### `Storage`
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `load_experiment` | `(path: Path) -> ExperimentConfig` | Load an experiment directory |
-| `list_experiments` | `(base: Path) -> list[Path]` | Enumerate experiment directories |
-| `append_trials` | `(experiment: str, subject: str, run_id: str, records: list[TrialRecord]) -> Path` | Append this run's trial records; returns the `trials.jsonl` path |
-| `save_summary` | `(experiment: str, results: ExperimentResults) -> Path` | Write the subject's summary (archived and `-latest`) |
-| `load_summary` | `(experiment: str, subject: str) -> ExperimentResults` | Load one subject's latest summary |
-| `subjects_with_results` | `(experiment: str) -> list[str]` | Subject names that have a summary |
+| `load_experiment` | `(path: Path) -> ExperimentConfig` | load an experiment directory |
+| `list_experiments` | `(base: Path) -> list[Path]` | experiment directories under a lab |
+| `append_trials` | `(experiment, subject, run_id, records: list[TrialRecord]) -> Path` | append to the run's `trials.jsonl`; returns its path relative to the experiment |
+| `save_summary` | `(experiment, results: ExperimentResults) -> Path` | write `summary-<run_id>.json` and `summary-latest.json` |
+| `load_summary` | `(experiment, subject) -> ExperimentResults` | a subject's latest summary |
+| `subjects_with_results` | `(experiment) -> list[str]` | subjects that have a summary |
 
-| engine | type URL | executes a repeat as |
-|---|---|---|
-| native | `ix.v1/engine.native` | one four-node matrix DAG per probe × trial; `concurrency` (default 1) bounds trials in flight, results stay in probe × trial order |
-| inspect | `ix.v1/engine.inspect` | one Inspect AI task: probes → samples, trials → epochs, subject → solver, sensor → scorer; `artifacts["inspect_log"]` is the `.eval` path |
+`FilesystemStore` (`ix.adapters._out.filesystem_store`) is the implementation.
 
 ---
 
-## Eval Models
+## Models: `ix.domain.models`
 
-**Import path**: `ix.eval.models`. Field-by-field tables for the persisted shapes are in
-[Experiment Format](experiment-format.md); this is what each type is for.
+Field-by-field tables for the persisted shapes are in [Experiment format](experiment-format.md).
 
 | Type | What it is |
 |------|------------|
-| `ExperimentConfig` | An experiment as loaded: name, subjects, probes, `sensors`, `engine`, `models`, `trials`, `repeats`. `extra="forbid"`; `sensor` (one) and `engine` (a name) are shorthands, and giving both `sensor` and `sensors` is an error. `subject(name)` looks one up or raises `ConfigError` naming the others. |
-| `TrialRecord` | One trial of one probe in one repeat — `run_id`, `run_index`, `probe_id`, `trial_index`, the serialised `response` or the `error`, and its `readings`. One JSON line each in `trials.jsonl`. |
-| `ProbeResult` | One probe aggregated over its trials: mean `score`, `passed` (a majority of trials passed, by the sensor's verdict), `trial_scores`, `details` (at most 3 distinct strings). |
-| `ExperimentResults` | One subject's run: pass rate and mean score with their standard errors over probes, the across-repeat noise floors, the confusion matrix, `sensor_faults` (readings the sensor crashed on, scored as failures), the `families` that answered (`measured_a_model` is false for the simulator or mock), provenance (`run_id`, `engine`, `trials_log`, `config_hash` over config and probes, `seed`, `simulated`), and a `status` that is `unmeasured` when no real model answered. |
-| `Comparison` | Subject B against A (`run_id_a`, `run_id_b` name the two runs), paired by probe: `mean_delta` with its SE and 95% CI, verdict flips, the score noise floor, `unmatched` probes, a `warning` when either side measured no model or had sensor faults, and a `verdict` of `b_better` / `a_better` / `inconclusive` — always `inconclusive` when `sensor_faults` > 0. |
+| `ExperimentConfig` | an experiment as loaded: `name`, `description`, `subjects`, `sensors`, `engine`, `models`, `trials`, `repeats`, `probes`. `extra="forbid"`. `sensor` (one) and a bare `engine` name are shorthands. `subject(name)` returns one or raises `NotFoundError` listing the others. |
+| `TrialRecord` | one line of `trials.jsonl`: `run_id`, `run_index`, `probe_id`, `trial_index`, the serialised `response` or the `error`, and the `readings` |
+| `ProbeResult` | one probe over its non-harness trials: mean `score`, `passed` (a majority passed), `trial_scores`, up to 3 distinct `details` |
+| `ExperimentResults` | one subject's run: rates and their standard errors, noise floors, confusion matrix, `sensor_faults`, `harness_faults`, `unmeasured_probes`, `stops`, `families`, provenance; computed `measured_a_model` and `status` |
+| `ProbeDelta` | one shared probe in a comparison: both scores and verdicts, computed `delta` |
+| `Comparison` | B against A paired by probe: `mean_delta`, `delta_stderr`, `ci95`, flips, `noise_floor_sd`, both fault counts, `both_measured`, `warning`, computed `verdict` |
 
-Activation expectations a probe can declare: `must_trigger`, `should_not_trigger`,
-`acceptable` (constants `MUST_TRIGGER`, `SHOULD_NOT_TRIGGER`, `ACCEPTABLE`).
+Activation expectations: `MUST_TRIGGER`, `SHOULD_NOT_TRIGGER`, `ACCEPTABLE`.
+
+Errors (`ix.domain.errors`), all subclasses of `IxError`: `ConfigError`, `NotFoundError`,
+`LabNotFoundError`, `MissingExtraError` (an optional extra is not installed),
+`EngineError` (an engine could not finish a repeat), `ResultsError`, `ResultsNotFoundError`.
+Each carries a `kind` from the vocabulary matrix and hardline share (`config`, `not_found`,
+`transient`, `auth`, `unknown`, ...) and an optional `fix`. `from_matrix(error, context)`
+wraps a matrix error with ix's context and keeps its kind and fix. The CLI maps the kind to
+the exit code, so a rate-limited runtime exits 5 and refused credentials exit 6.
 
 ---
 
-## DAG Topology
+## The experiment: `ix.eval.experiment.Experiment`
 
-Inner DAG (per probe × trial):
+`Experiment(sensor=, store=, engine=, agents=, seed=None, simulated=False)`;
+`await experiment.run(config, subject=None, on_probe_complete=, on_run_complete=, on_trial=,
+save_as=)` returns `ExperimentResults` and saves them.
+
+Per repeat it calls `engine.run(EngineRun(...))`, measures every returned trial with the
+memoised rule, and appends the trial records. After the last repeat it aggregates
+(`ix.eval.analysis`: `aggregate_readings`, `compute_metrics`, `standard_errors`,
+`compute_noise_floor`, `unmeasured_probes`, `build_confusion_matrix`) and saves the summary.
+`compare_results(a, b)` builds a `Comparison`. The module imports no engine, runtime or flow;
+`ix.composition.create_service` wires them.
+
+---
+
+## Registry entries and type URLs
+
+ix declares two points on matrix's registry, `sensor` and `engine`, and registers its
+built-ins there from `ix.composition.builtins:register`, through the `matrix.extensions`
+entry point. Type URLs use the dotted grammar `<namespace>.v<major>.<kind>.<name>`.
+
+| Point | Type URL | Config | Needs | Effects |
+|---|---|---|---|---|
+| sensor | `ix.v1.sensor.activation` | `ActivationSensorConfig` | `probes`, `judge` | none |
+| sensor | `ix.v1.sensor.function-test` | `FunctionTestSensorConfig` | `probes`, `judge` | unknown (it runs the subject's untrusted code) |
+| sensor | `ix.v1.sensor.tool-usage` | `ToolUsageSensorConfig` | `probes`, `judge` | none |
+| sensor | `ix.v1.sensor.outcome` | `OutcomeSensorConfig` | `probes`, `judge` | unknown |
+| sensor | `ix.v1.sensor.deepeval` | `DeepEvalSensorConfig` | `probes`, `judge` | `model`, `network` |
+| engine | `ix.v1.engine.native` | `NativeEngineConfig` | `observers` | unknown |
+| engine | `ix.v1.engine.inspect` | `InspectEngineConfig` | `results_dir` | `filesystem` |
+| payload-type | `ix.v1.probe` | `Probe` | | |
+| payload-type | `ix.v1.trial` | `Trial` | | |
+
+Config names a built-in by its short name (`activation` means `ix.v1.sensor.activation`) and
+anything else by its full type URL. `matrix catalog --point sensor` lists what is installed;
+`matrix describe <type URL>` prints one entry.
+
+What composition provides:
+
+- a **sensor** build may declare `probes` (the experiment's probes) and `judge`
+  (`judge(name) -> matrix.Agent`: the configured agent of that name, else that model on
+  matrix's `model` runtime). `build.truth_keys`, when set, names the probe keys it reads.
+- an **engine** build may declare `observers` (matrix's configured observers) and
+  `results_dir` (the experiment's results directory; Inspect's default `log_dir` is
+  `inspect/` under it).
+
+Payload types of the native engine's flow: `ix.v1.probe`, `ix.v1.trial-index`, `ix.v1.trial`.
+ix registers the schemas of the first and last, and the flow validates its probe and trial
+values against them. The flow, named `<experiment>.trial`, has one member, `TrialStep`, which requires `probe` and
+`index` and provides `trial`. It is compiled once per repeat and run once per probe × trial.
+
+`ix.domain.type_urls` builds these: `sensor(kind)`, `engine(kind)`, `schema(document)`
+(`results` gives `ix.v1.results`), and `short(url)`.
+
+## Type flow
 
 ```
-ProbeNode ──┐
-            ├──▶ TrialNode ──▶ SensorNode
-SubjectNode ┘
-
-ProbeNode:   requires: ∅                          provides: ix.v1/probe.stimulus    (Probe)
-SubjectNode: requires: ∅                          provides: ix.v1/subject           (Subject)
-TrialNode:   requires: {probe.stimulus, subject}  provides: ix.v1/trial.observation (Trial)
-SensorNode:  requires: {trial.observation}        provides: ix.v1/sensor.readings   (list[Reading])
-```
-
-The native engine runs this DAG per probe × trial; reads are declared and enforced by matrix.
-The Experiment runs `repeats` repeats through the engine, then aggregates. Status is derived
-from pass_rate via computed property.
-
-All components resolve through one `ComponentRegistry` by type URL: `matrix.v1/runtime.*`
-(includes matrix's own `mock`), `ix.v1/runtime.simulated` (ix's simulator), `ix.v1/sensor.*`,
-`ix.v1/engine.*`, plus `matrix.components` and `ix.components` entry points.
-
-## Type Flow
-
-```
-Probe (stimulus) + Subject (definition fields + runtime)
-    |
-AgentFactory: AgentDefinition + registry.create("matrix.v1/runtime.<type>", options) → BoundAgent
-              BoundAgent.run(prompt) → AgentResponse (content, tool_calls, usage, family)
-    |
-Trial(probe_id, trial_index, response, error)
-    |
-Sensor.measure(trial) → list[Reading]
-
-Reading(sensor_name, probe_id, trial_index, passed, score, metrics, details)
-    | Storage.append_trials() → TrialRecord(run_id, run_index, probe_id, trial_index,
-    |                                        response, error, readings) per trial, to trials.jsonl
-    | aggregate_readings()
-ProbeResult(probe_id, score, passed, trial_scores)
-    | compute_metrics() + standard_errors() + compute_noise_floor() per repeat
-ExperimentResults(experiment_name, subject, run_id, probe_results, pass_rate, mean_score,
-                   min_score, max_score, n_probes, pass_rate_stderr, mean_score_stderr,
-                   noise_floor_sd, families, ...)
-    .status → computed from pass_rate
-    .measured_a_model → computed from families
+Probe + Subject
+   │  AgentFactory: the subject's definition bound to its runtime → matrix Agent
+   ▼
+engine: run_trial(agent, probe) per probe × trial → Trial(response | error, error_reason)
+   │  experiment: measure_trial(sensor, trial)
+   ▼
+Reading(passed, score, metrics, details, fault)
+   │  Storage.append_trials → TrialRecord per trial, in trials.jsonl
+   │  aggregate_readings (harness faults left out) → ProbeResult per probe
+   ▼
+ExperimentResults (rates, standard errors, noise floors, faults, families, provenance)
+   │  compare_results(A, B)
+   ▼
+Comparison (mean_delta, ci95, noise floor, faults → verdict)
 ```

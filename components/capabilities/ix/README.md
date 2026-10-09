@@ -1,175 +1,161 @@
 # ix
 
-Intelligent Experimentation — evals, benchmarks and QoS experiments for AI agents, composed
-from config.
+ix runs experiments on agents. You write probes (prompts) and subjects (agents) as files;
+ix puts every probe to every subject several times, has a sensor judge each response, and
+reports the pass rate with its uncertainty. `ix compare` then says whether one subject beat
+another, and refuses to say so when the data cannot carry it.
 
 ```bash
-uv add "ix[inspect] @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/ix"
-# extras: [inspect] the Inspect AI engine · [deepeval] DeepEval metrics as sensors
+uv add "ix @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/ix"
+# extras: ix[inspect] for the Inspect AI engine, ix[deepeval] for DeepEval metrics as sensors
 ```
 
-## What this is
+## The loop
 
-An **experiment** is a directory: `experiment.yaml`, a `tasks/` folder of probes, and
-optionally `subjects/`. ix runs each probe against a subject for some number of trials, hands
-every response to a **sensor** that grades it, and repeats the whole run to measure its own
-noise. Sensors are the instruments — activation, function-test, tool-usage, outcome,
-deepeval — and the sensor is the grader. Aggregation only counts.
+```bash
+ix lab init lab                                 # a directory that holds experiments
+ix experiment init routing --lab lab            # experiment.yaml, a probe, a starter subject
+ix experiment validate routing --lab lab        # compose everything, run nothing
+ix run routing --lab lab --plan                 # sessions per subject, and which are live
+ix run routing --lab lab                        # run every subject; results saved per subject
+ix results routing --lab lab                    # the latest results, per subject
+ix compare routing --lab lab baseline candidate # is the difference real?
+```
 
-The vocabulary is domain-neutral: probe, subject, trial, reading. Nothing about "eval" is baked
-into the core types, because the same shapes express a benchmark or a load test.
+An experiment is a directory:
 
-Two things ix is built to protect against, both learned the hard way:
+```
+lab/routing/
+├── experiment.yaml     # sensors, subjects, trials, repeats, engine
+├── tasks/*.md          # one probe per file: frontmatter is ground truth, body is the prompt
+├── subjects/*.md       # optional: one subject per file
+└── results/            # written by ix: trials.jsonl per run, summary-latest.json per subject
+```
 
-**A simulated run measures the harness, not the thing.** `--simulate` proves the pipeline, store
-and aggregation work end to end without an API call. It tells you nothing about whether a
-catalog routes or a model can code. Those are different claims and ix keeps them separate.
-
-**A wrong verdict is worse than a crash**, because a crash gets noticed. Aggregation takes the
-sensor's `passed` rather than re-deriving one from the score. An errored trial is a failed
-reading, never a missing one.
-
-`repeats` exists for the same reason: one run's pass rate has no error bar. The reported
-noise floor — the spread of pass rates across repeats — is what says whether a difference
-between two subjects is real. Seeded simulated runs draw independently per repeat, so the
-noise floor is measured rather than zero by construction.
-
-### What it is not
-
-ix does not sandbox. `FunctionTestSensor` imports and runs model-generated Python **in this
-process**, which is the intended behaviour of a code benchmark and is written down in
-`SECURITY.md` rather than left implicit.
-
-## Composition
-
-Everything an experiment uses is named in its config and resolved by type URL through one
-registry — matrix's agent runtimes, ix's sensors and engines, and any installed extension.
-
-**A subject is an agent definition plus the runtime that plays it.** The definition fields
-(`system_prompt`, `model`, `tools`, `max_turns`) describe the agent; `runtime` says where it
-runs. Moving a subject from the Claude SDK to a local model is a one-line change.
+A minimal `experiment.yaml`:
 
 ```yaml
-name: local-codegen
-engine: inspect                    # native (matrix DAG per trial) | inspect (Inspect AI task)
-models:                            # a hardline registry, for model-runtime subjects and judges
-  default: qwen3-8b
-  models:
-    qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
-               model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
-subjects:
-  - name: local
-    config:
-      system_prompt: Reply with only a Python code block.
-      tools: []
-      runtime: {type: model}                       # matrix.v1/runtime.model
-  - name: claude
-    config:
-      max_turns: 3
-      runtime: {type: claude-sdk, setting_sources: [], permission_mode: default}
-sensors:
-  - type: function-test
-    timeout: 5
+name: routing
+sensor: activation
 trials: 5
 repeats: 3
+subjects:
+  - name: baseline
+    config: {agent: reviewer}                  # an agent configured in matrix.yaml
+  - name: candidate
+    config:                                    # or an agent defined right here
+      system_prompt: Use a skill only when the request is underspecified.
+      runtime: {type: claude-sdk, setting_sources: []}
 ```
 
-| runtime type | what plays the subject |
+## What ix guarantees
+
+- **One measuring rule.** The engine only runs trials. The experiment measures every trial
+  with the same function, whatever engine ran it, so changing the engine never changes how a
+  response is judged.
+- **Every failure has an owner.** A failed trial is a failed reading, never a missing one,
+  and it records whose failure it was: the **subject**'s (the runtime said the session
+  `failed` or the model `refused`), the **harness**'s (rate limit, outage, timeout,
+  credentials, a runtime that cannot run the definition, an engine that lost the trial, an
+  agent that could not be built, or a runtime that raised an unclassified error), or the
+  **sensor**'s (the grader raised). Harness faults are counted, left out of every score, and
+  make `ix compare` inconclusive. Sensor faults are scored as failures and also make
+  `ix compare` inconclusive.
+- **Two kinds of uncertainty.** A standard error over the probes (would the number move with
+  different probes?) and a noise floor across repeats (does it move when nothing changes?).
+  `ix compare` names a winner only when the 95% interval of the paired difference excludes
+  zero and the difference is larger than the noise floor.
+- **A harness check is not a measurement.** `--simulate` runs every subject on ix's
+  simulator, which calls no model. Results record the model families that actually
+  answered; when none did, the status is `unmeasured`, and `ix compare` warns and names no
+  winner.
+- **Typos fail at load.** A probe key that none of the experiment's sensors reads is refused
+  (`expectaton` instead of `expectation`). Prefix a key with `x-` to keep it as a note.
+
+## Configuration
+
+ix reads matrix's config tiers, so it shares runtimes, models and agents with every tool
+built on matrix. Lowest priority first: ix's defaults; the `ix:` and `matrix:` sections of
+`~/.matrix/config.yaml`, `~/.ix/config.yaml`, `./matrix.yaml`, `./ix.yaml`, `$MATRIX_CONFIG`,
+`$IX_CONFIG`; then the experiment's own `experiment.yaml`; then command-line flags.
+
+```yaml
+# ./ix.yaml: your defaults for every experiment
+ix:
+  lab: lab
+  trials: 3
+  repeats: 2
+  engine: native
+```
+
+`matrix config --tool ix --sources` lists the files read, in order. The how-to has a worked
+example with a `matrix.yaml` that defines a runtime and an agent.
+
+## Engines and sensors
+
+| engine | runs a repeat as |
 |---|---|
-| `claude-sdk` | a Claude Agent SDK session (cwd defaults to the experiment directory) |
-| `model` | one call to any model in the `models` registry — local MLX, ollama, Gemini, Claude |
-| `simulated` | ix's simulator: canned `mock_response`s, or a seeded 90/10 activation split (`--simulate` swaps every subject onto it) |
-| `mock` | matrix's own deterministic offline runtime — canned replies keyed by task |
+| `native` (default) | one run of a matrix flow per trial; the flow is compiled once per repeat |
+| `inspect` | one Inspect AI task: probes are samples, trials are epochs; writes an `.eval` log |
 
-A misconfigured experiment fails before anything runs, naming the key and the legal set:
+| sensor | judges |
+|---|---|
+| `activation` | did the expected skill fire (or stay quiet, for a decoy)? |
+| `function-test` | does the generated function pass the probe's test cases? Runs the code **in this process**; see SECURITY.md |
+| `tool-usage` | did the agent call the expected tool and subcommand? |
+| `outcome` | does the answer contain the expected facts, or pass your grader functions? |
+| `deepeval` | a DeepEval metric, graded by a judge model or a configured agent |
 
-```
-Error: subject 'claude': runtime.type 'strands' is not registered. Registered: claude-sdk, mock, model, simulated
-Error: experiment.yaml: unknown key(s) ['agent']. Legal: ['description', 'engine', 'models', ...]
-```
+Sensors and engines are extension points on matrix's registry. A package adds its own
+through the `matrix.extensions` entry point, and an experiment names it by type URL:
 
-## Engines
-
-The engine executes one repeat — every probe × trial — and returns readings. Aggregation,
-noise floor and persistence belong to the experiment, so **the same experiment gives the same
-results on either engine**; a parity test asserts it.
-
-- **native** — each trial is a four-node matrix DAG (probe → subject → trial → sensor), with
-  every read declared and enforced. `concurrency` (default 1) bounds how many trials run at
-  once; results come back in probe × trial order at any setting.
-- **inspect** — each repeat runs as an [Inspect AI](https://inspect.aisi.org.uk) task: probes
-  are samples, trials are epochs, the subject runs as a solver, the sensor as a scorer. Each
-  repeat leaves an `.eval` log under `results/inspect/` — open it with `inspect view`. The log
-  path is recorded in the summary's `engine_artifacts`.
-
-## Usage
-
-```bash
-ix run catalog-routing --lab lab --plan                    # sessions per subject, which are live
-ix run catalog-routing --lab lab --simulate --seed 42      # simulated, native engine
-ix run sensor-integrity --lab lab --engine inspect         # same experiment, Inspect engine
-ix run local-codegen --lab lab --subject local             # a real model
-ix experiment list --lab lab
-ix results catalog-routing --lab lab --format json
-ix compare local-codegen local claude --lab lab            # is the difference real?
+```toml
+[project.entry-points."matrix.extensions"]
+acme-sensors = "acme_sensors:register"
 ```
 
-A bare `ix run <experiment>` runs every subject — but when more than one would run and any
-is live (a runtime other than `simulated` or `mock`), it refuses with exit 3 and lists each
-subject's session count. Name a `--subject`, or pass `--all`. A `--simulate` run of a live
-subject is saved as `<subject>@simulated`, never over that subject's measured results.
-
-### For programs and agents
-
-Every command takes `--format json`. Each JSON document names its shape in a `schema` field
-(`ix.v1/results`, `ix.v1/comparison`, `ix.v1/plan`, …). `ix run` and `ix results` always print
-a **list** of results, one per subject, so `jq '.[0].pass_rate'` works at any subject count. A
-results summary keeps at most three distinct `details` strings per probe; every trial's own
-record is in the `trials.jsonl` that `trials_log` points to. `status` is `unmeasured` when no
-real model answered.
-
-With `--format json`, an error is one JSON line on stderr:
-
-```json
-{"error": {"kind": "not_found", "message": "experiment 'nope' not found in /…/lab", "fix": "ix experiment list --lab lab"}}
+```python
+def register(registry):
+    registry.register("sensor", "acme.v1.sensor.brevity", build,
+                      config=BrevityConfig, needs={"probes"}, effects=set())
 ```
 
-`kind` is `config`, `not_found`, `engine`, `transient`, `auth` or `unknown`; `fix` is a command
-that will work, or `null`; `experiment validate` adds `problems`. The exit code says what to do
-next:
+```yaml
+sensor: {type: acme.v1.sensor.brevity, max_chars: 120}
+```
+
+`matrix catalog --point sensor` lists what is installed.
+
+## For programs and agents
+
+Every command takes `--format json`. Each document names its shape in a `schema` field:
+`ix.v1.results-list`, `ix.v1.results`, `ix.v1.comparison`, `ix.v1.plan`, `ix.v1.experiment`, `ix.v1.experiments`,
+`ix.v1.validation`, `ix.v1.labs`, `ix.v1.init`. `ix run` and `ix results` print one
+`ix.v1.results-list` document, `{"schema", "experiment", "results": [...]}`, with one
+`ix.v1.results` entry per subject at any subject count. An error is one JSON line on stderr,
+`{"error": {"kind", "message", "fix"}}`, where `fix` is a command that will work.
 
 | Exit | Meaning |
 |------|---------|
 | 0 | success |
 | 1 | failure not otherwise classified (an engine error, a runtime error) |
 | 2 | usage: a bad flag or argument |
-| 3 | config: an invalid experiment, a failed `experiment validate`, `experiment list` with an invalid experiment, or a refused implicit live run |
+| 3 | config: an invalid experiment, a failed validate, or a refused implicit live run |
 | 4 | not found: a lab, experiment, subject or saved results |
-| 5 | transient: a runtime failure whose cause is retryable — retry later |
+| 5 | transient: a retryable runtime failure (rate limit, outage, timeout) outside a trial |
 | 6 | auth: the provider refused the credentials |
 
-## Out of family
-
-The DeepEval sensor's judge (`judge: <model>`) runs through matrix's model runtime, so any
-configured family can grade. Every reading records `judge_family`, `subject_family` and
-`out_of_family` — `None` when either side is unknown, never a guess.
-
-## Extending
-
-A sensor, engine or runtime registers without editing ix — one entry point, a callable
-`register(registry) -> None`:
-
-```toml
-[project.entry-points."ix.components"]
-my-sensor = "my_pkg.sensors:register"
-```
+`--plan` (also `--dry-run`, `-n`) prints what a run would start and runs nothing. With no
+`--subject`, a run that would start several subjects when any is live is refused until you
+name a `--subject` or pass `--all`. A runtime is live when its registered effects include
+`model` or `network`, or are unknown; ix's simulator and matrix's `mock` are offline.
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Running Experiments](docs/how-to/running-experiments.md) | Create a lab, write probes, run, interpret results |
-| [What is ix?](docs/explanation/what-is-ix.md) | The problem, the design, what it's not |
-| [Domain Models](docs/reference/domain-models.md) | Probe, Subject, Trial, Reading, the ports |
-| [Experiment Format](docs/reference/experiment-format.md) | `experiment.yaml`, markdown probes and subjects, results |
+| Document | What it covers |
+|----------|----------------|
+| [Running experiments](docs/how-to/running-experiments.md) | From an empty directory to a comparison; shared config; writing a sensor |
+| [What is ix?](docs/explanation/what-is-ix.md) | The model behind it: trials, faults, uncertainty, extension points |
+| [Experiment format](docs/reference/experiment-format.md) | Every file, key, option and result field |
+| [Domain models](docs/reference/domain-models.md) | The types, the ports, the registry entries |
 | [SECURITY.md](SECURITY.md) | In-process code execution, config as a capability grant, telemetry |
