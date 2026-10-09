@@ -123,7 +123,7 @@ Collector types and transforms are extensions, loaded from the entry-point group
 
 A plugin that fails to load is reported by `recon status` and `survey --dry-run` and does not break the others. To write one: [docs/reference/extending.md](docs/reference/extending.md).
 
-268 tests: 260 run offline (domain, application, adapters, the CLI contract through click's runner); 8 are live integration tests against OpenAlex, arXiv, Semantic Scholar and Zenodo.
+The tests run offline, except the live integration tests against OpenAlex, arXiv, Semantic Scholar and Zenodo, which are marked as such.
 
 ## Docs
 
