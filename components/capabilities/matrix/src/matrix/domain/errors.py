@@ -13,7 +13,7 @@ kind           exit  meaning, and the caller's next move
 ``component``  1     a component raised while running (its failure)
 ``transient``  5     unavailable, rate-limited or timed out: retry later
 ``auth``       6     credentials missing or refused: fix credentials
-``failed``     1     anything else that went wrong
+``unknown``    1     anything else that went wrong
 =============  ====  ==========================================================
 
 Every error also carries an optional ``fix`` (one actionable sentence) and ``details``
@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from matrix.domain.construct import Construct
 
-ErrorKind = Literal["config", "not_found", "contract", "component", "transient", "auth", "failed"]
+ErrorKind = Literal["config", "not_found", "contract", "component", "transient", "auth", "unknown"]
 
 EXIT_CODES: dict[str, int] = {
     "config": 3,
@@ -38,14 +38,14 @@ EXIT_CODES: dict[str, int] = {
     "component": 1,
     "transient": 5,
     "auth": 6,
-    "failed": 1,
+    "unknown": 1,
 }
 
 
 class MatrixError(Exception):
     """Base class for every error matrix raises deliberately."""
 
-    kind: ErrorKind = "failed"
+    kind: ErrorKind = "unknown"
 
     def __init__(self, message: str, *, fix: str | None = None, **details: Any) -> None:
         super().__init__(message)
@@ -113,8 +113,8 @@ _REASON_KIND: dict[str, ErrorKind] = {
     "timeout": "transient",
     "auth": "auth",
     "incapable": "config",
-    "refused": "failed",
-    "failed": "failed",
+    "refused": "unknown",
+    "failed": "unknown",
 }
 
 
@@ -141,7 +141,9 @@ class AgentRuntimeError(MatrixError):
 
     @property
     def kind(self) -> ErrorKind:  # type: ignore[override]
-        return _REASON_KIND[self.reason]
+        # The reason vocabulary is open: a runtime may report one matrix does not know, and
+        # that is a failure of the session, never a crash of the error itself.
+        return _REASON_KIND.get(self.reason, "unknown")
 
     @property
     def retryable(self) -> bool:

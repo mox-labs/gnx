@@ -218,3 +218,44 @@ async def test_compare_will_not_call_a_winner_over_harness_faults(tmp_path: Path
     assert comparison.harness_faults == 1
     assert comparison.verdict == "inconclusive"
     assert comparison.warning and "harness faults" in comparison.warning
+
+
+async def test_a_hung_session_times_out_as_a_harness_fault() -> None:
+    import asyncio
+
+    class Hangs(_Scripted):
+        async def run(self, definition: AgentDefinition, task: str) -> AgentResponse:
+            await asyncio.sleep(10)
+            raise AssertionError("unreachable")
+
+    trial = await run_trial(
+        BoundAgent(AgentDefinition(name="a"), Hangs()), "p", "q", 0, timeout_s=0.01
+    )
+    assert (trial.error_reason, fault_of(trial)) == ("timeout", "harness")
+
+
+async def test_an_agent_that_cannot_be_built_is_a_recorded_harness_fault() -> None:
+    def broken(subject: Subject, trial_index: int, run_index: int = 0) -> BoundAgent:
+        raise RuntimeError("no such runtime")
+
+    outcome = await NativeEngine().run(
+        EngineRun(
+            experiment="e",
+            probes=_probes("a"),
+            subject=Subject(name="s"),
+            agents=broken,
+            trials=2,
+            measure=lambda trial: [],
+        )
+    )
+    assert [t.error_reason for t in outcome.trials] == ["setup", "setup"]  # nothing lost
+    assert all(fault_of(t) == "harness" for t in outcome.trials)
+
+
+async def test_an_unclassified_runtime_error_is_not_the_subjects() -> None:
+    class Buggy(_Scripted):
+        async def run(self, definition: AgentDefinition, task: str) -> AgentResponse:
+            raise KeyError("adapter bug")
+
+    trial = await run_trial(BoundAgent(AgentDefinition(name="a"), Buggy()), "p", "q", 0)
+    assert (trial.error_reason, fault_of(trial)) == ("unclassified", "harness")

@@ -128,7 +128,7 @@ capabilities-standalone:
     fail=0
     for p in hardline matrix recon gnx dao; do
       cp -R components/capabilities/$p "$tmp/$p"
-      if [ "$p" = matrix ]; then probe=(python -c "import matrix"); else probe=("$p" --help); fi
+      probe=("$p" --help)
       if ( cd "$tmp" && uv run --isolated --no-project --quiet --with ./$p "${probe[@]}" >/dev/null ); then
         echo "  $p standalone OK"
       else

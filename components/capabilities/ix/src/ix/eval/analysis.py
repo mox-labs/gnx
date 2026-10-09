@@ -168,6 +168,7 @@ def compare_results(a: ExperimentResults, b: ExperimentResults) -> Comparison:
         warning=_comparison_warning(a, b),
         sensor_faults=a.sensor_faults + b.sensor_faults,
         harness_faults=a.harness_faults + b.harness_faults,
+        both_measured=a.measured_a_model and b.measured_a_model,
         probes=probes,
     )
 

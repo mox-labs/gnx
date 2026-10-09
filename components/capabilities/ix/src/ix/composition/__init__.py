@@ -45,7 +45,7 @@ from ix.adapters._out.simulated_runtime import SimulatedRuntime
 from ix.composition.builtins import register as register_builtins
 from ix.config.settings import find_lab
 from ix.domain import type_urls
-from ix.domain.errors import ConfigError, IxError
+from ix.domain.errors import ConfigError, IxError, from_matrix
 from ix.eval.activation import expected_skill_of, should_activate
 from ix.eval.experiment import Experiment
 from ix.eval.sensors import CompositeSensor
@@ -90,7 +90,7 @@ def load_ix_config(sources: list[Path] | None = None) -> Config[IxConfig]:
     try:
         return load_config(IxConfig, "ix", sources)
     except MatrixError as e:
-        raise ConfigError(e.message) from None
+        raise from_matrix(e) from None
 
 
 def effective(experiment: ExperimentConfig, ix: IxConfig) -> ExperimentConfig:
@@ -186,8 +186,19 @@ def runtime_type(
     return str(runtime.get("type") or "unset") if isinstance(runtime, dict) else "unset"
 
 
-def is_live(runtime: str) -> bool:
-    """Whether a runtime may call a real model. ``unset`` counts as live: assume the cost."""
+def is_live(runtime: str, registry: Registry | None = None) -> bool:
+    """Whether a runtime may call a real model or the network: what a plan warns about.
+
+    Read from the runtime's registered effects when a registry is given, so a third party's
+    offline runtime is offline without ix knowing its name; unknown effects count as live.
+    Without a registry (or for an unregistered name, ``unset`` included), only ix's
+    simulator and matrix's mock are offline: assume the cost.
+    """
+    if runtime == SIMULATED:
+        return False
+    if registry is not None and ("runtime", runtime_type_url(runtime)) in registry:
+        effects = registry.entry("runtime", runtime_type_url(runtime)).effects
+        return effects is None or bool(effects & {"model", "network"})
     return runtime not in OFFLINE_RUNTIMES
 
 
@@ -234,7 +245,7 @@ def compose_matrix(
     try:
         return compose(matrix, registry=registry, context={"cwd": cwd}, source="matrix")
     except MatrixError as e:
-        raise ConfigError(e.message) from None
+        raise from_matrix(e) from None
 
 
 def make_agent_factory(
@@ -260,7 +271,7 @@ def make_agent_factory(
             try:
                 configured = container.agent(spec.agent)
             except MatrixError as e:
-                raise ConfigError(f"subject {subject.name!r}: {e.message}") from None
+                raise from_matrix(e, f"subject {subject.name!r}") from None
             base = configured.definition
         definition = subject_definition(subject, spec, base)
         options = dict(spec.runtime)
@@ -280,7 +291,7 @@ def make_agent_factory(
         try:
             return BoundAgent(definition, runtime, observers=container.observers)
         except MatrixError as e:
-            raise ConfigError(f"subject {subject.name!r}: {e.message}") from None
+            raise from_matrix(e, f"subject {subject.name!r}") from None
 
     def _runtime(subject: Subject, kind: str, options: dict[str, Any]) -> AgentRuntime:
         url = runtime_type_url(kind)
@@ -294,7 +305,7 @@ def make_agent_factory(
                 "runtime", url, options, needs=container.needs(), where=f"subject {subject.name}"
             )
         except MatrixError as e:
-            raise ConfigError(e.message) from None
+            raise from_matrix(e) from None
         return built
 
     return build
@@ -381,7 +392,7 @@ def _build_one_sensor(
             where=f"sensor {kind}",
         )
     except MatrixError as e:
-        raise ConfigError(e.message) from None
+        raise from_matrix(e) from None
     return sensor
 
 
@@ -427,18 +438,16 @@ def create_engine(
         raise ConfigError(
             f"unknown engine {kind!r}. Engines: {', '.join(_entry_names(registry, 'engine'))}"
         )
-    if kind == "inspect" and "log_dir" not in options and results_dir is not None:
-        options["log_dir"] = str(results_dir / "inspect")
     try:
         engine: Engine = registry.create(
             "engine",
             url,
             options,
-            needs={"observers": container.observers},
+            needs={"observers": container.observers, "results_dir": results_dir},
             where=f"{experiment.name}: engine",
         )
     except MatrixError as e:
-        raise ConfigError(e.message) from None
+        raise from_matrix(e) from None
     return engine
 
 

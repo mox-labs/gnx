@@ -98,8 +98,10 @@ class TestConfiguredAgents:
         assert agent.definition.system_prompt == "Review."
 
     def test_an_unknown_agent_names_the_configured_ones(self):
+        from ix.domain.errors import NotFoundError
+
         factory = make_agent_factory(_container(self.MATRIX))
-        with pytest.raises(ConfigError, match="Configured: reviewer"):
+        with pytest.raises(NotFoundError, match="Configured: reviewer"):
             factory(_subject(agent="ghost"), 0)
 
     def test_the_plan_reads_the_agents_runtime_type(self):
@@ -335,3 +337,33 @@ class TestInit:
         result = runner.invoke(main, ["run", "e", "--lab", "lab", "--trials", "1"])
         assert result.exit_code == 0, result.output
         assert "subject agent (simulated)" in result.output
+
+
+class TestSubjectFiles:
+    def test_an_empty_body_keeps_the_named_agents_prompt(self, tmp_path: Path):
+        from ix.adapters._out.filesystem_store import FilesystemStore
+
+        exp = tmp_path / "e"
+        (exp / "subjects").mkdir(parents=True)
+        (exp / "experiment.yaml").write_text("name: e\n")
+        (exp / "subjects" / "rev.md").write_text("---\nagent: reviewer\n---\n")
+        (subject,) = FilesystemStore(tmp_path).load_experiment(exp).subjects
+        assert subject.config == {"agent": "reviewer"}
+        factory = make_agent_factory(_container(TestConfiguredAgents.MATRIX))
+        assert factory(subject, 0).definition.system_prompt == "Review."
+
+    def test_a_scaffolded_experiment_leaves_trials_to_your_defaults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from click.testing import CliRunner
+
+        from ix.adapters._in.cli import main
+
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "home")
+        runner = CliRunner()
+        runner.invoke(main, ["lab", "init", "lab"])
+        runner.invoke(main, ["experiment", "init", "e", "--lab", "lab"])
+        text = (tmp_path / "lab" / "e" / "experiment.yaml").read_text()
+        assert "trials:" not in text.replace("# trials", "") and "engine:" not in text

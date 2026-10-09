@@ -19,6 +19,8 @@ when it registers; composition hands over exactly those. Nothing is matched by f
 
 from __future__ import annotations
 
+from dataclasses import replace
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,11 +28,12 @@ from matrix.adapters._out.definitions.markdown import MarkdownDefinitionSource
 from matrix.composition.builtins import RUNTIME_PREFIX, observer_type_url, runtime_type_url
 from matrix.composition.builtins import register as register_builtins
 from matrix.domain.agent import AgentDefinition, BoundAgent
+from matrix.domain.agent_step import AGENT_STEP
 from matrix.domain.config import Config, MatrixConfig
 from matrix.domain.errors import ConfigError, NotFoundError
 from matrix.domain.executor import Executor
-from matrix.domain.flow import CompiledFlow, Flow, compile_flow
-from matrix.domain.registry import Registry
+from matrix.domain.flow import CompiledFlow, Flow, Member, compile_flow
+from matrix.domain.registry import ENTRY_POINT_GROUP, Registry
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -120,13 +123,31 @@ class Container:
         }
 
     def compile(self, flow: Flow) -> CompiledFlow:
-        """Compile ``flow``, building members given by extension id through the registry."""
+        """Compile ``flow``, building members given by extension id through the registry.
+
+        The compiled flow carries each member's declared effects. An ``agent-step`` member
+        has its agent's runtime's effects; a member built outside the registry has unknown
+        effects.
+        """
         needs = self.needs()
 
         def resolve(extension: str, config: dict[str, Any], where: str) -> Any:
             return self._registry.create("component", extension, config, needs=needs, where=where)
 
-        return compile_flow(flow, resolve=resolve, schemas=self._registry.payload_schemas())
+        compiled = compile_flow(flow, resolve=resolve, schemas=self._registry.payload_schemas())
+        return replace(compiled, effects={m.alias: self._effects(m) for m in flow.members})
+
+    def _effects(self, member: Member) -> frozenset[str] | None:
+        if not isinstance(member.component, str):
+            return None
+        if member.component == AGENT_STEP:
+            agent = (member.config or {}).get("agent")
+            spec = self._config.matrix.agents.get(str(agent))
+            runtime = self._config.matrix.runtimes.get(spec.runtime) if spec else None
+            if runtime is None:
+                return None
+            return self._registry.entry("runtime", runtime_type_url(runtime.type)).effects
+        return self._registry.entry("component", member.component).effects
 
     def executor(self) -> Executor:
         return Executor(self._observers)
@@ -140,7 +161,7 @@ def default_registry(*, discover: bool = True) -> Registry:
     registry = Registry()
     if discover:
         registry.discover()
-        if ("runtime", runtime_type_url("mock")) not in registry:
+        if not any(ep.name == "matrix" for ep in entry_points(group=ENTRY_POINT_GROUP)):
             register_builtins(registry)  # running from a source tree with no installed metadata
     else:
         register_builtins(registry)

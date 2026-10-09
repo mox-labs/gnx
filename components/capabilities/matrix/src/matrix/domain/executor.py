@@ -18,6 +18,7 @@ partial Run, with everything produced so far.
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -36,7 +37,7 @@ from matrix.domain.errors import (
     RunError,
 )
 from matrix.domain.flow import CompiledFlow, CompiledMember, Inputs, RunContext
-from matrix.domain.observer import Event, Observer, emit
+from matrix.domain.observer import CURRENT_SPAN, Event, Observer, emit
 
 
 @dataclass(frozen=True)
@@ -189,7 +190,17 @@ class Executor:
             if topic is None:
                 continue
             got = run.construct.values(topic)
-            values[port_name] = tuple(got) if port.many else got[-1]
+            if not got and not port.many:
+                producers = ", ".join(f"{a}.{p}" for a, p in flow.producers.get(topic, ()))
+                raise ContractError(
+                    f"member {member.alias!r} requires {port_name!r} from topic {topic!r}, but "
+                    f"its producers ({producers or 'none'}) left it empty",
+                    topic=topic,
+                    member=member.alias,
+                )
+            # Each member gets its own copy: a component that mutates what it read cannot
+            # change the recorded artifact, nor what a sibling in the same level sees.
+            values[port_name] = _private(tuple(got) if port.many else got[-1], topic)
         deadline = time.monotonic() + limits.member_timeout_s if limits.member_timeout_s else None
         inputs = Inputs(
             values, RunContext(run.run_id, member.alias, episode=run.episode, deadline=deadline)
@@ -201,6 +212,7 @@ class Executor:
         )
         started = time.monotonic()
         status = "ok"
+        token = CURRENT_SPAN.set((run.run_id, span))
         try:
             try:
                 async with asyncio.timeout(limits.member_timeout_s):
@@ -211,6 +223,7 @@ class Executor:
                 raise ComponentError(
                     f"member {member.alias!r} timed out after {limits.member_timeout_s}s",
                     member=member.alias,
+                    reason="timeout",
                 ) from e
             except Exception as e:
                 raise ComponentError(
@@ -223,6 +236,7 @@ class Executor:
             status = e.kind if isinstance(e, MatrixError) else "component"
             raise
         finally:
+            CURRENT_SPAN.reset(token)
             emit(
                 self._observers,
                 Event(
@@ -261,6 +275,17 @@ class Executor:
                 {"topic": topic, "type_url": type_url, "producer": producer, "port": port},
             ),
         )
+
+
+def _private(value: Any, topic: str) -> Any:
+    try:
+        return copy.deepcopy(value)
+    except Exception as e:
+        raise ContractError(
+            f"the value on topic {topic!r} cannot be copied ({type(e).__name__}: {e}); values "
+            "that flow between members must be data, not live handles",
+            topic=topic,
+        ) from e
 
 
 def _check_outputs(flow: CompiledFlow, member: CompiledMember, result: Any) -> None:

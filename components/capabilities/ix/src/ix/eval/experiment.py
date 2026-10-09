@@ -96,6 +96,7 @@ class Experiment:
         per_run_mean_scores: list[float] = []
         artifacts: list[str] = []
         families: set[str] = set()
+        stops: dict[str, int] = {}
         trials_log = ""
 
         for run_idx in range(config.repeats):
@@ -116,6 +117,10 @@ class Experiment:
             readings = [r for trial in outcome.trials for r in measure(trial)]
             all_readings.extend(readings)
             families.update(f for t in outcome.trials if (f := getattr(t.response, "family", None)))
+            for trial in outcome.trials:
+                if trial.response is not None:
+                    stop = str(getattr(trial.response, "stop", None) or "unreported")
+                    stops[stop] = stops.get(stop, 0) + 1
             artifacts.extend(f"{k}:{v}" for k, v in outcome.artifacts.items())
             path = self._store.append_trials(
                 config.name,
@@ -161,6 +166,7 @@ class Experiment:
             sensor_faults=sum(1 for r in all_readings if r.fault == "sensor"),
             harness_faults=sum(1 for r in all_readings if r.fault == "harness"),
             unmeasured_probes=unmeasured_probes(all_readings),
+            stops=stops,
             families=tuple(sorted(families)),
             engine=self._engine.name,
             engine_artifacts=tuple(artifacts),

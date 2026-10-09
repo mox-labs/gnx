@@ -244,3 +244,50 @@ async def test_the_flow_is_not_changed_by_running_it() -> None:
     before = repr(flow)
     await Executor().run(compile_flow(flow), {"q": "x"})
     assert repr(flow) == before
+
+
+async def test_a_member_cannot_change_what_it_read() -> None:
+    class Mutator:
+        requires = {"data": TEXT}
+        provides: dict[str, Any] = {}
+
+        async def run(self, inputs: Inputs) -> dict[str, Any]:
+            inputs["data"]["n"] = 999
+            return {}
+
+    class Reader:
+        requires = {"data": TEXT}
+        provides = {"n": SCORE}
+
+        async def run(self, inputs: Inputs) -> dict[str, Any]:
+            return {"n": inputs["data"]["n"]}
+
+    compiled = compile_flow(
+        Flow(
+            "alias",
+            (
+                Member("src", Emit({"n": 1}), {"out": "t"}),
+                Member("m", Mutator(), {"data": "t"}),
+                Member("r", Reader(), {"data": "t", "n": "seen"}),
+            ),
+        )
+    )
+    run = await Executor().run(compiled, limits=Limits(concurrency=2))
+    assert run.outputs("t") == ({"n": 1},)  # the recorded artifact is untouched
+    assert run.outputs("seen") == (1,)  # and so is what the sibling read
+
+
+async def test_live_handles_cannot_flow_between_members() -> None:
+    import threading
+
+    compiled = compile_flow(
+        Flow(
+            "handle",
+            (
+                Member("src", Emit(threading.Lock()), {"out": "t"}),
+                Member("up", Upper(), {"text": "t"}),
+            ),
+        )
+    )
+    with pytest.raises(RunError, match="must be data"):
+        await Executor().run(compiled)

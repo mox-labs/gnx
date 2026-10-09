@@ -171,8 +171,8 @@ def _registry_with(cls: type) -> Any:
         ("timeout", "transient", True),
         ("auth", "auth", False),
         ("incapable", "config", False),
-        ("refused", "failed", False),
-        ("failed", "failed", False),
+        ("refused", "unknown", False),
+        ("failed", "unknown", False),
     ],
 )
 def test_runtime_failures_carry_whose_problem_they_are(
@@ -210,3 +210,58 @@ def test_model_runtime_maps_hardline_failures() -> None:
     assert _reason(BackendError("x", reason="bad_request")) == "incapable"
     assert _reason(SecretError("x")) == "auth"
     assert _reason(RuntimeError("x")) == "failed"
+
+
+async def test_an_agent_called_by_a_member_reports_as_its_child() -> None:
+    recorder = RecordingObserver()
+    box = compose(
+        MatrixConfig.model_validate(
+            {
+                "runtimes": {"m": {"type": "mock"}},
+                "agents": {"a": {"runtime": "m", "system_prompt": "x"}},
+            }
+        )
+    )
+    agent = BoundAgent(box.agent("a").definition, box.runtime("m"), observers=[recorder])
+    step = AgentStep(AgentStepConfig(agent="a"), agents={"a": agent})
+    from matrix import Executor, compile_flow
+
+    flow = Flow("f", (Member("s", step, {"task": "t"}),), inputs={"t": "matrix.v1.task"})
+    run = await Executor([recorder]).run(compile_flow(flow), {"t": "go"})
+    member_start = next(e for e in recorder.events if e.name == "member.start")
+    agent_start = next(e for e in recorder.events if e.name == "agent.start")
+    assert (agent_start.run_id, agent_start.parent) == (run.run_id, member_start.span)
+
+
+def test_a_compiled_flow_carries_its_members_effects() -> None:
+    box = container()
+    flow = Flow(
+        "e",
+        (Member("rev", AGENT_STEP, {"task": "t"}, config={"agent": "reviewer"}),),
+        inputs={"t": "matrix.v1.task"},
+    )
+    compiled = box.compile(flow)
+    assert compiled.effects == {"rev": frozenset()}  # the mock runtime touches nothing
+    assert compiled.declared_effects() == frozenset()
+
+
+async def test_every_offline_runtime_keeps_the_port_promise() -> None:
+    """A response always says why the session ended (agent_runtime.py: Guarantees)."""
+    pytest.importorskip("hardline")
+    box = compose(
+        MatrixConfig.model_validate(
+            {
+                "models": {"models": {"q": {"backend": "mock", "model": "q", "family": "qwen"}}},
+                "runtimes": {"mock": {"type": "mock"}, "model": {"type": "model"}},
+            }
+        )
+    )
+    for name in ("mock", "model"):
+        definition = AgentDefinition(name="a", model="q" if name == "model" else None, tools=())
+        response = await box.runtime(name).run(definition, "hi")
+        assert isinstance(response, AgentResponse) and response.stop, name
+
+
+def test_an_unknown_reason_is_a_failure_not_a_crash() -> None:
+    error = AgentRuntimeError("quota exhausted", reason="quota")  # type: ignore[arg-type]
+    assert (error.kind, error.exit_code, error.retryable) == ("unknown", 1, False)

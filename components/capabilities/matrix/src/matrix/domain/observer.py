@@ -13,6 +13,7 @@ does not offer.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -32,6 +33,11 @@ EVENTS = (
     "agent.start",
     "agent.end",
 )
+
+
+#: ``(run_id, span)`` of the flow member running in this task, so an agent it calls reports
+#: as that member's child without the member threading ids through its arguments.
+CURRENT_SPAN: ContextVar[tuple[str, str] | None] = ContextVar("matrix_span", default=None)
 
 
 @dataclass(frozen=True)

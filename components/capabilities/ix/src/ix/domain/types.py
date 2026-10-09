@@ -69,7 +69,9 @@ class Reading(BaseModel, frozen=True):
     #: * ``harness``: the session never had a fair chance (rate limit, provider outage,
     #:   timeout, bad credentials, a runtime that cannot run the definition). Not the
     #:   subject's failure, so it is left out of the score and counted apart;
-    #: * ``sensor``: the sensor raised. The experiment's bug, not the subject's.
+    #: * ``sensor``: the sensor raised. The experiment's bug, not the subject's; it is still
+    #:   scored as a failure (so a broken grader can only understate the subject, never
+    #:   flatter it), counted in ``sensor_faults``, and makes ``ix compare`` inconclusive.
     #:
     #: ``None`` for an ordinary judgment, pass or fail.
     fault: Literal["subject", "harness", "sensor"] | None = None

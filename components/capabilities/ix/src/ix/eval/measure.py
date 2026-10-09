@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Literal
 
@@ -24,8 +25,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Runtime reasons that say the subject never had a fair attempt.
-HARNESS_REASONS = frozenset({"unavailable", "rate_limited", "timeout", "auth", "incapable"})
+#: Reasons that say the subject never had a fair attempt: the runtime port's infrastructure
+#: reasons; ``engine`` (the engine lost the trial); ``setup`` (the subject's agent could not
+#: be built); and ``unclassified`` (the runtime broke its port by raising something other
+#: than a classified error: an adapter bug, not the subject's failure).
+HARNESS_REASONS = frozenset(
+    {
+        "unavailable",
+        "rate_limited",
+        "timeout",
+        "auth",
+        "incapable",
+        "engine",
+        "setup",
+        "unclassified",
+    }
+)
 
 
 def fault_of(trial: Trial) -> Literal["subject", "harness"]:
@@ -61,16 +76,41 @@ def _failed(
     )
 
 
-async def run_trial(agent: Agent, probe_id: str, prompt: str, trial_index: int) -> Trial:
-    """Run one probe through an agent; a failure becomes an errored Trial with its reason."""
+async def run_trial(
+    agent: Agent,
+    probe_id: str,
+    prompt: str,
+    trial_index: int,
+    *,
+    timeout_s: float | None = None,
+) -> Trial:
+    """Run one probe through an agent; a failure becomes an errored Trial with its reason.
+
+    A session still running after ``timeout_s`` is cut off as a ``timeout``: a harness fault,
+    so one hung session cannot hang the experiment or count against the subject.
+    """
     try:
-        response = await agent.run(prompt)
+        async with asyncio.timeout(timeout_s):
+            response = await agent.run(prompt)
+    except TimeoutError:
+        logger.warning("Trial timed out for probe %s after %ss", probe_id, timeout_s)
+        return Trial(
+            probe_id=probe_id,
+            trial_index=trial_index,
+            error=f"the session did not finish within {timeout_s}s",
+            error_reason="timeout",
+        )
     except AgentRuntimeError as e:
         logger.warning("Trial failed for probe %s (%s): %s", probe_id, e.reason, e)
         return Trial(
             probe_id=probe_id, trial_index=trial_index, error=str(e), error_reason=e.reason
         )
     except Exception as e:
-        logger.warning("Trial failed for probe %s: %s", probe_id, e)
-        return Trial(probe_id=probe_id, trial_index=trial_index, error=str(e))
+        logger.warning("Trial failed for probe %s (unclassified): %s", probe_id, e)
+        return Trial(
+            probe_id=probe_id,
+            trial_index=trial_index,
+            error=f"{type(e).__name__}: {e}",
+            error_reason="unclassified",
+        )
     return Trial(probe_id=probe_id, trial_index=trial_index, response=response)

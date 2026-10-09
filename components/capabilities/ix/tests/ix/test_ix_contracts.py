@@ -52,10 +52,20 @@ def _results(subject: str, scores: dict[str, float], noise: float | None = None)
         subject=subject,
         probe_results=tuple(_pr(p, s) for p, s in scores.items()),
         score_noise_floor_sd=noise,
+        families=("claude",),  # a real model answered: only then may compare name a winner
     )
 
 
 class TestCompare:
+    def test_no_winner_when_no_real_model_answered(self):
+        from ix.eval.analysis import compare_results
+
+        probes = [f"p{i}" for i in range(20)]
+        a = _results("a", {p: 0.2 for p in probes}).model_copy(update={"families": ("mock",)})
+        b = _results("b", {p: 0.9 for p in probes}).model_copy(update={"families": ("mock",)})
+        comparison = compare_results(a, b)
+        assert comparison.verdict == "inconclusive" and not comparison.both_measured
+
     PROBES = [f"p{i}" for i in range(20)]
 
     def test_a_consistent_gain_is_b_better(self):
@@ -236,9 +246,10 @@ class TestCli:
         )
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)  # banners went to stderr
-        # One shape at any subject count: a list of results, each naming its schema.
-        assert [r["subject"] for r in payload] == ["a"]
-        assert payload[0]["schema"] == "ix.v1.results"
+        # One shape at any subject count: a document holding the results, each with a schema.
+        assert payload["schema"] == "ix.v1.results-list"
+        assert [r["subject"] for r in payload["results"]] == ["a"]
+        assert payload["results"][0]["schema"] == "ix.v1.results"
         assert "Running" in result.stderr
 
     def test_compare_two_subjects(self, lab: Path):
@@ -285,7 +296,7 @@ class TestProvenance:
         result = CliRunner().invoke(
             main, ["run", "e", "--lab", "lab", "--subject", "a", "--format", "json"]
         )
-        assert json.loads(result.stdout)[0]["families"] == ["simulated"]
+        assert json.loads(result.stdout)["results"][0]["families"] == ["simulated"]
 
 
 def test_inspect_engine_json_output_is_clean_stdout(lab: Path):
@@ -296,7 +307,7 @@ def test_inspect_engine_json_output_is_clean_stdout(lab: Path):
         ["run", "e", "--lab", "lab", "--subject", "a", "--engine", "inspect", "--format", "json"],
     )
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)[0]["engine"] == "inspect"
+    assert json.loads(result.stdout)["results"][0]["engine"] == "inspect"
 
 
 # --- the run as it happens ----------------------------------------------------------------

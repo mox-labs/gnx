@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from ix.adapters._out.engines.inspect_engine import InspectEngine, InspectEngineConfig
 from ix.adapters._out.engines.native import NativeEngine, NativeEngineConfig
 from ix.domain import type_urls
+from ix.domain.types import Probe, Trial
 from ix.eval.sensors import (
     ActivationSensor,
     FunctionTestSensor,
@@ -39,10 +40,11 @@ if TYPE_CHECKING:
 
 _SENSORS: dict[str, tuple[Any, frozenset[str] | None, str]] = {
     "activation": (ActivationSensor, frozenset(), "Did the agent activate the expected skill?"),
+    # Runs the subject's generated code: what that code touches is not knowable, so unknown.
     "function-test": (
         FunctionTestSensor,
-        frozenset({"subprocess", "filesystem"}),
-        "Runs the generated function against the probe's test cases",
+        None,
+        "Runs the generated function against the probe's test cases (untrusted code)",
     ),
     "tool-usage": (ToolUsageSensor, frozenset(), "Did the agent call the expected tool?"),
     "outcome": (OutcomeSensor, None, "Did the answer contain the expected facts?"),
@@ -70,6 +72,8 @@ def _native(config: NativeEngineConfig, *, observers: Sequence[Observer]) -> Nat
 
 def register(registry: Registry) -> None:
     registry.add_point("sensor").add_point("engine")
+    registry.register_payload(type_urls.PROBE, Probe, "A stimulus put to a subject")
+    registry.register_payload(type_urls.TRIAL, Trial, "One execution of a probe by a subject")
     for kind, (cls, effects, summary) in _SENSORS.items():
         registry.register(
             "sensor",
@@ -93,6 +97,7 @@ def register(registry: Registry) -> None:
         type_urls.engine("inspect"),
         InspectEngine,
         config=InspectEngineConfig,
+        needs={"results_dir"},
         effects={"filesystem"},
         summary="Each repeat as an Inspect AI task, with its .eval log (requires ix[inspect])",
     )

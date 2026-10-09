@@ -172,6 +172,22 @@ class CompiledFlow:
     levels: tuple[tuple[str, ...], ...]
     #: type URL -> a pydantic model that values of that type must validate against
     schemas: Mapping[str, type[BaseModel]] = field(default_factory=dict)
+    #: member alias -> the effects its registration declares; ``None`` means unknown
+    effects: Mapping[str, frozenset[str] | None] = field(default_factory=dict)
+
+    def declared_effects(self) -> frozenset[str] | None:
+        """Every effect the flow's members declare; ``None`` if any member's are unknown.
+
+        Unknown is never read as "none" (slick SD-12): a member built outside the registry,
+        or registered without effects, makes the whole flow's effects unknown.
+        """
+        found: set[str] = set()
+        for alias in self.members:
+            member_effects = self.effects.get(alias)
+            if member_effects is None:
+                return None
+            found |= member_effects
+        return frozenset(found)
 
 
 def compile_flow(
@@ -270,6 +286,16 @@ def compile_flow(
 
     for topic, uses in consumers.items():
         made = producers.get(topic, [])
+        maybe_empty = topic not in flow.inputs and all(
+            members[a].provides[p].optional for a, p in made
+        )
+        for alias, port_name in uses:
+            port = members[alias].requires[port_name]
+            if made and maybe_empty and not port.optional and not port.many:
+                problems.append(
+                    f"members.{alias}.{port_name}: topic {topic!r} is fed only by optional "
+                    "outputs, so it may stay empty; make the port optional or many"
+                )
         if not made and topic not in flow.inputs:
             readers = ", ".join(f"{a}.{p}" for a, p in uses)
             problems.append(

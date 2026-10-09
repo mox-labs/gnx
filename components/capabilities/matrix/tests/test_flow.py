@@ -185,3 +185,15 @@ def test_extension_ids_resolve_through_the_resolver() -> None:
 
 def test_an_extension_id_without_a_resolver_is_a_problem() -> None:
     assert any("no registry" in p for p in problems_of(Flow("f", (Member("a", "acme.v1.x"),))))
+
+
+def test_a_required_port_fed_only_by_optional_outputs_is_refused() -> None:
+    flow = Flow(
+        "f",
+        (
+            Member("p", Fake({}, {"o": Port(TEXT, optional=True)}), {"o": "t"}),
+            Member("c", Fake({"x": TEXT}, {}), {"x": "t"}),
+        ),
+    )
+    (problem,) = problems_of(flow)
+    assert "fed only by optional outputs" in problem and "members.c.x" in problem

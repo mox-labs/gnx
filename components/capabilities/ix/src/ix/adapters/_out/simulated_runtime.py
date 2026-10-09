@@ -54,7 +54,7 @@ class SimulatedRuntime:
     async def run(self, definition: AgentDefinition, task: str) -> AgentResponse:
         canned = self._responses.get(task)
         if canned is not None:
-            return AgentResponse(content=canned, family=FAMILY, model="simulated")
+            return AgentResponse(content=canned, family=FAMILY, model="simulated", stop="completed")
 
         skill = self._skill_map.get(task, self._expected_skill)
         should_activate = self._expectations.get(task)
@@ -64,7 +64,10 @@ class SimulatedRuntime:
         if self._rng.random() < rate:
             return self._activated(skill, task)
         return AgentResponse(
-            content=f"Here's a direct answer about '{task[:40]}'", family=FAMILY, model="simulated"
+            content=f"Here's a direct answer about '{task[:40]}'",
+            family=FAMILY,
+            model="simulated",
+            stop="completed",
         )
 
     @staticmethod
@@ -74,4 +77,5 @@ class SimulatedRuntime:
             tool_calls=({"name": "Skill", "input": {"skill": skill}},),
             family=FAMILY,
             model="simulated",
+            stop="completed",
         )

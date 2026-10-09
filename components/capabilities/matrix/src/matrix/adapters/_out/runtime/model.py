@@ -88,6 +88,12 @@ class ModelAgentRuntime:
             raise AgentRuntimeError(
                 f"agent {definition.name!r}: {e}", reason=_reason(e), agent=definition.name
             ) from e
+        except Exception as e:  # the port promises a response or a classified error
+            raise AgentRuntimeError(
+                f"agent {definition.name!r}: {type(e).__name__}: {e}",
+                reason="failed",
+                agent=definition.name,
+            ) from e
         return AgentResponse(
             content=completion.text,
             tokens_input=completion.usage.input_tokens,
@@ -96,6 +102,7 @@ class ModelAgentRuntime:
             num_turns=1,
             family=completion.family,
             model=completion.name,
+            stop="completed",
         )
 
 

@@ -16,8 +16,14 @@ An **extension point** is a named place where implementations of one protocol pl
 Everything, built-ins included, arrives the same way: an entry point in the
 ``matrix.extensions`` group whose value is ``register(registry) -> None``. One extension that
 fails to import or register is **quarantined**: recorded in :attr:`Registry.failures`,
-reported by ``matrix catalog``, and the rest load. A second registration of the same type URL
-at the same point is refused and recorded, naming both origins; install order never decides.
+reported by ``matrix catalog``, and the rest load.
+
+**Namespaces have owners.** A distribution owns the type URLs whose root segment is its own
+name (``matrix`` owns ``matrix.*``, ``ix`` owns ``ix.*``). When two extensions register the
+same type URL, the owner keeps it whichever loads first, and the other extension is
+quarantined whole: an extension cannot replace a built-in by sorting before it. Between two
+non-owners the first in entry-point name order keeps it and the second is refused, naming
+both; install order never decides.
 """
 
 from __future__ import annotations
@@ -71,6 +77,17 @@ class _UnknownPointError(ConfigError):
     """A registration at a point nobody has declared (yet)."""
 
 
+def _owns(origin: str, type_url: str) -> bool:
+    """Whether ``origin`` owns ``type_url``'s namespace: its root is the distribution's name.
+
+    Code registering directly (not through discovery) is trusted as the owner.
+    """
+    if origin == "(direct)":
+        return True
+    name = origin.lower().replace("_", "-").replace(".", "-")
+    return type_url.split(".", 1)[0] == name
+
+
 @dataclass(frozen=True)
 class Failure:
     """An extension that could not be loaded, or a registration that was refused."""
@@ -115,12 +132,28 @@ class Registry:
             )
         check_type_url(type_url, where=f"{point} registration")
         key = (point, type_url)
-        if key in self._entries:
-            raise ConfigError(
-                f"{point} {type_url!r} is registered by both {self._entries[key].origin} and "
-                f"{self._origin}",
-                fix="uninstall one of the two, or have one register under its own namespace",
-            )
+        existing = self._entries.get(key)
+        if existing is not None:
+            if _owns(self._origin, type_url) and not _owns(existing.origin, type_url):
+                # The namespace's owner arrived after an impostor: the owner keeps its name,
+                # and every entry the impostor registered is quarantined with it.
+                self._entries = {
+                    k: e for k, e in self._entries.items() if e.origin != existing.origin
+                }
+                self.failures.append(
+                    Failure(
+                        existing.origin,
+                        existing.origin,
+                        f"registered {point} {type_url!r} in {self._origin}'s namespace; "
+                        "all of its entries were dropped",
+                    )
+                )
+            else:
+                raise ConfigError(
+                    f"{point} {type_url!r} is registered by both {existing.origin} and "
+                    f"{self._origin}",
+                    fix="uninstall one of the two, or have one register under its own namespace",
+                )
         self._entries[key] = Entry(
             point=point,
             type_url=type_url,
@@ -236,6 +269,7 @@ class Registry:
     def _load(self, ep: Any, origin: str) -> Exception | None:
         before = dict(self._entries)
         points = set(self.points)
+        failures = len(self.failures)
         self._origin = origin
         try:
             register = ep.load()
@@ -245,6 +279,7 @@ class Registry:
         except Exception as e:
             self._entries = before  # all-or-nothing
             self.points = points
+            del self.failures[failures:]
             return e
         finally:
             self._origin = "(direct)"

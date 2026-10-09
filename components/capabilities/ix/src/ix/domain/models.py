@@ -161,6 +161,9 @@ class ExperimentResults(BaseModel, frozen=True):
     #: Probes with no reading the subject is accountable for (every trial a harness fault).
     #: Excluded from ``n_probes`` and every rate.
     unmeasured_probes: tuple[str, ...] = ()
+    #: How the subject's sessions ended, counted (``completed``, ``max_turns``, ...). A
+    #: session stopped by a limit was still judged; this says how many were cut short.
+    stops: dict[str, int] = {}
 
     # Provenance — trace results to their source
     #: The model families that answered, read off the responses (``simulated`` for the
@@ -264,6 +267,9 @@ class Comparison(BaseModel, frozen=True):
     #: Harness faults across both sides. Any at all and the verdict is ``inconclusive``: the
     #: two runs did not measure the same probes under the same conditions.
     harness_faults: int = 0
+    #: Whether a real model answered on both sides. A comparison of simulator or mock
+    #: answers compares the harness, so it never names a winner.
+    both_measured: bool = True
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -271,7 +277,7 @@ class Comparison(BaseModel, frozen=True):
         """``b_better`` / ``a_better`` only when the CI of the mean score delta excludes 0
         *and* the delta is larger than the run-to-run noise floor where one was measured;
         otherwise ``inconclusive``. Never a guess on thin data."""
-        if self.ci95 is None or self.sensor_faults or self.harness_faults:
+        if self.ci95 is None or self.sensor_faults or self.harness_faults or not self.both_measured:
             return "inconclusive"
         low, high = self.ci95
         clears_noise = self.noise_floor_sd is None or abs(self.mean_delta) > self.noise_floor_sd

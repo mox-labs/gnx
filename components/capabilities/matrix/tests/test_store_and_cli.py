@@ -89,7 +89,7 @@ def test_every_error_kind_has_an_exit_code_and_a_payload() -> None:
         "component",
         "transient",
         "auth",
-        "failed",
+        "unknown",
     }
     error = ConfigError("bad", fix="do this", path="a.b")
     assert error.payload() == {

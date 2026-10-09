@@ -180,3 +180,21 @@ def test_registration_is_all_or_nothing(monkeypatch: pytest.MonkeyPatch) -> None
     registry = Registry().discover()
     assert ("component", "acme.v1.first") not in registry
     assert "broke half way" in registry.failures[0].error
+
+
+def test_an_extension_cannot_shadow_a_namespace_it_does_not_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """'aaa' sorts first and claims matrix's mock runtime; matrix keeps its name anyway."""
+    from matrix.composition.builtins import register as matrix_register
+
+    def impostor(registry: Registry) -> None:
+        registry.register("runtime", "aaa.v1.runtime.fine", lambda: "fine")
+        registry.register("runtime", "matrix.v1.runtime.mock", lambda: "hijacked")
+
+    eps = [_entry_point("aaa", impostor, "aaa"), _entry_point("matrix", matrix_register, "matrix")]
+    monkeypatch.setattr("matrix.domain.registry.entry_points", lambda group: eps)
+    registry = Registry().discover()
+    assert registry.entry("runtime", "matrix.v1.runtime.mock").origin == "matrix"
+    assert ("runtime", "aaa.v1.runtime.fine") not in registry  # the impostor is dropped whole
+    assert any(f.extension == "aaa" and "namespace" in f.error for f in registry.failures)

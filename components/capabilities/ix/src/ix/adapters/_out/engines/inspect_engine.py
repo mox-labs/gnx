@@ -46,7 +46,7 @@ SCORER_NAME = "ix_sensor"
 class InspectEngineConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    #: Where ``.eval`` logs go. Composition sets ``<lab>/<experiment>/results/inspect``.
+    #: Where ``.eval`` logs go. Unset: ``inspect/`` under the experiment's results directory.
     log_dir: str | None = None
     #: Samples in flight at once. 1 by default, matching the native engine's
     #: ``concurrency``; raise it when the subject's provider can take parallel calls.
@@ -59,7 +59,9 @@ class InspectEngineConfig(BaseModel):
 class InspectEngine:
     name = "inspect"
 
-    def __init__(self, config: InspectEngineConfig | None = None) -> None:
+    def __init__(
+        self, config: InspectEngineConfig | None = None, *, results_dir: Path | None = None
+    ) -> None:
         try:
             import inspect_ai  # noqa: F401
         except ImportError as e:
@@ -67,6 +69,10 @@ class InspectEngine:
                 "the inspect engine requires 'inspect-ai'. Install with: uv add 'ix[inspect]'"
             ) from e
         self._config = config or InspectEngineConfig()
+        if self._config.log_dir is None and results_dir is not None:
+            self._config = self._config.model_copy(
+                update={"log_dir": str(Path(results_dir) / "inspect")}
+            )
 
     @property
     def config(self) -> InspectEngineConfig:
@@ -108,7 +114,10 @@ class InspectEngine:
             async def score(state: TaskState, target: Target) -> Score:
                 key = (str(state.sample_id), state.epoch - 1)
                 trial = trials.get(key) or Trial(
-                    probe_id=key[0], trial_index=key[1], error="solver produced no trial"
+                    probe_id=key[0],
+                    trial_index=key[1],
+                    error="solver produced no trial",
+                    error_reason="engine",
                 )
                 readings = run.measure(trial)  # the experiment's rule, not the engine's
                 if run.on_trial:
@@ -166,7 +175,7 @@ class InspectEngine:
                         probe_id=probe.id,
                         trial_index=index,
                         error="the Inspect evaluation produced no trial for this sample",
-                        error_reason="failed",
+                        error_reason="engine",
                     ),
                 )
         ordered = sorted(trials.values(), key=lambda t: (order[t.probe_id], t.trial_index))
