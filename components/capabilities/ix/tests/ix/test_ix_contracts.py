@@ -298,7 +298,7 @@ def test_inspect_engine_json_output_is_clean_stdout(lab: Path):
     assert json.loads(result.stdout)[0]["engine"] == "inspect"
 
 
-# --- the run as it happens (the cix experience, kept) ------------------------------------
+# --- the run as it happens ----------------------------------------------------------------
 
 
 class TestProgress:
@@ -320,7 +320,7 @@ class TestProgress:
         assert all(n >= 1 for _, _, n in seen)
 
     async def test_probe_lines_print_with_repeats_too(self, tmp_path: Path):
-        """cix printed per-probe PASS/FAIL only when repeats == 1; a repeated run said nothing."""
+        """Per-probe PASS/FAIL lines print for repeated runs too, not only when repeats == 1."""
         exp = ExperimentConfig(name="e", probes=_probes(3), trials=1, repeats=2)
         service = Experiment(
             sensor=ActivationSensor(expected_skill="x"),
@@ -350,7 +350,7 @@ class TestProgress:
         assert "a → b" in result.stdout
 
 
-class TestCixConfigKeys:
+class TestMovedConfigKeys:
     @pytest.mark.parametrize(
         ("key", "hint"), [("agent", "belong to a subject"), ("skill", "expected_skill")]
     )

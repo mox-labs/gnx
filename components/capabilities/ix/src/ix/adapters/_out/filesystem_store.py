@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 _FILE_KEYS = frozenset(set(ExperimentConfig.model_fields) - {"probes"} | {"sensor"})
 _LATEST = "summary-latest.json"
 
-#: Keys the cix-era ix accepted, and where each now lives — so an old experiment.yaml fails
+#: Keys earlier ix versions accepted, and where each now lives — so an old experiment.yaml fails
 #: with the move to make rather than only a list of what is legal.
 _MOVED = {
     "agent": "agent settings belong to a subject: subjects: [{name, config: {runtime, ...}}]",
