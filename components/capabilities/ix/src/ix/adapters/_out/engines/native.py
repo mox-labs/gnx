@@ -1,28 +1,34 @@
-"""NativeEngine — each probe × trial runs as a four-node matrix DAG.
+"""NativeEngine: every trial is one run of a matrix flow, compiled once per repeat.
 
-``concurrency`` bounds how many trials run at once (default 1). Readings and trials come
-back in probe × trial order however they were scheduled, so a run's records read the same
-at any concurrency. Raise it for subjects whose runtime and provider can take parallel
-calls; every built-in runtime is safe to run concurrently.
+The flow has one member, a :class:`TrialStep` that builds the subject's agent and puts the
+probe to it. Its inputs are the probe and the trial index, so the same compiled flow runs
+for every probe × trial; matrix records each run and reports it to its observers (tracing).
 
-Type URL: ``ix.v1/engine.native``. The default engine; no dependency beyond matrix.
+``concurrency`` bounds how many trials run at once (default 1). Trials come back in
+probe × trial order however they were scheduled.
+
+Type URL: ``ix.v1.engine.native``. The default engine; no dependency beyond matrix.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from matrix import Orchestrator
+from matrix import Executor, Flow, Member, compile_flow
 from pydantic import BaseModel, ConfigDict, Field
 
-from ix.adapters._out.components import ProbeNode, SensorNode, SubjectNode, TrialNode
 from ix.domain import type_urls
 from ix.domain.ports import EngineOutcome
+from ix.eval.measure import run_trial
 
 if TYPE_CHECKING:
-    from ix.domain.ports import EngineRun
-    from ix.domain.types import Probe, Reading, Trial
+    from collections.abc import Sequence
+
+    from matrix import Inputs, Observer
+
+    from ix.domain.ports import AgentFactory, EngineRun
+    from ix.domain.types import Probe, Subject, Trial
 
 
 class NativeEngineConfig(BaseModel):
@@ -32,37 +38,60 @@ class NativeEngineConfig(BaseModel):
     concurrency: int = Field(default=1, ge=1)
 
 
+class TrialStep:
+    """One trial: the subject's agent, given one probe."""
+
+    requires = {"probe": type_urls.PROBE, "index": type_urls.TRIAL_INDEX}
+    provides = {"trial": type_urls.TRIAL}
+
+    def __init__(self, agents: AgentFactory, subject: Subject, run_index: int) -> None:
+        self._agents = agents
+        self._subject = subject
+        self._run_index = run_index
+
+    async def run(self, inputs: Inputs) -> dict[str, Any]:
+        probe: Probe = inputs["probe"]
+        index: int = inputs["index"]
+        agent = self._agents(self._subject, index, self._run_index)
+        return {"trial": await run_trial(agent, probe.id, probe.prompt, index)}
+
+
 class NativeEngine:
     name = "native"
 
-    def __init__(self, config: NativeEngineConfig | None = None) -> None:
+    def __init__(
+        self, config: NativeEngineConfig | None = None, *, observers: Sequence[Observer] = ()
+    ) -> None:
         self._config = config or NativeEngineConfig()
+        self._executor = Executor(observers)
 
     @property
     def config(self) -> NativeEngineConfig:
         return self._config
 
     async def run(self, run: EngineRun) -> EngineOutcome:
-        jobs = [(probe, t) for probe in run.probes for t in range(run.trials)]
+        flow = compile_flow(
+            Flow(
+                f"{run.experiment}.trial",
+                (
+                    Member(
+                        "trial",
+                        TrialStep(run.agents, run.subject, run.run_index),
+                        {"probe": "probe", "index": "index", "trial": "trial"},
+                    ),
+                ),
+                inputs={"probe": type_urls.PROBE, "index": type_urls.TRIAL_INDEX},
+            )
+        )
         gate = asyncio.Semaphore(self._config.concurrency)
 
-        async def one(probe: Probe, trial_index: int) -> tuple[Trial, list[Reading]]:
+        async def one(probe: Probe, index: int) -> Trial:
             async with gate:
-                construct = await Orchestrator(
-                    [
-                        ProbeNode(probe),
-                        SubjectNode(run.subject),
-                        TrialNode(run.agents, trial_index, run.run_index),
-                        SensorNode(run.sensor),
-                    ]
-                ).run()
-            trial, readings = construct[type_urls.TRIAL], construct[type_urls.READINGS]
+                result = await self._executor.run(flow, {"probe": probe, "index": index})
+            trial: Trial = result.construct.last("trial").value
             if run.on_trial:
-                run.on_trial(trial, readings)
-            return trial, readings
+                run.on_trial(trial)
+            return trial
 
-        results = await asyncio.gather(*(one(p, t) for p, t in jobs))
-        return EngineOutcome(
-            readings=[r for _, readings in results for r in readings],
-            trials=[trial for trial, _ in results],
-        )
+        trials = await asyncio.gather(*(one(p, t) for p in run.probes for t in range(run.trials)))
+        return EngineOutcome(trials=list(trials))

@@ -16,10 +16,10 @@ from matrix import AgentDefinition, BoundAgent
 from ix.adapters._out.engines.native import NativeEngine
 from ix.adapters._out.filesystem_store import FilesystemStore
 from ix.adapters._out.simulated_runtime import SimulatedRuntime
+from ix.domain.models import ExperimentConfig, ProbeResult
 from ix.domain.types import Probe, Reading, Subject
 from ix.eval.analysis import aggregate_readings, compute_metrics
 from ix.eval.experiment import Experiment
-from ix.eval.models import ExperimentConfig, ProbeResult
 from ix.eval.sensors import ActivationSensor
 
 # --- Helpers ---

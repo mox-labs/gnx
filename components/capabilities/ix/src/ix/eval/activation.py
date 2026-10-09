@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ix.domain.errors import ConfigError
-from ix.eval.models import ACCEPTABLE, MUST_TRIGGER, SHOULD_NOT_TRIGGER
+from ix.domain.models import ACCEPTABLE, MUST_TRIGGER, SHOULD_NOT_TRIGGER
 
 if TYPE_CHECKING:
     from ix.domain.types import Probe

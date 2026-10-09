@@ -11,7 +11,6 @@ import pytest
 
 deepeval = pytest.importorskip("deepeval", reason="deepeval not installed")
 
-from hardline import build_runtime  # noqa: E402
 from matrix import AgentDefinition, AgentResponse, BoundAgent  # noqa: E402
 from matrix.adapters._out.runtime.mock import MockRuntime, MockRuntimeConfig  # noqa: E402
 
@@ -66,15 +65,31 @@ class TestAgentModelAdapter:
         assert isinstance(_create_agent_adapter(_agent()).generate("test", schema=None), str)
 
 
+def _judge(name: str):
+    """The judge composition hands a sensor: the named model on matrix's model runtime."""
+    from matrix import MatrixConfig
+
+    from ix.composition import build_registry, compose_matrix, judge_factory
+    from ix.domain.models import ExperimentConfig
+
+    container = compose_matrix(
+        ExperimentConfig(name="e", models=MODELS),
+        MatrixConfig(),
+        cwd=None,
+        registry=build_registry(),
+    )
+    return judge_factory(container)(name)
+
+
 class TestJudgeWiring:
     def test_from_config_builds_a_model_runtime_judge(self):
         config = DeepEvalSensorConfig(metric="answer_relevancy", threshold=0.5, judge="qwen-judge")
-        sensor = DeepEvalSensor.from_config(config, probes=(), models=lambda: build_runtime(MODELS))
+        sensor = DeepEvalSensor.from_config(config, probes=(), judge=_judge)
         assert sensor.name == "deepeval.answer_relevancy"
 
     def test_judge_without_a_registry_is_refused(self):
         config = DeepEvalSensorConfig(judge="qwen-judge")
-        with pytest.raises(ValueError, match="needs a model registry"):
+        with pytest.raises(ValueError, match="needs a judge factory"):
             DeepEvalSensor.from_config(config, probes=())
 
     def test_unknown_config_key_rejected(self):
@@ -84,7 +99,7 @@ class TestJudgeWiring:
     def test_reading_records_families_and_out_of_family(self):
         """A qwen judge grading a claude subject: out_of_family is True, and says so."""
         config = DeepEvalSensorConfig(metric="answer_relevancy", threshold=0.5, judge="qwen-judge")
-        sensor = DeepEvalSensor.from_config(config, probes=(), models=lambda: build_runtime(MODELS))
+        sensor = DeepEvalSensor.from_config(config, probes=(), judge=_judge)
 
         class _Metric:
             """Stands in for a DeepEval metric: calls the judge once, scores 0.9."""
@@ -109,7 +124,7 @@ class TestJudgeWiring:
 
     def test_unknown_family_is_none_not_a_guess(self):
         config = DeepEvalSensorConfig(metric="answer_relevancy", judge="qwen-judge")
-        sensor = DeepEvalSensor.from_config(config, probes=(), models=lambda: build_runtime(MODELS))
+        sensor = DeepEvalSensor.from_config(config, probes=(), judge=_judge)
 
         class _Metric:
             score, reason = 0.1, ""

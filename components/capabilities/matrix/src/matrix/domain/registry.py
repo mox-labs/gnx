@@ -67,6 +67,10 @@ class Entry:
         }
 
 
+class _UnknownPointError(ConfigError):
+    """A registration at a point nobody has declared (yet)."""
+
+
 @dataclass(frozen=True)
 class Failure:
     """An extension that could not be loaded, or a registration that was refused."""
@@ -105,7 +109,7 @@ class Registry:
         Raises ConfigError for an unknown point, a malformed type URL, or a duplicate.
         """
         if point not in self.points:
-            raise ConfigError(
+            raise _UnknownPointError(
                 f"no extension point {point!r}. Points: {', '.join(sorted(self.points))}",
                 fix="register at an existing point, or have its owner declare it",
             )
@@ -206,17 +210,42 @@ class Registry:
         }
 
     def discover(self, group: str = ENTRY_POINT_GROUP) -> Registry:
-        """Load every ``group`` entry point, in name order; quarantine any that fail."""
-        for ep in sorted(entry_points(group=group), key=lambda e: e.name):
-            origin = ep.dist.name if ep.dist is not None else ep.value
-            self._origin = origin
-            try:
-                register = ep.load()
-                if not callable(register):
-                    raise TypeError(f"{ep.value} is not callable; expected register(registry)")
-                register(self)
-            except Exception as e:
-                self.failures.append(Failure(ep.name, origin, f"{type(e).__name__}: {e}"))
-            finally:
-                self._origin = "(direct)"
+        """Load every ``group`` entry point, in name order; quarantine any that fail.
+
+        Each extension registers all-or-nothing: if its ``register`` raises part way, none of
+        its entries stay. An extension that registers at a point not yet declared (a sensor
+        plugin loading before ix declares ``sensor``) is retried once the others have loaded.
+        """
+        pending = sorted(entry_points(group=group), key=lambda e: e.name)
+        for attempt in (1, 2):
+            deferred = []
+            for ep in pending:
+                origin = ep.dist.name if ep.dist is not None else ep.value
+                error = self._load(ep, origin)
+                if error is None:
+                    continue
+                if attempt == 1 and isinstance(error, _UnknownPointError):
+                    deferred.append(ep)
+                else:
+                    self.failures.append(
+                        Failure(ep.name, origin, f"{type(error).__name__}: {error}")
+                    )
+            pending = deferred
         return self
+
+    def _load(self, ep: Any, origin: str) -> Exception | None:
+        before = dict(self._entries)
+        points = set(self.points)
+        self._origin = origin
+        try:
+            register = ep.load()
+            if not callable(register):
+                raise TypeError(f"{ep.value} is not callable; expected register(registry)")
+            register(self)
+        except Exception as e:
+            self._entries = before  # all-or-nothing
+            self.points = points
+            return e
+        finally:
+            self._origin = "(direct)"
+        return None

@@ -18,11 +18,11 @@ from ix.adapters._out.engines.native import NativeEngine, NativeEngineConfig
 from ix.adapters._out.filesystem_store import FilesystemStore
 from ix.composition import default_skill, validate_experiment
 from ix.domain.errors import ResultsError
+from ix.domain.models import ExperimentConfig, ExperimentResults, ProbeResult
 from ix.domain.ports import EngineRun
 from ix.domain.types import Probe, Subject
 from ix.eval.analysis import compare_results, standard_errors
 from ix.eval.experiment import Experiment
-from ix.eval.models import ExperimentConfig, ExperimentResults, ProbeResult
 from ix.eval.sensors import ActivationSensor
 
 if TYPE_CHECKING:
@@ -100,6 +100,9 @@ class TestCompare:
 
 
 class _Echo:
+    def check(self, definition):
+        pass
+
     async def run(self, definition, task):
         return AgentResponse(content=f"echo {task}", family="test", model="m")
 
@@ -135,17 +138,15 @@ class TestNativeConcurrency:
             experiment="e",
             probes=_probes(4),
             subject=Subject(name="s"),
-            sensor=ActivationSensor(expected_skill="x"),
             agents=lambda s, t, r=0: BoundAgent(AgentDefinition(name="a"), _Echo()),
             trials=3,
+            measure=lambda trial: [],
         )
         serial = await NativeEngine().run(run)
         parallel = await NativeEngine(NativeEngineConfig(concurrency=8)).run(run)
         key = [(t.probe_id, t.trial_index) for t in serial.trials]
         assert key == [(t.probe_id, t.trial_index) for t in parallel.trials]
-        assert [(r.probe_id, r.trial_index) for r in serial.readings] == [
-            (r.probe_id, r.trial_index) for r in parallel.readings
-        ]
+        assert len(key) == 12  # exactly one trial per probe x trial index
 
 
 # --- config ----------------------------------------------------------------------------
@@ -187,7 +188,7 @@ class TestValidate:
         problems = validate_experiment(exp)
         joined = "\n".join(problems)
         assert len(problems) == 4, joined
-        assert "engine: Unknown engine: 'ray'" in joined
+        assert "engine: unknown engine 'ray'" in joined
         assert "sensors:" in joined and "bogus" in joined
         assert "subject 'typo'" in joined and "cdw" in joined
         assert "subject 'none'" in joined and "no runtime.type" in joined
@@ -237,7 +238,7 @@ class TestCli:
         payload = json.loads(result.stdout)  # banners went to stderr
         # One shape at any subject count: a list of results, each naming its schema.
         assert [r["subject"] for r in payload] == ["a"]
-        assert payload[0]["schema"] == "ix.v1/results"
+        assert payload[0]["schema"] == "ix.v1.results"
         assert "Running" in result.stderr
 
     def test_compare_two_subjects(self, lab: Path):
@@ -381,7 +382,7 @@ class TestExpectationIsOneVocabulary:
         assert "boolean" in " ".join(result.stderr.split())
 
     def test_sensor_and_simulator_agree_on_every_probe(self):
-        from ix.composition import _build_expectations
+        from ix.composition import _expectations
         from ix.eval.activation import expectation_of
 
         probes = (
@@ -391,7 +392,7 @@ class TestExpectationIsOneVocabulary:
             Probe(id="any", prompt="d", metadata={"expectation": "acceptable"}),
         )
         exp = ExperimentConfig(name="e", probes=probes)
-        simulated = _build_expectations(exp)
+        simulated = _expectations(exp)
         for p in probes:
             sensor_says = expectation_of(p)
             if sensor_says == "acceptable":

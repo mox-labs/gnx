@@ -1,33 +1,43 @@
-"""ix type URLs — the matrix convention ``<namespace>.v<version>/<resource>``.
+"""ix type URLs, in slick's dotted grammar (minted through matrix's builder).
 
-Registry keys (sensors, engines, ix's own runtimes) and the kinds ix's DAG nodes append to
-the Construct. A composition root keys on these; config names the short form
-(``type: activation``) and composition expands it.
+Registry keys for ix's own extension points (sensors, engines, the simulator), the payload
+types of the native engine's trial flow, and the schema names of ix's JSON documents. Config
+names a built-in by its short form (``type: activation``); a third party's by its full type
+URL (``type: acme.v1.sensor.rubric``).
 """
 
 from __future__ import annotations
 
-NAMESPACE = "ix.v1"
+from matrix import type_url
 
-# Construct kinds — what the four-node trial DAG reads and writes.
-PROBE = f"{NAMESPACE}/probe.stimulus"
-SUBJECT = f"{NAMESPACE}/subject"
-TRIAL = f"{NAMESPACE}/trial.observation"
-READINGS = f"{NAMESPACE}/sensor.readings"
+NAMESPACE = "ix"
+
+PROBE = type_url(NAMESPACE, 1, "probe")
+TRIAL_INDEX = type_url(NAMESPACE, 1, "trial-index")
+TRIAL = type_url(NAMESPACE, 1, "trial")
+
+SENSOR_PREFIX = f"{NAMESPACE}.v1.sensor."
+ENGINE_PREFIX = f"{NAMESPACE}.v1.engine."
 
 
 def sensor(kind: str) -> str:
-    return f"{NAMESPACE}/sensor.{kind}"
+    """``activation`` → ``ix.v1.sensor.activation``; a full type URL passes through."""
+    return kind if "." in kind else type_url(NAMESPACE, 1, f"sensor.{kind}")
 
 
 def engine(kind: str) -> str:
-    return f"{NAMESPACE}/engine.{kind}"
+    """``native`` → ``ix.v1.engine.native``; a full type URL passes through."""
+    return kind if "." in kind else type_url(NAMESPACE, 1, f"engine.{kind}")
 
 
-def runtime(kind: str) -> str:
-    """ix-owned agent runtimes. Resolved before matrix's for the same short name."""
-    return f"{NAMESPACE}/runtime.{kind}"
+def schema(document: str) -> str:
+    """The ``schema`` field of an ix JSON document: ``results`` → ``ix.v1.results``."""
+    return type_url(NAMESPACE, 1, document)
 
 
-def short(type_url: str, prefix: str) -> str:
-    return type_url.removeprefix(f"{NAMESPACE}/{prefix}.")
+def short(url: str) -> str:
+    """A built-in's short name for display; a third party's full type URL as it stands."""
+    for prefix in (SENSOR_PREFIX, ENGINE_PREFIX):
+        if url.startswith(prefix):
+            return url.removeprefix(prefix)
+    return url

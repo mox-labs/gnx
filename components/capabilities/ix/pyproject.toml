@@ -1,7 +1,7 @@
 [project]
 name = "ix"
-version = "0.1.0"
-description = "Intelligent Experimentation — evals, benchmarks, and QoS experiments"
+version = "0.2.0"
+description = "ix: experiments on agents. Probes, subjects, sensors and statistics, driven by config"
 # readme = "README.md"  # TODO: create when ready
 requires-python = ">=3.12"
 license = "MIT"
@@ -20,9 +20,10 @@ dependencies = [
     "claude-agent-sdk>=0.1.51",  # see matrix's `claude` extra
 ]
 
-# Extensions add sensors, engines or runtimes without editing ix: each entry point is a
-# callable register(registry) -> None, loaded by the composition root.
-[project.entry-points."ix.components"]
+# ix declares its extension points (sensor, engine) and registers its built-ins through
+# matrix's one discovery group, exactly as a third-party sensor or engine does.
+[project.entry-points."matrix.extensions"]
+ix = "ix.composition.builtins:register"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
@@ -55,7 +56,7 @@ asyncio_mode = "auto"
 # deepeval auto-registers a pytest plugin that opens a telemetry capture per session.
 addopts = "-p no:deepeval"
 
-# The x.uma/puma house lint set: B (bugbear), SIM, TC on top of the cix selection.
+# The house lint set: B (bugbear), SIM, TC on top of the base selection.
 [tool.ruff]
 line-length = 100
 target-version = "py312"

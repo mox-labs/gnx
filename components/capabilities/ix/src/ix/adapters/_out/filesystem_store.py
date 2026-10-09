@@ -26,8 +26,8 @@ import yaml
 from pydantic import ValidationError
 
 from ix.domain.errors import ConfigError, ResultsNotFoundError
+from ix.domain.models import ExperimentConfig, ExperimentResults, TrialRecord
 from ix.domain.types import Probe, Subject
-from ix.eval.models import ExperimentConfig, ExperimentResults, TrialRecord
 
 if TYPE_CHECKING:
     from pathlib import Path

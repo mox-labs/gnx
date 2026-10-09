@@ -24,7 +24,6 @@ from ix.domain.types import Probe, Reading, Trial
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from hardline import ModelRuntime
     from matrix import Agent, AgentResponse
 
 # --- Config ---
@@ -169,6 +168,7 @@ class DeepEvalSensor:
     """
 
     Config = DeepEvalSensorConfig
+    truth_keys = frozenset({"expected_output", "context"})
 
     def __init__(
         self,
@@ -194,25 +194,16 @@ class DeepEvalSensor:
         config: DeepEvalSensorConfig,
         probes: tuple[Probe, ...] = (),
         *,
-        models: Callable[[], ModelRuntime] | None = None,
+        judge: Callable[[str], Agent] | None = None,
         **kwargs: Any,
     ) -> DeepEvalSensor:
-        judge: Agent | None = None
+        agent: Agent | None = None
         if config.judge:
-            if models is None:
+            if judge is None:
                 raise ConfigError(
-                    f"deepeval judge {config.judge!r} needs a model registry, and none was wired"
+                    f"deepeval judge {config.judge!r} needs a judge factory, and none was wired"
                 )
-            from matrix import AgentDefinition, BoundAgent
-            from matrix.adapters._out.runtime.model import (
-                ModelAgentRuntime,
-                ModelAgentRuntimeConfig,
-            )
-
-            runtime = ModelAgentRuntime(
-                models(), ModelAgentRuntimeConfig(default_model=config.judge)
-            )
-            judge = BoundAgent(AgentDefinition(name="deepeval-judge", tools=()), runtime)
+            agent = judge(config.judge)
 
         ground_truth = {
             p.id: {
@@ -226,7 +217,7 @@ class DeepEvalSensor:
             metric_name=config.metric,
             threshold=config.threshold,
             criteria=config.criteria,
-            judge=judge,
+            judge=agent,
             judge_name=config.judge or "ix-judge",
             ground_truth=ground_truth,
         )

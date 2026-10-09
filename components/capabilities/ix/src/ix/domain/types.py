@@ -43,6 +43,9 @@ class Trial(BaseModel, frozen=True):
     trial_index: int
     response: Any = None
     error: str | None = None
+    #: Why the session failed, in the runtime port's words (``rate_limited``, ``auth``,
+    #: ``failed``...), when the runtime said. What decides whose fault the failure is.
+    error_reason: str | None = None
 
 
 class Reading(BaseModel, frozen=True):
@@ -61,6 +64,12 @@ class Reading(BaseModel, frozen=True):
     metrics: dict[str, Any] = {}
     details: str = ""
     #: Whose failure a failed reading records when the sensor never judged the response:
-    #: ``subject`` (the trial errored) or ``sensor`` (the sensor raised — the experiment's
-    #: bug, not the subject's). ``None`` for an ordinary judgment, pass or fail.
-    fault: Literal["subject", "sensor"] | None = None
+    #:
+    #: * ``subject``: the agent's session failed on its own account (it broke, or refused);
+    #: * ``harness``: the session never had a fair chance (rate limit, provider outage,
+    #:   timeout, bad credentials, a runtime that cannot run the definition). Not the
+    #:   subject's failure, so it is left out of the score and counted apart;
+    #: * ``sensor``: the sensor raised. The experiment's bug, not the subject's.
+    #:
+    #: ``None`` for an ordinary judgment, pass or fail.
+    fault: Literal["subject", "harness", "sensor"] | None = None

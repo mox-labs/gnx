@@ -20,7 +20,7 @@ its limits machinery. ``model="none"``: Inspect's own model is never called.
 Inspect's progress display is messaging, not output: it is sent to stderr for the duration
 of the eval, so ix's stdout carries only ix's results (``--format json`` stays parseable).
 
-Type URL: ``ix.v1/engine.inspect``. Requires the ``inspect`` extra.
+Type URL: ``ix.v1.engine.inspect``. Requires the ``inspect`` extra.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ix.domain.errors import EngineError, MissingExtraError
 from ix.domain.ports import EngineOutcome
-from ix.domain.types import Reading, Trial
-from ix.eval.measure import measure_trial, run_trial
+from ix.domain.types import Trial
+from ix.eval.measure import run_trial
 
 if TYPE_CHECKING:
     from ix.domain.ports import EngineRun
@@ -110,9 +110,9 @@ class InspectEngine:
                 trial = trials.get(key) or Trial(
                     probe_id=key[0], trial_index=key[1], error="solver produced no trial"
                 )
-                readings = measure_trial(run.sensor, trial)
+                readings = run.measure(trial)  # the experiment's rule, not the engine's
                 if run.on_trial:
-                    run.on_trial(trial, readings)
+                    run.on_trial(trial)
                 passed = bool(readings) and all(r.passed for r in readings)
                 scores = [r.score for r in readings if r.score is not None]
                 return Score(
@@ -137,7 +137,7 @@ class InspectEngine:
             metadata={
                 "ix_experiment": run.experiment,
                 "ix_subject": run.subject.name,
-                "ix_sensor": run.sensor.name,
+                "ix_sensor": run.sensor_name,
                 "ix_run_index": run.run_index,
             },
         )
@@ -156,26 +156,18 @@ class InspectEngine:
                 f"(log: {log.location})"
             )
 
-        readings: list[Reading] = []
-        for sample in log.samples or []:
-            score = (sample.scores or {}).get(SCORER_NAME)
-            if score is None or not score.metadata:
-                readings.append(
-                    Reading(
-                        sensor_name=run.sensor.name,
-                        probe_id=str(sample.id),
-                        trial_index=sample.epoch - 1,
-                        passed=False,
-                        score=0.0,
-                        details=f"no score recorded: {getattr(sample.error, 'message', '')}",
-                        fault="sensor",
-                    )
+        # Every requested trial comes back, even one Inspect lost: a missing trial is a
+        # failed one (the engine's fault), never a silently smaller denominator.
+        for probe in run.probes:
+            for index in range(run.trials):
+                trials.setdefault(
+                    (probe.id, index),
+                    Trial(
+                        probe_id=probe.id,
+                        trial_index=index,
+                        error="the Inspect evaluation produced no trial for this sample",
+                        error_reason="failed",
+                    ),
                 )
-                continue
-            readings.extend(Reading.model_validate(r) for r in score.metadata["readings"])
         ordered = sorted(trials.values(), key=lambda t: (order[t.probe_id], t.trial_index))
-        return EngineOutcome(
-            readings=readings,
-            trials=ordered,
-            artifacts={"inspect_log": str(Path(log.location))},
-        )
+        return EngineOutcome(trials=ordered, artifacts={"inspect_log": str(Path(log.location))})

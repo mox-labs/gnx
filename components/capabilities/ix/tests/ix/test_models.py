@@ -4,12 +4,12 @@ import pytest
 from matrix import AgentResponse
 from pydantic import ValidationError
 
-from ix.domain.types import Probe, Reading, Subject, Trial
-from ix.eval.models import (
+from ix.domain.models import (
     ExperimentConfig,
     ExperimentResults,
     TrialRecord,
 )
+from ix.domain.types import Probe, Reading, Subject, Trial
 
 
 class TestProbe:

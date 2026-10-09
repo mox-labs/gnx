@@ -14,8 +14,9 @@ shape in simulated and live runs.
 The activated skill is the probe's ``expected_skill``, else the experiment's activation
 sensor's, else ``"unspecified"`` — never a hardcoded skill name.
 
-Type URL: ``ix.v1/runtime.simulated``, config ``runtime: {type: simulated}``. Distinct from
-matrix's ``mock`` runtime (canned replies keyed by task), which ix no longer shadows.
+Selected with ``runtime: {type: simulated}`` or ``--simulate``; built by ix's composition for
+each trial, since it reads the experiment's probes. Distinct from matrix's ``mock`` runtime
+(canned replies keyed by task).
 """
 
 from __future__ import annotations
@@ -46,6 +47,9 @@ class SimulatedRuntime:
         self._expectations = expectations or {}
         self._skill_map = skill_map or {}
         self._responses = responses or {}
+
+    def check(self, definition: AgentDefinition) -> None:
+        """The simulator plays any definition."""
 
     async def run(self, definition: AgentDefinition, task: str) -> AgentResponse:
         canned = self._responses.get(task)

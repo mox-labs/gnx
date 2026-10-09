@@ -112,8 +112,11 @@ class Component(Protocol):
     Configuration arrives when the component is built, never through ``run``.
     """
 
-    requires: Mapping[str, Any]
-    provides: Mapping[str, Any]
+    @property
+    def requires(self) -> Mapping[str, Any]: ...
+
+    @property
+    def provides(self) -> Mapping[str, Any]: ...
 
     async def run(self, inputs: Inputs) -> Mapping[str, Any]: ...
 

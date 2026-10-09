@@ -138,3 +138,45 @@ def test_entries_describe_themselves_for_agents() -> None:
 def test_unknown_effects_stay_unknown() -> None:
     entry = Registry().register("component", "acme.v1.x", build).entry("component", "acme.v1.x")
     assert entry.effects is None and entry.describe()["effects"] is None
+
+
+def test_an_extension_at_a_point_declared_later_is_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sensor plugin named 'acme' loads before 'ix' declares the sensor point."""
+
+    def sensor_plugin(registry: Registry) -> None:
+        registry.register("sensor", "acme.v1.sensor.x", build)
+
+    def owner(registry: Registry) -> None:
+        registry.add_point("sensor")
+
+    eps = [_entry_point("acme", sensor_plugin, "acme"), _entry_point("ix", owner, "ix")]
+    monkeypatch.setattr("matrix.domain.registry.entry_points", lambda group: eps)
+    registry = Registry().discover()
+    assert ("sensor", "acme.v1.sensor.x") in registry
+    assert registry.failures == []
+
+
+def test_a_point_nobody_declares_is_still_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def orphan(registry: Registry) -> None:
+        registry.register("sensor", "acme.v1.sensor.x", build)
+
+    monkeypatch.setattr(
+        "matrix.domain.registry.entry_points", lambda group: [_entry_point("acme", orphan)]
+    )
+    (failure,) = Registry().discover().failures
+    assert "no extension point 'sensor'" in failure.error
+
+
+def test_registration_is_all_or_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def half(registry: Registry) -> None:
+        registry.register("component", "acme.v1.first", build)
+        raise RuntimeError("broke half way")
+
+    monkeypatch.setattr(
+        "matrix.domain.registry.entry_points", lambda group: [_entry_point("acme", half)]
+    )
+    registry = Registry().discover()
+    assert ("component", "acme.v1.first") not in registry
+    assert "broke half way" in registry.failures[0].error

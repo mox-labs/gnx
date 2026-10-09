@@ -149,10 +149,18 @@ class ExperimentResults(BaseModel, frozen=True):
     per_run_mean_scores: tuple[float, ...] = ()
     score_noise_floor_sd: float | None = None
     confusion_matrix: dict[str, dict[str, int]] = {}
-    #: Readings the sensor never judged because it raised — the experiment's faults, counted
+    #: Readings the sensor never judged because it raised: the experiment's faults, counted
     #: in the pass rate as failures. Non-zero means the score understates the subject, and
     #: ``ix compare`` will not call a winner.
     sensor_faults: int = 0
+    #: Trials whose session never had a fair chance (rate limit, outage, timeout, credentials,
+    #: a runtime that cannot run the definition). Left **out** of every score, so they cannot
+    #: lower the subject's; but a run with any is incomplete, and ``ix compare`` will not call
+    #: a winner on it.
+    harness_faults: int = 0
+    #: Probes with no reading the subject is accountable for (every trial a harness fault).
+    #: Excluded from ``n_probes`` and every rate.
+    unmeasured_probes: tuple[str, ...] = ()
 
     # Provenance — trace results to their source
     #: The model families that answered, read off the responses (``simulated`` for the
@@ -253,6 +261,9 @@ class Comparison(BaseModel, frozen=True):
     #: grader that crashes on one subject's answers moves the delta without the subjects
     #: differing.
     sensor_faults: int = 0
+    #: Harness faults across both sides. Any at all and the verdict is ``inconclusive``: the
+    #: two runs did not measure the same probes under the same conditions.
+    harness_faults: int = 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -260,7 +271,7 @@ class Comparison(BaseModel, frozen=True):
         """``b_better`` / ``a_better`` only when the CI of the mean score delta excludes 0
         *and* the delta is larger than the run-to-run noise floor where one was measured;
         otherwise ``inconclusive``. Never a guess on thin data."""
-        if self.ci95 is None or self.sensor_faults:
+        if self.ci95 is None or self.sensor_faults or self.harness_faults:
             return "inconclusive"
         low, high = self.ci95
         clears_noise = self.noise_floor_sd is None or abs(self.mean_delta) > self.noise_floor_sd

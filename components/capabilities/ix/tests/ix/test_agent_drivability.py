@@ -19,10 +19,10 @@ from ix.adapters._out.engines.native import NativeEngine
 from ix.adapters._out.filesystem_store import FilesystemStore
 from ix.composition import validate_experiment
 from ix.domain.errors import ConfigError, EngineError, LabNotFoundError, NotFoundError
+from ix.domain.models import MAX_DETAILS, ExperimentConfig, ExperimentResults, ProbeResult
 from ix.domain.types import Probe, Reading, Subject
 from ix.eval.analysis import aggregate_readings
 from ix.eval.experiment import Experiment
-from ix.eval.models import MAX_DETAILS, ExperimentConfig, ExperimentResults, ProbeResult
 from ix.eval.sensors import ActivationSensor
 
 if TYPE_CHECKING:
@@ -220,7 +220,7 @@ class TestJsonEverywhere:
     def test_lab_list(self, lab: Path):
         doc = json.loads(_invoke("lab", "list", "--format", "json").stdout)
         assert doc == {
-            "schema": "ix.v1/labs",
+            "schema": "ix.v1.labs",
             "labs": [{"name": "lab", "experiments": 1, "path": "lab"}],
         }
 
@@ -228,12 +228,12 @@ class TestJsonEverywhere:
         listed = json.loads(
             _invoke("experiment", "list", "--lab", "lab", "--format", "json").stdout
         )
-        assert listed["schema"] == "ix.v1/experiments"
+        assert listed["schema"] == "ix.v1.experiments"
         assert listed["experiments"][0]["name"] == "e" and listed["experiments"][0]["valid"]
         shown = json.loads(
             _invoke("experiment", "show", "e", "--lab", "lab", "--format", "json").stdout
         )
-        assert shown["schema"] == "ix.v1/experiment"
+        assert shown["schema"] == "ix.v1.experiment"
         assert [s["runtime"] for s in shown["subjects"]] == ["simulated", "simulated"]
         assert shown["probes"][0] == {
             "id": "p0",
@@ -245,7 +245,7 @@ class TestJsonEverywhere:
         result = _invoke("experiment", "validate", "e", "--lab", "lab", "--format", "json")
         assert result.exit_code == 0, result.output
         doc = json.loads(result.stdout)
-        assert doc["schema"] == "ix.v1/validation" and doc["valid"] and doc["problems"] == []
+        assert doc["schema"] == "ix.v1.validation" and doc["valid"] and doc["problems"] == []
 
     def test_experiment_list_exits_3_on_an_invalid_experiment_and_still_lists(self, lab: Path):
         bad = lab / "broken"
@@ -269,14 +269,14 @@ class TestJsonEverywhere:
         shown = json.loads(
             _invoke("results", "e", "--lab", "lab", "--subject", "sim", "--format", "json").stdout
         )
-        assert isinstance(shown, list) and shown[0]["schema"] == "ix.v1/results"
+        assert isinstance(shown, list) and shown[0]["schema"] == "ix.v1.results"
 
     def test_compare_names_its_schema_and_both_runs(self, lab: Path):
         ran = json.loads(_invoke("run", "e", "--lab", "lab", "--format", "json").stdout)
         doc = json.loads(
             _invoke("compare", "e", "sim", "sim2", "--lab", "lab", "--format", "json").stdout
         )
-        assert doc["schema"] == "ix.v1/comparison"
+        assert doc["schema"] == "ix.v1.comparison"
         assert (doc["run_id_a"], doc["run_id_b"]) == (ran[0]["run_id"], ran[1]["run_id"])
 
 
@@ -288,7 +288,7 @@ class TestPlanAndLiveGuard:
         result = _invoke("run", "e", "--lab", "lab", "--plan", "--format", "json")
         assert result.exit_code == 0, result.output
         plan = json.loads(result.stdout)
-        assert plan["schema"] == "ix.v1/plan"
+        assert plan["schema"] == "ix.v1.plan"
         rows = {r["subject"]: r for r in plan["subjects"]}
         assert rows["live"]["runtime"] == "claude-sdk" and rows["live"]["live"]
         assert rows["live"]["permission_mode"] == "bypassPermissions"
@@ -390,6 +390,9 @@ class TestProvenance:
 
     async def test_config_hash_covers_the_probes(self, tmp_path: Path):
         class _Echo:
+            def check(self, definition: Any) -> None:
+                pass
+
             async def run(self, definition: Any, task: str) -> AgentResponse:
                 return AgentResponse(content=task, family="test")
 
@@ -462,7 +465,7 @@ class TestInit:
         first = json.loads(_invoke("lab", "init", "lab", "--format", "json").stdout)
         again = json.loads(_invoke("lab", "init", "lab", "--format", "json").stdout)
         assert (first["created"], again["created"]) == (True, False)
-        assert first["schema"] == "ix.v1/init"
+        assert first["schema"] == "ix.v1.init"
 
         made = _invoke("experiment", "init", "e", "--lab", "lab", "--format", "json")
         assert made.exit_code == 0, made.output
