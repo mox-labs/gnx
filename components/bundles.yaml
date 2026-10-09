@@ -68,7 +68,7 @@ plugins:
   # components/capabilities/recon; only its authored skill projects, from the path where it
   # lives inside the package.
   - name: recon
-    version: 0.8.0
+    version: 0.9.0
     category: research
     description: >-
       Heterogeneous sources in, structured data out. Fetch from APIs, CLIs, and web

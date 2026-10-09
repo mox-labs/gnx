@@ -52,6 +52,10 @@ abstract: "metadata.description|$html2text"
 
 The pipe is always `|` (no spaces required). Transform names start with `$`.
 
+**An unknown transform is a config error.** `recon survey --dry-run` (and every survey, which plans first) reports it at `collectors[i].normalize.<column>` with the list of installed transforms, and exits 3 before anything runs. So is a nested list-map (`a.*.b.*.c`) or a pipe without a `$name`.
+
+Transforms are extensions: each is registered under the entry-point group `recon.transforms`, and `recon status --json` lists what is installed (`plugins.transforms`). A package installed alongside recon can add its own.
+
 ## Built-in Transforms
 
 | Transform | Input | Output | Use case |
@@ -60,7 +64,7 @@ The pipe is always `|` (no spaces required). Transform names start with `$`.
 | `$inverted_index` | `{"word": [pos, ...]}` | Reconstructed text | OpenAlex abstract format |
 | `$join` | `list` | `str` (comma-separated) | Flatten author lists to string |
 | `$first` | `list` | First element or `None` | Extract first match from ripgrep |
-| `$pdf2text` | File path string | Extracted text | PDF content extraction (pymupdf) |
+| `$markitdown` | Local file path string | Markdown text | Convert a PDF, DOCX, PPTX, XLSX, EPub, CSV, image or audio file a record names (markitdown) |
 
 ### $html2text
 
@@ -98,13 +102,29 @@ content: "data.lines.text|$first"
 # ["matched line", "context"] → "matched line"
 ```
 
-### $pdf2text
+### $markitdown
 
-Extracts text from a PDF file path using pymupdf. Returns empty string if extraction fails.
+Converts the local file a field names to markdown via markitdown. Returns an empty string if the file is missing or conversion fails, so one unreadable file does not fail the table.
 
 ```yaml
-full_text: "pdf_path|$pdf2text"
+full_text: "pdf_path|$markitdown"
 ```
+
+To fetch and convert a remote document, use a `web` collector instead: it converts by content type.
+
+## Capture Collectors: `_capture`
+
+In a `capture` collector, a normalize path may start with `_capture` to read the capture line the record came from, as well as the record itself:
+
+```yaml
+normalize:
+  title: title                                  # from the body
+  tool: _capture.collector                      # e.g. mcp__exa__web_search_exa
+  query: _capture.request.tool_input.query      # what the tool was asked
+  captured_at: _capture.captured_at
+```
+
+`_capture` exists only while normalizing; without a normalize spec, records are written exactly as parsed.
 
 ## Response Formats
 
