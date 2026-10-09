@@ -1,6 +1,6 @@
 # Security — matrix
 
-matrix composes agents and runs component DAGs. It holds no secrets of its own and opens no
+matrix composes agents and runs flows of components. It holds no secrets of its own and opens no
 listening socket, but it is the package that **decides how much authority an agent session
 gets**. That makes its defaults and its config validation, not its code paths, the
 interesting surface.
@@ -29,8 +29,8 @@ section, an ix `experiment.yaml`, a markdown agent file.
 **A matrix config file, and every agent file in a `definitions` directory, is a capability
 grant. Review them like one.**
 
-What constrains it: each runtime's options are validated through its own typed config
-(`register_typed`), with unknown keys rejected. `permission_mode` is a `Literal`, so an
+What constrains it: each runtime's options are validated through the config model it registered
+with, with unknown keys rejected. `permission_mode` is a `Literal`, so an
 unrecognised mode fails at composition naming the legal set. Selecting `bypassPermissions`
 or `dontAsk` logs at WARNING, so a permissive run is visible in the output, not only in the
 config. Relative plugin paths are resolved against the runtime's `cwd`, never the process's.
@@ -47,11 +47,12 @@ there — see M-3, fixed.
 `setting_sources: []` is the hermetic setting — no ambient `~/.claude` or project plugin
 config leaks into the subprocess. Any evaluation that claims reproducibility should set it.
 
-### 3. Declared reads
+### 3. Declared ports
 
-Each DAG component is handed a view of the ledger restricted to its `requires`. A component
-that reads an undeclared kind raises `ContractError`. This is a correctness boundary, not a
-trust boundary: a component is in-process Python and can reach anything the process can.
+Each flow member receives `Inputs` holding only the values on the topics it bound, never the
+run's Construct, and an output that breaks its declared ports or its type's schema raises
+`ContractError`. This is a correctness boundary, not a trust boundary: a component is
+in-process Python and can reach anything the process can.
 
 ## Findings
 
@@ -87,7 +88,7 @@ with that SDK version installed.
   scratch `cwd`, or a definition with `tools: []`.
 - matrix does not redact agent output. An agent that reads a secret and prints it puts that
   secret in an `Artifact` and an `AgentResponse`.
-- Entry-point discovery (`matrix.components`) imports every installed extension at
+- Entry-point discovery (`matrix.extensions`) imports every installed extension at
   composition. Installing a package is trusting it.
 
 ## Reporting

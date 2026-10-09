@@ -1,128 +1,189 @@
-# Matrix
+# matrix
 
-Two things, one registry: a **DAG runtime** where components declare what they read and
-write, and the **composition of agents** from a definition and a runtime.
+matrix runs flows of typed components and composes agents from config.
+
+- A **component** declares named ports, each typed by a type URL. A **flow** wires members'
+  ports to **topics**. matrix checks the wiring before anything runs, reports every problem
+  at once, runs the members in dependency order, and records every value in a **Construct**.
+- An **agent** is a definition (prompt, tools, model) bound to a runtime (Claude Agent SDK,
+  one model call through hardline, or a mock). The binding is checked when it is made, and
+  `matrix.v1.agent-step` puts an agent into a flow as an ordinary member.
+- One **registry** holds every extension: runtimes, components, payload types, observers.
+  matrix's built-ins arrive through the same `matrix.extensions` entry point as anyone else's.
 
 ```bash
 uv add "matrix @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/matrix"
-# extras: [claude] the Claude Agent SDK runtime · [models] the model runtime (via hardline)
+# extras: [claude] Claude Agent SDK runtime · [models] model runtime (hardline) · [otel] tracing
 ```
 
-## Components and the DAG
-
-A component declares the artifact kinds it `requires` and the one kind it `provides`. Matrix
-derives the graph from those declarations, rejects malformed topologies before anything runs,
-executes in order, and ledgers every result.
+## A flow
 
 ```python
-from matrix import ConstructReader, Orchestrator, TypedStruct
+import asyncio
 
-class Probe:
-    name = "probe"
-    requires = frozenset()                       # a root: seed input comes via the constructor
-    provides = "demo.v1/probe.response"
+from matrix import Executor, Flow, Member, compile_flow
 
-    async def run(self, construct: ConstructReader) -> TypedStruct:
-        return TypedStruct(type_url=self.provides, value="hello")
 
-class Sensor:
-    name = "sensor"
-    requires = frozenset({"demo.v1/probe.response"})
-    provides = "demo.v1/sensor.grade"
+class Upper:
+    requires = {"text": "demo.v1.text"}
+    provides = {"shout": "demo.v1.text"}
 
-    async def run(self, construct: ConstructReader) -> TypedStruct:
-        return TypedStruct(self.provides, construct["demo.v1/probe.response"] == "hello")
+    async def run(self, inputs):
+        return {"shout": inputs["text"].upper()}
 
-construct = await Orchestrator([Probe(), Sensor()]).run()
-construct["demo.v1/sensor.grade"]                # True
+
+class Count:
+    requires = {"text": "demo.v1.text"}
+    provides = {"length": "demo.v1.count"}
+
+    async def run(self, inputs):
+        return {"length": len(inputs["text"])}
+
+
+flow = Flow(
+    name="shout-and-count",
+    inputs={"line": "demo.v1.text"},
+    members=(
+        Member("upper", Upper(), bindings={"text": "line", "shout": "loud"}),
+        Member("count", Count(), bindings={"text": "loud", "length": "size"}),
+    ),
+)
+
+compiled = compile_flow(flow)
+run = asyncio.run(Executor().run(compiled, {"line": "hello"}))
+
+print(run.status)              # completed
+print(run.outputs("loud"))     # ('HELLO',)
+print(run.outputs("size"))     # (5,)
+print(compiled.levels)         # (('upper',), ('count',))
 ```
 
-The declarations are **enforced**, not advisory:
+Components are structural: a class with `requires`, `provides` and an async `run` is a
+component without importing matrix. `run` receives `Inputs` (only the values it bound) and
+returns one value per provide port, keyed by port name. matrix holds it to that: an extra or
+missing port, or a value that fails its type's registered schema, is a `ContractError`.
 
-- **Writes.** `run` returns a `TypedStruct` whose `type_url` must equal `provides`, or the
-  Orchestrator raises `ContractError`.
-- **Reads.** Each component is handed a view of the ledger restricted to its `requires`. Reading
-  anything else raises `ContractError` naming the component, the kind, and what it declared —
-  so the compiler's edges are the true data dependencies.
+`compile_flow` raises one `CompilationError` listing every wiring problem: an unknown port, an
+unbound required port, a topic carrying two types, a topic nobody produces, a required port
+fed only by optional outputs, several producers feeding a port not declared `many=True`, and
+cycles. A compiled flow runs any number of times with different inputs.
 
-Structural typing throughout: implement the shape, no base class.
+## Agents
 
-## Agents: definition + runtime
+```python
+import asyncio
 
-An **AgentDefinition** is what the agent *is* — prompt, tools, model, turn budget. It is the
-same shape as a Claude Code agent file, so a plugin's `agents/*.md` load without translation.
+from matrix import Flow, MatrixConfig, Member, compose
 
-An **AgentRuntime** is *where and how* it runs:
+config = MatrixConfig.model_validate(
+    {
+        "runtimes": {"offline": {"type": "mock", "default": '{"verdict": "ok"}'}},
+        "agents": {
+            "reviewer": {"runtime": "offline", "system_prompt": "Review the change."},
+        },
+    }
+)
+container = compose(config)
 
-| type | type URL | what it runs |
-|---|---|---|
-| `claude-sdk` | `matrix.v1/runtime.claude-sdk` | Claude Agent SDK sessions — tools, turns, plugins, permission mode |
-| `model` | `matrix.v1/runtime.model` | one call to any model hardline has a registry row for; refuses definitions that declare tools |
-| `mock` | `matrix.v1/runtime.mock` | deterministic, offline |
+# An agent on its own.
+response = asyncio.run(container.agent("reviewer").run("Review: rename x to y"))
+print(response.content, response.stop, response.family)   # {"verdict": "ok"} completed mock
 
-Binding one to the other gives a **BoundAgent** (`run(prompt) -> AgentResponse`). Every response
-carries the `family` of the model that produced it.
+# The same agent as a flow member, through matrix.v1.agent-step.
+flow = Flow(
+    name="review",
+    inputs={"diff": "acme.v1.diff"},
+    members=(
+        Member(
+            "review",
+            "matrix.v1.agent-step",
+            config={
+                "agent": "reviewer",
+                "inputs": {"diff": "acme.v1.diff"},
+                "task": "Review this change:\n{diff}",
+                "output": "acme.v1.review",
+            },
+            bindings={"diff": "diff", "result": "review"},
+        ),
+    ),
+)
+compiled = container.compile(flow)
+run = asyncio.run(container.executor().run(compiled, {"diff": "- x\n+ y"}))
+print(run.outputs("review"))   # ({'verdict': 'ok'},)
+```
 
-## Configuration
-
-`compose` turns a `matrix:` config section into running objects:
+In a project the same composition usually comes from `./matrix.yaml` (or the `matrix:`
+section of any tool's config), read by `load_config`:
 
 ```yaml
 matrix:
-  definitions: [agents/]                # *.md agent files
-  models:                               # a hardline registry, for type: model runtimes
-    default: qwen3-8b
-    models:
-      qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
-                 model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
+  definitions: [agents/]                 # *.md agent files, Claude Code format
   runtimes:
-    sdk:   {type: claude-sdk, permission_mode: default, setting_sources: []}
-    local: {type: model}
+    sdk:     {type: claude-sdk, permission_mode: default, setting_sources: []}
+    local:   {type: model}
+    offline: {type: mock}
+  observers: [otel]                      # optional
   agents:
-    reviewer:       {runtime: sdk}                                  # agents/reviewer.md
-    reviewer-local: {runtime: local, definition: reviewer, model: qwen3-8b, tools: []}
-    greeter:        {runtime: local, system_prompt: "Say hello."}   # fully inline
+    reviewer: {runtime: sdk}                                    # agents/reviewer.md
+    triage:   {runtime: local, definition: reviewer, tools: []} # same prompt, no tools
+    greeter:  {runtime: offline, system_prompt: "Say hello."}   # fully inline
 ```
 
-```python
-from matrix import compose, load_config
-
-config = load_config(MyToolConfig, client_key="mytool")       # ~/.mytool/config.yaml < ./mytool.yaml
-container = compose(config, base_dir=project_root, source="mytool.yaml")
-response = await container.agent("reviewer-local").run("Review this diff: ...")
-```
-
-A bad value fails at composition, naming the key path and the legal set:
-
-```
-matrix.yaml: agents.triage.runtime: 'sdk' is not a configured runtime. Configured: local, mock
-matrix.yaml: runtimes.sdk: matrix.v1/runtime.claude-sdk: permission_mode: Input should be 'default', 'acceptEdits', ...
-```
+A runtime that cannot honour a definition refuses it at composition: the `model` runtime makes
+one call with no tool loop, so an agent bound to it that declares tools is a `ConfigError`,
+not a quiet downgrade.
 
 ## Extending
 
-Everything resolves through one `ComponentRegistry` keyed by type URL
-(`<namespace>.v<version>/<resource>`). An extension registers without editing matrix — one
-entry point, a callable `register(registry) -> None`:
+An extension is a package with an entry point in the `matrix.extensions` group whose value is
+`register(registry) -> None`:
 
 ```toml
-[project.entry-points."matrix.components"]
-strands = "my_pkg.strands:register"
+[project.entry-points."matrix.extensions"]
+acme = "acme.matrix_ext:register"
 ```
 
 ```python
 def register(registry):
-    registry.register_typed(runtime_type_url("strands"), StrandsConfig, StrandsRuntime)
+    registry.register(
+        "component",
+        "acme.v1.scorer",
+        Scorer,                     # called as Scorer(validated_config, **needs)
+        config=ScorerConfig,        # a pydantic model; unknown keys fail naming the type URL
+        effects=set(),              # what it may touch; None means unknown
+        summary="Scores a diff by length",
+        stability="experimental",
+    )
+    registry.register_payload("acme.v1.review", Review)   # outputs of this type are validated
 ```
 
-`register_typed` validates config through a pydantic model before building, so a typo names
-the type URL and the key. A duplicate type URL raises; discovery never overrides silently.
+The [API reference](docs/reference/api.md#the-registry) has the complete extension, with
+`Scorer`, its config and the `Review` payload. An extension that fails to import or register
+is quarantined: its entries are dropped, the failure is recorded, and the others load. A
+package owns the type URLs under its own name (`acme`
+owns `acme.*`): when two extensions register the same type URL, the owner keeps it and the
+other is quarantined, so nothing can replace a built-in by loading first.
+
+## The `matrix` command
+
+Read-only: it inspects what is installed and whether a config composes, and never runs a flow
+or calls a model.
+
+```bash
+matrix catalog [--point P] [--json]           # every registered extension, and any that failed
+matrix describe TYPE_URL [--json]             # config schema, needs, effects, origin
+matrix config [--tool T] [--sources] [--json] # the merged config and the files it came from
+matrix check [--tool T] [--json]              # compose runtimes and agents; call nothing
+matrix agents [--tool T] [--json]             # the agents a config defines
+```
+
+Exit codes: 0 ok, 1 failure, 2 usage, 3 config, 4 not found, 5 transient, 6 auth.
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [What is Matrix?](docs/explanation/what-is-matrix.md) | Why it exists, design decisions, what it's not |
-| [The Data Model](docs/explanation/data-model.md) | Construct and Artifact — the append-only execution ledger |
-| [API Reference](docs/reference/api.md) | All public types |
-| [SECURITY.md](SECURITY.md) | Agent authority, config as a capability grant, open findings |
+| Document | What it covers |
+|----------|----------------|
+| [What is matrix?](docs/explanation/what-is-matrix.md) | The model: components, ports, topics, flows, runs, agents, the registry |
+| [The data model](docs/explanation/data-model.md) | Artifact, Construct, Run, and how a run is saved |
+| [API reference](docs/reference/api.md) | Every public name, config key, error kind, exit code and CLI command |
+| [SECURITY.md](SECURITY.md) | Agent authority, config as a capability grant, findings |
