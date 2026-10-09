@@ -1,108 +1,140 @@
-"""Tests for ComponentRegistry — type URL to factory mapping."""
+"""The registry: typed config, declared needs, one discovery path, quarantine, no silent wins."""
+
+from __future__ import annotations
+
+from typing import Any
 
 import pytest
-from matrix_helpers import FakeComponent
+from pydantic import BaseModel, ConfigDict
 
-from matrix.domain.registry import ComponentRegistry
+from matrix import ConfigError, NotFoundError, Registry, default_registry
 
 
-def make_probe(**config):
-    """Factory that creates a FakeComponent probe."""
-    return FakeComponent(
-        name=config.get("name", "probe"),
-        requires=frozenset(),
-        provides="probe.response",
+class Settings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    size: int
+
+
+def build(config: Settings, **needs: Any) -> tuple[Settings, dict[str, Any]]:
+    return config, needs
+
+
+def test_config_is_validated_and_needs_are_handed_over() -> None:
+    registry = Registry().register(
+        "component", "acme.v1.thing", build, config=Settings, needs={"agents"}
     )
-
-
-def make_sensor(**config):
-    """Factory that creates a FakeComponent sensor."""
-    return FakeComponent(
-        name=config.get("name", "sensor"),
-        requires=frozenset({"probe.response"}),
-        provides="sensor.grade",
+    config, needs = registry.create(
+        "component", "acme.v1.thing", {"size": 3}, needs={"agents": {}, "cwd": "/x"}
     )
+    assert config.size == 3
+    assert needs == {"agents": {}}  # only what it declared
 
 
-class TestRegistration:
-    def test_register_and_create(self):
-        registry = ComponentRegistry().register("test.v1/probe", make_probe)
-        component = registry.create("test.v1/probe")
-        assert component.name == "probe"
-        assert component.provides == "probe.response"
-
-    def test_chaining(self):
-        registry = (
-            ComponentRegistry()
-            .register("test.v1/probe", make_probe)
-            .register("test.v1/sensor", make_sensor)
-        )
-        assert len(registry) == 2
-
-    def test_duplicate_raises(self):
-        registry = ComponentRegistry().register("test.v1/probe", make_probe)
-        with pytest.raises(ValueError, match="Duplicate registration"):
-            registry.register("test.v1/probe", make_sensor)
-
-    def test_class_as_factory(self):
-        """Python classes are callables — can register directly."""
-        registry = ComponentRegistry().register(
-            "test.v1/fake",
-            lambda **kw: FakeComponent(
-                name=kw.get("name", "direct"),
-                requires=frozenset(),
-                provides="fake.output",
-            ),
-        )
-        component = registry.create("test.v1/fake", {"name": "custom"})
-        assert component.name == "custom"
+def test_bad_config_names_every_key_path() -> None:
+    registry = Registry().register("component", "acme.v1.thing", build, config=Settings)
+    with pytest.raises(ConfigError) as e:
+        registry.create("component", "acme.v1.thing", {"sise": 3}, where="flow.members.t")
+    problems = e.value.details["problems"]
+    assert any("flow.members.t.size" in p for p in problems)
+    assert any("sise" in p for p in problems)
+    assert "matrix describe acme.v1.thing" in (e.value.fix or "")
 
 
-class TestCreation:
-    def test_unknown_type_raises(self):
-        registry = ComponentRegistry()
-        with pytest.raises(KeyError, match="Unknown component type"):
-            registry.create("nonexistent.type")
-
-    def test_config_passed_to_factory(self):
-        registry = ComponentRegistry().register("test.v1/probe", make_probe)
-        component = registry.create("test.v1/probe", {"name": "custom-probe"})
-        assert component.name == "custom-probe"
-
-    def test_none_config_uses_defaults(self):
-        registry = ComponentRegistry().register("test.v1/probe", make_probe)
-        component = registry.create("test.v1/probe")
-        assert component.name == "probe"
-
-    def test_empty_config_uses_defaults(self):
-        registry = ComponentRegistry().register("test.v1/probe", make_probe)
-        component = registry.create("test.v1/probe", {})
-        assert component.name == "probe"
+def test_a_missing_need_is_a_config_error() -> None:
+    registry = Registry().register(
+        "component", "acme.v1.thing", build, config=Settings, needs={"agents"}
+    )
+    with pytest.raises(ConfigError, match=r"needs \['agents'\]"):
+        registry.create("component", "acme.v1.thing", {"size": 1})
 
 
-class TestIntrospection:
-    def test_contains(self):
-        registry = ComponentRegistry().register("test.v1/probe", make_probe)
-        assert "test.v1/probe" in registry
-        assert "test.v1/missing" not in registry
+def test_untyped_entries_take_no_config() -> None:
+    registry = Registry().register("observer", "acme.v1.obs", lambda: "built")
+    assert registry.create("observer", "acme.v1.obs") == "built"
+    with pytest.raises(ConfigError, match="takes no config"):
+        registry.create("observer", "acme.v1.obs", {"x": 1})
 
-    def test_len(self):
-        registry = (
-            ComponentRegistry()
-            .register("test.v1/probe", make_probe)
-            .register("test.v1/sensor", make_sensor)
-        )
-        assert len(registry) == 2
 
-    def test_types(self):
-        registry = (
-            ComponentRegistry()
-            .register("test.v1/probe", make_probe)
-            .register("test.v1/sensor", make_sensor)
-        )
-        assert registry.types() == frozenset({"test.v1/probe", "test.v1/sensor"})
+def test_unknown_point_and_malformed_ids_are_refused() -> None:
+    with pytest.raises(ConfigError, match="no extension point 'sensor'"):
+        Registry().register("sensor", "acme.v1.s", build)
+    assert "sensor" in Registry().add_point("sensor").points
+    with pytest.raises(ConfigError, match="not a type URL"):
+        Registry().register("component", "acme.v1/thing", build)
 
-    def test_empty_registry(self):
-        registry = ComponentRegistry()
-        assert len(registry) == 0
-        assert registry.types() == frozenset()
+
+def test_a_lookup_miss_lists_what_is_registered() -> None:
+    registry = Registry().register("component", "acme.v1.a", build)
+    with pytest.raises(NotFoundError, match="Registered: acme.v1.a") as e:
+        registry.entry("component", "acme.v1.b")
+    assert isinstance(e.value, KeyError) and e.value.kind == "not_found"
+
+
+def _entry_point(name: str, register: Any, dist: str = "pkg") -> Any:
+    class _Dist:
+        pass
+
+    d = _Dist()
+    d.name = dist  # type: ignore[attr-defined]
+
+    class _EP:
+        value = f"{dist}:register"
+
+        def load(self) -> Any:
+            if isinstance(register, Exception):
+                raise register
+            return register
+
+    ep = _EP()
+    ep.name = name  # type: ignore[attr-defined]
+    ep.dist = d  # type: ignore[attr-defined]
+    return ep
+
+
+def test_a_broken_extension_is_quarantined_and_the_rest_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    good = _entry_point("good", lambda r: r.register("component", "good.v1.x", build), "good-pkg")
+    bad = _entry_point("bad", ImportError("no module named nope"), "bad-pkg")
+    monkeypatch.setattr("matrix.domain.registry.entry_points", lambda group: [bad, good])
+    registry = Registry().discover()
+    assert ("component", "good.v1.x") in registry
+    assert registry.entry("component", "good.v1.x").origin == "good-pkg"
+    (failure,) = registry.failures
+    assert (failure.extension, failure.origin) == ("bad", "bad-pkg")
+    assert "no module named nope" in failure.error
+
+
+def test_a_collision_names_both_origins_whatever_the_install_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def claims(registry: Registry) -> None:
+        registry.register("component", "shared.v1.x", build)
+
+    first = _entry_point("a-first", claims, "pkg-a")
+    second = _entry_point("b-second", claims, "pkg-b")
+    for order in ([first, second], [second, first]):
+        monkeypatch.setattr("matrix.domain.registry.entry_points", lambda group, o=order: o)
+        registry = Registry().discover()
+        assert registry.entry("component", "shared.v1.x").origin == "pkg-a"  # name order
+        (failure,) = registry.failures
+        assert "pkg-a" in failure.error and "pkg-b" in failure.error
+
+
+def test_the_built_ins_arrive_through_the_entry_point() -> None:
+    registry = default_registry()
+    assert registry.entry("runtime", "matrix.v1.runtime.mock").origin == "matrix"
+    assert not registry.failures
+
+
+def test_entries_describe_themselves_for_agents() -> None:
+    entry = default_registry(discover=False).entry("runtime", "matrix.v1.runtime.claude-sdk")
+    described = entry.describe()
+    assert described["effects"] == ["filesystem", "model", "network", "subprocess"]
+    assert described["needs"] == ["cwd"]
+    assert "permission_mode" in described["config"]["properties"]
+
+
+def test_unknown_effects_stay_unknown() -> None:
+    entry = Registry().register("component", "acme.v1.x", build).entry("component", "acme.v1.x")
+    assert entry.effects is None and entry.describe()["effects"] is None

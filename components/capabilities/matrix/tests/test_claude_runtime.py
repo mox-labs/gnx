@@ -6,7 +6,7 @@ import types
 import pytest
 
 from matrix import AgentDefinition
-from matrix.domain.types import AgentResponse
+from matrix.domain.agent import AgentResponse
 
 # --- SDK integration tests (mocked) ---
 
@@ -217,9 +217,11 @@ class TestPermissionMode:
 
         with pytest.raises(ConfigError) as exc:
             default_registry(discover=False).create(
+                "runtime",
                 runtime_type_url("claude-sdk"),
                 {"permission_mode": "bypassPermission"},
-                source="ix.yaml",
+                needs={"cwd": None},
+                where="ix.yaml",
             )
         msg = str(exc.value)
         assert "ix.yaml" in msg and "permission_mode" in msg

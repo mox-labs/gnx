@@ -4,7 +4,7 @@ The previous mock exposed ``invoke(system, messages) -> str``, a different signa
 the port it stood in for; under structural typing nothing noticed. This one is checked
 against the port in ``test_every_runtime_satisfies_the_port``.
 
-Type URL: ``matrix.v1/runtime.mock``.
+Type URL: ``matrix.v1.runtime.mock``.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
-from matrix.domain.types import AgentResponse
+from matrix.domain.agent import AgentResponse
 
 if TYPE_CHECKING:
     from matrix.domain.agent import AgentDefinition
@@ -33,6 +33,9 @@ class MockRuntime:
     def __init__(self, config: MockRuntimeConfig | None = None) -> None:
         self._config = config or MockRuntimeConfig()
         self.calls: list[tuple[str, str]] = []
+
+    def check(self, definition: AgentDefinition) -> None:
+        """Every definition can be mocked."""
 
     async def run(self, definition: AgentDefinition, task: str) -> AgentResponse:
         self.calls.append((definition.name, task))

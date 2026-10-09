@@ -176,7 +176,8 @@ class TestLoadConfig:
         f = tmp_path / "matrix.yaml"
         f.write_text("matrix:\n  definitions: [agents]\nix:\n  trials: 20\n")
         config = load_config(SampleClientConfig, client_key="ix", sources=[f])
-        assert config.matrix.definitions == ("agents",)
+        # Relative definition directories resolve against the file that declared them.
+        assert config.matrix.definitions == (str((tmp_path / "agents").resolve()),)
         assert config.client.trials == 20
 
     def test_project_overrides_user(self, tmp_path):
@@ -188,7 +189,11 @@ class TestLoadConfig:
         project.write_text("matrix:\n  definitions: [project-agents]\n")
 
         config = load_config(SampleClientConfig, client_key="ix", sources=[user, project])
-        assert config.matrix.definitions == ("project-agents",)
+        # Definition directories accumulate across tiers: your agents plus the project's.
+        assert config.matrix.definitions == (
+            str((tmp_path / "user-agents").resolve()),
+            str((tmp_path / "project-agents").resolve()),
+        )
         assert config.client.trials == 10  # not overridden by project
 
     def test_custom_client_key(self, tmp_path):

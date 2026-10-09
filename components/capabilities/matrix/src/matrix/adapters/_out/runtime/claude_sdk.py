@@ -5,7 +5,7 @@ mount) lives on the runtime. What the agent *is* — its prompt, tools, model, t
 arrives per call as an :class:`AgentDefinition`. One runtime serves every definition bound
 to it.
 
-Type URL: ``matrix.v1/runtime.claude-sdk``. Requires the ``claude`` extra.
+Type URL: ``matrix.v1.runtime.claude-sdk``. Requires the ``claude`` extra.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from matrix.domain.errors import AgentRuntimeError
-from matrix.domain.types import AgentResponse
+from matrix.domain.agent import AgentResponse
+from matrix.domain.errors import AgentRuntimeError, RuntimeReason
 
 if TYPE_CHECKING:
     from matrix.domain.agent import AgentDefinition
@@ -77,6 +77,9 @@ class ClaudeSdkRuntime:
     @property
     def config(self) -> ClaudeSdkRuntimeConfig:
         return self._config
+
+    def check(self, definition: AgentDefinition) -> None:
+        """The SDK honours every field of a definition; nothing to refuse."""
 
     def _plugins(self) -> list[dict[str, Any]]:
         resolved = []
@@ -153,16 +156,22 @@ class ClaudeSdkRuntime:
             else:
                 if type(e).__name__ == "CLINotFoundError":
                     raise AgentRuntimeError(
-                        f"agent {definition.name!r}: Claude Code CLI not found. "
-                        "Install: npm install -g @anthropic-ai/claude-code"
+                        f"agent {definition.name!r}: Claude Code CLI not found",
+                        reason="incapable",
+                        fix="install it: npm install -g @anthropic-ai/claude-code",
+                        agent=definition.name,
                     ) from e
                 raise AgentRuntimeError(
-                    f"agent {definition.name!r}: Claude SDK error: {type(e).__name__}: {e}"
+                    f"agent {definition.name!r}: Claude SDK error: {type(e).__name__}: {e}",
+                    reason="timeout" if isinstance(e, TimeoutError) else "failed",
+                    agent=definition.name,
                 ) from e
 
         if result_msg is None:
             raise AgentRuntimeError(
-                f"agent {definition.name!r}: the session ended without a result message"
+                f"agent {definition.name!r}: the session ended without a result message",
+                reason="failed",
+                agent=definition.name,
             )
         stop = _stop(result_msg)
         if stop is None:
@@ -171,7 +180,10 @@ class ClaudeSdkRuntime:
             raise AgentRuntimeError(
                 f"agent {definition.name!r}: session failed ({result_msg.subtype}"
                 + (f", HTTP {status}" if status else "")
-                + f"): {detail}"
+                + f"): {detail}",
+                reason=_http_reason(status),
+                agent=definition.name,
+                status=status,
             )
 
         usage = getattr(result_msg, "usage", None)
@@ -204,3 +216,18 @@ def _stop(result: Any) -> str | None:
     if result.is_error:
         return None
     return "completed"
+
+
+def _http_reason(status: Any) -> RuntimeReason:
+    """A failed session's HTTP status, in the runtime port's vocabulary."""
+    if not isinstance(status, int):
+        return "failed"
+    if status == 429:
+        return "rate_limited"
+    if status in (401, 403):
+        return "auth"
+    if status in (408, 504):
+        return "timeout"
+    if status >= 500:
+        return "unavailable"
+    return "failed"

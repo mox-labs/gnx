@@ -5,7 +5,7 @@ composition: which runtimes exist, where agent definitions live, and which agent
 which definition to which runtime. ``matrix.composition.compose`` turns it into running
 objects; nothing here does I/O.
 
-Example (``ix.yaml``, ``./matrix.yaml``, or any tool that composes matrix)::
+Example (``./matrix.yaml``, or the ``matrix:`` section of any tool's config file)::
 
     matrix:
       definitions: [agents/]                 # *.md agent files, Claude Code format
@@ -17,6 +17,7 @@ Example (``ix.yaml``, ``./matrix.yaml``, or any tool that composes matrix)::
       runtimes:
         sdk:   {type: claude-sdk, permission_mode: default, setting_sources: []}
         local: {type: model}
+      observers: [otel]                      # optional; tracing is an observer extension
       agents:
         reviewer: {runtime: sdk}                         # definition agents/reviewer.md
         triage:   {runtime: local, definition: reviewer, model: qwen3-8b}
@@ -33,19 +34,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 C = TypeVar("C", bound=BaseModel)
 
-_SLUG = r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
-
 
 class RuntimeConfig(BaseModel):
     """One named runtime: a ``type`` plus that runtime's own options.
 
-    Options are not validated here — the runtime's registry entry validates them through
-    its own typed config, so an unknown option fails naming the runtime type.
+    ``type`` is a matrix built-in's short name (``claude-sdk``, ``model``, ``mock``) or the
+    full type URL of a runtime another package registered (``acme.v1.runtime.strands``).
+    Options are validated by the runtime's own typed config, so an unknown option fails
+    naming the runtime.
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
-    type: str = Field(pattern=_SLUG)
+    type: str = Field(min_length=1)
 
     def options(self) -> dict[str, Any]:
         return dict(self.model_extra or {})
@@ -77,6 +78,8 @@ class MatrixConfig(BaseModel):
 
     definitions: tuple[str, ...] = ()
     runtimes: dict[str, RuntimeConfig] = {}
+    #: Observer extensions to attach: built-in short names (``otel``) or type URLs.
+    observers: tuple[str, ...] = ()
     agents: dict[str, AgentConfig] = {}
     #: A hardline registry section (``{default?, models: {...}}``) handed to every
     #: ``type: model`` runtime that does not carry its own. ``None`` = hardline discovers its
@@ -94,3 +97,6 @@ class Config(BaseModel, Generic[C]):  # noqa: UP046
 
     matrix: MatrixConfig = MatrixConfig()
     client: C
+    #: Every config file consulted, lowest priority first, each marked when absent: what
+    #: ``matrix config --sources`` prints, so "which file won" is never a guess.
+    sources: tuple[str, ...] = ()
