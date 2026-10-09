@@ -126,19 +126,24 @@ class TestAgentResponseInMatrix:
 class TestTrialRecord:
     def test_basic(self):
         v = TrialRecord(
+            run_id="r1",
+            run_index=0,
             probe_id="must-001",
-            trial=0,
-            observation=AgentResponse(content="hi"),
-            reading=Reading(
-                sensor_name="activation",
-                probe_id="must-001",
-                trial_index=0,
-                passed=True,
-                score=1.0,
+            trial_index=0,
+            response=AgentResponse(content="hi").model_dump(mode="json"),
+            readings=(
+                Reading(
+                    sensor_name="activation",
+                    probe_id="must-001",
+                    trial_index=0,
+                    passed=True,
+                    score=1.0,
+                ),
             ),
         )
         assert v.probe_id == "must-001"
-        assert v.reading.passed is True
+        assert v.readings[0].passed is True
+        assert v.response["content"] == "hi"
 
 
 class TestExperimentResults:
@@ -149,6 +154,7 @@ class TestExperimentResults:
             mean_score=0.80,
             min_score=0.6,
             max_score=1.0,
+            families=("claude",),
         )
         assert results.pass_rate == 0.85
         assert results.mean_score == 0.80
@@ -158,7 +164,9 @@ class TestExperimentResults:
         results = ExperimentResults(experiment_name="test")
         assert results.pass_rate == 0.0
         assert results.mean_score == 0.0
-        assert results.status == "poor"
+        assert results.status == "unmeasured"  # no family answered: no grade
+        assert results.grade == "poor"
+        assert results.seed is None and results.simulated is False
 
     def test_serialization_roundtrip(self):
         results = ExperimentResults(
@@ -174,10 +182,24 @@ class TestExperimentResults:
 
     def test_status_computed_from_pass_rate(self):
         """Status is derived from pass_rate, not stored — computed_field."""
-        assert ExperimentResults(experiment_name="t", pass_rate=1.0).status == "excellent"
-        assert ExperimentResults(experiment_name="t", pass_rate=0.90).status == "good"
-        assert ExperimentResults(experiment_name="t", pass_rate=0.60).status == "needs_work"
-        assert ExperimentResults(experiment_name="t", pass_rate=0.30).status == "poor"
+        f = ("claude",)
+        assert ExperimentResults(experiment_name="t", pass_rate=1.0, families=f).status == (
+            "excellent"
+        )
+        assert ExperimentResults(experiment_name="t", pass_rate=0.90, families=f).status == "good"
+        assert (
+            ExperimentResults(experiment_name="t", pass_rate=0.60, families=f).status
+            == "needs_work"
+        )
+        assert ExperimentResults(experiment_name="t", pass_rate=0.30, families=f).status == "poor"
+
+    @pytest.mark.parametrize("families", [(), ("simulated",), ("mock", "simulated")])
+    def test_a_run_that_measured_no_model_is_unmeasured_not_graded(self, families):
+        """F4: `status: excellent` on a simulated run read as a result; it is a harness check."""
+        results = ExperimentResults(experiment_name="t", pass_rate=1.0, families=families)
+        assert results.status == "unmeasured"
+        assert results.grade == "excellent"
+        assert results.model_dump(mode="json")["status"] == "unmeasured"
 
     def test_provenance_fields(self):
         """Results carry provenance for reproducibility."""

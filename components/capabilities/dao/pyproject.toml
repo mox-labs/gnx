@@ -11,6 +11,7 @@ authors = [
 dependencies = [
     "click>=8.1",
     "rich>=13",
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]

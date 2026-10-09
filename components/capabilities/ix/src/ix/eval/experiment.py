@@ -1,88 +1,64 @@
-"""Experiment — inner DAG loop + post-loop aggregation.
+"""Experiment — repeats × engine, then aggregation, then persistence.
 
-Inner DAG (per probe × trial):
-  ProbeNode → TrialNode ← SubjectNode
-                 ↓
-             SensorNode
+An engine runs every probe × trial of one repeat and returns the trials and their readings.
+The Experiment runs the configured number of repeats, writes every trial to the run's
+``trials.jsonl`` as it goes, aggregates across repeats, computes the probe-sampling standard
+errors and the across-repeat noise floor, and saves a summary under the subject's name.
 
-Experiment loops over probes × trials, runs the inner DAG each time.
-Post-loop: aggregate all readings → metrics.
-
-NOTE: This module does NOT import concrete Components (ProbeNode, TrialNode, etc.).
-Node construction is injected via `run_trial` from the composition root.
+The engine, the agent factory and the store are injected by the composition root. This
+module imports no concrete engine, runtime or DAG node.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any
 
-from matrix import ComponentRegistry
+from pydantic import BaseModel
 
 from ix import __version__
-from ix.domain.types import Probe, Reading, Subject
+from ix.domain.ports import EngineRun
+from ix.domain.types import Reading, Subject
 from ix.eval.analysis import (
     aggregate_readings,
     build_confusion_matrix,
     compute_metrics,
     compute_noise_floor,
+    standard_errors,
 )
-from ix.eval.models import (
-    ExperimentConfig,
-    ExperimentResults,
-    ProbeResult,
-    TrialRecord,
-)
+from ix.eval.models import ExperimentConfig, ExperimentResults, ProbeResult, TrialRecord
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Callable
 
-    from ix.domain.ports import Sensor
+    from ix.domain.ports import AgentFactory, Engine, Sensor, Storage
+    from ix.domain.types import Trial
 
-# Callable that runs one probe×trial iteration, returns readings.
-# The composition root provides this — it knows the concrete Components.
-RunTrial = Callable[
-    [Probe, Subject, "Sensor", ComponentRegistry, int],
-    Awaitable[list[Reading]],
-]
-
-
-class Storage(Protocol):
-    """Persistence boundary for experiments and eval results."""
-
-    def load_experiment(self, path: Path) -> ExperimentConfig: ...
-
-    def list_experiments(self, base: Path) -> list[Path]: ...
-
-    def append_result(self, experiment_name: str, result: TrialRecord) -> None: ...
-
-    def save_summary(self, experiment_name: str, results: ExperimentResults) -> Path: ...
+DEFAULT_SUBJECT = "default"
 
 
 class Experiment:
-    """An experiment you run.
-
-    Constructed with infrastructure (registry, sensor, store).
-    The registry resolves agent runtimes from subject config.
-    Call run(config, subject) to execute.
-    """
+    """An experiment you run: ``run(config, subject)`` → ExperimentResults."""
 
     def __init__(
         self,
-        registry: ComponentRegistry,
+        *,
         sensor: Sensor,
         store: Storage,
-        mock: bool = False,
-        *,
-        run_trial: RunTrial,
+        engine: Engine,
+        agents: AgentFactory,
+        seed: int | None = None,
+        simulated: bool = False,
     ) -> None:
-        self._registry = registry
         self._sensor = sensor
         self._store = store
-        self._mock = mock
-        self._run_trial = run_trial
+        self._engine = engine
+        self._agents = agents
+        # Provenance only: the agent factory already carries both. Recorded on the results
+        # so a run can be reproduced, and told apart, from its own summary.
+        self._seed = seed
+        self._simulated = simulated
 
     async def run(
         self,
@@ -90,74 +66,140 @@ class Experiment:
         subject: Subject | None = None,
         on_probe_complete: Callable[[ProbeResult], None] | None = None,
         on_run_complete: Callable[[int, float], None] | None = None,
+        on_trial: Callable[[int, Trial, list[Reading]], None] | None = None,
+        save_as: str | None = None,
     ) -> ExperimentResults:
-        """Execute the experiment: inner DAG loop then post-loop aggregation.
+        """Run ``config.repeats`` repeats of one subject through the engine, then aggregate.
 
-        When config.repeats > 1, runs the full probe×trial matrix N times
-        and computes noise floor (sd of pass_rate across runs) + confusion matrix.
+        Callbacks are for progress: ``on_trial(repeat, trial, readings)`` as each trial is
+        measured, ``on_run_complete(repeat, pass_rate)`` after each repeat, and
+        ``on_probe_complete`` once per probe with its result across all repeats.
+
+        ``save_as`` is the name the results are recorded and saved under (default: the
+        subject's name) — the CLI saves a simulated run of a real subject as
+        ``<name>@simulated`` so it never replaces that subject's measured results.
         """
-        active_subject = subject or Subject(name="default")
-
-        # Override runtime to mock if --mock flag
-        if self._mock:
-            subject_config = dict(active_subject.config)
-            subject_config["runtime"] = {"type": "mock"}
-            active_subject = active_subject.model_copy(
-                update={"config": subject_config},
-            )
+        active = subject or Subject(name=DEFAULT_SUBJECT)
+        label = save_as or active.name
+        probe_map = {p.id: p for p in config.probes}
+        started = datetime.now(UTC)
+        run_id = started.strftime("%Y%m%dT%H%M%S%fZ")
 
         all_readings: list[Reading] = []
         per_run_pass_rates: list[float] = []
+        per_run_mean_scores: list[float] = []
+        artifacts: list[str] = []
+        families: set[str] = set()
+        trials_log = ""
 
         for run_idx in range(config.repeats):
-            run_readings: list[Reading] = []
+            outcome = await self._engine.run(
+                EngineRun(
+                    experiment=config.name,
+                    probes=config.probes,
+                    subject=active,
+                    sensor=self._sensor,
+                    agents=self._agents,
+                    trials=config.trials,
+                    run_index=run_idx,
+                    on_trial=_bind_repeat(on_trial, run_idx),
+                )
+            )
+            all_readings.extend(outcome.readings)
+            families.update(f for t in outcome.trials if (f := getattr(t.response, "family", None)))
+            artifacts.extend(f"{k}:{v}" for k, v in outcome.artifacts.items())
+            path = self._store.append_trials(
+                config.name,
+                label,
+                run_id,
+                _records(run_id, run_idx, outcome.trials, outcome.readings),
+            )
+            trials_log = str(path)
 
-            for probe in config.probes:
-                for trial_idx in range(config.trials):
-                    trial_readings = await self._run_trial(
-                        probe,
-                        active_subject,
-                        self._sensor,
-                        self._registry,
-                        trial_idx,
-                    )
-                    run_readings.extend(trial_readings)
-
-            all_readings.extend(run_readings)
-
-            # Per-run metrics for noise floor
-            probe_map = {p.id: p for p in config.probes}
-            run_probe_results = aggregate_readings(run_readings, probe_map)
-            run_metrics = compute_metrics(run_probe_results)
+            run_metrics = compute_metrics(aggregate_readings(outcome.readings, probe_map))
             per_run_pass_rates.append(run_metrics["pass_rate"])
-
+            per_run_mean_scores.append(run_metrics["mean_score"])
             if on_run_complete:
                 on_run_complete(run_idx, run_metrics["pass_rate"])
 
-        # Final aggregation across all runs
-        probe_map = {p.id: p for p in config.probes}
-        callback = on_probe_complete if config.repeats == 1 else None
-        probe_results = aggregate_readings(all_readings, probe_map, callback)
+        probe_results = aggregate_readings(all_readings, probe_map, on_probe_complete)
         metrics = compute_metrics(probe_results)
+        pass_se, score_se = standard_errors(probe_results)
 
-        config_json = config.model_dump_json(exclude={"probes"})
+        # The probes are part of what was measured: a reworded prompt or a changed expectation
+        # must change the hash, or two summaries with one hash measured different things.
+        config_json = config.model_dump_json()
         config_hash = hashlib.sha256(config_json.encode()).hexdigest()[:16]
 
         results = ExperimentResults(
             experiment_name=config.name,
-            subject=active_subject.name,
+            subject=label,
+            run_id=run_id,
             probe_results=tuple(probe_results),
             pass_rate=metrics["pass_rate"],
             mean_score=metrics["mean_score"],
             min_score=metrics["min_score"],
             max_score=metrics["max_score"],
+            n_probes=len(probe_results),
+            pass_rate_stderr=pass_se,
+            mean_score_stderr=score_se,
             repeats=config.repeats,
             per_run_pass_rates=tuple(per_run_pass_rates),
             noise_floor_sd=compute_noise_floor(per_run_pass_rates),
+            per_run_mean_scores=tuple(per_run_mean_scores),
+            score_noise_floor_sd=compute_noise_floor(per_run_mean_scores),
             confusion_matrix=build_confusion_matrix(all_readings),
+            sensor_faults=sum(1 for r in all_readings if r.fault == "sensor"),
+            families=tuple(sorted(families)),
+            engine=self._engine.name,
+            engine_artifacts=tuple(artifacts),
+            trials_log=trials_log,
             config_hash=config_hash,
-            run_timestamp=datetime.now(UTC),
+            run_timestamp=started,
             ix_version=__version__,
+            seed=self._seed,
+            simulated=self._simulated,
         )
         self._store.save_summary(config.name, results)
         return results
+
+
+def _bind_repeat(
+    on_trial: Callable[[int, Trial, list[Reading]], None] | None, run_index: int
+) -> Callable[[Trial, list[Reading]], None] | None:
+    if on_trial is None:
+        return None
+
+    def bound(trial: Trial, readings: list[Reading]) -> None:
+        on_trial(run_index, trial, readings)
+
+    return bound
+
+
+def _records(
+    run_id: str, run_index: int, trials: list[Trial], readings: list[Reading]
+) -> list[TrialRecord]:
+    by_trial: dict[tuple[str, int], list[Reading]] = {}
+    for reading in readings:
+        by_trial.setdefault((reading.probe_id, reading.trial_index), []).append(reading)
+    return [
+        TrialRecord(
+            run_id=run_id,
+            run_index=run_index,
+            probe_id=trial.probe_id,
+            trial_index=trial.trial_index,
+            response=_serialise(trial.response),
+            error=trial.error,
+            readings=tuple(by_trial.get((trial.probe_id, trial.trial_index), [])),
+        )
+        for trial in trials
+    ]
+
+
+def _serialise(response: Any) -> dict[str, Any] | None:
+    if response is None:
+        return None
+    if isinstance(response, BaseModel):
+        dumped: dict[str, Any] = response.model_dump(mode="json")
+        return dumped
+    return {"content": str(response)}

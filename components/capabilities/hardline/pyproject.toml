@@ -1,0 +1,63 @@
+[project]
+name = "hardline"
+version = "0.1.0"
+description = "Model runtime — one port for every model family: messages in, text or a validated object out, tagged with the family that answered."
+requires-python = ">=3.12"
+license = "MIT"
+authors = [
+    { name = "yzavyas", email = "yza.vyas@gmail.com" }
+]
+
+# The two provider SDKs are core, not extras: the OpenAI wire protocol is the one hardline
+# adopts (mlx_lm.server, ollama, vLLM and Gemini's compatibility endpoint all speak it),
+# and Anthropic is the one native adapter. Both are small; both are imported lazily.
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "openai>=1.40",
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+hardline = "hardline.adapters._in.cli:main"
+
+# Third-party backends register here and are discovered at composition time — no edit to
+# hardline needed. The entry-point name is the short name a registry row puts in `backend:`.
+# The value is a zero-argument callable returning a ModelBackend.
+[project.entry-points."hardline.backends"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hardline"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+
+[tool.hatch.build]
+include = [
+    "src/hardline/**/*.py",
+    "src/hardline/py.typed",
+    "src/hardline/assets/*.md",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true

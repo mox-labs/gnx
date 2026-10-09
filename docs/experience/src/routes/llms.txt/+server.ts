@@ -8,15 +8,14 @@ import { listDocs, getDocSource } from '$lib/server/content';
 // (The dossier is the internal design wing; it is deliberately absent here.)
 
 const SUMMARY =
-	'gnx is a registry, a Claude Code marketplace, and an agentic CLI of composable components. Your agent composes capability from the catalog; you govern what it composes from. Designed for any agent; Claude Code today. slick (v0.2.0) and the first gnx plugins ship; the gnx CLI/registry/marketplace are designed.';
+	'gnx is a Claude Code marketplace of composable components: skills and agents install as plugins; capabilities are configuration-driven Python packages. The catalog page lists what exists, read from source.';
 
 // Internal docs (spec/design/build registers) are deliberately absent — they live in
 // the dossier wing. If a spec index for agents is wanted later, it's a dossier concern.
 //
-// Agent-utility order: what's real first, then the runnable path, then orientation,
+// Agent-utility order: the runnable path first, then orientation,
 // then the command/grammar surface, then the why. (vyasa, ia-two-wings spec)
 const PRIORITY = [
-	'status',
 	'install-a-plugin',
 	'overview',
 	'what-is-gnx',

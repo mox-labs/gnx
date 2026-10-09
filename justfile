@@ -9,7 +9,7 @@ set shell := ["bash", "-uc"]
 check: docs-check secrets grammar payloads projection
 
 # The CI gate (mirrors the hook; slow gates are added here as the CLI lands).
-ci: docs-check secrets-all grammar payloads projection capabilities-test capabilities-lint capabilities-typecheck
+ci: docs-check secrets-all grammar payloads projection capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone
 
 # `--project` not `--directory`: build reads ./components from the CWD, and
 # --directory would move the CWD into the workspace.
@@ -34,7 +34,7 @@ payloads:
 
 # Lint the capability packages (the puma/x.uma house set: + B, SIM, TC).
 capabilities-lint:
-    uv --directory components/capabilities run ruff check matrix ix recon dao gnx
+    uv --directory components/capabilities run ruff check hardline matrix ix recon dao gnx
 
 # Typecheck each capability FROM ITS OWN DIRECTORY. mypy resolves config from the
 # invocation rootdir, so running it from the workspace root silently applies the root
@@ -42,7 +42,7 @@ capabilities-lint:
 # xmltodict, matrix for opentelemetry, ix for deepeval — none of which ship py.typed).
 # puma's gate does `cd puma && mypy src/xuma` for exactly this reason.
 #
-# All five are clean under --strict as of 2026-08-18. Adding a package here is how it
+# All six are clean under --strict as of 2026-09-24 (hardline joined). Adding a package here is how it
 # stays that way: the list is the gate, not a wish.
 #
 # Typecheck every capability package under mypy --strict.
@@ -50,16 +50,16 @@ capabilities-typecheck:
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
-    for p in matrix ix recon dao gnx; do
+    for p in hardline matrix ix recon dao gnx; do
       ( cd components/capabilities/$p && \
         ../.venv/bin/mypy --strict src/$p ) || fail=1
     done
     exit $fail
 
-# The capability packages: matrix, ix, recon, dao (gnx CLI has no tests yet).
+# The capability packages: hardline, matrix, ix, recon, dao (gnx CLI has no tests yet).
 capabilities-test:
     uv --directory components/capabilities run --group dev \
-        python -m pytest matrix/tests ix/tests recon/tests dao/tests -q
+        python -m pytest hardline/tests matrix/tests ix/tests recon/tests dao/tests -q
 
 # The docsite: svelte-kit sync + svelte-check + tsc --noEmit.
 docs-check:
@@ -83,11 +83,56 @@ secrets-all:
 # test:
 #     uv run pytest
 
-# `--mock` proves the harness end to end without credentials; a live run needs
-# ANTHROPIC_API_KEY and measures the catalog rather than the plumbing. See lab/README.md
-# for why those are different claims.
+# The simulated subject proves the harness end to end without credentials; the live one
+# needs ANTHROPIC_API_KEY and measures the catalog rather than the plumbing. See
+# lab/README.md for why those are different claims.
 #
-# Run the lab's experiments in mock mode.
+# Run the lab's experiments offline, on both engines: the native matrix DAG and Inspect AI.
+# Same experiment, same readings — the engine parity test asserts it.
 evals:
-    uv --project components/capabilities run ix run catalog-routing --lab lab --mock --seed 42
-    uv --project components/capabilities run ix run sensor-integrity --lab lab --mock
+    uv --project components/capabilities run ix experiment validate catalog-routing --lab lab
+    uv --project components/capabilities run ix run catalog-routing --lab lab --subject catalog-simulated --seed 42
+    uv --project components/capabilities run ix run sensor-integrity --lab lab
+    uv --project components/capabilities run ix run sensor-integrity --lab lab --engine inspect
+
+# Every capability, installed ALONE from only its own declared dependencies —
+# the `uv tool install` / `uvx` path, which nothing else here exercises.
+#
+# `just ci` runs inside the workspace, where the dev group installs all five
+# packages and the UNION of their dependencies. An under-declared dependency is
+# therefore invisible to every other gate: dao imported pydantic in its domain
+# layer and declared only click and rich, and every gate passed while
+# `uv tool install dao` died on import (fixed 2026-09-06).
+#
+# The copy to a temp dir is load-bearing, not hygiene: uv discovers the workspace
+# from the package path and applies the root's [tool.uv.sources], so testing in
+# place resolves workspace-internal deps and gives a false pass.
+#
+# This models the real distribution path — `uv tool install`/`uvx` against a
+# git+subdirectory URL — for every package with no workspace-internal dependency.
+# uv clones the whole repo to build a subdirectory, so it sees the workspace root
+# and its [tool.uv.sources]; what it does NOT do is widen a package's own declared
+# dependency set. Confirmed against origin/main: dao installed from a git URL failed
+# on pydantic exactly as the local install did.
+#
+# ix is NOT in this list, and its absence is not a defect. ix depends on `matrix`,
+# which the repository resolves on every supported path because the clone carries
+# the workspace root. Severing the package from the repo — what this recipe does on
+# purpose — is the one condition under which ix legitimately cannot resolve, and
+# PyPI's unrelated `matrix` 3.0.0 then fills the gap. See ix/SECURITY.md I-6; ix is
+# checked on the git path instead.
+capabilities-standalone:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    tmp="$(mktemp -d)"; trap 'rip "$tmp" 2>/dev/null || true' EXIT
+    fail=0
+    for p in hardline matrix recon gnx dao; do
+      cp -R components/capabilities/$p "$tmp/$p"
+      if [ "$p" = matrix ]; then probe=(python -c "import matrix"); else probe=("$p" --help); fi
+      if ( cd "$tmp" && uv run --isolated --no-project --quiet --with ./$p "${probe[@]}" >/dev/null ); then
+        echo "  $p standalone OK"
+      else
+        echo "  $p standalone FAIL — an import is not in [project.dependencies]"; fail=1
+      fi
+    done
+    exit $fail

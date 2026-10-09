@@ -4,46 +4,52 @@ description: >-
   The catalog's promise is that a description routes correctly; this states that promise
   as a measurement instead of an assertion.
 
+# engine: native (a matrix DAG per trial, the default) or inspect (an Inspect AI task per
+# repeat, with an .eval log per repeat under results/inspect/ — open with `inspect view`).
+# Override per run with --engine.
+engine: native
+
 # Two subjects, and the difference between them is the whole point.
 #
-#   mock   — simulates a 90/10 activation split. Proves the harness: DAG, store,
-#            aggregation, confusion matrix. Measures NOTHING about the catalog.
+#   simulated — simulates a 90/10 activation split. Proves the harness: DAG, store,
+#               aggregation, confusion matrix. Measures NOTHING about the catalog, and its
+#               results say so (answered by: simulated).
 #   live   — the real Claude Agent SDK with the projected plugins loaded. This is the
 #            one that actually measures whether the descriptions route.
 #
 # Run the live one with:  ix run catalog-routing --lab lab --subject catalog-live --trials 1
+#
+# A subject is an agent definition (max_turns, system_prompt, model, tools) plus the runtime
+# that plays it (runtime.type + that runtime's options): simulated, claude-sdk, or model.
 subjects:
-  - name: catalog-mock
+  - name: catalog-simulated
     description: Simulated activation; harness check only.
     config:
       runtime:
-        type: mock
+        type: simulated
 
   - name: catalog-live
     description: The gnx marketplace as shipped, loaded into a real agent session.
     config:
+      # The agent definition. One turn: the Skill call happens in the first assistant turn,
+      # and stopping there measures routing rather than paying for the whole task.
+      max_turns: 1
+      # Where it runs. Deployment settings live on the runtime, not the definition.
       runtime:
-        type: claude
-        # One turn: the Skill call happens in the first assistant turn, and stopping there
-        # measures routing rather than paying for the agent to perform the whole task.
-        max_turns: 1
+        type: claude-sdk
         # Hermetic — no ambient ~/.claude plugins leak in, so what is measured is this
-        # repo's projected catalog and nothing else. Without this the reading is
-        # contaminated by whatever the operator happens to have installed.
+        # repo's projected catalog and nothing else.
         setting_sources: []
         # Unattended: no human is present to confirm a tool call. Requested explicitly,
         # logged at WARNING by the runtime — see matrix/SECURITY.md M-1.
         permission_mode: bypassPermissions
-        # Relative to the experiment directory, so this file stays machine-independent.
+        # Resolved against the experiment directory by the runtime, so this file stays
+        # machine-independent. The catalog as projected today: three plugins.
+        #
+        # KNOWN GAP (2026-09-24): five of the eight probes expect skills that left the
+        # catalog on 2026-08-19 (aces, trust-boundaries, dao — now in incubator/). A live
+        # run fails those probes by construction until they graduate or the probes change.
         plugins:
-          - { type: local, path: ../../plugins/guild-arch }
-          - { type: local, path: ../../plugins/antifragile }
-          - { type: local, path: ../../plugins/ci-scaffolds }
-          - { type: local, path: ../../plugins/craft-research }
-          - { type: local, path: ../../plugins/craft-rhetoric }
-          - { type: local, path: ../../plugins/craft-extensions }
-          - { type: local, path: ../../plugins/craft-evals }
-          - { type: local, path: ../../plugins/dao }
           - { type: local, path: ../../plugins/intent-hardening }
           - { type: local, path: ../../plugins/rational-inquiry }
           - { type: local, path: ../../plugins/recon }

@@ -1,229 +1,224 @@
 # Experiment Format
 
-Experiments live on disk as a directory: one YAML config, markdown case files, and a results directory written by ix.
+An experiment is a directory: one `experiment.yaml`, markdown probes, optional markdown
+subjects, and a `results/` directory ix writes. Everything here was read off the loader
+(`adapters/_out/filesystem_store.py`), the config models (`eval/models.py`,
+`composition/__init__.py`) and the results model.
 
 ---
 
-## Directory Structure
+## Directory structure
 
 ```
 <lab>/
-└── <experiment-name>/
-    ├── experiment.yaml       # Experiment configuration
-    ├── cases/                # Test cases as markdown files
-    │   ├── must-001.md
-    │   ├── must-002.md
-    │   ├── not-001.md
-    │   └── edge-001.md
-    └── results/              # Output directory (created by ix on first run)
-        ├── trials.jsonl                  # One verdict per line, appended each run
-        ├── summary-20260218T143022Z.json # Timestamped archive
-        └── summary-latest.json           # Always the most recent run
+└── <experiment>/
+    ├── experiment.yaml
+    ├── tasks/                 # probes, one per file (cases/ is read if tasks/ is absent)
+    │   └── <probe>.md
+    ├── subjects/              # optional; if present, it replaces `subjects:` in the YAML
+    │   └── <subject>.md
+    └── results/               # written by ix
+        ├── <subject>/
+        │   ├── <run_id>/
+        │   │   └── trials.jsonl       # one TrialRecord per trial, every repeat
+        │   ├── summary-<run_id>.json
+        │   └── summary-latest.json    # the most recent run's, what `ix results` reads
+        └── inspect/                   # engine: inspect only — one .eval log per repeat
 ```
 
-A lab is any directory containing at least one experiment subdirectory. `ix` auto-detects the lab by walking up from the current working directory.
+A lab is any directory containing at least one subdirectory with an `experiment.yaml`. ix
+finds it from `--lab <name>` (relative to the project root) or by walking up from the working
+directory.
+
+Results are keyed by subject: running one subject's experiment never overwrites another
+subject's `summary-latest.json`.
 
 ---
 
 ## experiment.yaml
 
-### Minimal
-
 ```yaml
-name: skill-activation
-description: Test build-eval skill activation
-skill: build-eval
-trials: 5
-```
-
-The `skill:` field is shorthand. ix infers the full activation evaluation pipeline from it:
-
-- `EvalProbe` generates cases from `cases/*.md`
-- `EvalRuntime` wraps `MockRuntime` or `ClaudeRuntime` and parses tool calls
-- `ActivationSensor` checks whether the named skill was invoked
-- Scorer computes pass/fail per case via majority vote across trials
-
-### Full
-
-```yaml
-name: skill-activation
-description: Test build-eval skill activation
-sensor: activation
-trials: 5
-
+name: local-codegen
+description: A local model writes small functions; function-test grades them.
+engine: inspect                  # or native (default), or {type: inspect, max_samples: 1}
+models:                          # a hardline registry section
+  default: qwen3-8b
+  models:
+    qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
+               model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
 subjects:
-  - name: build-eval
-    description: The skill under test
-    config: {}
-
-cases:
-  suite: cases/
+  - name: local
+    description: Qwen 8B on MLX
+    config:
+      system_prompt: Reply with only a Python code block.
+      tools: []
+      runtime: {type: model}
+sensors:
+  - type: function-test
+    timeout: 5
+trials: 5
+repeats: 3
 ```
 
-### Fields
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | directory name | Experiment identifier; results live under it |
+| `description` | string | `""` | |
+| `engine` | string or mapping | `native` | `native` \| `inspect`, or `{type: ..., <engine options>}` |
+| `models` | mapping | none | hardline registry for `model`-runtime subjects and judges; absent → hardline's own config tiers |
+| `subjects` | list | `[]` | `{name, description?, config}` — see below |
+| `sensors` | list | `[{type: activation}]` | Sensor configs; several are combined into one composite sensor |
+| `sensor` | string or mapping | | Single-sensor shorthand, normalised to `sensors` |
+| `trials` | int | `5` | Trials per probe per repeat; `--trials` overrides |
+| `repeats` | int | `1` | Whole-run repeats; the noise floor is the spread of pass rates across them |
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `name` | string | yes | | Experiment identifier |
-| `description` | string | no | `""` | Human-readable description |
-| `skill` | string | no | | Shorthand: sets subject name and implies activation pipeline |
-| `subjects` | list | no | `[]` | Explicit list of subjects under test |
-| `sensor` | string | no | `"activation"` | Sensor type to use |
-| `trials` | integer | no | `5` | Number of trials per case |
+**Any other top-level key is an error** naming the file and the legal keys.
 
-`skill` and `subjects` are mutually exclusive. If neither is set, ix derives the subject name from the experiment directory name.
+### Subjects
 
-The default trial count can be overridden at the command line with `--trials N`. The environment variable `IX_DEFAULT_TRIALS` sets a global default.
+A subject's `config` is an agent definition plus the runtime that plays it.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `system_prompt` | string | In `subjects/*.md`, the file body |
+| `model` | string | Runtime-interpreted: an SDK model alias for `claude-sdk`, a registry name for `model` |
+| `tools` | list or comma string | Omit for the runtime's default; `[]` for **no tools** |
+| `max_turns` | int ≥ 1 | Default 1 |
+| `runtime` | mapping | `{type: <runtime>, ...options}` |
+
+Any other key is rejected — deployment settings belong under `runtime`, which says so in the
+error. Runtime types and their options:
+
+| `runtime.type` | options | notes |
+|---|---|---|
+| `claude-sdk` | `permission_mode` (default `default`), `cwd` (default: the experiment directory), `setting_sources`, `plugins`, `fallback_model`, `agents` | relative plugin paths resolve against `cwd` |
+| `model` | `models`, `default_model`, `temperature`, `max_tokens` | `models` defaults to the experiment's `models` section; refuses subjects that declare tools |
+| `simulated` | none | ix's simulator — canned `mock_response`, else a seeded 90/10 activation split |
+| `mock` | none | matrix's own deterministic offline runtime — canned replies keyed by task, not ix's simulator |
+
+`--simulate` replaces every subject's runtime with ix's simulator for that run (`--mock` is a
+deprecated alias). A subject with no `runtime.type` fails, naming the registered types.
+
+### Engines
+
+| `engine` | options | executes a repeat as |
+|---|---|---|
+| `native` | `concurrency` (default 1, trials in flight at once) | one four-node matrix DAG per probe × trial |
+| `inspect` | `log_dir` (default `results/inspect`), `max_samples` (default 1), `fail_on_error` (default false) | one Inspect AI task: probes → samples, trials → epochs; writes an `.eval` log |
+
+`--engine` overrides the configured engine for a run; the other engine's options are dropped.
+
+### Sensors
+
+| `type` | options | measures |
+|---|---|---|
+| `activation` | `expected_skill` (probe metadata overrides) | whether the expected skill was invoked |
+| `function-test` | `timeout` (seconds, default 30) | runs the response's code against the probe's `test_cases` **in-process** (SECURITY.md) |
+| `tool-usage` | `expected_tool` | whether a tool was called |
+| `outcome` | `graders_module` (path relative to the experiment) | custom grader functions |
+| `deepeval` | `metric`, `threshold`, `judge` (a registry name), `criteria` | a DeepEval metric; records judge and subject families |
 
 ---
 
-## Case Markdown Files
-
-Each file in `cases/` is a test case: YAML frontmatter specifying behavior expectations, followed by the prompt text.
+## Probes — `tasks/*.md`
 
 ```markdown
 ---
-id: must-001
-expectation: must_trigger
-rationale: Direct question about writing evals should always trigger the skill.
+id: palindrome
+function_name: is_palindrome
+test_cases:
+  - {input: "racecar", expected: true}
+  - {input: "hello", expected: false}
 ---
-How do I write evals for my coding agent?
+Write a function `is_palindrome(s)` that returns True if the string reads the same both ways.
 ```
 
-### Frontmatter Fields
+The body is the prompt, sent verbatim. `id` defaults to the file stem and is always coerced to
+a string. Every other frontmatter key goes into the probe's `metadata`, which sensors read:
+`expectation` (`must_trigger` | `should_not_trigger` | `acceptable`; absent means
+`must_trigger`; any other value — including an unquoted `no`, which YAML reads as `false` — is
+a config error) and `expected_skill` for activation, `function_name` and `test_cases` for function-test, `mock_response` for the
+simulator.
 
-| Field | Required | Values | Description |
-|-------|----------|--------|-------------|
-| `id` | yes | string | Unique identifier within the experiment |
-| `expectation` | yes | see below | Expected behavior |
-| `rationale` | no | string | Human documentation — ignored by ix |
+## Subjects — `subjects/*.md`
 
-If `id` is omitted, ix uses the filename stem (e.g., `must-001`).
+```markdown
+---
+name: terse
+description: Answers in one word.
+model: haiku
+tools: []
+runtime: {type: claude-sdk, setting_sources: []}
+---
+Answer every question with exactly one word.
+```
 
-### Naming Convention
-
-File names follow `{expectation_prefix}-{number}.md`:
-
-| Prefix | Expectation | Example |
-|--------|-------------|---------|
-| `must-` | `must_trigger` | `must-001.md` |
-| `not-` | `should_not_trigger` | `not-003.md` |
-| `edge-` | `acceptable` | `edge-002.md` |
-
-Numbers are zero-padded to three digits. Gaps are allowed (`must-001`, `must-003` with no `must-002`).
-
-### Expectations
-
-| Value | Meaning | Scoring |
-|-------|---------|---------|
-| `must_trigger` | Skill MUST activate. FN if it doesn't. | Contributes to recall |
-| `should_not_trigger` | Skill must NOT activate. FP if it does. | Contributes to precision |
-| `acceptable` | Either outcome is valid. | Excluded from F1 entirely |
-
-`acceptable` cases are skipped before trials run — they never reach the sensor. Use them to document ambiguous prompts without affecting metrics.
-
-### Case Body
-
-The markdown body is the prompt text sent verbatim to the subject under test. Plain text or markdown. No length limit, but single-turn only.
+Frontmatter is the subject's config (`name` and `description` lifted out); the body is its
+`system_prompt`. When `subjects/` exists, `subjects:` in the YAML is ignored.
 
 ---
 
-## Results Format
+## Trials — `<run_id>/trials.jsonl`
 
-### trials.jsonl
-
-One JSON object per line. ix appends to this file; each `run` adds `(cases × trials)` lines.
-
-```json
-{"probe_id": "must-001", "trial": 0, "expectation": "must_trigger", "observation": {"content": "...", "tool_calls": [{"name": "Skill", "input": {"skill": "build-eval"}}], "duration_ms": 1234, "tokens_input": 0, "tokens_output": 0}, "reading": {"sensor_name": "activation", "passed": true, "score": 1.0, "metrics": {}, "details": ""}}
-```
-
-Field reference:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `probe_id` | string | Case ID from frontmatter |
-| `trial` | integer | Trial index, 0-based |
-| `expectation` | string | Expectation value from the case file |
-| `observation` | object | Raw agent response (content, tool_calls, timing, tokens) |
-| `reading` | object | Sensor output: `passed`, `score`, `sensor_name`, `metrics`, `details` |
-
-### summary-latest.json
-
-Written at the end of each run. Also archived as `summary-{timestamp}.json` where timestamp is UTC in `YYYYMMDDTHHMMSSz` format.
-
-```json
-{
-  "experiment_name": "skill-activation",
-  "probe_results": [
-    {
-      "probe_id": "must-001",
-      "expectation": "must_trigger",
-      "score": 0.8,
-      "correct": true,
-      "trials": []
-    }
-  ],
-  "metrics": {
-    "precision": 1.0,
-    "recall": 0.933,
-    "f1": 0.966,
-    "tp": 14,
-    "fp": 0,
-    "fn": 1,
-    "tn": 10
-  },
-  "interpretation": {
-    "status": "excellent",
-    "issues": [],
-    "suggestions": []
-  }
-}
-```
-
-#### probe_results
-
-One entry per case (excluding `acceptable` cases). `score` is the activation rate across trials — fraction of trials where the sensor passed. `correct` is the majority vote: `score > 0.5` must match the expectation.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `probe_id` | string | Case identifier |
-| `expectation` | string | `must_trigger` or `should_not_trigger` |
-| `score` | float | Fraction of trials where sensor passed (0.0–1.0) |
-| `correct` | bool | Whether majority vote matches expectation |
-
-#### metrics
-
-Standard binary classification. Only `must_trigger` and `should_not_trigger` cases contribute.
+One `TrialRecord` per line, for every trial of every repeat — written as the run goes, so a
+summary's numbers can be audited against the evidence they were computed from.
 
 | Field | Description |
 |-------|-------------|
-| `precision` | TP / (TP + FP) — of cases that activated, how many should have? |
-| `recall` | TP / (TP + FN) — of cases that should activate, how many did? |
-| `f1` | Harmonic mean of precision and recall |
-| `tp` | `must_trigger` cases where majority vote activated |
-| `fp` | `should_not_trigger` cases where majority vote activated |
-| `fn` | `must_trigger` cases where majority vote did not activate |
-| `tn` | `should_not_trigger` cases where majority vote did not activate |
+| `run_id`, `run_index` | the run this trial belongs to, and which repeat (0-based) |
+| `probe_id`, `trial_index` | which probe, which trial of that probe |
+| `response` | the agent's response, serialised — content, tool calls, usage, `family`, `model` |
+| `error` | set instead of `response` when the agent raised |
+| `readings` | the sensor's `Reading`s for this trial |
 
-#### interpretation
+## Results — `results/<subject>/summary-latest.json`
 
-| Status | Condition |
-|--------|-----------|
-| `excellent` | F1 >= 0.85 |
-| `good` | F1 >= 0.70 |
-| `needs_work` | F1 >= 0.50 |
-| `poor` | F1 < 0.50 |
+Written after every run of that subject and archived as `summary-<run_id>.json` alongside it.
+`ix results <experiment>` reads every subject's `summary-latest.json`; `ix results <experiment>
+--subject <name>` reads one.
 
-`issues` and `suggestions` are populated when precision < 0.8 or recall < 0.8.
+| Field | Description |
+|-------|-------------|
+| `experiment_name`, `subject`, `run_id` | |
+| `probe_results[]` | `probe_id`, `score` (mean trial score), `passed` (a **majority of trials passed**, by the sensor's verdict — never re-derived from the score), `trial_scores`, `details` (at most 3 **distinct** strings, first seen first; every trial's own are in `trials.jsonl`) |
+| `pass_rate`, `n_probes` | fraction of probes that passed, and how many probes that is over |
+| `mean_score`, `min_score`, `max_score` | over probe scores |
+| `pass_rate_stderr`, `mean_score_stderr` | CLT standard error over the `n_probes` probes sampled; `stderr_method` names it (`"clt-over-probes"`); `null` below two probes |
+| `repeats`, `per_run_pass_rates`, `per_run_mean_scores` | one pass rate / mean score per repeat |
+| `noise_floor_sd`, `score_noise_floor_sd` | standard deviation of `per_run_pass_rates` / `per_run_mean_scores` across repeats; `null` with one repeat |
+| `confusion_matrix` | `{expected_skill: {activated_skill: count}}` from activation readings |
+| `families` | the model families that actually answered, read off the trial responses — `("simulated",)` under `--simulate`, never asserted from config |
+| `measured_a_model` | computed: `false` when `families` is empty or only `simulated`/`mock` — a harness check, not a measurement |
+| `engine` | `native` or `inspect` |
+| `engine_artifacts` | e.g. `inspect_log:<path to .eval>`, one per repeat |
+| `trials_log` | this run's `trials.jsonl`, relative to the experiment directory |
+| `config_hash`, `run_timestamp`, `ix_version` | provenance; `config_hash` covers the whole config, probes (ids, prompts, metadata) included |
+| `seed`, `simulated` | the simulator's `--seed` (or `null`), and whether the run was made with `--simulate` |
+| `status` | computed: `unmeasured` when `measured_a_model` is false; otherwise from `pass_rate`: `excellent` (1.0), `good` (≥ 0.85), `needs_work` (≥ 0.5), `poor` |
 
----
+A `--simulate` run of a subject whose own runtime is not `simulated` is saved under
+`<subject>@simulated` (directory `results/<subject>-simulated/`), so it never replaces that
+subject's `summary-latest.json`. `ix results`/`ix compare` accept the `@simulated` name.
 
-## Lab Resolution
+`ix results --format json` and `ix run --format json` print a list of these, one per
+subject, each with an added `"schema": "ix.v1/results"`.
 
-`ix` resolves the lab in this order:
+## Comparison — `ix compare <experiment> A B`
 
-1. `--lab <name>` flag — searches from project root (nearest `.git` or `pyproject.toml`)
-2. Walk up from `cwd` — if any ancestor directory contains experiment subdirectories, use it
+Not persisted to disk; printed or emitted as JSON (`--format json`, with `"schema":
+"ix.v1/comparison"`) from `compare_results(A, B)` over the two subjects' latest
+`ExperimentResults`.
 
-A directory qualifies as a lab if it contains at least one child directory with an `experiment.yaml` file.
+| Field | Description |
+|-------|-------------|
+| `experiment`, `a`, `b`, `n` | the experiment, the two subject names, and how many probes they share |
+| `run_id_a`, `run_id_b` | the `run_id` of each side's summary — which two runs were compared |
+| `pass_rate_a`, `pass_rate_b` | each subject's pass rate over the shared probes |
+| `mean_delta` | mean of (score B − score A) over shared probes |
+| `delta_stderr`, `ci95` | standard error and 95% CI of `mean_delta` (paired, over √n); `null` below two shared probes |
+| `a_only_passed`, `b_only_passed` | probes whose verdict flipped, counted each way |
+| `noise_floor_sd` | the larger of the two subjects' `score_noise_floor_sd`, where measured |
+| `unmatched` | probe ids present in only one subject's results |
+| `warning` | set when either subject's results show `measured_a_model = false` |
+| `probes[]` | per shared probe: `score_a`, `score_b`, `passed_a`, `passed_b`, and computed `delta` |
+| `verdict` | computed: `"b_better"` / `"a_better"` only when the CI excludes 0 *and* `abs(mean_delta)` clears `noise_floor_sd`; otherwise `"inconclusive"` |

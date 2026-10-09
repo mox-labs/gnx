@@ -2,7 +2,7 @@
 
 Covers:
 - Pure analysis functions (aggregate_readings, compute_metrics)
-- Full Experiment.run() integration with MockAgent
+- Full Experiment.run() integration on the simulated runtime, through both engines
 - Persistence verification
 
 Source: ix/eval/experiment.py, ix/eval/analysis.py
@@ -11,11 +11,11 @@ Source: ix/eval/experiment.py, ix/eval/analysis.py
 from pathlib import Path
 
 import pytest
-from matrix import ComponentRegistry
+from matrix import AgentDefinition, BoundAgent
 
+from ix.adapters._out.engines.native import NativeEngine
 from ix.adapters._out.filesystem_store import FilesystemStore
-from ix.adapters._out.mock_runtime import MockAgent
-from ix.composition import make_run_trial
+from ix.adapters._out.simulated_runtime import SimulatedRuntime
 from ix.domain.types import Probe, Reading, Subject
 from ix.eval.analysis import aggregate_readings, compute_metrics
 from ix.eval.experiment import Experiment
@@ -48,24 +48,22 @@ def _config(probes: tuple[Probe, ...], trials: int = 5) -> ExperimentConfig:
     )
 
 
-def _mock_registry() -> ComponentRegistry:
-    registry = ComponentRegistry()
-    registry.register(
-        "matrix.agent.mock",
-        lambda **kw: MockAgent(expected_skill="build-eval"),
+def _simulated_agents(subject, trial_index, run_index=0):
+    return BoundAgent(AgentDefinition(name="s"), SimulatedRuntime(expected_skill="build-eval"))
+
+
+def _service(tmp_path: Path, engine=None) -> Experiment:
+    return Experiment(
+        sensor=ActivationSensor(expected_skill="build-eval"),
+        store=FilesystemStore(tmp_path),
+        engine=engine or NativeEngine(),
+        agents=_simulated_agents,
     )
-    return registry
 
 
 @pytest.fixture
 def service(tmp_path: Path) -> Experiment:
-    return Experiment(
-        registry=_mock_registry(),
-        sensor=ActivationSensor(expected_skill="build-eval"),
-        store=FilesystemStore(tmp_path),
-        mock=True,
-        run_trial=make_run_trial(),
-    )
+    return _service(tmp_path)
 
 
 # --- aggregate_readings ---
@@ -198,7 +196,9 @@ class TestExperiment:
             trials=3,
         )
         results = await service.run(exp)
-        assert results.status in ("excellent", "good", "needs_work", "poor")
+        # The simulator answered, so the run measured no model: graded, but not given a status.
+        assert results.grade in ("excellent", "good", "needs_work", "poor")
+        assert results.status == "unmeasured"
 
     async def test_runs_all_probes_regardless_of_metadata(self, service: Experiment):
         """All probes run including non-standard expectation values."""
@@ -233,8 +233,8 @@ class TestExperiment:
         )
         await service.run(exp)
 
-        latest = tmp_path / "test-activation" / "results" / "summary-latest.json"
-        assert latest.exists()
+        results_dir = tmp_path / "test-activation" / "results" / "default"
+        assert (results_dir / "summary-latest.json").exists()
 
     async def test_provenance_populated(self, service: Experiment):
         """Results carry config_hash and ix_version for reproducibility."""
@@ -249,8 +249,8 @@ class TestExperiment:
         assert results.ix_version != ""
         assert results.run_timestamp is not None
 
-    async def test_mock_agent_high_pass_rate(self, service: Experiment):
-        """MockAgent always activates -> high pass rate on must_trigger probes."""
+    async def test_simulated_runtime_high_pass_rate(self, service: Experiment):
+        """The simulator always activates without expectations -> must_trigger probes pass."""
         exp = _config(
             probes=tuple(
                 _probe(f"must-{i:03d}", f"eval question {i}", "must_trigger") for i in range(1, 11)
@@ -263,3 +263,47 @@ class TestExperiment:
         )
         results = await service.run(exp)
         assert results.pass_rate >= 0.5
+
+
+class TestEngines:
+    """Aggregation belongs to the Experiment; the engine only produces readings.
+
+    So the same deterministic experiment must give the same results through either engine.
+    """
+
+    def _exp(self):
+        return _config(
+            probes=(
+                _probe("must-001", "How do I write evals?", "must_trigger"),
+                _probe("not-001", "Write a Python function", "should_not_trigger"),
+            ),
+            trials=3,
+        )
+
+    async def test_native_engine_named_in_provenance(self, service: Experiment):
+        results = await service.run(self._exp())
+        assert (results.engine, results.engine_artifacts) == ("native", ())
+
+    async def test_inspect_engine_matches_native(self, tmp_path: Path):
+        from ix.adapters._out.engines.inspect_engine import InspectEngine, InspectEngineConfig
+
+        native = await _service(tmp_path / "n").run(self._exp())
+        inspect_engine = InspectEngine(InspectEngineConfig(log_dir=str(tmp_path / "logs")))
+        via_inspect = await _service(tmp_path / "i", inspect_engine).run(self._exp())
+
+        assert via_inspect.engine == "inspect"
+        assert via_inspect.probe_results == native.probe_results
+        assert via_inspect.pass_rate == native.pass_rate
+        (artifact,) = via_inspect.engine_artifacts
+        assert artifact.startswith("inspect_log:") and artifact.endswith(".eval")
+        assert Path(artifact.removeprefix("inspect_log:")).exists()
+
+    async def test_inspect_engine_runs_every_repeat(self, tmp_path: Path):
+        from ix.adapters._out.engines.inspect_engine import InspectEngine, InspectEngineConfig
+
+        exp = self._exp().model_copy(update={"repeats": 2, "trials": 1})
+        results = await _service(
+            tmp_path, InspectEngine(InspectEngineConfig(log_dir=str(tmp_path / "logs")))
+        ).run(exp)
+        assert len(results.per_run_pass_rates) == 2
+        assert len(results.engine_artifacts) == 2

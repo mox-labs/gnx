@@ -3,7 +3,8 @@
 import pytest
 from matrix_helpers import FakeComponent
 
-from matrix import CompilationError, DagCompiler
+from matrix import CompilationError
+from matrix.domain.compiler import DagCompiler
 
 # --- Helpers ---
 

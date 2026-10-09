@@ -1,0 +1,1 @@
+"""DefinitionSource adapters."""

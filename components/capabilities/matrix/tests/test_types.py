@@ -84,16 +84,15 @@ class TestConstruct:
         c.append(Artifact.create(type_url="test.v1/b", producer="p", data=2))
         assert c.kinds() == frozenset({"test.v1/a", "test.v1/b"})
 
-    def test_len_counts_unique_types(self):
+    def test_len_counts_artifacts_kinds_counts_types(self):
+        # A ledger's length is its entries; distinct kinds are kinds().
         c = Construct()
         assert len(c) == 0
         c.append(Artifact.create(type_url="test.v1/a", producer="p", data=1))
-        assert len(c) == 1
         c.append(Artifact.create(type_url="test.v1/b", producer="p", data=2))
-        assert len(c) == 2
-        # Same type_url — len stays 2
         c.append(Artifact.create(type_url="test.v1/a", producer="p", data=3))
-        assert len(c) == 2
+        assert len(c) == 3
+        assert len(c.kinds()) == 2
 
     def test_query_returns_all_of_type(self):
         c = Construct()

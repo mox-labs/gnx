@@ -11,18 +11,24 @@ authors = [
 
 dependencies = [
     "rich-click>=1.8",
+    "rich>=13",
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "python-frontmatter>=1.0",
     "matrix",
-    "anthropic>=0.84.0",
-    "claude-agent-sdk>=0.1.36",
+    "hardline",
+    "claude-agent-sdk>=0.1.51",  # see matrix's `claude` extra
 ]
+
+# Extensions add sensors, engines or runtimes without editing ix: each entry point is a
+# callable register(registry) -> None, loaded by the composition root.
+[project.entry-points."ix.components"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
-claude = ["claude-agent-sdk>=0.1"]
 deepeval = ["deepeval>=2.0"]
+# The Inspect AI engine: runs an ix experiment as an Inspect task (epochs, logs, log viewer).
+inspect = ["inspect-ai>=0.3.100"]
 
 [project.scripts]
 ix = "ix.adapters._in.cli:main"
@@ -46,6 +52,8 @@ include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# deepeval auto-registers a pytest plugin that opens a telemetry capture per session.
+addopts = "-p no:deepeval"
 
 # The x.uma/puma house lint set: B (bugbear), SIM, TC on top of the cix selection.
 [tool.ruff]

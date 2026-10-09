@@ -60,9 +60,20 @@ does not gain authority.
 
 ### 4. Optional third-party evaluators
 
-`DeepEvalSensor` is behind an optional extra. When enabled it routes judge calls through a
-matrix `Agent` adapter and hands prompts to deepeval. deepeval's own network behaviour is
-outside ix's control.
+`DeepEvalSensor` is behind an optional extra. With `judge: <model>` set, judge calls run
+through matrix's model runtime — so where the judge's prompts go is decided by the hardline
+registry row (hardline/SECURITY.md). Without a judge, deepeval calls its own default provider.
+
+See I-7 for deepeval's telemetry.
+
+### 5. The Inspect engine
+
+`engine: inspect` runs each repeat as an Inspect AI task with `model="none"`: Inspect's own
+model is never called, and the subject runs through ix's agent factory exactly as on the
+native engine. Inspect writes an `.eval` log per repeat under `results/inspect/` containing
+**every prompt and every response** — treat the directory like the results it is. The
+engine's `max_samples` defaults to 1, matching the native engine's `concurrency` default;
+raise it when the subject's runtime and provider can take parallel calls.
 
 ## Findings
 
@@ -117,13 +128,70 @@ what its own docstring says it does.
 Found by `lab/sensor-integrity` on its first run, not by review. Regression:
 `ix/tests/ix/test_strict_regressions.py`.
 
+### I-6 — a bare `matrix` dependency is safe only because the workspace travels with it (2026-09-06)
+
+`ix` declares `matrix` in `[project.dependencies]` with no source. `matrix` is also a real
+name on PyPI — an unrelated config-parsing library, currently 3.0.0 — so the name is
+ambiguous and what resolves depends entirely on whether the resolver can see this
+repository's workspace root.
+
+**On the distribution path gnx actually uses, it resolves correctly.** Verified
+2026-09-06 against `origin/main`:
+
+```
+$ uvx --from "git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/ix" ...
+Building matrix @ git+https://github.com/mox-labs/gnx@a4658f8#subdirectory=components/capabilities/matrix
+Building ix     @ git+https://github.com/mox-labs/gnx@a4658f8#subdirectory=components/capabilities/ix
+matrix version: 0.1.0
+```
+
+uv clones the whole repository to build the subdirectory, discovers
+`components/capabilities/pyproject.toml` as the workspace root, and applies its
+`[tool.uv.sources]`. Both packages are built from the same pinned commit. Every ix module
+imports cleanly.
+
+**It resolves to the stranger only when the package is severed from the repository** — a
+path install of a copied `ix/`, or `pip install ix` — where the workspace root is not
+present. Then uv takes PyPI's `matrix` 3.0.0, installs successfully, renders `ix --help`
+without complaint (click never touches matrix), and fails later at
+`from matrix import AgentResponse`. Verified by copying `ix/` outside the tree.
+
+So this is a **latent** finding, not a live one: the exposure is real but no supported
+install path reaches it. Two things keep it on the list rather than closed:
+
+1. The safety comes from a property of the *transport* (git clones the whole repo), not
+   from anything ix declares. A future path that publishes ix's wheel on its own — or any
+   consumer who vendors the directory — loses the guarantee silently.
+2. The failure mode is silent-then-late rather than an install error, and the package that
+   fills the gap is chosen by whoever owns the name on the public index.
+
+Not fixed, because the fix is a naming decision rather than a typo. Options: publish under
+a distinct distribution name, pin a direct git URL in ix's own dependency list, or declare
+ix repository-only and fail loudly when the workspace is absent. yzavyas's call.
+
+`ix` is excluded from `just capabilities-standalone` for the same reason — that gate
+severs the package from the repository on purpose, which is the one condition under which
+ix legitimately cannot resolve. It is not a defect the gate is entitled to flag.
+
+### I-7 — deepeval sends usage telemetry by default (mitigated 2026-09-24)
+
+deepeval reports usage telemetry unless `DEEPEVAL_TELEMETRY_OPT_OUT` is set, and installing it
+registers a pytest plugin that opens a telemetry capture on every test session in the
+environment — including suites that never touch deepeval.
+
+Mitigated: `_build_metric` sets `DEEPEVAL_TELEMETRY_OPT_OUT=1` with `setdefault` before
+deepeval is first imported, so the default is off and an operator's explicit choice still
+wins. The workspace and ix pytest configs pass `-p no:deepeval`. Residual: this is a
+process-global environment default, and deepeval's `__init_subclass__` hook wraps the judge
+adapter's `generate` in deepeval's tracing, which reports only when a Confident AI key is set.
+
 ## Not covered
 
 - ix does not sandbox generated code. See boundary 1.
 - ix does not verify experiment provenance. There is no signature on an experiment
   directory.
-- `--mock` uses a seeded PRNG for run reproducibility. It is not a security control and
-  its seed is not a secret.
+- `--simulate` (`--mock` is a deprecated alias) uses a seeded PRNG for run reproducibility.
+  It is not a security control and its seed is not a secret.
 
 ## Reporting
 

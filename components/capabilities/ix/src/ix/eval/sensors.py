@@ -19,7 +19,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
+from ix.domain.errors import ConfigError
 from ix.domain.types import Probe, Reading, Trial
+from ix.eval.models import ACCEPTABLE, MUST_TRIGGER, SHOULD_NOT_TRIGGER
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ class CompositeSensor:
 
     def __init__(self, sensors: list[Sensor]) -> None:
         if not sensors:
-            raise ValueError("CompositeSensor requires at least one sensor")
+            raise ConfigError("CompositeSensor requires at least one sensor")
         self._sensors = sensors
 
     @property
@@ -118,16 +120,16 @@ class ActivationSensor:
         probes: tuple[Probe, ...] = (),
         **kwargs: Any,
     ) -> ActivationSensor:
-        expectations = {p.id: str(p.metadata.get("expectation", "must_trigger")) for p in probes}
-        # Built as a loop rather than a comprehension because the guard and the value have
-        # to agree: a probe carrying an explicit `expected_skill: null` passed the old
-        # `or config.expected_skill` guard and then stored None, which the measure path
-        # reads as "no expectation" — silently un-scoring that probe.
-        expected_skills: dict[str, str] = {}
-        for p in probes:
-            skill = p.metadata.get("expected_skill") or config.expected_skill
-            if skill:
-                expected_skills[p.id] = str(skill)
+        from ix.eval.activation import expectation_of, expected_skill_of
+
+        expectations = {p.id: expectation_of(p) for p in probes}
+        # Only probes that resolve to a skill get an entry: an explicit `expected_skill: null`
+        # must not store None, which the measure path reads as "no expectation".
+        expected_skills = {
+            p.id: skill
+            for p in probes
+            if (skill := expected_skill_of(p, config.expected_skill)) is not None
+        }
         return cls(
             expected_skill=config.expected_skill,
             expectations=expectations,
@@ -163,12 +165,14 @@ class ActivationSensor:
 
         expectation = self._expectations.get(trial.probe_id, "must_trigger")
 
-        if expectation == "must_trigger":
+        if expectation == MUST_TRIGGER:
             passed = activated
-        elif expectation == "should_not_trigger":
-            passed = not (activated_skill is not None)
-        else:  # acceptable
+        elif expectation == SHOULD_NOT_TRIGGER:
+            passed = activated_skill is None
+        elif expectation == ACCEPTABLE:
             passed = True
+        else:  # a sensor built by hand, bypassing from_config's validation
+            raise ConfigError(f"probe {trial.probe_id!r}: unknown expectation {expectation!r}")
 
         return [
             Reading(
@@ -651,7 +655,9 @@ class OutcomeSensor:
         """Load grader functions from a Python module file."""
         spec = importlib.util.spec_from_file_location("graders", module_path)
         if spec is None or spec.loader is None:
-            return {}
+            # Returning {} here made every probe fail with "no grader" — a config fault
+            # scored as the subject's failure.
+            raise ConfigError(f"graders_module {module_path!r} is not an importable Python file")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         registry = getattr(mod, "GRADERS", {})

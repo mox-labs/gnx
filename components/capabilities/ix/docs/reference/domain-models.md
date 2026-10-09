@@ -42,6 +42,7 @@ Result of a sensor evaluating a single interaction. Sensors produce readings lik
 | `score` | `float \| None` | `None` | Numeric score (sensor-defined semantics) |
 | `metrics` | `dict` | `{}` | Additional numeric measurements |
 | `details` | `str` | `""` | Human-readable explanation |
+| `fault` | `"subject" \| "sensor" \| None` | `None` | Set when the sensor never judged the response: the trial errored (`subject`) or the sensor raised (`sensor`) |
 
 ---
 
@@ -58,124 +59,61 @@ Measures a trial and produces readings.
 | Member | Signature | Description |
 |--------|-----------|-------------|
 | `name` | `@property -> str` | Sensor identifier (appears in `Reading.sensor_name`) |
-| `sense` | `(trial: Trial) -> list[Reading]` | Measures one trial |
+| `measure` | `(trial: Trial) -> list[Reading]` | Measures one trial |
 
-**Note:** Agent execution uses `matrix.Agent` protocol directly (`run(prompt) -> AgentResponse`). No separate `ExperimentRuntime` protocol — Matrix's Agent IS the runtime.
+### `AgentFactory` (Protocol)
+
+`(subject: Subject, trial_index: int, run_index: int = 0) -> matrix.Agent`. Built by the
+composition root: splits the subject's config into a matrix `AgentDefinition` (`system_prompt`,
+`model`, `tools`, `max_turns`) and a runtime (`runtime.type` + options), and binds them.
+Seeded simulated runtimes draw per `(run_index, trial_index)`, so repeats are independent.
+
+### `Engine` (Protocol)
+
+`name: str`; `async run(run: EngineRun) -> EngineOutcome`. Executes one repeat — every probe ×
+trial — and returns `EngineOutcome(readings, trials, artifacts)`: `trials` is every `Trial` the
+repeat ran, response or error included — what `readings` measured, and what `Storage` persists.
+`EngineRun` carries `experiment`, `probes`, `subject`, `sensor`, `agents` (an AgentFactory),
+`trials`, `run_index`, and an optional `on_trial(trial, readings)` an engine calls as each trial
+is measured — progress only; the outcome stays the source of truth.
+
+### `Storage` (Protocol)
+
+**Import path**: `ix.domain.ports`
+
+Persistence boundary: experiments in, trial records and per-subject summaries out.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `load_experiment` | `(path: Path) -> ExperimentConfig` | Load an experiment directory |
+| `list_experiments` | `(base: Path) -> list[Path]` | Enumerate experiment directories |
+| `append_trials` | `(experiment: str, subject: str, run_id: str, records: list[TrialRecord]) -> Path` | Append this run's trial records; returns the `trials.jsonl` path |
+| `save_summary` | `(experiment: str, results: ExperimentResults) -> Path` | Write the subject's summary (archived and `-latest`) |
+| `load_summary` | `(experiment: str, subject: str) -> ExperimentResults` | Load one subject's latest summary |
+| `subjects_with_results` | `(experiment: str) -> list[str]` | Subject names that have a summary |
+
+| engine | type URL | executes a repeat as |
+|---|---|---|
+| native | `ix.v1/engine.native` | one four-node matrix DAG per probe × trial; `concurrency` (default 1) bounds trials in flight, results stay in probe × trial order |
+| inspect | `ix.v1/engine.inspect` | one Inspect AI task: probes → samples, trials → epochs, subject → solver, sensor → scorer; `artifacts["inspect_log"]` is the `.eval` path |
 
 ---
 
 ## Eval Models
 
-**Import path**: `ix.eval.models`
+**Import path**: `ix.eval.models`. Field-by-field tables for the persisted shapes are in
+[Experiment Format](experiment-format.md); this is what each type is for.
 
-All eval-specific types live in one file. Stimulus types (`EvalCase`, `EvalObservation`) and result types (`Verdict`, `ProbeResult`, `ExperimentResults`) are grouped together.
+| Type | What it is |
+|------|------------|
+| `ExperimentConfig` | An experiment as loaded: name, subjects, probes, `sensors`, `engine`, `models`, `trials`, `repeats`. `extra="forbid"`; `sensor` (one) and `engine` (a name) are shorthands, and giving both `sensor` and `sensors` is an error. `subject(name)` looks one up or raises `ConfigError` naming the others. |
+| `TrialRecord` | One trial of one probe in one repeat — `run_id`, `run_index`, `probe_id`, `trial_index`, the serialised `response` or the `error`, and its `readings`. One JSON line each in `trials.jsonl`. |
+| `ProbeResult` | One probe aggregated over its trials: mean `score`, `passed` (a majority of trials passed, by the sensor's verdict), `trial_scores`, `details` (at most 3 distinct strings). |
+| `ExperimentResults` | One subject's run: pass rate and mean score with their standard errors over probes, the across-repeat noise floors, the confusion matrix, `sensor_faults` (readings the sensor crashed on, scored as failures), the `families` that answered (`measured_a_model` is false for the simulator or mock), provenance (`run_id`, `engine`, `trials_log`, `config_hash` over config and probes, `seed`, `simulated`), and a `status` that is `unmeasured` when no real model answered. |
+| `Comparison` | Subject B against A (`run_id_a`, `run_id_b` name the two runs), paired by probe: `mean_delta` with its SE and 95% CI, verdict flips, the score noise floor, `unmatched` probes, a `warning` when either side measured no model or had sensor faults, and a `verdict` of `b_better` / `a_better` / `inconclusive` — always `inconclusive` when `sensor_faults` > 0. |
 
-### `ToolCall`
-
-A tool invocation observed in an agent response.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | `str` | required | Tool name (e.g., `"Skill"`) |
-| `input` | `dict` | `{}` | Tool input arguments |
-
-### `EvalCase`
-
-A single eval case — the stimulus in eval vocabulary.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `id` | `str` | required | Unique identifier (e.g., `must-001`) |
-| `prompt` | `str` | required | Text sent to the SUT |
-| `expectation` | `str` | required | `"must_trigger"`, `"should_not_trigger"`, or `"acceptable"` |
-| `rationale` | `str` | `""` | Human documentation — ignored by ix |
-
-### `EvalObservation`
-
-What the agent did in response to an `EvalCase` prompt.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `content` | `str` | `""` | Text response from the agent |
-| `tool_calls` | `tuple[ToolCall, ...]` | `()` | Tool invocations made |
-| `duration_ms` | `int` | `0` | Response time in milliseconds |
-| `tokens_input` | `int` | `0` | Input token count |
-| `tokens_output` | `int` | `0` | Output token count |
-
-### `Experiment`
-
-An eval experiment definition. Loaded from `experiment.yaml` + `cases/*.md`.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | `str` | required | Experiment identifier |
-| `description` | `str` | `""` | Human-readable description |
-| `subjects` | `tuple[Subject, ...]` | `()` | SUTs being compared |
-| `sensor` | `str` | `"activation"` | Sensor kind to use |
-| `trials` | `int` | `5` | Number of trials per case |
-| `cases` | `tuple[EvalCase, ...]` | `()` | Test cases (loaded from markdown files) |
-
-### `Verdict`
-
-One trial of one probe: observation + sensor reading.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `probe_id` | `str` | required | Which `EvalCase.id` this trial belongs to |
-| `trial` | `int` | required | Trial index (0-indexed) |
-| `expectation` | `str` | required | `EvalCase.expectation` at time of run |
-| `observation` | `Any` | `None` | The raw `EvalObservation` |
-| `reading` | `Reading \| None` | `None` | Sensor output for this trial |
-
-### `ProbeResult`
-
-Aggregated result across all trials for one probe.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `probe_id` | `str` | required | Which `EvalCase.id` |
-| `expectation` | `str` | required | `"must_trigger"` or `"should_not_trigger"` |
-| `score` | `float` | required | Activation rate: fraction of trials that passed |
-| `correct` | `bool` | required | Majority vote matches expectation |
-| `trials` | `tuple[Verdict, ...]` | `()` | Individual trial verdicts |
-
-### `ExperimentResults`
-
-Complete results for one experiment run. Metrics and interpretation are flat fields — no nested sub-models.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `experiment_name` | `str` | required | Which experiment was run |
-| `probe_results` | `tuple[ProbeResult, ...]` | `()` | Per-probe aggregated results |
-| `precision` | `float` | `0.0` | TP / (TP + FP) |
-| `recall` | `float` | `0.0` | TP / (TP + FN) |
-| `f1` | `float` | `0.0` | Harmonic mean of precision and recall |
-| `tp` | `int` | `0` | True positives |
-| `fp` | `int` | `0` | False positives |
-| `fn` | `int` | `0` | False negatives |
-| `tn` | `int` | `0` | True negatives |
-| `status` | `str` | `"pending"` | `"excellent"` (F1 >= 0.85), `"good"` (>= 0.70), `"needs_work"` (>= 0.50), `"poor"` |
-| `issues` | `tuple[str, ...]` | `()` | What's wrong (e.g., `"Low recall"`) |
-| `suggestions` | `tuple[str, ...]` | `()` | How to fix it |
-
-`acceptable` cases are excluded from all counts.
-
----
-
-## Eval Protocols
-
-### `Storage`
-
-**Import path**: `ix.eval.service`
-
-Persistence boundary for experiments and eval results.
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `load_experiment` | `(path: Path) -> Experiment` | Load experiment definition from directory |
-| `list_experiments` | `(base: Path) -> list[Path]` | Enumerate experiment directories |
-| `append_result` | `(experiment_name: str, result: Verdict) -> None` | Append one trial verdict to JSONL |
-| `save_summary` | `(experiment_name: str, results: ExperimentResults) -> Path` | Write aggregate summary, return path |
+Activation expectations a probe can declare: `must_trigger`, `should_not_trigger`,
+`acceptable` (constants `MUST_TRIGGER`, `SHOULD_NOT_TRIGGER`, `ACCEPTABLE`).
 
 ---
 
@@ -188,32 +126,41 @@ ProbeNode ──┐
             ├──▶ TrialNode ──▶ SensorNode
 SubjectNode ┘
 
-ProbeNode:   consumes: ∅                              produces: "probe.stimulus"      (Probe)
-SubjectNode: consumes: ∅                              produces: "subject.config"       (dict)
-TrialNode:   consumes: {probe.stimulus, subject.config} produces: "trial.observation"  (Trial)
-SensorNode:  consumes: {trial.observation}             produces: "sensor.reading"      (list[Reading])
+ProbeNode:   requires: ∅                          provides: ix.v1/probe.stimulus    (Probe)
+SubjectNode: requires: ∅                          provides: ix.v1/subject           (Subject)
+TrialNode:   requires: {probe.stimulus, subject}  provides: ix.v1/trial.observation (Trial)
+SensorNode:  requires: {trial.observation}        provides: ix.v1/sensor.readings   (list[Reading])
 ```
 
-Experiment loops over probes × trials, runs the inner DAG each iteration. Post-loop: aggregate all readings → metrics. Status is derived from pass_rate via computed property.
+The native engine runs this DAG per probe × trial; reads are declared and enforced by matrix.
+The Experiment runs `repeats` repeats through the engine, then aggregates. Status is derived
+from pass_rate via computed property.
 
-All components resolve through a unified `ComponentRegistry` via `type → type_url → factory`. Sensors, agent runtimes — same pattern, no special cases.
+All components resolve through one `ComponentRegistry` by type URL: `matrix.v1/runtime.*`
+(includes matrix's own `mock`), `ix.v1/runtime.simulated` (ix's simulator), `ix.v1/sensor.*`,
+`ix.v1/engine.*`, plus `matrix.components` and `ix.components` entry points.
 
 ## Type Flow
 
 ```
-Probe (stimulus) + Subject.config (identity + runtime)
+Probe (stimulus) + Subject (definition fields + runtime)
     |
-TrialNode: registry.create("matrix.agent.{type}", config) → Agent
-           Agent.run(prompt) → AgentResponse
+AgentFactory: AgentDefinition + registry.create("matrix.v1/runtime.<type>", options) → BoundAgent
+              BoundAgent.run(prompt) → AgentResponse (content, tool_calls, usage, family)
     |
 Trial(probe_id, trial_index, response, error)
     |
 Sensor.measure(trial) → list[Reading]
 
 Reading(sensor_name, probe_id, trial_index, passed, score, metrics, details)
+    | Storage.append_trials() → TrialRecord(run_id, run_index, probe_id, trial_index,
+    |                                        response, error, readings) per trial, to trials.jsonl
     | aggregate_readings()
 ProbeResult(probe_id, score, passed, trial_scores)
-    | compute_metrics() → dict
-ExperimentResults(experiment_name, probe_results, pass_rate, mean_score, min_score, max_score)
+    | compute_metrics() + standard_errors() + compute_noise_floor() per repeat
+ExperimentResults(experiment_name, subject, run_id, probe_results, pass_rate, mean_score,
+                   min_score, max_score, n_probes, pass_rate_stderr, mean_score_stderr,
+                   noise_floor_sd, families, ...)
     .status → computed from pass_rate
+    .measured_a_model → computed from families
 ```

@@ -33,7 +33,9 @@ def make_sensor(**config):
 @pytest.fixture
 def registry():
     return (
-        ComponentRegistry().register("test.probe", make_probe).register("test.sensor", make_sensor)
+        ComponentRegistry()
+        .register("test.v1/probe", make_probe)
+        .register("test.v1/sensor", make_sensor)
     )
 
 
@@ -54,21 +56,23 @@ class TestContainer:
     def test_exposes_registry(self, container, registry):
         assert container.registry is registry
 
-    def test_exposes_runtime(self, config, registry):
+    def test_exposes_runtimes_and_agents(self, config, registry):
         runtime = object()
-        container = Container(config=config, registry=registry, runtime=runtime)
-        assert container.runtime is runtime
+        container = Container(config=config, registry=registry, runtimes={"r": runtime})
+        assert container.runtime("r") is runtime
+        assert container.agents == {}
 
-    def test_runtime_defaults_none(self, container):
-        assert container.runtime is None
+    def test_unknown_runtime_lists_configured(self, container):
+        with pytest.raises(KeyError, match=r"no runtime named 'x'"):
+            container.runtime("x")
 
     def test_create_component(self, container):
-        component = container.create_component("test.probe")
+        component = container.create_component("test.v1/probe")
         assert component.name == "probe"
         assert component.provides == "probe.response"
 
     def test_create_component_with_config(self, container):
-        component = container.create_component("test.probe", {"name": "custom-probe"})
+        component = container.create_component("test.v1/probe", {"name": "custom-probe"})
         assert component.name == "custom-probe"
 
 
@@ -76,8 +80,8 @@ class TestBuildOrchestrator:
     def test_builds_from_specs(self, container):
         orchestrator = container.build_orchestrator(
             [
-                ("test.probe", None),
-                ("test.sensor", None),
+                ("test.v1/probe", None),
+                ("test.v1/sensor", None),
             ]
         )
         assert orchestrator is not None
@@ -86,8 +90,8 @@ class TestBuildOrchestrator:
     async def test_orchestrator_runs(self, container):
         orchestrator = container.build_orchestrator(
             [
-                ("test.probe", None),
-                ("test.sensor", None),
+                ("test.v1/probe", None),
+                ("test.v1/sensor", None),
             ]
         )
         construct = await orchestrator.run()
@@ -99,8 +103,8 @@ class TestBuildOrchestrator:
     async def test_config_passed_through(self, container):
         orchestrator = container.build_orchestrator(
             [
-                ("test.probe", {"name": "my-probe"}),
-                ("test.sensor", {"name": "my-sensor"}),
+                ("test.v1/probe", {"name": "my-probe"}),
+                ("test.v1/sensor", {"name": "my-sensor"}),
             ]
         )
         construct = await orchestrator.run()
@@ -132,7 +136,7 @@ class TestDIPattern:
                 data=f"used-runtime-{id(captured_runtime)}",
             )
 
-        registry = ComponentRegistry().register("test.runtime-probe", make_runtime_probe)
-        container = Container(config=config, registry=registry, runtime=captured_runtime)
-        component = container.create_component("test.runtime-probe")
+        registry = ComponentRegistry().register("test.v1/runtime-probe", make_runtime_probe)
+        container = Container(config=config, registry=registry)
+        component = container.create_component("test.v1/runtime-probe")
         assert component._data == f"used-runtime-{id(captured_runtime)}"

@@ -1,179 +1,179 @@
-# Running an Experiment
+# Running experiments
 
-Set up and run an ix experiment from scratch.
+From an empty directory to a result with an error bar. Every command here is ix's CLI as it
+exists; `ix <command> --help` has the rest.
 
+## 1. Create a lab and an experiment
+
+```bash
+ix lab init lab
+ix experiment init routing --lab lab
+```
+
+```
+lab/
+└── routing/
+    ├── experiment.yaml        # name, engine, sensor, trials
+    ├── tasks/example.md       # one example probe — edit it, add more beside it
+    └── subjects/agent.md      # a starter subject on the simulator (runtime: simulated)
+```
+
+The scaffold validates and runs at once, on the simulator, before any model is configured.
+Neither init command overwrites anything; with `--format json` each says `"created": true` or
+`false`.
+
+## 2. Write probes
+
+One markdown file per probe in `tasks/`. Frontmatter is metadata the sensor reads; the body is
+the prompt, sent verbatim.
+
+```markdown
 ---
-
-## 1. Create a Lab
-
-A lab is a directory that holds experiments.
-
-```bash
-ix lab init ci-lab
+id: vague-ask
+expectation: must_trigger          # activation: must_trigger | should_not_trigger | acceptable
+expected_skill: intent-hardening
+---
+I want to make our onboarding better somehow. Where do I start?
 ```
 
-## 2. Scaffold an Experiment
+Write decoys too — `should_not_trigger` probes pitched near a skill's vocabulary without
+needing it. A routing measurement with no decoys cannot tell a good description from a greedy
+one.
 
-```bash
-ix experiment init skill-activation --lab ci-lab
-```
+## 3. Choose who answers
 
-This creates:
-
-```
-ci-lab/
-└── skill-activation/
-    ├── experiment.yaml
-    └── cases/              # empty, you'll add cases here
-```
-
-## 3. Configure the Experiment
-
-Edit `experiment.yaml`:
+A subject is an agent definition plus the runtime that plays it. Edit `subjects/agent.md`, or
+list subjects in `experiment.yaml`:
 
 ```yaml
-name: skill-activation
-description: Test build-eval skill activation
-skill: build-eval
-trials: 5
-```
-
-`skill:` is shorthand — ix infers the subject, sensor, and evaluation pipeline from it. For full control:
-
-```yaml
-name: skill-activation
-description: Test build-eval skill activation
-sensor: activation
-trials: 5
-
 subjects:
-  - name: build-eval
-    description: The skill under test
+  - name: live
+    config:
+      max_turns: 1
+      runtime:
+        type: claude-sdk
+        setting_sources: []                # hermetic: nothing from ~/.claude leaks in
+        permission_mode: bypassPermissions # unattended — logged at WARNING
+        plugins: [{type: local, path: ../../plugins/intent-hardening}]
+  - name: local
+    config:
+      system_prompt: Answer briefly.
+      tools: []
+      runtime: {type: model}               # uses the experiment's `models:` registry
 ```
 
-## 4. Write Cases
-
-Each case is a markdown file in `cases/` — YAML frontmatter with the expectation, body is the prompt.
-
-**Must trigger** — skill should activate:
-
-```markdown
----
-id: must-001
-expectation: must_trigger
-rationale: Direct question about writing evals.
----
-How do I write evals for my coding agent?
-```
-
-**Should not trigger** — skill must stay quiet:
-
-```markdown
----
-id: not-001
-expectation: should_not_trigger
-rationale: General coding question, no eval intent.
----
-How do I sort a list in Python?
-```
-
-**Acceptable** — either outcome is fine (excluded from metrics):
-
-```markdown
----
-id: edge-001
-expectation: acceptable
-rationale: Ambiguous — mentions testing but not evals specifically.
----
-How do I test my AI assistant?
-```
-
-File naming convention: `must-001.md`, `not-001.md`, `edge-001.md`.
-
-## 5. Validate
+## 4. Validate, then run on the simulator
 
 ```bash
-ix experiment validate skill-activation --lab ci-lab
-# Valid: skill-activation (28 cases)
+ix experiment validate routing --lab lab
+ix run routing --lab lab --simulate --seed 42
 ```
 
-## 6. Run (Mock)
+`--simulate` swaps every subject onto the simulator: canned `mock_response`s where a probe has
+one, otherwise a seeded 90/10 activation split (`--mock` still works as a deprecated alias).
+**It proves the harness, not the thing.** A simulated pass rate says the pipeline works; it
+says nothing about your catalog.
 
-Mock mode uses a local runtime that simulates tool calls. No API keys needed.
+`ix experiment validate` also checks that every local plugin path a subject loads
+(`runtime.plugins: [{type: local, path}]`) exists, resolved against the experiment directory.
+
+## 5. Run for real
 
 ```bash
-ix run skill-activation --lab ci-lab --mock
+ix run routing --lab lab --plan                           # what would run; nothing does
+ix run routing --lab lab --subject live --trials 1        # one trial per probe to start
+ix run routing --lab lab --subject live                   # the configured trials × repeats
+ix run routing --lab lab --subject local --engine inspect # same experiment on Inspect AI
+ix run routing --lab lab --all                            # every subject, in turn
 ```
 
-Add `--seed 42` for deterministic results across runs.
+`--plan` prints, per subject, its runtime, probes × trials × repeats = sessions, and whether
+it is live — any runtime other than `simulated` or `mock`. With no `--subject`, a run that
+would start more than one subject with any of them live is refused (exit 3) with that list;
+name a `--subject`, or pass `--all` to run them all. One subject, or only simulated ones, runs
+without asking.
 
-## 7. Run (Live)
+Results are keyed by subject — running one subject never overwrites another's — so running
+every subject is the normal way to set up a comparison. A `--simulate` run of a subject whose
+own runtime is not the simulator is saved as `<subject>@simulated`, so a harness check never
+replaces that subject's measured results; `ix results` and `ix compare` take that name too.
 
-Live mode sends prompts to Claude and observes actual behavior.
+Set `repeats: 3` or more before you compare two subjects. One run's pass rate has no error
+bar; the **noise floor** — the spread of pass rates across repeats — is what says whether a
+difference between two subjects is bigger than the run-to-run wobble.
+
+While it runs, a terminal shows a bar that advances as each trial is measured, with a running
+count of passes and fails; a line per repeat (`repeat 2/3: 87.5%`) and, at the end, a line per
+probe (`stand-up-an-org: PASS (score=100%)`). All of that goes to stderr, so stdout carries only
+the results. Piped, the bar is omitted and the lines remain.
+
+In the results table, **Trials** draws one bar per trial — its height the trial's score — so
+`█████▁███████▁█` is a probe that failed twice in fifteen. The trial log holds each one in full.
+
+## 6. Read the results
 
 ```bash
-export ANTHROPIC_API_KEY=sk-...
-ix run skill-activation --lab ci-lab --live
+ix results routing --lab lab
+ix results routing --lab lab --format json
 ```
 
-Override trial count from the command line:
+| Metric | Meaning |
+|--------|---------|
+| **Pass rate** | fraction of probes where a majority of trials passed, by the sensor's own verdict; reported with ± one standard error over the probes sampled |
+| **Mean / min / max score** | over per-probe mean trial scores; mean score also carries its standard error |
+| **Noise floor (sd)** | standard deviation of per-repeat pass rate / mean score — compare differences against it |
+| **Answered by** | the model families that actually produced the responses measured, read off the responses — `simulated` under `--simulate`, never asserted from config |
+| **Confusion matrix** | activation only: expected skill × the skill that actually fired |
+| **Status** | a grade of the pass rate; `harness only` (JSON `status: "unmeasured"`) when no real model answered |
+
+`--format json` prints a list of results, one per subject, each with `"schema":
+"ix.v1/results"`. A summary keeps at most three distinct `details` strings per probe — the
+per-trial details are in `trials.jsonl`. It also records `seed`, `simulated`, and a
+`config_hash` over the whole config, probes included.
+
+Results live under `results/<subject>/<run_id>/trials.jsonl` (one `TrialRecord` per trial, every
+repeat) and `results/<subject>/summary-latest.json` (the result `ix results` reads); the path to
+that run's trials is in the summary's `trials_log`.
+
+On the Inspect engine each repeat also leaves an `.eval` log in `results/inspect/` with every
+prompt, response and score; `inspect view` opens it, and the path is recorded in the summary's
+`engine_artifacts`.
+
+## 7. Compare two subjects
 
 ```bash
-ix run skill-activation --lab ci-lab --mock --trials 3
+ix compare routing live local
 ```
 
-## 8. Read Results
+Pairs `live` and `local`'s latest results probe by probe and reports the mean delta (B − A),
+its standard error, a 95% CI, and which probes' verdicts flipped. The verdict is
+`inconclusive` unless the CI excludes zero *and* the delta clears the larger subject's noise
+floor — a difference that looks real on `repeats: 1` is not, by construction, enough. If
+either subject's results show no real model answered (`--simulate`, or matrix's `mock`
+runtime), the comparison carries a warning: it checked the harness, not the subjects.
 
-```bash
-ix results skill-activation --lab ci-lab
-```
+## Exit codes and errors
 
-```
-────────────── Results ──────────────
-  Precision    100.0%
-  Recall        93.3%
-  F1            96.6%
+| Exit | Meaning | Next step |
+|------|---------|-----------|
+| 0 | success | |
+| 1 | failure not otherwise classified (an engine error, a runtime error) | read the message |
+| 2 | usage: a bad flag or argument | `ix <command> --help` |
+| 3 | config: invalid experiment, failed validate, invalid experiment in `list`, refused live run | fix the file named, or name `--subject` / pass `--all` |
+| 4 | not found: lab, experiment, subject or saved results | the `fix` lists what exists |
+| 5 | transient: a runtime failure whose cause is retryable | retry later |
+| 6 | auth: the provider refused the credentials | fix the key; do not retry |
 
-Confusion Matrix:
-  TP=14  FP=0
-  FN=1   TN=10
+With `--format json` the error is one JSON line on stderr, after any progress lines:
+`{"error": {"kind", "message", "fix", "problems"?}}`. `fix` is a command that will work, or
+`null` — `ix results nope` points at `ix experiment list`, not at running an experiment that
+does not exist. Usage errors (2) stay click's prose. Trials that fail are failed readings, not
+errors, so a provider's rate limit inside a run lowers the score rather than exiting 5.
 
-Status: EXCELLENT
-```
+## When it disagrees with you
 
-JSON output:
-
-```bash
-ix results skill-activation --lab ci-lab --format json
-```
-
-Results live in `ci-lab/skill-activation/results/`:
-
-| File | Contents |
-|------|----------|
-| `trials.jsonl` | One verdict per trial, appended each run |
-| `summary-latest.json` | Aggregate metrics from the most recent run |
-| `summary-{timestamp}.json` | Archived snapshots |
-
-See [Experiment Format](../reference/experiment-format.md) for the complete schema.
-
----
-
-## Interpreting Results
-
-| Metric | What It Tells You |
-|--------|-------------------|
-| **Precision** | Of cases that activated, how many *should* have? Low = false positives. |
-| **Recall** | Of cases that *should* activate, how many did? Low = false negatives. |
-| **F1** | Harmonic mean of precision and recall. The single number to watch. |
-
-| Status | F1 Threshold |
-|--------|-------------|
-| Excellent | >= 0.85 |
-| Good | >= 0.70 |
-| Needs work | >= 0.50 |
-| Poor | < 0.50 |
-
-**Low precision?** The skill activates when it shouldn't. Tighten the skill description or add negative keywords.
-
-**Low recall?** The skill doesn't activate when it should. Broaden the skill description or add trigger patterns.
+- **A must-trigger probe fails** — read the confusion matrix. A different skill firing is a
+  description collision; nothing firing is a description that does not say when to use it.
+- **A decoy fires** — the description is greedy. Narrow its trigger phrasing.
+- **Results swing between runs** — raise `repeats` and look at the noise floor before
+  concluding anything.

@@ -1,0 +1,101 @@
+"""Agents as composition: a definition (data) bound to a runtime (execution).
+
+The split the old ``Agent`` protocol hid:
+
+* **AgentDefinition** — what the agent *is*: its prompt, the tools it may use, the model it
+  asks for, how many turns it gets. Pure data. The same shape as a Claude Code agent file
+  (``name``/``description``/``tools``/``model`` frontmatter + a markdown body), so a plugin's
+  agents are matrix definitions without translation.
+* **AgentRuntime** — *where and how* it runs: the Claude Agent SDK with a permission mode
+  and a working directory, a single model call through hardline, a mock. Deployment config.
+* **BoundAgent** — the component produced by pairing them. It satisfies the ``Agent`` port
+  (``run(prompt) -> AgentResponse``), so everything that consumed an agent before still does.
+
+One definition can run on several runtimes (an eval comparing the SDK against a local
+model), and one runtime serves many definitions (a bench of agents sharing a sandbox).
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from opentelemetry import trace
+from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from matrix.domain.ports._out.agent_runtime import AgentRuntime
+    from matrix.domain.types import AgentResponse
+
+_SLUG = r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
+
+_tracer = trace.get_tracer("matrix")
+
+
+class AgentDefinition(BaseModel):
+    """What an agent is, independent of where it runs."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(pattern=_SLUG)
+    description: str = ""
+    system_prompt: str = ""
+    #: Interpreted by the runtime: an SDK alias or model id for the Claude runtime, a
+    #: hardline registry name for the model runtime. ``None`` = the runtime's default.
+    model: str | None = None
+    #: ``None`` = the runtime's default toolset. ``()`` = **no tools** — never collapsed into
+    #: the default (the old ClaudeAgent turned ``[]`` into ``None`` and handed the agent the
+    #: full toolset; see matrix/SECURITY.md M-2).
+    tools: tuple[str, ...] | None = None
+    #: ``None`` = the runtime's default (a Claude Code agent file without ``maxTurns`` runs as
+    #: it would in Claude Code). Set it to bound a session — a one-turn routing eval sets 1.
+    max_turns: int | None = Field(default=None, ge=1)
+    #: Keys a source carried that no runtime interprets (``color`` in a Claude Code agent
+    #: file). Kept so a round trip loses nothing; never read for behaviour.
+    metadata: dict[str, Any] = {}
+
+
+class BoundAgent:
+    """A definition bound to a runtime — the thing a DAG node or an eval actually calls."""
+
+    def __init__(self, definition: AgentDefinition, runtime: AgentRuntime) -> None:
+        # A runtime that cannot honour a definition says so here, at binding — not mid-run,
+        # after other agents have spent their budget. ``check`` is optional on the port.
+        check = getattr(runtime, "check", None)
+        if check is not None:
+            check(definition)
+        self._definition = definition
+        self._runtime = runtime
+
+    @property
+    def name(self) -> str:
+        return self._definition.name
+
+    @property
+    def definition(self) -> AgentDefinition:
+        return self._definition
+
+    @property
+    def runtime(self) -> AgentRuntime:
+        return self._runtime
+
+    async def run(self, prompt: str) -> AgentResponse:
+        """Run the definition on the runtime, inside an OpenTelemetry ``invoke_agent`` span.
+
+        Span name and attributes follow the OpenTelemetry GenAI agent-span conventions
+        (``invoke_agent {gen_ai.agent.name}``); ``matrix.agent.*`` attributes are matrix's own.
+        """
+        name = self._definition.name
+        with _tracer.start_as_current_span(
+            f"invoke_agent {name}",
+            attributes={"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": name},
+        ) as span:
+            if self._definition.model is not None:
+                span.set_attribute("gen_ai.request.model", self._definition.model)
+            response = await self._runtime.run(self._definition, prompt)
+            span.set_attribute("gen_ai.usage.input_tokens", response.tokens_input)
+            span.set_attribute("gen_ai.usage.output_tokens", response.tokens_output)
+            if response.model is not None:
+                span.set_attribute("matrix.agent.model", response.model)
+            if response.family is not None:
+                span.set_attribute("matrix.agent.family", response.family)
+            return response

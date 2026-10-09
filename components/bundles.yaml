@@ -9,7 +9,7 @@
 # Components own nothing about their projection. A component can appear in more than one
 # bundle; nothing here writes back into components/.
 #
-# Capabilities (matrix, ix, recon, dao, gnx) are Python packages, not Claude Code shapes:
+# Capabilities (hardline, matrix, ix, recon, dao, gnx) are Python packages, not Claude Code shapes:
 # they are reached over a transport, and the protocol-location question is unresolved
 # (MF7). So a Capability's *runnable* does not project. Its *semantic surface* can, when it
 # has one — recon ships a real SKILL.md inside its package, projected below from its

@@ -7,7 +7,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from matrix import ContractError, Orchestrator, TypedStruct
+from matrix import ComponentError, ContractError, Orchestrator, TypedStruct
 
 # Single provider for the test module — OTel only allows set_tracer_provider once.
 _exporter = InMemorySpanExporter()
@@ -104,7 +104,7 @@ class TestErrorTracing:
                 raise ValueError("boom")
 
         orch = Orchestrator([FailComponent()])
-        with pytest.raises(ValueError, match="boom"):
+        with pytest.raises(ComponentError, match="boom"):
             await orch.run()
 
         comp_spans = _spans_named("matrix.component.run")
@@ -137,3 +137,21 @@ class TestNoOpSafety:
 
         assert len(construct) == 1
         assert construct["probe.response"] is not None
+
+
+class TestAgentSpan:
+    async def test_bound_agent_run_emits_a_genai_invoke_agent_span(self):
+        from matrix import AgentDefinition, BoundAgent
+        from matrix.adapters._out.runtime.mock import MockRuntime, MockRuntimeConfig
+
+        agent = BoundAgent(
+            AgentDefinition(name="greeter", model="m1"),
+            MockRuntime(MockRuntimeConfig(default="hi", family="mockfam")),
+        )
+        await agent.run("hello")
+
+        (span,) = _spans_named("invoke_agent greeter")
+        assert span.attributes["gen_ai.operation.name"] == "invoke_agent"
+        assert span.attributes["gen_ai.agent.name"] == "greeter"
+        assert span.attributes["gen_ai.request.model"] == "m1"
+        assert span.attributes["matrix.agent.family"] == "mockfam"

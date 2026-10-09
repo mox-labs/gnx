@@ -18,7 +18,7 @@ Matrix operates in three phases:
 
 **1. Compile** — `DagCompiler` reads each component's `requires` (what artifact kinds it needs) and `provides` (what artifact kind it produces). From these declarations it infers edges, detects missing producers, duplicate outputs, duplicate names, and cycles. The result is a validated registry and adjacency map.
 
-**2. Schedule** — `DagScheduler` generates execution batches via `graphlib.TopologicalSorter`. Components within a batch are independent of each other and could run in parallel. Batches execute sequentially.
+**2. Schedule** — `DagScheduler` generates execution batches via `graphlib.TopologicalSorter`. Components within a batch are independent of each other. Batches execute sequentially; within a batch, members run one at a time by default or, with `Orchestrator(concurrency=N)`, up to `N` at once — the ledger order stays batch order either way.
 
 **3. Execute** — `Orchestrator` drives each component in order. Before a component runs, all its upstream artifacts are available in the `Construct` (an append-only ledger). Each component returns a `TypedStruct`; the Orchestrator checks its `type_url` against the component's declared `provides`, then wraps it in an `Artifact` and appends it.
 
@@ -60,7 +60,24 @@ This means any domain can map onto Matrix:
 
 Same runtime. Different vocabularies.
 
-### Structural Typing
+### Agents are composed, not constructed
+
+The same move that keeps the runtime domain-free applies to agents. An agent used to be one
+object that knew its prompt, its model, its tools, its permission mode and its working
+directory — five decisions with two different owners, fused. Matrix splits them:
+
+- an **AgentDefinition** is what the agent *is* — prompt, tools, model, turn budget. Data.
+  The same shape as a Claude Code agent file, so a plugin's agents are definitions as-is.
+- an **AgentRuntime** is *where it runs* — the Claude Agent SDK with a permission mode and a
+  sandbox directory, a single model call through hardline, a mock. Deployment.
+
+Binding the two is composition, done from config. One definition runs on several runtimes —
+the comparison an evaluation needs — and one runtime serves a bench of definitions. A
+runtime that cannot honour part of a definition refuses rather than quietly running a
+different agent: the model runtime has no tool loop, so a definition that declares tools is
+an error there, not a silent downgrade.
+
+## Structural Typing
 
 The `Component` protocol uses `typing.Protocol` — structural subtyping. Applications implement the shape without importing Matrix. No base classes, no inheritance, no framework coupling.
 
@@ -68,15 +85,16 @@ The `Component` protocol uses `typing.Protocol` — structural subtyping. Applic
 # This IS a Component — the only import is TypedStruct, for the return value
 from matrix import TypedStruct
 
+
 class MyThing:
     name = "my-thing"
     requires = frozenset({"upstream.data"})
     provides = "my-thing.output"
 
     async def run(self, construct):
-        upstream = construct.last("upstream.data")   # → Artifact
+        upstream = construct.last("upstream.data")  # → Artifact
         return TypedStruct(
-            type_url="my-thing.output",              # must equal self.provides
+            type_url="my-thing.output",  # must equal self.provides
             value=transform(upstream.data),
         )
 ```
@@ -109,7 +127,7 @@ Topology errors are caught at compile time, before any component runs:
 |-----------|---------------|
 | A component runtime | A workflow engine (no retries, no persistence) |
 | Kind-agnostic | Domain-aware (no probes, sensors, hypotheses) |
-| Sequential execution | Parallel execution (batches are sequential currently) |
+| Batch-sequential, optionally concurrent within a batch (`Orchestrator(concurrency=N)`) | Fully parallel execution |
 | Compile-time validation | Runtime validation (no dynamic re-wiring) |
 | A library | A service (no daemon, no API) |
 

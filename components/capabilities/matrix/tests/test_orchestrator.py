@@ -3,7 +3,7 @@
 import pytest
 from matrix_helpers import FakeComponent
 
-from matrix import Artifact, Construct, ContractError, Orchestrator, TypedStruct
+from matrix import Artifact, ComponentError, Construct, ContractError, Orchestrator, TypedStruct
 
 
 class ReadingComponent:
@@ -84,14 +84,18 @@ class TestOrchestrator:
 
         assert construct["sensor.grade"] == "read:hello"
 
-    async def test_error_propagation(self):
-        """Component exception propagates to caller."""
+    async def test_error_names_component_keeps_cause_and_partial_ledger(self):
+        """A failing component raises ComponentError; what ran before it is not lost."""
         probe = FakeComponent("probe", frozenset(), "probe.response")
         fail = FailingComponent("fail", frozenset({"probe.response"}), "fail.output")
 
         orch = Orchestrator([probe, fail])
-        with pytest.raises(ValueError, match="fail failed"):
+        with pytest.raises(ComponentError, match="'fail' failed: ValueError: fail failed") as e:
             await orch.run()
+
+        assert e.value.component == "fail"
+        assert isinstance(e.value.__cause__, ValueError)
+        assert e.value.construct.kinds() == frozenset({"probe.response"})
 
     async def test_empty_dag(self):
         """No components -> empty construct."""

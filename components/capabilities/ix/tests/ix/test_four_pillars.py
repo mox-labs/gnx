@@ -1,13 +1,13 @@
 """Tests for core engine — generic, eval-free.
 
-Uses pure-Python dummy implementations to prove the engine
-works with any domain, not just eval. Registers a DummyAgent
-in the ComponentRegistry to exercise the unified type → registry path.
+Uses pure-Python dummy implementations to prove the trial DAG works with any domain, not
+just eval: the agent factory hands back a DummyAgent whose "response" is an int.
 """
 
-from matrix import Artifact, Component, ComponentRegistry, Construct, Orchestrator
+from matrix import Artifact, Component, Construct, Orchestrator
 
 from ix.adapters._out.components import ProbeNode, SensorNode, SubjectNode, TrialNode
+from ix.domain import type_urls
 from ix.domain.ports import Sensor
 from ix.domain.types import Probe, Reading, Subject, Trial
 
@@ -57,22 +57,23 @@ def _probes(*values: int) -> list[Probe]:
     return [Probe(id=str(v), prompt=str(v)) for v in values]
 
 
-def _subject(runtime_type: str = "dummy") -> Subject:
-    return Subject(name="test", config={"runtime": {"type": runtime_type}})
+def _subject() -> Subject:
+    return Subject(name="test")
 
 
-def _registry(agent_factory=None) -> ComponentRegistry:
-    registry = ComponentRegistry()
-    factory = agent_factory or (lambda **kw: DummyAgent())
-    registry.register("matrix.agent.dummy", factory)
-    return registry
+def _factory(agent=None):
+    return lambda subject, trial_index, run_index=0: agent or DummyAgent()
+
+
+def _construct(*items):
+    construct = Construct()
+    for kind, data in items:
+        construct.append(Artifact.create(type_url=kind, producer="test", data=data))
+    return construct
 
 
 def _construct_with_trial(trial: Trial) -> Construct:
-    """Pre-populate a Construct with one trial for isolated SensorNode tests."""
-    construct = Construct()
-    construct.append(Artifact.create(type_url="trial.observation", producer="trial", data=trial))
-    return construct
+    return _construct((type_urls.TRIAL, trial))
 
 
 # --- Protocol conformance ---
@@ -89,7 +90,7 @@ class TestProtocolConformance:
         assert isinstance(SubjectNode(_subject()), Component)
 
     def test_trial_node_satisfies_component(self):
-        assert isinstance(TrialNode(_registry()), Component)
+        assert isinstance(TrialNode(_factory()), Component)
 
     def test_sensor_node_satisfies_component(self):
         assert isinstance(SensorNode(sensor=ThresholdSensor()), Component)
@@ -101,35 +102,16 @@ class TestProtocolConformance:
 class TestTrialNode:
     async def test_produces_trial_with_response(self):
         """DummyAgent: int(prompt) * 10."""
-        reg = _registry()
-        probe = _probes(5)[0]
+        construct = _construct((type_urls.PROBE, _probes(5)[0]), (type_urls.SUBJECT, _subject()))
+        result = await TrialNode(_factory(), trial_index=0).run(construct)
 
-        construct = Construct()
-        construct.append(Artifact.create(type_url="probe.stimulus", producer="probe", data=probe))
-        construct.append(
-            Artifact.create(type_url="subject.config", producer="subject", data=_subject().config)
-        )
-
-        node = TrialNode(registry=reg, trial_index=0)
-        result = await node.run(construct)
-
-        assert result.type_url == "trial.observation"
+        assert result.type_url == type_urls.TRIAL
         assert result.value.response == 50
         assert result.value.probe_id == "5"
 
     async def test_captures_errors(self):
-        reg = _registry(agent_factory=lambda **kw: FailingAgent())
-
-        construct = Construct()
-        construct.append(
-            Artifact.create(type_url="probe.stimulus", producer="probe", data=_probes(1)[0])
-        )
-        construct.append(
-            Artifact.create(type_url="subject.config", producer="subject", data=_subject().config)
-        )
-
-        node = TrialNode(registry=reg, trial_index=0)
-        result = await node.run(construct)
+        construct = _construct((type_urls.PROBE, _probes(1)[0]), (type_urls.SUBJECT, _subject()))
+        result = await TrialNode(_factory(FailingAgent()), trial_index=0).run(construct)
 
         assert result.value.error == "SUT crashed"
         assert result.value.response is None
@@ -145,7 +127,7 @@ class TestSensorNode:
         node = SensorNode(sensor=ThresholdSensor(threshold=15))
         result = await node.run(construct)
 
-        assert result.type_url == "sensor.reading"
+        assert result.type_url == type_urls.READINGS
         assert len(result.value) == 1
         assert result.value[0].passed is True
         assert result.value[0].score == 50.0
@@ -176,7 +158,6 @@ class TestSensorNode:
 class TestFullDag:
     async def test_four_node_dag(self):
         """Orchestrator runs the full inner DAG with DummyAgent."""
-        reg = _registry()
         probe = _probes(3)[0]  # DummyAgent returns 30
         subject = _subject()
         sensor = ThresholdSensor(threshold=15)
@@ -185,34 +166,33 @@ class TestFullDag:
             [
                 ProbeNode(probe),
                 SubjectNode(subject),
-                TrialNode(registry=reg, trial_index=0),
+                TrialNode(_factory(), trial_index=0),
                 SensorNode(sensor),
             ]
         )
         construct = await orchestrator.run()
 
-        trial = construct["trial.observation"]
+        trial = construct[type_urls.TRIAL]
         assert trial.response == 30
 
-        readings = construct["sensor.reading"]
+        readings = construct[type_urls.READINGS]
         assert len(readings) == 1
         assert readings[0].passed is True  # 30 > 15
         assert readings[0].score == 30.0
 
     async def test_below_threshold_probe(self):
         """Probe with value 1 → response 10 → fails threshold 15."""
-        reg = _registry()
 
         orchestrator = Orchestrator(
             [
                 ProbeNode(_probes(1)[0]),
                 SubjectNode(_subject()),
-                TrialNode(registry=reg, trial_index=0),
+                TrialNode(_factory(), trial_index=0),
                 SensorNode(ThresholdSensor(threshold=15)),
             ]
         )
         construct = await orchestrator.run()
 
-        readings = construct["sensor.reading"]
+        readings = construct[type_urls.READINGS]
         assert readings[0].passed is False
         assert readings[0].score == 10.0

@@ -2,7 +2,8 @@
 
 from matrix_helpers import FakeComponent
 
-from matrix import DagCompiler, DagScheduler
+from matrix.domain.compiler import DagCompiler
+from matrix.domain.scheduler import DagScheduler
 
 
 def _compile(*components):

@@ -8,9 +8,9 @@ from __future__ import annotations
 import graphlib
 from typing import Any, Protocol, runtime_checkable
 
+from matrix.domain.errors import CompilationError
 
-class CompilationError(Exception):
-    """Raised when topology validation fails."""
+__all__ = ["CompilationError", "DagCompiler"]
 
 
 @runtime_checkable

@@ -1,84 +1,95 @@
 # Security — matrix
 
-matrix composes agent runtimes and runs component DAGs. It holds no secrets of its own and
-opens no listening socket, but it is the package that **decides how much authority an agent
-session gets**. That makes its defaults, not its code paths, the interesting surface.
+matrix composes agents and runs component DAGs. It holds no secrets of its own and opens no
+listening socket, but it is the package that **decides how much authority an agent session
+gets**. That makes its defaults and its config validation, not its code paths, the
+interesting surface.
 
 Audience: anyone embedding matrix, and anyone reviewing a config that reaches it.
 
 ## Blast radius
 
-A `ClaudeAgent` run launches a Claude Agent SDK session as a subprocess. Inside that
-session the agent may read and write files, run commands, and reach the network — bounded
-only by `permission_mode`, `allowed_tools`, and `cwd`. An `AnthropicAgent` run is a plain
-API call and carries no local authority.
+A `claude-sdk` runtime launches a Claude Agent SDK session as a subprocess. Inside that
+session the agent may read and write files, run commands, and reach the network — bounded by
+the runtime's `permission_mode` and `cwd` and by the definition's `tools`.
+
+A `model` runtime makes one model call through hardline and carries no local authority; it
+refuses any definition that declares tools rather than run it without them. Where that call's
+data goes is decided by the hardline registry — see hardline/SECURITY.md.
 
 ## Trust boundaries
 
-### 1. Component config → agent authority
+### 1. Config → agent authority
 
-`ComponentRegistry.create(type_url, config)` splats a config dict into a factory, and the
-factory into `ClaudeAgent(**kwargs)`. The registry performs **no validation**, so every
-authority-bearing keyword — `permission_mode`, `allowed_tools`, `cwd`, `setting_sources` —
-arrives from whatever produced that dict: an `experiment.yaml`, a CLI flag, a caller.
+`compose` builds runtimes from `matrix.runtimes.<name>` and binds agents from
+`matrix.agents.<name>`. Every authority-bearing value — `permission_mode`, `cwd`,
+`setting_sources`, `plugins`, a definition's `tools` — arrives from config: a `matrix:`
+section, an ix `experiment.yaml`, a markdown agent file.
 
-**A matrix config file is a capability grant. Treat it like one.**
+**A matrix config file, and every agent file in a `definitions` directory, is a capability
+grant. Review them like one.**
 
-What constrains it: `permission_mode` is a `Literal` enumerated at runtime with
-`get_args`, so an unrecognised mode raises at construction naming the legal set rather
-than reaching the SDK as an unknown string
-(`adapters/_out/runtime/claude.py`). Selecting `bypassPermissions` or `dontAsk`
-logs at WARNING, so a permissive run is visible in the output and not only in the config.
+What constrains it: each runtime's options are validated through its own typed config
+(`register_typed`), with unknown keys rejected. `permission_mode` is a `Literal`, so an
+unrecognised mode fails at composition naming the legal set. Selecting `bypassPermissions`
+or `dontAsk` logs at WARNING, so a permissive run is visible in the output, not only in the
+config. Relative plugin paths are resolved against the runtime's `cwd`, never the process's.
 
-What does not constrain it: nothing validates `cwd` or `allowed_tools`. A config naming
-`cwd: /` gets `/`.
+What does not constrain it: nothing restricts `cwd`. A config naming `cwd: /` gets `/`.
 
 ### 2. Ambient environment → session behaviour
 
-`ClaudeAgent.run` pops `CLAUDECODE` from `os.environ` for the duration of the call and
-restores it afterwards (`claude.py`). This is process-global mutation: **concurrent
-callers in the same process share it**. Runs are serialised per agent, but an unrelated
-thread reading `CLAUDECODE` during a run sees it absent.
+The `claude-sdk` runtime does not touch `os.environ`. It used to pop `CLAUDECODE` for the
+duration of a call (M-3); the installed SDK (`claude-agent-sdk >= 0.1.51`) now strips
+`CLAUDECODE` from the child's own environment itself, so the runtime has nothing left to do
+there — see M-3, fixed.
 
-`setting_sources=[]` is the hermetic setting — no ambient `~/.claude` or project plugin
-config leaks into the subprocess. Any eval that claims reproducibility should set it.
+`setting_sources: []` is the hermetic setting — no ambient `~/.claude` or project plugin
+config leaks into the subprocess. Any evaluation that claims reproducibility should set it.
 
-### 3. API credentials
+### 3. Declared reads
 
-`anthropic_agent.py` resolves a key from `~/.secrets/claude-api`, falling back to
-`ANTHROPIC_API_KEY`. Keys are never logged and never enter an `Artifact`. Nothing in
-matrix writes a credential to disk.
+Each DAG component is handed a view of the ledger restricted to its `requires`. A component
+that reads an undeclared kind raises `ContractError`. This is a correctness boundary, not a
+trust boundary: a component is in-process Python and can reach anything the process can.
 
 ## Findings
 
 ### M-1 — `permission_mode` defaulted to `bypassPermissions` (fixed 2026-08-17)
 
-`ClaudeAgent.__init__` took `permission_mode: str = "bypassPermissions"`. A tree-wide
-search confirmed **no caller overrode it**, so every agent-backed component in the stack
-ran with permissions bypassed — a decision made by a constant in one file rather than by
-anyone's configuration.
+The Claude adapter took `permission_mode: str = "bypassPermissions"` and no caller overrode
+it, so every agent-backed component ran with permissions bypassed — a decision made by a
+constant rather than by configuration. Now `"default"`; bypass must be requested explicitly
+and is logged at WARNING.
 
-Fixed: `DEFAULT_PERMISSION_MODE = "default"`. An unattended harness may legitimately need
-bypass, but it now has to ask, which puts the choice in the config and in the run record.
+### M-2 — an empty tool list granted the full toolset (fixed 2026-09-24)
 
-Impact if you depended on the old behaviour: a harness that previously ran unattended will
-now block on confirmation. Set `permission_mode: bypassPermissions` explicitly and accept
-the WARNING line.
+The Claude adapter passed `tools=self._allowed_tools or None`. `[]` — the value meaning *no
+tools* — is falsy, so it collapsed to `None`, which the SDK reads as *the default toolset*.
+An agent configured with no tools was given all of them.
 
-### M-2 — unvalidated mode strings reached the SDK (fixed 2026-08-17)
+Fixed: `AgentDefinition.tools` distinguishes `None` (runtime default) from `()` (no tools),
+and the runtime passes `()` as `[]`, which the installed SDK (0.2.139) documents as "disable
+all built-in tools". Regression tests: `test_claude_runtime.py::TestToolsNeverFailOpen`.
 
-`permission_mode` was typed `str`, so a typo in a YAML config (`bypass_permissions`)
-passed straight through to the SDK, which may not recognise it. Now a `Literal` checked
-against `get_args` at construction.
+### M-3 — `CLAUDECODE` is mutated process-wide (fixed 2026-10-02)
+
+The runtime used to pop `CLAUDECODE` from `os.environ` for the duration of a call, so
+concurrent `claude-sdk` runs in one process raced on the variable. Closed: `claude-agent-sdk
+>= 0.1.51` (the first release that strips `CLAUDECODE` from the child's own environment
+itself, bisected against PyPI wheels) makes the mutation unnecessary, and the runtime no
+longer touches `os.environ` at all. Concurrent `claude-sdk` runs in one process are safe
+with that SDK version installed.
 
 ## Not covered
 
 - matrix does not sandbox agent sessions. Isolation is the caller's job — a container, a
-  scratch `cwd`, or a restricted `allowed_tools` list.
-- matrix does not redact agent output. An agent that reads a secret and prints it puts
-  that secret in an `Artifact`.
+  scratch `cwd`, or a definition with `tools: []`.
+- matrix does not redact agent output. An agent that reads a secret and prints it puts that
+  secret in an `Artifact` and an `AgentResponse`.
+- Entry-point discovery (`matrix.components`) imports every installed extension at
+  composition. Installing a package is trusting it.
 
 ## Reporting
 
-Open an issue on the gnx repository. There is no separate embargo channel; this is a
-pre-gen-0 component with no external users.
+Open an issue on the gnx repository. There is no separate embargo channel.
