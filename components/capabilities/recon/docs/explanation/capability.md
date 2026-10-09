@@ -46,7 +46,7 @@ Six concrete capabilities follow from the one thesis.
 
 **Work over datasets larger than the context window.** Query, don't load. The archive holds the data; Claude holds the questions. A literature review across four hundred papers is the same shape as one across forty — the difference is how often Claude refines the query.
 
-**Reproducibility and audit.** The config is a frozen, reviewable artifact. Anyone reading `.cix/recon/<mission>/config.yaml` can see exactly what was collected, from where, with what parameters, at what time. There is no "Claude made a judgment call at step forty-seven that nobody can reconstruct." The judgment calls are in the config, signed by whoever wrote it.
+**Reproducibility and audit.** The config is a frozen, reviewable artifact. Anyone reading `.recon/<mission>/config.yaml` can see exactly what was collected, from where, with what parameters, at what time. There is no "Claude made a judgment call at step forty-seven that nobody can reconstruct." The judgment calls are in the config, signed by whoever wrote it.
 
 **Temporal awareness.** Each run produces a timestamped archive alongside earlier ones. Diff two runs to see what changed. Monitor a GitHub repo's releases week over week. Track an API's state between deploys. The archives are the memory; Claude does the diffing.
 
