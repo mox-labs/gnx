@@ -20,13 +20,13 @@ catalog:
     type: api
     url: https://en.wikipedia.org/w
     rate_limit: { rps: 5, burst: 3 }
-    user_agent: "recon/0.8.0 (https://github.com/mox-labs/cix)"
+    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
 
   - name: wikidata
     type: api
     url: https://query.wikidata.org
     rate_limit: { rps: 1, burst: 1 }
-    user_agent: "recon/0.8.0 (https://github.com/mox-labs/cix)"
+    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
     timeout: 90
 
 collectors:

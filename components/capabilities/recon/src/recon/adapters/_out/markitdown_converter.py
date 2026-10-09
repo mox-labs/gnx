@@ -35,3 +35,20 @@ class MarkitdownConverter:
             title=(getattr(result, "title", "") or ""),
             text=(getattr(result, "text_content", "") or ""),
         )
+
+
+def markitdown_path(path: str) -> str:
+    """The ``$markitdown`` transform: convert a local file the record names to markdown.
+
+    Handles PDF, DOCX, PPTX, XLSX, EPub, images (OCR), audio (transcription),
+    CSV, JSON, XML, ZIP, HTML. Returns an empty string on any failure — a transform is a
+    best-effort leaf of the pipeline, and one unreadable file must not fail the table.
+    Registered under the entry-point group ``recon.transforms`` as ``markitdown``.
+    """
+    try:
+        from markitdown import MarkItDown
+
+        result = MarkItDown().convert(path)
+        return getattr(result, "text_content", "") or ""
+    except Exception:
+        return ""

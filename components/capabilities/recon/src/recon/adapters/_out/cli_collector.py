@@ -4,46 +4,29 @@ Uses subprocess.Popen with a streaming stdout pipe so large outputs (e.g.
 `rg --json` across a huge tree) don't materialize in memory before parsing.
 Each stdout line is parsed and yielded as a record; memory usage is O(1) in
 the number of records produced.
+
+Registered as the built-in collector type ``cli`` (entry-point group ``recon.collectors``).
 """
 
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
-from recon.application.recon import substitute
-from recon.application.transforms import apply_normalize
-from recon.domain.exceptions import CollectionError
+from recon.adapters._out.parsing import parse_line
+from recon.application.transforms import BUILTIN_TRANSFORMS, apply_normalize
+from recon.domain.collector import CollectorType
+from recon.domain.exceptions import CollectionError, Problem
+from recon.domain.substitution import substitute
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
 
+    from recon.domain.capture import CaptureLog
+    from recon.domain.collector import Transform
     from recon.domain.models import CollectorEntry, SourceEntry
-
-
-class ShellRunner(Protocol):
-    """The port: given a command, yield stdout lines as they arrive.
-
-    Implementations own the subprocess lifecycle. Timeout raises
-    CollectionError; non-zero exit codes (other than 0/1) raise too.
-
-    When `capture_path` is provided, each stdout line is also written to
-    that file as it flows — a streaming tee. Memory stays O(1).
-    `capture_exit` is filled with the process exit code at the end (for
-    metadata capture by the caller).
-    """
-
-    def run_lines(
-        self,
-        cmd: str,
-        cwd: Path | None,
-        timeout: float,
-        *,
-        capture_path: Path | None = None,
-        capture_exit: list[int] | None = None,
-    ) -> Iterator[str]: ...
+    from recon.domain.shell import ShellRunner
 
 
 class PopenRunner:
@@ -101,14 +84,14 @@ class PopenRunner:
                 msg = f"Command timed out after {timeout}s: {cmd}"
                 raise CollectionError(msg) from exc
 
+            if capture_exit is not None:
+                capture_exit.append(proc.returncode)
+
             if proc.returncode not in (0, 1):
                 err = (stderr or "").strip()
                 detail = f"\n{err}" if err else ""
                 msg = f"Command failed (exit {proc.returncode}): {cmd}{detail}"
                 raise CollectionError(msg)
-
-            if capture_exit is not None:
-                capture_exit.append(proc.returncode)
         finally:
             if tee_file is not None:
                 try:
@@ -128,60 +111,39 @@ class PopenRunner:
                 pass
 
 
-def _parse_line(line: str, index: int) -> dict[str, Any] | None:
-    """Parse one stdout line. JSON object wins; otherwise {line_number, line}."""
-    stripped = line.strip()
-    if not stripped:
-        return None
-    try:
-        obj = json.loads(stripped)
-        if isinstance(obj, dict):
-            return obj
-    except json.JSONDecodeError:
-        pass
-    return {"line_number": index, "line": line}
-
-
 class CliCollector:
     """Runs shell commands, yields parsed stdout records as they stream."""
 
-    def __init__(self, runner: ShellRunner | None = None) -> None:
+    def __init__(
+        self,
+        runner: ShellRunner | None = None,
+        transforms: Mapping[str, Transform] = BUILTIN_TRANSFORMS,
+    ) -> None:
         self._runner = runner if runner is not None else PopenRunner()
+        self._transforms = transforms
 
     def collect(
         self,
         entry: CollectorEntry,
         source: SourceEntry | None,
         *,
-        raw_store: Any | None = None,
+        captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
         if not entry.run:
             msg = f"Collector '{entry.name}' has type=cli but no 'run' field"
-            raise CollectionError(msg)
+            raise CollectionError(msg, kind="config")
 
-        variables: dict[str, str] = {}
-        cwd: Path | None = None
-        if source:
-            variables["url"] = source.url
-            source_path = Path(source.url)
-            if source_path.is_dir():
-                cwd = source_path
+        cwd = _cwd(source)
         timeout = source.timeout if source else 300.0
+        commands = _commands(entry, source)
 
-        patterns = list(entry.patterns) if entry.patterns else [None]
-
-        # Raw capture: tee each invocation's stdout into a single body file
-        # per collector entry (patterns concatenate). Path is None when no store.
-        capture_path = raw_store.stream_path(entry.name) if raw_store is not None else None
-        last_cmd = ""
+        # Raw capture: tee every invocation's stdout into one body per collector entry
+        # (patterns concatenate). Path is None when the mission does not preserve raw.
+        capture_path = captures.stream_path(entry.name) if captures is not None else None
         exit_codes: list[int] = []
 
         try:
-            for pattern in patterns:
-                cmd_vars = {**variables, "pattern": pattern} if pattern is not None else variables
-                cmd = substitute(entry.run, cmd_vars)
-                last_cmd = cmd
-
+            for pattern, cmd in commands:
                 index = 0
                 for line in self._runner.run_lines(
                     cmd,
@@ -191,22 +153,76 @@ class CliCollector:
                     capture_exit=exit_codes,
                 ):
                     index += 1
-                    record = _parse_line(line, index)
+                    record = parse_line(line, index)
                     if record is None:
                         continue
                     if pattern is not None:
                         record["_pattern"] = pattern
                     if entry.normalize:
-                        record = apply_normalize(record, entry.normalize)
+                        record = apply_normalize(record, entry.normalize, self._transforms)
                     yield record
         finally:
-            if raw_store is not None:
+            if captures is not None:
                 # Finalize even on mid-iteration abandonment — preserves partial
                 # captures for audit.
-                raw_store.finalize_stream(
+                captures.finalize_stream(
                     entry.name,
-                    command=last_cmd,
-                    cwd=str(cwd) if cwd else None,
-                    exit_code=exit_codes[-1] if exit_codes else -1,
-                    patterns=[p for p in patterns if p is not None] or None,
+                    source=source.name if source else None,
+                    kind="cli",
+                    request={
+                        "commands": [cmd for _pattern, cmd in commands],
+                        "cwd": str(cwd) if cwd else None,
+                        "exit_codes": exit_codes,
+                    },
+                    status=exit_codes[-1] if exit_codes else None,
+                    content_type="text/plain",
                 )
+
+
+def _cwd(source: SourceEntry | None) -> Path | None:
+    if source is None:
+        return None
+    path = Path(source.url)
+    return path if path.is_dir() else None
+
+
+def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[str | None, str]]:
+    """(pattern, substituted command) for each invocation the entry makes."""
+    if not entry.run:
+        return []
+    variables = {"url": source.url} if source else {}
+    patterns: list[str | None] = list(entry.patterns) if entry.patterns else [None]
+    out = []
+    for pattern in patterns:
+        cmd_vars = {**variables, "pattern": pattern} if pattern is not None else variables
+        out.append((pattern, substitute(entry.run, cmd_vars)))
+    return out
+
+
+# --- Registration ---
+
+
+def _check(entry: CollectorEntry) -> list[Problem]:
+    if not entry.run:
+        return [Problem("run", "a cli collector needs run: (the shell command)")]
+    if "{pattern}" in entry.run and not entry.patterns:
+        return [Problem("patterns", "run: uses {pattern} but no patterns: are listed")]
+    return []
+
+
+def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
+    # Effects are declared, not inspected: the command may do anything a shell can.
+    # The plan shows the exact commands so a reviewer can read them before they run.
+    return {
+        "commands": [cmd for _pattern, cmd in _commands(entry, source)],
+        "cwd": source.url if source is not None and source.type == "local" else None,
+    }
+
+
+collector_type = CollectorType(
+    create=lambda ctx: CliCollector(transforms=ctx.transforms),
+    effects=frozenset({"subprocess"}),
+    summary="shell command → stdout lines (JSON objects or text) → records",
+    check=_check,
+    describe=_describe,
+)

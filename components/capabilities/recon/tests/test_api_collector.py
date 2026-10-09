@@ -6,11 +6,14 @@ so tests pass fakes directly.
 
 import pytest
 
-from recon.adapters._out.api_collector import ApiCollector, _ensure_list, _extract
-from recon.application.recon import find_unresolved, substitute
+from recon.adapters._out.api_collector import ApiCollector
+from recon.adapters._out.parsing import ensure_list as _ensure_list
+from recon.adapters._out.parsing import extract as _extract
+from recon.application.captures import REDACTED, FilesystemCaptureLog
 from recon.domain.exceptions import CollectionError
 from recon.domain.http import HttpResponse
 from recon.domain.models import AuthConfig, CollectorEntry, SourceEntry
+from recon.domain.substitution import find_unresolved, substitute
 
 
 class _FakeRequester:
@@ -86,33 +89,69 @@ class TestEnsureList:
 
 
 class TestResolveAuth:
-    def _collector(self, env: dict) -> ApiCollector:
-        return ApiCollector(_FakeRequester(), env=env)
+    """Auth is observed where it lands: the headers and query params sent to the Requester."""
+
+    @staticmethod
+    def _sent(auth: AuthConfig, env: dict) -> dict:
+        req = _FakeRequester(_ok_response('{"data": []}'))
+        src = SourceEntry(name="s", url="https://x", auth=auth)
+        entry = CollectorEntry(name="t", type="api", source="s", endpoint="/q", params={"q": "a"})
+        list(ApiCollector(req, env=env).collect(entry, src))
+        return req.calls[0]
 
     def test_header_no_prefix(self):
-        src = SourceEntry(
-            name="s", url="https://x", auth=AuthConfig(header="x-api-key", env="FAKE_KEY")
-        )
-        col = self._collector({"FAKE_KEY": "abc123"})
-        assert col._resolve_auth(src) == {"x-api-key": "abc123"}
+        sent = self._sent(AuthConfig(header="x-api-key", env="FAKE_KEY"), {"FAKE_KEY": "abc123"})
+        assert sent["headers"]["x-api-key"] == "abc123"
 
     def test_header_with_prefix(self):
-        src = SourceEntry(
-            name="s",
-            url="https://x",
-            auth=AuthConfig(header="Authorization", env="FAKE_KEY", prefix="Bearer "),
-        )
-        col = self._collector({"FAKE_KEY": "fc-xyz"})
-        assert col._resolve_auth(src) == {"Authorization": "Bearer fc-xyz"}
+        auth = AuthConfig(header="Authorization", env="FAKE_KEY", prefix="Bearer ")
+        sent = self._sent(auth, {"FAKE_KEY": "fc-xyz"})
+        assert sent["headers"]["Authorization"] == "Bearer fc-xyz"
 
     def test_empty_env_returns_no_headers(self):
-        src = SourceEntry(
-            name="s",
-            url="https://x",
-            auth=AuthConfig(header="Authorization", env="FAKE_KEY", prefix="Bearer "),
+        auth = AuthConfig(header="Authorization", env="FAKE_KEY", prefix="Bearer ")
+        sent = self._sent(auth, {})  # FAKE_KEY absent
+        assert "Authorization" not in sent["headers"]
+
+    def test_param_sends_the_key_as_a_query_parameter(self):
+        """auth.param was declared and ignored before 0.9.0: OpenAlex-style api_key."""
+        sent = self._sent(AuthConfig(param="api_key", env="FAKE_KEY"), {"FAKE_KEY": "k-123"})
+        assert sent["params"] == {"q": "a", "api_key": "k-123"}
+        assert "api_key" not in sent["headers"]
+
+    def test_param_with_prefix_and_header_together(self):
+        auth = AuthConfig(header="x-api-key", param="key", env="FAKE_KEY", prefix="p-")
+        sent = self._sent(auth, {"FAKE_KEY": "v"})
+        assert sent["params"]["key"] == "p-v"
+        assert sent["headers"]["x-api-key"] == "p-v"
+
+    def test_param_unset_env_sends_no_parameter(self):
+        sent = self._sent(AuthConfig(param="api_key", env="FAKE_KEY"), {})
+        assert "api_key" not in sent["params"]
+
+    def test_param_key_never_reaches_the_capture_log(self, tmp_path):
+        """The response URL carries the query string — and with auth.param, the key."""
+        resp = HttpResponse(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            body=b"{}",
+            text="{}",
+            url="https://x/q?q=a&api_key=k-SECRET",
+            content_type="application/json",
         )
-        col = self._collector({})  # FAKE_KEY absent
-        assert col._resolve_auth(src) == {}
+        req = _FakeRequester(resp)
+        src = SourceEntry(name="s", url="https://x", auth=AuthConfig(param="api_key", env="K"))
+        entry = CollectorEntry(name="t", type="api", source="s", endpoint="/q")
+        log = FilesystemCaptureLog(tmp_path)
+        list(ApiCollector(req, env={"K": "k-SECRET"}).collect(entry, src, captures=log))
+
+        import json
+        from urllib.parse import parse_qs, urlsplit
+
+        text = log.log_path.read_text()
+        assert "k-SECRET" not in text
+        logged = urlsplit(json.loads(text)["request"]["url"])
+        assert parse_qs(logged.query) == {"q": ["a"], "api_key": [REDACTED]}
 
 
 class TestCollectThroughRequester:
