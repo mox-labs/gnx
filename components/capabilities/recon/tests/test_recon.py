@@ -12,11 +12,12 @@ from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.cli_collector import CliCollector
 from recon.adapters._out.http_requester import HttpxRequester
 from recon.adapters._out.web_collector import WebCollector
-from recon.application.recon import run, substitute
+from recon.application.recon import failure_kind, run
 from recon.application.utilization import RateLimiter
 from recon.domain.converters import ConversionResult
 from recon.domain.exceptions import ReconError
 from recon.domain.models import ReconConfig
+from recon.domain.substitution import substitute
 
 
 class _NoOpConverter:
@@ -171,10 +172,10 @@ class TestReconRun:
             mission.mkdir()
             archive, _ = run(config, _collectors(), mission)
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
-            assert meta["collectors"][0]["status"] == "error"
-            assert "nonexistent" in meta["collectors"][0]["error"]
+            assert meta["tables"][0]["status"] == "error"
+            assert "nonexistent" in meta["tables"][0]["error"]["message"]
             # Second collector still ran
-            assert meta["collectors"][1]["status"] == "ok"
+            assert meta["tables"][1]["status"] == "ok"
 
     def test_meta_yaml_content(self):
         config = ReconConfig.model_validate(
@@ -190,9 +191,45 @@ class TestReconRun:
             archive, _ = run(config, _collectors(), mission)
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
             assert "timestamp" in meta
-            assert meta["collectors"][0]["name"] == "meta-test"
-            assert meta["collectors"][0]["status"] == "ok"
-            assert "records" in meta["collectors"][0]
+            assert meta["tables"][0]["name"] == "meta-test"
+            assert meta["tables"][0]["status"] == "ok"
+            assert "records" in meta["tables"][0]
+
+    def test_meta_format_2_declares_types_and_provenance(self):
+        """meta.yaml v2: recon version, config sha256, and per table its type_url."""
+        from recon import __version__
+
+        config = ReconConfig.model_validate(
+            {
+                "collectors": [
+                    {"name": "plain", "type": "cli", "run": "echo '{\"a\": 1}'"},
+                    {
+                        "name": "typed",
+                        "type": "cli",
+                        "run": "echo '{\"a\": 1}'",
+                        "type_url": "acme.papers.v1.hit",
+                    },
+                    {"name": "bad", "type": "cli", "run": "exit 2"},
+                ],
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            mission = Path(tmp) / "m"
+            mission.mkdir()
+            archive, _ = run(config, _collectors(), mission, config_sha256="ab" * 32)
+            meta = yaml.safe_load((archive / "meta.yaml").read_text())
+            records = [json.loads(x) for x in (archive / "typed.jsonl").read_text().splitlines()]
+
+        assert meta["format_version"] == 2
+        assert meta["recon_version"] == __version__
+        assert meta["config_sha256"] == "ab" * 32
+        tables = {t["name"]: t for t in meta["tables"]}
+        assert tables["plain"]["type_url"] == "recon.v1.records"
+        assert tables["typed"]["type_url"] == "acme.papers.v1.hit"
+        assert tables["typed"]["records"] == 1 and "seconds" in tables["typed"]
+        assert tables["bad"]["error"]["kind"] == "collection"
+        assert "exit 2" in tables["bad"]["error"]["message"]
+        assert records == [{"a": 1}], "records stay as normalized: no injected type fields"
 
     def test_collector_error_recorded(self):
         config = ReconConfig.model_validate(
@@ -208,8 +245,8 @@ class TestReconRun:
             mission.mkdir()
             archive, _ = run(config, _collectors(), mission)
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
-            assert meta["collectors"][0]["status"] == "error"
-            assert meta["collectors"][1]["status"] == "ok"
+            assert meta["tables"][0]["status"] == "error"
+            assert meta["tables"][1]["status"] == "ok"
             assert (archive / "ok.jsonl").exists()
 
     def test_archive_directory_structure(self):
@@ -241,8 +278,8 @@ class TestReconRun:
             mission.mkdir()
             archive, _ = run(config, {}, mission)  # empty registry
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
-            assert meta["collectors"][0]["status"] == "error"
-            assert "No collector registered" in meta["collectors"][0]["error"]
+            assert meta["tables"][0]["status"] == "error"
+            assert "No collector registered" in meta["tables"][0]["error"]["message"]
 
     def test_empty_collector_output(self):
         """Empty records get _empty sentinel."""
@@ -332,7 +369,7 @@ class TestIncompleteSentinel:
 
 class TestPreserveRaw:
     def test_disabled_by_default(self):
-        """preserve_raw: false → no raw/ subdir in archive."""
+        """preserve_raw: false → no capture log and no raw/ in the archive."""
         config = ReconConfig.model_validate(
             {"collectors": [{"name": "t", "type": "cli", "run": "echo '{\"a\": 1}'"}]}
         )
@@ -341,12 +378,11 @@ class TestPreserveRaw:
             mission.mkdir()
             archive, _ = run(config, _collectors(), mission)
             assert not (archive / "raw").exists()
+            assert not (archive / "captures.jsonl").exists()
 
-    def test_cli_raw_captured_with_hash(self):
-        """preserve_raw: true → stdout lands in raw/<name>/body + meta.yaml w/ sha256."""
+    def test_cli_stdout_is_captured_content_addressed(self):
+        """preserve_raw: true → one recon.v1.capture line; body under raw/<sha256>."""
         import hashlib
-
-        import yaml as _yaml
 
         config = ReconConfig.model_validate(
             {
@@ -361,21 +397,21 @@ class TestPreserveRaw:
             mission.mkdir()
             archive, _ = run(config, _collectors(), mission)
 
-            raw_body = archive / "raw" / "echoer" / "body"
-            raw_meta = archive / "raw" / "echoer" / "meta.yaml"
-            assert raw_body.exists()
-            assert raw_meta.exists()
+            lines = (archive / "captures.jsonl").read_text().splitlines()
+            assert len(lines) == 1
+            capture = json.loads(lines[0])
+            body_bytes = (archive / capture["body"]).read_bytes()
 
-            body_bytes = raw_body.read_bytes()
-            assert b'{"a": 1}' in body_bytes
-            assert b'{"a": 2}' in body_bytes
-
-            meta = _yaml.safe_load(raw_meta.read_text())
-            assert meta["type"] == "cli"
-            assert meta["collector"] == "echoer"
-            assert meta["exit_code"] == 0
-            assert meta["bytes"] == len(body_bytes)
-            assert meta["sha256"] == hashlib.sha256(body_bytes).hexdigest()
+        assert body_bytes == b'{"a": 1}\n{"a": 2}\n'
+        sha = hashlib.sha256(body_bytes).hexdigest()
+        assert capture["schema"] == "recon.v1.capture"
+        assert capture["kind"] == "cli"
+        assert capture["collector"] == "echoer"
+        assert capture["status"] == 0
+        assert capture["body"] == f"raw/{sha}"
+        assert capture["sha256"] == sha
+        assert capture["bytes"] == len(body_bytes)
+        assert capture["request"]["commands"] == ["printf '{\"a\": 1}\\n{\"a\": 2}\\n'"]
 
     def test_jsonl_still_produced_alongside_raw(self):
         """Raw doesn't replace processed output — both exist."""
@@ -392,7 +428,45 @@ class TestPreserveRaw:
             mission.mkdir()
             archive, _ = run(config, _collectors(), mission)
             assert (archive / "t.jsonl").exists()
-            assert (archive / "raw" / "t" / "body").exists()
+            assert (archive / "captures.jsonl").exists()
+
+    def test_capture_log_is_not_a_query_table(self):
+        from recon.application.query import available_tables
+
+        config = ReconConfig.model_validate(
+            {"preserve_raw": True, "collectors": [{"name": "t", "type": "cli", "run": "true"}]}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            mission = Path(tmp) / "m"
+            mission.mkdir()
+            archive, _ = run(config, _collectors(), mission)
+            assert available_tables(archive) == ["t"]
+
+
+class TestFailureKind:
+    """The survey exit code is chosen from the failed tables' kinds."""
+
+    @staticmethod
+    def _results(*kinds):
+        return [
+            {"name": f"t{i}", "status": "error", "error": {"kind": k, "message": ""}}
+            if k
+            else {"name": f"t{i}", "status": "ok"}
+            for i, k in enumerate(kinds)
+        ]
+
+    def test_all_ok_is_none(self):
+        assert failure_kind(self._results(None, None)) is None
+
+    def test_all_transient_is_transient(self):
+        assert failure_kind(self._results(None, "transient", "transient")) == "transient"
+
+    def test_any_auth_wins(self):
+        assert failure_kind(self._results("transient", "auth", "collection")) == "auth"
+
+    def test_mixed_is_collection(self):
+        assert failure_kind(self._results("transient", "collection")) == "collection"
+        assert failure_kind(self._results("unknown")) == "collection"
 
 
 class TestEventCallback:

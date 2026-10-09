@@ -6,14 +6,14 @@ You'll learn the **probe → normalize → survey** workflow by doing it. Total 
 
 ## Before you start
 
-Install recon from the cix repo:
+Install recon from the gnx repository:
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/cix#subdirectory=tools/recon"
+uv tool install "recon @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
-(If you're developing inside the cix monorepo, `uv tool install --editable tools/recon` works too — points at your working copy.)
+(Working inside a gnx checkout, `uv tool install --editable components/capabilities/recon` points at your working copy instead.)
 
 Export a GitHub personal access token so the API gives you the real rate limit (5,000/hr instead of 60/hr):
 
@@ -25,11 +25,11 @@ Any fine-grained or classic token with public-repo read is enough.
 
 ## Create the mission
 
-A mission is a named unit of work. Each mission gets its own directory under `.cix/recon/`. Pick a descriptive name:
+A mission is a named unit of work. Each mission gets its own directory under `.recon/` at the root of your git repository (or the current directory outside one). Pick a descriptive name:
 
 ```bash
-mkdir -p .cix/recon/dep-releases
-$EDITOR .cix/recon/dep-releases/config.yaml
+mkdir -p .recon/dep-releases
+$EDITOR .recon/dep-releases/config.yaml
 ```
 
 The config has two sections: **catalog** (where to look) and **collectors** (what to ask). You'll build it in three stages.
@@ -50,7 +50,7 @@ catalog:
       env: GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.8.0 (first-survey walkthrough)"
+    user_agent: "recon/0.9.0 (first-survey walkthrough)"
 
 collectors:
   - name: probe
@@ -64,7 +64,13 @@ collectors:
 
 > **Auth note.** GitHub's API requires the `Bearer ` prefix on the token. `auth.prefix` prepends it to whatever `$GITHUB_TOKEN` holds. Without the prefix, GitHub returns 401. For legacy classic PATs you can also use `prefix: "token "`.
 
-Run it:
+Plan it first. A dry run validates the config and prints what the survey would do (the URL, the effects) without sending anything:
+
+```bash
+recon survey dep-releases --dry-run
+```
+
+If the config has mistakes, every one is listed with its location (`collectors[0].endpoint: ...`) and the command exits 3. If `GITHUB_TOKEN` is unset you get a warning: the request would go out unauthenticated. Then run it:
 
 ```bash
 recon survey dep-releases
@@ -73,19 +79,19 @@ recon survey dep-releases
 You should see:
 
 ```
-Mission: dep-releases — 1 collector(s), 1 source(s)
+Mission: dep-releases — 1 run(s) from 1 collector(s), 1 source(s)
   probe: 1 records
-/Users/you/project/.cix/recon/dep-releases/archive/2026-04-06-143022-123456/
+/Users/you/project/.recon/dep-releases/archive/2026-04-06-143022-123456
 ```
 
-One request, one record, one timestamped archive.
+One request, one record, one timestamped archive. The last line, the archive path, is the only thing on stdout, so it pipes; `--json` prints the whole result instead, every table's status included.
 
 ## Stage 2 — Inspect the raw shape
 
 Look at what GitHub actually returned:
 
 ```bash
-cat .cix/recon/dep-releases/archive/*/probe.jsonl | jq .
+cat .recon/dep-releases/archive/*/probe.jsonl | jq .
 ```
 
 ```json
@@ -128,7 +134,7 @@ Re-run on the same one-record sample:
 
 ```bash
 recon survey dep-releases
-cat .cix/recon/dep-releases/archive/*/probe.jsonl | jq .
+cat .recon/dep-releases/archive/*/probe.jsonl | jq .
 ```
 
 ```json
@@ -160,7 +166,7 @@ catalog:
       env: GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.8.0 (dep-releases monitor)"
+    user_agent: "recon/0.9.0 (dep-releases monitor)"
 
 collectors:
   - name: tokio
@@ -205,7 +211,7 @@ recon survey dep-releases
 ```
 
 ```
-Mission: dep-releases — 3 collector(s), 1 source(s)
+Mission: dep-releases — 3 run(s) from 3 collector(s), 1 source(s)
   tokio: 10 records
   axum: 10 records
   serde: 10 records
@@ -251,13 +257,16 @@ Recon is mechanical, so it runs without Claude present. A cron entry:
 0 * * * * cd /path/to/project && recon survey dep-releases
 ```
 
-Every hour, a fresh timestamped archive lands under `.cix/recon/dep-releases/archive/`. The next time Claude looks, it can diff the latest archive against the previous one to find releases that are new — without needing to have been awake when they shipped.
+Every hour, a fresh timestamped archive lands under `.recon/dep-releases/archive/`. The next time Claude looks, it can diff the latest archive against the previous one to find releases that are new — without needing to have been awake when they shipped.
+
+If a table fails (GitHub down, token expired), the archive is still written and marked incomplete, and the exit code says what kind of failure it was: 5 when every failure was transient (retry later), 6 when any failed on credentials (replace the token), 1 otherwise. `recon status` shows which archives are incomplete.
 
 ## Where to go next
 
 - [search-api-post-body.md](./search-api-post-body.md) — walkthrough for POST-body search APIs (Exa, Firecrawl, Tavily, Serper, Perplexity)
 - `recon --skill` — the full skill Claude loads to author configs
 - `recon --skill -r config-patterns` — domain patterns (code mining, RSS, dependency audits, issue triage, doc surveys, modern search APIs) as complete copy-and-adapt configs
-- `recon --skill -r normalize-spec` — full normalize spec syntax including transforms (`$html2text`, `$inverted_index`, `$pdf2text`, `$join`, `$first`)
+- `recon --skill -r normalize-spec` — full normalize spec syntax including the built-in transforms (`$html2text`, `$inverted_index`, `$join`, `$first`, `$markitdown`)
+- [capture-mcp-results.md](./capture-mcp-results.md) — normalize results an MCP tool already fetched, captured by a Claude Code hook
 - [capability.md](../explanation/capability.md) — the deeper "why" behind the tool
 - The `examples/` directory in the skill bundle — ready-to-run configs for probe-then-survey, code mining, and API monitoring

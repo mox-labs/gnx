@@ -4,7 +4,7 @@
 # correct normalize spec against an unknown API response shape.
 #
 # Usage:
-#   1. Copy the PROBE config (Stage 1) into .cix/recon/<mission>/config.yaml
+#   1. Copy the PROBE config (Stage 1) into .recon/<mission>/config.yaml
 #   2. recon survey <mission>
 #   3. Read the raw JSONL output
 #   4. Copy the NORMALIZE config (Stage 2) into config.yaml — write the

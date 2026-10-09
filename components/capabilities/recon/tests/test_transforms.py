@@ -1,13 +1,18 @@
 """Tests for transforms — glom-based path resolution + normalize specs."""
 
+import pytest
+
 from recon.application.transforms import (
+    BUILTIN_TRANSFORMS,
     apply_normalize,
     first,
     html2text,
     inverted_index,
     join,
     resolve_path,
+    spec_problems,
 )
+from recon.domain.exceptions import ConfigError
 
 
 class TestHtml2Text:
@@ -154,15 +159,39 @@ class TestApplyNormalize:
         assert result["abstract"] == "A dataset for testing."
         assert result["authors"] == ["Bob"]
 
-    def test_missing_transform(self):
-        """Unknown transforms are silently skipped."""
-        raw = {"x": "hello"}
-        result = apply_normalize(raw, {"x": "x|$nonexistent"})
-        assert result["x"] == "hello"
+    def test_missing_transform_raises(self):
+        """An unknown transform is a config error, never a silently skipped step (it was
+        skipped before 0.9.0, so a typo produced untransformed data with no signal)."""
+        with pytest.raises(ConfigError, match=r"normalize\.x: unknown transform \$nonexistent"):
+            apply_normalize({"x": "hello"}, {"x": "x|$nonexistent"})
+
+    def test_uses_the_transforms_it_is_given(self):
+        result = apply_normalize({"x": "a"}, {"x": "x|$shout"}, {"shout": str.upper})
+        assert result["x"] == "A"
+
+
+class TestSpecProblems:
+    def test_sound_spec_has_none(self):
+        spec = {"t": "title", "a": "authors.*.name|$join", "b": "x|$html2text"}
+        assert spec_problems(spec, BUILTIN_TRANSFORMS) == {}
+
+    def test_every_problem_is_reported_by_column(self):
+        spec = {
+            "ok": "title",
+            "typo": "abstract|$html2txt",
+            "nested": "a.*.b.*.c",
+            "no_dollar": "x|join",
+            "not_a_string": 3,
+        }
+        problems = spec_problems(spec, BUILTIN_TRANSFORMS)
+        assert set(problems) == {"typo", "nested", "no_dollar", "not_a_string"}
+        assert "unknown transform $html2txt" in problems["typo"]
+        assert "$html2text" in problems["typo"], "the message lists what is installed"
+        assert "Nested list-maps" in problems["nested"]
 
 
 class TestMarkitdown:
-    """Test $markitdown transform via markitdown (registered by CLI composition root).
+    """Test $markitdown transform via markitdown (registered under recon.transforms).
 
     markitdown handles PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP, HTML,
     images (OCR), audio. Tests cover the roundtrip + the best-effort failure
@@ -171,18 +200,18 @@ class TestMarkitdown:
 
     def test_roundtrip_csv(self, tmp_path):
         """Create a simple CSV, convert to markdown via $markitdown."""
-        from recon.adapters._in.cli import _markitdown_path
+        from recon.adapters._out.markitdown_converter import markitdown_path
 
         csv_path = tmp_path / "data.csv"
         csv_path.write_text("name,city\nAlice,Paris\nBob,Berlin\n")
 
-        text = _markitdown_path(str(csv_path))
+        text = markitdown_path(str(csv_path))
         # markitdown converts CSV to a markdown table — check for cell values
         assert "Alice" in text
         assert "Paris" in text
 
     def test_missing_file_returns_empty(self):
         """Non-existent file returns empty string (best-effort contract)."""
-        from recon.adapters._in.cli import _markitdown_path
+        from recon.adapters._out.markitdown_converter import markitdown_path
 
-        assert _markitdown_path("/nonexistent/file.pdf") == ""
+        assert markitdown_path("/nonexistent/file.pdf") == ""

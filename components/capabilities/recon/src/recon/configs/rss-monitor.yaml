@@ -23,13 +23,13 @@ catalog:
     type: api
     url: https://hnrss.org
     rate_limit: { rps: 0.5, burst: 1 }
-    user_agent: "recon/0.8.0 (https://github.com/mox-labs/cix)"
+    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
 
   - name: gh-releases
     type: api
     url: https://github.com
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.8.0 (https://github.com/mox-labs/cix)"
+    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
 
 collectors:
   - name: hn-frontpage

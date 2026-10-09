@@ -1,6 +1,6 @@
 # Config Patterns
 
-Complete config examples for common recon use cases. Copy, adapt, write to `.cix/recon/<mission>/config.yaml`.
+Complete config examples for common recon use cases. Copy, adapt, write to `.recon/<mission>/config.yaml`.
 
 ## Contents
 
@@ -226,7 +226,7 @@ Create the mission config. Use the recon skill (`--skill recon`) to have Claude 
 claude --skill recon "Set up a weekly arxiv + S2 tracker for collaborative intelligence papers"
 ```
 
-Claude writes `.cix/recon/arxiv-weekly/config.yaml`:
+Claude writes `.recon/arxiv-weekly/config.yaml`:
 
 ```yaml
 catalog:
@@ -283,7 +283,7 @@ collectors:
 The config exists. Now schedule a recurring survey — the scheduled agent runs recon and analyzes the diff:
 
 ```
-/schedule create --cron "0 9 * * 1" --prompt "Run recon survey arxiv-weekly. Read the JSONL results. If a previous archive exists, compare and report: new papers, rising citations, anything relevant to collaborative intelligence. Write a summary to .cix/recon/arxiv-weekly/digest.md."
+/schedule create --cron "0 9 * * 1" --prompt "Run recon survey arxiv-weekly. Read the JSONL results. If a previous archive exists, compare and report: new papers, rising citations, anything relevant to collaborative intelligence. Write a summary to .recon/arxiv-weekly/digest.md."
 ```
 
 Every Monday at 9am, the scheduled agent:
@@ -317,7 +317,7 @@ catalog:
       env: GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.8.0 (release-monitor)"
+    user_agent: "recon/0.9.0 (release-monitor)"
 
 collectors:
   - name: tokio-releases
