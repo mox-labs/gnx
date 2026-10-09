@@ -5,7 +5,7 @@
 # changed over time.
 #
 # Typical setup:
-#   1. Write this config to .cix/recon/github-releases/config.yaml
+#   1. Write this config to .recon/github-releases/config.yaml
 #   2. Schedule: run `recon survey github-releases` on cron (e.g. hourly)
 #   3. Claude reads the latest archive and compares to the previous one
 #
@@ -56,9 +56,9 @@ collectors:
       url: html_url
 
 # Each run produces:
-#   .cix/recon/github-releases/archive/<timestamp>/tokio-releases.jsonl
-#   .cix/recon/github-releases/archive/<timestamp>/axum-releases.jsonl
-#   .cix/recon/github-releases/archive/<timestamp>/meta.yaml
+#   .recon/github-releases/archive/<timestamp>/tokio-releases.jsonl
+#   .recon/github-releases/archive/<timestamp>/axum-releases.jsonl
+#   .recon/github-releases/archive/<timestamp>/meta.yaml
 #
 # Diff across runs (pseudo-query, across two specific archives):
 #   SELECT curr.tag, curr.published

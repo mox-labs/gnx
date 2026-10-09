@@ -1,73 +1,76 @@
-"""Composition root — config in, runtimes + definitions + bound agents out.
+"""Composition root: config in, runtimes, definitions, agents and observers out.
 
-The only place that combines domain concepts with concrete adapters. ``compose`` reads a
-``MatrixConfig`` and builds, in order:
+The only place that joins domain concepts to concrete adapters. :func:`compose` builds, in
+order:
 
-1. **runtimes** — each ``runtimes.<name>`` resolved through the registry by its type URL
-   (``matrix.v1/runtime.<type>``), its options validated by that runtime's typed config;
-2. **definitions** — every ``*.md`` in each ``definitions`` directory;
-3. **agents** — each ``agents.<name>`` binding a definition (plus inline overrides) to a
-   named runtime, producing a :class:`BoundAgent`.
+1. **observers**, each ``matrix.observers`` entry resolved through the registry;
+2. **runtimes**, each ``matrix.runtimes.<name>`` resolved by its type (a built-in short name
+   or a full type URL), its options validated by that runtime's typed config;
+3. **definitions**, every ``*.md`` in each ``matrix.definitions`` directory;
+4. **agents**, each ``matrix.agents.<name>`` binding a definition (plus inline overrides) to a
+   named runtime. The runtime's ``check`` runs here, so a definition it cannot honour fails now.
 
-Every failure is a ConfigError naming the key path (``agents.triage.runtime``) and the
-legal values. The Container then hands out agents by name and builds DAG orchestrators
-from ``(type_url, config)`` specs.
+Nothing is called: composition makes no model call and no tool call. Every failure is a
+ConfigError naming the key path and the legal values.
 
-**Shared context.** Some settings belong to the composition, not to one runtime: the
-``matrix.models`` registry, the working directory a host tool runs in. ``compose`` hands each
-of them to every runtime whose typed config declares a field of that name and leaves it
-unset. Composition never names a runtime type to do this, so a third-party runtime that
-declares ``models`` gets the registry exactly as the built-in ``model`` runtime does.
+**Needs.** An extension declares the shared things it needs (``agents``, ``models``, ``cwd``)
+when it registers; composition hands over exactly those. Nothing is matched by field name.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from matrix.adapters._out.definitions.markdown import MarkdownDefinitionSource
-from matrix.composition.runtimes import (
-    RUNTIME_NAMESPACE,
-    register_builtin_runtimes,
-    runtime_type_url,
-)
+from matrix.composition.builtins import RUNTIME_PREFIX, observer_type_url, runtime_type_url
+from matrix.composition.builtins import register as register_builtins
 from matrix.domain.agent import AgentDefinition, BoundAgent
+from matrix.domain.agent_step import AGENT_STEP
 from matrix.domain.config import Config, MatrixConfig
 from matrix.domain.errors import ConfigError, NotFoundError
-from matrix.domain.orchestrator import Orchestrator
-from matrix.domain.registry import ComponentRegistry
+from matrix.domain.executor import Executor
+from matrix.domain.flow import CompiledFlow, Flow, Member, compile_flow
+from matrix.domain.registry import ENTRY_POINT_GROUP, Registry
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from matrix.domain.observer import Observer
     from matrix.domain.ports._out.agent_runtime import AgentRuntime
     from matrix.domain.ports._out.definition_source import DefinitionSource
 
 
 class Container:
-    """What composition produced. Hands out agents by name; builds orchestrators."""
+    """What composition produced: agents by name, and the means to compile and run flows."""
 
     def __init__(
         self,
         config: Config[Any],
-        registry: ComponentRegistry,
+        registry: Registry,
         *,
         runtimes: Mapping[str, AgentRuntime] | None = None,
         definitions: Mapping[str, AgentDefinition] | None = None,
         agents: Mapping[str, BoundAgent] | None = None,
+        observers: Sequence[Observer] = (),
+        context: Mapping[str, Any] | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
         self._runtimes = dict(runtimes or {})
         self._definitions = dict(definitions or {})
         self._agents = dict(agents or {})
+        self._observers = tuple(observers)
+        self._context = dict(context or {})
 
     @property
     def config(self) -> Config[Any]:
         return self._config
 
     @property
-    def registry(self) -> ComponentRegistry:
+    def registry(self) -> Registry:
         return self._registry
 
     @property
@@ -82,86 +85,119 @@ class Container:
     def agents(self) -> Mapping[str, BoundAgent]:
         return dict(self._agents)
 
+    @property
+    def observers(self) -> tuple[Observer, ...]:
+        return self._observers
+
     def agent(self, name: str) -> BoundAgent:
         agent = self._agents.get(name)
         if agent is None:
             known = ", ".join(sorted(self._agents)) or "(none configured)"
-            raise NotFoundError(f"no agent named {name!r}. Configured: {known}")
+            raise NotFoundError(
+                f"no agent named {name!r}. Configured: {known}",
+                fix="define it under matrix.agents",
+            )
         return agent
 
     def runtime(self, name: str) -> AgentRuntime:
         runtime = self._runtimes.get(name)
         if runtime is None:
             known = ", ".join(sorted(self._runtimes)) or "(none configured)"
-            raise NotFoundError(f"no runtime named {name!r}. Configured: {known}")
+            raise NotFoundError(
+                f"no runtime named {name!r}. Configured: {known}",
+                fix="define it under matrix.runtimes",
+            )
         return runtime
 
-    def create_component(self, type_url: str, config: dict[str, Any] | None = None) -> Any:
-        return self._registry.create(type_url, config)
+    def bind(self, definition: AgentDefinition, runtime: str) -> BoundAgent:
+        """Bind a definition to a configured runtime, with this container's observers."""
+        return BoundAgent(definition, self.runtime(runtime), observers=self._observers)
 
-    def build_orchestrator(
-        self, component_specs: Sequence[tuple[str, dict[str, Any] | None]]
-    ) -> Orchestrator:
-        """Resolve ``(type_url, config)`` specs through the registry into an Orchestrator."""
-        components = [self._registry.create(t, c) for t, c in component_specs]
-        return Orchestrator(components)
+    def needs(self) -> dict[str, Any]:
+        """The shared things extensions may declare they need."""
+        return {
+            "agents": dict(self._agents),
+            "models": self._config.matrix.models,
+            "cwd": self._context.get("cwd"),
+            **{k: v for k, v in self._context.items() if k != "cwd"},
+        }
+
+    def compile(self, flow: Flow) -> CompiledFlow:
+        """Compile ``flow``, building members given by extension id through the registry.
+
+        The compiled flow carries each member's declared effects. An ``agent-step`` member
+        has its agent's runtime's effects; a member built outside the registry has unknown
+        effects.
+        """
+        needs = self.needs()
+
+        def resolve(extension: str, config: dict[str, Any], where: str) -> Any:
+            return self._registry.create("component", extension, config, needs=needs, where=where)
+
+        compiled = compile_flow(flow, resolve=resolve, schemas=self._registry.payload_schemas())
+        return replace(compiled, effects={m.alias: self._effects(m) for m in flow.members})
+
+    def _effects(self, member: Member) -> frozenset[str] | None:
+        if not isinstance(member.component, str):
+            return None
+        if member.component == AGENT_STEP:
+            agent = (member.config or {}).get("agent")
+            spec = self._config.matrix.agents.get(str(agent))
+            runtime = self._config.matrix.runtimes.get(spec.runtime) if spec else None
+            if runtime is None:
+                return None
+            return self._registry.entry("runtime", runtime_type_url(runtime.type)).effects
+        return self._registry.entry("component", member.component).effects
+
+    def executor(self) -> Executor:
+        return Executor(self._observers)
 
 
-def default_registry(*, discover: bool = True) -> ComponentRegistry:
-    """Built-in runtimes, plus every ``matrix.components`` entry point when ``discover``."""
-    registry = register_builtin_runtimes(ComponentRegistry())
-    return registry.discover() if discover else registry
+def default_registry(*, discover: bool = True) -> Registry:
+    """A registry with every ``matrix.extensions`` entry point loaded (built-ins included).
 
-
-def shared_context(matrix: MatrixConfig, **extra: Any) -> dict[str, Any]:
-    """The composition-wide settings offered to runtimes: ``models`` plus ``extra``."""
-    context = {k: v for k, v in extra.items() if v is not None}
-    if matrix.models is not None:
-        context.setdefault("models", matrix.models)
-    return context
-
-
-def with_context(
-    registry: ComponentRegistry,
-    type_url: str,
-    options: Mapping[str, Any],
-    context: Mapping[str, Any],
-) -> dict[str, Any]:
-    """``options`` plus each context value the entry's typed config declares and lacks."""
-    merged = dict(options)
-    config_cls = registry.config_class(type_url)
-    if config_cls is None:
-        return merged
-    for key, value in context.items():
-        if key in config_cls.model_fields and key not in merged:
-            merged[key] = value
-    return merged
+    ``discover=False`` registers only matrix's built-ins, for tests and hermetic callers.
+    """
+    registry = Registry()
+    if discover:
+        registry.discover()
+        if not any(ep.name == "matrix" for ep in entry_points(group=ENTRY_POINT_GROUP)):
+            register_builtins(registry)  # running from a source tree with no installed metadata
+    else:
+        register_builtins(registry)
+    return registry
 
 
 def build_runtimes(
     matrix: MatrixConfig,
-    registry: ComponentRegistry,
+    registry: Registry,
+    needs: Mapping[str, Any],
     *,
     source: str = "matrix",
-    context: Mapping[str, Any] | None = None,
 ) -> dict[str, AgentRuntime]:
-    shared = shared_context(matrix) if context is None else dict(context)
     runtimes: dict[str, AgentRuntime] = {}
     for name, spec in matrix.runtimes.items():
-        type_url = runtime_type_url(spec.type)
-        if type_url not in registry:
+        url = runtime_type_url(spec.type)
+        if ("runtime", url) not in registry:
             legal = sorted(
-                t.removeprefix(RUNTIME_NAMESPACE)
-                for t in registry.types()
-                if t.startswith(RUNTIME_NAMESPACE)
+                e.type_url.removeprefix(RUNTIME_PREFIX) for e in registry.entries("runtime")
             )
             raise ConfigError(
                 f"{source}: runtimes.{name}.type: {spec.type!r} is not a registered runtime. "
-                f"Registered: {', '.join(legal) or '(none)'}"
+                f"Registered: {', '.join(legal) or '(none)'}",
+                fix="use one of the registered runtimes, or install the package providing it",
             )
-        options = with_context(registry, type_url, spec.options(), shared)
-        runtimes[name] = registry.create(type_url, options, source=f"{source}: runtimes.{name}")
+        runtimes[name] = registry.create(
+            "runtime", url, spec.options(), needs=needs, where=f"{source}: runtimes.{name}"
+        )
     return runtimes
+
+
+def build_observers(matrix: MatrixConfig, registry: Registry) -> list[Observer]:
+    return [
+        registry.create("observer", observer_type_url(name), where=f"matrix: observers[{i}]")
+        for i, name in enumerate(matrix.observers)
+    ]
 
 
 def load_definitions(sources: Sequence[DefinitionSource]) -> dict[str, AgentDefinition]:
@@ -172,7 +208,8 @@ def load_definitions(sources: Sequence[DefinitionSource]) -> dict[str, AgentDefi
             if definition.name in definitions:
                 raise ConfigError(
                     f"agent definition {definition.name!r} is defined in both "
-                    f"{origin[definition.name]} and {source.describe()}"
+                    f"{origin[definition.name]} and {source.describe()}",
+                    fix="rename one, or drop one of the definition directories",
                 )
             definitions[definition.name] = definition
             origin[definition.name] = source.describe()
@@ -183,6 +220,7 @@ def bind_agents(
     matrix: MatrixConfig,
     runtimes: Mapping[str, AgentRuntime],
     definitions: Mapping[str, AgentDefinition],
+    observers: Sequence[Observer] = (),
     *,
     source: str = "matrix",
 ) -> dict[str, BoundAgent]:
@@ -192,7 +230,8 @@ def bind_agents(
         if runtime is None:
             raise ConfigError(
                 f"{source}: agents.{name}.runtime: {spec.runtime!r} is not a configured runtime. "
-                f"Configured: {', '.join(sorted(runtimes)) or '(none)'}"
+                f"Configured: {', '.join(sorted(runtimes)) or '(none)'}",
+                fix="name a runtime defined under matrix.runtimes",
             )
         base_name = spec.definition or name
         base = definitions.get(base_name)
@@ -206,44 +245,58 @@ def bind_agents(
                 raise ConfigError(
                     f"{source}: agents.{name}: no definition named {base_name!r} was loaded "
                     f"(loaded: {', '.join(sorted(definitions)) or '(none)'}), and no inline "
-                    "system_prompt was given"
+                    "system_prompt was given",
+                    fix="add the definition file, or give system_prompt inline",
                 )
             definition = AgentDefinition.model_validate({"name": name, **overrides})
         else:
-            definition = base.model_copy(update={**overrides, "name": name})
-            definition = AgentDefinition.model_validate(definition.model_dump())
-        agents[name] = BoundAgent(definition, runtime)
+            definition = AgentDefinition.model_validate(
+                {**base.model_dump(), **overrides, "name": name}
+            )
+        try:
+            agents[name] = BoundAgent(definition, runtime, observers=observers)
+        except ConfigError as e:
+            raise ConfigError(
+                f"{source}: agents.{name}: {e.message}", fix=e.fix, **e.details
+            ) from None
     return agents
 
 
 def compose(
     config: Config[Any] | MatrixConfig,
     *,
-    registry: ComponentRegistry | None = None,
+    registry: Registry | None = None,
     base_dir: Path | str | None = None,
     source: str = "matrix",
     definition_sources: Sequence[DefinitionSource] = (),
     context: Mapping[str, Any] | None = None,
 ) -> Container:
-    """Config → Container with runtimes, definitions and bound agents.
+    """Config → Container. Makes no model or tool call.
 
-    ``base_dir`` anchors relative ``definitions`` directories (the directory of the config
-    file that declared them). ``definition_sources`` adds sources beyond the configured
-    directories — a plugin's agents, a mapping from another root. ``context`` adds shared
-    settings (e.g. ``{"cwd": ...}``) on top of ``matrix.models``; see the module docstring.
+    ``base_dir`` anchors relative ``definitions`` directories that ``load_config`` did not
+    already resolve. ``definition_sources`` adds sources beyond the configured directories.
+    ``context`` supplies shared needs (``{"cwd": ...}``) to extensions that declare them.
     """
     full = config if isinstance(config, Config) else Config[Any](matrix=config, client=None)
     matrix = full.matrix
     reg = registry if registry is not None else default_registry()
     root = Path(base_dir) if base_dir is not None else Path.cwd()
     sources: list[DefinitionSource] = [
-        MarkdownDefinitionSource((root / d) if not Path(d).is_absolute() else Path(d))
+        MarkdownDefinitionSource(Path(d) if Path(d).is_absolute() else root / d)
         for d in matrix.definitions
     ]
     sources.extend(definition_sources)
-    runtimes = build_runtimes(
-        matrix, reg, source=source, context=shared_context(matrix, **dict(context or {}))
-    )
+    shared = {"cwd": None, "models": matrix.models, **dict(context or {})}
+    observers = build_observers(matrix, reg)
+    runtimes = build_runtimes(matrix, reg, shared, source=source)
     definitions = load_definitions(sources)
-    agents = bind_agents(matrix, runtimes, definitions, source=source)
-    return Container(full, reg, runtimes=runtimes, definitions=definitions, agents=agents)
+    agents = bind_agents(matrix, runtimes, definitions, observers, source=source)
+    return Container(
+        full,
+        reg,
+        runtimes=runtimes,
+        definitions=definitions,
+        agents=agents,
+        observers=observers,
+        context=shared,
+    )

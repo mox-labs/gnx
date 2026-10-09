@@ -46,10 +46,16 @@ container.** There is no middle setting.
 ### 2. Experiment directory → sensor configuration
 
 An experiment is a directory of YAML and Markdown. `graders_module` is resolved relative
-to the experiment directory and imported. `experiment.yaml`'s `agent:` block becomes
-matrix's agent kwargs, so **an experiment.yaml chooses the agent's permission mode**.
+to the experiment directory and imported. A subject's `runtime:` (in `experiment.yaml` or
+`subjects/*.md`) becomes the options of the matrix runtime that plays it, so **an experiment
+chooses the agent's permission mode, tools and plugins**. A subject that names an agent
+(`agent: reviewer`) takes those from matrix's config instead: `./matrix.yaml` and `./ix.yaml`
+in the directory ix runs in, `~/.matrix/config.yaml`, `~/.ix/config.yaml`, and the files
+`$MATRIX_CONFIG` and `$IX_CONFIG` name. Those files are part of the grant too.
 
-Installing someone else's experiment is equivalent to installing their code.
+Installing someone else's experiment is equivalent to installing their code. Run
+`ix run <experiment> --plan` first: it lists every subject's runtime and which sessions are
+live.
 
 ### 3. Probe frontmatter → sensor state
 
@@ -60,9 +66,10 @@ does not gain authority.
 
 ### 4. Optional third-party evaluators
 
-`DeepEvalSensor` is behind an optional extra. With `judge: <model>` set, judge calls run
-through matrix's model runtime — so where the judge's prompts go is decided by the hardline
-registry row (hardline/SECURITY.md). Without a judge, deepeval calls its own default provider.
+`DeepEvalSensor` is behind an optional extra. Its `judge:` names a configured matrix agent,
+whose runtime decides where the judge's prompts go, or else a model name, run on matrix's
+`model` runtime, where the hardline registry row decides (hardline/SECURITY.md). Without a
+judge, deepeval calls its own default provider.
 
 See I-7 for deepeval's telemetry.
 
@@ -172,6 +179,27 @@ ix repository-only and fail loudly when the workspace is absent. yzavyas's call.
 `ix` is excluded from `just capabilities-standalone` for the same reason — that gate
 severs the package from the repository on purpose, which is the one condition under which
 ix legitimately cannot resolve. It is not a defect the gate is entitled to flag.
+
+### I-8 — `ix` is a taken name on PyPI too (2026-10-09)
+
+The same ambiguity as I-6 applies to ix's own name. `ix` on PyPI is an unrelated package.
+Observed 2026-10-09: a throwaway extension package that declared `dependencies = ["ix"]`,
+installed beside ix with `uv run --with <package>`, pulled PyPI's `ix` instead of this one.
+Its import failed with `ModuleNotFoundError: No module named 'scipy'`, raised from that
+package's `ix/__init__.py`, before ix's CLI ran.
+
+**On the git-subdirectory install path it resolves correctly**, for the reason given in I-6:
+uv clones the whole repository, finds `components/capabilities/pyproject.toml` as the
+workspace root, and applies its `[tool.uv.sources]`. **It resolves to the stranger whenever
+ix's directory is installed severed from the repository**, and whenever a third-party
+package names `ix` as a bare dependency, which is what an extension registering a sensor or
+engine would naturally write.
+
+A latent finding, like I-6: no supported install path reaches it, but the safety comes from
+the transport rather than from anything ix declares. Until a naming decision is made, a
+package extending ix should depend on it by git URL
+(`ix @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/ix`), not by
+bare name.
 
 ### I-7 — deepeval sends usage telemetry by default (mitigated 2026-09-24)
 

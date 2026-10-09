@@ -26,8 +26,8 @@ import yaml
 from pydantic import ValidationError
 
 from ix.domain.errors import ConfigError, ResultsNotFoundError
+from ix.domain.models import ExperimentConfig, ExperimentResults, TrialRecord
 from ix.domain.types import Probe, Subject
-from ix.eval.models import ExperimentConfig, ExperimentResults, TrialRecord
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -115,11 +115,17 @@ class FilesystemStore:
             for md_path in subject_files:
                 post = frontmatter.load(str(md_path))
                 meta = dict(post.metadata)
+                body = post.content.strip()
+                # The body is the system prompt; an empty body says nothing, so a subject
+                # naming a configured agent keeps that agent's prompt.
+                config = {**meta, "system_prompt": body} if body else meta
                 subjects.append(
                     Subject(
                         name=str(meta.pop("name", md_path.stem)),
                         description=str(meta.pop("description", "")),
-                        config={**meta, "system_prompt": post.content.strip()},
+                        config={
+                            k: v for k, v in config.items() if k not in ("name", "description")
+                        },
                     )
                 )
             return subjects

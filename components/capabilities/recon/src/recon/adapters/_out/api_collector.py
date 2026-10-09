@@ -3,51 +3,30 @@
 No direct httpx import. No rate limiter (that's inside the Requester).
 Constructor-injected dependencies are explicit: tests pass a fake Requester
 without monkeypatching anything.
+
+Registered as the built-in collector type ``api`` (entry-point group ``recon.collectors``).
 """
 
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, Protocol
-
-from glom import GlomError, glom
+from typing import TYPE_CHECKING, Any
 
 from recon import DEFAULT_USER_AGENT
-from recon.application.recon import find_unresolved, substitute
-from recon.application.transforms import apply_normalize
-from recon.domain.exceptions import CollectionError
+from recon.adapters._out.parsing import parse_body, to_records
+from recon.application.captures import redact_query_params
+from recon.application.transforms import BUILTIN_TRANSFORMS, apply_normalize
+from recon.domain.collector import CollectorType
+from recon.domain.exceptions import CollectionError, Problem
+from recon.domain.substitution import find_unresolved, substitute
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
-    from recon.domain.http import HttpResponse
+    from recon.domain.capture import CaptureLog
+    from recon.domain.collector import Transform
+    from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, SourceEntry
-
-
-class Requester(Protocol):
-    """The port: given a source + HTTP parameters, return an HttpResponse.
-
-    Rate limiting is the Requester's responsibility, not the collector's.
-    """
-
-    def request(
-        self,
-        source: SourceEntry,
-        method: str,
-        url: str,
-        *,
-        params: dict[str, str] | None = ...,
-        headers: dict[str, str] | None = ...,
-        json_body: dict[str, Any] | None = ...,
-    ) -> HttpResponse: ...
-
-    def get(
-        self,
-        source: SourceEntry,
-        url: str,
-        *,
-        headers: dict[str, str] | None = ...,
-    ) -> HttpResponse: ...
 
 
 class ApiCollector:
@@ -58,40 +37,34 @@ class ApiCollector:
     requester to return a streaming body; current Requester buffers.)
     """
 
-    def __init__(self, requester: Requester, env: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        requester: Requester,
+        env: Mapping[str, str] | None = None,
+        transforms: Mapping[str, Transform] = BUILTIN_TRANSFORMS,
+    ) -> None:
         self._requester = requester
         self._env = env if env is not None else os.environ
+        self._transforms = transforms
 
     def collect(
         self,
         entry: CollectorEntry,
         source: SourceEntry | None,
         *,
-        raw_store: Any | None = None,
+        captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
         if not source:
             msg = f"API collector '{entry.name}' requires a source"
-            raise CollectionError(msg)
+            raise CollectionError(msg, kind="config")
         if not entry.endpoint:
             msg = f"API collector '{entry.name}' has no endpoint"
-            raise CollectionError(msg)
+            raise CollectionError(msg, kind="config")
 
-        url = self._build_url(source.url, entry.endpoint, entry.params or {})
-        query_params = self._build_query_params(entry.params or {})
+        url = build_url(source.url, entry.endpoint, entry.params or {})
+        query_params = {**_resolved_params(entry.params or {}), **self._auth_params(source)}
         headers = self._build_headers(source)
-
-        body: dict[str, Any] | None = None
-        if entry.body:
-            body = substitute(entry.body, entry.params or {})
-            unresolved = find_unresolved(body)
-            if unresolved:
-                missing = ", ".join(sorted(set(unresolved)))
-                msg = (
-                    f"API collector '{entry.name}' body has unresolved placeholder(s): "
-                    f"{{{missing}}}. Add them to params: — sending this literally to the "
-                    f"server will silently fail or return empty results."
-                )
-                raise CollectionError(msg)
+        body = _substituted_body(entry)
 
         resp = self._requester.request(
             source,
@@ -102,104 +75,129 @@ class ApiCollector:
             json_body=body,
         )
 
-        if raw_store is not None:
-            raw_store.save_http(
-                entry.name,
-                resp.body,
+        if captures is not None:
+            request: dict[str, Any] = {
+                "method": entry.method,
+                # The response URL carries the query string, and with auth.param the
+                # query string carries the key: it never reaches the capture log.
+                "url": redact_query_params(resp.url, [source.auth.param]),
+            }
+            if body is not None:
+                request["body"] = body
+            captures.record(
+                collector=entry.name,
+                source=source.name,
+                kind="http",
+                request=request,
                 status=resp.status_code,
-                url=resp.url,
-                headers=resp.headers,
                 content_type=resp.content_type,
+                headers=resp.headers,
+                body=resp.body,
             )
 
-        data = self._parse_response(resp, entry.response_format)
-
-        if entry.extract and isinstance(data, (dict, list)):
-            data = _extract(data, entry.extract)
-
-        records = _ensure_list(data)
-
-        if entry.normalize:
-            for record in records:
-                yield apply_normalize(record, entry.normalize)
-        else:
-            yield from records
+        data = parse_body(resp.text, entry.response_format, origin=resp.url)
+        for record in to_records(data, entry.extract):
+            yield (
+                apply_normalize(record, entry.normalize, self._transforms)
+                if entry.normalize
+                else record
+            )
 
     # --- Private ---
 
     def _build_headers(self, source: SourceEntry) -> dict[str, str]:
         ua = source.user_agent or DEFAULT_USER_AGENT
-        return {"User-Agent": ua, **self._resolve_auth(source)}
+        headers = {"User-Agent": ua}
+        secret = self._secret(source)
+        if secret is not None and source.auth.header:
+            headers[source.auth.header] = secret
+        return headers
 
-    def _resolve_auth(self, source: SourceEntry) -> dict[str, str]:
-        auth = source.auth
-        if not auth.header or not auth.env:
+    def _auth_params(self, source: SourceEntry) -> dict[str, str]:
+        secret = self._secret(source)
+        if secret is None or not source.auth.param:
             return {}
+        return {source.auth.param: secret}
+
+    def _secret(self, source: SourceEntry) -> str | None:
+        """The prefixed credential, or None when no env var is named or it is unset.
+
+        An unset variable sends the request without credentials (optional auth, e.g. a
+        higher rate limit); ``survey --dry-run`` warns about it before anything is sent.
+        """
+        auth = source.auth
+        if not auth.env:
+            return None
         value = self._env.get(auth.env, "")
         if not value:
-            return {}
-        return {auth.header: f"{auth.prefix}{value}"}
-
-    def _build_url(
-        self,
-        base_url: str,
-        endpoint: str,
-        params: dict[str, str],
-    ) -> str:
-        path = substitute(endpoint, params)
-        return f"{base_url.rstrip('/')}{path}"
-
-    def _build_query_params(self, params: dict[str, str]) -> dict[str, str]:
-        """Drop entries whose values still contain {placeholder}."""
-        resolved = {}
-        for k, v in params.items():
-            if isinstance(v, str) and "{" in v:
-                continue
-            resolved[k] = v
-        return resolved
-
-    def _parse_response(self, resp: HttpResponse, fmt: str) -> Any:
-        import json
-
-        if fmt == "json":
-            if not resp.text:
-                return None
-            try:
-                return json.loads(resp.text)
-            except json.JSONDecodeError as exc:
-                msg = f"Response is not valid JSON from {resp.url}: {exc}"
-                raise CollectionError(msg) from exc
-        if fmt == "xml":
-            import xmltodict
-
-            return xmltodict.parse(
-                resp.text,
-                process_namespaces=True,
-                namespaces={
-                    "http://www.w3.org/2005/Atom": None,
-                    "http://arxiv.org/schemas/atom": "arxiv:",
-                    "http://a9.com/-/spec/opensearch/1.1/": "opensearch:",
-                },
-                force_list=("entry", "author", "link", "category"),
-            )
-        return resp.text
+            return None
+        return f"{auth.prefix}{value}"
 
 
-# --- Helpers ---
+def build_url(base_url: str, endpoint: str, params: dict[str, str]) -> str:
+    path = substitute(endpoint, params)
+    return f"{base_url.rstrip('/')}{path}"
 
 
-def _extract(data: Any, dotted_path: str) -> Any:
-    """Navigate nested dict via dotted path using glom."""
-    try:
-        return glom(data, dotted_path)
-    except (GlomError, KeyError, TypeError):
+def _resolved_params(params: dict[str, str]) -> dict[str, str]:
+    """Drop entries whose values still contain {placeholder}."""
+    return {k: v for k, v in params.items() if not (isinstance(v, str) and "{" in v)}
+
+
+def _substituted_body(entry: CollectorEntry) -> dict[str, Any] | None:
+    if not entry.body:
         return None
+    body: dict[str, Any] = substitute(entry.body, entry.params or {})
+    unresolved = find_unresolved(body)
+    if unresolved:
+        missing = ", ".join(sorted(set(unresolved)))
+        msg = (
+            f"API collector '{entry.name}' body has unresolved placeholder(s): "
+            f"{{{missing}}}. Add them to params: — sending this literally to the "
+            f"server will silently fail or return empty results."
+        )
+        raise CollectionError(msg, kind="config")
+    return body
 
 
-def _ensure_list(data: Any) -> list[dict[str, Any]]:
-    """Coerce response to list of dicts."""
-    if isinstance(data, list):
-        return [d for d in data if isinstance(d, dict)]
-    if isinstance(data, dict):
-        return [data]
-    return []
+# --- Registration ---
+
+
+def _check(entry: CollectorEntry) -> list[Problem]:
+    problems = []
+    if not entry.endpoint:
+        problems.append(Problem("endpoint", "an api collector needs an endpoint (e.g. /search)"))
+    else:
+        unresolved = find_unresolved(substitute(entry.endpoint, entry.params or {}))
+        if unresolved:
+            missing = ", ".join(f"{{{u}}}" for u in sorted(set(unresolved)))
+            problems.append(
+                Problem("endpoint", f"unresolved placeholder(s) {missing}: set them in params:")
+            )
+    if entry.body:
+        unresolved = find_unresolved(substitute(entry.body, entry.params or {}))
+        if unresolved:
+            missing = ", ".join(sorted(set(unresolved)))
+            problems.append(
+                Problem("body", f"unresolved placeholder(s) {{{missing}}}: add to params:")
+            )
+    return problems
+
+
+def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
+    if source is None or not entry.endpoint:
+        return {}
+    return {
+        "method": entry.method,
+        "url": build_url(source.url, entry.endpoint, entry.params or {}),
+    }
+
+
+collector_type = CollectorType(
+    create=lambda ctx: ApiCollector(ctx.requester, ctx.env, ctx.transforms),
+    effects=frozenset({"network"}),
+    summary="HTTP API request → JSON/XML → records",
+    requires_source=True,
+    check=_check,
+    describe=_describe,
+)

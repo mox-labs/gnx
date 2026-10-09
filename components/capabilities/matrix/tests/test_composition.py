@@ -10,12 +10,11 @@ from matrix import (
     AgentDefinition,
     AgentRuntime,
     BoundAgent,
-    ComponentRegistry,
     ConfigError,
     MatrixConfig,
+    Registry,
     compose,
     default_registry,
-    runtime_type_url,
 )
 from matrix.adapters._out.runtime.mock import MockRuntime
 
@@ -155,19 +154,26 @@ def test_top_level_models_reach_model_runtimes() -> None:
 
 
 def test_extension_runtime_registers_by_entry_point(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A third party's runtime arrives the way matrix's own do, under its own namespace."""
+
+    class _Dist:
+        name = "acme-strands"
+
     class _EP:
-        name, value = "strands", "pkg:register"
+        name, value, dist = "strands", "pkg:register", _Dist()
 
         @staticmethod
         def load():  # type: ignore[no-untyped-def]
-            def register(registry: ComponentRegistry) -> None:
-                registry.register(runtime_type_url("strands"), lambda **kw: MockRuntime())
+            def register(registry: Registry) -> None:
+                registry.register("runtime", "acme.v1.runtime.strands", lambda: MockRuntime())
 
             return register
 
     monkeypatch.setattr("matrix.domain.registry.entry_points", lambda group: [_EP()])
-    container = compose(_config(runtimes={"s": {"type": "strands"}}))
+    container = compose(_config(runtimes={"s": {"type": "acme.v1.runtime.strands"}}))
     assert isinstance(container.runtime("s"), MockRuntime)
+    entry = container.registry.entry("runtime", "acme.v1.runtime.strands")
+    assert entry.origin == "acme-strands"
 
 
 def test_every_builtin_runtime_satisfies_the_port() -> None:
@@ -176,6 +182,7 @@ def test_every_builtin_runtime_satisfies_the_port() -> None:
 
     for cls in (ClaudeSdkRuntime, ModelAgentRuntime, MockRuntime):
         assert callable(getattr(cls, "run", None)), cls
+        assert callable(getattr(cls, "check", None)), cls  # check is required by the port
     assert isinstance(MockRuntime(), AgentRuntime)
 
 

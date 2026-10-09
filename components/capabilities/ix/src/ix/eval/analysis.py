@@ -12,13 +12,13 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from ix.domain.errors import ResultsError
-from ix.eval.models import MAX_DETAILS, Comparison, ProbeDelta, ProbeResult
+from ix.domain.models import MAX_DETAILS, Comparison, ProbeDelta, ProbeResult
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from ix.domain.models import ExperimentResults
     from ix.domain.types import Probe, Reading
-    from ix.eval.models import ExperimentResults
 
 
 def aggregate_readings(
@@ -26,9 +26,15 @@ def aggregate_readings(
     probes: dict[str, Probe],
     on_probe_complete: Callable[[ProbeResult], None] | None = None,
 ) -> list[ProbeResult]:
-    """Group readings by probe_id, compute pass rate per probe."""
+    """Group readings by probe_id, compute pass rate per probe.
+
+    Harness-faulted readings are not the subject's and are left out; a probe left with no
+    reading at all is not scored (see :func:`unmeasured_probes`).
+    """
     by_probe: dict[str, list[Reading]] = defaultdict(list)
     for reading in readings:
+        if reading.fault == "harness":
+            continue
         by_probe[reading.probe_id].append(reading)
 
     probe_results: list[ProbeResult] = []
@@ -65,6 +71,15 @@ def aggregate_readings(
             on_probe_complete(probe_result)
 
     return probe_results
+
+
+def unmeasured_probes(readings: list[Reading]) -> tuple[str, ...]:
+    """Probes every one of whose readings was a harness fault, in first-seen order."""
+    seen: dict[str, bool] = {}
+    for reading in readings:
+        accountable = reading.fault != "harness"
+        seen[reading.probe_id] = seen.get(reading.probe_id, False) or accountable
+    return tuple(probe for probe, measured in seen.items() if not measured)
 
 
 def compute_metrics(results: list[ProbeResult]) -> dict[str, float]:
@@ -152,6 +167,8 @@ def compare_results(a: ExperimentResults, b: ExperimentResults) -> Comparison:
         unmatched=unmatched,
         warning=_comparison_warning(a, b),
         sensor_faults=a.sensor_faults + b.sensor_faults,
+        harness_faults=a.harness_faults + b.harness_faults,
+        both_measured=a.measured_a_model and b.measured_a_model,
         probes=probes,
     )
 
@@ -196,5 +213,11 @@ def _comparison_warning(a: ExperimentResults, b: ExperimentResults) -> str | Non
         notes.append(
             f"sensor faults ({', '.join(faulted)}): the sensor crashed on some trials, so "
             "the delta may be the sensor's, not the subjects'"
+        )
+    harness = [f"{r.subject!r} {r.harness_faults}" for r in (a, b) if r.harness_faults]
+    if harness:
+        notes.append(
+            f"harness faults ({', '.join(harness)}): some trials never ran fairly (rate "
+            "limits, outages, credentials); rerun them before reading the delta"
         )
     return "; ".join(notes) or None

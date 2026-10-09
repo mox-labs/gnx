@@ -18,11 +18,11 @@ from ix.adapters._out.engines.native import NativeEngine, NativeEngineConfig
 from ix.adapters._out.filesystem_store import FilesystemStore
 from ix.composition import default_skill, validate_experiment
 from ix.domain.errors import ResultsError
+from ix.domain.models import ExperimentConfig, ExperimentResults, ProbeResult
 from ix.domain.ports import EngineRun
 from ix.domain.types import Probe, Subject
 from ix.eval.analysis import compare_results, standard_errors
 from ix.eval.experiment import Experiment
-from ix.eval.models import ExperimentConfig, ExperimentResults, ProbeResult
 from ix.eval.sensors import ActivationSensor
 
 if TYPE_CHECKING:
@@ -52,10 +52,20 @@ def _results(subject: str, scores: dict[str, float], noise: float | None = None)
         subject=subject,
         probe_results=tuple(_pr(p, s) for p, s in scores.items()),
         score_noise_floor_sd=noise,
+        families=("claude",),  # a real model answered: only then may compare name a winner
     )
 
 
 class TestCompare:
+    def test_no_winner_when_no_real_model_answered(self):
+        from ix.eval.analysis import compare_results
+
+        probes = [f"p{i}" for i in range(20)]
+        a = _results("a", {p: 0.2 for p in probes}).model_copy(update={"families": ("mock",)})
+        b = _results("b", {p: 0.9 for p in probes}).model_copy(update={"families": ("mock",)})
+        comparison = compare_results(a, b)
+        assert comparison.verdict == "inconclusive" and not comparison.both_measured
+
     PROBES = [f"p{i}" for i in range(20)]
 
     def test_a_consistent_gain_is_b_better(self):
@@ -100,6 +110,9 @@ class TestCompare:
 
 
 class _Echo:
+    def check(self, definition):
+        pass
+
     async def run(self, definition, task):
         return AgentResponse(content=f"echo {task}", family="test", model="m")
 
@@ -135,17 +148,15 @@ class TestNativeConcurrency:
             experiment="e",
             probes=_probes(4),
             subject=Subject(name="s"),
-            sensor=ActivationSensor(expected_skill="x"),
             agents=lambda s, t, r=0: BoundAgent(AgentDefinition(name="a"), _Echo()),
             trials=3,
+            measure=lambda trial: [],
         )
         serial = await NativeEngine().run(run)
         parallel = await NativeEngine(NativeEngineConfig(concurrency=8)).run(run)
         key = [(t.probe_id, t.trial_index) for t in serial.trials]
         assert key == [(t.probe_id, t.trial_index) for t in parallel.trials]
-        assert [(r.probe_id, r.trial_index) for r in serial.readings] == [
-            (r.probe_id, r.trial_index) for r in parallel.readings
-        ]
+        assert len(key) == 12  # exactly one trial per probe x trial index
 
 
 # --- config ----------------------------------------------------------------------------
@@ -187,7 +198,7 @@ class TestValidate:
         problems = validate_experiment(exp)
         joined = "\n".join(problems)
         assert len(problems) == 4, joined
-        assert "engine: Unknown engine: 'ray'" in joined
+        assert "engine: unknown engine 'ray'" in joined
         assert "sensors:" in joined and "bogus" in joined
         assert "subject 'typo'" in joined and "cdw" in joined
         assert "subject 'none'" in joined and "no runtime.type" in joined
@@ -235,9 +246,10 @@ class TestCli:
         )
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)  # banners went to stderr
-        # One shape at any subject count: a list of results, each naming its schema.
-        assert [r["subject"] for r in payload] == ["a"]
-        assert payload[0]["schema"] == "ix.v1/results"
+        # One shape at any subject count: a document holding the results, each with a schema.
+        assert payload["schema"] == "ix.v1.results-list"
+        assert [r["subject"] for r in payload["results"]] == ["a"]
+        assert payload["results"][0]["schema"] == "ix.v1.results"
         assert "Running" in result.stderr
 
     def test_compare_two_subjects(self, lab: Path):
@@ -284,7 +296,7 @@ class TestProvenance:
         result = CliRunner().invoke(
             main, ["run", "e", "--lab", "lab", "--subject", "a", "--format", "json"]
         )
-        assert json.loads(result.stdout)[0]["families"] == ["simulated"]
+        assert json.loads(result.stdout)["results"][0]["families"] == ["simulated"]
 
 
 def test_inspect_engine_json_output_is_clean_stdout(lab: Path):
@@ -295,7 +307,7 @@ def test_inspect_engine_json_output_is_clean_stdout(lab: Path):
         ["run", "e", "--lab", "lab", "--subject", "a", "--engine", "inspect", "--format", "json"],
     )
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)[0]["engine"] == "inspect"
+    assert json.loads(result.stdout)["results"][0]["engine"] == "inspect"
 
 
 # --- the run as it happens ----------------------------------------------------------------
@@ -381,7 +393,7 @@ class TestExpectationIsOneVocabulary:
         assert "boolean" in " ".join(result.stderr.split())
 
     def test_sensor_and_simulator_agree_on_every_probe(self):
-        from ix.composition import _build_expectations
+        from ix.composition import _expectations
         from ix.eval.activation import expectation_of
 
         probes = (
@@ -391,7 +403,7 @@ class TestExpectationIsOneVocabulary:
             Probe(id="any", prompt="d", metadata={"expectation": "acceptable"}),
         )
         exp = ExperimentConfig(name="e", probes=probes)
-        simulated = _build_expectations(exp)
+        simulated = _expectations(exp)
         for p in probes:
             sensor_says = expectation_of(p)
             if sensor_says == "acceptable":

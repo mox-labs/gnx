@@ -1,7 +1,7 @@
 [project]
 name = "matrix"
-version = "0.1.0"
-description = "Matrix — kind-agnostic DAG orchestration, and agents composed from a definition and a runtime"
+version = "0.2.0"
+description = "matrix: the executor. Typed components wired into flows, and agents composed from config"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
@@ -11,21 +11,25 @@ authors = [
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
-    "opentelemetry-api>=1.20",
 ]
 
-# Extensions register runtimes and components without editing matrix: each entry point is a
-# callable register(registry) -> None, loaded by ComponentRegistry.discover().
-[project.entry-points."matrix.components"]
+[project.scripts]
+matrix = "matrix.adapters._in.cli:run"
+
+# Every extension, matrix's own included, registers through this one group: each entry point
+# is a callable register(registry) -> None, loaded by Registry.discover().
+[project.entry-points."matrix.extensions"]
+matrix = "matrix.composition.builtins:register"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "opentelemetry-sdk>=1.20"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 # >=0.1.51: the first release that strips CLAUDECODE from the CLI's environment itself
 # (bisected against PyPI wheels), which is what lets the runtime leave os.environ alone.
 claude = ["claude-agent-sdk>=0.1.51"]
 # The `model` agent runtime: any model family hardline has a registry row for.
 models = ["hardline"]
 otel = [
+    "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
     "opentelemetry-exporter-otlp-proto-grpc>=1.20",
 ]
@@ -49,7 +53,7 @@ include = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
-# The x.uma/puma house lint set: B (bugbear), SIM, TC on top of the cix selection.
+# The house lint set: B (bugbear), SIM, TC on top of the base selection.
 [tool.ruff]
 line-length = 100
 target-version = "py312"

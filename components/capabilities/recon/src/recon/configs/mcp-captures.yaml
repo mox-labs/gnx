@@ -1,0 +1,35 @@
+# MCP captures — normalize MCP tool results a Claude Code hook captured; fetch nothing.
+#
+# Demonstrates:
+#   • the capture collector (reads a recon.v1.capture log, no network, no subprocess)
+#   • `recon capture`, fed by a PostToolUse hook matching "mcp__.*"
+#   • normalize paths into the capture line itself via `_capture.*`
+#
+# Wire the hook once (see docs/how-to/capture-mcp-results.md in the recon package):
+#   .claude/settings.json → hooks.PostToolUse: matcher "mcp__.*",
+#   command: recon capture <mission>
+# Every MCP tool call then appends one capture to
+# .recon/<mission>/captures/captures.jsonl.
+#
+# Usage:
+#   recon init mcp --template mcp-captures
+#   # ...use MCP tools in Claude Code; each result is captured...
+#   recon survey mcp
+#   recon query mcp "SELECT tool, captured_at FROM mcp_results"
+#
+# Probe first: a tool's response shape depends on the server. Delete the normalize
+# block, survey, and read the raw JSONL before writing paths into the response.
+
+collectors:
+  - name: mcp-results
+    type: capture
+    # path: captures/captures.jsonl      # the default: this mission's hook-fed log
+    match:
+      kind: external
+      # collector: "mcp__exa__*"          # narrow to one server's tools
+    normalize:
+      tool: _capture.collector
+      server: _capture.source
+      input: _capture.request.tool_input
+      captured_at: _capture.captured_at
+      text: text                          # set when the response is MCP text blocks

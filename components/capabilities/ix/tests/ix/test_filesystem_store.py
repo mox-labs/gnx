@@ -10,11 +10,11 @@ import pytest
 
 from ix.adapters._out.filesystem_store import FilesystemStore
 from ix.domain.errors import ConfigError, ResultsError
-from ix.domain.types import Reading
-from ix.eval.models import (
+from ix.domain.models import (
     ExperimentResults,
     TrialRecord,
 )
+from ix.domain.types import Reading
 
 
 @pytest.fixture

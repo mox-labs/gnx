@@ -1,533 +1,795 @@
-# API Reference
+# API reference
 
-All public types exported from `matrix`.
-
-> Regenerated 2026-09-24 from source after the definition/runtime split. Every signature
-> below was read off the code, not carried over from a previous revision. The 2026-08-17
-> revision replaced one that — which taught a contract
-> matrix had already abandoned (`requires`/`provides` as `consumes`/`produces`, an
-> `Artifact.kind` field, a frozen generic `Construct[S]` with a `subject`, and
-> `run(subject)`). If you are porting code written against those docs, see
-> [Migrating from the pre-intake contract](#migrating-from-the-pre-intake-contract).
-
----
+Every public name exported from `matrix`, the config it reads, the errors it raises, and the
+`matrix` command.
 
 ```python
 from matrix import (
-    # DAG
-    Artifact, Component, CompilationError, Construct, ConstructReader, ConstructView,
-    ContractError, Orchestrator, TypedStruct,
-    # errors
-    AgentRuntimeError, ComponentError, ConfigError, MatrixError, NotFoundError,
+    # type URLs
+    TypeUrl, check_type_url, is_type_url, parse_type_url, type_url,
+    # flows
+    Component, Port, Member, Flow, compile_flow, CompiledFlow, Inputs, RunContext,
+    # execution
+    Executor, Limits, Run,
+    # the Construct
+    Artifact, Construct, ConstructStore, JsonlConstructStore, MemoryConstructStore,
     # agents
     Agent, AgentDefinition, AgentResponse, AgentRuntime, BoundAgent, DefinitionSource,
-    # composition
-    AgentConfig, ComponentRegistry, Config, Container, MatrixConfig, RuntimeConfig,
-    compose, default_registry, runtime_type_url, with_context,
-    # type URLs
-    TypeUrl, parse_type_url, type_url,
-    # config loading, telemetry
-    config_env_var, configure_telemetry, discover_sources, load_config,
+    AgentStep, AgentStepConfig, AGENT_STEP, AGENT_RESPONSE, TASK,
+    # registry
+    Registry, Entry, Failure, default_registry, runtime_type_url, observer_type_url,
+    # observers
+    Event, Observer, RecordingObserver, configure_telemetry,
+    # config and composition
+    Config, MatrixConfig, RuntimeConfig, AgentConfig, ConfigSource,
+    load_config, discover_sources, config_env_var, compose, Container,
+    # errors
+    MatrixError, ConfigError, CompilationError, NotFoundError, ContractError, ComponentError,
+    AgentRuntimeError, RunError, ErrorKind, RuntimeReason, EXIT_CODES,
+    __version__,
 )
 ```
 
-`DagCompiler`, `DagScheduler`, `deep_merge`, `bind_agents`, `build_runtimes`,
-`load_definitions`, and `register_builtin_runtimes` are no longer exported from `matrix`
-top-level; import them from their own modules (`matrix.domain.compiler`,
-`matrix.domain.scheduler`, `matrix.composition.config`, `matrix.composition.container`,
-`matrix.composition.runtimes`) when you need them directly.
+---
 
-## Core Types
+## Type URLs
 
-### `Component` (Protocol)
+Everything is registered and typed under a type URL: dot-separated segments, each lowercase
+kebab-case (`[a-z0-9]+(-[a-z0-9]+)*`), compared by equality and never dereferenced.
 
-The contract every DAG node must satisfy. `@runtime_checkable` structural typing — implement it without importing matrix.
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `name` | `str` | Unique identifier within a DAG |
-| `requires` | `frozenset[str]` | Artifact `type_url`s this component reads |
-| `provides` | `str` | Artifact `type_url` this component writes |
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `run` | `async (construct: ConstructReader) -> TypedStruct` | Read upstream artifacts, do work, return self-describing output |
-
-`run` returns a `TypedStruct`, **not** a bare value. The Orchestrator checks the returned
-`type_url` against the declared `provides` and raises `ContractError` on mismatch — the
-double-entry bookkeeping that makes a component's declaration binding rather than advisory.
-
-Reads are enforced the same way: the Orchestrator hands `run` a `ConstructView` restricted to
-`requires`, and reading any other kind raises `ContractError`.
-
-```python
-from matrix import ConstructReader, TypedStruct
-
-
-class MyComponent:
-    name = "my-component"
-    requires = frozenset({"demo.v1/upstream.data"})
-    provides = "demo.v1/my-component.output"
-
-    async def run(self, construct: ConstructReader) -> TypedStruct:
-        upstream = construct.last("demo.v1/upstream.data")  # -> Artifact
-        return TypedStruct(
-            type_url=self.provides,  # must equal self.provides
-            value=process(upstream.data),
-        )
+```
+matrix.v1.runtime.claude-sdk     ix.v1.sensor.activation     matrix.v1.agent-response
 ```
 
-### `TypedStruct`
+- `/` is not part of the grammar.
+- A component kind name (`capability`, `skill`, `flow`, `agent`) is never a whole segment.
+- `slick.*` is reserved; `type_url` refuses to mint into it.
+- A URL matrix mints carries one version segment (`v1`, `v1alpha1`, `v2beta1`) after at least
+  one namespace segment and before the resource.
 
-Self-describing output. A `NamedTuple` — zero overhead, no import needed by external consumers.
+Ports and payload types are checked with the grammar only; registry entries are checked the
+same way when they register.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type_url` | `str` | What the value is |
-| `value` | `Any` | The data |
+| Name | Signature | Behaviour |
+|------|-----------|-----------|
+| `is_type_url` | `(url: str) -> bool` | True if `url` is valid under the grammar |
+| `check_type_url` | `(url: str, *, where: str = "") -> str` | Returns `url`, or raises `ConfigError` saying why it is invalid, prefixed with `where` |
+| `parse_type_url` | `(url: str) -> TypeUrl` | Splits at the version segment; `ConfigError` if there is none |
+| `type_url` | `(namespace: str, version: str \| int, resource: str) -> str` | Builds and validates; an `int` version becomes `v<N>`; refuses the `slick` namespace |
+| `TypeUrl` | `NamedTuple(namespace, version, resource)` | `str()` joins it back |
 
-### `Artifact`
+```python
+from matrix import ConfigError, is_type_url, parse_type_url, type_url
 
-Immutable fact produced by a component. Frozen Pydantic model.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `type_url` | `str` | Artifact type (must equal the producing component's `provides`) |
-| `producer` | `str` | Name of the component that created it |
-| `data` | `Any` | The actual value |
-| `id` | `str` | UUID4 string |
-| `timestamp` | `datetime` | UTC creation time |
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `create` | `static (*, type_url: str, producer: str, data: Any) -> Artifact` | Factory that stamps `id` (uuid4) and `timestamp` (UTC now) |
-
-`id` and `timestamp` are required fields with no defaults — construct via `Artifact.create()`
-rather than the initialiser unless you are deliberately supplying your own.
-
-`type_url` convention: `<namespace>.v<version>/<resource>` — e.g. `matrix.v1/runtime.model`,
-`ix.v1/trial.observation`, `hardline.v1/completion`.
-
-### `Construct`
-
-Append-only artifact ledger for one DAG execution. A plain mutable class — **not** frozen,
-**not** generic, and it carries no `subject`. Constructed with no arguments.
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `append` | `(artifact: Artifact) -> None` | Append to the ledger. Mutates in place; returns nothing |
-| `query` | `(type_url: str) -> list[Artifact]` | All artifacts of the type, in append order. Empty list if none |
-| `last` | `(type_url: str) -> Artifact` | Most recent artifact of the type. Raises `NotFoundError`, a `KeyError` (message lists available types) |
-| `ledger` | `property -> tuple[Artifact, ...]` | Immutable snapshot of the full ledger |
-| `kinds` | `() -> frozenset[str]` | Every `type_url` present |
-| `__getitem__` | `(type_url: str) -> Any` | Backward-compat shorthand for `last(type_url).data` |
-| `__contains__` | `(type_url: str) -> bool` | Whether any artifact of the type exists |
-| `__len__` | `() -> int` | **Number of artifacts in the ledger.** For distinct `type_url`s, use `len(construct.kinds())` |
-
-`last()` returns the `Artifact`, not its `data`. Reach through to `.data`, or use the
-`construct["type_url"]` shorthand.
-
-The DagCompiler guarantees that if a component's `requires` are satisfiable at compile time,
-those artifacts exist by the time it runs — so `last()` on a declared requirement will not raise.
-
-### `ConstructReader` (Protocol) and `ConstructView`
-
-`ConstructReader` is the read side of a Construct — `query`, `last`, `__getitem__`,
-`__contains__`, `kinds` — and is what `Component.run` receives. A `Construct` satisfies it.
-
-`ConstructView(construct, *, reader, allowed)` is the Orchestrator's implementation: every
-accessor raises `ContractError` for a kind outside `allowed` (the component's `requires`),
-naming the component, the kind, and what it declared. `kinds()` returns only allowed kinds.
-
-### `ContractError`
-
-Raised by the Orchestrator when a component's returned `type_url` doesn't match its declared
-`provides`, or when a component reads a kind outside its declared `requires`.
-
-### Error hierarchy
-
-Every error matrix raises on purpose is a `MatrixError`; `except MatrixError` catches all of
-them.
-
-| Error | Also | Raised when |
-|---|---|---|
-| `MatrixError` | — | base class |
-| `ConfigError` | `ValueError` | a matrix config, agent definition, component config, or type URL is invalid |
-| `NotFoundError` | `KeyError` | a name or type URL is not registered or configured, or a Construct holds no artifact of the kind read |
-| `ContractError` | — | a component's output or an undeclared read breaks its contract |
-| `CompilationError` | — | a component graph is malformed (missing producer, duplicate output, cycle) |
-| `ComponentError` | — | a component raised while the DAG ran; carries `component` (its name) and `construct` (the ledger as it stood when it failed, so artifacts produced before the failure are not lost) |
-| `AgentRuntimeError` | — | an agent runtime could not run a definition — every built-in runtime raises this for an execution failure, whatever its backend |
+type_url("ix", 1, "sensor.activation")          # 'ix.v1.sensor.activation'
+parse_type_url("matrix.v1.runtime.claude-sdk")   # TypeUrl(namespace='matrix', version='v1', resource='runtime.claude-sdk')
+is_type_url("matrix.v1/runtime.mock")            # False: '/' is not part of the grammar
+is_type_url("acme.v1.agent.reviewer")            # False: 'agent' is a kind name
+```
 
 ---
 
-## Orchestration
+## Flows
 
-### `Orchestrator`
+### `Port`
 
-Compiles and executes a DAG of components, batch by batch.
+`Port(type_url: str, many: bool = False, optional: bool = False)`, frozen.
 
-```python
-orch = Orchestrator([probe, sensor, scorer])
-construct = await orch.run()  # no arguments
+| Field | On a required port | On a provided port |
+|-------|--------------------|--------------------|
+| `many` | receives every value on its topic as a tuple (possibly empty); needed when a topic has several producers | (no effect) |
+| `optional` | may be left unbound; the component then sees no value | may be absent from the component's result |
 
-orch = Orchestrator([probe, sensor, scorer], concurrency=4, timeout_s=30)
-```
+Anywhere a port is declared, a bare type URL string means `Port(type_url)`.
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `__init__` | `(components: Sequence[Component], on_node: NodeCallback \| None = None, *, concurrency: int = 1, timeout_s: float \| None = None)` | Compile topology immediately; optional per-node progress callback; `concurrency` caps how many independent members of one batch run at once; `timeout_s` bounds each component's `run` |
-| `run` | `async () -> Construct` | Execute the DAG, return the Construct holding every artifact |
+### `Component` (Protocol)
 
-`run()` takes **no** arguments. External input enters through component constructors
-(factory-closure config), not through the run call. Roots declare `requires = frozenset()`.
+Structural and `runtime_checkable`: implement the shape, no base class.
 
-`on_node` is called as `on_node(name, "start")` as each component begins and `on_node(name,
-"done")` as it finishes.
+| Member | Type |
+|--------|------|
+| `requires` | `Mapping[str, str \| Port]`: port name to type |
+| `provides` | `Mapping[str, str \| Port]`: port name to type |
+| `run` | `async (inputs: Inputs) -> Mapping[str, Any]`: one value per provide port, keyed by port name |
 
-`__init__` calls `DagCompiler.compile()`, so topology errors surface at construction, not at run.
+Configuration arrives when the component is built, never through `run`. A port name may not
+appear in both maps.
 
-Batches run in topological order. Within a batch, `concurrency=1` (the default) runs members
-one at a time; `concurrency > 1` runs up to that many at once via an `asyncio.Semaphore` — the
-ledger order stays batch order regardless of how members finished. A component that raises, or
-that exceeds `timeout_s`, becomes a `ComponentError`; batch siblings that finished before the
-failure are still ledgered. Matrix refuses persistence and retries by design — dump
-`construct.ledger` on the caller side if you need durability.
+### `Inputs`
 
-### `DagCompiler`
+A read-only `Mapping[str, Any]` of port name to value, plus `inputs.context`, a `RunContext`.
+An ordinary port maps to the last value on its topic; a `many` port to a tuple of every value;
+an unbound optional port is absent. A missing key raises `KeyError` listing the bound ports.
 
-Static topology validation. Call directly when you need edges without execution. Not exported
-from `matrix` top-level — import from `matrix.domain.compiler`.
+### `RunContext`
 
-```python
-from matrix.domain.compiler import DagCompiler
+Frozen: `run_id: str`, `member: str` (this member's alias), `episode: int = 0`,
+`deadline: float | None` (a `time.monotonic()` deadline when `Limits.member_timeout_s` is set).
+It says nothing about other members.
 
-registry, edges = DagCompiler.compile([probe, sensor, scorer])
-# registry: {"probe": <Probe>, "sensor": <Sensor>, "scorer": <Scorer>}
-# edges:    {"probe": set(), "sensor": {"probe"}, "scorer": {"sensor"}}
-```
+### `Member`
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `compile` | `static (components: list[Any]) -> tuple[dict[str, Any], dict[str, set[str]]]` | Validate and return (registry, edges) |
+`Member(alias, component, bindings={}, config=None, after=())`, frozen.
 
-Raises `CompilationError` on:
-- **Missing producer** — a component `requires` a type nobody `provides`
-- **Duplicate output** — two components declare the same `provides`
-- **Duplicate name** — two components share a `name`
-- **Cycle** — any cycle in the dependency graph (detected via `graphlib`)
+| Field | Type | Meaning |
+|-------|------|---------|
+| `alias` | `str` | unique in the flow; `^[A-Za-z0-9][A-Za-z0-9_-]*$` |
+| `component` | `Component \| str` | a built component, or the type URL of a registered `component` entry |
+| `bindings` | `Mapping[str, str]` | port name to topic name |
+| `config` | `Mapping[str, Any] \| None` | settings for a component given by type URL; an error for a built one |
+| `after` | `tuple[str, ...]` | aliases this member runs after, without exchanging data |
 
-### `DagScheduler`
+### `Flow`
 
-Yields topological execution batches. Components within a batch are mutually independent. Not
-exported from `matrix` top-level — import from `matrix.domain.scheduler`.
+`Flow(name, members, inputs={})`, frozen. `members: tuple[Member, ...]`;
+`inputs: Mapping[str, str]` maps each input topic to its type URL. A run never changes it.
+
+### `compile_flow`
 
 ```python
-from matrix.domain.scheduler import DagScheduler
-
-scheduler = DagScheduler(registry, edges)
-for batch in scheduler.batches():
-    for component in batch:
-        ...
+compile_flow(flow: Flow, *, resolve=None, schemas=None) -> CompiledFlow
 ```
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `__init__` | `(registry: dict, edges: dict)` | Accept compiled topology |
-| `batches` | `() -> Iterator[tuple[Any, ...]]` | Yield batches in topological order |
+- `resolve(extension_id, config, where) -> Component` builds members given by type URL.
+  `Container.compile` supplies one backed by the registry; without it, such a member is a
+  problem.
+- `schemas: Mapping[str, type[BaseModel]]` maps payload type URLs to the models values of that
+  type must validate against.
 
-### `CompilationError`
+Raises `CompilationError` (kind `config`) whose message lists every problem, also available as
+`error.details["problems"]`. The checks: alias syntax and uniqueness; every port's type URL;
+no port both required and provided; every binding names a declared port; every required,
+non-optional port is bound; every topic carries one type; every consumed topic has a producer
+or is a flow input; nothing provides onto a flow input; a topic fed only by optional outputs
+feeds only optional or `many` ports; a topic with several producers feeds only `many` ports;
+every `after` names a member; no cycle. A cycle is reported after the other
+checks pass, naming the members and the topics it runs through.
 
-Raised by `DagCompiler.compile()` when topology validation fails.
+```python
+from matrix import CompilationError, compile_flow
+
+try:
+    compile_flow(broken)
+except CompilationError as e:
+    for problem in e.details["problems"]:
+        print(problem)
+# members.upper.bindings.txt: no such port; declared: shout, text
+# members.upper.requires.text: required port is not bound
+# topic 'size' carries 'demo.v1.text' (from members.count.text) but members.count.length is 'demo.v1.count'
+```
+
+### `CompiledFlow`
+
+Frozen and reusable.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `name` | `str` | |
+| `members` | `Mapping[str, CompiledMember]` | resolved component, normalised ports, bindings, `after` |
+| `inputs` | `Mapping[str, str]` | input topic to type |
+| `topics` | `Mapping[str, str]` | every topic to its one type |
+| `producers` | `Mapping[str, tuple[tuple[str, str], ...]]` | topic to `(alias, port)` producers, in declaration order |
+| `levels` | `tuple[tuple[str, ...], ...]` | aliases grouped so each level depends only on earlier ones; declaration order within a level |
+| `schemas` | `Mapping[str, type[BaseModel]]` | payload schemas outputs are validated against |
+| `effects` | `Mapping[str, frozenset[str] \| None]` | member alias to the effects its registration declares; `None` is unknown. Filled by `Container.compile`; empty from `compile_flow` |
+
+`declared_effects() -> frozenset[str] | None` is the union of every member's effects, or `None`
+if any member's are unknown. A member built outside the registry, or registered without
+`effects`, makes the whole flow's effects unknown; unknown is never read as none.
+
+---
+
+## Execution
+
+### `Limits`
+
+`Limits(concurrency: int = 1, member_timeout_s: float | None = None)`, frozen.
+`concurrency` caps how many members of one level run at once (`>= 1`); `member_timeout_s`
+bounds each member separately (`> 0`). An invalid value raises `ConfigError`.
+
+### `Executor`
+
+`Executor(observers: Sequence[Observer] = ())`. Stateless between runs; safe to share.
+
+```python
+async Executor.run(
+    flow: CompiledFlow,
+    inputs: Mapping[str, Any] | None = None,
+    *,
+    limits: Limits | None = None,
+    run_id: str | None = None,
+    episode: int = 0,
+) -> Run
+```
+
+1. `inputs` must hold exactly the flow's declared inputs, or `ConfigError` names the missing
+   and unknown ones. Each input is validated against its type's schema, if one is registered
+   (`ContractError` otherwise), and recorded with producer `$input`.
+2. Levels run in order. Each member gets `Inputs` for the topics it bound, each value a deep
+   copy, so a component that mutates what it read changes neither the recorded artifact nor
+   what a sibling sees. A value that cannot be copied is a `ContractError`: values between
+   members must be data, not live handles. A required, non-`many` port whose topic its
+   producers left empty is a `ContractError`.
+3. A member's result must be a mapping holding every non-optional provide port and no other
+   key; each value must validate against its type's schema when one is registered. Otherwise
+   `ContractError`. Values on bound ports are appended to the Construct in declaration order;
+   values on unbound provide ports are dropped.
+4. A member that raises becomes a `ComponentError` (a `MatrixError` it raises keeps its own
+   kind); a timeout is a `ComponentError` saying so. The rest of the level finishes, each
+   failure is recorded in `run.failures`, and `RunError` is raised from the first failure.
+   A timeout's `ComponentError` carries `details["reason"] == "timeout"`.
+
+Cancellation propagates untouched.
+
+### `Run`
+
+| Field / method | Type | Meaning |
+|----------------|------|---------|
+| `run_id` | `str` | |
+| `flow` | `str` | the flow's name |
+| `construct` | `Construct` | every value recorded |
+| `status` | `"running" \| "completed" \| "failed"` | |
+| `started` / `ended` | `datetime` / `datetime \| None` | UTC |
+| `failures` | `list[dict]` | `{"member", "kind", "message"}` per failed member |
+| `episode` | `int` | |
+| `outputs(topic)` | `-> tuple[Any, ...]` | the values on `topic` |
+
+---
+
+## The Construct
+
+See [The data model](../explanation/data-model.md) for the model and the on-disk layout.
+
+### `Artifact`
+
+Frozen pydantic model: `id`, `run_id`, `topic`, `type_url`, `producer` (alias, or `$input`),
+`port`, `value`, `episode`, `timestamp`. `Artifact.create(*, run_id, topic, type_url,
+producer, port, value, episode=0)` stamps `id` and a UTC `timestamp`.
+
+### `Construct`
+
+`Construct(topics: dict[str, str] | None = None)`, topic to type.
+
+| Method | Signature | Behaviour |
+|--------|-----------|-----------|
+| `append` | `(artifact) -> None` | Adds a row. `ValueError` if the topic already carries another type. Only the executor and stores call it |
+| `rows` | `(topic) -> tuple[Artifact, ...]` | In landing order; `()` if none |
+| `values` | `(topic) -> tuple[Any, ...]` | |
+| `last` | `(topic) -> Artifact` | `NotFoundError` listing topics with rows |
+| `by_type` | `(type_url) -> tuple[Artifact, ...]` | Across topics, ledger order |
+| `topics` | `() -> dict[str, str]` | Every topic declared or seen, with its type |
+| `ledger` | property `-> tuple[Artifact, ...]` | Every artifact, append order |
+| `__contains__` | `(topic) -> bool` | True if the topic has a row |
+| `__len__` | `() -> int` | Number of artifacts |
+
+### `ConstructStore` (Protocol)
+
+| Method | Signature | Contract |
+|--------|-----------|----------|
+| `save` | `(run: Run) -> str` | Persists the run; returns where it went. Never rewrites a saved run (`ConfigError`) |
+| `load` | `(run_id) -> Construct` | The Construct as saved |
+| `describe` | `(run_id) -> dict` | The run record: `schema` (`matrix.v1.run`), flow, status, failures, `tables` |
+| `runs` | `() -> list[str]` | Saved run ids, oldest first |
+
+A missing run is `NotFoundError` naming the runs that exist.
+
+`JsonlConstructStore(root: Path | str)` writes `<root>/<run_id>/run.json` and one
+`<topic>.jsonl` per topic; values reload as JSON data. A run id must match `[A-Za-z0-9._-]+`
+and not be `.` or `..`. `MemoryConstructStore()` keeps `Run` objects in memory, values as
+given.
 
 ---
 
 ## Agents
 
-An agent is composition: an **AgentDefinition** (what it is) bound to an **AgentRuntime**
-(where it runs) gives a **BoundAgent**, which satisfies the `Agent` port.
-
 ### `AgentDefinition`
 
-Frozen Pydantic model, `extra="forbid"`. The same shape as a Claude Code agent file.
+What an agent is. Frozen pydantic model, unknown fields rejected.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | `str` | required | Slug |
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `name` | `str` | required | `^[A-Za-z0-9][A-Za-z0-9._-]*$` |
 | `description` | `str` | `""` | |
-| `system_prompt` | `str` | `""` | A markdown file's body |
-| `model` | `str \| None` | `None` | Interpreted by the runtime: SDK alias/id, or a hardline registry name |
-| `tools` | `tuple[str, ...] \| None` | `None` | `None` = runtime default; `()` = **no tools** (never collapsed — SECURITY.md M-2) |
-| `max_turns` | `int \| None` | `None` | ≥ 1; `None` = the runtime's default (an agent file without `maxTurns` runs as in Claude Code) |
-| `metadata` | `dict` | `{}` | Keys a source carried that no runtime interprets |
-
-### `AgentRuntime` (Protocol)
-
-| Method | Signature |
-|--------|-----------|
-| `run` | `async (definition: AgentDefinition, task: str) -> AgentResponse` |
-| `check` *(optional)* | `(definition: AgentDefinition) -> None` — raise `ConfigError` for a definition this runtime cannot honour; `BoundAgent` calls it at binding |
-
-Built-ins, registered as `matrix.v1/runtime.<type>`:
-
-| type | config fields | notes |
-|------|---------------|-------|
-| `claude-sdk` | `permission_mode` (default `"default"`), `cwd`, `setting_sources`, `plugins`, `fallback_model`, `agents` | stamps `family="claude"`; relative plugin paths resolve against `cwd` |
-| `model` | `models` (a hardline registry section), `default_model`, `temperature`, `max_tokens` | one call; refuses definitions with tools at binding (`check`); stamps the answering model's family |
-| `mock` | `responses`, `default`, `family` | offline; records `calls` |
-
-### `BoundAgent`
-
-`BoundAgent(definition, runtime)` — calls `runtime.check(definition)` when the runtime has one. Properties `name`, `definition`, `runtime`;
-`async run(prompt) -> AgentResponse` delegates to `runtime.run(definition, prompt)`, inside an
-OpenTelemetry span named `invoke_agent {name}` (`gen_ai.operation.name=invoke_agent`,
-`gen_ai.agent.name`, plus `gen_ai.request.model`, `gen_ai.usage.input_tokens`,
-`gen_ai.usage.output_tokens`, and matrix's own `matrix.agent.model` / `matrix.agent.family` when
-the response carries them) — the OpenTelemetry GenAI agent-span conventions.
-
-### `Agent` (Protocol)
-
-`async run(prompt: str) -> AgentResponse`. What a consumer calls.
+| `system_prompt` | `str` | `""` | |
+| `model` | `str \| None` | `None` | Interpreted by the runtime: an SDK alias or model id for `claude-sdk`, a hardline registry name for `model`. `None` is the runtime's default |
+| `tools` | `tuple[str, ...] \| None` | `None` | `None` is the runtime's default toolset; `()` is **no tools**, never collapsed into the default |
+| `max_turns` | `int \| None` | `None` | `>= 1`; `None` is the runtime's default |
+| `metadata` | `dict[str, Any]` | `{}` | Keys a source carried that no runtime interprets; kept, never read for behaviour |
 
 ### `AgentResponse`
 
-Frozen Pydantic model, flat for DataFrame compatibility.
+The runtime-neutral record of one session. Frozen.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `content` | `str` | `""` | The response text |
-| `tool_calls` | `tuple[dict, ...]` | `()` | Plain `{name, input}` dicts |
-| `tokens_input` | `int` | `0` | |
-| `tokens_output` | `int` | `0` | |
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `content` | `str` | `""` | |
+| `tool_calls` | `tuple[dict, ...]` | `()` | `{name, input}` per call |
+| `tokens_input`, `tokens_output` | `int` | `0` | |
 | `duration_ms` | `int` | `0` | |
-| `cost_usd` | `float \| None` | `None` | When the backend reports it |
+| `cost_usd` | `float \| None` | `None` | when the backend reports it |
 | `num_turns` | `int` | `0` | |
-| `family` | `str \| None` | `None` | Model family that produced it — what out-of-family checks read |
-| `model` | `str \| None` | `None` | Model id or registry name, when known |
-| `stop` | `str \| None` | `None` | Why the session ended: `completed`, or the limit hit (`max_turns`, `max_budget_usd`). A limit is reported, not raised; a failed session raises `AgentRuntimeError` |
+| `family` | `str \| None` | `None` | model family that answered (`claude`, `qwen`, ...), stamped by the runtime |
+| `model` | `str \| None` | `None` | model id or registry name, when known |
+| `stop` | `str \| None` | `None` | `completed`, or the limit reached (`max_turns`, `max_budget_usd`, ...). A limit is not a failure |
+
+### `AgentRuntime` (Protocol)
+
+| Method | Signature | Contract |
+|--------|-----------|----------|
+| `check` | `(definition) -> None` | **Required.** Raises `ConfigError` for a definition the runtime cannot honour. A runtime that accepts everything implements it as a no-op |
+| `run` | `async (definition, task: str) -> AgentResponse` | Returns a response whose `stop` says why the session ended, or raises `AgentRuntimeError` with a `reason`. Never an empty normal response for a failed session |
+
+### `Agent` (Protocol) and `BoundAgent`
+
+`Agent` is what callers use: `name` and `async run(task: str) -> AgentResponse`.
+
+`BoundAgent(definition, runtime, *, observers=())` satisfies it. Construction calls
+`runtime.check(definition)`, so a refusal happens at binding. Properties `name`,
+`definition`, `runtime`. `run(task)` emits `agent.start` and `agent.end`.
+
+### Built-in runtimes
+
+Registered at the `runtime` point. In config, `type:` takes the short name.
+
+| `type` | Type URL | Config fields | Needs | Notes |
+|--------|----------|---------------|-------|-------|
+| `claude-sdk` | `matrix.v1.runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (`[]` is hermetic), `plugins` (relative `path` resolved against `cwd`), `fallback_model`, `agents` | `cwd` | Extra `[claude]`. Accepts every definition. `bypassPermissions` and `dontAsk` log a WARNING. Stamps `family="claude"` |
+| `model` | `matrix.v1.runtime.model` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. One call, no tool loop: `check` refuses a definition that declares tools |
+| `mock` | `matrix.v1.runtime.mock` | `responses` (task to reply), `default` (reply for an unmatched task; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | Offline. Accepts every definition. Records `calls` |
+
+Classes: `matrix.adapters._out.runtime.claude_sdk.ClaudeSdkRuntime`,
+`matrix.adapters._out.runtime.model.ModelAgentRuntime`,
+`matrix.adapters._out.runtime.mock.MockRuntime`.
 
 ### `DefinitionSource` (Protocol)
 
-`load() -> list[AgentDefinition]`, `describe() -> str`. Built-in:
-`MarkdownDefinitionSource(directory)` reads `*.md` (frontmatter `name`, `description`,
-`tools` as a comma string or list, `model`, `max_turns`/`maxTurns`; body = system prompt;
-other keys → `metadata`). Errors name the file.
+`load() -> list[AgentDefinition]`, `describe() -> str`.
+`matrix.adapters._out.definitions.markdown.MarkdownDefinitionSource(directory)` reads every
+`*.md` in a directory, in Claude Code's agent-file format:
+
+```markdown
+---
+name: reviewer                 # defaults to the file stem
+description: Reviews a diff for correctness.
+tools: Read, Grep, Glob        # comma string or YAML list; omit for the runtime default
+model: sonnet                  # optional
+max_turns: 3                   # optional; maxTurns also accepted
+color: blue                    # anything else is kept in metadata
+---
+You are a careful reviewer...  (the body is the system prompt)
+```
+
+Errors name the file. A missing directory is a `ConfigError`.
+
+### `matrix.v1.agent-step`
+
+A registered `component` that runs one composed agent as a flow member. Constants:
+`AGENT_STEP = "matrix.v1.agent-step"`, `AGENT_RESPONSE = "matrix.v1.agent-response"`,
+`TASK = "matrix.v1.task"`.
+
+`AgentStepConfig` (unknown keys rejected):
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `agent` | `str` | required | a composed agent's name |
+| `inputs` | `dict[str, str]` | `{"task": "matrix.v1.task"}` | port name to type URL; these are the step's `requires` |
+| `task` | `str \| None` | `None` | template with `{port}` placeholders (`{{ }}` for literal braces). `None` is allowed only with exactly one input, whose value is the task |
+| `output` | `str \| None` | `None` | a payload type URL; adds the `result` port |
+
+Ports provided: `response` (`matrix.v1.agent-response`), and `result` (the `output` type) when
+`output` is set. Input values are rendered as text: a string as is, a pydantic model as
+indented JSON, anything else through `json.dumps`. `result` is the JSON document in the reply,
+either the whole reply or a fenced `json` block; a reply with no JSON document is a
+`ContractError`. An unknown agent name, like any member that cannot be built, is reported
+among the flow's compile problems.
+
+---
+
+## The registry
+
+### Extension points and entries
+
+Points matrix declares: `runtime`, `component`, `payload-type`, `observer`. Other packages
+declare their own with `add_point` (ix declares `sensor` and `engine`).
+
+`Entry` (frozen):
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `point` | `str` | |
+| `type_url` | `str` | |
+| `build` | `Callable` | called as `build(validated_config, **needs)`, or `build(**needs)` when `config` is `None`. For `payload-type`, the model itself |
+| `config` | `type[BaseModel] \| None` | the model its settings validate against |
+| `needs` | `frozenset[str]` | shared things composition must hand it: `agents`, `models`, `cwd`, or keys of `compose(context=...)` |
+| `effects` | `frozenset[str] \| None` | what it may touch: `network`, `subprocess`, `filesystem`, `model`. `None` is unknown, not none |
+| `summary` | `str` | |
+| `stability` | `"stable" \| "beta" \| "experimental"` | default `beta` |
+| `origin` | `str` | the distribution that registered it; `(direct)` for a direct call |
+
+`entry.describe()` returns all of it as a JSON-ready dict, with `config` as a JSON schema.
+
+`Failure(extension, origin, error)` records an extension that failed to load or a refused
+registration.
+
+### `Registry`
+
+| Method | Signature | Behaviour |
+|--------|-----------|-----------|
+| `add_point` | `(point) -> Registry` | Declares an extension point |
+| `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta") -> Registry` | `ConfigError` for an undeclared point, an invalid type URL, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
+| `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the model's docstring |
+| `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
+| `entries` | `(point=None) -> list[Entry]` | Sorted by point, then type URL |
+| `__contains__` | `((point, type_url)) -> bool` | |
+| `create` | `(point, type_url, config=None, *, needs=None, where="<config>") -> Any` | Validates `config` and builds the entry with the needs it declared. `ConfigError` for a missing need, for config given to an untyped entry, or for invalid config (each problem as a key path under `where`) |
+| `payload_schemas` | `() -> dict[str, type[BaseModel]]` | Every `payload-type` entry that is a pydantic model |
+| `discover` | `(group="matrix.extensions") -> Registry` | Loads every entry point in the group, in name order (see below) |
+
+Attributes: `points: set[str]`, `failures: list[Failure]`.
+
+`discover` rules:
+
+- Each entry point's value is `register(registry) -> None`.
+- Registration is all-or-nothing per extension: if `register` raises part way, none of its
+  entries or points stay, and the failure is recorded in `failures`.
+- An extension that registers at an undeclared point is retried once every other extension
+  has loaded; if the point is still undeclared, it is recorded as a failure.
+- Namespaces have owners: a distribution owns the type URLs whose root segment is its own
+  name (`matrix` owns `matrix.*`, `ix` owns `ix.*`). When two extensions register the same
+  type URL at one point, the owner keeps it whichever loads first, and the other extension is
+  quarantined whole, so an extension cannot replace a built-in by sorting before it. Between
+  two non-owners, the first in entry-point name order keeps it and the second fails, naming
+  both. Code calling `register` directly is treated as the owner.
+
+`default_registry(*, discover=True) -> Registry` returns a registry with every
+`matrix.extensions` entry point loaded. `discover=False` registers only matrix's built-ins.
+
+`runtime_type_url(name)` maps `claude-sdk` to `matrix.v1.runtime.claude-sdk`;
+`observer_type_url(name)` maps `otel` to `matrix.v1.observer.otel`. A name containing `.` is
+returned unchanged.
+
+Matrix's own entries:
+
+| Point | Type URL | Needs | Effects |
+|-------|----------|-------|---------|
+| `runtime` | `matrix.v1.runtime.claude-sdk` | `cwd` | `model`, `network`, `subprocess`, `filesystem` |
+| `runtime` | `matrix.v1.runtime.model` | `models` | `model`, `network` |
+| `runtime` | `matrix.v1.runtime.mock` | | none |
+| `component` | `matrix.v1.agent-step` | `agents` | unknown |
+| `payload-type` | `matrix.v1.agent-response` | | |
+| `payload-type` | `matrix.v1.task` | | |
+| `observer` | `matrix.v1.observer.otel` | | `network` |
+
+A third-party extension:
+
+```toml
+[project.entry-points."matrix.extensions"]
+acme = "acme.matrix_ext:register"
+```
+
+```python
+from pydantic import BaseModel
+
+
+class Review(BaseModel):
+    """A review verdict."""
+
+    verdict: str
+    score: int
+
+
+class ScorerConfig(BaseModel):
+    threshold: int = 3
+
+
+class Scorer:
+    requires = {"text": "acme.v1.diff"}
+    provides = {"review": "acme.v1.review"}
+
+    def __init__(self, config: ScorerConfig) -> None:
+        self.threshold = config.threshold
+
+    async def run(self, inputs):
+        n = len(inputs["text"])
+        return {"review": {"verdict": "ok" if n < self.threshold else "long", "score": n}}
+
+
+def register(registry):
+    registry.register(
+        "component",
+        "acme.v1.scorer",
+        Scorer,
+        config=ScorerConfig,
+        effects=set(),
+        summary="Scores a diff by length",
+        stability="experimental",
+    )
+    registry.register_payload("acme.v1.review", Review)
+```
+
+---
+
+## Observers
+
+### `Event`
+
+Frozen: `name`, `span`, `run_id: str | None`, `parent: str | None`, `fields: dict`,
+`time: datetime` (UTC), `schema: str = "matrix.v1.event"`. A `*.start`/`*.end` pair shares a
+`span`. An agent called from inside a flow member reports that member's span as its `parent`
+and the member's run id as its `run_id`; called outside a flow, both are `None`.
+
+| Event | Emitted by | `span` / `parent` | `fields` |
+|-------|-----------|-------------------|----------|
+| `run.start` | executor | run id / none | `flow` |
+| `run.end` | executor | run id / none | `flow`, `status`, `artifacts` |
+| `member.start` | executor | new id / run id | `member` |
+| `member.end` | executor | same / run id | `member`, `status` (`ok` or an error kind), `duration_ms` |
+| `artifact.append` | executor | artifact id / run id | `topic`, `type_url`, `producer`, `port` |
+| `agent.start` | `BoundAgent` | new id / the calling member's span | `agent`, `model` |
+| `agent.end` | `BoundAgent` | same / the calling member's span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`; or `status="error"`, `error`, `reason` |
+
+### `Observer` (Protocol) and `RecordingObserver`
+
+`Observer` is `on_event(event: Event) -> None`. An observer that raises is logged and skipped;
+it cannot stop a run. `RecordingObserver()` keeps `events: list[Event]`; `names()` lists their
+names.
+
+### The `otel` observer
+
+`matrix.v1.observer.otel`, enabled with `observers: [otel]`. Requires `[otel]`. Spans:
+`matrix.run` for a run, `matrix.member` under it for each member, and `invoke_agent {agent}`
+for each agent session (`gen_ai.operation.name=invoke_agent`). Fields become attributes:
+`agent`, `model`, `tokens_input` and `tokens_output` map to `gen_ai.agent.name`,
+`gen_ai.request.model`, `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens`; other
+scalar fields become `matrix.<field>`. A failing member or run, or an agent ending in error,
+sets the span status to ERROR.
+
+### `configure_telemetry`
+
+`configure_telemetry(*, service_name="matrix", endpoint=None, console=False) -> None`
+configures the OpenTelemetry SDK exporter. `endpoint` is an OTLP gRPC endpoint and falls back
+to `OTEL_EXPORTER_OTLP_ENDPOINT`; `console=True` prints spans. With neither, it does nothing.
+Requires `[otel]`.
 
 ---
 
 ## Configuration
 
-Each consumer (ix, memex, radix) defines its own config model. Matrix owns the platform section
-and supplies the loading/merging machinery.
+### Tiers
+
+`load_config` reads these files, lowest priority first, and merges them before validating:
+
+| Tier | File | For |
+|------|------|-----|
+| 1 | `~/.matrix/config.yaml` | your runtimes, models and agents, for every tool |
+| 2 | `~/.<tool>/config.yaml` | your defaults for this tool |
+| 3 | `./matrix.yaml` | the project's shared runtimes and agents |
+| 4 | `./<tool>.yaml` | the project's settings for this tool |
+| 5 | `$MATRIX_CONFIG` | an explicit shared file; must exist |
+| 6 | `$<TOOL>_CONFIG` | an explicit tool file; must exist |
+
+Schema defaults sit below tier 1; a tool's command-line flags sit above tier 6. Absent files
+read as empty. A file that exists but is not a YAML mapping is a `ConfigError` naming it.
+
+Merge rules: mappings merge key by key, later tiers winning; lists replace, except
+`matrix.definitions`, whose directories accumulate across tiers, each relative directory
+resolved against the file that declared it.
 
 ### `MatrixConfig`
 
-The `matrix:` section. Frozen, `extra="forbid"`.
+The `matrix:` section. Frozen, unknown keys rejected.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `definitions` | `tuple[str, ...]` | `()` | Directories of `*.md` agent files, relative to `compose(base_dir=...)` |
-| `runtimes` | `dict[str, RuntimeConfig]` | `{}` | Named runtimes: `{type: <runtime type>, ...options}` |
-| `agents` | `dict[str, AgentConfig]` | `{}` | `{runtime, definition?, description?, system_prompt?, model?, tools?, max_turns?}` |
-| `models` | `dict \| None` | `None` | A hardline registry section, handed to `type: model` runtimes that carry none |
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `definitions` | `tuple[str, ...]` | `()` | directories of `*.md` agent files |
+| `runtimes` | `dict[str, RuntimeConfig]` | `{}` | named runtimes |
+| `observers` | `tuple[str, ...]` | `()` | observer short names (`otel`) or type URLs |
+| `agents` | `dict[str, AgentConfig]` | `{}` | named agents |
+| `models` | `dict \| None` | `None` | a hardline registry section (`{default?, models: {...}}`) handed to every `model` runtime that has none. `None` lets hardline read its own tiers |
 
-### `compose`
+`RuntimeConfig`: `type` (a built-in short name or a full type URL) plus that runtime's own
+options as extra keys, validated by the runtime's config model.
 
-`compose(config, *, registry=None, base_dir=None, source="matrix", definition_sources=(), context=None) -> Container`
-
-Builds runtimes (each resolved by `runtime_type_url(type)` through the registry, options
-validated by that runtime's typed config), loads definitions, binds agents. Every failure
-is a `ConfigError` naming the key path and the legal values. `registry` defaults to
-`default_registry()` — built-in runtimes plus every `matrix.components` entry point.
-
-**Shared context.** `matrix.models` (and anything passed in `context`, e.g. `{"cwd": ...}`) is
-offered to every runtime whose typed config declares a field of that name and leaves it unset —
-`compose` never names a specific runtime type to do this, so a third-party runtime that declares
-`models` gets the registry the same way the built-in `model` runtime does. `with_context(registry,
-type_url, options, context)` is the function that does the merge, for callers building runtimes
-outside `compose`.
-
-### `Container`
-
-`agent(name) -> BoundAgent`, `runtime(name) -> AgentRuntime`, properties `agents`,
-`runtimes`, `definitions`, `config`, `registry`; `build_orchestrator(specs)` resolves
-`(type_url, config)` pairs into an `Orchestrator`.
-
-### `Config[C]`
-
-Composes Matrix platform settings with one client's settings. Frozen; generic over the client's
-Pydantic model type.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `matrix` | `MatrixConfig` | `MatrixConfig()` | Platform-level settings |
-| `client` | `C` | required | Client-provided Pydantic model |
-
-```python
-from matrix import load_config, Config, MatrixConfig
-from pydantic import BaseModel, ConfigDict
-
-
-class MyToolConfig(BaseModel):          # a made-up client model, for illustration
-    model_config = ConfigDict(frozen=True)
-    default_trials: int = 5
-
-
-config = load_config(MyToolConfig, client_key="mytool")
-config.matrix.runtimes        # {} unless a tier declares some
-config.client.default_trials  # 5
-```
-
-### `load_config`
-
-Reads YAML sources, merges tiers, validates both sections.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `client_type` | `type[C]` | Pydantic model class for the client section |
-| `client_key` | `str` | YAML key for the client section (**required**, positional-or-keyword) |
-| `sources` | `list[Path] \| None` | Paths in priority order. `None` → `discover_sources(client_key)` |
-
-A validation failure raises `ConfigError` naming each bad key path (`matrix.agents.a.runtim`)
-and every file consulted. A tier that exists but is not a YAML mapping is an error naming the
-file, not an empty tier.
-
-```python
-config = load_config(
-    client_type=MyToolConfig,
-    client_key="mytool",
-    sources=[Path("mytool.yaml")],  # omit for 3-tier discovery
-)
-```
-
-### `discover_sources`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `tool` | `str` | Tool name — owns the config location |
-| `project_root` | `Path \| None` | Defaults to `Path.cwd()` |
-
-Returns paths in priority order (first = lowest precedence):
-
-1. Pydantic model defaults — no file; built into the schema
-2. User-level — `~/.{tool}/config.yaml`
-3. Project-level — `{project_root}/{tool}.yaml`
-4. Explicit — the file named by `${TOOL}_CONFIG` (e.g. `IX_CONFIG` for `tool="ix"`), when that
-   environment variable is set. Unlike the first three tiers, this one must exist: a variable
-   pointing at a missing file raises `ConfigError`.
-
-Later tiers override earlier ones. Missing user- and project-level files are skipped, not
-errors. `config_env_var(tool)` builds the environment variable name (`"ix"` → `"IX_CONFIG"`,
-`"-"`/`"."` replaced with `"_"`) without constructing the rest of the discovery list.
-
-### `deep_merge`
-
-`(base: dict, override: dict) -> dict` — recursive merge. Override wins. **Lists replace
-entirely**; they are not concatenated or merged element-wise. Not exported from `matrix`
-top-level — import from `matrix.composition.config`.
-
-### Multi-consumer YAML
-
-One file can serve several consumers. Each reads the shared `matrix:` section plus its own:
+`AgentConfig` (unknown keys rejected): `runtime` (required, a name under `runtimes`),
+`definition` (a loaded definition's name; defaults to the agent's own key), and overrides
+`description`, `system_prompt`, `model`, `tools`, `max_turns`. An agent with no loaded
+definition must give `system_prompt` inline.
 
 ```yaml
 matrix:
-  runtime:
-    model: claude-sonnet-4-5-20250929
+  definitions: [agents/]
+  models:
+    default: qwen3-8b
+    models:
+      qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
+                 model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
+  runtimes:
+    sdk:   {type: claude-sdk, permission_mode: default, setting_sources: []}
+    local: {type: model}
+  observers: [otel]
+  agents:
+    reviewer: {runtime: sdk}                                    # agents/reviewer.md
+    triage:   {runtime: local, definition: reviewer, tools: [], model: qwen3-8b}
+    greeter:  {runtime: local, system_prompt: "Say hello."}
 mytool:
-  default_trials: 5
-memex:
-  chunk_size: 512
+  trials: 3
 ```
+
+### `Config[C]`
+
+Frozen, generic over a tool's pydantic model: `matrix: MatrixConfig`, `client: C`, and
+`sources: tuple[str, ...]`, every file consulted (lowest priority first, absent ones marked
+`(absent)`).
+
+### `load_config`
 
 ```python
-mytool_config = load_config(MyToolConfig, "mytool")  # reads matrix: + mytool:
-memex_config = load_config(MemexConfig, "memex")  # reads matrix: + memex:
+load_config(client_type=None, client_key="matrix", sources=None) -> Config
 ```
 
-### `configure_telemetry`
+- `client_type`: the tool's pydantic model for its own section.
+- `client_key`: the tool's name: its section key and the `<tool>` in the tiers.
+- `sources`: paths (or `ConfigSource` objects) lowest priority first; `None` uses
+  `discover_sources(client_key)`.
 
-`(**kwargs)` — configures the OpenTelemetry SDK. Requires the extra: `uv add matrix[otel]`.
-Imported lazily, so matrix runs without the SDK installed (the API package alone is enough —
-spans become no-ops).
+Raises `ConfigError` naming every bad key path (`matrix.agents.a.runtim`) and every file
+consulted.
 
-Spans emitted:
+```python
+from pydantic import BaseModel
 
-| Span | Attributes |
-|------|-----------|
-| `matrix.dag.run` | `matrix.dag.artifact_count` |
-| `matrix.component.run` | `matrix.component.name`, `matrix.component.provides` |
-| `invoke_agent {name}` | `gen_ai.operation.name`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.agent.model`, `matrix.agent.family` — emitted by `BoundAgent.run`, not the DAG orchestrator |
+from matrix import compose, load_config
+
+
+class MyToolConfig(BaseModel):
+    trials: int = 5
+
+
+config = load_config(MyToolConfig, "mytool")   # reads matrix: and mytool: from every tier
+config.client.trials
+container = compose(config)
+```
+
+`discover_sources(tool, project_root=None) -> list[Path]` returns the tier paths
+(`project_root` defaults to the working directory); a set but missing `$MATRIX_CONFIG` or
+`$<TOOL>_CONFIG` is a `ConfigError`. `config_env_var(tool)` gives the variable name:
+`"my-tool"` becomes `MY_TOOL_CONFIG`.
+
+`ConfigSource` (Protocol): `read() -> dict` (empty when absent, no validation) and
+`describe() -> str`.
 
 ---
 
-## Component Registry
+## Composition
 
-### `ComponentRegistry`
-
-Type URL → factory, with typed config and discovery. The xDS typed-config registry pattern.
+### `compose`
 
 ```python
-registry = (
-    ComponentRegistry()
-    .register("app.v1/probe", make_probe)                              # factory(**config)
-    .register_typed("app.v1/sensor", SensorConfig, lambda c: Sensor(c)) # validated first
-)
-component = registry.create("app.v1/sensor", {"threshold": 3}, source="app.yaml")
+compose(
+    config: Config | MatrixConfig,
+    *,
+    registry: Registry | None = None,
+    base_dir: Path | str | None = None,
+    source: str = "matrix",
+    definition_sources: Sequence[DefinitionSource] = (),
+    context: Mapping[str, Any] | None = None,
+) -> Container
 ```
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `register` | `(type_url, factory) -> ComponentRegistry` | `factory(**config)`. An unaccepted or missing key raises `ConfigError` naming the type URL and the keys, not a bare `TypeError`. A malformed `type_url` or a duplicate registration also raises `ConfigError` |
-| `register_typed` | `(type_url, config_cls, build) -> ComponentRegistry` | Config validated through `config_cls` (pydantic) first; failures raise `ConfigError` with `source`, type URL and key path. Same malformed/duplicate `type_url` check as `register` |
-| `create` | `(type_url, config=None, *, source="<config>") -> Any` | Create. `NotFoundError` (a `KeyError`) lists registered type URLs when unknown |
-| `config_class` | `(type_url) -> type[BaseModel] \| None` | The typed config a `register_typed` entry validates against; `None` if untyped or unregistered. What `with_context` reads to decide which shared-context fields a component wants |
-| `discover` | `(group="matrix.components") -> ComponentRegistry` | Load every entry point in `group`; each is `register(registry) -> None` |
-| `types` | `() -> frozenset[str]` | All registered type URLs |
-| `__contains__` / `__len__` | | |
+Builds, in order: observers, runtimes (each resolved by type through the registry, options
+validated by its config model), definitions (every `*.md` in each `definitions` directory,
+plus `definition_sources`), and agents (each runtime's `check` runs here). Makes no model or
+tool call.
 
-`default_registry(discover=True)` is a registry with the built-in runtimes, plus discovered
-extensions. `runtime_type_url("claude-sdk")` → `"matrix.v1/runtime.claude-sdk"`.
+- `registry` defaults to `default_registry()`.
+- `base_dir` anchors relative `definitions` directories that `load_config` did not already
+  resolve; defaults to the working directory.
+- `source` prefixes error messages (`mytool.yaml: agents.triage.runtime: ...`).
+- `context` supplies shared needs, such as `{"cwd": "/path"}`, to extensions that declare them.
 
-### Type URLs
+Every failure is a `ConfigError` naming the key path and the legal values; one definition name
+in two directories is also a `ConfigError`.
 
-`type_url(namespace, version, resource) -> str` builds and validates a type URL against the
-`<namespace>.v<version>/<resource>` pattern (lowercase; version like `1`, `1alpha1`, `2beta1`),
-e.g. `type_url("ix", 1, "sensor.activation")` → `"ix.v1/sensor.activation"`. `parse_type_url(url)
--> TypeUrl` splits one back into its `namespace`, `version`, `resource` fields; both raise
-`ConfigError` naming the expected shape on a malformed URL. `ComponentRegistry` calls
-`parse_type_url` at every registration, so a malformed type URL fails when the extension loads,
-not when a config first names it.
+### `Container`
+
+| Member | Returns |
+|--------|---------|
+| `config`, `registry` | what it was composed from |
+| `runtimes`, `definitions`, `agents` | name to object |
+| `observers` | `tuple[Observer, ...]` |
+| `agent(name)` | `BoundAgent`; `NotFoundError` listing configured agents |
+| `runtime(name)` | `AgentRuntime`; `NotFoundError` listing configured runtimes |
+| `bind(definition, runtime)` | a `BoundAgent` on the configured runtime named `runtime`, with the container's observers |
+| `needs()` | the shared needs: `agents`, `models`, `cwd`, plus `context` keys |
+| `compile(flow)` | `CompiledFlow`, building members given by type URL from the registry's `component` entries, with the registry's payload schemas and each member's declared `effects` (an `agent-step` member has its agent's runtime's effects) |
+| `executor()` | an `Executor` with the container's observers |
 
 ---
 
-## Migrating from the pre-intake contract
+## Errors
 
-If you wrote against the previous docs, these are the breaks:
+Every error matrix raises deliberately is a `MatrixError`. Each carries a `kind` (what the
+caller can do about it), an `exit_code`, an optional `fix` (one actionable sentence), and
+`details` (structured fields). `payload()` renders
+`{"error": {"kind", "message", "fix", ...details}}`.
 
-| Old (documented, non-existent) | Current (in code) |
-|---|---|
-| `consumes` / `produces` | `requires` / `provides` |
-| `async run(...) -> Any` | `async run(...) -> TypedStruct` |
-| `Artifact.kind` | `Artifact.type_url` |
-| `Artifact.created_at: float` (monotonic) | `Artifact.timestamp: datetime` (UTC) |
-| `Construct[S]`, frozen dataclass, `subject: S` | `Construct`, mutable class, no subject, no generic |
-| `construct.append(a) -> Construct[S]` | `construct.append(a) -> None` (mutates) |
-| `construct.last(kind) -> Any` | `construct.last(type_url) -> Artifact` |
-| `construct.all(kind)` | `construct.query(type_url)` |
-| `await orch.run("my-subject")` | `await orch.run()` |
+| Kind | Exit | Meaning, and the next move |
+|------|------|----------------------------|
+| `config` | 3 | a config, definition, flow or argument is invalid: fix it |
+| `not_found` | 4 | a name or type URL is not registered or configured |
+| `contract` | 1 | a component broke its declared ports (a bug in it) |
+| `component` | 1 | a component raised while running |
+| `transient` | 5 | unavailable, rate-limited or timed out: retry later |
+| `auth` | 6 | credentials missing or refused |
+| `unknown` | 1 | anything else that went wrong |
 
-The `consumes` → `requires` and `produces` → `provides` rename landed at gnx intake
-(2026-08-17), aligning the runtime's vocabulary with slick's Manifest field names. Everything
-else in this table was already true in the code and merely mis-documented.
+`EXIT_CODES` is this mapping; `ErrorKind` is the literal type of the kinds.
 
-### From the 2026-08-17 contract (breaks on 2026-09-24)
+| Class | Kind | Also | Raised when |
+|-------|------|------|-------------|
+| `MatrixError` | `unknown` | `Exception` | base class |
+| `ConfigError` | `config` | `ValueError` | a config, definition, flow, type URL or argument is invalid |
+| `CompilationError` | `config` | `ConfigError` | a flow is miswired; `details["problems"]` lists every problem |
+| `NotFoundError` | `not_found` | `KeyError` | a name, type URL, topic or saved run does not exist; the message lists those that do |
+| `ContractError` | `contract` | | a member's output or a flow input breaks its declared type or ports |
+| `ComponentError` | `component` | | a member raised or timed out; the original exception is the cause |
+| `AgentRuntimeError` | from `reason` | | an agent session failed |
+| `RunError` | the failing member's | | a flow run failed; `run` is the partial `Run`, `member` the alias, `construct` the partial Construct |
 
-| Before | After |
-|--------|-------|
-| `ClaudeAgent(system_prompt=..., max_turns=..., allowed_tools=..., permission_mode=...)` | `AgentDefinition(system_prompt=..., max_turns=..., tools=...)` bound to `ClaudeSdkRuntime(ClaudeSdkRuntimeConfig(permission_mode=...))` — or config: `runtimes: {sdk: {type: claude-sdk}}` |
-| `AnthropicAgent` | removed; a single model call is the `model` runtime, through hardline, for any family |
-| `MockRuntime.invoke(system, messages) -> str` | `MockRuntime.run(definition, task) -> AgentResponse` — now satisfies the port |
-| `MatrixConfig.runtime.model` / `.max_tokens` | removed (nothing consumed them); `MatrixConfig` declares `definitions`, `runtimes`, `agents`, `models` |
-| `Component.run(construct: Construct)` | `run(construct: ConstructReader)`; undeclared reads raise `ContractError` |
-| registry keys `matrix.agent.<type>` | `matrix.v1/runtime.<type>` |
+`AgentRuntimeError(message, *, reason="failed", fix=None, **details)` maps its `reason`
+(`RuntimeReason`) to a kind; a reason matrix does not know maps to `unknown`. `retryable` is
+true for the transient ones:
+
+| `reason` | Kind | Meaning |
+|----------|------|---------|
+| `unavailable` | `transient` | backend down |
+| `rate_limited` | `transient` | |
+| `timeout` | `transient` | |
+| `auth` | `auth` | credentials missing or refused |
+| `incapable` | `config` | the runtime cannot honour the definition (or is not installed) |
+| `refused` | `unknown` | the model declined |
+| `failed` | `unknown` | the session ran and broke |
+
+```python
+from matrix import AgentRuntimeError
+
+e = AgentRuntimeError("agent 'x': HTTP 429", reason="rate_limited")
+e.kind, e.retryable, e.exit_code   # ('transient', True, 5)
+```
+
+---
+
+## The `matrix` command
+
+Read-only: it inspects extensions and configs and never runs a flow or calls a model. Data
+goes to stdout, diagnostics to stderr.
+
+| Command | Output (`--json` schema) |
+|---------|--------------------------|
+| `matrix catalog [--point P]` | every registered entry (point, type URL, stability, summary, origin, needs, effects, whether configurable) and every failed extension (`matrix.v1.catalog`) |
+| `matrix describe TYPE_URL` | the full entry, including its config JSON schema (`matrix.v1.extension`); `not_found` if nothing is registered under it |
+| `matrix config [--tool T] [--sources]` | the merged `matrix` section and the files consulted (`matrix.v1.config`); with `--sources`, only the files (`matrix.v1.config-sources`) |
+| `matrix check [--tool T]` | composes runtimes and agents and reports what composed (`matrix.v1.check`) |
+| `matrix agents [--tool T]` | each agent's name, runtime, runtime type, model, tools and description (`matrix.v1.agents`) |
+| `matrix --version` | the installed version |
+
+`--tool` (default `matrix`) selects whose config tiers to read. With `--json`, an error is the
+`payload()` document on stderr; without it, `error (<kind>): <message>` and `fix: <fix>`.
+
+| Exit | Meaning |
+|------|---------|
+| 0 | ok |
+| 1 | failure (`contract`, `component`, `unknown`) |
+| 2 | usage |
+| 3 | config |
+| 4 | not found |
+| 5 | transient |
+| 6 | auth |
+
+```console
+$ matrix check
+error (config): matrix: agents.greeter.runtime: 'sdk' is not a configured runtime. Configured: offline
+fix: name a runtime defined under matrix.runtimes
+$ echo $?
+3
+```

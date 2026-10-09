@@ -29,7 +29,7 @@ catalog:
       env: GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 0.5, burst: 2 }
-    user_agent: "recon/0.8.0"
+    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
     timeout: 60
 
 collectors:

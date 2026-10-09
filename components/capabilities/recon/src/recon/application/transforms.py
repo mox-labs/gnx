@@ -1,4 +1,4 @@
-"""Transforms — registered field-level transforms + normalize spec engine.
+"""Transforms — the built-in field transforms + the normalize spec engine.
 
 Normalize specs map output column names to source paths with optional transforms:
   title: title                          # direct field
@@ -9,6 +9,11 @@ Normalize specs map output column names to source paths with optional transforms
 
 Path resolution uses glom. Our '*' list-map syntax translates to glom tuple specs.
 The '|$transform' pipe syntax is ours — applied after path resolution.
+
+Transforms are extensions: each is registered under the entry-point group
+``recon.transforms`` (the built-ins below included) and looked up by name without the
+``$``. This module holds no registry of its own; callers pass the mapping they loaded, and
+``BUILTIN_TRANSFORMS`` is the default for code that runs without the composition root.
 """
 
 from __future__ import annotations
@@ -18,8 +23,12 @@ from typing import TYPE_CHECKING, Any
 
 from glom import GlomError, glom
 
+from recon.domain.exceptions import ConfigError
+
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Mapping
+
+    from recon.domain.collector import Transform
 
 # --- Transforms ---
 
@@ -83,21 +92,15 @@ def first(items: list[object] | None) -> object | None:
     return items[0]
 
 
-# A transform takes the extracted value (any YAML-derived shape) plus optional
-# keyword config and returns a normalized value. Parameterised loosely on purpose:
-# the registry is an extension seam, and `register_transform` accepts adapter-layer
-# transforms this module never sees.
-TRANSFORMS: dict[str, Callable[..., object]] = {
-    "$html2text": html2text,
-    "$inverted_index": inverted_index,
-    "$join": join,
-    "$first": first,
+#: The pure built-ins. `markitdown` is also built in, but it is an adapter (it reads a
+#: file), so it lives in adapters/_out and reaches the engine only through the
+#: entry-point group.
+BUILTIN_TRANSFORMS: Mapping[str, Transform] = {
+    "html2text": html2text,
+    "inverted_index": inverted_index,
+    "join": join,
+    "first": first,
 }
-
-
-def register_transform(name: str, fn: Callable[..., object]) -> None:
-    """Register a named transform (for adapter-layer transforms like $pdf2text)."""
-    TRANSFORMS[name] = fn
 
 
 # --- Normalize Spec Engine ---
@@ -143,27 +146,67 @@ def resolve_path(data: Any, path: str) -> Any:
         return None
 
 
-def apply_normalize(raw: dict[str, Any], spec: dict[str, str]) -> dict[str, Any]:
+def parse_expression(expr: str) -> tuple[str, str | None]:
+    """Split ``path|$transform`` into (path, transform name without ``$``, or None).
+
+    Raises ValueError when the part after the pipe is not ``$name``.
+    """
+    if "|" not in expr:
+        return expr.strip(), None
+    path, _, transform = expr.rpartition("|")
+    transform = transform.strip()
+    if not transform.startswith("$") or len(transform) < 2:
+        msg = f"after '|' expected a transform like $html2text, got {transform!r}"
+        raise ValueError(msg)
+    return path.strip(), transform[1:]
+
+
+def spec_problems(spec: Mapping[str, Any], transforms: Mapping[str, Transform]) -> dict[str, str]:
+    """Every problem in a normalize spec, by output column. Empty when the spec is sound.
+
+    Checked before a run so that an unknown transform or an unsupported path is a config
+    error at validation, never a silently skipped transform mid-survey.
+    """
+    problems: dict[str, str] = {}
+    for column, expr in spec.items():
+        if not isinstance(expr, str):
+            problems[column] = f"expected a path string, got {type(expr).__name__}"
+            continue
+        try:
+            path, transform = parse_expression(expr)
+            _build_glom_spec(path)
+        except ValueError as exc:
+            problems[column] = str(exc)
+            continue
+        if transform is not None and transform not in transforms:
+            installed = ", ".join(f"${name}" for name in sorted(transforms)) or "(none)"
+            problems[column] = f"unknown transform ${transform}; installed: {installed}"
+    return problems
+
+
+def apply_normalize(
+    raw: dict[str, Any],
+    spec: Mapping[str, str],
+    transforms: Mapping[str, Transform] = BUILTIN_TRANSFORMS,
+) -> dict[str, Any]:
     """Apply a normalize spec to a raw dict.
 
     Each spec entry is: output_column: "source.path|$transform"
-    The pipe and transform are optional.
+    The pipe and transform are optional. An unknown transform raises ConfigError; the
+    planner reports it before any run, so reaching it here means validation was skipped.
     """
     result: dict[str, Any] = {}
     for output_col, expr in spec.items():
-        if "|" in expr:
-            path, transform_name = expr.rsplit("|", 1)
-            transform_name = transform_name.strip()
-            path = path.strip()
-        else:
-            path = expr
-            transform_name = None
-
+        try:
+            path, transform_name = parse_expression(expr)
+        except ValueError as exc:
+            raise ConfigError(f"normalize.{output_col}: {exc}") from exc
         value = resolve_path(raw, path)
-
-        if transform_name and transform_name in TRANSFORMS:
-            value = TRANSFORMS[transform_name](value)
-
+        if transform_name is not None:
+            transform = transforms.get(transform_name)
+            if transform is None:
+                msg = f"normalize.{output_col}: unknown transform ${transform_name}"
+                raise ConfigError(msg)
+            value = transform(value)
         result[output_col] = value
-
     return result

@@ -1457,7 +1457,7 @@ wheels = [
 
 [[package]]
 name = "ix"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "ix" }
 dependencies = [
     { name = "claude-agent-sdk" },
@@ -2016,10 +2016,9 @@ wheels = [
 
 [[package]]
 name = "matrix"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "matrix" }
 dependencies = [
-    { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
@@ -2029,6 +2028,7 @@ claude = [
     { name = "claude-agent-sdk" },
 ]
 dev = [
+    { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -2037,6 +2037,7 @@ models = [
     { name = "hardline" },
 ]
 otel = [
+    { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-sdk" },
 ]
@@ -2045,7 +2046,8 @@ otel = [
 requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.1.51" },
     { name = "hardline", marker = "extra == 'models'", editable = "hardline" },
-    { name = "opentelemetry-api", specifier = ">=1.20" },
+    { name = "opentelemetry-api", marker = "extra == 'dev'", specifier = ">=1.20" },
+    { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", marker = "extra == 'dev'", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20" },
@@ -3422,7 +3424,7 @@ wheels = [
 
 [[package]]
 name = "recon"
-version = "0.8.0"
+version = "0.9.0"
 source = { editable = "recon" }
 dependencies = [
     { name = "click" },

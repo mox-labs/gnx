@@ -1,177 +1,286 @@
-"""ComponentRegistry — type URL to factory, with typed config and discovery.
+"""The registry: extension points, and the implementations registered at each.
 
-Inspired by x.uma's xDS typed config registry: a type URL maps to a factory that builds a
-component from config. Two registration forms:
+An **extension point** is a named place where implementations of one protocol plug in
+(``runtime``, ``component``, ``payload-type``, ``observer``; ix adds ``sensor`` and
+``engine``). An **entry** is one implementation, registered under a type URL, with:
 
-* ``register(type_url, factory)`` — ``factory(**config)``. A config key the factory does not
-  accept is reported as a ConfigError naming the type URL and the offending keys, not as a
-  bare ``TypeError: unexpected keyword argument``.
-* ``register_typed(type_url, config_cls, build)`` — the config dict is validated through a
-  pydantic model first, then ``build(validated)``. A typo in YAML fails at validation with the
-  key path and the source it came from.
+* ``config``: the pydantic model its config validates against (typed extension config: the
+  type URL selects the implementation, the model checks its settings);
+* ``needs``: shared things composition hands it (``agents``, ``models``, ``cwd``), declared,
+  never matched by field name;
+* ``effects``: what it may touch (``network``, ``subprocess``, ``filesystem``, ``model``).
+  ``None`` means **unknown**, which is never read as "none" (slick SD-12);
+* ``summary``, ``stability`` (``stable``/``beta``/``experimental``) and ``origin`` (the
+  distribution that registered it).
 
-Extensions register themselves: :meth:`discover` loads every ``matrix.components`` entry
-point, each a callable ``register(registry) -> None``. A duplicate type URL still raises —
-discovery never silently overrides. A malformed type URL is refused at registration, so a
-typo surfaces when the extension loads rather than when a config first names it.
+Everything, built-ins included, arrives the same way: an entry point in the
+``matrix.extensions`` group whose value is ``register(registry) -> None``. One extension that
+fails to import or register is **quarantined**: recorded in :attr:`Registry.failures`,
+reported by ``matrix catalog``, and the rest load.
+
+**Namespaces have owners.** A distribution owns the type URLs whose root segment is its own
+name (``matrix`` owns ``matrix.*``, ``ix`` owns ``ix.*``). When two extensions register the
+same type URL, the owner keeps it whichever loads first, and the other extension is
+quarantined whole: an extension cannot replace a built-in by sorting before it. Between two
+non-owners the first in entry-point name order keeps it and the second is refused, naming
+both; install order never decides.
 """
 
 from __future__ import annotations
 
-import inspect
+from dataclasses import dataclass, field
 from importlib.metadata import entry_points
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
-from .errors import ConfigError, NotFoundError
-from .type_url import parse_type_url
+from matrix.domain.errors import ConfigError, NotFoundError
+from matrix.domain.ids import check_type_url
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
-ENTRY_POINT_GROUP = "matrix.components"
+ENTRY_POINT_GROUP = "matrix.extensions"
+Stability = Literal["stable", "beta", "experimental"]
 
-C = TypeVar("C", bound=BaseModel)
-
-
-@runtime_checkable
-class ComponentFactory(Protocol):
-    """Anything callable that produces a Component from keyword args."""
-
-    def __call__(self, **config: Any) -> Any: ...
+#: The points matrix owns. Packages add theirs with :meth:`Registry.add_point`.
+MATRIX_POINTS = ("runtime", "component", "payload-type", "observer")
 
 
-class ComponentRegistry:
-    """Type URL → component factory.
+@dataclass(frozen=True)
+class Entry:
+    point: str
+    type_url: str
+    build: Callable[..., Any]
+    config: type[BaseModel] | None = None
+    needs: frozenset[str] = frozenset()
+    effects: frozenset[str] | None = None
+    summary: str = ""
+    stability: Stability = "beta"
+    origin: str = "(direct)"
 
-    Usage::
+    def describe(self) -> dict[str, Any]:
+        """A JSON-ready description: what an agent reads to decide whether to use it."""
+        return {
+            "point": self.point,
+            "type_url": self.type_url,
+            "summary": self.summary,
+            "stability": self.stability,
+            "origin": self.origin,
+            "needs": sorted(self.needs),
+            "effects": None if self.effects is None else sorted(self.effects),
+            "config": None if self.config is None else self.config.model_json_schema(),
+        }
 
-        registry = (
-            ComponentRegistry()
-            .register("ix.v1/probe.prompt", PromptProbe)
-            .register_typed("ix.v1/sensor.activation", ActivationConfig, ActivationSensor)
-        )
-        probe = registry.create("ix.v1/probe.prompt", {"template": "..."})
+
+class _UnknownPointError(ConfigError):
+    """A registration at a point nobody has declared (yet)."""
+
+
+def _owns(origin: str, type_url: str) -> bool:
+    """Whether ``origin`` owns ``type_url``'s namespace: its root is the distribution's name.
+
+    Code registering directly (not through discovery) is trusted as the owner.
     """
+    if origin == "(direct)":
+        return True
+    name = origin.lower().replace("_", "-").replace(".", "-")
+    return type_url.split(".", 1)[0] == name
 
-    def __init__(self) -> None:
-        self._factories: dict[str, Callable[[dict[str, Any], str], Any]] = {}
-        self._config_classes: dict[str, type[BaseModel]] = {}
 
-    def register(self, type_url: str, factory: ComponentFactory) -> ComponentRegistry:
-        """Register ``factory(**config)``. Raises ConfigError on a duplicate or malformed URL."""
+@dataclass(frozen=True)
+class Failure:
+    """An extension that could not be loaded, or a registration that was refused."""
 
-        def create(config: dict[str, Any], source: str) -> Any:
-            try:
-                return factory(**config)
-            except TypeError as e:
-                problem = _unaccepted_keys(factory, config)
-                if problem is None:
-                    raise
-                raise ConfigError(f"{source}: {type_url}: {problem}") from e
+    extension: str
+    origin: str
+    error: str
 
-        return self._add(type_url, create)
 
-    def register_typed(
-        self, type_url: str, config_cls: type[C], build: Callable[[C], Any]
-    ) -> ComponentRegistry:
-        """Register a builder whose config is validated through ``config_cls`` first."""
+@dataclass
+class Registry:
+    points: set[str] = field(default_factory=lambda: set(MATRIX_POINTS))
+    failures: list[Failure] = field(default_factory=list)
+    _entries: dict[tuple[str, str], Entry] = field(default_factory=dict)
+    _origin: str = "(direct)"
 
-        def create(config: dict[str, Any], source: str) -> Any:
-            try:
-                validated = config_cls.model_validate(config)
-            except ValidationError as e:
-                lines = [
-                    f"  {source}: {type_url}: {'.'.join(str(p) for p in err['loc']) or '(root)'}: "
-                    f"{err['msg']}"
-                    for err in e.errors()
-                ]
-                raise ConfigError("invalid component config:\n" + "\n".join(lines)) from None
-            return build(validated)
-
-        self._add(type_url, create)
-        self._config_classes[type_url] = config_cls
+    def add_point(self, point: str) -> Registry:
+        """Declare an extension point owned by the caller (ix declares ``sensor``)."""
+        self.points.add(point)
         return self
 
-    def _add(
-        self, type_url: str, create: Callable[[dict[str, Any], str], Any]
-    ) -> ComponentRegistry:
-        parse_type_url(type_url)
-        if type_url in self._factories:
-            raise ConfigError(f"Duplicate registration: {type_url!r} is already registered")
-        self._factories[type_url] = create
+    def register(
+        self,
+        point: str,
+        type_url: str,
+        build: Callable[..., Any],
+        *,
+        config: type[BaseModel] | None = None,
+        needs: frozenset[str] | set[str] | tuple[str, ...] = (),
+        effects: frozenset[str] | set[str] | tuple[str, ...] | None = None,
+        summary: str = "",
+        stability: Stability = "beta",
+    ) -> Registry:
+        """Register ``build(config, **needs)`` (or ``build(**needs)`` when untyped).
+
+        Raises ConfigError for an unknown point, a malformed type URL, or a duplicate.
+        """
+        if point not in self.points:
+            raise _UnknownPointError(
+                f"no extension point {point!r}. Points: {', '.join(sorted(self.points))}",
+                fix="register at an existing point, or have its owner declare it",
+            )
+        check_type_url(type_url, where=f"{point} registration")
+        key = (point, type_url)
+        existing = self._entries.get(key)
+        if existing is not None:
+            if _owns(self._origin, type_url) and not _owns(existing.origin, type_url):
+                # The namespace's owner arrived after an impostor: the owner keeps its name,
+                # and every entry the impostor registered is quarantined with it.
+                self._entries = {
+                    k: e for k, e in self._entries.items() if e.origin != existing.origin
+                }
+                self.failures.append(
+                    Failure(
+                        existing.origin,
+                        existing.origin,
+                        f"registered {point} {type_url!r} in {self._origin}'s namespace; "
+                        "all of its entries were dropped",
+                    )
+                )
+            else:
+                raise ConfigError(
+                    f"{point} {type_url!r} is registered by both {existing.origin} and "
+                    f"{self._origin}",
+                    fix="uninstall one of the two, or have one register under its own namespace",
+                )
+        self._entries[key] = Entry(
+            point=point,
+            type_url=type_url,
+            build=build,
+            config=config,
+            needs=frozenset(needs),
+            effects=None if effects is None else frozenset(effects),
+            summary=summary,
+            stability=stability,
+            origin=self._origin,
+        )
         return self
+
+    def register_payload(
+        self, type_url: str, model: type[BaseModel], summary: str = ""
+    ) -> Registry:
+        """Register the schema values of ``type_url`` must validate against."""
+        return self.register(
+            "payload-type", type_url, model, summary=summary or (model.__doc__ or "").strip()
+        )
+
+    def entry(self, point: str, type_url: str) -> Entry:
+        found = self._entries.get((point, type_url))
+        if found is None:
+            known = ", ".join(sorted(u for p, u in self._entries if p == point)) or "(none)"
+            raise NotFoundError(
+                f"no {point} {type_url!r} is registered. Registered: {known}",
+                fix="install the extension that provides it, or fix the type URL",
+                point=point,
+                type_url=type_url,
+            )
+        return found
+
+    def entries(self, point: str | None = None) -> list[Entry]:
+        return sorted(
+            (e for e in self._entries.values() if point is None or e.point == point),
+            key=lambda e: (e.point, e.type_url),
+        )
+
+    def __contains__(self, key: tuple[str, str]) -> bool:
+        return key in self._entries
 
     def create(
-        self, type_url: str, config: dict[str, Any] | None = None, *, source: str = "<config>"
+        self,
+        point: str,
+        type_url: str,
+        config: Mapping[str, Any] | None = None,
+        *,
+        needs: Mapping[str, Any] | None = None,
+        where: str = "<config>",
     ) -> Any:
-        """Create a component. ``source`` names where the config came from, for errors.
-
-        Raises NotFoundError (a KeyError) listing the registered type URLs if ``type_url``
-        is unknown.
-        """
-        create = self._factories.get(type_url)
-        if create is None:
-            known = ", ".join(sorted(self._factories)) or "(none)"
-            raise NotFoundError(f"Unknown component type: {type_url!r}. Registered: {known}")
-        return create(dict(config or {}), source)
-
-    def config_class(self, type_url: str) -> type[BaseModel] | None:
-        """The typed config a ``register_typed`` entry validates against; None if untyped.
-
-        Composition reads it to supply shared context — a ``models`` registry, a working
-        directory — to any component whose config declares that field, without naming the
-        component.
-        """
-        return self._config_classes.get(type_url)
-
-    def discover(self, group: str = ENTRY_POINT_GROUP) -> ComponentRegistry:
-        """Load every entry point in ``group``; each is ``register(registry) -> None``."""
-        for ep in entry_points(group=group):
-            register = ep.load()
-            if not callable(register):
+        """Validate ``config`` and build the entry, handing it the needs it declared."""
+        entry = self.entry(point, type_url)
+        available = dict(needs or {})
+        missing = sorted(entry.needs - set(available))
+        if missing:
+            raise ConfigError(
+                f"{where}: {type_url} needs {missing}, which composition did not provide",
+                fix="compose it through matrix.compose, or pass the needs explicitly",
+            )
+        given = {n: available[n] for n in entry.needs}
+        if entry.config is None:
+            if config:
                 raise ConfigError(
-                    f"entry point {ep.name!r} ({ep.value}) in {group!r} is not callable; "
-                    "expected register(registry) -> None"
+                    f"{where}: {type_url} takes no config, but got keys {sorted(config)}"
                 )
-            register(self)
+            return entry.build(**given)
+        try:
+            validated = entry.config.model_validate(dict(config or {}))
+        except ValidationError as e:
+            problems = [
+                f"{where}.{'.'.join(str(p) for p in err['loc']) or '(root)'}: {err['msg']}"
+                for err in e.errors()
+            ]
+            raise ConfigError(
+                f"invalid config for {type_url}:\n  " + "\n  ".join(problems),
+                problems=problems,
+                fix=f"see `matrix describe {type_url}` for its config schema",
+            ) from None
+        return entry.build(validated, **given)
+
+    def payload_schemas(self) -> dict[str, type[BaseModel]]:
+        return {
+            e.type_url: e.build
+            for e in self.entries("payload-type")
+            if isinstance(e.build, type) and issubclass(e.build, BaseModel)
+        }
+
+    def discover(self, group: str = ENTRY_POINT_GROUP) -> Registry:
+        """Load every ``group`` entry point, in name order; quarantine any that fail.
+
+        Each extension registers all-or-nothing: if its ``register`` raises part way, none of
+        its entries stay. An extension that registers at a point not yet declared (a sensor
+        plugin loading before ix declares ``sensor``) is retried once the others have loaded.
+        """
+        pending = sorted(entry_points(group=group), key=lambda e: e.name)
+        for attempt in (1, 2):
+            deferred = []
+            for ep in pending:
+                origin = ep.dist.name if ep.dist is not None else ep.value
+                error = self._load(ep, origin)
+                if error is None:
+                    continue
+                if attempt == 1 and isinstance(error, _UnknownPointError):
+                    deferred.append(ep)
+                else:
+                    self.failures.append(
+                        Failure(ep.name, origin, f"{type(error).__name__}: {error}")
+                    )
+            pending = deferred
         return self
 
-    def __contains__(self, type_url: str) -> bool:
-        return type_url in self._factories
-
-    def __len__(self) -> int:
-        return len(self._factories)
-
-    def types(self) -> frozenset[str]:
-        """Return all registered type URLs."""
-        return frozenset(self._factories)
-
-
-def _unaccepted_keys(factory: Callable[..., Any], config: dict[str, Any]) -> str | None:
-    """Explain a TypeError from ``factory(**config)`` in config terms, or None if unrelated."""
-    try:
-        params = inspect.signature(factory).parameters
-    except (TypeError, ValueError):
+    def _load(self, ep: Any, origin: str) -> Exception | None:
+        before = dict(self._entries)
+        points = set(self.points)
+        failures = len(self.failures)
+        self._origin = origin
+        try:
+            register = ep.load()
+            if not callable(register):
+                raise TypeError(f"{ep.value} is not callable; expected register(registry)")
+            register(self)
+        except Exception as e:
+            self._entries = before  # all-or-nothing
+            self.points = points
+            del self.failures[failures:]
+            return e
+        finally:
+            self._origin = "(direct)"
         return None
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
-        return None
-    accepted = {
-        n
-        for n, p in params.items()
-        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-    }
-    unknown = sorted(set(config) - accepted)
-    if unknown:
-        return f"unknown config key(s) {unknown}. Accepted: {sorted(accepted)}"
-    required = {
-        n
-        for n, p in params.items()
-        if p.default is inspect.Parameter.empty
-        and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-    }
-    missing = sorted(required - set(config))
-    if missing:
-        return f"missing required config key(s) {missing}"
-    return None

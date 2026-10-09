@@ -1,18 +1,23 @@
-# Matrix — Kind-Agnostic DAG Orchestration
+# matrix
 
-Compile components into a DAG. Validate topology. Execute in order. Collect artifacts.
+matrix runs flows of typed components and composes agents from config. Components declare
+named, typed ports; a flow binds them to topics; matrix checks the wiring, runs the members in
+dependency order, and records every value in a Construct. Agents are definitions bound to
+runtimes, and run alone or as flow members.
+
+Start with the [README](../README.md) for a working flow and a working agent.
 
 ---
 
-## Explanation (Understanding Why)
+## Explanation
 
-| Document | Description |
-|----------|-------------|
-| [What is Matrix?](explanation/what-is-matrix.md) | The problem, design decisions, what it's not |
-| [The Data Model](explanation/data-model.md) | Artifact, Construct, TypedStruct — the append-only execution ledger and the contract check |
+| Document | What it covers |
+|----------|----------------|
+| [What is matrix?](explanation/what-is-matrix.md) | Components, ports, topics, flows and runs; agents as definition plus runtime; the registry; observers; shared config |
+| [The data model](explanation/data-model.md) | Artifact, Construct and Run, and how a run is saved as typed JSONL tables |
 
-## Reference (Technical Lookup)
+## Reference
 
-| Document | Description |
-|----------|-------------|
-| [API Reference](reference/api.md) | All public types, their fields, and usage patterns |
+| Document | What it covers |
+|----------|----------------|
+| [API reference](reference/api.md) | Every public name and signature, config keys, error kinds, exit codes, and the `matrix` command |

@@ -80,15 +80,42 @@ class TestCollectorEntry:
         assert entry.source == "s2"
         assert len(entry.normalize) == 2
 
-    def test_invalid_type(self):
-        with pytest.raises(ValidationError):
-            CollectorEntry(name="bad", type="ftp")
+    def test_type_is_an_open_string(self):
+        """Collector types are extensions: whether one is installed is a plan-time check
+        against the entry-point group (test_plan.py), not a closed Literal here."""
+        assert CollectorEntry(name="x", type="sql").type == "sql"
 
-    def test_old_types_rejected(self):
-        with pytest.raises(ValidationError):
-            CollectorEntry(name="old", type="command")
-        with pytest.raises(ValidationError):
-            CollectorEntry(name="old", type="http")
+    def test_unknown_field_is_rejected(self):
+        """A misspelt key (normalise:) must not be silently ignored."""
+        with pytest.raises(ValidationError, match="normalise"):
+            CollectorEntry(name="x", type="cli", run="true", normalise={"a": "b"})
+
+    def test_type_url_defaults_to_records(self):
+        assert CollectorEntry(name="x", type="cli").type_url == "recon.v1.records"
+
+    @pytest.mark.parametrize(
+        "value", ["acme.papers.v2.search-hit", "recon.v1.records", "x.v10.a-b-c"]
+    )
+    def test_type_url_accepts_the_dotted_grammar(self, value):
+        assert CollectorEntry(name="x", type="cli", type_url=value).type_url == value
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "recon.v1/records",  # slash form
+            "recon/v1/records",
+            "recon.records",  # no version
+            "v1.records",  # empty namespace
+            "recon.v1",  # version-terminal
+            "recon.v1.a.b",  # two resource segments
+            "Recon.v1.records",  # uppercase namespace
+            "recon.v1.Records",  # resource not kebab
+            "recon.v1.search_hit",  # underscore
+        ],
+    )
+    def test_type_url_rejects_everything_else(self, value):
+        with pytest.raises(ValidationError, match="not a type_url"):
+            CollectorEntry(name="x", type="cli", type_url=value)
 
 
 class TestReconConfig:

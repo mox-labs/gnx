@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import BaseModel
 
 from ix.domain.errors import ConfigError
+from ix.domain.models import ACCEPTABLE, MUST_TRIGGER, SHOULD_NOT_TRIGGER
 from ix.domain.types import Probe, Reading, Trial
-from ix.eval.models import ACCEPTABLE, MUST_TRIGGER, SHOULD_NOT_TRIGGER
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +102,7 @@ class ActivationSensor:
     """
 
     Config = ActivationSensorConfig
+    truth_keys = frozenset({"expectation", "expected_skill"})
 
     def __init__(
         self,
@@ -207,6 +208,7 @@ class FunctionTestSensor:
     """
 
     Config = FunctionTestSensorConfig
+    truth_keys = frozenset({"function_name", "test_cases"})
 
     def __init__(
         self,
@@ -426,6 +428,7 @@ class ToolUsageSensor:
     """
 
     Config = ToolUsageSensorConfig
+    truth_keys = frozenset({"expected_command", "expected_query", "expected_args", "expectation"})
 
     def __init__(
         self,
@@ -622,6 +625,7 @@ class OutcomeSensor:
     """
 
     Config = OutcomeSensorConfig
+    truth_keys = frozenset({"expected_facts", "expected_command"})
 
     def __init__(
         self,

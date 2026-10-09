@@ -1,12 +1,16 @@
-"""Experiment — repeats × engine, then aggregation, then persistence.
+"""Experiment: repeats × engine, then measurement, aggregation and persistence.
 
-An engine runs every probe × trial of one repeat and returns the trials and their readings.
-The Experiment runs the configured number of repeats, writes every trial to the run's
-``trials.jsonl`` as it goes, aggregates across repeats, computes the probe-sampling standard
-errors and the across-repeat noise floor, and saves a summary under the subject's name.
+An engine executes every probe × trial of one repeat and returns the trials. The Experiment
+measures each trial with its one rule (:func:`~ix.eval.measure.measure_trial` over the
+configured sensors), whatever engine ran it. It also writes every trial to the run's
+``trials.jsonl``, aggregates across repeats, computes the probe-sampling standard errors and
+the across-repeat noise floor, and saves a summary under the subject's name.
+
+Trials whose session never had a fair chance (harness faults) are recorded and counted, and
+kept out of every score.
 
 The engine, the agent factory and the store are injected by the composition root. This
-module imports no concrete engine, runtime or DAG node.
+module imports no concrete engine, runtime or flow.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from ix import __version__
+from ix.domain.models import ExperimentConfig, ExperimentResults, ProbeResult, TrialRecord
 from ix.domain.ports import EngineRun
 from ix.domain.types import Reading, Subject
 from ix.eval.analysis import (
@@ -26,8 +31,9 @@ from ix.eval.analysis import (
     compute_metrics,
     compute_noise_floor,
     standard_errors,
+    unmeasured_probes,
 )
-from ix.eval.models import ExperimentConfig, ExperimentResults, ProbeResult, TrialRecord
+from ix.eval.measure import measure_trial
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -90,33 +96,41 @@ class Experiment:
         per_run_mean_scores: list[float] = []
         artifacts: list[str] = []
         families: set[str] = set()
+        stops: dict[str, int] = {}
         trials_log = ""
 
         for run_idx in range(config.repeats):
+            measure = _Memo(self._sensor)
             outcome = await self._engine.run(
                 EngineRun(
                     experiment=config.name,
                     probes=config.probes,
                     subject=active,
-                    sensor=self._sensor,
                     agents=self._agents,
                     trials=config.trials,
+                    measure=measure,
                     run_index=run_idx,
-                    on_trial=_bind_repeat(on_trial, run_idx),
+                    on_trial=_bind_repeat(on_trial, run_idx, measure),
+                    sensor_name=self._sensor.name,
                 )
             )
-            all_readings.extend(outcome.readings)
+            readings = [r for trial in outcome.trials for r in measure(trial)]
+            all_readings.extend(readings)
             families.update(f for t in outcome.trials if (f := getattr(t.response, "family", None)))
+            for trial in outcome.trials:
+                if trial.response is not None:
+                    stop = str(getattr(trial.response, "stop", None) or "unreported")
+                    stops[stop] = stops.get(stop, 0) + 1
             artifacts.extend(f"{k}:{v}" for k, v in outcome.artifacts.items())
             path = self._store.append_trials(
                 config.name,
                 label,
                 run_id,
-                _records(run_id, run_idx, outcome.trials, outcome.readings),
+                _records(run_id, run_idx, outcome.trials, readings),
             )
             trials_log = str(path)
 
-            run_metrics = compute_metrics(aggregate_readings(outcome.readings, probe_map))
+            run_metrics = compute_metrics(aggregate_readings(readings, probe_map))
             per_run_pass_rates.append(run_metrics["pass_rate"])
             per_run_mean_scores.append(run_metrics["mean_score"])
             if on_run_complete:
@@ -150,6 +164,9 @@ class Experiment:
             score_noise_floor_sd=compute_noise_floor(per_run_mean_scores),
             confusion_matrix=build_confusion_matrix(all_readings),
             sensor_faults=sum(1 for r in all_readings if r.fault == "sensor"),
+            harness_faults=sum(1 for r in all_readings if r.fault == "harness"),
+            unmeasured_probes=unmeasured_probes(all_readings),
+            stops=stops,
             families=tuple(sorted(families)),
             engine=self._engine.name,
             engine_artifacts=tuple(artifacts),
@@ -164,14 +181,30 @@ class Experiment:
         return results
 
 
+class _Memo:
+    """The experiment's measuring rule for one repeat, computed once per trial."""
+
+    def __init__(self, sensor: Sensor) -> None:
+        self._sensor = sensor
+        self._done: dict[tuple[str, int], list[Reading]] = {}
+
+    def __call__(self, trial: Trial) -> list[Reading]:
+        key = (trial.probe_id, trial.trial_index)
+        if key not in self._done:
+            self._done[key] = measure_trial(self._sensor, trial)
+        return self._done[key]
+
+
 def _bind_repeat(
-    on_trial: Callable[[int, Trial, list[Reading]], None] | None, run_index: int
-) -> Callable[[Trial, list[Reading]], None] | None:
+    on_trial: Callable[[int, Trial, list[Reading]], None] | None,
+    run_index: int,
+    measure: _Memo,
+) -> Callable[[Trial], None] | None:
     if on_trial is None:
         return None
 
-    def bound(trial: Trial, readings: list[Reading]) -> None:
-        on_trial(run_index, trial, readings)
+    def bound(trial: Trial) -> None:
+        on_trial(run_index, trial, measure(trial))
 
     return bound
 

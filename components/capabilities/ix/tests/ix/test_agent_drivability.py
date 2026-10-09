@@ -19,10 +19,10 @@ from ix.adapters._out.engines.native import NativeEngine
 from ix.adapters._out.filesystem_store import FilesystemStore
 from ix.composition import validate_experiment
 from ix.domain.errors import ConfigError, EngineError, LabNotFoundError, NotFoundError
+from ix.domain.models import MAX_DETAILS, ExperimentConfig, ExperimentResults, ProbeResult
 from ix.domain.types import Probe, Reading, Subject
 from ix.eval.analysis import aggregate_readings
 from ix.eval.experiment import Experiment
-from ix.eval.models import MAX_DETAILS, ExperimentConfig, ExperimentResults, ProbeResult
 from ix.eval.sensors import ActivationSensor
 
 if TYPE_CHECKING:
@@ -158,23 +158,9 @@ class TestExitCodes:
         assert "3 config" in text and "4 not found" in text and "5 transient" in text
 
 
-class _CauseError(Exception):
-    def __init__(self, reason: str, retryable: bool) -> None:
-        super().__init__(reason)
-        self.reason = reason
-        self.retryable = retryable
-
-
-def _runtime_error(cause: Exception | None) -> AgentRuntimeError:
-    try:
-        try:
-            if cause is not None:
-                raise cause
-            raise AgentRuntimeError("agent 'x': session failed")
-        except _CauseError as e:
-            raise AgentRuntimeError("agent 'x': provider failed") from e
-    except AgentRuntimeError as e:
-        return e
+def _runtime_error(reason: Any = "failed") -> AgentRuntimeError:
+    """A runtime failure as every runtime now reports it: with a classified reason."""
+    return AgentRuntimeError("agent 'x': session failed", reason=reason)
 
 
 class TestClassify:
@@ -191,21 +177,27 @@ class TestClassify:
     def test_ix_errors(self, error: Exception, expected: tuple[str, int]):
         assert _classify(error) == expected
 
-    def test_a_retryable_runtime_cause_is_transient(self):
-        assert _classify(_runtime_error(_CauseError("rate_limit", True))) == ("transient", 5)
+    @pytest.mark.parametrize("reason", ["rate_limited", "unavailable", "timeout"])
+    def test_a_retryable_runtime_failure_is_transient(self, reason: str):
+        assert _classify(_runtime_error(reason)) == ("transient", 5)
 
-    def test_an_auth_runtime_cause_is_auth(self):
-        assert _classify(_runtime_error(_CauseError("auth", False))) == ("auth", 6)
+    def test_an_auth_runtime_failure_is_auth(self):
+        assert _classify(_runtime_error("auth")) == ("auth", 6)
 
-    def test_a_runtime_error_with_no_structured_cause_is_unclassified(self):
-        assert _classify(_runtime_error(None)) == ("unknown", 1)
+    def test_a_session_that_broke_is_unknown(self):
+        assert _classify(_runtime_error("failed")) == ("unknown", 1)
+
+    def test_a_matrix_error_wrapped_by_ix_keeps_its_kind(self):
+        from ix.domain.errors import from_matrix
+
+        assert _classify(from_matrix(_runtime_error("auth"), "subject 's'")) == ("auth", 6)
 
     def test_a_transient_failure_exits_5_from_the_cli(
         self, lab: Path, monkeypatch: pytest.MonkeyPatch
     ):
         class _Service:
             async def run(self, *args: Any, **kwargs: Any) -> ExperimentResults:
-                raise _runtime_error(_CauseError("timeout", True))
+                raise _runtime_error("timeout")
 
         monkeypatch.setattr("ix.composition.create_service", lambda *a, **k: _Service())
         result = _invoke("run", "e", "--lab", "lab", "--subject", "sim", "--format", "json")
@@ -220,7 +212,7 @@ class TestJsonEverywhere:
     def test_lab_list(self, lab: Path):
         doc = json.loads(_invoke("lab", "list", "--format", "json").stdout)
         assert doc == {
-            "schema": "ix.v1/labs",
+            "schema": "ix.v1.labs",
             "labs": [{"name": "lab", "experiments": 1, "path": "lab"}],
         }
 
@@ -228,12 +220,12 @@ class TestJsonEverywhere:
         listed = json.loads(
             _invoke("experiment", "list", "--lab", "lab", "--format", "json").stdout
         )
-        assert listed["schema"] == "ix.v1/experiments"
+        assert listed["schema"] == "ix.v1.experiments"
         assert listed["experiments"][0]["name"] == "e" and listed["experiments"][0]["valid"]
         shown = json.loads(
             _invoke("experiment", "show", "e", "--lab", "lab", "--format", "json").stdout
         )
-        assert shown["schema"] == "ix.v1/experiment"
+        assert shown["schema"] == "ix.v1.experiment"
         assert [s["runtime"] for s in shown["subjects"]] == ["simulated", "simulated"]
         assert shown["probes"][0] == {
             "id": "p0",
@@ -245,7 +237,7 @@ class TestJsonEverywhere:
         result = _invoke("experiment", "validate", "e", "--lab", "lab", "--format", "json")
         assert result.exit_code == 0, result.output
         doc = json.loads(result.stdout)
-        assert doc["schema"] == "ix.v1/validation" and doc["valid"] and doc["problems"] == []
+        assert doc["schema"] == "ix.v1.validation" and doc["valid"] and doc["problems"] == []
 
     def test_experiment_list_exits_3_on_an_invalid_experiment_and_still_lists(self, lab: Path):
         bad = lab / "broken"
@@ -261,22 +253,28 @@ class TestJsonEverywhere:
         assert "trails" in rows["broken"]["error"]
         assert _error(result)["fix"] == "ix experiment validate broken --lab lab"
 
-    def test_run_and_results_are_always_a_list(self, lab: Path):
-        one = _invoke("run", "e", "--lab", "lab", "--subject", "sim", "--format", "json")
-        both = _invoke("run", "e", "--lab", "lab", "--seed", "1", "--format", "json")
-        assert isinstance(json.loads(one.stdout), list) and len(json.loads(one.stdout)) == 1
-        assert [r["subject"] for r in json.loads(both.stdout)] == ["sim", "sim2"]
+    def test_run_and_results_have_one_shape_at_any_count(self, lab: Path):
+        one = json.loads(
+            _invoke("run", "e", "--lab", "lab", "--subject", "sim", "--format", "json").stdout
+        )
+        both = json.loads(
+            _invoke("run", "e", "--lab", "lab", "--seed", "1", "--format", "json").stdout
+        )
+        assert one["schema"] == both["schema"] == "ix.v1.results-list"
+        assert len(one["results"]) == 1
+        assert [r["subject"] for r in both["results"]] == ["sim", "sim2"]
         shown = json.loads(
             _invoke("results", "e", "--lab", "lab", "--subject", "sim", "--format", "json").stdout
         )
-        assert isinstance(shown, list) and shown[0]["schema"] == "ix.v1/results"
+        assert shown["schema"] == "ix.v1.results-list"
+        assert shown["results"][0]["schema"] == "ix.v1.results"
 
     def test_compare_names_its_schema_and_both_runs(self, lab: Path):
-        ran = json.loads(_invoke("run", "e", "--lab", "lab", "--format", "json").stdout)
+        ran = json.loads(_invoke("run", "e", "--lab", "lab", "--format", "json").stdout)["results"]
         doc = json.loads(
             _invoke("compare", "e", "sim", "sim2", "--lab", "lab", "--format", "json").stdout
         )
-        assert doc["schema"] == "ix.v1/comparison"
+        assert doc["schema"] == "ix.v1.comparison"
         assert (doc["run_id_a"], doc["run_id_b"]) == (ran[0]["run_id"], ran[1]["run_id"])
 
 
@@ -288,7 +286,7 @@ class TestPlanAndLiveGuard:
         result = _invoke("run", "e", "--lab", "lab", "--plan", "--format", "json")
         assert result.exit_code == 0, result.output
         plan = json.loads(result.stdout)
-        assert plan["schema"] == "ix.v1/plan"
+        assert plan["schema"] == "ix.v1.plan"
         rows = {r["subject"]: r for r in plan["subjects"]}
         assert rows["live"]["runtime"] == "claude-sdk" and rows["live"]["live"]
         assert rows["live"]["permission_mode"] == "bypassPermissions"
@@ -344,16 +342,18 @@ class TestProvenance:
         unseeded = _invoke(
             "run", "e", "--lab", "lab", "--subject", "sim", "--simulate", "--format", "json"
         )
-        assert json.loads(seeded.stdout)[0]["seed"] == 7
-        assert json.loads(seeded.stdout)[0]["simulated"] is False  # its own runtime simulates
-        assert json.loads(unseeded.stdout)[0]["seed"] is None
-        assert json.loads(unseeded.stdout)[0]["simulated"] is True
+        assert json.loads(seeded.stdout)["results"][0]["seed"] == 7
+        assert (
+            json.loads(seeded.stdout)["results"][0]["simulated"] is False
+        )  # its own runtime simulates
+        assert json.loads(unseeded.stdout)["results"][0]["seed"] is None
+        assert json.loads(unseeded.stdout)["results"][0]["simulated"] is True
 
     def test_simulated_json_status_is_unmeasured(self, lab: Path):
         doc = json.loads(
             _invoke("run", "e", "--lab", "lab", "--subject", "sim", "--format", "json").stdout
         )
-        assert doc[0]["status"] == "unmeasured"
+        assert doc["results"][0]["status"] == "unmeasured"
         table = _invoke("results", "e", "--lab", "lab", "--subject", "sim")
         assert "Status: harness only" in table.stdout
 
@@ -374,14 +374,17 @@ class TestProvenance:
             "run", "e", "--lab", "lab", "--subject", "live", "--simulate", "--format", "json"
         )
         assert result.exit_code == 0, result.output
-        assert json.loads(result.stdout)[0]["subject"] == "live@simulated"
+        assert json.loads(result.stdout)["results"][0]["subject"] == "live@simulated"
         assert store.load_summary("e", "live").run_id == "measured"
         assert store.load_summary("e", "live@simulated").families == ("simulated",)
 
         shown = _invoke(
             "results", "e", "--lab", "lab", "--subject", "live@simulated", "--format", "json"
         )
-        assert shown.exit_code == 0 and json.loads(shown.stdout)[0]["subject"] == "live@simulated"
+        assert (
+            shown.exit_code == 0
+            and json.loads(shown.stdout)["results"][0]["subject"] == "live@simulated"
+        )
         compared = _invoke(
             "compare", "e", "live", "live@simulated", "--lab", "lab", "--format", "json"
         )
@@ -390,6 +393,9 @@ class TestProvenance:
 
     async def test_config_hash_covers_the_probes(self, tmp_path: Path):
         class _Echo:
+            def check(self, definition: Any) -> None:
+                pass
+
             async def run(self, definition: Any, task: str) -> AgentResponse:
                 return AgentResponse(content=task, family="test")
 
@@ -462,7 +468,7 @@ class TestInit:
         first = json.loads(_invoke("lab", "init", "lab", "--format", "json").stdout)
         again = json.loads(_invoke("lab", "init", "lab", "--format", "json").stdout)
         assert (first["created"], again["created"]) == (True, False)
-        assert first["schema"] == "ix.v1/init"
+        assert first["schema"] == "ix.v1.init"
 
         made = _invoke("experiment", "init", "e", "--lab", "lab", "--format", "json")
         assert made.exit_code == 0, made.output

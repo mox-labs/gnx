@@ -1,16 +1,14 @@
-"""Core protocols — Sensor, SensorClass, AgentFactory, Engine.
+"""Core protocols: Sensor, SensorClass, AgentFactory, Engine, Storage.
 
-Composable building blocks of any experiment. Each is a typing.Protocol: implement the
-methods, satisfy the contract.
-
-* A **Sensor** measures a trial and produces readings — like an instrument.
+* A **Sensor** measures a trial and produces readings, like an instrument. It declares the
+  probe truth keys it reads (``truth_keys``), so a probe key no sensor reads is caught as a
+  typo when the experiment loads, not ignored.
 * An **AgentFactory** turns a subject into a runnable agent for one trial.
-* An **Engine** runs every probe × trial of one repeat and returns the trials and their
-  readings. The native engine runs each trial as a matrix DAG; the Inspect engine runs the
-  repeat as an Inspect AI task. Aggregation, noise floor and persistence are the same either
-  way — they belong to the Experiment, not the engine.
-* A **Storage** loads experiments and persists what a run produced: every trial, and a
-  summary per subject.
+* An **Engine** *executes*: it runs every probe × trial of one repeat and returns the trials.
+  It never decides how a trial is judged. The experiment hands it ``measure`` (its one
+  measuring rule), which an engine that must score as it goes (Inspect) calls; the experiment
+  then measures every trial with the same function, so results never depend on the engine.
+* A **Storage** loads experiments and persists what a run produced.
 """
 
 from __future__ import annotations
@@ -24,17 +22,17 @@ if TYPE_CHECKING:
 
     from matrix import Agent
 
+    from ix.domain.models import ExperimentConfig, ExperimentResults, TrialRecord
     from ix.domain.types import Probe, Reading, Subject, Trial
-    from ix.eval.models import ExperimentConfig, ExperimentResults, TrialRecord
 
 
 @runtime_checkable
 class Sensor(Protocol):
     """Measures a trial and produces readings.
 
-    Ground truth (test cases, rubrics) is injected at construction by the composition root,
-    not discovered from the probe. The trial gives the sensor a key (probe_id) to look up
-    its ground truth, and a response to measure.
+    Ground truth (test cases, expectations) is read from the probes at construction, by the
+    keys the sensor declares in ``truth_keys``; the trial gives it a probe id to look its
+    truth up and a response to measure.
     """
 
     @property
@@ -45,17 +43,21 @@ class Sensor(Protocol):
 
 @runtime_checkable
 class SensorClass(Protocol):
-    """A sensor *class* — the shape the composition root holds in its registry.
+    """A sensor *class*: what a third party registers at ix's ``sensor`` extension point.
 
-    Every ix sensor pairs a pydantic ``Config`` model with a ``from_config`` classmethod;
-    naming the pair as a port is what lets a third party plug a sensor in, typed.
+    ``truth_keys`` names the probe frontmatter keys it reads. ``from_config`` builds it from
+    its validated config, the experiment's probes, and ``judge``: a function returning a
+    matrix agent for a model or agent name, for sensors that ask a model to grade.
     """
+
+    truth_keys: frozenset[str]
 
     def from_config(
         self,
         config: Any,
         probes: tuple[Probe, ...] = ...,
-        **kwargs: Any,
+        *,
+        judge: Callable[[str], Agent] | None = ...,
     ) -> Sensor: ...
 
 
@@ -77,22 +79,24 @@ class EngineRun:
     experiment: str
     probes: tuple[Probe, ...]
     subject: Subject
-    sensor: Sensor
     agents: AgentFactory
     trials: int
+    #: The experiment's measuring rule. Call it to score a trial as it completes (it is
+    #: memoised, so the experiment's own pass costs nothing extra); never judge otherwise.
+    measure: Callable[[Trial], list[Reading]]
     run_index: int = 0
-    #: Called as each trial is measured, in completion order — for progress, not results.
-    #: The outcome is still the source of truth; an engine that cannot report per trial
-    #: may leave it uncalled.
-    on_trial: Callable[[Trial, list[Reading]], None] | None = None
+    #: Call as each trial completes, in completion order: progress only, never results.
+    on_trial: Callable[[Trial], None] | None = None
+    #: The sensors' combined name, for engines that label their own logs.
+    sensor_name: str = ""
 
 
 @dataclass(frozen=True)
 class EngineOutcome:
-    readings: list[Reading]
-    #: Every trial the repeat ran, response or error included — what the readings measured.
-    trials: list[Trial] = field(default_factory=list)
-    #: Engine-specific provenance a reader can open — e.g. the Inspect ``.eval`` log path.
+    #: Exactly one trial per (probe, trial index), in probe × trial order; a failed session
+    #: is a trial with an error, never a missing one.
+    trials: list[Trial]
+    #: Engine-specific provenance a reader can open, e.g. the Inspect ``.eval`` log path.
     artifacts: dict[str, str] = field(default_factory=dict)
 
 

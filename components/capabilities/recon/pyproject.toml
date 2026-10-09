@@ -1,6 +1,6 @@
 [project]
 name = "recon"
-version = "0.8.0"
+version = "0.9.0"
 description = "Mechanical collection system — collect, normalize, query via parquet + DuckDB"
 requires-python = ">=3.12"
 license = "MIT"
@@ -27,6 +27,22 @@ dev = ["pytest>=8.0"]
 [project.scripts]
 recon = "recon.adapters._in.cli:main"
 
+# Collector types and transforms are extensions. recon's built-ins register through the
+# same groups a third-party package uses; the entry-point name is the config's `type:`
+# (collectors) or the `$name` in a normalize spec (transforms).
+[project.entry-points."recon.collectors"]
+api = "recon.adapters._out.api_collector:collector_type"
+cli = "recon.adapters._out.cli_collector:collector_type"
+web = "recon.adapters._out.web_collector:collector_type"
+capture = "recon.adapters._out.capture_collector:collector_type"
+
+[project.entry-points."recon.transforms"]
+html2text = "recon.application.transforms:html2text"
+inverted_index = "recon.application.transforms:inverted_index"
+join = "recon.application.transforms:join"
+first = "recon.application.transforms:first"
+markitdown = "recon.adapters._out.markitdown_converter:markitdown_path"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -45,7 +61,7 @@ include = [
     "src/recon/py.typed",
 ]
 
-# The x.uma/puma house lint set: B (bugbear), SIM, TC on top of the cix selection.
+# The x.uma/puma house lint set: B (bugbear), SIM, TC on top of E, F, I, N, W, UP.
 [tool.ruff]
 line-length = 100
 target-version = "py312"

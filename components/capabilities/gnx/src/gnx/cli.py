@@ -317,6 +317,22 @@ def list_cmd() -> None:
         console.print(f"[red]layout:[/] {p}")
 
 
+def _git_dir(root: Path) -> Path:
+    """The repository's git directory: `.git` itself, or what a worktree's `.git` file names.
+
+    In a linked worktree `.git` is a file holding `gitdir: <path>`, and staging under it
+    fails with NotADirectoryError. Staging stays inside the git dir so the final swap is a
+    rename on one filesystem and never shows up as an untracked path.
+    """
+    dot_git = root / ".git"
+    if dot_git.is_file():
+        text = dot_git.read_text().strip()
+        if text.startswith("gitdir:"):
+            target = Path(text.removeprefix("gitdir:").strip())
+            return target if target.is_absolute() else (root / target).resolve()
+    return dot_git
+
+
 @main.command("build")
 @click.option(
     "--check",
@@ -337,7 +353,7 @@ def build_cmd(check: bool) -> None:
 
     # Build into a staging directory, then swap. The previous implementation rmtree'd
     # plugins/ up front, so any failure mid-build left the repo with no projection at all.
-    staging = Path(tempfile.mkdtemp(prefix="gnx-build-", dir=root / ".git"))
+    staging = Path(tempfile.mkdtemp(prefix="gnx-build-", dir=_git_dir(root)))
     try:
         stage_plugins = staging / "plugins"
         stage_plugins.mkdir(parents=True)

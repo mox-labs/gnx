@@ -6,10 +6,10 @@ This walkthrough uses **Exa** (neural search) because the auth is simple and the
 
 ## Before you start
 
-Install recon as an editable tool:
+Install recon from the gnx repository (see [first-survey.md](./first-survey.md) for an editable install from a checkout):
 
 ```bash
-uv tool install --editable tools/recon
+uv tool install "recon @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
@@ -29,13 +29,13 @@ Three config knobs make POST-body APIs work:
 
 Plus one templating knob that keeps the config generic:
 
-4. **`{placeholder}` substitution in body strings** — values from `params:` are substituted recursively into string values in `body:`. Non-strings (ints, bools, lists, nested dicts) pass through untouched. This is the same `substitute()` mechanism recon already uses for `endpoint` path interpolation and `cli.run` commands. **If any `{foo}` remains unresolved after substitution, recon raises `CollectionError` before sending the request** — loud local failure beats silent server-side 400s or empty results. Add every `{foo}` you reference to `params:`.
+4. **`{placeholder}` substitution in body strings** — values from `params:` are substituted recursively into string values in `body:`. Non-strings (ints, bools, lists, nested dicts) pass through untouched. This is the same `substitute()` mechanism recon already uses for `endpoint` path interpolation and `cli.run` commands. **If any `{foo}` remains unresolved after substitution, `recon survey --dry-run` (and every survey, which plans first) reports it as a config problem at `collectors[i].body` and exits 3 before anything is sent** — loud local failure beats silent server-side 400s or empty results. Add every `{foo}` you reference to `params:`.
 
 ## Create the mission
 
 ```bash
-mkdir -p .cix/recon/exa-discovery
-$EDITOR .cix/recon/exa-discovery/config.yaml
+mkdir -p .recon/exa-discovery
+$EDITOR .recon/exa-discovery/config.yaml
 ```
 
 ## Stage 1 — Probe
@@ -52,7 +52,7 @@ catalog:
       env: EXA_API_KEY
       # no prefix — Exa uses raw x-api-key
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.8.0 (exa-discovery walkthrough)"
+    user_agent: "recon/0.9.0 (exa-discovery walkthrough)"
 
 collectors:
   - name: probe
@@ -81,15 +81,15 @@ recon survey exa-discovery
 Expected output:
 
 ```
-Mission: exa-discovery — 1 collector(s), 1 source(s)
+Mission: exa-discovery — 1 run(s) from 1 collector(s), 1 source(s)
   probe: 1 records
-/Users/you/project/.cix/recon/exa-discovery/archive/2026-04-19-113022-123456/
+/Users/you/project/.recon/exa-discovery/archive/2026-04-19-113022-123456
 ```
 
 ## Stage 2 — Inspect the raw shape
 
 ```bash
-cat .cix/recon/exa-discovery/archive/*/probe.jsonl | jq .
+cat .recon/exa-discovery/archive/*/probe.jsonl | jq .
 ```
 
 Exa returns records shaped like:
@@ -141,7 +141,7 @@ Re-run on the same one-record sample:
 
 ```bash
 recon survey exa-discovery
-cat .cix/recon/exa-discovery/archive/*/probe.jsonl | jq .
+cat .recon/exa-discovery/archive/*/probe.jsonl | jq .
 ```
 
 Uniform columns, populated. If a path was wrong, the field would be `null` — fix and re-run. Iteration is cheap because `numResults: 1` keeps the probe one request.
@@ -159,7 +159,7 @@ catalog:
       header: x-api-key
       env: EXA_API_KEY
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.8.0 (exa-discovery survey)"
+    user_agent: "recon/0.9.0 (exa-discovery survey)"
 
 collectors:
   - name: neural-search
@@ -192,7 +192,7 @@ recon survey exa-discovery
 ```
 
 ```
-Mission: exa-discovery — 1 collector(s), 1 source(s)
+Mission: exa-discovery — 1 run(s) from 1 collector(s), 1 source(s)
   neural-search: 15 records
 ```
 

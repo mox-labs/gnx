@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from recon.adapters._out.cli_collector import CliCollector, _parse_line
+from recon.adapters._out.cli_collector import CliCollector
+from recon.adapters._out.parsing import parse_line as _parse_line
 from recon.domain.exceptions import CollectionError
 from recon.domain.models import CollectorEntry, SourceEntry
 

@@ -7,7 +7,7 @@ No tool loop. A definition that declares tools is refused rather than run withou
 the agent defined and the agent measured would differ, and nothing downstream would know.
 ``max_turns`` is an upper bound, which one call satisfies.
 
-Type URL: ``matrix.v1/runtime.model``. Requires the ``models`` extra (hardline).
+Type URL: ``matrix.v1.runtime.model``. Requires the ``models`` extra (hardline).
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
-from matrix.domain.errors import AgentRuntimeError, ConfigError
-from matrix.domain.types import AgentResponse
+from matrix.domain.agent import AgentResponse
+from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason
 
 if TYPE_CHECKING:
     from hardline import ModelRuntime
@@ -68,8 +68,8 @@ class ModelAgentRuntime:
         if definition.tools:
             raise ConfigError(
                 f"agent {definition.name!r} declares tools {list(definition.tools)}, but the "
-                "model runtime makes a single call with no tool loop. Bind it to a claude-sdk "
-                "runtime, or set tools: [] if it needs none."
+                "model runtime makes a single call with no tool loop",
+                fix="bind it to a claude-sdk runtime, or set tools: [] if it needs none",
             )
 
     async def run(self, definition: AgentDefinition, task: str) -> AgentResponse:
@@ -85,7 +85,15 @@ class ModelAgentRuntime:
                 temperature=self._config.temperature,
             )
         except HardlineError as e:
-            raise AgentRuntimeError(f"agent {definition.name!r}: {e}") from e
+            raise AgentRuntimeError(
+                f"agent {definition.name!r}: {e}", reason=_reason(e), agent=definition.name
+            ) from e
+        except Exception as e:  # the port promises a response or a classified error
+            raise AgentRuntimeError(
+                f"agent {definition.name!r}: {type(e).__name__}: {e}",
+                reason="failed",
+                agent=definition.name,
+            ) from e
         return AgentResponse(
             content=completion.text,
             tokens_input=completion.usage.input_tokens,
@@ -94,4 +102,25 @@ class ModelAgentRuntime:
             num_turns=1,
             family=completion.family,
             model=completion.name,
+            stop="completed",
         )
+
+
+_BACKEND_REASONS: dict[str, RuntimeReason] = {
+    "rate_limit": "rate_limited",
+    "timeout": "timeout",
+    "unavailable": "unavailable",
+    "auth": "auth",
+    "bad_request": "incapable",
+}
+
+
+def _reason(error: Exception) -> RuntimeReason:
+    """hardline's classification, in the runtime port's vocabulary."""
+    from hardline import BackendError, SecretError
+
+    if isinstance(error, BackendError):
+        return _BACKEND_REASONS.get(error.reason, "failed")
+    if isinstance(error, SecretError):
+        return "auth"
+    return "failed"

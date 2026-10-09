@@ -21,7 +21,7 @@ With ``--format json`` an error is one line of JSON on stderr::
                "message": "...", "fix": "<next command>" | null, "problems": [...]}}
 
 ``problems`` appears on ``experiment validate`` only. Usage errors (2) are click's prose.
-Every JSON document on stdout names its shape in a ``schema`` field (``ix.v1/results``, …).
+Every JSON document on stdout names its shape in a ``schema`` field (``ix.v1.results``, …).
 """
 
 from __future__ import annotations
@@ -33,21 +33,16 @@ import sys
 from typing import TYPE_CHECKING, Any, NoReturn
 
 import rich_click as click
-from matrix import AgentRuntimeError, MatrixError
-from matrix import ConfigError as MatrixConfigError
-from matrix import NotFoundError as MatrixNotFoundError
+from matrix import EXIT_CODES, MatrixError
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
 from ix import __version__
 from ix.domain.errors import (
-    ConfigError,
     EngineError,
     IxError,
     LabNotFoundError,
-    MissingExtraError,
-    NotFoundError,
     ResultsNotFoundError,
 )
 
@@ -55,8 +50,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
+    from ix.domain.models import Comparison, ExperimentConfig, ExperimentResults, ProbeResult
     from ix.domain.types import Reading, Subject, Trial
-    from ix.eval.models import Comparison, ExperimentConfig, ExperimentResults, ProbeResult
 
 out = Console()
 err = Console(stderr=True)
@@ -136,6 +131,18 @@ def _print_metrics(results: ExperimentResults) -> None:
             "Sensor faults",
             f"[red]{results.sensor_faults}[/red]  (sensor crashed; scored as failures)",
         )
+    if results.harness_faults:
+        table.add_row(
+            "Harness faults",
+            f"[red]{results.harness_faults}[/red]  (rate limit, outage, credentials: "
+            "not scored; rerun)",
+        )
+    if results.unmeasured_probes:
+        table.add_row("Unmeasured probes", ", ".join(results.unmeasured_probes))
+    cut_short = {k: v for k, v in results.stops.items() if k != "completed"}
+    if cut_short:
+        endings = ", ".join(f"{k} {v}" for k, v in sorted(cut_short.items()))
+        table.add_row("Sessions cut short", f"[yellow]{endings}[/yellow]  (judged as they stood)")
     if results.trials_log:
         table.add_row("Trials", _short_path(results.trials_log))
     out.print(table)
@@ -223,6 +230,8 @@ def _print_comparison(c: Comparison) -> None:
         table.add_row("Unmatched probes", ", ".join(c.unmatched))
     if c.sensor_faults:
         table.add_row("Sensor faults", f"[red]{c.sensor_faults}[/red]  (no winner is called)")
+    if c.harness_faults:
+        table.add_row("Harness faults", f"[red]{c.harness_faults}[/red]  (no winner is called)")
     out.print(table)
     if c.warning:
         out.print(f"[yellow]Warning:[/yellow] {c.warning}")
@@ -292,30 +301,22 @@ def _json_mode() -> bool:
     return ctx is not None and ctx.params.get("fmt") == "json"
 
 
-def _emit(doc: dict[str, Any] | list[dict[str, Any]]) -> None:
+def _emit(doc: dict[str, Any]) -> None:
     click.echo(json.dumps(doc, indent=2, default=str))
 
 
 def _classify(e: BaseException) -> tuple[str, int]:
-    """(kind, exit code) for an error — what the caller should do next, not where it arose."""
-    if isinstance(e, (NotFoundError, MatrixNotFoundError)):
-        return "not_found", EXIT_NOT_FOUND
-    if isinstance(e, (ConfigError, MissingExtraError, MatrixConfigError)):
-        return "config", EXIT_CONFIG
-    if isinstance(e, AgentRuntimeError):
-        # hardline's BackendError carries `reason` and `retryable`; read them off the cause
-        # chain without importing hardline. A runtime whose cause carries neither (the
-        # claude-sdk runtime reports HTTP status only in prose) stays unclassified.
-        cause = e.__cause__
-        while cause is not None:
-            if getattr(cause, "reason", None) == "auth":
-                return "auth", EXIT_AUTH
-            if getattr(cause, "retryable", False) is True:
-                return "transient", EXIT_TRANSIENT
-            cause = cause.__cause__
-        return "unknown", EXIT_FAILURE
+    """(kind, exit code) for an error: what the caller should do next, not where it arose.
+
+    matrix's errors already carry both (a runtime failure's kind comes from its classified
+    reason), so they are taken as they are; ix's own errors map by class.
+    """
+    if isinstance(e, MatrixError):
+        return e.kind, e.exit_code
     if isinstance(e, EngineError):
         return "engine", EXIT_FAILURE
+    if isinstance(e, IxError):
+        return e.kind, EXIT_CODES.get(e.kind, EXIT_FAILURE)
     return "unknown", EXIT_FAILURE
 
 
@@ -347,11 +348,37 @@ def _fail(e: BaseException, fix: str | None = None) -> NoReturn:
     _cli_error(str(e), fix, kind=kind, code=code)
 
 
+_SETTINGS: list[Any] = []
+_REGISTRY: list[Any] = []
+
+
+def _registry() -> Any:
+    """The extension registry, built once per command (for plans: which runtimes are live)."""
+    from ix.composition import build_registry
+
+    if not _REGISTRY:
+        _REGISTRY.append(build_registry())
+    return _REGISTRY[0]
+
+
+def _settings() -> Any:
+    """Your ix defaults and the shared matrix section, read once per command."""
+    from ix.composition import load_ix_config
+
+    if not _SETTINGS:
+        try:
+            _SETTINGS.append(load_ix_config())
+        except IxError as e:
+            _fail(e, "matrix config --tool ix --sources   # which file says what")
+    return _SETTINGS[0]
+
+
 def _resolve_lab(lab_name: str | None) -> Path:
     from pathlib import Path
 
     from ix.config.settings import find_lab, find_project_root, is_lab
 
+    lab_name = lab_name or _settings().client.lab
     try:
         return find_lab(lab_name)
     except LabNotFoundError:
@@ -381,18 +408,28 @@ def _require_experiment(lab_path: Path, name: str) -> Path:
 
 def _load(name: str, lab_name: str | None) -> tuple[Path, Path, ExperimentConfig]:
     """(lab, experiment dir, config) — or a clean error naming what is missing."""
-    from ix.composition import create_store
+    from ix.composition import create_store, effective
 
     lab_path = _resolve_lab(lab_name)
     exp_path = _require_experiment(lab_path, name)
     try:
-        return lab_path, exp_path, create_store(lab=lab_path).load_experiment(exp_path)
+        loaded = create_store(lab=lab_path).load_experiment(exp_path)
     except (IxError, MatrixError) as e:
         _fail(e)  # the message names the file and key; validate would only repeat it
+    return lab_path, exp_path, effective(loaded, _settings().client)
+
+
+def _results_list(experiment: str, results: list[ExperimentResults]) -> dict[str, Any]:
+    """One document for any number of subjects: its shape never depends on the count."""
+    return {
+        "schema": "ix.v1.results-list",
+        "experiment": experiment,
+        "results": [_results_doc(r) for r in results],
+    }
 
 
 def _results_doc(results: ExperimentResults) -> dict[str, Any]:
-    return {"schema": "ix.v1/results", **results.model_dump(mode="json")}
+    return {"schema": "ix.v1.results", **results.model_dump(mode="json")}
 
 
 def _format_option(f: Callable[..., Any]) -> Callable[..., Any]:
@@ -412,9 +449,10 @@ def _format_option(f: Callable[..., Any]) -> Callable[..., Any]:
 @click.version_option(__version__, prog_name="ix")
 @click.pass_context
 def main(ctx: click.Context) -> None:
-    """ix — Intelligent Experimentation
+    """ix: experiments on agents and skills, driven by config.
 
-    Evals, benchmarks, and QoS experiments for AI agents and skills.
+    Evals, benchmarks, and QoS experiments: probes × subjects × trials, judged by sensors,
+    with uncertainty and a comparison that refuses to call a winner on thin data.
 
     \b
     ix experiment init routing --lab lab     scaffold an experiment
@@ -423,7 +461,14 @@ def main(ctx: click.Context) -> None:
     ix run routing --simulate --seed 42      prove the harness, no API calls
     ix run routing --subject live            one subject, for real
     ix compare routing baseline candidate    is the difference real?
+
+    \b
+    Your defaults (trials, repeats, engine, lab) go in the ix: section of ./ix.yaml or
+    ~/.ix/config.yaml; runtimes, models and agents in the matrix: section of ./matrix.yaml
+    or ~/.matrix/config.yaml. `matrix config --tool ix --sources` lists the files read.
     """
+    _SETTINGS.clear()  # read the config tiers fresh for each command
+    _REGISTRY.clear()
     if ctx.invoked_subcommand is None:
         out.print(ctx.get_help())
 
@@ -454,7 +499,7 @@ def lab_init(name: str, fmt: str) -> None:
     if fmt == "json":
         _emit(
             {
-                "schema": "ix.v1/init",
+                "schema": "ix.v1.init",
                 "kind": "lab",
                 "name": name,
                 "path": str(lab_path),
@@ -488,7 +533,7 @@ def lab_list(fmt: str) -> None:
         for lab_path in labs
     ]
     if fmt == "json":
-        _emit({"schema": "ix.v1/labs", "labs": rows})
+        _emit({"schema": "ix.v1.labs", "labs": rows})
         return
     if not rows:
         err.print("[dim]No labs found. Create one with: ix lab init <name>[/dim]")
@@ -514,8 +559,8 @@ def _plan(
     n = len(experiment.probes)
     rows = []
     for subject in subjects:
-        runtime = runtime_type(subject, simulate=simulate)
-        options = (subject.config.get("runtime") or {}) if subject and not simulate else {}
+        runtime = runtime_type(subject, simulate=simulate, matrix=_settings().matrix)
+        options = _runtime_options(subject) if subject and not simulate else {}
         rows.append(
             {
                 "subject": subject.name if subject else "default",
@@ -524,7 +569,7 @@ def _plan(
                 "permission_mode": options.get("permission_mode")
                 if isinstance(options, dict)
                 else None,
-                "live": is_live(runtime),
+                "live": is_live(runtime, _registry()),
                 "probes": n,
                 "trials": experiment.trials,
                 "repeats": experiment.repeats,
@@ -532,6 +577,18 @@ def _plan(
             }
         )
     return rows
+
+
+def _runtime_options(subject: Subject) -> dict[str, Any]:
+    """The deployment options of whatever plays ``subject``: inline, or its named agent's."""
+    agent = subject.config.get("agent")
+    if agent:
+        matrix = _settings().matrix
+        spec = matrix.agents.get(agent)
+        runtime = matrix.runtimes.get(spec.runtime) if spec else None
+        return runtime.options() if runtime is not None else {}
+    options = subject.config.get("runtime") or {}
+    return options if isinstance(options, dict) else {}
 
 
 def _print_plan(experiment: ExperimentConfig, rows: list[dict[str, Any]], refused: bool) -> None:
@@ -580,6 +637,8 @@ def _print_plan(experiment: ExperimentConfig, rows: list[dict[str, Any]], refuse
 )
 @click.option(
     "--plan",
+    "--dry-run",
+    "-n",
     "show_plan",
     is_flag=True,
     default=False,
@@ -596,9 +655,8 @@ def _print_plan(experiment: ExperimentConfig, rows: list[dict[str, Any]], refuse
 @click.option("--mock", "mock_alias", is_flag=True, default=False, hidden=True)
 @click.option(
     "--engine",
-    type=click.Choice(["native", "inspect"]),
     default=None,
-    help="Override the experiment's engine",
+    help="Override the experiment's engine: native, inspect, or an extension's type URL",
 )
 @click.option("--seed", type=int, help="Seed for the simulator")
 @_format_option
@@ -664,7 +722,7 @@ def run(
         if fmt == "json":
             _emit(
                 {
-                    "schema": "ix.v1/plan",
+                    "schema": "ix.v1.plan",
                     "experiment": experiment.name,
                     "simulate": simulate,
                     "subjects": plan,
@@ -698,6 +756,7 @@ def run(
             seed=seed,
             experiment_cwd=str(exp_path.resolve()),
             engine=engine,
+            matrix=_settings().matrix,
         )
     except (IxError, MatrixError) as e:
         _fail(e, f"ix experiment validate {name} --lab {lab_path.name}")
@@ -741,7 +800,7 @@ def run(
             _print_metrics(result)
 
     if fmt == "json":
-        _emit([_results_doc(r) for r in collected])
+        _emit(_results_list(experiment.name, collected))
 
 
 # --- Experiment ------------------------------------------------------------------------
@@ -786,7 +845,8 @@ def experiment_init(name: str, lab_name: str | None, fmt: str) -> None:
         (exp_path / "subjects").mkdir()
         scaffold = {
             "experiment.yaml": (
-                f'name: {name}\ndescription: ""\nengine: native\nsensor: activation\ntrials: 5\n'
+                f'name: {name}\ndescription: ""\nsensor: activation\n'
+                "# trials, repeats and engine come from your ix: defaults unless set here\n"
             ),
             "tasks/example.md": _EXAMPLE_PROBE,
             # A starter subject on the simulator, so a new experiment runs before any model is
@@ -802,7 +862,7 @@ def experiment_init(name: str, lab_name: str | None, fmt: str) -> None:
     if fmt == "json":
         _emit(
             {
-                "schema": "ix.v1/init",
+                "schema": "ix.v1.init",
                 "kind": "experiment",
                 "name": name,
                 "path": str(exp_path),
@@ -849,7 +909,7 @@ def experiment_list(lab_name: str | None, fmt: str) -> None:
         )
 
     if fmt == "json":
-        _emit({"schema": "ix.v1/experiments", "lab": lab_path.name, "experiments": rows})
+        _emit({"schema": "ix.v1.experiments", "lab": lab_path.name, "experiments": rows})
     elif not rows:
         err.print(
             f"[dim]No experiments in {lab_path.name}. "
@@ -900,7 +960,7 @@ def experiment_show(name: str, lab_name: str | None, fmt: str) -> None:
     if fmt == "json":
         _emit(
             {
-                "schema": "ix.v1/experiment",
+                "schema": "ix.v1.experiment",
                 "name": exp.name,
                 "description": exp.description,
                 "engine": exp.engine,
@@ -911,8 +971,8 @@ def experiment_show(name: str, lab_name: str | None, fmt: str) -> None:
                     {
                         "name": s.name,
                         "description": s.description,
-                        "runtime": runtime_type(s),
-                        "live": is_live(runtime_type(s)),
+                        "runtime": runtime_type(s, matrix=_settings().matrix),
+                        "live": is_live(runtime_type(s, matrix=_settings().matrix), _registry()),
                     }
                     for s in exp.subjects
                 ],
@@ -926,8 +986,10 @@ def experiment_show(name: str, lab_name: str | None, fmt: str) -> None:
     if exp.description:
         out.print(f"[dim]{exp.description}[/dim]")
     for subject in exp.subjects or ():
-        runtime = (subject.config.get("runtime") or {}).get("type", "unset")
-        out.print(f"Subject: [cyan]{subject.name}[/cyan] (runtime: {runtime})")
+        runtime = runtime_type(subject, matrix=_settings().matrix)
+        agent = subject.config.get("agent")
+        via = f"agent {agent}, " if agent else ""
+        out.print(f"Subject: [cyan]{subject.name}[/cyan] ({via}runtime: {runtime})")
     out.print(f"Sensors: [cyan]{', '.join(s.get('type', '?') for s in exp.sensors)}[/cyan]")
     out.print(f"Engine: {exp.engine.get('type', 'native')}")
     out.print(f"Trials × repeats: {exp.trials} × {exp.repeats}")
@@ -946,7 +1008,11 @@ def experiment_show(name: str, lab_name: str | None, fmt: str) -> None:
 @experiment.command("validate", epilog=_EXIT_CODES)
 @click.argument("name")
 @click.option("--lab", "lab_name", help="Lab name (auto-detected if omitted)")
-@click.option("--engine", type=click.Choice(["native", "inspect"]), default=None)
+@click.option(
+    "--engine",
+    default=None,
+    help="Check with this engine: native, inspect, or an extension's type URL",
+)
 @_format_option
 def experiment_validate(name: str, lab_name: str | None, engine: str | None, fmt: str) -> None:
     """Compose everything a run would — sensors, engine, every subject's runtime — and run
@@ -954,7 +1020,7 @@ def experiment_validate(name: str, lab_name: str | None, engine: str | None, fmt
 
     Also checks that local plugin paths (claude-sdk ``runtime.plugins``) exist.
     """
-    from ix.composition import create_store, validate_experiment
+    from ix.composition import create_store, effective, validate_experiment
 
     lab_path = _resolve_lab(lab_name)
     exp_path = _require_experiment(lab_path, name)
@@ -963,7 +1029,12 @@ def experiment_validate(name: str, lab_name: str | None, engine: str | None, fmt
     except (IxError, MatrixError) as e:
         problems = [str(e)]  # a file that does not load stops composition at its first error
     else:
-        problems = validate_experiment(exp, experiment_cwd=str(exp_path.resolve()), engine=engine)
+        problems = validate_experiment(
+            effective(exp, _settings().client),
+            experiment_cwd=str(exp_path.resolve()),
+            engine=engine,
+            matrix=_settings().matrix,
+        )
     if problems:
         _cli_error(
             f"{name}: {len(problems)} problem(s)",
@@ -976,7 +1047,7 @@ def experiment_validate(name: str, lab_name: str | None, engine: str | None, fmt
     if fmt == "json":
         _emit(
             {
-                "schema": "ix.v1/validation",
+                "schema": "ix.v1.validation",
                 "experiment": exp.name,
                 "valid": True,
                 "problems": [],
@@ -1040,7 +1111,7 @@ def results(name: str, lab_name: str | None, subject_name: str | None, fmt: str)
     except IxError as e:
         _fail(e)
     if fmt == "json":
-        _emit([_results_doc(r) for r in loaded])
+        _emit(_results_list(name, loaded))
         return
     for r in loaded:
         _print_metrics(r)
@@ -1078,7 +1149,7 @@ def compare(name: str, subject_a: str, subject_b: str, lab_name: str | None, fmt
     except IxError as e:
         _fail(e)
     if fmt == "json":
-        _emit({"schema": "ix.v1/comparison", **comparison.model_dump(mode="json")})
+        _emit({"schema": "ix.v1.comparison", **comparison.model_dump(mode="json")})
     else:
         _print_comparison(comparison)
 

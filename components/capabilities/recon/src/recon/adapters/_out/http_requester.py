@@ -18,7 +18,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from recon.domain.exceptions import CollectionError
+from recon.domain.exceptions import CollectionError, ErrorKind
 from recon.domain.http import HttpResponse
 
 if TYPE_CHECKING:
@@ -31,6 +31,25 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code == 429 or exc.response.status_code >= 500
     return isinstance(exc, httpx.TransportError)
+
+
+def classify_http_failure(exc: BaseException) -> ErrorKind:
+    """What the caller should do about a failed request, once retries are spent.
+
+    401 / 403 → ``auth`` (a new credential, not a retry); 429, 5xx and transport errors
+    (timeouts, connection refused) → ``transient`` (retrying later may succeed); any other
+    status → ``collection``.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in (401, 403):
+            return "auth"
+        if code == 429 or code >= 500:
+            return "transient"
+        return "collection"
+    if isinstance(exc, httpx.TransportError):
+        return "transient"
+    return "collection"
 
 
 def _retry_wait(retry_state: Any) -> float:
@@ -120,7 +139,7 @@ class HttpxRequester:
                 if text:
                     snippet = f"\nResponse body: {text[:200]}"
             msg = f"HTTP request failed after retries: {url}{status}{snippet}"
-            raise CollectionError(msg) from exc
+            raise CollectionError(msg, kind=classify_http_failure(exc)) from exc
 
         return _to_domain(resp)
 

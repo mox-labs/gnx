@@ -49,7 +49,7 @@
       "name": "recon",
       "source": "./plugins/recon",
       "description": "Heterogeneous sources in, structured data out. Fetch from APIs, CLIs, and web pages; reshape to uniform JSONL queryable with SQL.",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "category": "research",
       "keywords": [
         "collection",

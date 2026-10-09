@@ -2,7 +2,7 @@
 
 Requires: uv add matrix[otel]
 
-Matrix instruments with opentelemetry-api (always available, no-op by default).
+matrix emits events; the `otel` observer (`observers: [otel]`) turns them into spans.
 This module configures the SDK so spans actually get exported. For custom
 setups, configure the OpenTelemetry SDK directly — Matrix doesn't care how.
 """

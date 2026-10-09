@@ -214,7 +214,7 @@ class TestZenodoLive:
             name="zenodo",
             url="https://zenodo.org/api",
             rate_limit={"rps": 1, "burst": 2},
-            user_agent="recon/0.7.0 (https://github.com/mox-labs/cix)",
+            user_agent="recon/0.9.0 (https://github.com/mox-labs/gnx)",
         )
         entry = CollectorEntry(
             name="test",
@@ -300,6 +300,6 @@ class TestFanOutLive:
         import yaml
 
         meta = yaml.safe_load((archive / "meta.yaml").read_text())
-        statuses = {c["name"]: c["status"] for c in meta["collectors"]}
+        statuses = {t["name"]: t["status"] for t in meta["tables"]}
         assert statuses["ok"] == "ok"
         assert statuses["fail"] == "error"
