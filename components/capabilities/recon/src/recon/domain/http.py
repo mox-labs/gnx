@@ -39,7 +39,8 @@ class Requester(Protocol):
 
     Rate limiting and retries are the Requester's responsibility, not the collector's.
     A failure raises CollectionError whose ``kind`` is ``transient`` (429, 5xx, transport
-    errors, after retries), ``auth`` (401, 403) or ``collection`` (any other status).
+    errors, after retries), ``auth`` (401, 403) or ``collection`` (any other status, or a
+    body larger than the source's ``max_bytes``).
     """
 
     def request(
