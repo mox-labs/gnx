@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from matrix.adapters._out.observers.jsonl import JsonlObserver, JsonlObserverConfig
 from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig
 from matrix.adapters._out.runtime.mock import MockRuntime, MockRuntimeConfig
 from matrix.adapters._out.runtime.model import ModelAgentRuntimeConfig
@@ -58,6 +59,16 @@ def _otel() -> Any:
     from matrix.adapters._out.observers.otel import OtelObserver
 
     return OtelObserver()
+
+
+def _console() -> Any:
+    from matrix.adapters._out.observers.console import ConsoleObserver
+
+    return ConsoleObserver()
+
+
+def _jsonl(config: JsonlObserverConfig) -> JsonlObserver:
+    return JsonlObserver(config.path)
 
 
 def _agent_step(config: AgentStepConfig, *, agents: Mapping[str, Agent]) -> AgentStep:
@@ -110,5 +121,20 @@ def register(registry: Registry) -> None:
         observer_type_url("otel"),
         _otel,
         effects={"network"},
-        summary="OpenTelemetry spans for runs, members and agents (requires matrix[otel])",
+        summary="OpenTelemetry spans and metrics from run events (requires matrix[otel])",
+    )
+    registry.register(
+        "observer",
+        observer_type_url("console"),
+        _console,
+        effects=set(),
+        summary="Progress on stderr: member states and elapsed time, live on a terminal",
+    )
+    registry.register(
+        "observer",
+        observer_type_url("jsonl"),
+        _jsonl,
+        config=JsonlObserverConfig,
+        effects={"filesystem"},
+        summary="One JSON line per event, to a file or stderr: the stream an agent tails",
     )

@@ -30,6 +30,9 @@ another member failed, the run was cancelled):
 
 What this cannot bound: a member that blocks the event loop (synchronous work) stalls every
 deadline, sibling and release until it yields.
+
+Everything above is narrated as events on the run's channel (:mod:`matrix.domain.observer`),
+which components feed too, through ``ctx.emit``, ``ctx.measure`` and ``ctx.span``.
 """
 
 from __future__ import annotations
@@ -40,8 +43,9 @@ import inspect
 import logging
 import time
 import uuid
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -57,7 +61,26 @@ from matrix.domain.errors import (
     RunError,
 )
 from matrix.domain.flow import CompiledFlow, CompiledMember, Inputs, Release, RunContext
-from matrix.domain.observer import CURRENT_SPAN, Event, Observer, emit
+from matrix.domain.observer import (
+    ARTIFACT_APPEND,
+    CURRENT_SPAN,
+    MEASURE,
+    MEASURE_KINDS,
+    MEMBER_END,
+    MEMBER_LATE,
+    MEMBER_START,
+    MEMBER_STOPPING,
+    RELEASE_END,
+    RELEASE_START,
+    RUN_END,
+    RUN_START,
+    Channel,
+    Event,
+    EventPolicy,
+    Observer,
+    SpanScope,
+    check_event_name,
+)
 from matrix.domain.signals import cancel_on_signals
 
 logger = logging.getLogger("matrix.executor")
@@ -145,6 +168,8 @@ class Run:
     #: ``{member, status, error}`` per deferred release, in the order they were called.
     #: ``status`` is ``released``, ``failed`` (it raised) or ``abandoned`` (it overran).
     releases: list[dict[str, Any]] = field(default_factory=list)
+    #: Events emitted during the run that no observer received (telemetry is lossy).
+    events_dropped: int = 0
     episode: int = 0
 
     def outputs(self, topic: str) -> tuple[Any, ...]:
@@ -155,12 +180,20 @@ class Run:
 class Executor:
     """Runs compiled flows. Stateless between runs; safe to share.
 
-    ``signals=False`` leaves SIGTERM and SIGINT alone; the caller then owns turning them into
-    cancellation (see :mod:`matrix.domain.signals`).
+    ``events`` bounds the telemetry a run may hold for its observers. ``signals=False``
+    leaves SIGTERM and SIGINT alone; the caller then owns turning them into cancellation
+    (see :mod:`matrix.domain.signals`).
     """
 
-    def __init__(self, observers: Sequence[Observer] = (), *, signals: bool = True) -> None:
+    def __init__(
+        self,
+        observers: Sequence[Observer] = (),
+        *,
+        events: EventPolicy | None = None,
+        signals: bool = True,
+    ) -> None:
         self._observers = tuple(observers)
+        self._events = events or EventPolicy()
         self._signals = signals
 
     async def run(
@@ -206,7 +239,8 @@ class Executor:
             construct=Construct(dict(flow.topics)),
             episode=episode,
         )
-        session = _Session(flow, run, limits, self._observers)
+        channel = Channel(self._observers, self._events, run.run_id)
+        session = _Session(flow, run, limits, channel)
         # The run lives in its own task, shielded from the caller's cancellation: cancelling
         # the caller asks the run to stop, and the run answers once it has cleaned up.
         main = asyncio.ensure_future(session.execute(supplied))
@@ -250,6 +284,7 @@ class _Step:
     running: bool = False
     #: What the member returned, once it passed the output checks. Appended at level end.
     outputs: Mapping[str, Any] | None = None
+    span: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 class _Hooks:
@@ -259,29 +294,82 @@ class _Hooks:
         self._session = session
         self._alias = alias
         self._cleanup_s = cleanup_s
+        self._warned = False
         self.closed = False
+
+    def _late(self, call: str) -> bool:
+        """Whether the member has ended; the first late call is reported, the rest are quiet."""
+        if self.closed and not self._warned:
+            self._warned = True
+            logger.warning(
+                "member %r used its context (%s) after it ended; ignored", self._alias, call
+            )
+            self._session.emit(MEMBER_LATE, uuid.uuid4().hex, {"call": call}, self._alias)
+        return self.closed
+
+    def _parent(self) -> str:
+        scope = CURRENT_SPAN.get()
+        if scope is not None and scope.run_id == self._session.run_id:
+            return scope.span
+        return self._session.run_id
 
     def defer(self, release: Release) -> None:
         if not callable(release):
             raise TypeError(f"defer() takes a callable, got {type(release).__name__}")
-        if self.closed:
-            logger.warning(
-                "member %r called defer() after it ended; the release is ignored", self._alias
+        if not self._late("defer"):
+            self._session.releases.append((self._alias, release, self._cleanup_s))
+
+    def emit(self, name: str, fields: dict[str, Any]) -> None:
+        check_event_name(name)
+        if not self._late("emit"):
+            self._session.emit(name, uuid.uuid4().hex, fields, self._alias, self._parent())
+
+    def measure(self, name: str, value: float, unit: str, kind: str, attrs: dict[str, Any]) -> None:
+        check_event_name(name, what="measure")
+        if kind not in MEASURE_KINDS:
+            raise ContractError(
+                f"measure {name!r}: kind {kind!r} is not one of {', '.join(MEASURE_KINDS)}"
             )
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ContractError(
+                f"measure {name!r}: value must be a number, got {type(value).__name__}"
+            )
+        if not self._late("measure"):
+            fields = {"name": name, "value": value, "unit": unit, "kind": kind, "attrs": attrs}
+            self._session.emit(MEASURE, uuid.uuid4().hex, fields, self._alias, self._parent())
+
+    @asynccontextmanager
+    async def span(self, name: str, fields: dict[str, Any]) -> AsyncIterator[None]:
+        check_event_name(name, what="span")
+        scope = CURRENT_SPAN.get()
+        if self._late("span") or scope is None:
+            yield
             return
-        self._session.releases.append((self._alias, release, self._cleanup_s))
+        span = uuid.uuid4().hex
+        self._session.emit(f"{name}.start", span, fields, self._alias, scope.span)
+        token = CURRENT_SPAN.set(replace(scope, span=span))
+        started = time.monotonic()
+        status = "ok"
+        try:
+            yield
+        except BaseException:
+            status = "error"
+            raise
+        finally:
+            CURRENT_SPAN.reset(token)
+            ended = {"status": status, "duration_ms": int((time.monotonic() - started) * 1000)}
+            self._session.emit(f"{name}.end", span, ended, self._alias, scope.span)
 
 
 class _Session:
     """One run in flight: the levels, the stop path, and the releases owed at the end."""
 
-    def __init__(
-        self, flow: CompiledFlow, run: Run, limits: Limits, observers: tuple[Observer, ...]
-    ) -> None:
+    def __init__(self, flow: CompiledFlow, run: Run, limits: Limits, channel: Channel) -> None:
         self._flow = flow
         self._run = run
         self._limits = limits
-        self._observers = observers
+        self._channel = channel
+        self.run_id = run.run_id
         self._depends = _dependencies(flow)
         self._steps: dict[str, _Step] = {}
         #: Why nothing more may start (a skip reason), once something stopped the run.
@@ -298,7 +386,9 @@ class _Session:
 
     async def execute(self, supplied: Mapping[str, Any]) -> None:
         flow, run = self._flow, self._run
-        self._emit("run.start", run.run_id, None, {"flow": flow.name})
+        started = time.monotonic()
+        self._channel.start()
+        self.emit(RUN_START, run.run_id, {"flow": flow.name}, parent=None)
         try:
             for topic, value in supplied.items():
                 self._append(topic, flow.inputs[topic], INPUT_PRODUCER, topic, value)
@@ -314,12 +404,24 @@ class _Session:
             await self._release()
             run.status = status
             run.ended = datetime.now(UTC)
-            self._emit(
-                "run.end",
+            self.emit(
+                RUN_END,
                 run.run_id,
-                None,
-                {"flow": flow.name, "status": run.status, "artifacts": len(run.construct)},
+                {
+                    "flow": flow.name,
+                    "status": run.status,
+                    "artifacts": len(run.construct),
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                },
+                parent=None,
             )
+            run.events_dropped = await self._channel.close()
+            if run.events_dropped:
+                logger.warning(
+                    "run %s: %d events were dropped before any observer received them",
+                    run.run_id,
+                    run.events_dropped,
+                )
 
     async def _level(self, level: tuple[str, ...]) -> None:
         steps: list[_Step] = []
@@ -366,12 +468,11 @@ class _Session:
     async def _drive(self, step: _Step) -> None:
         """Run one member to a terminal state. Never raises: every ending is recorded."""
         alias = step.member.alias
-        span = uuid.uuid4().hex
-        self._emit("member.start", span, self._run.run_id, {"member": alias})
+        self.emit(MEMBER_START, step.span, {}, alias)
         started = time.monotonic()
         abandoned = False
         try:
-            status, error, abandoned = await self._attempt(step, span, started)
+            status, error, abandoned = await self._attempt(step, started)
         except MatrixError as e:
             status, error = "failed", e
         finally:
@@ -391,10 +492,10 @@ class _Session:
                 step.cleanup_s,
             )
         self._run.members[alias] = record
-        fields = {"member": alias, **record}
+        fields = dict(record)
         if error is not None:
             fields["kind"] = error.kind
-        self._emit("member.end", span, self._run.run_id, fields)
+        self.emit(MEMBER_END, step.span, fields, alias)
         if error is not None:
             self._run.failures.append({"member": alias, "kind": error.kind, "message": str(error)})
             self.first = self.first or (alias, error)
@@ -402,7 +503,7 @@ class _Session:
                 self._halt("policy: fast", "run_failed")
 
     async def _attempt(
-        self, step: _Step, span: str, started: float
+        self, step: _Step, started: float
     ) -> tuple[MemberStatus, MatrixError | None, bool]:
         """Inputs in, the stop path around the component, and how it ended."""
         member = step.member
@@ -410,7 +511,8 @@ class _Session:
         inputs = self._inputs(step)
         if step.deadline_s is not None:
             step.context.deadline = started + step.deadline_s
-        task = asyncio.ensure_future(_call(member, inputs, (self._run.run_id, span)))
+        scope = SpanScope(self.run_id, step.span, alias, self._channel)
+        task = asyncio.ensure_future(_call(member, inputs, scope))
         stopped = asyncio.ensure_future(step.stop.wait())
         step.running = True
         sent = False
@@ -496,6 +598,7 @@ class _Session:
         step.reason = reason
         step.context.stopping.set()
         step.stop.set()
+        self.emit(MEMBER_STOPPING, step.span, {"reason": reason}, step.member.alias)
 
     def _halt(self, why: str, reason: StopReason) -> None:
         """Nothing more starts; everything running is asked to stop. The first cause stands."""
@@ -507,17 +610,14 @@ class _Session:
 
     def _skip(self, alias: str, why: str) -> None:
         self._run.members[alias] = {"status": "skipped", "reason": why}
-        self._emit(
-            "member.end",
-            uuid.uuid4().hex,
-            self._run.run_id,
-            {"member": alias, "status": "skipped", "reason": why},
-        )
+        self.emit(MEMBER_END, uuid.uuid4().hex, {"status": "skipped", "reason": why}, alias)
 
     async def _release(self) -> None:
         """Call every deferred release, last registered first, each under its own bound."""
         while self.releases:
             alias, release, bound = self.releases.pop()
+            span = uuid.uuid4().hex
+            self.emit(RELEASE_START, span, {}, alias)
             status, error = "released", None
             try:
                 pending = release()
@@ -537,6 +637,7 @@ class _Session:
             if error is not None:
                 logger.warning("a release deferred by member %r %s: %s", alias, status, error)
             self._run.releases.append({"member": alias, "status": status, "error": error})
+            self.emit(RELEASE_END, span, {"status": status, "error": error}, alias)
 
     def _append(self, topic: str, type_url: str, producer: str, port: str, value: Any) -> None:
         run = self._run
@@ -550,19 +651,28 @@ class _Session:
             episode=run.episode,
         )
         run.construct.append(artifact)
-        self._emit(
-            "artifact.append",
+        self.emit(
+            ARTIFACT_APPEND,
             artifact.id,
-            run.run_id,
             {"topic": topic, "type_url": type_url, "producer": producer, "port": port},
+            None if producer == INPUT_PRODUCER else producer,
         )
 
-    def _emit(self, name: str, span: str, parent: str | None, fields: dict[str, Any]) -> None:
-        emit(self._observers, Event(name, span, self._run.run_id, parent, fields))
+    def emit(
+        self,
+        name: str,
+        span: str,
+        fields: dict[str, Any],
+        member: str | None = None,
+        parent: str | None = "",
+    ) -> None:
+        """Put one event on the run's channel. ``parent`` defaults to the run's own span."""
+        under = self.run_id if parent == "" else parent
+        self._channel.emit(Event(name, span, self.run_id, under, fields, member))
 
 
-async def _call(member: CompiledMember, inputs: Inputs, span: tuple[str, str]) -> Any:
-    CURRENT_SPAN.set(span)  # this task's own context: an agent it calls reports as its child
+async def _call(member: CompiledMember, inputs: Inputs, scope: SpanScope) -> Any:
+    CURRENT_SPAN.set(scope)  # this task's own context: an agent it calls reports as its child
     return await member.component.run(inputs)
 
 

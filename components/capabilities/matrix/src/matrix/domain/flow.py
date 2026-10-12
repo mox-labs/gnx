@@ -30,7 +30,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -74,12 +75,30 @@ class ContextHooks(Protocol):
 
     def defer(self, release: Release) -> None: ...
 
+    def emit(self, name: str, fields: dict[str, Any]) -> None: ...
+
+    def measure(
+        self, name: str, value: float, unit: str, kind: str, attrs: dict[str, Any]
+    ) -> None: ...
+
+    def span(self, name: str, fields: dict[str, Any]) -> AbstractAsyncContextManager[None]: ...
+
 
 class _Detached:
     """Hooks for a context built outside a run (a component under a unit test)."""
 
     def defer(self, release: Release) -> None:
         return None
+
+    def emit(self, name: str, fields: dict[str, Any]) -> None:
+        return None
+
+    def measure(self, name: str, value: float, unit: str, kind: str, attrs: dict[str, Any]) -> None:
+        return None
+
+    @asynccontextmanager
+    async def span(self, name: str, fields: dict[str, Any]) -> AsyncIterator[None]:
+        yield
 
 
 class RunContext:
@@ -92,7 +111,15 @@ class RunContext:
 
     ``defer(release)`` hands the run something to undo. Every deferred release is called once
     when the run ends, in reverse order, whether the run completed, failed or was cancelled.
-    Outside a run (a context built by hand) nothing calls them.
+
+    ``emit``, ``measure`` and ``span`` are the member's telemetry: events on the run's
+    channel, under a name the component namespaces with its own root (``acme.probe.sample``;
+    ``matrix.*`` is matrix's). They are never part of the result, and may be dropped under
+    load.
+
+    Outside a run (a context built by hand) nothing is released, emitted or recorded. After
+    the member has ended, each of these is ignored and reported once as
+    ``matrix.member.late``.
     """
 
     def __init__(
@@ -115,6 +142,31 @@ class RunContext:
     def defer(self, release: Release) -> None:
         """Register ``release`` (sync or async, no arguments) to run when the run ends."""
         self._hooks.defer(release)
+
+    def emit(self, name: str, /, **fields: Any) -> None:
+        """Emit one event named ``name`` with ``fields``."""
+        self._hooks.emit(name, fields)
+
+    def measure(
+        self,
+        name: str,
+        value: float,
+        /,
+        *,
+        unit: str = "",
+        kind: str = "gauge",
+        **attrs: Any,
+    ) -> None:
+        """Record one measurement: a ``gauge`` reading, a ``counter`` increment, or one
+        ``histogram`` observation. It travels as a ``matrix.measure`` event, so a metrics
+        exporter and an event log see the same thing."""
+        self._hooks.measure(name, value, unit, kind, attrs)
+
+    def span(self, name: str, /, **fields: Any) -> AbstractAsyncContextManager[None]:
+        """``async with ctx.span("acme.probe"):`` emits ``acme.probe.start`` and
+        ``acme.probe.end`` (with ``status`` and ``duration_ms``) around the block. Spans and
+        agent calls made inside it are its children."""
+        return self._hooks.span(name, fields)
 
     def __repr__(self) -> str:
         return f"RunContext(run_id={self.run_id!r}, member={self.member!r})"

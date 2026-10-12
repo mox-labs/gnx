@@ -127,7 +127,7 @@ async def test_bound_agents_report_to_observers() -> None:
     recorder = RecordingObserver()
     agent = BoundAgent(AgentDefinition(name="a"), MockRuntime(), observers=[recorder])
     await agent.run("hi")
-    assert recorder.names() == ["agent.start", "agent.end"]
+    assert recorder.names() == ["matrix.agent.start", "matrix.agent.end"]
     assert recorder.events[-1].fields["status"] == "completed"
 
 
@@ -228,8 +228,8 @@ async def test_an_agent_called_by_a_member_reports_as_its_child() -> None:
 
     flow = Flow("f", (Member("s", step, {"task": "t"}),), inputs={"t": "matrix.v1.task"})
     run = await Executor([recorder]).run(compile_flow(flow), {"t": "go"})
-    member_start = next(e for e in recorder.events if e.name == "member.start")
-    agent_start = next(e for e in recorder.events if e.name == "agent.start")
+    member_start = next(e for e in recorder.events if e.name == "matrix.member.start")
+    agent_start = next(e for e in recorder.events if e.name == "matrix.agent.start")
     assert (agent_start.run_id, agent_start.parent) == (run.run_id, member_start.span)
 
 

@@ -235,11 +235,11 @@ async def test_observers_see_the_run_and_one_failing_observer_cannot_stop_it() -
     run = await Executor([Broken(), recorder]).run(compiled)
     assert run.status == "completed"
     assert recorder.names() == [
-        "run.start",
-        "member.start",
-        "member.end",
-        "artifact.append",
-        "run.end",
+        "matrix.run.start",
+        "matrix.member.start",
+        "matrix.member.end",
+        "matrix.artifact.append",
+        "matrix.run.end",
     ]
     end = recorder.events[-1]
     assert end.fields["status"] == "completed" and end.fields["artifacts"] == 1

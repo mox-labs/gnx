@@ -108,7 +108,7 @@ async def test_the_native_engine_runs_one_compiled_flow_and_reports_each_trial()
         ("b", 1),
     ]
     assert sorted(progress) == sorted((t.probe_id, t.trial_index) for t in outcome.trials)
-    assert recorder.names().count("run.start") == 4  # one flow run per trial, observable
+    assert recorder.names().count("matrix.run.start") == 4  # one flow run per trial, observable
 
 
 async def test_a_failed_session_is_an_errored_trial_with_its_reason() -> None:

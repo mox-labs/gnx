@@ -22,7 +22,7 @@ from .composition.config import config_env_var, discover_sources, load_config
 from .composition.container import Container, compose, default_registry
 from .domain.agent import AgentDefinition, AgentResponse, BoundAgent
 from .domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
-from .domain.config import AgentConfig, Config, MatrixConfig, RuntimeConfig
+from .domain.config import AgentConfig, Config, MatrixConfig, ObserverConfig, RuntimeConfig
 from .domain.construct import Artifact, Construct
 from .domain.errors import (
     EXIT_CODES,
@@ -50,7 +50,7 @@ from .domain.flow import (
     compile_flow,
 )
 from .domain.ids import TypeUrl, check_type_url, is_type_url, parse_type_url, type_url
-from .domain.observer import Event, Observer, RecordingObserver
+from .domain.observer import Event, EventPolicy, Observer, RecordingObserver
 from .domain.ports._out.agent_runtime import Agent, AgentRuntime
 from .domain.ports._out.config_source import ConfigSource
 from .domain.ports._out.construct_store import ConstructStore
@@ -100,6 +100,7 @@ __all__ = [
     "Entry",
     "ErrorKind",
     "Event",
+    "EventPolicy",
     "Executor",
     "Failure",
     "Flow",
@@ -114,6 +115,7 @@ __all__ = [
     "MemberStatus",
     "NotFoundError",
     "Observer",
+    "ObserverConfig",
     "Port",
     "RecordingObserver",
     "Registry",
