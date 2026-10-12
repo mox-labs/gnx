@@ -55,6 +55,24 @@ def _resp(url: str, body: bytes, content_type: str) -> HttpResponse:
     )
 
 
+class TestUserAgent:
+    def _sent(self, **source_fields):
+        req = _FakeRequester(_resp("https://x/", b"<p>hi</p>", "text/html"))
+        source = SourceEntry(name="s", type="web", url="https://x", **source_fields)
+        entry = CollectorEntry(name="c", type="web", source="s")
+        list(WebCollector(req, _FakeConverter()).collect(entry, source))
+        return req.calls[0]["headers"]["User-Agent"]
+
+    def test_the_default_is_the_one_every_collector_sends(self):
+        from recon import DEFAULT_USER_AGENT, __version__
+
+        assert self._sent() == DEFAULT_USER_AGENT
+        assert DEFAULT_USER_AGENT.startswith(f"recon/{__version__} ")
+
+    def test_a_mission_s_own_user_agent_is_sent_as_written(self):
+        assert self._sent(user_agent="docs-bot/1") == "docs-bot/1"
+
+
 class TestWebCollector:
     def test_requires_source(self):
         entry = CollectorEntry(name="test", type="web")

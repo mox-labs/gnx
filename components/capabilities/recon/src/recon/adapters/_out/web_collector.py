@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from recon import DEFAULT_USER_AGENT
 from recon.application.transforms import BUILTIN_TRANSFORMS, apply_normalize
 from recon.domain.collector import CollectorType
 from recon.domain.exceptions import CollectionError
@@ -60,7 +61,7 @@ class WebCollector:
 
         url = _url(entry, source)
         headers = {
-            "User-Agent": source.user_agent or "recon/web",
+            "User-Agent": source.user_agent or DEFAULT_USER_AGENT,
             # Widened from HTML-only so non-HTML content types (PDF, DOCX,
             # images, audio) are served directly by the origin.
             "Accept": "*/*",

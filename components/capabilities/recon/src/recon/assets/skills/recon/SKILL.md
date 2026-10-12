@@ -236,6 +236,8 @@ Collector types are extensions: `recon status --json` lists what is installed (`
 
 `type_url` declares what a table's records are, in the dotted grammar (`<namespace>.v<N>.<kebab-resource>`, never a slash). It is recorded per table in `meta.yaml`; the records themselves are written exactly as normalized.
 
+A source may set `user_agent:`. Without it recon identifies itself, as `recon/<version> (+https://github.com/mox-labs/gnx)`, on every `api` and `web` request. Set your own (with a contact, e.g. `"my-survey/1 (mailto:you@example.org)"`) for a source that asks for one or that refuses unidentified clients; recon sends it as written.
+
 A source may set `timeout:` (seconds, default 60) and `max_bytes:` (default 50,000,000). `max_bytes` bounds one response body from that source, counted after decompression: a larger body is not buffered, and the table fails with `kind: collection` and a `fix` that says to raise the limit or narrow the request. Raise it on the source that serves large documents rather than everywhere.
 
 Source auth: `auth.env` names the environment variable holding the secret; `auth.header` sends it as a header, `auth.param` as a query parameter (e.g. OpenAlex `api_key`), and `auth.prefix` is prepended in either place. An unset variable sends the request without credentials, and the plan warns about it.
