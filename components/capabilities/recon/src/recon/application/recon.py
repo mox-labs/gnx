@@ -23,7 +23,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Callable, Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -87,7 +87,7 @@ def _tag_errors(
     entry: CollectorEntry,
     source: SourceEntry | None,
     captures: CaptureLog | None = None,
-) -> Iterator[dict[str, Any]]:
+) -> Generator[dict[str, Any], None, None]:
     """Wrap a collector's iterator so any exception it raises (eagerly or
     mid-stream) surfaces as CollectorError with entry + source attribution.
 
