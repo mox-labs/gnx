@@ -24,6 +24,7 @@ handlers keep working.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -153,7 +154,9 @@ class AgentRuntimeError(MatrixError):
 class RunError(MatrixError):
     """A flow run failed. ``run`` is the partial :class:`Run`; the member's error is the cause.
 
-    Nothing produced before the failure is lost: ``run.construct`` holds it.
+    Nothing produced before the failure is lost: ``run.construct`` holds it. ``run.failures``
+    lists every member that failed, ``run.members`` how each one ended, and ``run.releases``
+    what became of each deferred release.
     """
 
     def __init__(self, message: str, *, run: Any, member: str, cause_kind: ErrorKind) -> None:
@@ -170,3 +173,17 @@ class RunError(MatrixError):
     def construct(self) -> Construct:
         result: Construct = self.run.construct
         return result
+
+
+class RunCancelled(asyncio.CancelledError):  # noqa: N818 - it is a cancellation, not an Error
+    """The task running a flow was cancelled (by its caller, Ctrl-C or SIGTERM).
+
+    Raised only after the run stopped its members and called every deferred release, so it is
+    still a ``CancelledError`` to asyncio and to callers. ``run`` is the partial :class:`Run`;
+    its ``status`` says how far it got (``cancelled``, or ``completed``/``failed`` when the
+    cancellation arrived as the run was already ending).
+    """
+
+    def __init__(self, run: Any) -> None:
+        super().__init__(f"run {run.run_id} of flow {run.flow!r} was cancelled")
+        self.run = run

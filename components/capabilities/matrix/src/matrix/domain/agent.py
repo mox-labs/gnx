@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from matrix.domain.observer import CURRENT_SPAN, Event, emit
+from matrix.domain.observer import AGENT_END, AGENT_START, CURRENT_SPAN, Event, emit
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -103,18 +103,22 @@ class BoundAgent:
         return self._runtime
 
     async def run(self, task: str) -> AgentResponse:
-        """Run the definition on the runtime. Emits ``agent.start``/``agent.end``."""
+        """Run the definition on the runtime. Emits ``matrix.agent.start``/``.end``."""
         span = uuid.uuid4().hex
         name = self._definition.name
-        run_id, parent = CURRENT_SPAN.get() or (None, None)
-        emit(
+        scope = CURRENT_SPAN.get()
+        run_id, parent, member = (
+            (scope.run_id, scope.span, scope.member) if scope else (None, None, None)
+        )
+        await emit(
             self._observers,
             Event(
-                "agent.start",
+                AGENT_START,
                 span,
                 run_id,
                 parent,
                 {"agent": name, "model": self._definition.model},
+                member,
             ),
         )
         started = time.monotonic()
@@ -136,4 +140,4 @@ class BoundAgent:
             return response
         finally:
             fields["duration_ms"] = int((time.monotonic() - started) * 1000)
-            emit(self._observers, Event("agent.end", span, run_id, parent, fields))
+            await emit(self._observers, Event(AGENT_END, span, run_id, parent, fields, member))

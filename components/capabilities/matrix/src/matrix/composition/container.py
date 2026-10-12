@@ -194,10 +194,15 @@ def build_runtimes(
 
 
 def build_observers(matrix: MatrixConfig, registry: Registry) -> list[Observer]:
-    return [
-        registry.create("observer", observer_type_url(name), where=f"matrix: observers[{i}]")
-        for i, name in enumerate(matrix.observers)
-    ]
+    observers: list[Observer] = []
+    for i, spec in enumerate(matrix.observers):
+        name, options = (spec, {}) if isinstance(spec, str) else (spec.type, spec.options())
+        observers.append(
+            registry.create(
+                "observer", observer_type_url(name), options, where=f"matrix: observers[{i}]"
+            )
+        )
+    return observers
 
 
 def load_definitions(sources: Sequence[DefinitionSource]) -> dict[str, AgentDefinition]:

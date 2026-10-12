@@ -13,7 +13,7 @@ matrix runs flows of typed components and composes agents from config.
 
 ```bash
 uv add "matrix @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/matrix"
-# extras: [claude] Claude Agent SDK runtime · [models] model runtime (hardline) · [otel] tracing
+# extras: [claude] Claude Agent SDK runtime · [models] model runtime (hardline) · [otel] spans and metrics
 ```
 
 ## A flow
@@ -67,6 +67,72 @@ missing port, or a value that fails its type's registered schema, is a `Contract
 unbound required port, a topic carrying two types, a topic nobody produces, a required port
 fed only by optional outputs, several producers feeding a port not declared `many=True`, and
 cycles. A compiled flow runs any number of times with different inputs.
+
+## Stopping, and cleaning up
+
+A run ends `completed`, `failed` or `cancelled`, and every member in it ends `completed`,
+`failed`, `cancelled` or `skipped` (`run.members`). However a member comes to be stopped (its
+deadline passed, another member failed, the caller cancelled, the process got SIGTERM or
+Ctrl-C), it is stopped the same way: `ctx.stopping` is set, it has `grace_s` to return what it
+has, then it is cancelled. When the run ends, everything members handed to `ctx.defer` is
+called, last first.
+
+```python
+from matrix import Limits, MemberLimits, process
+
+
+class Load:
+    requires = {}
+    provides = {"report": "demo.v1.text"}
+
+    async def run(self, inputs):
+        ctx = inputs.context
+        server = await process.spawn(ctx, ["my-server", "--port", "8080"])  # its kill is deferred
+        ctx.defer(lambda: print("released"))        # runs on success, failure and cancel alike
+        while not ctx.stopping.is_set():
+            ctx.measure("demo.requests", await poke(), kind="counter")
+        return {"report": "stopped when asked"}
+
+
+limits = Limits(
+    deadline_s=60,                                   # each member, from when it starts
+    on_failure="fast",                               # or "isolate": only dependents are skipped
+    members={"soak": MemberLimits(deadline_s=4 * 3600)},
+)
+```
+
+A failed run raises `RunError` and a cancelled one `RunCancelled` (a `CancelledError`); both
+carry the partial `Run`, and both are raised only after the members stopped and the releases
+ran. `run.releases` says what became of each release; one that raises or overruns `cleanup_s`
+is reported there and does not stop the others. A member that swallows cancellation is
+abandoned after `cleanup_s` and marked so. `process.spawn` starts a child in its own process
+group and defers killing the group, so a tool that forks leaves nothing behind.
+
+Two things this cannot do: stop a member that blocks the event loop with synchronous work, and
+clean up after `kill -9` of the run itself.
+
+## Watching a run
+
+Runs narrate themselves as events (`matrix.run.start`, `matrix.member.end`, ...), and a
+component adds its own with `ctx.emit`, `ctx.measure` and `ctx.span`, under its own root.
+Three observers ship: `console` (progress on stderr), `jsonl` (one JSON document per event, to
+a file or stderr) and `otel` (spans and metrics).
+
+```python
+from matrix import Executor, default_registry
+
+events = default_registry().create(
+    "observer", "matrix.v1.observer.jsonl", {"path": "run.events.jsonl"}
+)
+run = await Executor([events]).run(compiled, {"line": "hello"})
+```
+
+In config they go under `matrix.observers`, and `compose(...).executor()` has them attached.
+
+Events are telemetry, not data. They pass through a bounded queue, so an observer that is
+slow, stuck or broken cannot hold a run up; when the queue is full events are dropped and
+counted (`run.events_dropped`, and a `matrix.events.dropped` event). Read results from the
+`Run`, never from the stream.
 
 ## Agents
 
@@ -122,7 +188,9 @@ matrix:
     sdk:     {type: claude-sdk, permission_mode: default, setting_sources: []}
     local:   {type: model}
     offline: {type: mock}
-  observers: [otel]                      # optional
+  observers:                             # optional
+    - console
+    - {type: jsonl, path: runs/events.jsonl}
   agents:
     reviewer: {runtime: sdk}                                    # agents/reviewer.md
     triage:   {runtime: local, definition: reviewer, tools: []} # same prompt, no tools

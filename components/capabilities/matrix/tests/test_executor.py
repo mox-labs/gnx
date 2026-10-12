@@ -207,16 +207,22 @@ async def test_a_failure_keeps_the_partial_run_and_finished_siblings() -> None:
 
 
 async def test_member_timeout_is_a_component_failure_naming_it() -> None:
-    compiled = compile_flow(Flow("t", (Member("slow", Emit("x", delay=1.0)),)))
-    with pytest.raises(RunError, match="'slow' timed out after 0.01s"):
-        await Executor().run(compiled, limits=Limits(member_timeout_s=0.01))
+    compiled = compile_flow(Flow("t", (Member("slow", Emit("x", delay=60.0)),)))
+    with pytest.raises(RunError, match="'slow' timed out after 0.01s") as e:
+        await Executor().run(compiled, limits=Limits(deadline_s=0.01, grace_s=0))
+    assert e.value.kind == "component"
 
 
 def test_limits_are_checked_when_made() -> None:
-    with pytest.raises(ConfigError):
-        Limits(concurrency=0)
-    with pytest.raises(ConfigError):
-        Limits(member_timeout_s=0)
+    for bad in (
+        {"concurrency": 0},
+        {"deadline_s": 0},
+        {"grace_s": -1},
+        {"cleanup_s": 0},
+        {"on_failure": "retry"},
+    ):
+        with pytest.raises(ConfigError):
+            Limits(**bad)  # type: ignore[arg-type]
 
 
 async def test_observers_see_the_run_and_one_failing_observer_cannot_stop_it() -> None:
@@ -229,11 +235,11 @@ async def test_observers_see_the_run_and_one_failing_observer_cannot_stop_it() -
     run = await Executor([Broken(), recorder]).run(compiled)
     assert run.status == "completed"
     assert recorder.names() == [
-        "run.start",
-        "member.start",
-        "member.end",
-        "artifact.append",
-        "run.end",
+        "matrix.run.start",
+        "matrix.member.start",
+        "matrix.member.end",
+        "matrix.artifact.append",
+        "matrix.run.end",
     ]
     end = recorder.events[-1]
     assert end.fields["status"] == "completed" and end.fields["artifacts"] == 1

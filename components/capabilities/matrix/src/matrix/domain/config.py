@@ -17,7 +17,9 @@ Example (``./matrix.yaml``, or the ``matrix:`` section of any tool's config file
       runtimes:
         sdk:   {type: claude-sdk, permission_mode: default, setting_sources: []}
         local: {type: model}
-      observers: [otel]                      # optional; tracing is an observer extension
+      observers:                             # optional; each is an observer extension
+        - otel
+        - {type: jsonl, path: runs/events.jsonl}
       agents:
         reviewer: {runtime: sdk}                         # definition agents/reviewer.md
         triage:   {runtime: local, definition: reviewer, model: qwen3-8b}
@@ -42,6 +44,21 @@ class RuntimeConfig(BaseModel):
     full type URL of a runtime another package registered (``acme.v1.runtime.strands``).
     Options are validated by the runtime's own typed config, so an unknown option fails
     naming the runtime.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    type: str = Field(min_length=1)
+
+    def options(self) -> dict[str, Any]:
+        return dict(self.model_extra or {})
+
+
+class ObserverConfig(BaseModel):
+    """One observer with options: a ``type`` plus that observer's own config.
+
+    ``type`` is a built-in's short name (``console``, ``jsonl``, ``otel``) or a full type URL.
+    An observer that takes no options can be named by a bare string instead.
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
@@ -78,8 +95,9 @@ class MatrixConfig(BaseModel):
 
     definitions: tuple[str, ...] = ()
     runtimes: dict[str, RuntimeConfig] = {}
-    #: Observer extensions to attach: built-in short names (``otel``) or type URLs.
-    observers: tuple[str, ...] = ()
+    #: Observer extensions to attach: a built-in short name (``console``, ``jsonl``,
+    #: ``otel``) or type URL, or ``{type, ...options}`` for one that takes config.
+    observers: tuple[str | ObserverConfig, ...] = ()
     agents: dict[str, AgentConfig] = {}
     #: A hardline registry section (``{default?, models: {...}}``) handed to every
     #: ``type: model`` runtime that does not carry its own. ``None`` = hardline discovers its

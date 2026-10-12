@@ -1,6 +1,6 @@
 [project]
 name = "matrix"
-version = "0.2.0"
+version = "0.3.0"
 description = "matrix: the executor. Typed components wired into flows, and agents composed from config"
 requires-python = ">=3.12"
 license = "MIT"
@@ -11,6 +11,7 @@ authors = [
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
+    "rich>=13",
 ]
 
 [project.scripts]
@@ -22,16 +23,17 @@ matrix = "matrix.adapters._in.cli:run"
 matrix = "matrix.composition.builtins:register"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "opentelemetry-api>=1.23", "opentelemetry-sdk>=1.23"]
 # >=0.1.51: the first release that strips CLAUDECODE from the CLI's environment itself
 # (bisected against PyPI wheels), which is what lets the runtime leave os.environ alone.
 claude = ["claude-agent-sdk>=0.1.51"]
 # The `model` agent runtime: any model family hardline has a registry row for.
 models = ["hardline"]
+# >=1.23: the first release with a synchronous gauge, which a `gauge` measure records to.
 otel = [
-    "opentelemetry-api>=1.20",
-    "opentelemetry-sdk>=1.20",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.20",
+    "opentelemetry-api>=1.23",
+    "opentelemetry-sdk>=1.23",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.23",
 ]
 
 [build-system]
