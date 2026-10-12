@@ -1,6 +1,6 @@
 [project]
 name = "ix"
-version = "0.2.0"
+version = "0.3.0"
 description = "ix: experiments on agents and services. Genres, subjects, probes and a plan, driven by one file"
 # readme = "README.md"  # TODO: create when ready
 requires-python = ">=3.12"
