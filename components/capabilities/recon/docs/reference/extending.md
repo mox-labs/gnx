@@ -21,7 +21,6 @@ from recon.domain.exceptions import CollectionError, Problem
 class SqliteCollector:
     def __init__(self, ctx):
         self._mission_dir = ctx.mission_dir
-        self._transforms = ctx.transforms
 
     def collect(self, entry, source, *, captures=None):
         if source is None:
@@ -56,6 +55,7 @@ The contract:
 
 - **`create(ctx)`** builds the collector once per survey. `ctx` (`CollectorContext`) carries the shared `requester` (rate-limited HTTP, one bucket per source), `converter`, `transforms`, `mission_dir` and `env`. Take what you need from it; never read `os.environ` directly, so tests can inject.
 - **`collect(entry, source, *, captures=None)`** yields dicts, one per record. It is consumed lazily and closed if the consumer stops, so release resources in a `finally`. If the mission has `preserve_raw: true`, `captures` is the archive's capture log: call `captures.record(...)` with the bytes you fetched before parsing them.
+- **`normalize:` is applied for you.** recon applies the entry's spec to every record you yield, so the collector above never mentions it. Pass `normalizes=True` to `CollectorType` only if you apply `entry.normalize` yourself, because the spec needs something the records do not carry (the built-in `capture` type does this to expose the capture line as `_capture`); recon then leaves your records alone.
 - **Raise `CollectionError(message, kind=...)`** on failure. `kind="transient"` (a retry may work) and `kind="auth"` (a credential was refused) decide the survey's exit code; anything else is `collection`.
 - **`effects`** declares what a run can touch: any of `network`, `subprocess`, `filesystem`. `None` means unknown, and every plan then shows the run's effects as `unknown`. Declared effects are what `survey --dry-run` reports; recon does not enforce them.
 - **`check(entry)`** and **`describe(entry, source)`** feed the plan. Both must be pure: no I/O, no network. `check` returns `Problem`s with paths relative to the entry (`run`, `endpoint`); the planner prefixes `collectors[i].`.

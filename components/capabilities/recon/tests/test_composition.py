@@ -1,10 +1,12 @@
 """Collector types and transforms load from entry points; a broken plugin breaks nothing else."""
 
+import json
 import sys
 from importlib.metadata import EntryPoint
 
 import pytest
 
+from recon.application.recon import run
 from recon.composition import (
     COLLECTORS_GROUP,
     TRANSFORMS_GROUP,
@@ -14,6 +16,7 @@ from recon.composition import (
     load_transforms,
 )
 from recon.domain.collector import CollectorType
+from recon.domain.models import ReconConfig
 
 
 def test_builtins_register_through_the_entry_point_groups():
@@ -106,3 +109,92 @@ def test_a_factory_that_raises_is_reported_and_others_build(tmp_path):
     assert "fragile" not in collectors
     assert {"api", "cli", "web", "capture"} <= set(collectors)
     assert any(b.name == "fragile" and "no credentials file" in b.error for b in registry.broken)
+
+
+# --- normalize: is applied to every collector type's records ---------------------------
+
+
+class _RawCollector:
+    """A plugin collector that yields what it read and never looks at ``entry.normalize``."""
+
+    def __init__(self):
+        self.closed = False
+
+    def collect(self, entry, source, *, captures=None):
+        try:
+            yield {"Title": "A", "meta": {"year": 2020}}
+            yield {"Title": "B", "meta": {"year": 2021}}
+        finally:
+            self.closed = True
+
+
+def _registry_with(name, collector, **fields):
+    registry = load_registry()
+    registry.collector_types[name] = CollectorType(
+        create=lambda ctx: collector, effects=frozenset(), **fields
+    )
+    return registry
+
+
+def _survey(registry, mission_dir, collector_entry):
+    config = ReconConfig.model_validate({"collectors": [collector_entry]})
+    collectors = build_collectors(registry, mission_dir, env={})
+    archive, results = run(config, collectors, mission_dir)
+    assert [r["status"] for r in results] == ["ok"], results
+    table = archive / f"{collector_entry['name']}.jsonl"
+    return [json.loads(line) for line in table.read_text().splitlines()]
+
+
+NORMALIZE = {"title": "Title", "year": "meta.year"}
+
+
+def test_a_plugin_collector_that_ignores_normalize_still_has_it_applied(tmp_path):
+    """The plan validates ``normalize:`` for every type, so the survey must honour it for
+    every type. A plugin that forgot to apply it used to write raw records, silently."""
+    registry = _registry_with("raw", _RawCollector())
+    rows = _survey(registry, tmp_path, {"name": "t", "type": "raw", "normalize": NORMALIZE})
+    assert rows == [{"title": "A", "year": 2020}, {"title": "B", "year": 2021}]
+
+
+def test_without_a_normalize_spec_a_plugin_collector_s_records_pass_through(tmp_path):
+    registry = _registry_with("raw", _RawCollector())
+    rows = _survey(registry, tmp_path, {"name": "t", "type": "raw"})
+    assert rows[0] == {"Title": "A", "meta": {"year": 2020}}
+
+
+def test_a_type_that_normalizes_itself_is_not_normalized_twice(tmp_path):
+    """Applying the spec to already-normalized records would null every column."""
+
+    class Own:
+        def collect(self, entry, source, *, captures=None):
+            yield {"title": "already normalized", "year": 1999}
+
+    registry = _registry_with("own", Own(), normalizes=True)
+    rows = _survey(registry, tmp_path, {"name": "t", "type": "own", "normalize": NORMALIZE})
+    assert rows == [{"title": "already normalized", "year": 1999}]
+
+
+def test_the_built_in_types_are_not_normalized_twice(tmp_path):
+    entry = {
+        "name": "t",
+        "type": "cli",
+        "run": """echo '{"Title": "A", "meta": {"year": 2020}}'""",
+        "normalize": NORMALIZE,
+    }
+    assert _survey(load_registry(), tmp_path, entry) == [{"title": "A", "year": 2020}]
+
+
+def test_stopping_early_closes_the_plugin_s_generator(tmp_path):
+    """Normalizing must not stand between a plugin and its cleanup (a held connection)."""
+    raw = _RawCollector()
+    registry = _registry_with("raw", raw)
+    collector = build_collectors(registry, tmp_path, env={})["raw"]
+    entry = ReconConfig.model_validate(
+        {"collectors": [{"name": "t", "type": "raw", "normalize": NORMALIZE}]}
+    ).collectors[0]
+
+    records = collector.collect(entry, None)
+    assert next(records) == {"title": "A", "year": 2020}
+    records.close()
+
+    assert raw.closed

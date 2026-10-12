@@ -88,6 +88,10 @@ class CollectorType:
     - ``create`` builds the collector from the shared context.
     - ``effects`` declares what a run can touch; ``None`` means unknown.
     - ``requires_source`` makes a missing ``source`` (with an empty catalog) a plan error.
+    - ``normalizes`` says the collector applies ``entry.normalize`` itself. Left ``False``,
+      recon applies the spec to every record the collector yields, so a type cannot forget
+      it. Set it only when the spec needs something the records alone do not carry (the
+      capture collector's ``_capture`` scope).
     - ``check`` returns problems in an entry, with paths relative to it (``run``,
       ``endpoint``); the planner prefixes ``collectors[i].``. Pure: no I/O.
     - ``describe`` returns what a planned run would do (the URL, the command) for a
@@ -98,6 +102,7 @@ class CollectorType:
     effects: frozenset[Effect] | None
     summary: str = ""
     requires_source: bool = False
+    normalizes: bool = False
     check: Callable[[CollectorEntry], list[Problem]] = field(default=_no_problems)
     describe: Callable[[CollectorEntry, SourceEntry | None], dict[str, Any]] = field(
         default=_no_description

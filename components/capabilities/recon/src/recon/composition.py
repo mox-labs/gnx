@@ -18,13 +18,16 @@ from importlib.metadata import EntryPoint, entry_points
 from typing import TYPE_CHECKING, Any
 
 from recon.application.plan import BrokenPlugin
+from recon.application.transforms import apply_normalize
 from recon.domain.collector import CollectorContext, CollectorType
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
     from pathlib import Path
 
+    from recon.domain.capture import CaptureLog
     from recon.domain.collector import Collector, Transform
+    from recon.domain.models import CollectorEntry, SourceEntry
 
 COLLECTORS_GROUP = "recon.collectors"
 TRANSFORMS_GROUP = "recon.transforms"
@@ -128,6 +131,39 @@ def load_registry(
     return Registry(types, transforms, broken_types + broken_transforms)
 
 
+class _Normalizing:
+    """Applies ``normalize:`` to the records of a collector whose type does not.
+
+    The plan validates the spec for every type; this is what makes the survey honour it
+    for every type, whether or not a plugin's author remembered to.
+    """
+
+    def __init__(self, collector: Collector, transforms: Mapping[str, Transform]) -> None:
+        self._collector = collector
+        self._transforms = transforms
+
+    def collect(
+        self,
+        entry: CollectorEntry,
+        source: SourceEntry | None,
+        *,
+        captures: CaptureLog | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        records = self._collector.collect(entry, source, captures=captures)
+        if not entry.normalize:
+            yield from records
+            return
+        # A consumer that stops early closes this generator; pass that on, so the
+        # collector's own cleanup runs now rather than whenever it is collected.
+        try:
+            for record in records:
+                yield apply_normalize(record, entry.normalize, self._transforms)
+        finally:
+            close = getattr(records, "close", None)
+            if close is not None:
+                close()
+
+
 def build_collectors(
     registry: Registry,
     mission_dir: Path,
@@ -152,9 +188,13 @@ def build_collectors(
     collectors: dict[str, Collector] = {}
     for name, ct in registry.collector_types.items():
         try:
-            collectors[name] = ct.create(ctx)
+            collector = ct.create(ctx)
         except Exception as exc:  # one plugin's factory must not stop the others
             registry.broken.append(
                 BrokenPlugin(COLLECTORS_GROUP, name, "create()", f"{type(exc).__name__}: {exc}")
             )
+            continue
+        collectors[name] = (
+            collector if ct.normalizes else _Normalizing(collector, registry.transforms)
+        )
     return collectors

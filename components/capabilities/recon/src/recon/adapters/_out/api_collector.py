@@ -198,6 +198,7 @@ collector_type = CollectorType(
     effects=frozenset({"network"}),
     summary="HTTP API request → JSON/XML → records",
     requires_source=True,
+    normalizes=True,
     check=_check,
     describe=_describe,
 )

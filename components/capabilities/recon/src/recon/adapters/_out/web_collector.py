@@ -109,5 +109,6 @@ collector_type = CollectorType(
     effects=frozenset({"network"}),
     summary="HTTP GET → document converted to markdown → one record",
     requires_source=True,
+    normalizes=True,
     describe=lambda entry, source: {"method": "GET", "url": _url(entry, source)} if source else {},
 )
