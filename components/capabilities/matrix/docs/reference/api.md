@@ -10,7 +10,7 @@ from matrix import (
     # flows
     Component, Port, Member, Flow, compile_flow, CompiledFlow, Inputs, RunContext,
     # execution
-    Executor, Limits, Run,
+    Executor, Limits, MemberLimits, MemberStatus, Run, process,
     # the Construct
     Artifact, Construct, ConstructStore, JsonlConstructStore, MemoryConstructStore,
     # agents
@@ -19,13 +19,13 @@ from matrix import (
     # registry
     Registry, Entry, Failure, default_registry, runtime_type_url, observer_type_url,
     # observers
-    Event, Observer, RecordingObserver, configure_telemetry,
+    Event, EventPolicy, Observer, RecordingObserver, configure_telemetry,
     # config and composition
-    Config, MatrixConfig, RuntimeConfig, AgentConfig, ConfigSource,
+    Config, MatrixConfig, RuntimeConfig, ObserverConfig, AgentConfig, ConfigSource,
     load_config, discover_sources, config_env_var, compose, Container,
     # errors
     MatrixError, ConfigError, CompilationError, NotFoundError, ContractError, ComponentError,
-    AgentRuntimeError, RunError, ErrorKind, RuntimeReason, EXIT_CODES,
+    AgentRuntimeError, RunError, RunCancelled, ErrorKind, RuntimeReason, EXIT_CODES,
     __version__,
 )
 ```
@@ -103,9 +103,23 @@ an unbound optional port is absent. A missing key raises `KeyError` listing the 
 
 ### `RunContext`
 
-Frozen: `run_id: str`, `member: str` (this member's alias), `episode: int = 0`,
-`deadline: float | None` (a `time.monotonic()` deadline when `Limits.member_timeout_s` is set).
-It says nothing about other members.
+What a member may know about its run, and ask of it. It says nothing about other members.
+
+| Attribute / method | Meaning |
+|--------------------|---------|
+| `run_id`, `member`, `episode` | the run, this member's alias, the run's episode |
+| `deadline` | a `time.monotonic()` deadline when the member has a `deadline_s`, else `None` |
+| `stopping` | an `asyncio.Event`, set when the member is asked to stop |
+| `defer(release)` | register a sync or async callable to be called when the run ends |
+| `emit(name, **fields)` | emit one event |
+| `measure(name, value, *, unit="", kind="gauge", **attrs)` | record a number as a `matrix.measure` event; `kind` is `gauge`, `counter` or `histogram` |
+| `span(name, **fields)` | an async context manager emitting `<name>.start` and `<name>.end` (`status`, `duration_ms`) |
+
+A name given to `emit`, `measure` or `span` is dotted lower-case with at least two segments,
+and not under `matrix.*`; anything else is a `ContractError`. After the member has ended these
+calls are ignored, and the first is reported as `matrix.member.late`. A `RunContext` built by
+hand (`RunContext("run", "member")`, for testing a component alone) accepts every call and
+does nothing with it.
 
 ### `Member`
 
@@ -183,13 +197,24 @@ if any member's are unknown. A member built outside the registry, or registered 
 
 ### `Limits`
 
-`Limits(concurrency: int = 1, member_timeout_s: float | None = None)`, frozen.
-`concurrency` caps how many members of one level run at once (`>= 1`); `member_timeout_s`
-bounds each member separately (`> 0`). An invalid value raises `ConfigError`.
+Frozen. An invalid value raises `ConfigError`.
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `concurrency` | `1` | how many members of one level run at once (`>= 1`) |
+| `deadline_s` | `None` | bounds each member separately, from when it starts (`> 0`) |
+| `grace_s` | `5.0` | how long a member has to return after a stop request before it is cancelled (`>= 0`) |
+| `cleanup_s` | `30.0` | how long a cancelled member, or one deferred release, has to finish before it is abandoned (`> 0`) |
+| `on_failure` | `"fast"` | `fast`: the first failure stops every running member and skips the rest. `isolate`: only members that depend on the failed one are skipped |
+| `members` | `{}` | alias to `MemberLimits(deadline_s, grace_s, cleanup_s)`; a field left `None` inherits the run's |
 
 ### `Executor`
 
-`Executor(observers: Sequence[Observer] = ())`. Stateless between runs; safe to share.
+`Executor(observers: Sequence[Observer] = (), *, events: EventPolicy | None = None,
+signals: bool = True)`. Stateless between runs; safe to share. `events` bounds the event
+queue (see [Observers](#observers)). With `signals=True`, while a run is in flight a SIGTERM
+or SIGINT that nothing else handles cancels the run, so a signalled run still releases; a
+host that installed its own handler keeps it. A second signal does what it always did.
 
 ```python
 async Executor.run(
@@ -215,11 +240,21 @@ async Executor.run(
    `ContractError`. Values on bound ports are appended to the Construct in declaration order;
    values on unbound provide ports are dropped.
 4. A member that raises becomes a `ComponentError` (a `MatrixError` it raises keeps its own
-   kind); a timeout is a `ComponentError` saying so. The rest of the level finishes, each
-   failure is recorded in `run.failures`, and `RunError` is raised from the first failure.
-   A timeout's `ComponentError` carries `details["reason"] == "timeout"`.
+   kind); a member past its deadline is a `ComponentError` saying so, with
+   `details["reason"] == "timeout"`. Each failure is recorded in `run.failures`, and
+   `RunError` is raised from the first.
+5. Stopping a member is one sequence, whatever the cause (`deadline`, `run_failed`,
+   `cancelled`): `ctx.stopping` is set; the member has `grace_s` to return, and what it
+   returns is recorded; then its task is cancelled; if it is still running `cleanup_s` later
+   it is abandoned and its record says `abandoned`. A member past its deadline is `failed`
+   even when it returned within the grace.
+6. When the run ends, every release registered with `ctx.defer` is called, last registered
+   first, each bounded by `cleanup_s`, whatever the run's status. A synchronous release runs
+   on the event loop and is not bounded.
 
-Cancellation propagates untouched.
+Cancelling the task that awaits `run` (directly, or through Ctrl-C or SIGTERM) stops every
+running member by the same sequence, skips the rest, calls the releases, and then raises
+`RunCancelled`, a `CancelledError` whose `run` is the partial Run.
 
 ### `Run`
 
@@ -228,11 +263,25 @@ Cancellation propagates untouched.
 | `run_id` | `str` | |
 | `flow` | `str` | the flow's name |
 | `construct` | `Construct` | every value recorded |
-| `status` | `"running" \| "completed" \| "failed"` | |
+| `status` | `"running" \| "completed" \| "failed" \| "cancelled"` | |
 | `started` / `ended` | `datetime` / `datetime \| None` | UTC |
 | `failures` | `list[dict]` | `{"member", "kind", "message"}` per failed member |
+| `members` | `dict[str, dict]` | alias to how it ended: `status` (`MemberStatus`: `completed`, `failed`, `cancelled`, `skipped`), `reason` when it was stopped (`deadline`, `run_failed`, `cancelled`) or skipped (`upstream: <alias>`, `policy: fast`, `cancelled`), `duration_ms`, and `abandoned: true` when it ignored cancellation |
+| `releases` | `list[dict]` | `{"member", "status", "error"}` per deferred release, in the order called; `status` is `released`, `failed` or `abandoned` |
+| `events_dropped` | `int` | events no observer received |
 | `episode` | `int` | |
 | `outputs(topic)` | `-> tuple[Any, ...]` | the values on `topic` |
+
+The member and run states are open vocabularies: a reader must tolerate one it does not know.
+
+### `process`
+
+`await process.spawn(ctx, argv, *, grace_s=5.0, **options) -> asyncio.subprocess.Process`
+starts `argv` in its own process group and defers killing that group with the run: SIGTERM,
+then SIGKILL once `grace_s` has passed with the group still alive. `options` go to
+`asyncio.create_subprocess_exec`. `await process.kill_group(proc, grace_s=5.0)` does the kill
+directly; only the first call for a process signals. A child that moves itself to another
+session is not reached.
 
 ---
 
@@ -514,41 +563,101 @@ def register(registry):
 ### `Event`
 
 Frozen: `name`, `span`, `run_id: str | None`, `parent: str | None`, `fields: dict`,
-`time: datetime` (UTC), `schema: str = "matrix.v1.event"`. A `*.start`/`*.end` pair shares a
-`span`. An agent called from inside a flow member reports that member's span as its `parent`
-and the member's run id as its `run_id`; called outside a flow, both are `None`.
+`member: str | None`, `time: datetime` (UTC), `schema: str = "matrix.v1.event"`.
+`document()` is the JSON-ready form every sink writes:
+`{schema, name, time, run_id, span, parent, member, fields}`. Within `matrix.v1.event` fields
+are only ever added.
 
-| Event | Emitted by | `span` / `parent` | `fields` |
-|-------|-----------|-------------------|----------|
-| `run.start` | executor | run id / none | `flow` |
-| `run.end` | executor | run id / none | `flow`, `status`, `artifacts` |
-| `member.start` | executor | new id / run id | `member` |
-| `member.end` | executor | same / run id | `member`, `status` (`ok` or an error kind), `duration_ms` |
-| `artifact.append` | executor | artifact id / run id | `topic`, `type_url`, `producer`, `port` |
-| `agent.start` | `BoundAgent` | new id / the calling member's span | `agent`, `model` |
-| `agent.end` | `BoundAgent` | same / the calling member's span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`; or `status="error"`, `error`, `reason` |
+Names are namespaced, root first. matrix owns `matrix.*`; a component emits under its own
+root, and an observer treats a name it does not know as opaque. A `*.start`/`*.end` pair
+shares a `span`. An agent called from inside a flow member reports that member's span as its
+`parent` and the member's run id as its `run_id`; called outside a flow, both are `None`.
 
-### `Observer` (Protocol) and `RecordingObserver`
+| Event | `span` / `parent` | `fields` |
+|-------|-------------------|----------|
+| `matrix.run.start` | run id / none | `flow` |
+| `matrix.run.end` | run id / none | `flow`, `status`, `artifacts`, `duration_ms` |
+| `matrix.member.start` | new id / run id | |
+| `matrix.member.stopping` | the member's / run id | `reason` (`deadline`, `run_failed`, `cancelled`) |
+| `matrix.member.end` | the member's / run id | `status`, and when they apply `reason`, `duration_ms`, `kind`, `abandoned`. Exactly one per member; a skipped member has no start |
+| `matrix.member.late` | new id / run id | `call`: the context method used after the member ended |
+| `matrix.artifact.append` | artifact id / run id | `topic`, `type_url`, `producer`, `port` |
+| `matrix.release.start` | new id / run id | |
+| `matrix.release.end` | same / run id | `status` (`released`, `failed`, `abandoned`), `error` |
+| `matrix.agent.start` | new id / the calling span | `agent`, `model` |
+| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`; or `status="error"`, `error`, `reason` |
+| `matrix.measure` | new id / the calling span | `name`, `value`, `unit`, `kind`, `attrs` |
+| `matrix.events.dropped` | new id / none | `count` |
+| `<name>.start`, `<name>.end` | from `ctx.span` | the caller's fields; the end has `status` (`ok`, `error`) and `duration_ms` |
 
-`Observer` is `on_event(event: Event) -> None`. An observer that raises is logged and skipped;
-it cannot stop a run. `RecordingObserver()` keeps `events: list[Event]`; `names()` lists their
-names.
+Events about a member carry its alias in `member`.
+
+### `Observer` (Protocol), `EventPolicy` and `RecordingObserver`
+
+`Observer` is `on_event(event: Event)`, a plain function or a coroutine function.
+
+Events are delivered by a dispatcher task from a bounded queue, never on the emitting task.
+`EventPolicy(queue: int = 4096, drain_s: float = 10.0)` sets the bound, and how long the
+executor waits at the end of a run for the queue to empty. What follows from that:
+
+- emitting never waits. When the queue is full the event is dropped and counted; the next
+  event delivered is preceded by `matrix.events.dropped`, and `Run.events_dropped` has the
+  total;
+- an observer that raises is logged and skipped;
+- an observer that never returns holds up the dispatcher, not the run: later events are
+  dropped, and the run returns after at most `drain_s`;
+- a synchronous observer that blocks the event loop is not bounded. One that does slow I/O
+  must be `async`.
+
+Outside a run (a `BoundAgent` called directly) there is no queue, and observers are called
+inline.
+
+`RecordingObserver(limit: int = 10_000)` keeps the last `limit` events in `events`;
+`names()` lists their names.
+
+### The `console` observer
+
+`matrix.v1.observer.console`. One line on stderr for each run starting and ending, each member
+starting, being asked to stop and ending, each release that did not go cleanly, and dropped
+events. On a terminal the members still running are shown live with their elapsed time
+instead of a "started" line; `NO_COLOR` and `TERM=dumb` are honoured.
+
+### The `jsonl` observer
+
+`matrix.v1.observer.jsonl`, config `path` (omitted or `-` for stderr; a file is appended to).
+One event document per line, flushed as written, so the stream can be followed while the run
+is going.
 
 ### The `otel` observer
 
-`matrix.v1.observer.otel`, enabled with `observers: [otel]`. Requires `[otel]`. Spans:
-`matrix.run` for a run, `matrix.member` under it for each member, and `invoke_agent {agent}`
-for each agent session (`gen_ai.operation.name=invoke_agent`). Fields become attributes:
+`matrix.v1.observer.otel`, enabled with `observers: [otel]`. Requires `[otel]`.
+
+Spans: one per `*.start`/`*.end` pair, parented as the events are, so `matrix.run` holds
+`matrix.member` holds whatever the member opened with `ctx.span`. An agent session is
+`invoke_agent {agent}` (`gen_ai.operation.name=invoke_agent`). Fields become attributes:
 `agent`, `model`, `tokens_input` and `tokens_output` map to `gen_ai.agent.name`,
 `gen_ai.request.model`, `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens`; other
-scalar fields become `matrix.<field>`. A failing member or run, or an agent ending in error,
-sets the span status to ERROR.
+scalar fields become `<root>.<field>` under the event's root (`matrix.status`). A failed
+member or run, or an agent or span ending in error, sets the span status to ERROR.
+
+Metrics, derived from the same events:
+
+| Instrument | Kind | Attributes |
+|------------|------|------------|
+| `matrix.run.duration` | histogram, s | `matrix.flow`, `matrix.status` |
+| `matrix.member.duration` | histogram, s | `matrix.member`, `matrix.status` |
+| `matrix.member.count` | counter | `matrix.member`, `matrix.status` |
+| `matrix.agent.tokens` | counter | `gen_ai.agent.name`, `gen_ai.token.type` |
+| `matrix.agent.cost_usd` | counter | `gen_ai.agent.name` |
+| `matrix.events.dropped` | counter | |
+| the name given to `ctx.measure` | the measure's `kind` | the measure's scalar `attrs`, `matrix.member` |
 
 ### `configure_telemetry`
 
 `configure_telemetry(*, service_name="matrix", endpoint=None, console=False) -> None`
-configures the OpenTelemetry SDK exporter. `endpoint` is an OTLP gRPC endpoint and falls back
-to `OTEL_EXPORTER_OTLP_ENDPOINT`; `console=True` prints spans. With neither, it does nothing.
+configures the OpenTelemetry SDK's span exporter. `endpoint` is an OTLP gRPC endpoint and
+falls back to `OTEL_EXPORTER_OTLP_ENDPOINT`; `console=True` prints spans. With neither, it
+does nothing. It does not set up a metrics exporter: configure a `MeterProvider` directly.
 Requires `[otel]`.
 
 ---
@@ -583,7 +692,7 @@ The `matrix:` section. Frozen, unknown keys rejected.
 |-----|------|---------|---------|
 | `definitions` | `tuple[str, ...]` | `()` | directories of `*.md` agent files |
 | `runtimes` | `dict[str, RuntimeConfig]` | `{}` | named runtimes |
-| `observers` | `tuple[str, ...]` | `()` | observer short names (`otel`) or type URLs |
+| `observers` | `tuple[str \| ObserverConfig, ...]` | `()` | each a short name (`console`, `jsonl`, `otel`) or type URL, or `{type, ...options}` for one that takes config |
 | `agents` | `dict[str, AgentConfig]` | `{}` | named agents |
 | `models` | `dict \| None` | `None` | a hardline registry section (`{default?, models: {...}}`) handed to every `model` runtime that has none. `None` lets hardline read its own tiers |
 
@@ -606,7 +715,9 @@ matrix:
   runtimes:
     sdk:   {type: claude-sdk, permission_mode: default, setting_sources: []}
     local: {type: model}
-  observers: [otel]
+  observers:
+    - otel
+    - {type: jsonl, path: runs/events.jsonl}
   agents:
     reviewer: {runtime: sdk}                                    # agents/reviewer.md
     triage:   {runtime: local, definition: reviewer, tools: [], model: qwen3-8b}
@@ -732,9 +843,14 @@ caller can do about it), an `exit_code`, an optional `fix` (one actionable sente
 | `CompilationError` | `config` | `ConfigError` | a flow is miswired; `details["problems"]` lists every problem |
 | `NotFoundError` | `not_found` | `KeyError` | a name, type URL, topic or saved run does not exist; the message lists those that do |
 | `ContractError` | `contract` | | a member's output or a flow input breaks its declared type or ports |
-| `ComponentError` | `component` | | a member raised or timed out; the original exception is the cause |
+| `ComponentError` | `component` | | a member raised or passed its deadline; the original exception is the cause |
 | `AgentRuntimeError` | from `reason` | | an agent session failed |
 | `RunError` | the failing member's | | a flow run failed; `run` is the partial `Run`, `member` the alias, `construct` the partial Construct |
+
+`RunCancelled` is not a `MatrixError`: it is an `asyncio.CancelledError` (so asyncio and
+callers treat it as the cancellation it is) with one addition, `run`, the partial `Run`. Its
+`run.status` is `cancelled`, or `completed`/`failed` when the cancellation arrived as the run
+was already ending.
 
 `AgentRuntimeError(message, *, reason="failed", fix=None, **details)` maps its `reason`
 (`RuntimeReason`) to a kind; a reason matrix does not know maps to `unknown`. `retryable` is

@@ -82,20 +82,51 @@ only on earlier levels. It is reusable; compile once, run many times.
 
 `Executor.run(compiled, inputs)` checks that the caller supplied exactly the declared inputs,
 then runs the flow level by level. Within a level, up to `Limits.concurrency` members run at
-once, and `Limits.member_timeout_s` bounds each one.
+once, and `Limits.deadline_s` bounds each one (`Limits.members` overrides it per member).
 
 Each member receives `Inputs`: the values on the topics it bound, by port name, plus a
-`RunContext` (run id, its own alias, episode, deadline). It never sees the run's state or its
+`RunContext`: its run id, alias, episode and deadline, the `stopping` flag, and `defer`, `emit`,
+`measure` and `span`. It never sees the run's state or its
 neighbours, and each value is its own deep copy, so mutating what it read changes neither the
 record nor what a sibling sees. Values that flow between members must therefore be data that
 can be copied, not live handles. It returns a mapping of provide-port name to value, and the executor holds it to
 that: an undeclared or missing port is a `ContractError`, and so is a value that fails the
 schema registered for its type.
 
-The result is a `Run`: the observed state of one execution, with its status, its failures,
-and a `Construct` holding every value produced. When a member fails, the rest of its level is
-allowed to finish (work already paid for is kept), and then `RunError` is raised carrying the
-partial Run. Nothing produced before the failure is lost.
+The result is a `Run`: the observed state of one execution, with its status, how each member
+ended, its failures, and a `Construct` holding every value produced.
+
+### Every run ends, and cleans up
+
+A run ends `completed`, `failed` or `cancelled`; each member ends `completed`, `failed`,
+`cancelled` or `skipped`. What makes that true is that there is one way to stop a member,
+whatever the reason:
+
+1. **Stop request.** `ctx.stopping` is set. A member that returns now keeps what it returns.
+2. **Grace.** The executor waits `grace_s` for that.
+3. **Cancel.** The member's task is cancelled and its own `finally` blocks run. A member that
+   swallows the cancellation is abandoned after `cleanup_s` and reported as such.
+4. **Deferred release.** At the end of the run, everything members handed to `ctx.defer` is
+   called, last registered first, each bounded by `cleanup_s`.
+
+The reasons are a member's own deadline, another member's failure, and cancellation of the
+run, which is also what SIGTERM and Ctrl-C become while a run is in flight.
+
+When a member fails, `Limits.on_failure` decides what happens to the others. `fast` (the
+default) stops every running member and skips the rest: the caller is usually paying for each
+one, and a failed upstream makes the downstream pointless. `isolate` skips only the members
+that depend on the failed one and lets the others finish. Either way `RunError` is raised
+carrying the partial Run, and a cancelled run raises `RunCancelled` the same way. Nothing
+produced before the end is lost.
+
+A release exists because the thing to undo usually outlives the member that made it: one
+member provisions, others use, and a teardown written as a member is skipped exactly when it
+is needed. `matrix.process.spawn` is the common case made to carry itself: the child gets its
+own process group, and killing the group is deferred.
+
+Two limits are real and stated. matrix cannot preempt in-process Python, so a member that
+blocks the event loop stalls every deadline until it yields; and nothing in-process survives
+`kill -9`, so a component that provisions something expensive keeps its own record of it.
 
 ## Agents are composed, not constructed
 
@@ -165,13 +196,20 @@ effects are unknown.
 
 ## Observers, not built-in tracing
 
-The executor and bound agents emit `Event`s (`run.start`, `member.end`, `artifact.append`,
-`agent.end`, ...). Tracing, logging and cost metering are observers of those events, so the
-core imports none of them. An agent called from inside a member reports that member as its
-parent, so the `otel` observer nests an agent's span under the member that ran it.
+The executor and bound agents emit `Event`s (`matrix.run.start`, `matrix.member.end`,
+`matrix.artifact.append`, `matrix.agent.end`, ...), and a component adds its own through its
+context: `ctx.emit` for an event, `ctx.measure` for a number, `ctx.span` for a timed block.
+Names are namespaced like type URLs; `matrix.*` is matrix's, and a component uses its own
+root. Progress, logging, tracing and metrics are observers of those events, so the core
+imports none of them. An agent called from inside a member reports that member as its parent,
+so the `otel` observer nests an agent's span under the member that ran it.
 
-An observer that raises is logged and skipped; it cannot stop a run. That makes observers
-telemetry, not an audit channel.
+Telemetry is not data. Events reach observers through a bounded queue and a dispatcher, never
+on the task that emitted them, so an observer cannot stall a run: one that raises is skipped,
+one that is slow makes the queue fill and events drop (counted, and reported), and one that
+never returns costs the run a bounded wait at its end. Nothing a run produces depends on an
+event arriving; results are read from the `Run`. For the same reason observers are not an
+audit channel: an audit hook would have to be able to stop the operation.
 
 ## Configuration is shared
 
@@ -185,7 +223,7 @@ files consulted, so which file set a value is never a guess.
 
 - **Not a scheduler or a service.** It is a library and a read-only CLI. There is no daemon.
 - **Not a retry engine.** A failed run raises with its partial state; repeating is the
-  caller's decision.
+  caller's decision. The executor stops, cleans up and reports; it never tries again.
 - **Not a sandbox.** Components are in-process Python. Port checking is a correctness
   boundary, not a trust boundary. Agent sessions get whatever authority their runtime's
   config grants; see [SECURITY.md](../../SECURITY.md).

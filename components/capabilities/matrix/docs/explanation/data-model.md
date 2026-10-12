@@ -65,9 +65,12 @@ The observed state of one execution, kept apart from the `Flow`, which a run nev
 | `run_id` | `str` | given to `Executor.run`, or a fresh uuid4 hex |
 | `flow` | `str` | the flow's name |
 | `construct` | `Construct` | every value produced, flow inputs included |
-| `status` | `"running" \| "completed" \| "failed"` | |
+| `status` | `"running" \| "completed" \| "failed" \| "cancelled"` | |
 | `started`, `ended` | `datetime` | UTC; `ended` is `None` while running |
 | `failures` | `list[dict]` | `{member, kind, message}` for each member that failed |
+| `members` | `dict[str, dict]` | alias to `{status, reason?, duration_ms?, abandoned?}`: how each member ended |
+| `releases` | `list[dict]` | `{member, status, error}` for each deferred release, in the order called |
+| `events_dropped` | `int` | events no observer received |
 | `episode` | `int` | stamped on every artifact the run produces |
 
 `run.outputs(topic)` is `run.construct.values(topic)`.
@@ -76,9 +79,11 @@ Flow inputs are recorded first, with producer `$input`. A provide port the membe
 but the flow left unbound is checked against its declaration and then dropped: only bound
 topics become tables.
 
-When a member fails, the executor lets the rest of its level finish, records each failure,
-and raises `RunError`. `RunError.run` is the partial Run, with `status == "failed"`, and
-`RunError.construct` is its Construct.
+When a member fails, the executor stops or skips the others as `Limits.on_failure` says,
+records each failure, calls the deferred releases, and raises `RunError`. `RunError.run` is
+the partial Run, with `status == "failed"`, and `RunError.construct` is its Construct. A
+cancelled run raises `RunCancelled` with the partial Run in the same way. A member that was
+stopped but returned within its grace has its values recorded like any other.
 
 ## Saving a run
 
