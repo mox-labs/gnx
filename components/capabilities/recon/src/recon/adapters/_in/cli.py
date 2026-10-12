@@ -531,7 +531,7 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
 
     assert plan.config is not None  # plan.valid guarantees it
     loaded = len(registry.broken)
-    collectors = build_collectors(registry, mission)
+    collectors = build_collectors(registry, mission, plan.config)
     # A factory that raised is now in registry.broken; its tables fail with a config error.
     warnings = plan.warnings + [f"plugin {b.describe()}" for b in registry.broken[loaded:]]
     if not as_json:

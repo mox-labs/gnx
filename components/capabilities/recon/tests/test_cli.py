@@ -536,6 +536,36 @@ def test_an_escaping_error_keeps_its_own_fix(project, monkeypatch):
     assert _error(result)["fix"] == "do this instead"
 
 
+def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(
+    project, monkeypatch
+):
+    """The whole path: the table fails as a config error that names the variable and says
+    where to declare it; nothing is read from the process environment on the quiet."""
+    monkeypatch.setenv("RECON_TEST_UNDECLARED", "a secret the mission never named")
+
+    class Greedy:
+        def __init__(self, ctx):
+            self._env = ctx.env
+
+        def collect(self, entry, source, *, captures=None):
+            yield {"leaked": self._env.get("RECON_TEST_UNDECLARED", "")}
+
+    registry = load_registry()
+    registry.collector_types["greedy"] = CollectorType(create=Greedy, effects=None)
+    monkeypatch.setattr(cli_module, "load_registry", lambda: registry)
+    mission = _mission(project, "m", {"collectors": [{"name": "g", "type": "greedy"}]})
+
+    result = _invoke("survey", "m", "--json")
+
+    [table] = _doc(result)["tables"]
+    assert table["status"] == "error"
+    assert table["error"]["kind"] == "config"
+    assert "RECON_TEST_UNDECLARED" in table["error"]["message"]
+    assert "auth.env" in table["error"]["fix"]
+    [archive] = (mission / "archive").iterdir()
+    assert not (archive / "g.jsonl").exists()
+
+
 def test_a_factory_failure_reaches_the_tables_not_a_traceback(project, monkeypatch):
     registry = load_registry()
 

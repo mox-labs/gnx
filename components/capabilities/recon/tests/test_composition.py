@@ -16,6 +16,7 @@ from recon.composition import (
     load_transforms,
 )
 from recon.domain.collector import CollectorType
+from recon.domain.exceptions import CollectionError
 from recon.domain.models import ReconConfig
 
 
@@ -96,6 +97,11 @@ def test_duplicate_name_is_reported_not_silently_shadowed(plugin_module):
     assert len(broken) == 1 and "already registered" in broken[0].error
 
 
+def _config(*collectors, catalog=()):
+    entries = list(collectors) or [{"name": "c", "type": "cli", "run": "true"}]
+    return ReconConfig.model_validate({"catalog": list(catalog), "collectors": entries})
+
+
 def test_a_factory_that_raises_is_reported_and_others_build(tmp_path):
     from dataclasses import replace
 
@@ -105,10 +111,118 @@ def test_a_factory_that_raises_is_reported_and_others_build(tmp_path):
         raise ValueError("no credentials file")
 
     registry.collector_types["fragile"] = replace(registry.collector_types["cli"], create=explode)
-    collectors = build_collectors(registry, tmp_path, env={})
+    collectors = build_collectors(registry, tmp_path, _config(), env={})
     assert "fragile" not in collectors
     assert {"api", "cli", "web", "capture"} <= set(collectors)
     assert any(b.name == "fragile" and "no credentials file" in b.error for b in registry.broken)
+
+
+# --- env: a collector type sees only the variables its sources declare ------------------
+
+PROCESS_ENV = {
+    "S2_KEY": "s2-secret",
+    "DB_TOKEN": "db-secret",
+    "AWS_SECRET_ACCESS_KEY": "not for any collector",
+    "HOME": "/home/someone",
+}
+
+
+def _source(name, env):
+    return {"name": name, "url": f"https://{name}.example.test", "auth": {"param": "k", "env": env}}
+
+
+CATALOG = [_source("s2", "S2_KEY"), _source("db", "DB_TOKEN"), _source("soon", "NOT_SET")]
+
+
+def _plugin_env(tmp_path, *collectors):
+    """The ``ctx.env`` a plugin type named ``probe`` is handed for this mission."""
+    handed = {}
+
+    def create(ctx):
+        handed["env"] = ctx.env
+        return object()
+
+    registry = load_registry()
+    registry.collector_types["probe"] = CollectorType(create=create, effects=None)
+    build_collectors(registry, tmp_path, _config(*collectors, catalog=CATALOG), env=PROCESS_ENV)
+    return handed["env"]
+
+
+def test_a_collector_type_is_handed_only_what_its_sources_declare(tmp_path):
+    """It used to be handed the whole process environment: every credential on the machine,
+    whatever the mission's config named."""
+    env = _plugin_env(
+        tmp_path,
+        {"name": "papers", "type": "api", "source": "s2", "endpoint": "/x"},
+        {"name": "rows", "type": "probe", "source": "db"},
+    )
+    assert dict(env) == {"DB_TOKEN": "db-secret"}
+    assert env["DB_TOKEN"] == "db-secret"
+
+
+def test_a_collector_with_no_pinned_source_is_granted_every_catalog_source(tmp_path):
+    """No ``source:`` fans out over the catalog, so those are the sources it runs against."""
+    env = _plugin_env(tmp_path, {"name": "rows", "type": "probe"})
+    assert dict(env) == {"S2_KEY": "s2-secret", "DB_TOKEN": "db-secret"}
+
+
+def test_a_declared_variable_that_is_unset_is_simply_absent(tmp_path):
+    env = _plugin_env(tmp_path, {"name": "rows", "type": "probe", "source": "soon"})
+    assert env.get("NOT_SET") is None
+    assert env.get("NOT_SET", "") == ""
+    assert "NOT_SET" not in env
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        lambda env: env["HOME"],
+        lambda env: env.get("HOME"),
+        lambda env: env.get("AWS_SECRET_ACCESS_KEY", ""),
+        lambda env: "S2_KEY" in env,
+    ],
+    ids=["getitem", "get", "get-default", "contains"],
+)
+def test_reading_an_undeclared_variable_fails_loudly_with_a_fix(tmp_path, read):
+    """Silence here would look like an unset variable: a request sent without its key."""
+    env = _plugin_env(tmp_path, {"name": "rows", "type": "probe", "source": "db"})
+    with pytest.raises(CollectionError) as excinfo:
+        read(env)
+    assert excinfo.value.kind == "config"
+    assert "probe" in str(excinfo.value)
+    assert "auth.env" in excinfo.value.fix
+
+
+def test_a_factory_that_reads_an_undeclared_variable_is_reported_with_the_fix(tmp_path):
+    registry = load_registry()
+    registry.collector_types["eager"] = CollectorType(
+        create=lambda ctx: ctx.env["HOME"], effects=None
+    )
+    collectors = build_collectors(registry, tmp_path, _config(), env=PROCESS_ENV)
+    assert "eager" not in collectors
+    [broken] = [b for b in registry.broken if b.name == "eager"]
+    assert "'HOME'" in broken.error and "auth.env" in broken.error
+
+
+def test_the_api_collector_still_reads_its_source_s_key(tmp_path):
+    from recon.adapters._out.api_collector import ApiCollector
+    from recon.composition import ScopedEnv
+    from recon.domain.http import HttpResponse
+    from recon.domain.models import SourceEntry
+
+    class Requester:
+        def request(self, source, method, url, *, params=None, headers=None, json_body=None):
+            self.params = params
+            return HttpResponse(
+                status_code=200, headers={}, body=b"[]", text="[]", url=url, content_type=""
+            )
+
+    requester = Requester()
+    entry = {"name": "p", "type": "api", "source": "s2", "endpoint": "/x"}
+    config = _config(entry, catalog=CATALOG)
+    collector = ApiCollector(requester, ScopedEnv(PROCESS_ENV, {"S2_KEY"}, "api"))
+    list(collector.collect(config.collectors[0], SourceEntry.model_validate(CATALOG[0])))
+    assert requester.params == {"k": "s2-secret"}
 
 
 # --- normalize: is applied to every collector type's records ---------------------------
@@ -138,7 +252,7 @@ def _registry_with(name, collector, **fields):
 
 def _survey(registry, mission_dir, collector_entry):
     config = ReconConfig.model_validate({"collectors": [collector_entry]})
-    collectors = build_collectors(registry, mission_dir, env={})
+    collectors = build_collectors(registry, mission_dir, config, env={})
     archive, results = run(config, collectors, mission_dir)
     assert [r["status"] for r in results] == ["ok"], results
     table = archive / f"{collector_entry['name']}.jsonl"
@@ -188,10 +302,11 @@ def test_stopping_early_closes_the_plugin_s_generator(tmp_path):
     """Normalizing must not stand between a plugin and its cleanup (a held connection)."""
     raw = _RawCollector()
     registry = _registry_with("raw", raw)
-    collector = build_collectors(registry, tmp_path, env={})["raw"]
-    entry = ReconConfig.model_validate(
+    config = ReconConfig.model_validate(
         {"collectors": [{"name": "t", "type": "raw", "normalize": NORMALIZE}]}
-    ).collectors[0]
+    )
+    collector = build_collectors(registry, tmp_path, config, env={})["raw"]
+    entry = config.collectors[0]
 
     records = collector.collect(entry, None)
     assert next(records) == {"title": "A", "year": 2020}

@@ -39,7 +39,7 @@ What constrains it:
 - `source.timeout` bounds the command (default 300s).
 
 What does **not** constrain it: nothing restricts which binaries run, what they touch, or
-where they connect. There is no allowlist. Declared effects are what a collector type says
+where they connect. The child inherits recon's environment, every variable of it. There is no allowlist. Declared effects are what a collector type says
 about itself; recon reports them and does not enforce them.
 
 ### 2. Source entries → outbound credentials (`api` collector)
@@ -58,8 +58,14 @@ a query parameter (`auth.param`), or both. Two consequences:
 An unset `auth.env` variable sends the request without credentials; the plan warns about
 it before anything is sent.
 
-The injectable `env` mapping exists so tests never touch the real environment; it is also
-the seam for scoping which variables a run can see.
+A collector type is not handed the process environment. Its `env` holds only the
+variables the mission declares for it: the `auth.env` names of the catalog sources its
+collectors run against. A plugin type therefore sees the secrets the config granted its
+sources and no others, and reading any other name fails the table with a config error
+that says where to declare it, rather than returning nothing (R-5). This scopes what a
+collector type is *handed*; it is not a sandbox. A plugin is Python in recon's process and
+can import `os`, and a `cli` command's child process inherits recon's whole environment
+(boundary 1).
 
 ### 3. Remote responses → local files
 
@@ -141,6 +147,18 @@ value in the captured URL with the redaction marker before recording it.
 
 Regression: `test_param_key_never_reaches_the_capture_log` in
 `recon/tests/test_api_collector.py`.
+
+### R-5 — every collector type was handed the whole environment (fixed)
+
+The composition root passed `os.environ` to every collector type's factory, so installing
+a third-party collector type gave it every credential on the machine, whatever the
+mission's config named. Fixed by handing each type a mapping scoped to the `auth.env`
+names of the sources its collectors use (boundary 2). An undeclared read raises, because
+a silent "not set" would send the request without its key.
+
+Regression: `recon/tests/test_composition.py`, and
+`test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix` in
+`recon/tests/test_cli.py`.
 
 ## Not covered
 

@@ -64,6 +64,10 @@ class CollectorContext:
 
     Shared on purpose: one Requester (and so one rate limiter per source) serves every
     HTTP collector in a run. ``mission_dir`` anchors relative paths in a config.
+
+    ``env`` is not the process environment. It holds only the variables the mission
+    declares for this type: the ``auth.env`` names of the catalog sources its collectors
+    run against. Reading any other name raises a config error that says where to declare it.
     """
 
     requester: Requester
