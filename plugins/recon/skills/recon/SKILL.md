@@ -443,7 +443,7 @@ tables:
     seconds: 60.04
 ```
 
-**Plan problems (nothing runs)** — every survey plans first, and these stop it with exit 3 before an archive exists, each reported with its path: an unknown collector type or transform, a misspelt key, a pinned source missing from the catalog, an output-name collision (a pinned `foo-arxiv` plus a fan-out `foo` over source `arxiv` both compute `foo-arxiv.jsonl`), and an unresolved `{placeholder}` in an `api` endpoint or `body:` after substitution from `params:`. `--dry-run` shows the same list without running anything.
+**Plan problems (nothing runs)** — every survey plans first, and these stop it with exit 3 before an archive exists, each reported with its path: an unknown collector type or transform, a misspelt key, a pinned source missing from the catalog, an output-name collision (a pinned `foo-arxiv` plus a fan-out `foo` over source `arxiv` both compute `foo-arxiv.jsonl`), and an unresolved `{placeholder}` in an `api` endpoint or `body:` after substitution from `params:`, or in a `params:` value itself (path `collectors[i].params.<key>`; a params value is sent as written, nothing fills it in). `--dry-run` shows the same list without running anything.
 
 ## Preserving Raw Captures
 

@@ -62,7 +62,7 @@ class ApiCollector:
             raise CollectionError(msg, kind="config")
 
         url = build_url(source.url, entry.endpoint, entry.params or {})
-        query_params = {**_resolved_params(entry.params or {}), **self._auth_params(source)}
+        query_params = {**_checked_params(entry), **self._auth_params(source)}
         headers = self._build_headers(source)
         body = _substituted_body(entry)
 
@@ -139,9 +139,19 @@ def build_url(base_url: str, endpoint: str, params: dict[str, str]) -> str:
     return f"{base_url.rstrip('/')}{path}"
 
 
-def _resolved_params(params: dict[str, str]) -> dict[str, str]:
-    """Drop entries whose values still contain {placeholder}."""
-    return {k: v for k, v in params.items() if not (isinstance(v, str) and "{" in v)}
+def _checked_params(entry: CollectorEntry) -> dict[str, str]:
+    """The entry's params, sent as written. Nothing substitutes into a params value, so
+    one that still holds a ``{placeholder}`` is a template left unedited: refuse it."""
+    params = entry.params or {}
+    unresolved = find_unresolved(params)
+    if unresolved:
+        missing = ", ".join(sorted(set(unresolved)))
+        msg = (
+            f"API collector '{entry.name}' params has unresolved placeholder(s): "
+            f"{{{missing}}}. Replace each with the value to send."
+        )
+        raise CollectionError(msg, kind="config")
+    return dict(params)
 
 
 def _substituted_body(entry: CollectorEntry) -> dict[str, Any] | None:
@@ -180,6 +190,17 @@ def _check(entry: CollectorEntry) -> list[Problem]:
             missing = ", ".join(sorted(set(unresolved)))
             problems.append(
                 Problem("body", f"unresolved placeholder(s) {{{missing}}}: add to params:")
+            )
+    for key, value in (entry.params or {}).items():
+        unresolved = find_unresolved(value)
+        if unresolved:
+            missing = ", ".join(f"{{{u}}}" for u in sorted(set(unresolved)))
+            problems.append(
+                Problem(
+                    f"params.{key}",
+                    f"unresolved placeholder(s) {missing}: a params value is sent as "
+                    "written, so replace it with the value to send",
+                )
             )
     return problems
 

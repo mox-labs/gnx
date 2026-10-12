@@ -168,6 +168,45 @@ class TestEveryProblemWithAPath:
         message = _paths(plan)["collectors[0].endpoint"]
         assert "{owner}" in message and "{repo}" not in message
 
+    def test_unresolved_params_placeholder_is_a_problem_with_its_path(self, registry):
+        """Nothing fills a ``{placeholder}`` in a params value; it used to be dropped from
+        the query string at run time, and the plan said nothing."""
+        plan = _plan(
+            {
+                "catalog": [{"name": "s2", "url": "https://api.example.test"}],
+                "collectors": [
+                    {
+                        "name": "s",
+                        "type": "api",
+                        "endpoint": "/search",
+                        "params": {"query": "{topic}", "limit": "20", "fields": "{a},{b}"},
+                    }
+                ],
+            },
+            registry,
+        )
+        paths = _paths(plan)
+        assert set(paths) == {"collectors[0].params.query", "collectors[0].params.fields"}
+        assert "unresolved placeholder(s) {topic}" in paths["collectors[0].params.query"]
+        assert "{a}, {b}" in paths["collectors[0].params.fields"]
+
+    def test_a_params_value_with_braces_that_is_not_a_placeholder_is_fine(self, registry):
+        plan = _plan(
+            {
+                "catalog": [{"name": "wd", "url": "https://query.example.test"}],
+                "collectors": [
+                    {
+                        "name": "q",
+                        "type": "api",
+                        "endpoint": "/sparql",
+                        "params": {"query": "SELECT ?p WHERE { ?p wdt:P106 wd:Q82594 . }"},
+                    }
+                ],
+            },
+            registry,
+        )
+        assert plan.valid, plan.problems
+
     def test_unresolved_body_placeholder_is_caught_before_a_request(self, registry):
         plan = _plan(
             {

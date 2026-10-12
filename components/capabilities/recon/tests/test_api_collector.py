@@ -238,6 +238,38 @@ class TestCollectThroughRequester:
         assert req.calls == [], "Requester must not be invoked when body has unresolved vars"
 
 
+class TestParams:
+    """Every ``params`` value is sent as written, or the collector refuses to run.
+
+    A value still holding a ``{placeholder}`` used to be left out of the query string
+    without a word, and so was any value that merely contained a brace.
+    """
+
+    SPARQL = "SELECT ?p WHERE { ?p wdt:P106 wd:Q82594 . }"
+
+    def _collect(self, params):
+        req = _FakeRequester(_ok_response("[]"))
+        source = SourceEntry(name="s", url="https://x")
+        entry = CollectorEntry(name="c", type="api", source="s", endpoint="/q", params=params)
+        list(ApiCollector(req, env={}).collect(entry, source))
+        return req
+
+    def test_a_value_containing_braces_is_sent(self):
+        req = self._collect({"format": "json", "query": self.SPARQL})
+        assert req.calls[0]["params"] == {"format": "json", "query": self.SPARQL}
+
+    def test_an_unresolved_placeholder_raises_before_the_request(self):
+        req = _FakeRequester()  # no canned response; must never be called
+        source = SourceEntry(name="s", url="https://x")
+        entry = CollectorEntry(
+            name="c", type="api", source="s", endpoint="/q", params={"q": "{topic}", "n": "5"}
+        )
+        with pytest.raises(CollectionError, match=r"params.*\{topic\}") as excinfo:
+            list(ApiCollector(req, env={}).collect(entry, source))
+        assert excinfo.value.kind == "config"
+        assert req.calls == []
+
+
 class TestSubstituteUnified:
     def test_string_branch(self):
         assert substitute("hello {name}", {"name": "world"}) == "hello world"
