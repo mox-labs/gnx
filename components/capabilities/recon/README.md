@@ -71,6 +71,8 @@ recon capture <mission>                                append a hook payload (st
 recon --skill [-r <reference>]                         print the skill (for Claude)
 ```
 
+`recon query` reads only the mission's own archives: no other file, no DuckDB extension, no URL ([SECURITY.md](SECURITY.md), boundary 6).
+
 Every command takes `--json`: one JSON document on stdout whose `schema` names its shape (`recon.v1.survey`, `recon.v1.plan`, `recon.v1.status`, `recon.v1.query-rows`, `recon.v1.templates`, `recon.v1.mission`, `recon.v1.capture`); collections are always wrapped in an object.
 
 ### Exit codes

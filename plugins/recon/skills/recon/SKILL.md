@@ -1,7 +1,7 @@
 ---
 name: recon
 description: "This skill should be used when the user asks to 'collect data from an API', 'scrape a website', 'mine a codebase', 'fetch from multiple sources', 'normalize this response', 'query across sources with SQL', 'build a dataset', 'monitor something over time', 'schedule a recurring survey', 'cron this', 'run a survey', 'find papers', 'scan repos for patterns', 'track releases', 'audit dependencies', 'snapshot an API', 'diff API state over time', 'extract structured records', 'build a JSONL dataset', 'use Exa', 'use Firecrawl', 'use Tavily', 'use Serper', 'use Perplexity', 'call a search API', 'convert a PDF to markdown', 'convert a DOCX', 'ingest documents', 'aggregate structured data', 'write a recon config', 'capture MCP tool results', or needs to transform unstructured/semi-structured data from heterogeneous sources into queryable structured JSONL."
-version: 0.9.0
+version: 0.10.0
 ---
 
 # Recon

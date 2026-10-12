@@ -1,6 +1,6 @@
 [project]
 name = "recon"
-version = "0.9.0"
+version = "0.10.0"
 description = "Mechanical collection system — collect, normalize, query via parquet + DuckDB"
 requires-python = ">=3.12"
 license = "MIT"
