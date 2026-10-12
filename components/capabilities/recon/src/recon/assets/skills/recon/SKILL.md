@@ -422,7 +422,7 @@ ORDER BY citations DESC
 
 ### Meta.yaml
 
-Each archive includes `meta.yaml` (`format_version: 2`): `recon_version`, `config_sha256` (of the config file that ran), timestamps, and `tables` — one entry per output with `name`, `file`, `collector`, `source`, `type_url`, `status`, `records`, `seconds`, and `error: {kind, message}` when it failed. `recon status --json` reads it for you, including archives written by older recon (`format_version: 1`).
+Each archive includes `meta.yaml` (`format_version: 2`): `recon_version`, `config_sha256` (of the config file that ran), timestamps, and `tables` — one entry per output with `name`, `file`, `collector`, `source`, `type_url`, `status`, `records`, `seconds`, and `error: {kind, message}` when it failed, with a `fix` when the error names its remedy. `recon status --json` reads it for you, including archives written by older recon (`format_version: 1`).
 
 ## Sentinels and Error Signals
 

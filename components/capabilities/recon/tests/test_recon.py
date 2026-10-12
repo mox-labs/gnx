@@ -15,7 +15,7 @@ from recon.adapters._out.web_collector import WebCollector
 from recon.application.recon import failure_kind, run
 from recon.application.utilization import RateLimiter
 from recon.domain.converters import ConversionResult
-from recon.domain.exceptions import ReconError
+from recon.domain.exceptions import CollectionError, ReconError
 from recon.domain.models import ReconConfig
 from recon.domain.substitution import substitute
 
@@ -511,6 +511,41 @@ class TestEventCallback:
         ok_event = next(e for e in events if e["kind"] == "ok")
         assert ok_event["name"] == "ok"
         assert ok_event["records"] == 1
+
+
+class TestTableErrorCarriesItsFix:
+    """A collector that knows the remedy says so; the table's error keeps it."""
+
+    class _Refuses:
+        def __init__(self, fix):
+            self._fix = fix
+
+        def collect(self, entry, source, *, captures=None):
+            raise CollectionError("limit reached", kind="collection", fix=self._fix)
+            yield {}
+
+    def _error(self, tmp_path, fix):
+        config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
+        events: list[dict] = []
+        archive, results = run(
+            config, {"x": self._Refuses(fix)}, tmp_path, on_event=events.append
+        )
+        meta = yaml.safe_load((archive / "meta.yaml").read_text())
+        assert meta["tables"][0]["error"] == results[0]["error"]
+        return results[0]["error"], events[0]
+
+    def test_fix_reaches_the_results_meta_and_event(self, tmp_path):
+        error, event = self._error(tmp_path, "raise the limit")
+        assert error == {
+            "kind": "collection",
+            "message": "[t] limit reached",
+            "fix": "raise the limit",
+        }
+        assert event["fix"] == "raise the limit"
+
+    def test_an_error_without_a_remedy_has_no_fix_key(self, tmp_path):
+        error, _event = self._error(tmp_path, None)
+        assert error == {"kind": "collection", "message": "[t] limit reached"}
 
 
 class TestSinkClosesTheGenerator:

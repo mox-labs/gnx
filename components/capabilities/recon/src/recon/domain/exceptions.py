@@ -2,6 +2,8 @@
 
 Every error carries a ``kind``: what the caller should do next, not where the error arose.
 The CLI maps kinds to exit codes (see ``adapters/_in/cli.py``); nothing parses messages.
+An error that knows its remedy carries it as ``fix``: the next command to run or the config
+line to change. It reaches the caller beside ``kind`` and ``message``.
 
 Kinds:
 
@@ -48,11 +50,16 @@ class ReconError(Exception):
     """Base for all recon errors."""
 
     kind: ErrorKind = "unknown"
+    fix: str | None = None
 
-    def __init__(self, message: str, *, kind: ErrorKind | None = None) -> None:
+    def __init__(
+        self, message: str, *, kind: ErrorKind | None = None, fix: str | None = None
+    ) -> None:
         super().__init__(message)
         if kind is not None:
             self.kind = kind
+        if fix is not None:
+            self.fix = fix
 
 
 class ConfigError(ReconError):

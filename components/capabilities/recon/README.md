@@ -96,6 +96,7 @@ A survey in which any table failed still writes its archive (marked `.incomplete
   <output>.jsonl       one table per collector × source; records exactly as normalized
   meta.yaml            format_version 2: recon version, config sha256, and per table
                        its type_url, records, status, seconds, error {kind, message}
+                       (and fix, when the error names its remedy)
   .incomplete          present when any table failed
   captures.jsonl, raw/ the capture log, when preserve_raw: true
 ```

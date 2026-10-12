@@ -525,6 +525,17 @@ def test_an_unexpected_exception_is_classified_unknown(project, monkeypatch):
     assert "wiring bug" in error["message"]
 
 
+def test_an_escaping_error_keeps_its_own_fix(project, monkeypatch):
+    def refuses():
+        raise CollectionError("cannot do that", kind="config", fix="do this instead")
+
+    monkeypatch.setattr(cli_module, "load_registry", refuses)
+    _mission(project, "m", OK_CONFIG)
+    result = _invoke("survey", "m", "--json")
+    assert result.exit_code == 3
+    assert _error(result)["fix"] == "do this instead"
+
+
 def test_a_factory_failure_reaches_the_tables_not_a_traceback(project, monkeypatch):
     registry = load_registry()
 

@@ -11,7 +11,7 @@ The archive it writes (meta.yaml ``format_version: 2``)::
     archive/<timestamp>/
       <output>.jsonl          one table per collector × source, records as normalized
       meta.yaml               recon version, config sha256, and per table: type_url,
-                              records, status, seconds, error {kind, message}
+                              records, status, seconds, error {kind, message[, fix]}
       .incomplete             present when any table failed
       captures.jsonl, raw/    the capture log, when preserve_raw is on
 
@@ -52,7 +52,7 @@ class CollectorError(CollectionError):
 
     Raised at the run_collector boundary so downstream code (sink, dispatch)
     knows which collector failed without having to unpack the cause itself.
-    The cause's ``kind`` carries through, so a 429 stays ``transient``.
+    The cause's ``kind`` carries through, so a 429 stays ``transient``; so does its ``fix``.
     """
 
     def __init__(self, collector_name: str, source_name: str | None, cause: BaseException):
@@ -61,7 +61,8 @@ class CollectorError(CollectionError):
         self.cause = cause
         loc = f"{collector_name}" + (f" against '{source_name}'" if source_name else "")
         kind: ErrorKind = cause.kind if isinstance(cause, ReconError) else "unknown"
-        super().__init__(f"[{loc}] {cause}", kind=kind)
+        fix = cause.fix if isinstance(cause, ReconError) else None
+        super().__init__(f"[{loc}] {cause}", kind=kind, fix=fix)
 
 
 def failure_kind(results: list[dict[str, Any]]) -> ErrorKind | None:
@@ -182,7 +183,8 @@ def run(
     The caller formats output; this function does no console I/O.
 
     Returns (archive_dir, results) where results is the per-table list that also lands
-    in meta.yaml under ``tables``. A failed table has ``error: {kind, message}``.
+    in meta.yaml under ``tables``. A failed table has ``error: {kind, message}``, plus
+    ``fix`` when the error named its remedy.
     """
     _check_collisions(config)
 
@@ -200,17 +202,32 @@ def run(
 
     results: list[dict[str, Any]] = []
 
-    def failed(base: dict[str, Any], kind: ErrorKind, message: str, seconds: float) -> None:
+    def failed(
+        base: dict[str, Any],
+        kind: ErrorKind,
+        message: str,
+        seconds: float,
+        fix: str | None = None,
+    ) -> None:
+        error = {"kind": kind, "message": message, **({"fix": fix} if fix else {})}
         results.append(
             {
                 **base,
                 "status": "error",
                 "records": 0,
                 "seconds": round(seconds, 2),
-                "error": {"kind": kind, "message": message},
+                "error": error,
             }
         )
-        emit({"kind": "error", "name": base["name"], "reason": message, "error_kind": kind})
+        emit(
+            {
+                "kind": "error",
+                "name": base["name"],
+                "reason": message,
+                "error_kind": kind,
+                "fix": fix,
+            }
+        )
 
     for entry in config.collectors:
         targets = fan_out(entry, catalog)
@@ -241,7 +258,8 @@ def run(
                 count = _sink(records, archive_dir / f"{output_name}.jsonl")
             except Exception as exc:
                 kind: ErrorKind = exc.kind if isinstance(exc, ReconError) else "unknown"
-                failed(base, kind, str(exc), (datetime.now(UTC) - start).total_seconds())
+                fix = exc.fix if isinstance(exc, ReconError) else None
+                failed(base, kind, str(exc), (datetime.now(UTC) - start).total_seconds(), fix)
                 continue
             elapsed = (datetime.now(UTC) - start).total_seconds()
             results.append({**base, "status": "ok", "records": count, "seconds": round(elapsed, 2)})
