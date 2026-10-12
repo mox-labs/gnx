@@ -396,6 +396,20 @@ class TestQuery:
         doc = _doc(_invoke("query", "m", "SELECT a FROM hello WHERE a > 9", "--json"))
         assert doc["rows"] == [] and doc["count"] == 0
 
+    def test_reading_outside_the_archive_is_refused_with_a_fix(self, project):
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        (project / "private.txt").write_text("hunter2")
+        sql = f"SELECT * FROM read_text('{project / 'private.txt'}')"
+
+        result = _invoke("query", "m", sql, "--json")
+
+        assert result.exit_code == 3
+        assert "hunter2" not in result.stdout + result.stderr
+        error = _error(result)
+        assert error["kind"] == "query"
+        assert str(project / ".recon" / "m" / "archive") in error["fix"]
+
     def test_bad_sql_exits_3_naming_the_tables(self, project):
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")

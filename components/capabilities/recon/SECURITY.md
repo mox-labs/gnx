@@ -97,6 +97,24 @@ same care as the conversation transcript. `recon capture` writes only under an e
 mission's directory; it refuses (exit 4) when the mission does not exist, rather than
 creating one from a name it was handed.
 
+### 6. Collected text → SQL (`recon query`)
+
+`recon query` runs the SQL it is given, and the SQL is usually written by an agent that
+has just read the tables — text from the open web, an API, a tool's output. A table can
+therefore talk its reader into a query, and DuckDB SQL can read files and load extensions
+that reach the network.
+
+The connection is confined before any SQL runs: `allowed_directories` is the mission's
+`archive/` directory, extension auto-install and auto-load are off, external access is
+off (DuckDB does not allow turning it back on), and the configuration is locked. A query
+reads its own and earlier archives of the same mission and nothing else; `INSTALL`, `LOAD`
+and URLs are refused (R-7).
+
+What this does **not** do: it does not make a query read-only inside that directory. SQL
+can still write a file under the mission's `archive/` (`COPY ... TO`, `ATTACH`), and can
+use DuckDB's spill directory (`.tmp/` under the working directory). And it does nothing
+about the text itself: a `content` column from the web is untrusted wherever it is read.
+
 ## Findings
 
 ### R-1 — generator cleanup silenced to satisfy the type checker (fixed 2026-08-17)
@@ -180,12 +198,23 @@ Regression: `recon/tests/test_transforms.py`, and the `test_markitdown_*` tests 
 `recon/tests/test_composition.py` (one serves a page from localhost and asserts no
 request arrives).
 
+### R-7 — `recon query` could read any file and load extensions (fixed)
+
+`recon query m "SELECT * FROM read_text('/etc/hosts')"` returned the file, and nothing
+stopped a query from installing `httpfs` and fetching a URL. Fixed by confining the
+connection as boundary 6 describes; the settings and their order were checked against
+DuckDB 1.5.5.
+
+Regression: `recon/tests/test_query.py`, and
+`test_reading_outside_the_archive_is_refused_with_a_fix` in `recon/tests/test_cli.py`.
+
 ## Not covered
 
 - No sandboxing of collector commands. See boundary 1.
 - No egress allowlist. A source may point anywhere.
 - No TLS pinning; recon uses the platform trust store.
 - Declared collector effects are not enforced.
+- A query can write files under the mission's `archive/` directory. See boundary 6.
 
 ## Reporting
 

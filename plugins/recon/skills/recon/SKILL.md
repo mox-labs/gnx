@@ -420,6 +420,8 @@ WHERE citations > 100
 ORDER BY citations DESC
 ```
 
+A query is confined to the mission's archives. It can read any file under `.recon/<mission>/archive/` (so `read_json_auto('<that directory>/<timestamp>/<table>.jsonl')` reaches an earlier archive for a diff), and nothing else: no other file, no `INSTALL` or `LOAD`, no URL. Reaching outside exits 3 with `kind: query` and a `fix` naming the directory. To join against other data, collect it into the mission first.
+
 ### Meta.yaml
 
 Each archive includes `meta.yaml` (`format_version: 2`): `recon_version`, `config_sha256` (of the config file that ran), timestamps, and `tables` — one entry per output with `name`, `file`, `collector`, `source`, `type_url`, `status`, `records`, `seconds`, and `error: {kind, message}` when it failed, with a `fix` when the error names its remedy. `recon status --json` reads it for you, including archives written by older recon (`format_version: 1`).
