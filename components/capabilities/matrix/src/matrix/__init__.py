@@ -15,6 +15,7 @@ depends on slick.
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
+from . import process
 from .adapters._out.stores.jsonl import JsonlConstructStore, MemoryConstructStore
 from .composition.builtins import observer_type_url, runtime_type_url
 from .composition.config import config_env_var, discover_sources, load_config
@@ -135,6 +136,7 @@ __all__ = [
     "load_config",
     "observer_type_url",
     "parse_type_url",
+    "process",
     "runtime_type_url",
     "type_url",
 ]
