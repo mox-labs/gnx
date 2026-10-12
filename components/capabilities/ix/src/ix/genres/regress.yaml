@@ -1,0 +1,28 @@
+# regress: may this change ship against the baseline? compare, narrowed.
+schema: ix.v1.genre
+name: ix.v1.genre.regress
+extends: ix.v1.genre.compare
+question: May this change ship against the baseline?
+hypothesis_form: "{variant} is no worse than {control} by more than {margin} on {metric}"
+subjects:
+  - {name: control, min: 1, max: 1}
+  - {name: variant, min: 1, max: 1}
+requires: [primary, rule, margin]
+rules: [non-inferiority]
+defaults:
+  rule: {value: non-inferiority, note: "provisional: pending the experimentation canon; a gate asks only whether the change is no worse"}
+analysis:
+  id: ix.v1.analysis.compare
+  params: {pairing: control, correction: holm, baseline: rebuilt-and-interleaved}
+report: [question, design, gate, estimates, noise_floor, baseline, faults, warrant, raw]
+skill: |
+  Use regress to gate a change: the candidate must be no worse than the baseline.
+  The control is the baseline build and the one variant is the candidate. Rebuild the
+  baseline and run it in the same experiment, interleaved with the candidate, so that the
+  two are measured under the same conditions.
+  Decide the margin before you run: the largest regression you would still ship. The rule
+  is non-inferiority and is not yours to change here.
+  Register the experiment before the run (`ix register`), so the margin cannot move once
+  the numbers are in.
+  What would falsify it: the interval of the difference crosses the margin on the worse
+  side. Inconclusive does not pass a gate.

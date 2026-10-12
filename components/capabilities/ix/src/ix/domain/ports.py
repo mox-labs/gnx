@@ -9,6 +9,12 @@
   measuring rule), which an engine that must score as it goes (Inspect) calls; the experiment
   then measures every trial with the same function, so results never depend on the engine.
 * A **Storage** loads experiments and persists what a run produced.
+
+Those five serve the agent-eval harness. The experiment model (genres, validate, plan,
+register) asks four things of the world, at the end of this module: **ExperimentFiles**,
+**GenreLibrary**, **ProbeReader** and **Registrations**. Each hides one decision that can
+change without the model changing: the file format, where genres are discovered, where
+probes come from, and where a registration is kept.
 """
 
 from __future__ import annotations
@@ -17,11 +23,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     from matrix import Agent
 
+    from ix.domain.experiment import ProbeBinding, ProbeSource
+    from ix.domain.genre import GenreRecord
     from ix.domain.models import ExperimentConfig, ExperimentResults, TrialRecord
     from ix.domain.types import Probe, Reading, Subject, Trial
 
@@ -124,3 +132,65 @@ class Storage(Protocol):
     def load_summary(self, experiment: str, subject: str) -> ExperimentResults: ...
 
     def subjects_with_results(self, experiment: str) -> list[str]: ...
+
+
+# --- the experiment model's ports ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ExperimentDocument:
+    """An experiment file as read: where it is, its bytes, and its data or why not."""
+
+    source: str
+    raw: bytes
+    #: The parsed file, or None when it is not well-formed (``error`` says why).
+    data: Any = None
+    error: str = ""
+
+
+class ExperimentFiles(Protocol):
+    """Reads an experiment file. The format and the file's name in a directory are its
+    decisions."""
+
+    def read(self, path: str) -> ExperimentDocument:
+        """The file at ``path``, or the experiment file inside the directory ``path``.
+
+        Raises :class:`ix.domain.errors.NotFoundError` when there is none.
+        """
+        ...
+
+
+class GenreLibrary(Protocol):
+    """Finds genre files: the installed ones, and those kept beside an experiment."""
+
+    def records(self, beside: str | None = None) -> Sequence[GenreRecord]:
+        """Every genre file visible from the experiment file ``beside`` (None: installed
+        ones only). A file that cannot be read is a record with an ``error``, not a raise."""
+        ...
+
+
+class ProbeReader(Protocol):
+    """Resolves a probe source into probes, in a fixed order."""
+
+    def read(self, source: ProbeSource, base: str) -> tuple[ProbeBinding, ...]:
+        """The probes of ``source``, relative to the experiment file ``base``.
+
+        Raises :class:`ix.domain.errors.ProbeSourceError` when the source cannot be read.
+        """
+        ...
+
+
+class Registrations(Protocol):
+    """Keeps an experiment's registration record."""
+
+    def location(self, experiment_source: str) -> str:
+        """Where the registration of the experiment file ``experiment_source`` is kept."""
+        ...
+
+    def read(self, experiment_source: str) -> Mapping[str, Any] | None:
+        """The stored registration document, or None when there is none."""
+        ...
+
+    def write(self, experiment_source: str, document: Mapping[str, Any]) -> str:
+        """Store ``document``; returns where."""
+        ...

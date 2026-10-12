@@ -1,7 +1,7 @@
 [project]
 name = "ix"
 version = "0.2.0"
-description = "ix: experiments on agents. Probes, subjects, sensors and statistics, driven by config"
+description = "ix: experiments on agents and services. Genres, subjects, probes and a plan, driven by one file"
 # readme = "README.md"  # TODO: create when ready
 requires-python = ">=3.12"
 license = "MIT"
@@ -24,6 +24,12 @@ dependencies = [
 # matrix's one discovery group, exactly as a third-party sensor or engine does.
 [project.entry-points."matrix.extensions"]
 ix = "ix.composition.builtins:register"
+
+# Genres are data. A package registers a package of `*.yaml` genre files at the `ix.genre`
+# entry point, which ix owns; ix registers its own four the same way. The entry point is
+# read for its name and never called.
+[project.entry-points."ix.genre"]
+ix = "ix.genres"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
@@ -48,6 +54,7 @@ packages = ["src/ix"]
 include = [
     "src/ix/**/*.py",
     "src/ix/**/*.md",
+    "src/ix/**/*.yaml",
     "src/ix/py.typed",
 ]
 
@@ -63,6 +70,11 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TC"]
+
+# pydantic reads a model's annotations at runtime, so the types they name cannot move into
+# a TYPE_CHECKING block. Record is the base of every model in the experiment model.
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-base-classes = ["pydantic.BaseModel", "ix.domain.schema.Record"]
 
 [tool.mypy]
 python_version = "3.12"

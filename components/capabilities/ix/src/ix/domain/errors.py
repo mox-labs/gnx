@@ -52,6 +52,15 @@ class MissingExtraError(IxError, ImportError):
     """
 
 
+class ProbeSourceError(ConfigError):
+    """A probe source could not be read: an unknown source, a missing directory, a probe
+    file that does not parse. Carries the ``path`` of the offending key and a ``fix``."""
+
+    def __init__(self, message: str, *, fix: str, path: str = "probes"):
+        super().__init__(message, fix=fix)
+        self.path = path
+
+
 class EngineError(IxError):
     """An engine could not complete a repeat (e.g. the Inspect evaluation did not finish).
 
