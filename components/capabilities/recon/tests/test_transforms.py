@@ -194,24 +194,86 @@ class TestMarkitdown:
     """Test $markitdown transform via markitdown (registered under recon.transforms).
 
     markitdown handles PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP, HTML,
-    images (OCR), audio. Tests cover the roundtrip + the best-effort failure
-    contract (missing file returns empty string, does not raise).
+    images (OCR), audio. Tests cover the roundtrip, the best-effort failure
+    contract (a missing file returns an empty string, does not raise), and the
+    confinement: the value comes from collected data, so it may name only a file under
+    the directories the mission declares, and never a URL.
     """
 
-    def test_roundtrip_csv(self, tmp_path):
+    @pytest.fixture
+    def dirs(self, tmp_path):
+        declared = tmp_path / "declared"
+        outside = tmp_path / "outside"
+        declared.mkdir()
+        outside.mkdir()
+        (declared / "data.csv").write_text("name,city\nAlice,Paris\nBob,Berlin\n")
+        (outside / "secret.csv").write_text("key,value\ntoken,hunter2\n")
+        return declared, outside
+
+    def test_roundtrip_csv(self, dirs):
         """Create a simple CSV, convert to markdown via $markitdown."""
         from recon.adapters._out.markitdown_converter import markitdown_path
 
-        csv_path = tmp_path / "data.csv"
-        csv_path.write_text("name,city\nAlice,Paris\nBob,Berlin\n")
-
-        text = markitdown_path(str(csv_path))
+        declared, _outside = dirs
+        text = markitdown_path(str(declared / "data.csv"), roots=[declared])
         # markitdown converts CSV to a markdown table — check for cell values
         assert "Alice" in text
         assert "Paris" in text
 
-    def test_missing_file_returns_empty(self):
+    def test_missing_file_returns_empty(self, dirs):
         """Non-existent file returns empty string (best-effort contract)."""
         from recon.adapters._out.markitdown_converter import markitdown_path
 
-        assert markitdown_path("/nonexistent/file.pdf") == ""
+        declared, _outside = dirs
+        assert markitdown_path(str(declared / "nonexistent.pdf"), roots=[declared]) == ""
+
+    @pytest.mark.parametrize("value", [None, "", 42, ["a.pdf"]])
+    def test_a_value_that_is_not_a_path_returns_empty(self, dirs, value):
+        from recon.adapters._out.markitdown_converter import markitdown_path
+
+        assert markitdown_path(value, roots=[dirs[0]]) == ""
+
+    def _refused(self, value, roots):
+        from recon.adapters._out.markitdown_converter import markitdown_path
+        from recon.domain.exceptions import CollectionError
+
+        with pytest.raises(CollectionError) as excinfo:
+            markitdown_path(value, roots=roots)
+        assert excinfo.value.kind == "config"
+        assert "hunter2" not in str(excinfo.value)
+        return excinfo.value
+
+    def test_a_file_outside_the_declared_directories_is_refused(self, dirs):
+        declared, outside = dirs
+        error = self._refused(str(outside / "secret.csv"), [declared])
+        assert "local" in error.fix
+
+    def test_dot_dot_does_not_escape(self, dirs):
+        declared, _outside = dirs
+        self._refused(str(declared / ".." / "outside" / "secret.csv"), [declared])
+
+    def test_a_symlink_does_not_escape(self, dirs):
+        declared, outside = dirs
+        (declared / "link.csv").symlink_to(outside / "secret.csv")
+        self._refused(str(declared / "link.csv"), [declared])
+
+    def test_with_no_declared_directory_nothing_is_read(self, dirs):
+        declared, _outside = dirs
+        self._refused(str(declared / "data.csv"), [])
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "http://127.0.0.1:9/doc.html",
+            "https://127.0.0.1:9/doc.pdf",
+            "HTTPS://127.0.0.1:9/doc.pdf",
+            "data:text/plain;base64,aHVudGVyMg==",
+        ],
+    )
+    def test_a_uri_is_refused_not_fetched(self, dirs, uri):
+        error = self._refused(uri, [dirs[0]])
+        assert "web" in error.fix
+
+    def test_a_file_uri_is_refused_even_inside_a_declared_directory(self, dirs):
+        declared, _outside = dirs
+        self._refused((declared / "data.csv").as_uri(), [declared])

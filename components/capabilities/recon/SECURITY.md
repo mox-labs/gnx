@@ -74,6 +74,11 @@ values, never as paths or commands. Output filenames come from the collector ent
 `name` in the config, not from response content. Capture bodies are named by their own
 sha256, never by anything in the response.
 
+`$markitdown` is the one built-in transform that opens a file, and the path it opens is
+a collected value. It reads only under the mission directory and the catalog's `local`
+sources (after resolving symlinks and `..`), and it never fetches a URL; either refusal
+fails the table with a config error (R-6).
+
 ### 4. Capture logs → the capture collector
 
 A capture log (`captures.jsonl`, format `recon.v1.capture`) may be written by tools other
@@ -159,6 +164,21 @@ a silent "not set" would send the request without its key.
 Regression: `recon/tests/test_composition.py`, and
 `test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix` in
 `recon/tests/test_cli.py`.
+
+### R-6 — `$markitdown` fetched URLs and read any path a record named (fixed)
+
+The transform passed the record's value to markitdown's `convert`, which fetches `http:`
+and `https:` URLs and opens `file:` URIs and any local path. A record is whatever a
+source returned, so a response could make a survey request an arbitrary URL — outside the
+requester, the rate limit and the capture log, with no network effect in the plan — or
+copy `~/.ssh/config` into a table.
+
+Fixed: URIs are refused, and a path must resolve under the mission directory or a `local`
+catalog source. Both are config errors with a fix, not an empty column.
+
+Regression: `recon/tests/test_transforms.py`, and the `test_markitdown_*` tests in
+`recon/tests/test_composition.py` (one serves a page from localhost and asserts no
+request arrives).
 
 ## Not covered
 

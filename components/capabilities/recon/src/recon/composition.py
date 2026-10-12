@@ -16,7 +16,9 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import replace
+from functools import partial
 from importlib.metadata import EntryPoint, entry_points
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recon.application.plan import BrokenPlugin, fan_out
@@ -26,7 +28,6 @@ from recon.domain.exceptions import CollectionError, ReconError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterable, Iterator
-    from pathlib import Path
 
     from recon.domain.capture import CaptureLog
     from recon.domain.collector import Collector, Transform
@@ -179,6 +180,21 @@ def declared_env(config: ReconConfig) -> dict[str, set[str]]:
     return declared
 
 
+def _bound_transforms(
+    transforms: Mapping[str, Transform], config: ReconConfig, mission_dir: Path
+) -> dict[str, Transform]:
+    """The transforms a survey runs with. ``$markitdown`` reads files a record names, so
+    it is bound to the directories this mission declares: its own, and each ``local``
+    source's."""
+    from recon.adapters._out.markitdown_converter import markitdown_path
+
+    roots = [mission_dir, *(Path(s.url) for s in config.catalog if s.type == "local")]
+    return {
+        name: partial(fn, roots=roots) if fn is markitdown_path else fn
+        for name, fn in transforms.items()
+    }
+
+
 class _Normalizing:
     """Applies ``normalize:`` to the records of a collector whose type does not.
 
@@ -230,10 +246,11 @@ def build_collectors(
     from recon.adapters._out.markitdown_converter import MarkitdownConverter
     from recon.application.utilization import RateLimiter
 
+    transforms = _bound_transforms(registry.transforms, config, mission_dir)
     ctx = CollectorContext(
         requester=HttpxRequester(RateLimiter()),
         converter=MarkitdownConverter(),
-        transforms=registry.transforms,
+        transforms=transforms,
         mission_dir=mission_dir,
         env={},
     )
@@ -250,7 +267,5 @@ def build_collectors(
                 error += f" (fix: {exc.fix})"
             registry.broken.append(BrokenPlugin(COLLECTORS_GROUP, name, "create()", error))
             continue
-        collectors[name] = (
-            collector if ct.normalizes else _Normalizing(collector, registry.transforms)
-        )
+        collectors[name] = collector if ct.normalizes else _Normalizing(collector, transforms)
     return collectors

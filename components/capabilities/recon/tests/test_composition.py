@@ -225,6 +225,92 @@ def test_the_api_collector_still_reads_its_source_s_key(tmp_path):
     assert requester.params == {"k": "s2-secret"}
 
 
+# --- $markitdown: reads only what the mission declares; fetches nothing ----------------
+
+
+def _markitdown_table(tmp_path, named: str, catalog=()):
+    """Survey one cli collector whose only record names ``named``, converted by $markitdown."""
+    mission = tmp_path / "mission"
+    mission.mkdir(exist_ok=True)
+    config = _config(
+        {
+            "name": "docs",
+            "type": "cli",
+            "run": f"echo '{named}'",
+            "normalize": {"path": "line", "text": "line|$markitdown"},
+        },
+        catalog=catalog,
+    )
+    collectors = build_collectors(load_registry(), mission, config, env={})
+    archive, [table] = run(config, collectors, mission)
+    path = archive / table["file"]
+    lines = path.read_text().splitlines() if path.exists() else []
+    return table, [json.loads(line) for line in lines]
+
+
+def test_markitdown_converts_a_file_under_a_declared_local_source(tmp_path):
+    here = tmp_path / "here"
+    here.mkdir()
+    (here / "data.csv").write_text("name,city\nAlice,Paris\n")
+    catalog = [{"name": "here", "type": "local", "url": str(here)}]
+
+    table, rows = _markitdown_table(tmp_path, str(here / "data.csv"), catalog)
+
+    assert table["status"] == "ok", table
+    assert "Alice" in rows[0]["text"]
+
+
+def test_markitdown_does_not_read_a_file_the_mission_did_not_declare(tmp_path):
+    """A record names the path, and records are whatever a source returned: before this
+    was confined, a collected `/etc/...` or `~/.ssh/...` was read into the table."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "secret.csv").write_text("key,value\ntoken,hunter2\n")
+
+    table, rows = _markitdown_table(tmp_path, str(elsewhere / "secret.csv"))
+
+    assert table["status"] == "error", rows
+    assert table["error"]["kind"] == "config"
+    assert "local" in table["error"]["fix"]
+    assert rows == []
+
+
+def test_markitdown_does_not_fetch_a_url_a_record_names(tmp_path):
+    """The fetch would bypass the requester, its rate limit and the capture log, and the
+    plan showed no network effect for it. Served from localhost; nothing must arrive."""
+    import http.server
+    import threading
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            body = b"<html><body><p>fetched</p></body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/doc.html"
+        table, rows = _markitdown_table(tmp_path, url)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert hits == []
+    assert table["status"] == "error", rows
+    assert table["error"]["kind"] == "config"
+    assert "web" in table["error"]["fix"]
+
+
 # --- normalize: is applied to every collector type's records ---------------------------
 
 
