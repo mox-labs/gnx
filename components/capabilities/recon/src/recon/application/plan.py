@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 
 _TOP_LEVEL_KEYS = frozenset(ReconConfig.model_fields)
 
+#: A top-level key beginning with this is the config author's own: a note, or the holder of
+#: a YAML anchor that collectors alias. recon ignores it. Every other unknown key is an error.
+IGNORED_KEY_PREFIX = "_"
+
 #: Output names that would overwrite a file recon itself writes into an archive.
 RESERVED_OUTPUT_NAMES = frozenset({CAPTURE_LOG_NAME.removesuffix(".jsonl")})
 
@@ -113,6 +117,10 @@ def _loc_path(prefix: str, loc: tuple[int | str, ...]) -> str:
     return path
 
 
+def _ignored(key: Any) -> bool:
+    return isinstance(key, str) and key.startswith(IGNORED_KEY_PREFIX)
+
+
 def _validate_items(
     raw: Any, key: str, model: type[BaseModel], problems: list[Problem]
 ) -> list[tuple[int, Any]]:
@@ -154,10 +162,17 @@ def build_plan(
         problems.append(Problem("", f"a config must be a mapping with collectors:, got {got}"))
         return Plan(config=None, problems=problems, warnings=warnings)
 
+    raw = {k: v for k, v in raw.items() if not _ignored(k)}
     for key in raw:
         if key not in _TOP_LEVEL_KEYS:
             allowed = ", ".join(sorted(_TOP_LEVEL_KEYS))
-            problems.append(Problem(str(key), f"unknown key; a config has: {allowed}"))
+            problems.append(
+                Problem(
+                    str(key),
+                    f"unknown key; a config has: {allowed} "
+                    f"(a top-level key beginning with {IGNORED_KEY_PREFIX} is ignored)",
+                )
+            )
     if "collectors" not in raw:
         problems.append(Problem("collectors", "required: list at least one collector"))
     elif isinstance(raw["collectors"], list) and not raw["collectors"]:

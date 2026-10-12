@@ -232,7 +232,7 @@ collectors:
 | `web` | HTTP GET → document to markdown → one record `{url, title, content, status_code, content_type}` | `endpoint` (optional), `normalize` (optional) |
 | `capture` | Capture log → bodies → normalize → JSONL. Fetches nothing. | `path` (default `captures/captures.jsonl`), `match`, `extract`, `normalize` |
 
-Collector types are extensions: `recon status --json` lists what is installed (`plugins.collectors`), and a type that is not installed is a config error naming the installed ones. Keys a model does not know are config errors too, so a typo like `normalise:` is reported with its path rather than ignored.
+Collector types are extensions: `recon status --json` lists what is installed (`plugins.collectors`), and a type that is not installed is a config error naming the installed ones. Keys a model does not know are config errors too, so a typo like `normalise:` is reported with its path rather than ignored. One exception: a top-level key beginning with `_` is ignored, so a config can carry its own notes or hold a YAML anchor that several collectors alias (`_normalize: &spec {...}`, then `normalize: *spec`). The rule is top-level only; a `_key` inside a source or collector is still an error.
 
 `type_url` declares what a table's records are, in the dotted grammar (`<namespace>.v<N>.<kebab-resource>`, never a slash). It is recorded per table in `meta.yaml`; the records themselves are written exactly as normalized.
 

@@ -3,7 +3,8 @@
 No infrastructure dependencies. These flow through the hexagon.
 
 Every model forbids unknown keys: a misspelt ``normalise:`` or ``preserve-raw:`` is a config
-error with a path, not a silently ignored line.
+error with a path, not a silently ignored line. The one exception is made by the planner
+before a config reaches these models: a top-level key beginning with ``_`` is dropped.
 """
 
 from __future__ import annotations
