@@ -28,8 +28,9 @@ run's state, and returns its outputs keyed by provide-port name.
 
 from __future__ import annotations
 
+import asyncio
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -38,6 +39,9 @@ from matrix.domain.ids import problem as type_url_problem
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
+
+#: A deferred release: called with no arguments; may return an awaitable.
+Release = Callable[[], Awaitable[None] | None]
 
 _ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
@@ -65,15 +69,55 @@ def ports(spec: Mapping[str, PortSpec] | None) -> dict[str, Port]:
     }
 
 
-@dataclass(frozen=True)
-class RunContext:
-    """What a member may know about the run it is part of. Nothing about its neighbours."""
+class ContextHooks(Protocol):
+    """What a run does on a member's behalf. The executor supplies it; nothing else needs to."""
 
-    run_id: str
-    member: str
-    episode: int = 0
-    #: ``time.monotonic()`` deadline for this member, or None.
-    deadline: float | None = None
+    def defer(self, release: Release) -> None: ...
+
+
+class _Detached:
+    """Hooks for a context built outside a run (a component under a unit test)."""
+
+    def defer(self, release: Release) -> None:
+        return None
+
+
+class RunContext:
+    """What a member may know about the run it is part of, and ask of it. Nothing about its
+    neighbours.
+
+    ``stopping`` is set when the run asks the member to finish now: its deadline passed, another
+    member failed, or the run was cancelled. A member that returns soon after keeps what it
+    returns; one that does not is cancelled after the grace period.
+
+    ``defer(release)`` hands the run something to undo. Every deferred release is called once
+    when the run ends, in reverse order, whether the run completed, failed or was cancelled.
+    Outside a run (a context built by hand) nothing calls them.
+    """
+
+    def __init__(
+        self,
+        run_id: str,
+        member: str,
+        episode: int = 0,
+        deadline: float | None = None,
+        *,
+        hooks: ContextHooks | None = None,
+    ) -> None:
+        self.run_id = run_id
+        self.member = member
+        self.episode = episode
+        #: ``time.monotonic()`` deadline for this member, or None.
+        self.deadline = deadline
+        self.stopping = asyncio.Event()
+        self._hooks: ContextHooks = hooks if hooks is not None else _Detached()
+
+    def defer(self, release: Release) -> None:
+        """Register ``release`` (sync or async, no arguments) to run when the run ends."""
+        self._hooks.defer(release)
+
+    def __repr__(self) -> str:
+        return f"RunContext(run_id={self.run_id!r}, member={self.member!r})"
 
 
 class Inputs(Mapping[str, Any]):

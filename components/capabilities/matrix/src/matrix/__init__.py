@@ -33,10 +33,11 @@ from .domain.errors import (
     ErrorKind,
     MatrixError,
     NotFoundError,
+    RunCancelled,
     RunError,
     RuntimeReason,
 )
-from .domain.executor import Executor, Limits, Run
+from .domain.executor import Executor, Limits, MemberLimits, MemberStatus, Run
 from .domain.flow import (
     CompiledFlow,
     Component,
@@ -108,12 +109,15 @@ __all__ = [
     "MatrixError",
     "MemoryConstructStore",
     "Member",
+    "MemberLimits",
+    "MemberStatus",
     "NotFoundError",
     "Observer",
     "Port",
     "RecordingObserver",
     "Registry",
     "Run",
+    "RunCancelled",
     "RunContext",
     "RunError",
     "RuntimeConfig",
