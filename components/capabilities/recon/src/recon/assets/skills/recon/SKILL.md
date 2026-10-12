@@ -428,11 +428,7 @@ Each archive includes `meta.yaml` (`format_version: 2`): `recon_version`, `confi
 
 Recon marks these conditions explicitly so downstream tooling (and Claude reading an archive) never has to guess.
 
-**`{"_empty": true}`** — a collector produced zero records. Recon writes this single-record sentinel to the JSONL so DuckDB `read_json_auto` has a valid file to read. Query for it with `WHERE NOT coalesce(_empty, false)` to exclude:
-
-```sql
-SELECT * FROM s2_search WHERE NOT coalesce(_empty, false)
-```
+**`{"_empty": true}`** — a collector produced zero records. Recon writes this one line to the JSONL so DuckDB `read_json_auto` has a valid file to read. It is not a record: the table reports `records: 0` in `survey --json` and `meta.yaml`, and its view has no rows, so `SELECT count(*)` returns 0. Only something reading the `.jsonl` file directly needs to skip the line.
 
 **`.incomplete` file at archive root** — at least one table failed, or `meta.yaml` itself failed to write. The survey exits non-zero (1, 5 or 6 — see [CLI Commands](#cli-commands)); `recon status` shows the archive state as `incomplete`; `recon query` prints a warning before running the SQL. `survey --json` lists every table's status, and `meta.yaml` keeps it:
 

@@ -7,7 +7,8 @@ Keeping this out of the CLI adapter means a future non-CLI frontend (MCP
 server, Python API, HTTP endpoint) can reuse the same query path.
 
 Every output table is a view named after its file (non-identifier characters become
-``_``). The capture log is not a table.
+``_``). The capture log is not a table. A table that collected nothing is a view with no
+rows: the one sentinel line in its file is filtered out.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from recon.application.archives import table_files
+from recon.application.archives import is_empty_table, table_files
 from recon.domain.exceptions import NotFoundError, QueryError
 
 if TYPE_CHECKING:
@@ -50,8 +51,10 @@ def execute(archive_dir: Path, sql: str) -> tuple[list[str], list[tuple[Any, ...
     try:
         for jf in jsonl_files:
             jf_str = str(jf).replace("'", "''")
+            where = " WHERE NOT _empty" if is_empty_table(jf) else ""
             conn.execute(
-                f"CREATE VIEW \"{table_name(jf.stem)}\" AS SELECT * FROM read_json_auto('{jf_str}')"
+                f'CREATE VIEW "{table_name(jf.stem)}" AS '
+                f"SELECT * FROM read_json_auto('{jf_str}'){where}"
             )
 
         try:

@@ -298,6 +298,28 @@ class TestReconRun:
             records = [json.loads(line) for line in lines]
             assert records == [{"_empty": True}]
 
+    def test_an_empty_table_reports_zero_records(self):
+        """The sentinel keeps the file readable; it is not a record. Counting it made an
+        empty table indistinguishable from a table with one row."""
+        events: list[dict] = []
+        config = ReconConfig.model_validate(
+            {
+                "collectors": [
+                    {"name": "empty", "type": "cli", "run": "true"},
+                    {"name": "one", "type": "cli", "run": "echo hi"},
+                ],
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            mission = Path(tmp) / "m"
+            mission.mkdir()
+            archive, results = run(config, _collectors(), mission, on_event=events.append)
+            meta = yaml.safe_load((archive / "meta.yaml").read_text())
+
+        assert {r["name"]: r["records"] for r in results} == {"empty": 0, "one": 1}
+        assert {t["name"]: t["records"] for t in meta["tables"]} == {"empty": 0, "one": 1}
+        assert {e["name"]: e["records"] for e in events} == {"empty": 0, "one": 1}
+
 
 class TestCollisionDetection:
     def test_pinned_and_fanout_collide(self):

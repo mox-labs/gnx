@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from recon import __version__
+from recon.application.archives import EMPTY_SENTINEL
 from recon.application.captures import FilesystemCaptureLog
 from recon.application.plan import fan_out
 from recon.domain.exceptions import CollectionError, ErrorKind, ReconError
@@ -110,6 +111,9 @@ def _sink(
     durability loss on crash is bounded. On any error the partial .tmp is
     removed and the exception propagates. On success, atomic rename to final.
 
+    A stream that yields nothing still produces a file DuckDB's read_json_auto can read:
+    one ``{"_empty": true}`` line. The sentinel is not a record and is not counted.
+
     Guarantees generator cleanup via contextlib.closing — if an exception
     interrupts iteration, the upstream collector's try/finally still runs
     (subprocess kill, httpx client close, rate-limit token release).
@@ -129,6 +133,8 @@ def _sink(
                 if count % fsync_every == 0:
                     f.flush()
                     os.fsync(f.fileno())
+            if count == 0:
+                f.write(json.dumps(EMPTY_SENTINEL) + "\n")
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -137,17 +143,6 @@ def _sink(
             tmp.unlink()
         raise
     return count
-
-
-def _with_sentinel(r: Iterator[dict[str, Any]]) -> Generator[dict[str, Any], None, None]:
-    """Empty-collector sentinel: a collector that yields nothing still produces one
-    ``{"_empty": true}`` record, so DuckDB's read_json_auto has a file to read."""
-    any_yielded = False
-    for record in r:
-        any_yielded = True
-        yield record
-    if not any_yielded:
-        yield {"_empty": True}
 
 
 def _check_collisions(config: ReconConfig) -> None:
@@ -243,7 +238,7 @@ def run(
                     else entry.model_copy(update={"name": output_name})
                 )
                 records = _tag_errors(collector, per_target_entry, source, captures=captures)
-                count = _sink(_with_sentinel(records), archive_dir / f"{output_name}.jsonl")
+                count = _sink(records, archive_dir / f"{output_name}.jsonl")
             except Exception as exc:
                 kind: ErrorKind = exc.kind if isinstance(exc, ReconError) else "unknown"
                 failed(base, kind, str(exc), (datetime.now(UTC) - start).total_seconds())
