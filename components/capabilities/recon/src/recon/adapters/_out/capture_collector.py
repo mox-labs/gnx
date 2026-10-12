@@ -158,5 +158,6 @@ collector_type = CollectorType(
     create=lambda ctx: CaptureCollector(ctx.mission_dir, ctx.transforms),
     effects=frozenset({"filesystem"}),
     summary="capture log (recon.v1.capture) → bodies → records; fetches nothing",
+    normalizes=True,  # the spec may address the capture line itself, as `_capture.*`
     describe=_describe,
 )

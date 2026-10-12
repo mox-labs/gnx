@@ -1,7 +1,7 @@
 ---
 name: recon
 description: "This skill should be used when the user asks to 'collect data from an API', 'scrape a website', 'mine a codebase', 'fetch from multiple sources', 'normalize this response', 'query across sources with SQL', 'build a dataset', 'monitor something over time', 'schedule a recurring survey', 'cron this', 'run a survey', 'find papers', 'scan repos for patterns', 'track releases', 'audit dependencies', 'snapshot an API', 'diff API state over time', 'extract structured records', 'build a JSONL dataset', 'use Exa', 'use Firecrawl', 'use Tavily', 'use Serper', 'use Perplexity', 'call a search API', 'convert a PDF to markdown', 'convert a DOCX', 'ingest documents', 'aggregate structured data', 'write a recon config', 'capture MCP tool results', or needs to transform unstructured/semi-structured data from heterogeneous sources into queryable structured JSONL."
-version: 0.9.0
+version: 0.10.0
 ---
 
 # Recon
@@ -232,9 +232,13 @@ collectors:
 | `web` | HTTP GET → document to markdown → one record `{url, title, content, status_code, content_type}` | `endpoint` (optional), `normalize` (optional) |
 | `capture` | Capture log → bodies → normalize → JSONL. Fetches nothing. | `path` (default `captures/captures.jsonl`), `match`, `extract`, `normalize` |
 
-Collector types are extensions: `recon status --json` lists what is installed (`plugins.collectors`), and a type that is not installed is a config error naming the installed ones. Keys a model does not know are config errors too, so a typo like `normalise:` is reported with its path rather than ignored.
+Collector types are extensions: `recon status --json` lists what is installed (`plugins.collectors`), and a type that is not installed is a config error naming the installed ones. Keys a model does not know are config errors too, so a typo like `normalise:` is reported with its path rather than ignored. One exception: a top-level key beginning with `_` is ignored, so a config can carry its own notes or hold a YAML anchor that several collectors alias (`_normalize: &spec {...}`, then `normalize: *spec`). The rule is top-level only; a `_key` inside a source or collector is still an error.
 
 `type_url` declares what a table's records are, in the dotted grammar (`<namespace>.v<N>.<kebab-resource>`, never a slash). It is recorded per table in `meta.yaml`; the records themselves are written exactly as normalized.
+
+A source may set `user_agent:`. Without it recon identifies itself, as `recon/<version> (+https://github.com/mox-labs/gnx)`, on every `api` and `web` request. Set your own (with a contact, e.g. `"my-survey/1 (mailto:you@example.org)"`) for a source that asks for one or that refuses unidentified clients; recon sends it as written.
+
+A source may set `timeout:` (seconds, default 60) and `max_bytes:` (default 50,000,000). `max_bytes` bounds one response body from that source, counted after decompression: a larger body is not buffered, and the table fails with `kind: collection` and a `fix` that says to raise the limit or narrow the request. Raise it on the source that serves large documents rather than everywhere.
 
 Source auth: `auth.env` names the environment variable holding the secret; `auth.header` sends it as a header, `auth.param` as a query parameter (e.g. OpenAlex `api_key`), and `auth.prefix` is prepended in either place. An unset variable sends the request without credentials, and the plan warns about it.
 
@@ -420,19 +424,17 @@ WHERE citations > 100
 ORDER BY citations DESC
 ```
 
+A query is confined to the mission's archives. It can read any file under `.recon/<mission>/archive/` (so `read_json_auto('<that directory>/<timestamp>/<table>.jsonl')` reaches an earlier archive for a diff), and nothing else: no other file, no `INSTALL` or `LOAD`, no URL. Reaching outside exits 3 with `kind: query` and a `fix` naming the directory. To join against other data, collect it into the mission first.
+
 ### Meta.yaml
 
-Each archive includes `meta.yaml` (`format_version: 2`): `recon_version`, `config_sha256` (of the config file that ran), timestamps, and `tables` — one entry per output with `name`, `file`, `collector`, `source`, `type_url`, `status`, `records`, `seconds`, and `error: {kind, message}` when it failed. `recon status --json` reads it for you, including archives written by older recon (`format_version: 1`).
+Each archive includes `meta.yaml` (`format_version: 2`): `recon_version`, `config_sha256` (of the config file that ran), timestamps, and `tables` — one entry per output with `name`, `file`, `collector`, `source`, `type_url`, `status`, `records`, `seconds`, and `error: {kind, message}` when it failed, with a `fix` when the error names its remedy. `recon status --json` reads it for you, including archives written by older recon (`format_version: 1`).
 
 ## Sentinels and Error Signals
 
 Recon marks these conditions explicitly so downstream tooling (and Claude reading an archive) never has to guess.
 
-**`{"_empty": true}`** — a collector produced zero records. Recon writes this single-record sentinel to the JSONL so DuckDB `read_json_auto` has a valid file to read. Query for it with `WHERE NOT coalesce(_empty, false)` to exclude:
-
-```sql
-SELECT * FROM s2_search WHERE NOT coalesce(_empty, false)
-```
+**`{"_empty": true}`** — a collector produced zero records. Recon writes this one line to the JSONL so DuckDB `read_json_auto` has a valid file to read. It is not a record: the table reports `records: 0` in `survey --json` and `meta.yaml`, and its view has no rows, so `SELECT count(*)` returns 0. Only something reading the `.jsonl` file directly needs to skip the line.
 
 **`.incomplete` file at archive root** — at least one table failed, or `meta.yaml` itself failed to write. The survey exits non-zero (1, 5 or 6 — see [CLI Commands](#cli-commands)); `recon status` shows the archive state as `incomplete`; `recon query` prints a warning before running the SQL. `survey --json` lists every table's status, and `meta.yaml` keeps it:
 
@@ -447,7 +449,7 @@ tables:
     seconds: 60.04
 ```
 
-**Plan problems (nothing runs)** — every survey plans first, and these stop it with exit 3 before an archive exists, each reported with its path: an unknown collector type or transform, a misspelt key, a pinned source missing from the catalog, an output-name collision (a pinned `foo-arxiv` plus a fan-out `foo` over source `arxiv` both compute `foo-arxiv.jsonl`), and an unresolved `{placeholder}` in an `api` endpoint or `body:` after substitution from `params:`. `--dry-run` shows the same list without running anything.
+**Plan problems (nothing runs)** — every survey plans first, and these stop it with exit 3 before an archive exists, each reported with its path: an unknown collector type or transform, a misspelt key, a pinned source missing from the catalog, an output-name collision (a pinned `foo-arxiv` plus a fan-out `foo` over source `arxiv` both compute `foo-arxiv.jsonl`), and an unresolved `{placeholder}` in an `api` endpoint or `body:` after substitution from `params:`, or in a `params:` value itself (path `collectors[i].params.<key>`; a params value is sent as written, nothing fills it in). `--dry-run` shows the same list without running anything.
 
 ## Preserving Raw Captures
 

@@ -238,6 +238,62 @@ class TestCollectThroughRequester:
         assert req.calls == [], "Requester must not be invoked when body has unresolved vars"
 
 
+class TestUserAgent:
+    """Unless the mission says otherwise, recon says who it is."""
+
+    def _sent(self, **source_fields):
+        req = _FakeRequester(_ok_response("[]"))
+        source = SourceEntry(name="s", url="https://x", **source_fields)
+        entry = CollectorEntry(name="c", type="api", source="s", endpoint="/q")
+        list(ApiCollector(req, env={}).collect(entry, source))
+        return req.calls[0]["headers"]["User-Agent"]
+
+    def test_the_default_names_recon_its_version_and_where_to_find_it(self):
+        from recon import __version__
+
+        ua = self._sent()
+        assert ua.startswith(f"recon/{__version__} ")
+        assert "github.com/mox-labs/gnx" in ua
+        assert "Mozilla" not in ua and "Chrome" not in ua
+
+    def test_a_mission_s_own_user_agent_is_sent_as_written(self):
+        assert self._sent(user_agent="my-survey/2 (mailto:me@example.org)") == (
+            "my-survey/2 (mailto:me@example.org)"
+        )
+
+
+class TestParams:
+    """Every ``params`` value is sent as written, or the collector refuses to run.
+
+    A value still holding a ``{placeholder}`` used to be left out of the query string
+    without a word, and so was any value that merely contained a brace.
+    """
+
+    SPARQL = "SELECT ?p WHERE { ?p wdt:P106 wd:Q82594 . }"
+
+    def _collect(self, params):
+        req = _FakeRequester(_ok_response("[]"))
+        source = SourceEntry(name="s", url="https://x")
+        entry = CollectorEntry(name="c", type="api", source="s", endpoint="/q", params=params)
+        list(ApiCollector(req, env={}).collect(entry, source))
+        return req
+
+    def test_a_value_containing_braces_is_sent(self):
+        req = self._collect({"format": "json", "query": self.SPARQL})
+        assert req.calls[0]["params"] == {"format": "json", "query": self.SPARQL}
+
+    def test_an_unresolved_placeholder_raises_before_the_request(self):
+        req = _FakeRequester()  # no canned response; must never be called
+        source = SourceEntry(name="s", url="https://x")
+        entry = CollectorEntry(
+            name="c", type="api", source="s", endpoint="/q", params={"q": "{topic}", "n": "5"}
+        )
+        with pytest.raises(CollectionError, match=r"params.*\{topic\}") as excinfo:
+            list(ApiCollector(req, env={}).collect(entry, source))
+        assert excinfo.value.kind == "config"
+        assert req.calls == []
+
+
 class TestSubstituteUnified:
     def test_string_branch(self):
         assert substitute("hello {name}", {"name": "world"}) == "hello world"

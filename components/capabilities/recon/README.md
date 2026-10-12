@@ -71,6 +71,8 @@ recon capture <mission>                                append a hook payload (st
 recon --skill [-r <reference>]                         print the skill (for Claude)
 ```
 
+`recon query` reads only the mission's own archives: no other file, no DuckDB extension, no URL ([SECURITY.md](SECURITY.md), boundary 6).
+
 Every command takes `--json`: one JSON document on stdout whose `schema` names its shape (`recon.v1.survey`, `recon.v1.plan`, `recon.v1.status`, `recon.v1.query-rows`, `recon.v1.templates`, `recon.v1.mission`, `recon.v1.capture`); collections are always wrapped in an object.
 
 ### Exit codes
@@ -96,6 +98,7 @@ A survey in which any table failed still writes its archive (marked `.incomplete
   <output>.jsonl       one table per collector × source; records exactly as normalized
   meta.yaml            format_version 2: recon version, config sha256, and per table
                        its type_url, records, status, seconds, error {kind, message}
+                       (and fix, when the error names its remedy)
   .incomplete          present when any table failed
   captures.jsonl, raw/ the capture log, when preserve_raw: true
 ```

@@ -1,5 +1,31 @@
 # Changelog — recon
 
+## 0.10.0 — 2026-10-12
+
+Fixes for cases where recon gave a wrong answer without saying so, and for three places where collected data or an installed plugin could reach further than the mission's config allowed.
+
+### Changed (breaking)
+
+- **An empty table reports `records: 0`.** It reported 1, because the `{"_empty": true}` line that keeps the file readable was counted, and `SELECT count(*)` on the table returned 1. The line is still written; it is no longer counted and the table's view has no rows. `meta.yaml` files written by 0.9.0 keep the number they recorded.
+- **An unresolved `{placeholder}` in a `params:` value is a config error** at plan time, located as `collectors[i].params.<key>`. The parameter used to be left out of the request without a word. So was any value that merely contained a `{` (a SPARQL query, a JSON filter); those are now sent as written.
+- **`recon query` is confined to the mission's archives.** SQL can read files under `.recon/<mission>/archive/` (earlier archives included) and nothing else: no other path, no `INSTALL` or `LOAD`, no URL. It used to run on an unrestricted DuckDB connection, where `read_text('/etc/hosts')` returned the file.
+- **`$markitdown` reads only what the mission declares and never fetches.** The file a record names must be under the mission directory or a catalog source with `type: local`; a URL (`http:`, `https:`, `file:`, `data:`) is refused. Either is a config error with a fix, where it used to fetch the URL or read the file. Use a `web` collector to fetch a document.
+- **A response body is bounded.** A source has `max_bytes` (default 50,000,000, counted after decompression). A larger body fails its table with kind `collection` instead of being buffered. Raise `max_bytes` on a source that serves larger documents.
+- **The default User-Agent is `recon/<version> (+https://github.com/mox-labs/gnx)`** for `api` and `web` sources. An `api` source with no `user_agent:` used to send a desktop browser's string. A source's own `user_agent:` is sent as written; set one for a site that refuses the default.
+- **For collector-type authors:** recon applies `normalize:` to the records of any type that does not declare `normalizes=True`, so a type that applies the spec itself must now say so. `ctx.env` holds only the `auth.env` variables of the sources that type's collectors use; reading any other name raises a config error. `build_collectors` takes the config.
+
+### Added
+
+- Top-level config keys beginning with `_` are ignored. A config can hold notes, or a YAML anchor that several collectors alias (`_normalize: &spec {...}`), without tripping the unknown-key check that 0.9.0 introduced. Every other unknown key is still an error, and so is a `_key` inside a source or collector.
+- `max_bytes` on a catalog source.
+- A failed table's `error` carries a `fix` when the error names its remedy, in `survey --json` and `meta.yaml`; an error that escapes a command keeps its own `fix` on the `--json` error line.
+
+### Fixed
+
+- A plugin collector type that did not apply `normalize:` wrote raw records for a config the plan had accepted. The spec is now applied for it.
+- A collector type's factory was handed the whole process environment.
+- The built-in `factual-ground` template's SPARQL `query` parameter was never sent (it contains braces).
+
 ## 0.9.0 — 2026-10-09
 
 Agents are recon's main callers, so this release makes its boundary say what happened in a form a program can act on, and plans every survey before it touches anything.

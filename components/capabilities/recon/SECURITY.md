@@ -39,7 +39,7 @@ What constrains it:
 - `source.timeout` bounds the command (default 300s).
 
 What does **not** constrain it: nothing restricts which binaries run, what they touch, or
-where they connect. There is no allowlist. Declared effects are what a collector type says
+where they connect. The child inherits recon's environment, every variable of it. There is no allowlist. Declared effects are what a collector type says
 about itself; recon reports them and does not enforce them.
 
 ### 2. Source entries → outbound credentials (`api` collector)
@@ -58,8 +58,14 @@ a query parameter (`auth.param`), or both. Two consequences:
 An unset `auth.env` variable sends the request without credentials; the plan warns about
 it before anything is sent.
 
-The injectable `env` mapping exists so tests never touch the real environment; it is also
-the seam for scoping which variables a run can see.
+A collector type is not handed the process environment. Its `env` holds only the
+variables the mission declares for it: the `auth.env` names of the catalog sources its
+collectors run against. A plugin type therefore sees the secrets the config granted its
+sources and no others, and reading any other name fails the table with a config error
+that says where to declare it, rather than returning nothing (R-5). This scopes what a
+collector type is *handed*; it is not a sandbox. A plugin is Python in recon's process and
+can import `os`, and a `cli` command's child process inherits recon's whole environment
+(boundary 1).
 
 ### 3. Remote responses → local files
 
@@ -67,6 +73,11 @@ Collected records are attacker-influenced data by definition. recon writes them 
 values, never as paths or commands. Output filenames come from the collector entry's
 `name` in the config, not from response content. Capture bodies are named by their own
 sha256, never by anything in the response.
+
+`$markitdown` is the one built-in transform that opens a file, and the path it opens is
+a collected value. It reads only under the mission directory and the catalog's `local`
+sources (after resolving symlinks and `..`), and it never fetches a URL; either refusal
+fails the table with a config error (R-6).
 
 ### 4. Capture logs → the capture collector
 
@@ -85,6 +96,24 @@ anything the tool saw, including private data, so `.recon/<mission>/captures/` d
 same care as the conversation transcript. `recon capture` writes only under an existing
 mission's directory; it refuses (exit 4) when the mission does not exist, rather than
 creating one from a name it was handed.
+
+### 6. Collected text → SQL (`recon query`)
+
+`recon query` runs the SQL it is given, and the SQL is usually written by an agent that
+has just read the tables — text from the open web, an API, a tool's output. A table can
+therefore talk its reader into a query, and DuckDB SQL can read files and load extensions
+that reach the network.
+
+The connection is confined before any SQL runs: `allowed_directories` is the mission's
+`archive/` directory, extension auto-install and auto-load are off, external access is
+off (DuckDB does not allow turning it back on), and the configuration is locked. A query
+reads its own and earlier archives of the same mission and nothing else; `INSTALL`, `LOAD`
+and URLs are refused (R-7).
+
+What this does **not** do: it does not make a query read-only inside that directory. SQL
+can still write a file under the mission's `archive/` (`COPY ... TO`, `ATTACH`), and can
+use DuckDB's spill directory (`.tmp/` under the working directory). And it does nothing
+about the text itself: a `content` column from the web is untrusted wherever it is read.
 
 ## Findings
 
@@ -142,12 +171,50 @@ value in the captured URL with the redaction marker before recording it.
 Regression: `test_param_key_never_reaches_the_capture_log` in
 `recon/tests/test_api_collector.py`.
 
+### R-5 — every collector type was handed the whole environment (fixed)
+
+The composition root passed `os.environ` to every collector type's factory, so installing
+a third-party collector type gave it every credential on the machine, whatever the
+mission's config named. Fixed by handing each type a mapping scoped to the `auth.env`
+names of the sources its collectors use (boundary 2). An undeclared read raises, because
+a silent "not set" would send the request without its key.
+
+Regression: `recon/tests/test_composition.py`, and
+`test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix` in
+`recon/tests/test_cli.py`.
+
+### R-6 — `$markitdown` fetched URLs and read any path a record named (fixed)
+
+The transform passed the record's value to markitdown's `convert`, which fetches `http:`
+and `https:` URLs and opens `file:` URIs and any local path. A record is whatever a
+source returned, so a response could make a survey request an arbitrary URL — outside the
+requester, the rate limit and the capture log, with no network effect in the plan — or
+copy `~/.ssh/config` into a table.
+
+Fixed: URIs are refused, and a path must resolve under the mission directory or a `local`
+catalog source. Both are config errors with a fix, not an empty column.
+
+Regression: `recon/tests/test_transforms.py`, and the `test_markitdown_*` tests in
+`recon/tests/test_composition.py` (one serves a page from localhost and asserts no
+request arrives).
+
+### R-7 — `recon query` could read any file and load extensions (fixed)
+
+`recon query m "SELECT * FROM read_text('/etc/hosts')"` returned the file, and nothing
+stopped a query from installing `httpfs` and fetching a URL. Fixed by confining the
+connection as boundary 6 describes; the settings and their order were checked against
+DuckDB 1.5.5.
+
+Regression: `recon/tests/test_query.py`, and
+`test_reading_outside_the_archive_is_refused_with_a_fix` in `recon/tests/test_cli.py`.
+
 ## Not covered
 
 - No sandboxing of collector commands. See boundary 1.
 - No egress allowlist. A source may point anywhere.
 - No TLS pinning; recon uses the platform trust store.
 - Declared collector effects are not enforced.
+- A query can write files under the mission's `archive/` directory. See boundary 6.
 
 ## Reporting
 

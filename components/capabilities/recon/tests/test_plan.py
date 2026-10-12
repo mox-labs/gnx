@@ -1,6 +1,9 @@
 """Planning: every problem, with a path; every run, with its effects; no effects of its own."""
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from recon.application.plan import BrokenPlugin, build_plan
 from recon.composition import load_registry
@@ -165,6 +168,45 @@ class TestEveryProblemWithAPath:
         message = _paths(plan)["collectors[0].endpoint"]
         assert "{owner}" in message and "{repo}" not in message
 
+    def test_unresolved_params_placeholder_is_a_problem_with_its_path(self, registry):
+        """Nothing fills a ``{placeholder}`` in a params value; it used to be dropped from
+        the query string at run time, and the plan said nothing."""
+        plan = _plan(
+            {
+                "catalog": [{"name": "s2", "url": "https://api.example.test"}],
+                "collectors": [
+                    {
+                        "name": "s",
+                        "type": "api",
+                        "endpoint": "/search",
+                        "params": {"query": "{topic}", "limit": "20", "fields": "{a},{b}"},
+                    }
+                ],
+            },
+            registry,
+        )
+        paths = _paths(plan)
+        assert set(paths) == {"collectors[0].params.query", "collectors[0].params.fields"}
+        assert "unresolved placeholder(s) {topic}" in paths["collectors[0].params.query"]
+        assert "{a}, {b}" in paths["collectors[0].params.fields"]
+
+    def test_a_params_value_with_braces_that_is_not_a_placeholder_is_fine(self, registry):
+        plan = _plan(
+            {
+                "catalog": [{"name": "wd", "url": "https://query.example.test"}],
+                "collectors": [
+                    {
+                        "name": "q",
+                        "type": "api",
+                        "endpoint": "/sparql",
+                        "params": {"query": "SELECT ?p WHERE { ?p wdt:P106 wd:Q82594 . }"},
+                    }
+                ],
+            },
+            registry,
+        )
+        assert plan.valid, plan.problems
+
     def test_unresolved_body_placeholder_is_caught_before_a_request(self, registry):
         plan = _plan(
             {
@@ -191,6 +233,45 @@ class TestEveryProblemWithAPath:
     def test_missing_and_empty_collectors(self, registry):
         assert "collectors" in _paths(_plan({"catalog": []}, registry))
         assert "empty" in _paths(_plan({"collectors": []}, registry))["collectors"]
+
+
+class TestUnderscoreKeys:
+    """Top-level keys beginning with ``_`` are the config's own notebook: recon ignores them.
+
+    Missions written before 0.9 hold a shared normalize spec under such a key and alias it
+    from every collector; 0.9's strict keys rejected the holder.
+    """
+
+    def test_a_mission_written_before_strict_keys_still_plans(self, registry):
+        fixture = Path(__file__).parent / "fixtures" / "pre-0.9-anchor-mission.yaml"
+        raw = yaml.safe_load(fixture.read_text())
+        assert "_normalize" in raw, "the fixture must keep the anchor holder"
+
+        plan = _plan(raw, registry)
+
+        assert plan.valid, plan.problems
+        assert [r.output for r in plan.runs] == ["attention_mechanisms", "retrieval_augmentation"]
+        assert plan.config is not None
+        assert all(c.normalize == raw["_normalize"] for c in plan.config.collectors)
+
+    def test_ignored_whatever_it_holds(self, registry):
+        raw = {
+            "_notes": "why this mission exists",
+            "_scratch": [{"anything": 1}],
+            "collectors": [{"name": "c", "type": "cli", "run": "true"}],
+        }
+        assert _plan(raw, registry).valid
+
+    def test_every_other_unknown_key_is_still_a_problem(self, registry):
+        raw = {
+            "notes": "no underscore",
+            "_notes": "underscore",
+            "collectors": [{"name": "c", "type": "cli", "run": "true", "_note": "nested"}],
+        }
+        paths = _paths(_plan(raw, registry))
+        assert "unknown key" in paths["notes"] and "beginning with _" in paths["notes"]
+        assert "collectors[0]._note" in paths, "the rule is for top-level keys only"
+        assert "_notes" not in paths
 
 
 class TestBrokenPlugins:

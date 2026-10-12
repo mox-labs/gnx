@@ -223,6 +223,7 @@ collector_type = CollectorType(
     create=lambda ctx: CliCollector(transforms=ctx.transforms),
     effects=frozenset({"subprocess"}),
     summary="shell command → stdout lines (JSON objects or text) → records",
+    normalizes=True,
     check=_check,
     describe=_describe,
 )

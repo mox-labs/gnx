@@ -396,6 +396,20 @@ class TestQuery:
         doc = _doc(_invoke("query", "m", "SELECT a FROM hello WHERE a > 9", "--json"))
         assert doc["rows"] == [] and doc["count"] == 0
 
+    def test_reading_outside_the_archive_is_refused_with_a_fix(self, project):
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        (project / "private.txt").write_text("hunter2")
+        sql = f"SELECT * FROM read_text('{project / 'private.txt'}')"
+
+        result = _invoke("query", "m", sql, "--json")
+
+        assert result.exit_code == 3
+        assert "hunter2" not in result.stdout + result.stderr
+        error = _error(result)
+        assert error["kind"] == "query"
+        assert str(project / ".recon" / "m" / "archive") in error["fix"]
+
     def test_bad_sql_exits_3_naming_the_tables(self, project):
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
@@ -523,6 +537,47 @@ def test_an_unexpected_exception_is_classified_unknown(project, monkeypatch):
     error = _error(result)
     assert error["kind"] == "unknown"
     assert "wiring bug" in error["message"]
+
+
+def test_an_escaping_error_keeps_its_own_fix(project, monkeypatch):
+    def refuses():
+        raise CollectionError("cannot do that", kind="config", fix="do this instead")
+
+    monkeypatch.setattr(cli_module, "load_registry", refuses)
+    _mission(project, "m", OK_CONFIG)
+    result = _invoke("survey", "m", "--json")
+    assert result.exit_code == 3
+    assert _error(result)["fix"] == "do this instead"
+
+
+def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(
+    project, monkeypatch
+):
+    """The whole path: the table fails as a config error that names the variable and says
+    where to declare it; nothing is read from the process environment on the quiet."""
+    monkeypatch.setenv("RECON_TEST_UNDECLARED", "a secret the mission never named")
+
+    class Greedy:
+        def __init__(self, ctx):
+            self._env = ctx.env
+
+        def collect(self, entry, source, *, captures=None):
+            yield {"leaked": self._env.get("RECON_TEST_UNDECLARED", "")}
+
+    registry = load_registry()
+    registry.collector_types["greedy"] = CollectorType(create=Greedy, effects=None)
+    monkeypatch.setattr(cli_module, "load_registry", lambda: registry)
+    mission = _mission(project, "m", {"collectors": [{"name": "g", "type": "greedy"}]})
+
+    result = _invoke("survey", "m", "--json")
+
+    [table] = _doc(result)["tables"]
+    assert table["status"] == "error"
+    assert table["error"]["kind"] == "config"
+    assert "RECON_TEST_UNDECLARED" in table["error"]["message"]
+    assert "auth.env" in table["error"]["fix"]
+    [archive] = (mission / "archive").iterdir()
+    assert not (archive / "g.jsonl").exists()
 
 
 def test_a_factory_failure_reaches_the_tables_not_a_traceback(project, monkeypatch):

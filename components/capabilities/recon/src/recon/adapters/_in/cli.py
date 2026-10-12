@@ -171,9 +171,9 @@ def _guarded(fn: Callable[..., None]) -> Callable[..., None]:
         except (click.exceptions.ClickException, click.exceptions.Exit, click.exceptions.Abort):
             raise
         except ConfigError as exc:
-            _fail(str(exc), kind=exc.kind, problems=exc.problems or None)
+            _fail(str(exc), kind=exc.kind, fix=exc.fix, problems=exc.problems or None)
         except ReconError as exc:
-            _fail(str(exc), kind=exc.kind)
+            _fail(str(exc), kind=exc.kind, fix=exc.fix)
         except Exception as exc:
             _fail(f"{type(exc).__name__}: {exc}", kind="unknown")
 
@@ -531,7 +531,7 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
 
     assert plan.config is not None  # plan.valid guarantees it
     loaded = len(registry.broken)
-    collectors = build_collectors(registry, mission)
+    collectors = build_collectors(registry, mission, plan.config)
     # A factory that raised is now in registry.broken; its tables fail with a config error.
     warnings = plan.warnings + [f"plugin {b.describe()}" for b in registry.broken[loaded:]]
     if not as_json:
@@ -584,6 +584,8 @@ def _cli_event(event: dict[str, object]) -> None:
     elif kind == "error":
         reason = escape(str(event.get("reason", "")))
         console.print(f"[red]  {name}: ERROR ({event.get('error_kind')}) — {reason}[/]")
+        if event.get("fix"):
+            console.print(f"[dim]    Fix: {escape(str(event['fix']))}[/]")
     elif kind == "archive_warning":
         console.print(
             f"[yellow]  WARNING: archive finalization issue — {event.get('reason', '')}[/]"
@@ -727,7 +729,7 @@ def query(name: str, sql: str, run_id: str | None, as_json: bool) -> None:
         columns, rows = query_module.execute(run_dir, sql)
     except ReconError as exc:
         tables = ", ".join(query_module.available_tables(run_dir)) or "(none)"
-        _fail(str(exc), kind=exc.kind, fix=f"query one of these tables: {tables}")
+        _fail(str(exc), kind=exc.kind, fix=exc.fix or f"query one of these tables: {tables}")
 
     if as_json:
         # strict=True: `columns` and `rows` come from the same execution, so a width

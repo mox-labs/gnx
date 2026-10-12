@@ -11,7 +11,7 @@ The archive it writes (meta.yaml ``format_version: 2``)::
     archive/<timestamp>/
       <output>.jsonl          one table per collector × source, records as normalized
       meta.yaml               recon version, config sha256, and per table: type_url,
-                              records, status, seconds, error {kind, message}
+                              records, status, seconds, error {kind, message[, fix]}
       .incomplete             present when any table failed
       captures.jsonl, raw/    the capture log, when preserve_raw is on
 
@@ -23,13 +23,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Callable, Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from recon import __version__
+from recon.application.archives import EMPTY_SENTINEL
 from recon.application.captures import FilesystemCaptureLog
 from recon.application.plan import fan_out
 from recon.domain.exceptions import CollectionError, ErrorKind, ReconError
@@ -51,7 +52,7 @@ class CollectorError(CollectionError):
 
     Raised at the run_collector boundary so downstream code (sink, dispatch)
     knows which collector failed without having to unpack the cause itself.
-    The cause's ``kind`` carries through, so a 429 stays ``transient``.
+    The cause's ``kind`` carries through, so a 429 stays ``transient``; so does its ``fix``.
     """
 
     def __init__(self, collector_name: str, source_name: str | None, cause: BaseException):
@@ -60,7 +61,8 @@ class CollectorError(CollectionError):
         self.cause = cause
         loc = f"{collector_name}" + (f" against '{source_name}'" if source_name else "")
         kind: ErrorKind = cause.kind if isinstance(cause, ReconError) else "unknown"
-        super().__init__(f"[{loc}] {cause}", kind=kind)
+        fix = cause.fix if isinstance(cause, ReconError) else None
+        super().__init__(f"[{loc}] {cause}", kind=kind, fix=fix)
 
 
 def failure_kind(results: list[dict[str, Any]]) -> ErrorKind | None:
@@ -85,7 +87,7 @@ def _tag_errors(
     entry: CollectorEntry,
     source: SourceEntry | None,
     captures: CaptureLog | None = None,
-) -> Iterator[dict[str, Any]]:
+) -> Generator[dict[str, Any], None, None]:
     """Wrap a collector's iterator so any exception it raises (eagerly or
     mid-stream) surfaces as CollectorError with entry + source attribution.
 
@@ -110,6 +112,9 @@ def _sink(
     durability loss on crash is bounded. On any error the partial .tmp is
     removed and the exception propagates. On success, atomic rename to final.
 
+    A stream that yields nothing still produces a file DuckDB's read_json_auto can read:
+    one ``{"_empty": true}`` line. The sentinel is not a record and is not counted.
+
     Guarantees generator cleanup via contextlib.closing — if an exception
     interrupts iteration, the upstream collector's try/finally still runs
     (subprocess kill, httpx client close, rate-limit token release).
@@ -129,6 +134,8 @@ def _sink(
                 if count % fsync_every == 0:
                     f.flush()
                     os.fsync(f.fileno())
+            if count == 0:
+                f.write(json.dumps(EMPTY_SENTINEL) + "\n")
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -137,17 +144,6 @@ def _sink(
             tmp.unlink()
         raise
     return count
-
-
-def _with_sentinel(r: Iterator[dict[str, Any]]) -> Generator[dict[str, Any], None, None]:
-    """Empty-collector sentinel: a collector that yields nothing still produces one
-    ``{"_empty": true}`` record, so DuckDB's read_json_auto has a file to read."""
-    any_yielded = False
-    for record in r:
-        any_yielded = True
-        yield record
-    if not any_yielded:
-        yield {"_empty": True}
 
 
 def _check_collisions(config: ReconConfig) -> None:
@@ -187,7 +183,8 @@ def run(
     The caller formats output; this function does no console I/O.
 
     Returns (archive_dir, results) where results is the per-table list that also lands
-    in meta.yaml under ``tables``. A failed table has ``error: {kind, message}``.
+    in meta.yaml under ``tables``. A failed table has ``error: {kind, message}``, plus
+    ``fix`` when the error named its remedy.
     """
     _check_collisions(config)
 
@@ -205,17 +202,32 @@ def run(
 
     results: list[dict[str, Any]] = []
 
-    def failed(base: dict[str, Any], kind: ErrorKind, message: str, seconds: float) -> None:
+    def failed(
+        base: dict[str, Any],
+        kind: ErrorKind,
+        message: str,
+        seconds: float,
+        fix: str | None = None,
+    ) -> None:
+        error = {"kind": kind, "message": message, **({"fix": fix} if fix else {})}
         results.append(
             {
                 **base,
                 "status": "error",
                 "records": 0,
                 "seconds": round(seconds, 2),
-                "error": {"kind": kind, "message": message},
+                "error": error,
             }
         )
-        emit({"kind": "error", "name": base["name"], "reason": message, "error_kind": kind})
+        emit(
+            {
+                "kind": "error",
+                "name": base["name"],
+                "reason": message,
+                "error_kind": kind,
+                "fix": fix,
+            }
+        )
 
     for entry in config.collectors:
         targets = fan_out(entry, catalog)
@@ -243,10 +255,11 @@ def run(
                     else entry.model_copy(update={"name": output_name})
                 )
                 records = _tag_errors(collector, per_target_entry, source, captures=captures)
-                count = _sink(_with_sentinel(records), archive_dir / f"{output_name}.jsonl")
+                count = _sink(records, archive_dir / f"{output_name}.jsonl")
             except Exception as exc:
                 kind: ErrorKind = exc.kind if isinstance(exc, ReconError) else "unknown"
-                failed(base, kind, str(exc), (datetime.now(UTC) - start).total_seconds())
+                fix = exc.fix if isinstance(exc, ReconError) else None
+                failed(base, kind, str(exc), (datetime.now(UTC) - start).total_seconds(), fix)
                 continue
             elapsed = (datetime.now(UTC) - start).total_seconds()
             results.append({**base, "status": "ok", "records": count, "seconds": round(elapsed, 2)})

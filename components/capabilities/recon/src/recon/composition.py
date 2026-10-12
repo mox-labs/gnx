@@ -14,17 +14,24 @@ register the same name, recon's own registration wins and the other is reported.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
+from dataclasses import replace
+from functools import partial
 from importlib.metadata import EntryPoint, entry_points
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from recon.application.plan import BrokenPlugin
+from recon.application.plan import BrokenPlugin, fan_out
+from recon.application.transforms import apply_normalize
 from recon.domain.collector import CollectorContext, CollectorType
+from recon.domain.exceptions import CollectionError, ReconError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
-    from pathlib import Path
+    from collections.abc import Callable, Collection, Iterable, Iterator
 
+    from recon.domain.capture import CaptureLog
     from recon.domain.collector import Collector, Transform
+    from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 
 COLLECTORS_GROUP = "recon.collectors"
 TRANSFORMS_GROUP = "recon.transforms"
@@ -128,12 +135,109 @@ def load_registry(
     return Registry(types, transforms, broken_types + broken_transforms)
 
 
+class ScopedEnv(Mapping[str, str]):
+    """The environment one collector type may read: the variables its sources declare.
+
+    A mission declares a variable by naming it as ``auth.env`` on a catalog source. A
+    declared variable that is unset is absent, as in any mapping. Reading a name the mission
+    did not declare raises instead: answering "not set" would be indistinguishable from an
+    unset credential, and the request would go out without it.
+    """
+
+    def __init__(self, env: Mapping[str, str], declared: Collection[str], owner: str) -> None:
+        self._env = env
+        self._declared = frozenset(declared)
+        self._owner = owner
+
+    def __getitem__(self, name: str) -> str:
+        if name not in self._declared:
+            raise CollectionError(
+                f"collector type {self._owner!r} read the environment variable {name!r}, "
+                "which this mission does not declare for it",
+                kind="config",
+                fix=f"name {name} as auth.env on a catalog source that a "
+                f"{self._owner} collector uses",
+            )
+        return self._env[name]
+
+    def __iter__(self) -> Iterator[str]:
+        return (name for name in sorted(self._declared) if name in self._env)
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+
+def declared_env(config: ReconConfig) -> dict[str, set[str]]:
+    """For each collector type the config uses, the ``auth.env`` names of the sources its
+    collectors run against."""
+    catalog = {s.name: s for s in config.catalog}
+    declared: dict[str, set[str]] = {}
+    for entry in config.collectors:
+        names = declared.setdefault(entry.type, set())
+        for source, _output in fan_out(entry, catalog):
+            if source is not None and source.auth.env:
+                names.add(source.auth.env)
+    return declared
+
+
+def _bound_transforms(
+    transforms: Mapping[str, Transform], config: ReconConfig, mission_dir: Path
+) -> dict[str, Transform]:
+    """The transforms a survey runs with. ``$markitdown`` reads files a record names, so
+    it is bound to the directories this mission declares: its own, and each ``local``
+    source's."""
+    from recon.adapters._out.markitdown_converter import markitdown_path
+
+    roots = [mission_dir, *(Path(s.url) for s in config.catalog if s.type == "local")]
+    return {
+        name: partial(fn, roots=roots) if fn is markitdown_path else fn
+        for name, fn in transforms.items()
+    }
+
+
+class _Normalizing:
+    """Applies ``normalize:`` to the records of a collector whose type does not.
+
+    The plan validates the spec for every type; this is what makes the survey honour it
+    for every type, whether or not a plugin's author remembered to.
+    """
+
+    def __init__(self, collector: Collector, transforms: Mapping[str, Transform]) -> None:
+        self._collector = collector
+        self._transforms = transforms
+
+    def collect(
+        self,
+        entry: CollectorEntry,
+        source: SourceEntry | None,
+        *,
+        captures: CaptureLog | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        records = self._collector.collect(entry, source, captures=captures)
+        if not entry.normalize:
+            yield from records
+            return
+        # A consumer that stops early closes this generator; pass that on, so the
+        # collector's own cleanup runs now rather than whenever it is collected.
+        try:
+            for record in records:
+                yield apply_normalize(record, entry.normalize, self._transforms)
+        finally:
+            close = getattr(records, "close", None)
+            if close is not None:
+                close()
+
+
 def build_collectors(
     registry: Registry,
     mission_dir: Path,
+    config: ReconConfig,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Collector]:
     """One collector per installed type, sharing one Requester (one rate limit per source).
+
+    Each type's factory is handed a ``ScopedEnv`` over ``env`` (default: the process
+    environment), holding only the variables ``config`` declares for that type's sources.
 
     The HTTP and conversion adapters are imported here, not at module load, so planning
     and status never import httpx or markitdown.
@@ -142,19 +246,26 @@ def build_collectors(
     from recon.adapters._out.markitdown_converter import MarkitdownConverter
     from recon.application.utilization import RateLimiter
 
+    transforms = _bound_transforms(registry.transforms, config, mission_dir)
     ctx = CollectorContext(
         requester=HttpxRequester(RateLimiter()),
         converter=MarkitdownConverter(),
-        transforms=registry.transforms,
+        transforms=transforms,
         mission_dir=mission_dir,
-        env=env if env is not None else os.environ,
+        env={},
     )
+    process_env = env if env is not None else os.environ
+    declared = declared_env(config)
     collectors: dict[str, Collector] = {}
     for name, ct in registry.collector_types.items():
+        scoped = ScopedEnv(process_env, declared.get(name, ()), name)
         try:
-            collectors[name] = ct.create(ctx)
+            collector = ct.create(replace(ctx, env=scoped))
         except Exception as exc:  # one plugin's factory must not stop the others
-            registry.broken.append(
-                BrokenPlugin(COLLECTORS_GROUP, name, "create()", f"{type(exc).__name__}: {exc}")
-            )
+            error = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, ReconError) and exc.fix:
+                error += f" (fix: {exc.fix})"
+            registry.broken.append(BrokenPlugin(COLLECTORS_GROUP, name, "create()", error))
+            continue
+        collectors[name] = collector if ct.normalizes else _Normalizing(collector, transforms)
     return collectors

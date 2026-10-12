@@ -8,6 +8,7 @@ archives without knowing which they are reading.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -20,6 +21,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 INCOMPLETE_MARKER = ".incomplete"
+
+#: The only line of a table that collected nothing. It keeps the file readable by DuckDB;
+#: it is not a record, so it is neither counted in meta.yaml nor a row in the table's view.
+EMPTY_SENTINEL: dict[str, Any] = {"_empty": True}
 
 
 def list_archives(mission_dir: Path) -> list[Path]:
@@ -51,6 +56,18 @@ def resolve_archive(mission_dir: Path, mission: str, run_id: str | None) -> Path
 def table_files(archive_dir: Path) -> list[Path]:
     """The archive's output tables: every JSONL file except the capture log."""
     return [p for p in sorted(archive_dir.glob("*.jsonl")) if p.name != CAPTURE_LOG_NAME]
+
+
+def is_empty_table(path: Path) -> bool:
+    """True when the table file holds the empty sentinel and nothing else."""
+    with open(path, encoding="utf-8") as f:
+        first, second = f.readline(), f.readline()
+    if second.strip():
+        return False
+    try:
+        return bool(json.loads(first) == EMPTY_SENTINEL)
+    except json.JSONDecodeError:
+        return False
 
 
 def read_meta(archive_dir: Path) -> dict[str, Any]:
