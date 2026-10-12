@@ -1,7 +1,10 @@
 # ix
 
-ix runs experiments on agents: probes put to subjects for a number of trials, judged by
-sensors, reported with their uncertainty, and compared without guessing.
+ix answers a question about a system with an experiment. The experiment model (`ix validate`,
+`ix plan`, `ix register`, `ix genres`) is described in the [README](../README.md) and taught
+by `ix --skill`. The pages below describe the agent-eval harness (`ix run`, `ix results`,
+`ix compare`, `ix experiment`, `ix lab`): probes put to subjects for a number of trials,
+judged by sensors, reported with their uncertainty, and compared without guessing.
 
 ## How-to
 

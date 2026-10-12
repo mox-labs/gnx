@@ -1,16 +1,153 @@
 # ix
 
-ix runs experiments on agents. You write probes (prompts) and subjects (agents) as files;
-ix puts every probe to every subject several times, has a sensor judge each response, and
-reports the pass rate with its uncertainty. `ix compare` then says whether one subject beat
-another, and refuses to say so when the data cannot carry it.
+ix answers a question about a system with an experiment. This package holds two things, and
+each command belongs to exactly one of them:
+
+| | Commands | Reads |
+|---|---|---|
+| **The experiment model** | `ix validate`, `ix plan`, `ix register`, `ix genres`, `ix --skill` | one experiment file with a `genre:` (schema `ix.v2.experiment`) |
+| **The agent-eval harness** | `ix run`, `ix results`, `ix compare`, `ix experiment ...`, `ix lab ...` | a lab directory whose `experiment.yaml` has `sensors:`, `trials:`, `engine:` |
+
+The experiment model checks, plans and registers an experiment for an agent, a model, a skill
+or a service; it starts nothing. The agent-eval harness runs agent evals. The two file
+formats are different and neither command set reads the other's: `ix validate` given a
+harness file says so and names `ix experiment validate`.
 
 ```bash
 uv add "ix @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/ix"
 # extras: ix[inspect] for the Inspect AI engine, ix[deepeval] for DeepEval metrics as sensors
 ```
 
-## The loop
+## The experiment model
+
+```bash
+ix --skill                                     # how to write an experiment for each genre
+ix validate examples/proxy-streaming           # every problem at once; exit 3 when invalid
+ix plan examples/proxy-streaming               # what a run would do; runs nothing
+ix register examples/proxy-streaming           # freeze the decision parameters beside the file
+ix register examples/proxy-streaming --check   # what changed since registration
+ix genres                                      # the genres installed, and any file ix refused
+```
+
+An experiment is one YAML file (or a directory holding `experiment.yaml`). It names its
+**genre**, the decision the answer must equip, and declares its subjects, probes and metrics:
+
+```yaml
+name: proxy-streaming
+question: Does streaming download bodies cut peak memory without costing TTFB?
+genre: compare
+subjects:                 # the first is the control, unless control: names another
+  buffered:  {kind: process, command: ["./proxy", "--config", "env/buffered.yaml"]}
+  streaming: {kind: process, command: ["./proxy", "--config", "env/streaming.yaml"]}
+factors: {size: [1MiB, 64MiB, 1GiB]}
+probes:
+  - {kind: http-load, target: "http://127.0.0.1:8080/blobs/{size}", load_model: open}
+metrics:
+  - {name: ttfb, unit: ns, direction: lower, shape: histogram}
+primary: {metric: ttfb, statistic: p99}
+rule: non-inferiority
+margin: 5%
+```
+
+Two complete examples are checked in:
+[`examples/proxy-streaming`](examples/proxy-streaming/experiment.yaml) (a service comparison)
+and [`examples/catalog-routing`](examples/catalog-routing/experiment.yaml) (an agent
+evaluation with probes in files).
+
+### Genres
+
+A genre is a record in a YAML file: the roles subjects play, what the experiment must
+declare, the design defaults, which analysis decides, and what the report must contain. It
+holds no code and names no probe kind, sensor, subject kind or tool.
+
+| genre | question | subjects | you must set | verdict |
+|---|---|---|---|---|
+| `evaluate` | Does this subject meet the bar? | one | `primary`, `bar` | holds / fails / inconclusive |
+| `compare` | Is the variant better than the control, or no worse? | one control, one or more variants | `primary`, `rule`, and `margin` unless the rule is `superiority` | holds / fails / inconclusive |
+| `regress` | May this change ship against the baseline? | one control, one variant | `primary`, `margin` | holds / fails / inconclusive |
+| `characterise` | How does this subject behave across the range? | one | `factors` | none: estimates only |
+
+`regress` extends `compare`. A genre extends at most one other, one level deep, and only by
+narrowing: it may raise a minimum, lower a maximum, require more, allow fewer rules or add
+report sections; it may not loosen its parent, change the analysis or the verdict kind, or
+add a role. A genre file that breaks this is refused with a `genre_narrowing` problem for
+each place it does.
+
+Every default a genre supplies (repeats, interleaving, the A/A calibration, a fixed rule)
+carries a note, and the built-in ones say they are provisional pending the experimentation
+canon. `ix plan` shows each design value with where it came from: the experiment, the genre
+or ix.
+
+To ship a genre, put its YAML file in a package and name the package at the `ix.genre` entry
+point; ix registers its own four the same way. A lab can also keep genre files in a
+`genres/` directory beside its experiment.
+
+```toml
+[project.entry-points."ix.genre"]
+acme = "acme_ix.genres"      # a package of *.yaml files; read, never called
+```
+
+### What validate refuses
+
+`ix validate` reports every problem in one batch, each with `path`, `kind`, `message` and
+`fix`. Among them: a genre's requirements that are not met; a rule the genre does not allow;
+a metric that is not declared, or a statistic its shape does not have; a `{placeholder}` in a
+probe that is bound to nothing; an estimated spend over the ceiling.
+
+**A model-judged metric never decides a gate.** A metric declared `judged: true` is refused
+as `primary` and as a guard in every genre with a verdict (`judged_gate`). It may be measured
+and reported.
+
+### Plan and registration
+
+`ix plan` is pure: it runs nothing, and the same file gives the same plan with the same
+digest. It states which subject is the control, the roles, the cells (factor combinations),
+the probes, the repeats, the order rule (interleaved, seeded), the effects the file declares,
+and the estimated spend.
+
+`ix register` writes `<file-stem>.registration.json` beside the experiment: the digests of
+the file and of the probe set, the genre, the primary metric, the margin, the repeats, the
+seed and the spend ceiling. Whatever differs afterwards is a deviation, listed by
+`ix register <path> --check`. Registering an experiment that has changed is refused (exit 3)
+and the record is kept. `ix run` belongs to the harness and does not read a registration.
+
+### Library
+
+The commands are an adapter over the library; `import ix` gives the same thing.
+
+```python
+import ix
+
+result = ix.validate("examples/proxy-streaming")     # ix.Validation: valid, problems, warnings
+plan = ix.plan("examples/proxy-streaming")           # ix.Plan; raises ix.InvalidExperimentError
+design = ix.resolve("examples/proxy-streaming")      # ix.ResolvedDesign: every value, attributed
+record = ix.register("examples/proxy-streaming")     # ix.Registered
+changed = ix.deviations("examples/proxy-streaming")  # ix.RegistrationCheck
+genres = ix.catalogue()                              # ix.Catalogue: genres, and refused files
+```
+
+`ix.__all__` is the declared API: those functions, `load` and `skill`, the records
+(`Experiment`, `Genre`, `Metric`, `Plan`, `Registration`, `Problem`, ...) and the errors
+(`IxError`, `ConfigError`, `NotFoundError`, `InvalidExperimentError`,
+`RegistrationConflictError`). Importing `ix` loads no host runtime.
+
+### Output
+
+These commands take `--json` and print one document with a `schema` field: `ix.v2.validation`,
+`ix.v2.plan`, `ix.v1.registered`, `ix.v1.deviations`, `ix.v1.genres`. An error is one JSON
+line on stderr, `{"error": {"kind", "message", "fix"}}`. Exit codes: 0 done (for `validate`,
+valid); 2 usage; 3 config (an invalid experiment, or `register` on a changed one); 4 not
+found (no experiment file, or no registration to check).
+
+## The agent-eval harness
+
+The rest of this README describes the harness: `ix run`, `ix results`, `ix compare`,
+`ix experiment` and `ix lab`. You write probes (prompts) and subjects (agents) as files; ix
+puts every probe to every subject several times, has a sensor judge each response, and
+reports the pass rate with its uncertainty. `ix compare` then says whether one subject beat
+another, and refuses to say so when the data cannot carry it.
+
+### The loop
 
 ```bash
 ix lab init lab                                 # a directory that holds experiments
@@ -48,7 +185,7 @@ subjects:
       runtime: {type: claude-sdk, setting_sources: []}
 ```
 
-## What ix guarantees
+### What ix guarantees
 
 - **One measuring rule.** The engine only runs trials. The experiment measures every trial
   with the same function, whatever engine ran it, so changing the engine never changes how a
@@ -72,7 +209,7 @@ subjects:
 - **Typos fail at load.** A probe key that none of the experiment's sensors reads is refused
   (`expectaton` instead of `expectation`). Prefix a key with `x-` to keep it as a note.
 
-## Configuration
+### Configuration
 
 ix reads matrix's config tiers, so it shares runtimes, models and agents with every tool
 built on matrix. Lowest priority first: ix's defaults; the `ix:` and `matrix:` sections of
@@ -91,7 +228,7 @@ ix:
 `matrix config --tool ix --sources` lists the files read, in order. The how-to has a worked
 example with a `matrix.yaml` that defines a runtime and an agent.
 
-## Engines and sensors
+### Engines and sensors
 
 | engine | runs a repeat as |
 |---|---|
@@ -126,9 +263,9 @@ sensor: {type: acme.v1.sensor.brevity, max_chars: 120}
 
 `matrix catalog --point sensor` lists what is installed.
 
-## For programs and agents
+### For programs and agents
 
-Every command takes `--format json`. Each document names its shape in a `schema` field:
+Every harness command takes `--format json`. Each document names its shape in a `schema` field:
 `ix.v1.results-list`, `ix.v1.results`, `ix.v1.comparison`, `ix.v1.plan`, `ix.v1.experiment`, `ix.v1.experiments`,
 `ix.v1.validation`, `ix.v1.labs`, `ix.v1.init`. `ix run` and `ix results` print one
 `ix.v1.results-list` document, `{"schema", "experiment", "results": [...]}`, with one
@@ -154,8 +291,10 @@ name a `--subject` or pass `--all`. A runtime is live when its registered effect
 
 | Document | What it covers |
 |----------|----------------|
-| [Running experiments](docs/how-to/running-experiments.md) | From an empty directory to a comparison; shared config; writing a sensor |
-| [What is ix?](docs/explanation/what-is-ix.md) | The model behind it: trials, faults, uncertainty, extension points |
-| [Experiment format](docs/reference/experiment-format.md) | Every file, key, option and result field |
-| [Domain models](docs/reference/domain-models.md) | The types, the ports, the registry entries |
+| `ix --skill` | The experiment model: the file, each genre, the commands, the problem kinds |
+| [CHANGELOG.md](CHANGELOG.md) | What each release changed |
+| [Running experiments](docs/how-to/running-experiments.md) | The harness: from an empty directory to a comparison; shared config; writing a sensor |
+| [What is ix?](docs/explanation/what-is-ix.md) | The harness: trials, faults, uncertainty, extension points |
+| [Experiment format](docs/reference/experiment-format.md) | The harness: every file, key, option and result field |
+| [Domain models](docs/reference/domain-models.md) | The harness: the types, the ports, the registry entries |
 | [SECURITY.md](SECURITY.md) | In-process code execution, config as a capability grant, telemetry |

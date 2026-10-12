@@ -1,0 +1,62 @@
+# A service comparison: two builds of one proxy, swept over artifact size and concurrency.
+#
+#   ix validate examples/proxy-streaming
+#   ix plan examples/proxy-streaming
+#
+# The first subject is the control. The variant differs from it in one setting (the config
+# file), so a difference in the result has one explanation.
+name: proxy-streaming
+question: Does streaming download bodies cut peak memory without costing TTFB or throughput?
+hypothesis: >-
+  streaming is no worse than buffered by 5% on ttfb p99 and on throughput, and no worse on
+  peak memory
+genre: compare
+
+subjects:
+  buffered:
+    kind: process
+    command: ["./proxy", "--config", "env/buffered.yaml"]
+    ready: "http://127.0.0.1:8080/healthz"
+    effects: ["starts process ./proxy", "binds 127.0.0.1:8080"]
+  streaming:
+    kind: process
+    command: ["./proxy", "--config", "env/streaming.yaml"]
+    ready: "http://127.0.0.1:8080/healthz"
+    effects: ["starts process ./proxy", "binds 127.0.0.1:8080"]
+
+environment:
+  provider: process
+  services:
+    upstream:
+      command: ["./tools/blobserve", "--sizes", "1MiB,64MiB,1GiB"]
+      ready: "http://127.0.0.1:9000/healthz"
+  effects: ["starts process ./tools/blobserve", "binds 127.0.0.1:9000"]
+
+# Every combination is a cell: 3 sizes x 3 concurrencies = 9.
+factors:
+  size: [1MiB, 64MiB, 1GiB]
+  concurrency: [1, 8, 64]
+
+probes:
+  - id: download
+    kind: http-load
+    tool: k6
+    target: "http://127.0.0.1:8080/blobs/{size}"
+    load_model: open        # open vs closed changes what latency means
+    rate: "{concurrency}0/s"
+    duration: 60s
+    warmup: 15s
+    verify_body: sha256     # the faster subject may not win by truncating
+
+metrics:
+  - {name: ttfb, unit: ns, direction: lower, shape: histogram}
+  - {name: throughput, unit: req/s, direction: higher, shape: scalar}
+  - {name: memory_peak, unit: bytes, direction: lower, shape: scalar}
+
+primary: {metric: ttfb, statistic: p99}
+rule: non-inferiority
+margin: 5%
+guards:
+  - {metric: throughput, statistic: mean, margin: 5%}
+  - {metric: memory_peak, statistic: max, margin: 0%}
+repeats: 5

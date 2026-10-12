@@ -38,7 +38,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from ix import __version__
+from ix import __version__, skill
+from ix.adapters._in.commands import COMMANDS
 from ix.domain.errors import (
     EngineError,
     IxError,
@@ -445,16 +446,38 @@ def _format_option(f: Callable[..., Any]) -> Callable[..., Any]:
 # --- CLI -------------------------------------------------------------------------------
 
 
+def _print_skill(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(skill())
+    ctx.exit()
+
+
 @click.group(invoke_without_command=True, epilog=_EXIT_CODES)
 @click.version_option(__version__, prog_name="ix")
+@click.option(
+    "--skill",
+    is_flag=True,
+    expose_value=False,
+    is_eager=True,
+    callback=_print_skill,
+    help="Print how to write an experiment file for each genre, then exit",
+)
 @click.pass_context
 def main(ctx: click.Context) -> None:
-    """ix: experiments on agents and skills, driven by config.
+    """ix: experiments on agents, skills and services, driven by config.
 
     Evals, benchmarks, and QoS experiments: probes × subjects × trials, judged by sensors,
     with uncertainty and a comparison that refuses to call a winner on thin data.
 
     \b
+    The experiment model (one file with a genre; `ix --skill` teaches it):
+    ix validate lab/proxy                    every problem at once, nothing run
+    ix plan lab/proxy                        what a run would do, with its digest
+    ix register lab/proxy                    freeze the decision before a run
+
+    \b
+    The agent-eval harness (its own experiment.yaml: sensors, trials, engine):
     ix experiment init routing --lab lab     scaffold an experiment
     ix experiment validate routing           compose everything, run nothing
     ix run routing --plan                    what a run would do, and which of it is live
@@ -471,6 +494,12 @@ def main(ctx: click.Context) -> None:
     _REGISTRY.clear()
     if ctx.invoked_subcommand is None:
         out.print(ctx.get_help())
+
+
+# --- The experiment model: validate, plan, register, genres ----------------------------
+
+for _name, _command in COMMANDS.items():
+    main.add_command(_command, _name)
 
 
 # --- Lab -------------------------------------------------------------------------------
