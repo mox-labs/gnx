@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 #: The commands ix has, in the order an author uses them.
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("ix validate <path>", "every problem at once, each with path, kind, message, fix"),
-    ("ix plan <path>", "the decision a run would equip and what it would cost; runs nothing"),
+    ("ix plan <path>", "the decision a run would inform and what it would cost; runs nothing"),
     ("ix register <path>", "freeze the design beside the file, before any run"),
     ("ix deviations <path>", "what changed since registration; exit 9 when anything did"),
     ("ix genres", "the genres installed, and any genre file ix refused"),
@@ -35,7 +35,7 @@ _HEAD = """\
 # ix: writing and checking an experiment
 
 ix answers a question about a system with an experiment. You write one YAML file; ix checks
-it, shows the decision a run would equip and what it would cost, and freezes the design
+it, shows the decision a run would inform and what it would cost, and freezes the design
 before anything runs. **ix has no `run` command yet**: it checks, plans and registers.
 
 ## The loop
@@ -50,7 +50,7 @@ first), then register.
 
 ## Choose the genre first
 
-A genre is the kind of decision the answer must equip. Pick it by the decision, not by the
+A genre is the kind of decision the answer must inform. Pick it by the decision, not by the
 system under test.
 """
 

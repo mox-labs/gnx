@@ -1,4 +1,4 @@
-"""The plan: what a run of an experiment would do, and the decision it would equip, computed
+"""The plan: what a run of an experiment would do, and the decision it would inform, computed
 without running anything.
 
 A plan is a pure function of the experiment, its design, its probe set and the kinds it

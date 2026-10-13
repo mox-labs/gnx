@@ -1,8 +1,8 @@
 # ix
 
 ix answers a question about a system with an experiment. You write one YAML file that names
-its **genre** (the decision the answer must equip), its subjects, its probes and the metric
-that decides. ix checks the file, shows the decision a run would equip and what it would
+its **genre** (the decision the answer must inform), its subjects, its probes and the metric
+that decides. ix checks the file, shows the decision a run would inform and what it would
 cost, and freezes the design before anything runs.
 
 **ix does not run an experiment.** There is no `ix run`: this package validates, plans and

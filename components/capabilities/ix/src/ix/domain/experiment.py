@@ -1,6 +1,6 @@
 """The experiment: one file that declares a question and how it will be answered.
 
-An experiment names its **genre** (the decision the answer must equip), its **subjects** (the
+An experiment names its **genre** (the decision the answer must inform), its **subjects** (the
 configurations under test), its **probes** (what is applied to them), the metric that
 decides, and the decision parameters the genre asks for. Everything it leaves out is
 supplied by the genre, and :mod:`ix.domain.design` shows which.

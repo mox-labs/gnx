@@ -126,7 +126,7 @@ def _print_skill(ctx: click.Context, _param: click.Parameter, value: bool) -> No
 def main(ctx: click.Context) -> None:
     """ix: one file declares a question about a system and how it will be answered.
 
-    ix checks the file, shows the decision a run would equip and what it would cost, and
+    ix checks the file, shows the decision a run would inform and what it would cost, and
     freezes the design before anything runs. There is no `ix run` yet: ix checks, plans and
     registers an experiment; it does not execute one.
 
@@ -281,7 +281,7 @@ def _print_plan(plan: ix.Plan, path: str) -> None:
 @_path_argument
 @_json_option
 def plan(path: str, as_json: bool) -> None:
-    """Show the decision a run would equip and what it would cost. Runs nothing.
+    """Show the decision a run would inform and what it would cost. Runs nothing.
 
     States the question, the hypothesis rendered from the genre, the guardrails and the form
     of the verdict; then the subjects with their roles, the trials with their arithmetic, the
