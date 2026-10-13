@@ -1,0 +1,6 @@
+schema: ix.v1.kind
+name: ix.v1.environment.process
+summary: Programs started before the trials and stopped after them.
+options:
+  services: {type: mapping, required: true, description: "name to {command, ready}: each program and the URL that says it is up"}
+effects: [process]

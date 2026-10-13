@@ -1,0 +1,7 @@
+schema: ix.v1.kind
+name: ix.v1.probe.prompt
+summary: One prompt put to an agent; the session's response is what is measured.
+options:
+  prompt: {type: string, required: true, description: the text put to the agent}
+needs: [agent]
+offers: [response, usage]

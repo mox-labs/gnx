@@ -1,0 +1,11 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.function-test
+summary: Whether code in the response passes the probe's test cases.
+options:
+  timeout: {type: duration, description: time allowed for the tests of one trial}
+effects: [code]
+needs: [response]
+truth: [function_name, test_cases]
+metrics:
+  - {name: tests_passed, direction: higher, shape: boolean, description: every test case passed}
+  - {name: tests_pass_share, unit: ratio, direction: higher, shape: scalar, description: share of test cases that passed}
