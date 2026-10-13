@@ -1,0 +1,16 @@
+schema: ix.v1.kind
+name: ix.v1.subject.agent
+summary: An agent definition; each trial is one fresh session.
+options:
+  runtime: {type: string, description: the agent runtime that plays the definition}
+  model: {type: string, description: the model the agent uses}
+  system_prompt: {type: string, description: "the system prompt, or a path to it"}
+  max_turns: {type: integer, description: turns after which the session is stopped}
+  plugins: {type: list, description: plugins loaded into the session}
+  skills: {type: list, description: skills available to the agent}
+  tools: {type: list, description: tools the agent may call}
+  permission_mode: {type: string, description: how tool calls are approved when nobody is present}
+  setting_sources: {type: list, description: which ambient settings the session reads}
+  cwd: {type: string, description: the directory the agent works in}
+effects: [spend, tools]
+offers: [agent]

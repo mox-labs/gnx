@@ -1,0 +1,12 @@
+schema: ix.v1.kind
+name: ix.v1.subject.process
+summary: A program ix starts for each trial and stops after it.
+options:
+  command: {type: list, required: true, description: the program and its arguments}
+  url: {type: string, description: where the program listens once it is up}
+  ready: {type: string, description: a URL that answers when the program is ready}
+  cwd: {type: string, description: the directory to start it in}
+  env: {type: mapping, description: environment variables to add}
+  startup_timeout: {type: duration, description: how long to wait for ready}
+effects: [process]
+offers: [pid, url]

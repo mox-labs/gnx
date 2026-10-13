@@ -1,0 +1,7 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.activation
+summary: Whether the expected skill fired, or stayed quiet for a decoy.
+needs: [response]
+truth: [expectation, expected_skill]
+metrics:
+  - {name: activated_correctly, direction: higher, shape: boolean, description: "the skill fired when it should (expectation: must_trigger) and not when it should not (should_not_trigger)"}

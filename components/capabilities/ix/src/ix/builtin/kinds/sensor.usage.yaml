@@ -1,0 +1,9 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.usage
+summary: What a session consumed, as its runtime reported it.
+needs: [usage]
+metrics:
+  - {name: tokens_total, unit: tokens, direction: lower, shape: scalar, description: input and output tokens of the session}
+  - {name: cost, unit: USD, direction: lower, shape: scalar, description: what the session cost}
+  - {name: turns, unit: turns, direction: lower, shape: scalar, description: turns the session took}
+  - {name: tool_calls, unit: calls, direction: lower, shape: scalar, description: tool calls the agent made}

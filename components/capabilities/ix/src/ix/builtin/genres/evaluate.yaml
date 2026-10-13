@@ -1,0 +1,28 @@
+# evaluate: does one subject meet a threshold?
+schema: ix.v1.genre
+name: ix.v1.genre.evaluate
+question: Does this subject meet the threshold?
+hypothesis_form: "{subject} has {metric} {threshold}"
+roles:
+  - {name: subject, min: 1, max: 1}
+factors: allowed
+must_set: [primary, threshold]
+design:
+  repeats: {default: 3, min: 1}
+  order: interleaved
+  calibration: none
+  estimator: mean
+  note: "provisional: pending the experimentation canon"
+analysis: {id: ix.v1.analysis.evaluate}
+verdict_form: three-way
+report: [question, design, estimates, failures, warrant, raw]
+guidance: |
+  Use evaluate when one thing must meet a threshold before it is relied on.
+  Decide the threshold before you run: the bound the primary metric must satisfy, with
+  its direction (`threshold: {op: ">=", value: 0.9}`).
+  Give exactly one subject. To ask which of two subjects is better, use compare.
+  A guardrail here is another absolute threshold, since there is no control to be within
+  a margin of.
+  What would falsify it: the interval of the primary lies on the wrong side of the
+  threshold. An interval that straddles it is inconclusive; more repeats or more probes
+  are the remedy, not a looser threshold.
