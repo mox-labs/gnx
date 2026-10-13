@@ -118,11 +118,10 @@ jobs:
       - name: capability standalone install
         run: just capabilities-standalone
 
-      # A smoke test, not a threshold: `ix run` exits 0 whatever it scores, so this proves
-      # the CLI, store, DAG and composition root wire up end to end. The scoring logic
-      # itself is asserted in ix/tests, where a wrong verdict fails a test.
-      - name: evals smoke (mock)
-        run: just evals
+      # Every lab experiment validates and plans through the installed CLI, so its genres
+      # and kinds resolve through their entry points. Nothing runs: ix has no `run`.
+      - name: lab experiments validate and plan
+        run: just lab
 
       - name: secret scan (full history)
         run: just secrets-all

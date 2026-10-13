@@ -41,13 +41,13 @@ plus a `bundles.yaml` entry.
 |---|---|---|
 | `hardline` | one port for every model family — local MLX, ollama, Gemini, Claude — tagged with the family that answered | [README](components/capabilities/hardline/README.md) · [SECURITY](components/capabilities/hardline/SECURITY.md) |
 | `matrix` | runs component DAGs with enforced reads, and composes agents from a definition plus a runtime | [README](components/capabilities/matrix/README.md) · [SECURITY](components/capabilities/matrix/SECURITY.md) |
-| `ix` | runs experiments — evals, benchmarks, QoS — on a native engine or Inspect AI | [README](components/capabilities/ix/README.md) · [SECURITY](components/capabilities/ix/SECURITY.md) |
+| `ix` | checks, plans and registers an experiment — an eval, a benchmark, a QoS comparison — written as one file with a genre; it does not run one | [README](components/capabilities/ix/README.md) · [SECURITY](components/capabilities/ix/SECURITY.md) |
 | `recon` | heterogeneous sources in, structured JSONL out | [SECURITY](components/capabilities/recon/SECURITY.md) |
 | `dao` | stands up and audits a project's agent organization | [SECURITY](components/capabilities/dao/SECURITY.md) |
 
 Each is `mypy --strict` clean, tested, and installable on its own from only its declared
 dependencies — `just ci` enforces all three. Each `SECURITY.md` names the package's trust
-boundaries and the findings already fixed — `matrix` and `ix` both execute things, and the
+boundaries and the findings already fixed — `matrix` executes things, and the
 boundary that isn't written down is the one nobody reviews.
 
 ## Stack placement
@@ -67,12 +67,12 @@ distribution surface, not the only possible one.
 just              # list every gate
 just check        # what a commit must pass (the pre-commit hook calls this)
 just ci           # the full gate, mirrored by .github/workflows/ci.yml
-just evals        # run the lab's experiments offline, on both engines
+just lab          # validate and plan the lab's experiments (ix runs nothing)
 ```
 
 One `justfile` is the single source of truth for gates, so a local check and the CI check
 cannot drift. See [CONTRIBUTING.md](CONTRIBUTING.md), and `lab/README.md` for how the
-experiments distinguish "the harness works" from "the catalog works".
+experiments state the catalog's claims as measurements.
 
 ## License
 
