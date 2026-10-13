@@ -1,6 +1,6 @@
 # Security — matrix
 
-matrix composes agents and runs flows of components. It holds no secrets of its own and opens no
+matrix composes agents and runs components. It holds no secrets of its own and opens no
 listening socket, but it is the package that **decides how much authority an agent session
 gets**. That makes its defaults and its config validation, not its code paths, the
 interesting surface.
@@ -47,11 +47,11 @@ there — see M-3, fixed.
 `setting_sources: []` is the hermetic setting — no ambient `~/.claude` or project plugin
 config leaks into the subprocess. Any evaluation that claims reproducibility should set it.
 
-### 3. Declared ports
+### 3. Declared kinds
 
-Each flow member receives `Inputs` holding only the values on the topics it bound, never the
-run's Construct, and an output that breaks its declared ports or its type's schema raises
-`ContractError`. This is a correctness boundary, not a trust boundary: a component is
+Each component receives `Inputs` holding only the rows of the kinds it requires, never the
+run's Construct, and a row of a kind it does not provide, or one that fails its kind's schema,
+raises `ContractError`. This is a correctness boundary, not a trust boundary: a component is
 in-process Python and can reach anything the process can.
 
 ## Findings
@@ -87,7 +87,7 @@ with that SDK version installed.
 - matrix does not sandbox agent sessions. Isolation is the caller's job — a container, a
   scratch `cwd`, or a definition with `tools: []`.
 - matrix does not redact agent output. An agent that reads a secret and prints it puts that
-  secret in an `Artifact` and an `AgentResponse`.
+  secret in an `AgentResponse`, which is recorded as a row and written to the run's store.
 - Entry-point discovery (`matrix.extensions`) imports every installed extension at
   composition. Installing a package is trusting it.
 

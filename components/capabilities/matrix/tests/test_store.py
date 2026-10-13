@@ -287,9 +287,11 @@ async def test_a_store_that_fails_fails_the_run_with_kind_store() -> None:
             "sense": Step(sense, requires=[TRIAL]),
         }
     )
+    # isolate would let the bystander go on; a run with no record does not go on. (The
+    # timeout turns "the store never failed, so nothing stopped the bystander" into a failure.)
     with pytest.raises(RunError) as e:
-        # isolate would let the bystander go on; a run with no record does not go on.
-        await Executor().run(wiring, store=store, limits=Limits(on_failure="isolate"))
+        async with asyncio.timeout(30):
+            await Executor().run(wiring, store=store, limits=Limits(on_failure="isolate"))
     run = e.value.run
     assert e.value.kind == "store" and e.value.component == "trials"
     assert isinstance(e.value.__cause__, StoreError) and caught == [e.value.__cause__]
