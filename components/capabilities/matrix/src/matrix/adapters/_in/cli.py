@@ -4,7 +4,8 @@
     matrix describe TYPE_URL [--json]       one extension: config schema, needs, effects
     matrix config [--tool T] [--sources] [--json]
                                             the merged config a tool would see, and its files
-    matrix check [--tool T] [--json]        compose runtimes and agents; call nothing
+    matrix check [--tool T] [--json]        compose runtimes and agents, wire the configured
+                                            components; call nothing
     matrix agents [--tool T] [--json]       the agents a config defines, with their runtimes
 
 Data goes to stdout, diagnostics to stderr. With ``--json``, every document carries a
@@ -97,11 +98,12 @@ def _check(args: argparse.Namespace) -> int:
         "runtimes": sorted(container.runtimes),
         "agents": sorted(container.agents),
         "observers": len(container.observers),
+        "components": list(container.wire().order()),
         "sources": list(config.sources),
     }
     text = (
-        f"ok: {len(container.runtimes)} runtimes, {len(container.agents)} agents compose "
-        "(nothing was called)"
+        f"ok: {len(container.runtimes)} runtimes, {len(container.agents)} agents compose, "
+        f"{len(config.matrix.components)} components wire (nothing was called)"
     )
     _emit(document, args.json, text)
     return EXIT_OK
@@ -148,7 +150,7 @@ def _parser() -> argparse.ArgumentParser:
     p.set_defaults(handler=_describe)
     for name, handler, help_text in (
         ("config", _config, "show the merged config and the files it came from"),
-        ("check", _check, "compose runtimes and agents without calling anything"),
+        ("check", _check, "compose runtimes and agents, wire components; call nothing"),
         ("agents", _agents, "list the agents a config defines"),
     ):
         p = add(name, help_text)

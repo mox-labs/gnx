@@ -1,7 +1,7 @@
-"""However a run ends, its members stop the same way and what they deferred is released.
+"""However a run ends, its components stop the same way and what they deferred is released.
 
 Every test here synchronises on events the components set, never on elapsed time: a bound
-(``grace_s``, ``cleanup_s``, ``deadline_s``) is only ever waited out against a member that
+(``grace_s``, ``cleanup_s``, ``deadline_s``) is only ever waited out against a component that
 would not have ended on its own.
 """
 
@@ -19,45 +19,42 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from matrix import (
+    ComponentLimits,
     ConfigError,
     Executor,
-    Flow,
     Inputs,
     Limits,
-    Member,
-    MemberLimits,
     RunCancelled,
+    RunContext,
     RunError,
-    compile_flow,
+    wire,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-TEXT = "acme.v1.text"
+A, B, C, D = "acme.v1.a", "acme.v1.b", "acme.v1.c", "acme.v1.d"
 
 
 class Step:
-    """A component whose body is the coroutine function it is given."""
+    """A component whose body is a coroutine function of its context; what the body returns
+    is one row of the kind the step provides."""
 
-    def __init__(self, body: Any, *, requires: bool = False) -> None:
-        self.requires: dict[str, Any] = {"in": TEXT} if requires else {}
-        self.provides = {"out": TEXT}
+    def __init__(self, body: Any, *, requires: Any = (), provides: str | None = None) -> None:
+        self.requires = frozenset(requires)
+        self.provides = frozenset([provides] if provides else [])
         self._body = body
 
-    async def run(self, inputs: Inputs) -> dict[str, Any]:
-        return {"out": await self._body(inputs.context)}
-
-
-def flow_of(*members: Member) -> Any:
-    return compile_flow(Flow("f", members))
+    async def run(self, inputs: Inputs, ctx: RunContext) -> Any:
+        row = await self._body(ctx)
+        return {kind: row for kind in self.provides}
 
 
 async def _boom(ctx: Any) -> str:
     raise RuntimeError("kaput")
 
 
-async def test_releases_run_after_a_member_raises_last_registered_first() -> None:
+async def test_releases_run_after_a_component_raises_last_registered_first() -> None:
     released: list[str] = []
 
     async def provision(ctx: Any) -> str:
@@ -73,25 +70,27 @@ async def test_releases_run_after_a_member_raises_last_registered_first() -> Non
         ctx.defer(lambda: released.append("third"))
         raise RuntimeError("kaput")
 
-    compiled = flow_of(
-        Member("provision", Step(provision), {"out": "h"}),
-        Member("use", Step(fail_holding_a_resource, requires=True), {"in": "h", "out": "u"}),
-        Member("teardown", Step(_boom, requires=True), {"in": "u"}),
+    wiring = wire(
+        {
+            "provision": Step(provision, provides=A),
+            "use": Step(fail_holding_a_resource, requires=[A], provides=B),
+            "teardown": Step(_boom, requires=[B]),
+        }
     )
     with pytest.raises(RunError) as e:
-        await Executor().run(compiled)
+        await Executor().run(wiring)
     run = e.value.run
     assert released == ["third", "second", "first"]
     assert run.releases == [
-        {"member": "use", "status": "released", "error": None},
-        {"member": "provision", "status": "released", "error": None},
-        {"member": "provision", "status": "released", "error": None},
+        {"component": "use", "status": "released", "error": None},
+        {"component": "provision", "status": "released", "error": None},
+        {"component": "provision", "status": "released", "error": None},
     ]
-    assert run.status == "failed" and run.outputs("h") == ("handle",)
-    assert run.members["provision"]["status"] == "completed"
-    assert run.members["use"]["status"] == "failed"
-    # A teardown written as a member is skipped exactly when it is needed; a release is not.
-    assert run.members["teardown"] == {"status": "skipped", "reason": "policy: fast"}
+    assert run.status == "failed" and run.rows(A) == ("handle",)
+    assert run.components["provision"]["status"] == "completed"
+    assert run.components["use"]["status"] == "failed"
+    # A teardown written as a component is skipped exactly when it is needed; a release is not.
+    assert run.components["teardown"] == {"status": "skipped", "reason": "policy: fast"}
 
 
 async def test_releases_run_on_success_too() -> None:
@@ -101,12 +100,12 @@ async def test_releases_run_on_success_too() -> None:
         ctx.defer(lambda: released.append("x"))
         return "v"
 
-    run = await Executor().run(flow_of(Member("a", Step(body), {"out": "t"})))
+    run = await Executor().run(wire({"a": Step(body, provides=A)}))
     assert run.status == "completed" and released == ["x"]
-    assert run.members["a"]["status"] == "completed"
+    assert run.components["a"]["status"] == "completed"
 
 
-async def test_a_failure_asks_running_members_to_stop_and_keeps_what_they_return() -> None:
+async def test_a_failure_asks_running_components_to_stop_and_keeps_what_they_return() -> None:
     running = asyncio.Event()
 
     async def cooperative(ctx: Any) -> str:
@@ -118,23 +117,25 @@ async def test_a_failure_asks_running_members_to_stop_and_keeps_what_they_return
         await running.wait()
         raise RuntimeError("kaput")
 
-    compiled = flow_of(
-        Member("sampler", Step(cooperative), {"out": "s"}),
-        Member("bad", Step(fails_once_its_sibling_runs), {"out": "b"}),
-        Member("after", Step(_boom, requires=True), {"in": "s"}),
+    wiring = wire(
+        {
+            "sampler": Step(cooperative, provides=A),
+            "bad": Step(fails_once_its_sibling_runs, provides=B),
+            "after": Step(_boom, requires=[A]),
+        }
     )
     with pytest.raises(RunError) as e:
-        await Executor().run(compiled, limits=Limits(concurrency=2))
+        await Executor().run(wiring)
     run = e.value.run
-    assert e.value.member == "bad"
-    assert run.members["sampler"]["status"] == "completed"
-    assert run.members["sampler"]["reason"] == "run_failed"
-    assert run.outputs("s") == ("partial",)
-    assert run.members["after"] == {"status": "skipped", "reason": "policy: fast"}
-    assert [f["member"] for f in run.failures] == ["bad"]
+    assert e.value.component == "bad"
+    assert run.components["sampler"]["status"] == "completed"
+    assert run.components["sampler"]["reason"] == "run_failed"
+    assert run.rows(A) == ("partial",)
+    assert run.components["after"] == {"status": "skipped", "reason": "policy: fast"}
+    assert [f["component"] for f in run.failures] == ["bad"]
 
 
-async def test_a_member_that_ignores_the_stop_request_is_cancelled_after_the_grace() -> None:
+async def test_a_component_that_ignores_the_stop_request_is_cancelled_after_the_grace() -> None:
     running = asyncio.Event()
     never = asyncio.Event()
     unwound: list[str] = []
@@ -151,44 +152,46 @@ async def test_a_member_that_ignores_the_stop_request_is_cancelled_after_the_gra
         await running.wait()
         raise RuntimeError("kaput")
 
-    compiled = flow_of(Member("deaf", Step(deaf), {"out": "d"}), Member("bad", Step(fails)))
+    wiring = wire({"deaf": Step(deaf, provides=A), "bad": Step(fails)})
     with pytest.raises(RunError) as e:
-        await Executor().run(compiled, limits=Limits(concurrency=2, grace_s=0))
+        await Executor().run(wiring, limits=Limits(grace_s=0))
     run = e.value.run
     assert unwound == ["finally"]
-    assert run.members["deaf"]["status"] == "cancelled"
-    assert run.members["deaf"]["reason"] == "run_failed"
-    assert "d" not in run.construct
+    assert run.components["deaf"]["status"] == "cancelled"
+    assert run.components["deaf"]["reason"] == "run_failed"
+    assert A not in run.construct
 
 
-async def test_isolate_lets_independent_members_finish_and_skips_only_dependents() -> None:
+async def test_isolate_lets_independent_components_finish_and_skips_only_dependents() -> None:
     async def ok(ctx: Any) -> str:
         return "fine"
 
-    compiled = flow_of(
-        Member("bad", Step(_boom), {"out": "b"}),
-        Member("needs-bad", Step(ok, requires=True), {"in": "b", "out": "nb"}),
-        Member("needs-that", Step(ok, requires=True), {"in": "nb"}),
-        Member("free", Step(ok), {"out": "f"}),
-        Member("needs-free", Step(ok, requires=True), {"in": "f", "out": "nf"}),
+    wiring = wire(
+        {
+            "bad": Step(_boom, provides=A),
+            "needs-bad": Step(ok, requires=[A], provides=B),
+            "needs-that": Step(ok, requires=[B]),
+            "free": Step(ok, provides=C),
+            "needs-free": Step(ok, requires=[C], provides=D),
+        }
     )
     with pytest.raises(RunError) as e:
-        await Executor().run(compiled, limits=Limits(on_failure="isolate"))
+        await Executor().run(wiring, limits=Limits(on_failure="isolate"))
     run = e.value.run
     assert run.status == "failed"
-    assert {a: m["status"] for a, m in run.members.items()} == {
+    assert {name: c["status"] for name, c in run.components.items()} == {
         "bad": "failed",
         "needs-bad": "skipped",
         "needs-that": "skipped",
         "free": "completed",
         "needs-free": "completed",
     }
-    assert run.members["needs-bad"]["reason"] == "upstream: bad"
-    assert run.members["needs-that"]["reason"] == "upstream: needs-bad"
-    assert run.outputs("nf") == ("fine",)
+    assert run.components["needs-bad"]["reason"] == "upstream: bad"
+    assert run.components["needs-that"]["reason"] == "upstream: needs-bad"
+    assert run.rows(D) == ("fine",)
 
 
-async def test_cancelling_mid_member_stops_it_releases_and_keeps_the_partial_run() -> None:
+async def test_cancelling_mid_component_stops_it_releases_and_keeps_the_partial_run() -> None:
     running = asyncio.Event()
     never = asyncio.Event()
     trail: list[str] = []
@@ -198,6 +201,7 @@ async def test_cancelling_mid_member_stops_it_releases_and_keeps_the_partial_run
         return "kept"
 
     async def hangs(ctx: Any) -> str:
+        ctx.provide(B, "handed over before the cancel")
         running.set()
         try:
             await never.wait()
@@ -205,12 +209,14 @@ async def test_cancelling_mid_member_stops_it_releases_and_keeps_the_partial_run
             trail.append("unwound")
         return "unreachable"
 
-    compiled = flow_of(
-        Member("first", Step(first), {"out": "a"}),
-        Member("hangs", Step(hangs, requires=True), {"in": "a", "out": "b"}),
-        Member("never-starts", Step(_boom, requires=True), {"in": "b"}),
+    wiring = wire(
+        {
+            "first": Step(first, provides=A),
+            "hangs": Step(hangs, requires=[A], provides=B),
+            "never-starts": Step(_boom, requires=[B]),
+        }
     )
-    task = asyncio.ensure_future(Executor().run(compiled, limits=Limits(grace_s=0)))
+    task = asyncio.ensure_future(Executor().run(wiring, limits=Limits(grace_s=0)))
     await running.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError) as e:
@@ -220,14 +226,15 @@ async def test_cancelling_mid_member_stops_it_releases_and_keeps_the_partial_run
     assert task.cancelled()  # still a cancellation to asyncio
     assert trail == ["unwound", "released"]
     assert run.status == "cancelled" and run.ended is not None
-    assert run.outputs("a") == ("kept",)
-    assert run.members["hangs"]["status"] == "cancelled"
-    assert run.members["hangs"]["reason"] == "cancelled"
-    assert run.members["never-starts"] == {"status": "skipped", "reason": "cancelled"}
+    assert run.rows(A) == ("kept",)
+    assert run.rows(B) == ("handed over before the cancel",)
+    assert run.components["hangs"]["status"] == "cancelled"
+    assert run.components["hangs"]["reason"] == "cancelled"
+    assert run.components["never-starts"] == {"status": "skipped", "reason": "cancelled"}
     assert run.failures == []
 
 
-async def test_a_cancelled_member_that_returns_within_the_grace_keeps_its_output() -> None:
+async def test_a_cancelled_component_that_returns_within_the_grace_keeps_its_rows() -> None:
     running = asyncio.Event()
 
     async def cooperative(ctx: Any) -> str:
@@ -235,25 +242,25 @@ async def test_a_cancelled_member_that_returns_within_the_grace_keeps_its_output
         await ctx.stopping.wait()
         return "what I had"
 
-    task = asyncio.ensure_future(
-        Executor().run(flow_of(Member("m", Step(cooperative), {"out": "t"})))
-    )
+    task = asyncio.ensure_future(Executor().run(wire({"m": Step(cooperative, provides=A)})))
     await running.wait()
     task.cancel()
     with pytest.raises(RunCancelled) as e:
         await task
-    assert e.value.run.outputs("t") == ("what I had",)
-    assert e.value.run.members["m"]["status"] == "completed"
+    assert e.value.run.rows(A) == ("what I had",)
+    assert e.value.run.components["m"]["status"] == "completed"
     assert e.value.run.status == "cancelled"
 
 
-async def test_a_member_that_swallows_cancellation_is_abandoned_and_reported() -> None:
+async def test_a_component_that_swallows_cancellation_is_abandoned_and_reported() -> None:
     running = asyncio.Event()
     let_go = asyncio.Event()
     swallowed = asyncio.Event()
     released: list[str] = []
+    kept: list[Any] = []
 
     async def stubborn(ctx: Any) -> str:
+        kept.append(ctx)
         ctx.defer(lambda: released.append("released"))
         running.set()
         while not let_go.is_set():
@@ -263,8 +270,8 @@ async def test_a_member_that_swallows_cancellation_is_abandoned_and_reported() -
                 swallowed.set()
         return "too late"
 
-    compiled = flow_of(Member("stubborn", Step(stubborn), {"out": "t"}))
-    task = asyncio.ensure_future(Executor().run(compiled, limits=Limits(grace_s=0, cleanup_s=0.01)))
+    wiring = wire({"stubborn": Step(stubborn, provides=A)})
+    task = asyncio.ensure_future(Executor().run(wiring, limits=Limits(grace_s=0, cleanup_s=0.01)))
     await running.wait()
     task.cancel()
     with pytest.raises(RunCancelled) as e:
@@ -272,16 +279,17 @@ async def test_a_member_that_swallows_cancellation_is_abandoned_and_reported() -
     run = e.value.run
     try:
         assert swallowed.is_set() and not let_go.is_set()  # it is still running
-        assert run.members["stubborn"]["status"] == "cancelled"
-        assert run.members["stubborn"]["abandoned"] is True
+        assert run.components["stubborn"]["status"] == "cancelled"
+        assert run.components["stubborn"]["abandoned"] is True
         assert released == ["released"]  # the run still ended, and still released
-        assert "t" not in run.construct
+        kept[0].provide(A, "after the run ended")  # and it can no longer write to the record
+        assert A not in run.construct
     finally:
         let_go.set()
         await asyncio.sleep(0)
 
 
-async def test_a_member_past_its_deadline_that_swallows_cancellation_fails_abandoned() -> None:
+async def test_a_component_past_its_deadline_that_swallows_cancellation_fails_abandoned() -> None:
     let_go = asyncio.Event()
 
     async def stubborn(ctx: Any) -> str:
@@ -290,12 +298,12 @@ async def test_a_member_past_its_deadline_that_swallows_cancellation_fails_aband
                 await let_go.wait()
         return "too late"
 
-    compiled = flow_of(Member("stubborn", Step(stubborn), {"out": "t"}))
+    wiring = wire({"stubborn": Step(stubborn, provides=A)})
     limits = Limits(deadline_s=0.01, grace_s=0, cleanup_s=0.01)
     try:
         with pytest.raises(RunError, match="timed out after 0.01s") as e:
-            await Executor().run(compiled, limits=limits)
-        record = e.value.run.members["stubborn"]
+            await Executor().run(wiring, limits=limits)
+        record = e.value.run.components["stubborn"]
         assert (record["status"], record["reason"], record["abandoned"]) == (
             "failed",
             "deadline",
@@ -306,7 +314,7 @@ async def test_a_member_past_its_deadline_that_swallows_cancellation_fails_aband
         await asyncio.sleep(0)
 
 
-async def test_each_member_has_its_own_deadline() -> None:
+async def test_each_component_has_its_own_deadline() -> None:
     never = asyncio.Event()
     proceed = asyncio.Event()
 
@@ -324,25 +332,27 @@ async def test_each_member_has_its_own_deadline() -> None:
         proceed.set()
         return "x"
 
-    compiled = flow_of(
-        Member("hangs", Step(hangs), {"out": "h"}),
-        Member("unbounded", Step(unbounded), {"out": "u"}),
-        Member("timed-out-by-now", Step(after_the_timeout), {"out": "o"}),
+    wiring = wire(
+        {
+            "hangs": Step(hangs, provides=A),
+            "unbounded": Step(unbounded, provides=B),
+            "timed-out-by-now": Step(after_the_timeout, provides=C),
+        }
     )
     limits = Limits(
-        concurrency=2,  # the third member starts only once `hangs` has timed out
+        concurrency=2,  # the third component starts only once `hangs` has timed out
         on_failure="isolate",
         grace_s=0,
-        members={"hangs": MemberLimits(deadline_s=0.01)},
+        components={"hangs": ComponentLimits(deadline_s=0.01)},
     )
     with pytest.raises(RunError, match="'hangs' timed out after 0.01s") as e:
-        await Executor().run(compiled, limits=limits)
+        await Executor().run(wiring, limits=limits)
     run = e.value.run
-    assert run.members["hangs"]["status"] == "failed"
-    assert run.members["hangs"]["reason"] == "deadline"
+    assert run.components["hangs"]["status"] == "failed"
+    assert run.components["hangs"]["reason"] == "deadline"
     # The sibling with no deadline outlived the one that timed out, and was left alone.
-    assert run.members["unbounded"]["status"] == "completed"
-    assert run.outputs("u") == ("done",)
+    assert run.components["unbounded"]["status"] == "completed"
+    assert run.rows(B) == ("done",)
 
 
 async def test_a_deadline_is_a_stop_request_first_and_what_is_returned_is_kept() -> None:
@@ -350,18 +360,19 @@ async def test_a_deadline_is_a_stop_request_first_and_what_is_returned_is_kept()
         await ctx.stopping.wait()
         return "so far"
 
-    compiled = flow_of(Member("m", Step(returns_what_it_has), {"out": "t"}))
+    wiring = wire({"m": Step(returns_what_it_has, provides=A)})
     with pytest.raises(RunError, match="timed out") as e:
-        await Executor().run(compiled, limits=Limits(deadline_s=0.01))
+        await Executor().run(wiring, limits=Limits(deadline_s=0.01))
     run = e.value.run
-    assert run.members["m"]["status"] == "failed" and run.members["m"]["reason"] == "deadline"
-    assert run.outputs("t") == ("so far",)
+    assert run.components["m"]["status"] == "failed"
+    assert run.components["m"]["reason"] == "deadline"
+    assert run.rows(A) == ("so far",)
 
 
-async def test_limits_naming_an_unknown_member_are_refused() -> None:
-    compiled = flow_of(Member("a", Step(_boom)))
-    with pytest.raises(ConfigError, match="not in the flow"):
-        await Executor().run(compiled, limits=Limits(members={"b": MemberLimits(deadline_s=1)}))
+async def test_limits_naming_an_unknown_component_are_refused() -> None:
+    wiring = wire({"a": Step(_boom)})
+    with pytest.raises(ConfigError, match="not in the run"):
+        await Executor().run(wiring, limits=Limits(components={"b": ComponentLimits(deadline_s=1)}))
 
 
 async def test_a_release_that_raises_or_overruns_is_reported_and_the_rest_still_run() -> None:
@@ -381,20 +392,18 @@ async def test_a_release_that_raises_or_overruns_is_reported_and_the_rest_still_
         ctx.defer(lambda: released.append("last"))
         return "v"
 
-    run = await Executor().run(
-        flow_of(Member("a", Step(body), {"out": "t"})), limits=Limits(cleanup_s=0.01)
-    )
+    run = await Executor().run(wire({"a": Step(body, provides=A)}), limits=Limits(cleanup_s=0.01))
     assert released == ["last", "first"]
     assert run.status == "completed"  # a failed release is reported, not a failed run
     assert run.releases == [
-        {"member": "a", "status": "released", "error": None},
-        {"member": "a", "status": "abandoned", "error": "still running after 0.01s"},
-        {"member": "a", "status": "failed", "error": "OSError: device busy"},
-        {"member": "a", "status": "released", "error": None},
+        {"component": "a", "status": "released", "error": None},
+        {"component": "a", "status": "abandoned", "error": "still running after 0.01s"},
+        {"component": "a", "status": "failed", "error": "OSError: device busy"},
+        {"component": "a", "status": "released", "error": None},
     ]
 
 
-async def test_a_release_deferred_after_the_member_ended_is_ignored(
+async def test_a_release_deferred_after_the_component_ended_is_ignored(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     kept: list[Any] = []
@@ -408,11 +417,13 @@ async def test_a_release_deferred_after_the_member_ended_is_ignored(
         kept[0].defer(lambda: called.append("late"))
         return "v"
 
-    compiled = flow_of(
-        Member("a", Step(leaks_its_context), {"out": "t"}),
-        Member("b", Step(uses_the_leaked_context, requires=True), {"in": "t"}),
+    wiring = wire(
+        {
+            "a": Step(leaks_its_context, provides=A),
+            "b": Step(uses_the_leaked_context, requires=[A]),
+        }
     )
-    run = await Executor().run(compiled)
+    run = await Executor().run(wiring)
     assert called == [] and run.releases == []
     assert "after it ended" in caplog.text
 
@@ -420,25 +431,24 @@ async def test_a_release_deferred_after_the_member_ended_is_ignored(
 _SIGNALLED = """
     import asyncio, sys
     from pathlib import Path
-    from matrix import Executor, Flow, Member, RunCancelled, compile_flow
+    from matrix import Executor, Limits, RunCancelled, wire
 
     marker = Path(sys.argv[1])
 
     class Holds:
-        requires = {}
-        provides = {"out": "acme.v1.text"}
+        requires = ()
+        provides = ("acme.v1.a",)
 
-        async def run(self, inputs):
-            inputs.context.defer(lambda: marker.write_text("released"))
+        async def run(self, inputs, ctx):
+            ctx.defer(lambda: marker.write_text("released"))
             print("ready", flush=True)
             await asyncio.Event().wait()
 
     async def main():
-        flow = compile_flow(Flow("f", (Member("holds", Holds(), {"out": "t"}),)))
         try:
-            await Executor().run(flow)
+            await Executor().run(wire({"holds": Holds()}), limits=Limits(grace_s=0))
         except RunCancelled as e:
-            print(e.run.status, e.run.members["holds"]["status"], flush=True)
+            print(e.run.status, e.run.components["holds"]["status"], flush=True)
             raise
 
     try:
@@ -450,7 +460,7 @@ _SIGNALLED = """
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
-def test_a_signalled_run_stops_its_members_and_releases(
+def test_a_signalled_run_stops_its_components_and_releases(
     tmp_path: Path, sig: signal.Signals
 ) -> None:
     marker = tmp_path / "marker"
@@ -464,7 +474,7 @@ def test_a_signalled_run_stops_its_members_and_releases(
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
     ) as proc:
         assert proc.stdout is not None
-        assert proc.stdout.readline().strip() == "ready"  # the member holds its resource
+        assert proc.stdout.readline().strip() == "ready"  # the component holds its resource
         proc.send_signal(sig)
         out, err = proc.communicate(timeout=60)
     assert out.strip() == "cancelled cancelled", err

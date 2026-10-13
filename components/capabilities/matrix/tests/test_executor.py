@@ -1,4 +1,4 @@
-"""Running flows: inputs in, a Run out, every value recorded, failures keep what was done."""
+"""Running components: inputs in, a Run out, every row recorded, a component held to its kinds."""
 
 from __future__ import annotations
 
@@ -13,203 +13,241 @@ from matrix import (
     ConfigError,
     ContractError,
     Executor,
-    Flow,
     Inputs,
     Limits,
-    Member,
-    Port,
     RecordingObserver,
+    RunContext,
     RunError,
-    compile_flow,
+    wire,
 )
 
-TEXT = "acme.v1.text"
-SCORE = "acme.v1.score"
+TEXT, UPPER, SCORE, OTHER = "acme.v1.text", "acme.v1.upper", "acme.v1.score", "acme.v1.other"
 
 
-class Upper:
-    requires = {"text": TEXT}
-    provides = {"upper": TEXT}
+class Step:
+    """A component whose body is the coroutine function it is given."""
 
-    def __init__(self) -> None:
+    def __init__(self, body: Any, requires: Any = (), provides: Any = ()) -> None:
+        self.requires = frozenset(requires)
+        self.provides = frozenset(provides)
+        self._body = body
         self.seen: list[Inputs] = []
 
-    async def run(self, inputs: Inputs) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: RunContext) -> Any:
         self.seen.append(inputs)
-        return {"upper": inputs["text"].upper()}
+        return await self._body(inputs, ctx)
 
 
-class Emit:
-    requires: dict[str, Any] = {}
+def emits(kind: str, value: Any) -> Step:
+    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+        return {kind: value}
 
-    def __init__(self, value: Any, delay: float = 0.0, port: str = "out", type_url: str = TEXT):
-        self.provides = {port: type_url}
-        self._value, self._delay, self._port = value, delay, port
-
-    async def run(self, inputs: Inputs) -> dict[str, Any]:
-        await asyncio.sleep(self._delay)
-        return {self._port: self._value}
+    return Step(body, provides=[kind])
 
 
-class Collect:
-    requires = {"all": Port(TEXT, many=True)}
-    provides = {"joined": TEXT}
-
-    async def run(self, inputs: Inputs) -> dict[str, Any]:
-        return {"joined": "+".join(inputs["all"])}
+async def upper(inputs: Inputs, ctx: RunContext) -> Any:
+    return {UPPER: [text.upper() for text in inputs[TEXT]]}
 
 
-class Boom:
-    requires: dict[str, Any] = {}
-    provides = {"out": TEXT}
-
-    async def run(self, inputs: Inputs) -> dict[str, Any]:
-        raise RuntimeError("kaput")
-
-
-async def test_inputs_flow_through_and_land_in_the_construct() -> None:
-    upper = Upper()
-    compiled = compile_flow(
-        Flow(
-            "upper",
-            (Member("up", upper, {"text": "q"}), Member("e", Emit("x"), {"out": "r"})),
-            inputs={"q": TEXT},
-        )
-    )
-    run = await Executor().run(compiled, {"q": "hello"})
+async def test_inputs_reach_the_component_and_rows_land_in_the_construct() -> None:
+    step = Step(upper, requires=[TEXT], provides=[UPPER])
+    wiring = wire({"up": step}, inputs=[TEXT])
+    run = await Executor().run(wiring, {TEXT: ["hello", "world"]})
     assert run.status == "completed" and run.ended is not None
-    assert run.outputs("q") == ("hello",)
-    assert run.outputs("r") == ("x",)
-    assert run.construct.last("q").producer == "$input"
-    seen = upper.seen[0]
-    assert dict(seen) == {"text": "hello"}  # only what it bound
-    assert seen.context.member == "up" and seen.context.run_id == run.run_id
+    assert run.rows(TEXT) == ("hello", "world")  # rows are the records, nothing around them
+    assert run.rows(UPPER) == ("HELLO", "WORLD")
+    assert [(e.kind, e.row, e.component) for e in run.construct.ledger] == [
+        (TEXT, 0, "$input"),
+        (TEXT, 1, "$input"),
+        (UPPER, 0, "up"),
+        (UPPER, 1, "up"),
+    ]
 
 
-async def test_provides_bound_to_topics_are_recorded_with_provenance() -> None:
-    compiled = compile_flow(
-        Flow(
-            "two",
-            (
-                Member("src", Emit("abc"), {"out": "t"}),
-                Member("up", Upper(), {"text": "t"}),
-            ),
-        )
+async def test_a_component_sees_only_the_kinds_it_requires() -> None:
+    reader = Step(upper, requires=[TEXT], provides=[UPPER])
+    wiring = wire(
+        {"secret": emits(OTHER, "not for the reader"), "reader": reader}, inputs=[TEXT, SCORE]
     )
-    run = await Executor().run(compiled)
-    artifact = run.construct.last("t")
-    assert (artifact.producer, artifact.port, artifact.type_url) == ("src", "out", TEXT)
-    assert [a.topic for a in run.construct.ledger] == ["t"]  # Upper's output was not bound
+    await Executor().run(wiring, {TEXT: "hi", SCORE: 1})
+    (seen,) = reader.seen
+    assert dict(seen) == {TEXT: ("hi",)}  # not SCORE, not OTHER, not the Construct
+    with pytest.raises(KeyError, match="is not a kind this component requires"):
+        seen[OTHER]
+    assert seen.one(TEXT) == "hi"
 
 
-async def test_fan_in_delivers_every_value_in_declaration_order() -> None:
-    compiled = compile_flow(
-        Flow(
-            "fan",
-            (
-                Member("slow", Emit("a", delay=0.02), {"out": "t"}),
-                Member("fast", Emit("b"), {"out": "t"}),
-                Member("c", Collect(), {"all": "t", "joined": "j"}),
-            ),
-        )
+async def test_a_run_input_is_one_row_or_a_list_of_rows() -> None:
+    reader = Step(upper, requires=[TEXT], provides=[UPPER])
+    one = await Executor().run(wire({"r": reader}, inputs=[TEXT]), {TEXT: "a"})
+    many = await Executor().run(wire({"r": reader}, inputs=[TEXT]), {TEXT: ("a", "b")})
+    none = await Executor().run(wire({"r": reader}, inputs=[TEXT]), {TEXT: []})
+    assert (one.rows(UPPER), many.rows(UPPER), none.rows(UPPER)) == (("A",), ("A", "B"), ())
+
+
+async def test_a_component_starts_when_what_it_requires_is_ready_not_before() -> None:
+    order: list[str] = []
+    gate = asyncio.Event()
+    independent_ran = asyncio.Event()
+
+    async def slow(inputs: Inputs, ctx: RunContext) -> Any:
+        order.append("slow starts")
+        await independent_ran.wait()  # it can only finish once its neighbour has run
+        await gate.wait()
+        order.append("slow ends")
+        return {TEXT: "from slow"}
+
+    async def independent(inputs: Inputs, ctx: RunContext) -> Any:
+        order.append("independent runs")
+        independent_ran.set()
+        return {OTHER: "x"}
+
+    async def after_independent(inputs: Inputs, ctx: RunContext) -> Any:
+        order.append("its dependent runs")
+        gate.set()  # which is what lets the slow one finish
+        return None
+
+    async def after_slow(inputs: Inputs, ctx: RunContext) -> Any:
+        order.append(f"reader sees {inputs.one(TEXT)}")
+        return None
+
+    wiring = wire(
+        {
+            "after-slow": Step(after_slow, requires=[TEXT]),
+            "slow": Step(slow, provides=[TEXT]),
+            "after-independent": Step(after_independent, requires=[OTHER]),
+            "independent": Step(independent, provides=[OTHER]),
+        }
     )
-    run = await Executor().run(compiled, limits=Limits(concurrency=2))
-    assert run.outputs("j") == ("a+b",)  # declaration order, not finishing order
-    assert [a.producer for a in run.construct.rows("t")] == ["slow", "fast"]
+    async with asyncio.timeout(30):  # scheduling by anything but readiness deadlocks here
+        run = await Executor().run(wiring)
+    assert run.status == "completed"
+    # A component two steps from the start ran while an unrelated slow one was still going,
+    # and nothing that requires the slow one's rows started until it had finished.
+    assert order == [
+        "slow starts",
+        "independent runs",
+        "its dependent runs",
+        "slow ends",
+        "reader sees from slow",
+    ]
 
 
-async def test_a_compiled_flow_runs_again_with_new_inputs() -> None:
-    compiled = compile_flow(Flow("u", (Member("up", Upper(), {"text": "q"}),), inputs={"q": TEXT}))
+async def test_concurrency_caps_how_many_run_at_once() -> None:
+    running = 0
+    most = 0
+
+    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+        nonlocal running, most
+        running += 1
+        most = max(most, running)
+        await asyncio.sleep(0)
+        running -= 1
+
+    parts = {f"p{i}": Step(body) for i in range(5)}
+    await Executor().run(wire(parts), limits=Limits(concurrency=2))
+    assert most == 2
+    most = 0
+    await Executor().run(wire(parts))
+    assert most == 5
+
+
+async def test_wiring_runs_again_with_new_inputs() -> None:
+    wiring = wire({"up": Step(upper, requires=[TEXT], provides=[UPPER])}, inputs=[TEXT])
     executor = Executor()
-    first = await executor.run(compiled, {"q": "a"})
-    second = await executor.run(compiled, {"q": "b"})
+    first = await executor.run(wiring, {TEXT: "a"})
+    second = await executor.run(wiring, {TEXT: "b"})
     assert first.run_id != second.run_id
-    assert (first.outputs("q"), second.outputs("q")) == (("a",), ("b",))
+    assert (first.rows(UPPER), second.rows(UPPER)) == (("A",), ("B",))
 
 
 @pytest.mark.parametrize(
     ("given", "says"),
-    [({}, "missing inputs ['q']"), ({"q": "x", "z": 1}, "unknown inputs ['z']")],
+    [({}, "missing inputs ['acme.v1.text']"), ({TEXT: "x", SCORE: 1}, "unknown inputs")],
 )
 async def test_inputs_must_match_the_declaration(given: dict[str, Any], says: str) -> None:
-    compiled = compile_flow(Flow("u", (Member("up", Upper(), {"text": "q"}),), inputs={"q": TEXT}))
+    wiring = wire({"up": Step(upper, requires=[TEXT], provides=[UPPER])}, inputs=[TEXT])
     with pytest.raises(ConfigError) as e:
-        await Executor().run(compiled, given)
+        await Executor().run(wiring, given)
     assert says in str(e.value)
 
 
-async def test_undeclared_or_missing_outputs_break_the_contract() -> None:
-    class Wrong:
-        requires: dict[str, Any] = {}
-        provides = {"a": TEXT, "b": TEXT}
+async def test_a_row_of_a_kind_it_does_not_provide_breaks_the_contract() -> None:
+    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+        return {TEXT: "x", OTHER: "y"}
 
-        async def run(self, inputs: Inputs) -> dict[str, Any]:
-            return {"a": "x", "c": "y"}
-
-    compiled = compile_flow(Flow("w", (Member("w", Wrong(), {"a": "t"}),)))
     with pytest.raises(RunError) as e:
-        await Executor().run(compiled)
-    assert e.value.kind == "contract"
-    assert "undeclared ['c']" in str(e.value) and "missing ['b']" in str(e.value)
+        await Executor().run(wire({"w": Step(body, provides=[TEXT])}))
+    assert e.value.kind == "contract" and e.value.component == "w"
+    assert "returned rows of ['acme.v1.other'], which it does not provide" in str(e.value)
+    assert e.value.run.rows(TEXT) == ()  # nothing from a broken return is recorded
 
 
-async def test_returning_a_non_mapping_breaks_the_contract() -> None:
-    class Bare:
-        requires: dict[str, Any] = {}
-        provides = {"a": TEXT}
-
-        async def run(self, inputs: Inputs) -> Any:
-            return "x"
+async def test_returning_something_that_is_not_a_mapping_breaks_the_contract() -> None:
+    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+        return "x"
 
     with pytest.raises(RunError, match="returned str"):
-        await Executor().run(compile_flow(Flow("b", (Member("b", Bare()),))))
+        await Executor().run(wire({"b": Step(body, provides=[TEXT])}))
 
 
-async def test_values_validate_against_registered_payload_schemas() -> None:
+async def test_a_component_may_return_nothing() -> None:
+    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+        return None
+
+    run = await Executor().run(wire({"quiet": Step(body, provides=[TEXT])}))
+    assert run.status == "completed" and run.rows(TEXT) == ()
+
+
+async def test_rows_validate_against_the_kinds_registered_schema() -> None:
     class Score(BaseModel):
         value: float
 
-    compiled = compile_flow(
-        Flow("s", (Member("s", Emit({"value": "high"}, type_url=SCORE), {"out": "t"}),)),
-        schemas={SCORE: Score},
-    )
+    bad = wire({"s": emits(SCORE, [{"value": 1.0}, {"value": "high"}])}, schemas={SCORE: Score})
     with pytest.raises(RunError) as e:
-        await Executor().run(compiled)
+        await Executor().run(bad)
     assert isinstance(e.value.__cause__, ContractError)
     assert "not a valid acme.v1.score" in str(e.value)
+    assert e.value.run.rows(SCORE) == ()  # every row is checked before any is recorded
+    good = wire({"s": emits(SCORE, Score(value=2.0))}, schemas={SCORE: Score})
+    assert (await Executor().run(good)).rows(SCORE) == (Score(value=2.0),)
+    with pytest.raises(ContractError, match="input 'acme.v1.score'"):
+        await Executor().run(wire({}, inputs=[SCORE], schemas={SCORE: Score}), {SCORE: {}})
 
 
-async def test_a_failure_keeps_the_partial_run_and_finished_siblings() -> None:
-    compiled = compile_flow(
-        Flow(
-            "f",
-            (
-                Member("ok", Emit("kept"), {"out": "t"}),
-                Member("bad", Boom(), {"out": "u"}),
-                Member("later", Upper(), {"text": "t"}),
-            ),
-        )
+async def test_a_failure_keeps_the_partial_run() -> None:
+    async def boom(inputs: Inputs, ctx: RunContext) -> Any:
+        raise RuntimeError("kaput")
+
+    wiring = wire(
+        {
+            "ok": emits(TEXT, "kept"),
+            "bad": Step(boom, requires=[TEXT], provides=[OTHER]),
+            "later": Step(upper, requires=[TEXT, OTHER]),
+        }
     )
     with pytest.raises(RunError) as e:
-        await Executor().run(compiled)
+        await Executor().run(wiring)
     run = e.value.run
-    assert run.status == "failed" and e.value.member == "bad"
-    assert run.outputs("t") == ("kept",)  # the sibling's work was not lost
+    assert run.status == "failed" and e.value.component == "bad"
+    assert run.rows(TEXT) == ("kept",)
     assert run.failures == [
         {
-            "member": "bad",
+            "component": "bad",
             "kind": "component",
-            "message": "member 'bad' failed: RuntimeError: kaput",
+            "message": "component 'bad' failed: RuntimeError: kaput",
         }
     ]
     assert isinstance(e.value.__cause__, ComponentError)
-    assert e.value.kind == "component"
+    assert e.value.kind == "component" and e.value.construct is run.construct
 
 
-async def test_member_timeout_is_a_component_failure_naming_it() -> None:
-    compiled = compile_flow(Flow("t", (Member("slow", Emit("x", delay=60.0)),)))
+async def test_a_component_past_its_deadline_is_a_failure_naming_it() -> None:
+    async def hangs(inputs: Inputs, ctx: RunContext) -> Any:
+        await asyncio.Event().wait()
+
     with pytest.raises(RunError, match="'slow' timed out after 0.01s") as e:
-        await Executor().run(compiled, limits=Limits(deadline_s=0.01, grace_s=0))
+        await Executor().run(wire({"slow": Step(hangs)}), limits=Limits(deadline_s=0.01, grace_s=0))
     assert e.value.kind == "component"
 
 
@@ -231,69 +269,48 @@ async def test_observers_see_the_run_and_one_failing_observer_cannot_stop_it() -
             raise RuntimeError("observer bug")
 
     recorder = RecordingObserver()
-    compiled = compile_flow(Flow("o", (Member("e", Emit("x"), {"out": "t"}),)))
-    run = await Executor([Broken(), recorder]).run(compiled)
+    run = await Executor([Broken(), recorder]).run(wire({"e": emits(TEXT, "x")}))
     assert run.status == "completed"
     assert recorder.names() == [
         "matrix.run.start",
-        "matrix.member.start",
-        "matrix.member.end",
-        "matrix.artifact.append",
+        "matrix.component.start",
+        "matrix.row.append",
+        "matrix.component.end",
         "matrix.run.end",
     ]
     end = recorder.events[-1]
-    assert end.fields["status"] == "completed" and end.fields["artifacts"] == 1
+    assert end.fields["status"] == "completed" and end.fields["rows"] == 1
 
 
-async def test_the_flow_is_not_changed_by_running_it() -> None:
-    flow = Flow("u", (Member("up", Upper(), {"text": "q"}),), inputs={"q": TEXT})
-    before = repr(flow)
-    await Executor().run(compile_flow(flow), {"q": "x"})
-    assert repr(flow) == before
+async def test_a_component_cannot_change_what_it_read_or_what_it_handed_over() -> None:
+    handed: dict[str, int] = {"n": 1}
 
+    async def source(inputs: Inputs, ctx: RunContext) -> Any:
+        ctx.provide(TEXT, handed)
+        handed["n"] = 2  # after the hand-over: the record already has its own copy
+        return None
 
-async def test_a_member_cannot_change_what_it_read() -> None:
-    class Mutator:
-        requires = {"data": TEXT}
-        provides: dict[str, Any] = {}
+    async def mutator(inputs: Inputs, ctx: RunContext) -> Any:
+        inputs.one(TEXT)["n"] = 999
+        return None
 
-        async def run(self, inputs: Inputs) -> dict[str, Any]:
-            inputs["data"]["n"] = 999
-            return {}
+    async def reader(inputs: Inputs, ctx: RunContext) -> Any:
+        return {SCORE: inputs.one(TEXT)["n"]}
 
-    class Reader:
-        requires = {"data": TEXT}
-        provides = {"n": SCORE}
-
-        async def run(self, inputs: Inputs) -> dict[str, Any]:
-            return {"n": inputs["data"]["n"]}
-
-    compiled = compile_flow(
-        Flow(
-            "alias",
-            (
-                Member("src", Emit({"n": 1}), {"out": "t"}),
-                Member("m", Mutator(), {"data": "t"}),
-                Member("r", Reader(), {"data": "t", "n": "seen"}),
-            ),
-        )
+    wiring = wire(
+        {
+            "src": Step(source, provides=[TEXT]),
+            "m": Step(mutator, requires=[TEXT]),
+            "r": Step(reader, requires=[TEXT], provides=[SCORE]),
+        }
     )
-    run = await Executor().run(compiled, limits=Limits(concurrency=2))
-    assert run.outputs("t") == ({"n": 1},)  # the recorded artifact is untouched
-    assert run.outputs("seen") == (1,)  # and so is what the sibling read
+    run = await Executor().run(wiring)
+    assert run.rows(TEXT) == ({"n": 1},)  # the record is untouched
+    assert run.rows(SCORE) == (1,)  # and so is what the sibling read
 
 
-async def test_live_handles_cannot_flow_between_members() -> None:
+async def test_live_handles_cannot_be_rows() -> None:
     import threading
 
-    compiled = compile_flow(
-        Flow(
-            "handle",
-            (
-                Member("src", Emit(threading.Lock()), {"out": "t"}),
-                Member("up", Upper(), {"text": "t"}),
-            ),
-        )
-    )
     with pytest.raises(RunError, match="must be data"):
-        await Executor().run(compiled)
+        await Executor().run(wire({"src": emits(TEXT, threading.Lock())}))

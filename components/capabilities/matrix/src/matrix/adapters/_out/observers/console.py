@@ -1,8 +1,8 @@
 """Progress on stderr, for a person watching a run.
 
-One line per thing worth knowing: a run starting and ending, each member starting, being asked
+One line per thing worth knowing: a run starting and ending, each component starting, being asked
 to stop, and ending (with its state and how long it took), a release that did not go cleanly,
-events that were dropped. On a terminal, the members still running are shown live underneath
+events that were dropped. On a terminal, the components still running are shown live underneath
 with their elapsed time; anywhere else (a pipe, a log, ``TERM=dumb``) only the lines are
 written. ``NO_COLOR`` is honoured.
 
@@ -20,10 +20,10 @@ from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from matrix.domain.observer import (
+    COMPONENT_END,
+    COMPONENT_START,
+    COMPONENT_STOPPING,
     EVENTS_DROPPED,
-    MEMBER_END,
-    MEMBER_START,
-    MEMBER_STOPPING,
     RELEASE_END,
     RUN_END,
     RUN_START,
@@ -51,7 +51,7 @@ class ConsoleObserver:
     def on_event(self, event: Event) -> None:
         fields = event.fields
         run = (event.run_id or "")[:8]
-        member = escape(event.member or "")
+        component = escape(event.component or "")
         if event.name == RUN_START:
             self._runs += 1
             if self._live and self._progress is None:
@@ -63,22 +63,25 @@ class ConsoleObserver:
                     transient=True,
                 )
                 self._progress.start()
-            self._say(f"[bold]run {run}[/bold] {escape(str(fields.get('flow')))} started")
-        elif event.name == MEMBER_START:
+            names = ", ".join(str(n) for n in fields.get("components") or ())
+            self._say(f"[bold]run {run}[/bold] started: {escape(names)}")
+        elif event.name == COMPONENT_START:
             if self._progress is not None:
-                self._rows[event.span] = self._progress.add_task(member, total=None)
+                self._rows[event.span] = self._progress.add_task(component, total=None)
             else:
-                self._say(f"  {member} started")
-        elif event.name == MEMBER_STOPPING:
-            self._say(f"  {member} [yellow]stopping[/yellow] ({escape(str(fields.get('reason')))})")
-        elif event.name == MEMBER_END:
+                self._say(f"  {component} started")
+        elif event.name == COMPONENT_STOPPING:
+            self._say(
+                f"  {component} [yellow]stopping[/yellow] ({escape(str(fields.get('reason')))})"
+            )
+        elif event.name == COMPONENT_END:
             row = self._rows.pop(event.span, None)
             if self._progress is not None and row is not None:
                 self._progress.remove_task(row)
-            self._say(f"  {member} {_state(fields)}")
+            self._say(f"  {component} {_state(fields)}")
         elif event.name == RELEASE_END and fields.get("status") != "released":
             self._say(
-                f"  [red]release {escape(str(fields.get('status')))}[/red] ({member}): "
+                f"  [red]release {escape(str(fields.get('status')))}[/red] ({component}): "
                 f"{escape(str(fields.get('error')))}"
             )
         elif event.name == EVENTS_DROPPED:

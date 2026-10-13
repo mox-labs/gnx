@@ -1,7 +1,7 @@
 """Termination signals reach a run as cancellation, so a signalled run still cleans up.
 
 Left alone, SIGTERM ends the process where it stands: no ``finally`` block runs, no deferred
-release is called, and a child process a member started outlives the run. While a run is in
+release is called, and a child process a component started outlives the run. While a run is in
 flight the executor therefore routes SIGTERM (and SIGINT, when nothing else handles it) to
 ``task.cancel()`` on the task awaiting the run. From there it is the one stop path every
 cancellation takes.

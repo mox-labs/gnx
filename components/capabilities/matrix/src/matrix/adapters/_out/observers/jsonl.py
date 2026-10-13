@@ -3,7 +3,7 @@
 Each line is an event document (``schema: matrix.v1.event``; see
 :meth:`matrix.domain.observer.Event.document`). A run's first line is its
 ``matrix.run.start`` and its last its ``matrix.run.end``; a failure shows as a
-``matrix.member.end`` with ``status: failed`` before that. Lines are flushed as they are
+``matrix.component.end`` with ``status: failed`` before that. Lines are flushed as they are
 written, so the file can be followed while the run is going.
 
 The stream is telemetry: under load events may be missing, and a ``matrix.events.dropped``

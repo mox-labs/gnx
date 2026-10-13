@@ -24,6 +24,11 @@ Example (``./matrix.yaml``, or the ``matrix:`` section of any tool's config file
         reviewer: {runtime: sdk}                         # definition agents/reviewer.md
         triage:   {runtime: local, definition: reviewer, model: qwen3-8b}
         greeter:  {runtime: local, system_prompt: "Say hello."}   # fully inline
+      inputs: [acme.v1.diff]                 # the kinds whoever runs this will supply
+      components:                            # wired by the kinds they require and provide
+        - name: review
+          type: matrix.v1.agent-step
+          config: {agent: reviewer, inputs: {diff: acme.v1.diff}, output: acme.v1.review}
 
 ``Config[C]`` composes that section with a client-provided schema.
 """
@@ -69,6 +74,17 @@ class ObserverConfig(BaseModel):
         return dict(self.model_extra or {})
 
 
+class ComponentConfig(BaseModel):
+    """One component to use in a run: a ``name`` for this instance, the ``type`` (the type
+    URL of a registered component) and that component's own ``config``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    type: str = Field(min_length=1)
+    config: dict[str, Any] = {}
+
+
 class AgentConfig(BaseModel):
     """Binds a definition to a runtime, with optional inline overrides.
 
@@ -99,6 +115,11 @@ class MatrixConfig(BaseModel):
     #: ``otel``) or type URL, or ``{type, ...options}`` for one that takes config.
     observers: tuple[str | ObserverConfig, ...] = ()
     agents: dict[str, AgentConfig] = {}
+    #: The components of a run. Their order of work is inferred from the kinds they require
+    #: and provide; the order here means nothing.
+    components: tuple[ComponentConfig, ...] = ()
+    #: The kinds a caller supplies when it runs ``components``.
+    inputs: tuple[str, ...] = ()
     #: A hardline registry section (``{default?, models: {...}}``) handed to every
     #: ``type: model`` runtime that does not carry its own. ``None`` = hardline discovers its
     #: own tiers (``~/.hardline/config.yaml``, ``./hardline.yaml``, ``$HARDLINE_CONFIG``).

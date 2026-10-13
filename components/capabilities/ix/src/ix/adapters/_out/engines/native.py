@@ -8,27 +8,31 @@ for every probe × trial; matrix records each run and reports it to its observer
 probe × trial order however they were scheduled.
 
 Type URL: ``ix.v1.engine.native``. The default engine; no dependency beyond matrix.
+
+**Not runnable against matrix 0.4.** This engine was built on matrix's flow API (``Flow``,
+``Member``, ``compile_flow``, port-named ``Inputs``), which matrix 0.4 removed in favour of
+components wired by kind. It belongs to the harness that is being replaced and was
+deliberately not ported: :meth:`NativeEngine.run` raises :class:`EngineError` saying so, and
+``tests/conftest.py`` lists the tests that depended on it.
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
-from matrix import Executor, Flow, Member, compile_flow
 from pydantic import BaseModel, ConfigDict, Field
 
 from ix.domain import type_urls
-from ix.domain.ports import EngineOutcome
+from ix.domain.errors import EngineError
 from ix.domain.types import Probe, Trial
 from ix.eval.measure import run_trial
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from matrix import Inputs, Observer
+    from matrix import Observer
 
-    from ix.domain.ports import AgentFactory, EngineRun
+    from ix.domain.ports import AgentFactory, EngineOutcome, EngineRun
     from ix.domain.types import Subject
 
 
@@ -60,7 +64,7 @@ class TrialStep:
         self._run_index = run_index
         self._timeout_s = timeout_s
 
-    async def run(self, inputs: Inputs) -> dict[str, Any]:
+    async def run(self, inputs: Any) -> dict[str, Any]:
         probe: Probe = inputs["probe"]
         index: int = inputs["index"]
         try:
@@ -84,38 +88,15 @@ class NativeEngine:
         self, config: NativeEngineConfig | None = None, *, observers: Sequence[Observer] = ()
     ) -> None:
         self._config = config or NativeEngineConfig()
-        self._executor = Executor(observers)
+        self._observers = tuple(observers)
 
     @property
     def config(self) -> NativeEngineConfig:
         return self._config
 
     async def run(self, run: EngineRun) -> EngineOutcome:
-        flow = compile_flow(
-            Flow(
-                f"{run.experiment}.trial",
-                (
-                    Member(
-                        "trial",
-                        TrialStep(
-                            run.agents, run.subject, run.run_index, self._config.trial_timeout_s
-                        ),
-                        {"probe": "probe", "index": "index", "trial": "trial"},
-                    ),
-                ),
-                inputs={"probe": type_urls.PROBE, "index": type_urls.TRIAL_INDEX},
-            ),
-            schemas={type_urls.PROBE: Probe, type_urls.TRIAL: Trial},
+        raise EngineError(
+            "the native engine cannot run: it was built on matrix's flow API, which matrix "
+            "0.4 removed (components are now wired by kind)",
+            fix="use `--engine inspect`, or wait for ix's run path on matrix components",
         )
-        gate = asyncio.Semaphore(self._config.concurrency)
-
-        async def one(probe: Probe, index: int) -> Trial:
-            async with gate:
-                result = await self._executor.run(flow, {"probe": probe, "index": index})
-            trial: Trial = result.construct.last("trial").value
-            if run.on_trial:
-                run.on_trial(trial)
-            return trial
-
-        trials = await asyncio.gather(*(one(p, t) for p in run.probes for t in range(run.trials)))
-        return EngineOutcome(trials=list(trials))

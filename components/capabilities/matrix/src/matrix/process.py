@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from matrix.domain.flow import RunContext
+    from matrix.domain.component import RunContext
 
 #: How often the group is checked while waiting for it to exit after SIGTERM.
 _POLL_S = 0.02

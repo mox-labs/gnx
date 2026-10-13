@@ -1,15 +1,16 @@
-"""matrix: the executor. Typed components wired into flows, and agents composed from config.
+"""matrix: components wired by kind, a registry, and config.
 
-* **Flows**: components declare named, typed ports; members bind ports to topics; matrix
-  checks the wiring, runs the flow, and records every value in a :class:`Construct`.
+* **Components** declare the kinds (type URLs) of data they require and provide. matrix
+  infers the wiring, runs each component when what it requires is ready, and records every
+  row in a :class:`Construct`: a table per kind, kept in a store as the run goes.
 * **Agents**: an :class:`AgentDefinition` (what) bound to an :class:`AgentRuntime` (where),
-  checked at binding. ``matrix.v1.agent-step`` makes an agent an ordinary flow member.
+  checked at binding. ``matrix.v1.agent-step`` makes an agent an ordinary component.
 * **Composition**: ``load_config`` reads the shared config tiers, ``compose`` builds runtimes,
   agents and observers from them, and the registry finds every extension (built-ins too)
   through the ``matrix.extensions`` entry point.
 
-The wiring and type URL grammar follow slick's ratified rules, carried here until matrix
-depends on slick.
+The type URL grammar follows slick's ratified rules, carried here until matrix depends on
+slick.
 """
 
 from importlib.metadata import PackageNotFoundError, version
@@ -22,8 +23,16 @@ from .composition.config import config_env_var, discover_sources, load_config
 from .composition.container import Container, compose, default_registry
 from .domain.agent import AgentDefinition, AgentResponse, BoundAgent
 from .domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
-from .domain.config import AgentConfig, Config, MatrixConfig, ObserverConfig, RuntimeConfig
-from .domain.construct import Artifact, Construct
+from .domain.component import LEDGER, Component, Inputs, RunContext, Wiring, wire
+from .domain.config import (
+    AgentConfig,
+    ComponentConfig,
+    Config,
+    MatrixConfig,
+    ObserverConfig,
+    RuntimeConfig,
+)
+from .domain.construct import Construct, LedgerEntry
 from .domain.errors import (
     EXIT_CODES,
     AgentRuntimeError,
@@ -37,24 +46,16 @@ from .domain.errors import (
     RunCancelled,
     RunError,
     RuntimeReason,
+    StoreError,
 )
-from .domain.executor import Executor, Limits, MemberLimits, MemberStatus, Run
-from .domain.flow import (
-    CompiledFlow,
-    Component,
-    Flow,
-    Inputs,
-    Member,
-    Port,
-    RunContext,
-    compile_flow,
-)
+from .domain.executor import ComponentLimits, ComponentStatus, Executor, Limits, Run
 from .domain.ids import TypeUrl, check_type_url, is_type_url, parse_type_url, type_url
 from .domain.observer import Event, EventPolicy, Observer, RecordingObserver
 from .domain.ports._out.agent_runtime import Agent, AgentRuntime
 from .domain.ports._out.config_source import ConfigSource
-from .domain.ports._out.construct_store import ConstructStore
+from .domain.ports._out.construct_store import ConstructStore, RunWriter
 from .domain.ports._out.definition_source import DefinitionSource
+from .domain.ref import REF, Ref
 from .domain.registry import Entry, Failure, Registry
 
 try:
@@ -74,6 +75,8 @@ __all__ = [
     "AGENT_RESPONSE",
     "AGENT_STEP",
     "EXIT_CODES",
+    "LEDGER",
+    "REF",
     "TASK",
     "Agent",
     "AgentConfig",
@@ -83,12 +86,13 @@ __all__ = [
     "AgentRuntimeError",
     "AgentStep",
     "AgentStepConfig",
-    "Artifact",
     "BoundAgent",
     "CompilationError",
-    "CompiledFlow",
     "Component",
+    "ComponentConfig",
     "ComponentError",
+    "ComponentLimits",
+    "ComponentStatus",
     "Config",
     "ConfigError",
     "ConfigSource",
@@ -103,32 +107,31 @@ __all__ = [
     "EventPolicy",
     "Executor",
     "Failure",
-    "Flow",
     "Inputs",
     "JsonlConstructStore",
+    "LedgerEntry",
     "Limits",
     "MatrixConfig",
     "MatrixError",
     "MemoryConstructStore",
-    "Member",
-    "MemberLimits",
-    "MemberStatus",
     "NotFoundError",
     "Observer",
     "ObserverConfig",
-    "Port",
     "RecordingObserver",
+    "Ref",
     "Registry",
     "Run",
     "RunCancelled",
     "RunContext",
     "RunError",
+    "RunWriter",
     "RuntimeConfig",
     "RuntimeReason",
+    "StoreError",
     "TypeUrl",
+    "Wiring",
     "__version__",
     "check_type_url",
-    "compile_flow",
     "compose",
     "config_env_var",
     "configure_telemetry",
@@ -141,4 +144,5 @@ __all__ = [
     "process",
     "runtime_type_url",
     "type_url",
+    "wire",
 ]
