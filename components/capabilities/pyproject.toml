@@ -17,7 +17,7 @@ members = ["*"]
 exclude = ["radix"]
 
 # uv 0.9+ REQUIRES an explicit source entry for a workspace-internal dependency.
-# `ix` declares a bare `matrix` dep; without this, resolution fails with
+# A member that declares a bare `matrix` dep fails to resolve without this, with
 # "`matrix` is included as a workspace member, but is missing an entry in
 # `tool.uv.sources`". cix declared this at its own workspace root, which is why
 # the member pyprojects port over unmodified.
@@ -38,8 +38,10 @@ dev = [
     "types-PyYAML",  # gnx + harness parse YAML; strict mypy needs the stubs
     "pytz>=2024.1",  # required by DuckDB TIMESTAMPTZ (recon)
     "opentelemetry-sdk>=1.20",  # matrix/tests/test_orchestrator_tracing.py
-    "matrix",
-    "ix[inspect,deepeval]",
+    # The `claude` extra: matrix's SDK runtime is typechecked and tested here, and no other
+    # member brings the SDK in.
+    "matrix[claude]",
+    "ix",
     "recon",
     "gnx",
     "dao",
@@ -51,9 +53,6 @@ dev = [
 # too or every async test errors on a missing marker.
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# deepeval (ix's deepeval extra) auto-registers a pytest plugin that opens a telemetry
-# capture on every session. ix's tests call deepeval directly and need none of it.
-addopts = "-p no:deepeval"
 
 [tool.ruff]
 line-length = 100

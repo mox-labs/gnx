@@ -8,31 +8,36 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
-from ix.adapters._out.genre_files import GenreFiles
-from ix.domain.genre import Catalogue, catalogue
+from ix.adapters._out.declaration_files import GenreFiles, KindFiles
+from ix.adapters._out.probe_directory import DirectoryProbes
+from ix.application.experiments import Vocabulary
+from ix.domain.genre import Genres, genres
+from ix.domain.kind import Kinds, kinds
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+_URL = "http://127.0.0.1:8080"
 
 _COMPARE: dict[str, Any] = {
     "name": "proxy",
     "question": "Is streaming no worse than buffered?",
     "genre": "compare",
     "subjects": {
-        "buffered": {"kind": "process", "command": ["./proxy", "--buffered"]},
-        "streaming": {"kind": "process", "command": ["./proxy", "--streaming"]},
+        "buffered": {"kind": "process", "command": ["./proxy", "--buffered"], "url": _URL},
+        "streaming": {"kind": "process", "command": ["./proxy", "--streaming"], "url": _URL},
     },
-    "probes": [{"id": "download", "kind": "http-load", "target": "http://127.0.0.1:8080/x"}],
-    "metrics": [
-        {"name": "ttfb", "unit": "ms", "direction": "lower", "shape": "histogram"},
-        {"name": "throughput", "unit": "req/s", "direction": "higher", "shape": "scalar"},
-        {"name": "quality", "direction": "higher", "shape": "scalar", "judged": True},
-        {"name": "passed", "direction": "higher", "shape": "boolean"},
-        {"name": "drift", "direction": "neither", "shape": "scalar"},
-        {"name": "trace", "direction": "lower", "shape": "series"},
+    "probes": [
+        {
+            "id": "download",
+            "kind": "http-load",
+            "target": "{url}/x",
+            "load_model": "open",
+            "duration": "60s",
+        }
     ],
     "primary": {"metric": "ttfb", "statistic": "p99"},
-    "rule": "non-inferiority",
+    "comparison": "non-inferiority",
     "margin": "5%",
 }
 
@@ -41,17 +46,37 @@ _EVALUATE: dict[str, Any] = {
     "question": "Does the right skill fire?",
     "genre": "evaluate",
     "subjects": {"catalog": {"kind": "agent", "max_turns": 1}},
-    "probes": [{"id": "ask", "kind": "prompt", "prompt": "Review this change."}],
-    "metrics": _COMPARE["metrics"],
-    "primary": {"metric": "passed"},
-    "bar": {"op": ">=", "value": 0.9},
+    "probes": [
+        {
+            "id": "ask",
+            "kind": "prompt",
+            "prompt": "Review this change.",
+            "truth": {"expectation": "must_trigger", "expected_skill": "review"},
+        }
+    ],
+    "primary": {"metric": "activated_correctly"},
+    "threshold": {"op": ">=", "value": 0.9},
+    "spend": {"ceiling": 5},
 }
 
 
 @pytest.fixture(scope="session")
-def builtin_genres() -> Catalogue:
+def builtin_genres() -> Genres:
     """ix's four genres, read from the package (no entry-point discovery)."""
-    return catalogue(GenreFiles(packages=["ix.genres"]).records())
+    return genres(GenreFiles(packages=["ix.builtin.genres"]).files())
+
+
+@pytest.fixture(scope="session")
+def builtin_kinds() -> Kinds:
+    """ix's kinds, read from the package (no entry-point discovery)."""
+    return kinds(KindFiles(packages=["ix.builtin.kinds"]).files())
+
+
+@pytest.fixture(scope="session")
+def vocabulary(builtin_genres: Genres, builtin_kinds: Kinds) -> Vocabulary:
+    return Vocabulary(
+        genres=builtin_genres, kinds=builtin_kinds, probe_sources={"directory": DirectoryProbes()}
+    )
 
 
 @pytest.fixture
@@ -68,7 +93,7 @@ def evaluate_data() -> dict[str, Any]:
 
 @pytest.fixture
 def write_experiment(tmp_path: Path) -> Any:
-    """Write experiment data to ``<tmp>/<name>/experiment.yaml`` and return the file."""
+    """Write experiment data to ``<tmp>/<directory>/experiment.yaml`` and return the file."""
 
     def write(data: dict[str, Any], directory: str = "lab") -> Path:
         folder = tmp_path / directory

@@ -1,47 +1,61 @@
-"""The plan: what a run of an experiment would do, computed without running anything.
+"""The plan: what a run of an experiment would do, and the decision it would equip, computed
+without running anything.
 
-A plan is a pure function of the experiment, its resolved design and its probe set. It lists
-the subjects with their roles, the cells, the probes, the repeats, the order rule, the
-effects the file declares and the estimated spend, and it is identified by a digest of all of
-that: the same file gives the same plan, and a plan that changed has another digest.
+A plan is a pure function of the experiment, its design, its probe set and the kinds it
+names. It states the decision first (the question, the hypothesis rendered from the genre,
+the guardrails, the form of the verdict), then what a run costs: the trials with their
+arithmetic, the estimated duration, the effects and the spend.
+
+**The digest.** ``digest`` identifies what a run would do. It is over the experiment's
+operative digest, the design, the probe set, the effects and the trial count. It is stable
+against a comment, key order, a default written out, a reworded question, note or
+description, and a field a later ix adds with a default. It changes when a value a run
+would use changes, including one the genre supplied.
 """
 
 from __future__ import annotations
 
 from itertools import product
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
 
 from ix.domain import schema
-from ix.domain.design import Setting, SubjectRole
+from ix.domain.design import RoleAssignment, SelectedSensor, SourcedValue, kind_uses, metric_text
 from ix.domain.experiment import Level
-from ix.domain.schema import Record
+from ix.domain.genre import Calibration, Order, VerdictForm
+from ix.domain.kind import EFFECTS, fill, seconds
+from ix.domain.schema import Record, canonical
 
 if TYPE_CHECKING:
-    from ix.domain.design import ResolvedDesign
+    from ix.domain.design import Design
     from ix.domain.experiment import Experiment, ProbeSet, Spend
+    from ix.domain.genre import Genre
+    from ix.domain.kind import Kinds
 
-#: Said by every plan until a host is attached: the file is the only source of effects.
-EFFECTS_NOTE = (
-    "effects are those the file declares; what each subject, probe and environment kind does "
-    "on its own is added when a host is attached"
-)
+VERDICTS: dict[str, str] = {
+    "three-way": "holds / fails / inconclusive",
+    "none": "none: estimates only",
+}
 
 
-class Order(Record):
-    """The rule a run orders its trials by. The seed fixes the order it produces."""
+class OrderPlan(Record):
+    """How a run orders its trials. The seed fixes the order it produces."""
 
-    rule: Literal["interleaved", "sequential"]
+    scheme: Order
     seed: int
     description: str
 
 
 class Effect(Record):
-    """Something a run would do to the world, and the part of the file that declares it."""
+    """Something a run would do to the world, and what declares it: the kind an entry names,
+    or the author on top of that."""
 
     effect: str
-    declared_by: str
+    detail: str = ""
+    #: The entry in the experiment this effect belongs to (``subjects.buffered``).
+    source: str
+    declared_by: Literal["kind", "experiment"]
 
 
 class PlannedProbes(Record):
@@ -50,12 +64,50 @@ class PlannedProbes(Record):
     ids: tuple[str, ...]
 
 
-class Calibration(Record):
-    """The A/A pass: the control run against itself, to measure the noise floor."""
+class Trials(Record):
+    """The trial count, with the arithmetic that gives it."""
 
-    aa: bool
-    subject: str | None
-    trials: int
+    subjects: int
+    cells: int
+    probes: int
+    repeats: int
+    #: Trials of the subjects: subjects x cells x probes x repeats.
+    measured: int
+    #: Trials of the A/A pass: the control once more, in every cell, probe and repeat.
+    calibration: int
+    total: int
+
+    def text(self) -> str:
+        def n(count: int, noun: str) -> str:
+            return f"{count} {noun}{'' if count == 1 else 's'}"
+
+        parts = (
+            f"{n(self.subjects, 'subject')} x {n(self.cells, 'cell')} x "
+            f"{n(self.probes, 'probe')} x {n(self.repeats, 'repeat')} = {self.measured}"
+        )
+        if self.calibration:
+            parts += f", + {self.calibration} A/A = {self.total}"
+        return parts
+
+
+class Duration(Record):
+    """How long the probes alone would take, when every probe kind declares its duration."""
+
+    seconds: float | None
+    basis: str
+
+    def text(self) -> str:
+        if self.seconds is None:
+            return f"not estimated ({self.basis})"
+        minutes = round(self.seconds / 60)
+        human = (
+            f"{self.seconds:g}s"
+            if self.seconds < 90
+            else f"{minutes}m"
+            if minutes < 90
+            else f"{minutes // 60}h {minutes % 60:02d}m"
+        )
+        return f"about {human} ({self.basis})"
 
 
 class SpendEstimate(Record):
@@ -65,30 +117,57 @@ class SpendEstimate(Record):
     basis: str
 
 
-class Plan(Record):
-    """What a run would do. ``plan`` is the digest of every other field."""
+class RegistrationStatus(Record):
+    """Where the experiment stands against its registration."""
 
-    schema_: Literal["ix.v2.plan"] = Field(default=schema.PLAN, alias="schema")
-    plan: str
+    status: Literal["none", "matches", "deviations"] = "none"
+    deviations: int = 0
+    location: str = ""
+
+    def text(self) -> str:
+        if self.status == "deviations":
+            return f"{self.deviations} deviation{'' if self.deviations == 1 else 's'}"
+        return self.status
+
+
+class Plan(Record):
+    """What a run would do. ``digest`` identifies it; see the module docstring."""
+
+    schema_: Literal["ix.v1.plan"] = Field(default=schema.PLAN, alias="schema")
+    digest: str
     experiment: str
     experiment_digest: str
+    #: The genre as the author writes it, and its type URL.
     genre: str
-    subjects: tuple[SubjectRole, ...]
+    genre_url: str
+
+    question: str
+    #: The hypothesis the verdict is about: one sentence per variant, rendered from the genre.
+    decides: tuple[str, ...]
+    comparison: str | None
+    guardrails: tuple[str, ...]
+    verdict_form: VerdictForm
+
+    subjects: tuple[RoleAssignment, ...]
     control: str | None
     factors: dict[str, tuple[Level, ...]]
-    cells: tuple[dict[str, Level], ...]
     probes: PlannedProbes
-    repeats: int
     calibration: Calibration
-    #: Subject trials plus calibration trials.
-    trials: int
-    order: Order
+    trials: Trials
+    duration: Duration
+    order: OrderPlan
+    sensors: tuple[SelectedSensor, ...]
     effects: tuple[Effect, ...]
     spend: SpendEstimate
-    verdict: Literal["three-way", "none"]
-    #: Every design value and where it came from; see :class:`ix.domain.design.Setting`.
-    settings: tuple[Setting, ...]
-    notes: tuple[str, ...]
+    registration: RegistrationStatus = RegistrationStatus()
+    #: Every design value and where it came from.
+    provenance: tuple[SourcedValue, ...]
+    notes: tuple[str, ...] = ()
+
+    @property
+    def verdict(self) -> str:
+        """The form of the verdict, in words."""
+        return VERDICTS[self.verdict_form]
 
 
 def cells(factors: dict[str, tuple[Level, ...]]) -> tuple[dict[str, Level], ...]:
@@ -101,11 +180,21 @@ def cells(factors: dict[str, tuple[Level, ...]]) -> tuple[dict[str, Level], ...]
     )
 
 
-def trial_counts(experiment: Experiment, design: ResolvedDesign, probes: int) -> tuple[int, int]:
-    """(subject trials, calibration trials) of one run."""
-    per_subject = len(cells(experiment.factors)) * probes * design.repeats
-    calibration = per_subject if design.aa and design.control is not None else 0
-    return per_subject * len(design.subjects), calibration
+def count_trials(experiment: Experiment, design: Design, probes: int) -> Trials:
+    """The trials of one run."""
+    n_cells = len(cells(experiment.factors))
+    per_subject = n_cells * probes * design.repeats
+    measured = per_subject * len(design.roles)
+    calibration = per_subject if design.calibration == "aa" and design.control else 0
+    return Trials(
+        subjects=len(design.roles),
+        cells=n_cells,
+        probes=probes,
+        repeats=design.repeats,
+        measured=measured,
+        calibration=calibration,
+        total=measured + calibration,
+    )
 
 
 def estimate_spend(spend: Spend | None, trials: int) -> SpendEstimate:
@@ -129,67 +218,153 @@ def estimate_spend(spend: Spend | None, trials: int) -> SpendEstimate:
     )
 
 
-def _effects(experiment: Experiment) -> tuple[Effect, ...]:
-    found: list[Effect] = [
-        Effect(effect=effect, declared_by="environment")
-        for effect in experiment.environment.effects
-    ]
-    for name, subject in experiment.subjects.items():
+def effects(
+    experiment: Experiment, design: Design, kinds: Kinds, probes: ProbeSet | None
+) -> tuple[Effect, ...]:
+    """What a run would do to the world: the effects of each kind in use, then what the author
+    added to them. The author cannot remove one."""
+    found: list[Effect] = []
+    used, _ = kind_uses(experiment, kinds, probes)
+    for path, kind, _, added in used:
         found += [
-            Effect(effect=effect, declared_by=f"subjects.{name}") for effect in subject.effects
+            Effect(effect=effect, detail=EFFECTS[effect], source=path, declared_by="kind")
+            for effect in kind.effects
         ]
-    if isinstance(experiment.probes, tuple):
-        for index, probe in enumerate(experiment.probes):
+        found += [Effect(effect=text, source=path, declared_by="experiment") for text in added]
+    for sensor in design.sensors:
+        selected = kinds.kinds.get(sensor.kind)
+        if sensor.source == "ix" and selected is not None:
             found += [
-                Effect(effect=effect, declared_by=f"probes.{index}") for effect in probe.effects
+                Effect(
+                    effect=effect,
+                    detail=EFFECTS[effect],
+                    source=f"sensor {selected.label}",
+                    declared_by="kind",
+                )
+                for effect in selected.effects
             ]
-    return tuple(found)
+    unique: dict[tuple[str, str], Effect] = {}
+    for effect in found:
+        unique.setdefault((effect.effect, effect.source), effect)
+    return tuple(unique.values())
 
 
-def plan(experiment: Experiment, design: ResolvedDesign, probes: ProbeSet) -> Plan:
-    """The plan of a valid experiment. Runs nothing and reads nothing."""
-    subject_trials, calibration_trials = trial_counts(experiment, design, len(probes.probes))
-    trials = subject_trials + calibration_trials
-    order = (
-        Order(
-            rule="interleaved",
-            seed=design.seed,
-            description="within each repeat, cell and probe the subjects run in a random "
-            "order drawn from the seed",
-        )
-        if design.interleave
-        else Order(
-            rule="sequential",
-            seed=design.seed,
-            description="subjects run one after another in the order written",
-        )
+def estimate_duration(
+    experiment: Experiment, design: Design, kinds: Kinds, probes: ProbeSet
+) -> Duration:
+    """Probe time over the whole run, from the durations probe kinds declare."""
+    shared = [set(subject.options) for subject in experiment.subjects.values()]
+    common = set.intersection(*shared) if shared else set()
+    first = next(iter(experiment.subjects.values()))
+    passes = len(design.roles) + (1 if design.calibration == "aa" and design.control else 0)
+    total = 0.0
+    for probe in probes.probes:
+        kind = kinds.get("probe", probe.kind)
+        if kind is None or not kind.duration:
+            return Duration(seconds=None, basis=f"probe kind {probe.kind} declares no duration")
+        for cell in cells(experiment.factors):
+            bound: dict[str, Any] = {name: first.options[name] for name in common} | cell
+            for option in kind.duration:
+                if option not in probe.options:
+                    continue
+                length = seconds(fill(probe.options[option], bound))
+                if length is None:
+                    return Duration(
+                        seconds=None,
+                        basis=f"{probe.id}: {option} is not a duration once filled in",
+                    )
+                total += length * design.repeats * passes
+    trials = count_trials(experiment, design, len(probes.probes)).total
+    return Duration(
+        seconds=total, basis=f"{trials} trials, probe time only; setup and teardown add to it"
     )
-    notes = [EFFECTS_NOTE]
-    if calibration_trials:
-        notes.append(
-            f"calibration: the control {design.control!r} also runs against itself (A/A) to "
-            "measure the noise floor"
+
+
+def _guardrail_text(design: Design) -> tuple[str, ...]:
+    lines = []
+    for guardrail in design.guardrails:
+        if guardrail.threshold is not None:
+            lines.append(f"{metric_text(guardrail)} {guardrail.threshold.text()}")
+        elif guardrail.margin is not None:
+            lines.append(
+                f"{metric_text(guardrail)} no worse than {design.control or 'the control'} by "
+                f"more than {guardrail.margin.text()}"
+            )
+    return tuple(lines)
+
+
+def _order(design: Design, alternating: int) -> OrderPlan:
+    if design.order == "sequential":
+        description = "trials run in the order written: repeats, then cells, probes, subjects"
+    elif alternating > 1:
+        description = (
+            "within each repeat, cell and probe, the subjects run in a random order drawn "
+            "from the seed"
         )
-    body = Plan(
-        plan="",
+    else:
+        description = "one subject and no A/A pass: there is nothing to interleave"
+    return OrderPlan(scheme=design.order, seed=design.seed, description=description)
+
+
+def plan_digest(
+    experiment: Experiment,
+    design: Design,
+    probes: ProbeSet,
+    plan_effects: tuple[Effect, ...],
+    trials: int,
+) -> str:
+    """The digest of what a run would do; see the module docstring for what it is stable
+    against."""
+    resolved = canonical(design, exclude={"hypotheses", "provenance"})
+    for metric in resolved.get("metrics", []):
+        metric.pop("description", None)
+    return schema.digest(
+        {
+            "experiment": experiment.digest(operative=True),
+            "design": resolved,
+            "probes": probes.digest,
+            "effects": sorted([effect.effect, effect.source] for effect in plan_effects),
+            "trials": trials,
+        }
+    )
+
+
+def plan(
+    experiment: Experiment,
+    genre: Genre,
+    design: Design,
+    probes: ProbeSet,
+    kinds: Kinds,
+    *,
+    registration: RegistrationStatus | None = None,
+) -> Plan:
+    """The plan of a valid experiment. Runs nothing and reads nothing."""
+    trials = count_trials(experiment, design, len(probes.probes))
+    plan_effects = effects(experiment, design, kinds, probes)
+    alternating = len(design.roles) + (1 if trials.calibration else 0)
+    return Plan(
+        digest=plan_digest(experiment, design, probes, plan_effects, trials.total),
         experiment=experiment.name,
         experiment_digest=experiment.digest(),
-        genre=design.genre,
-        subjects=design.subjects,
+        genre=schema.short(genre.name),
+        genre_url=genre.name,
+        question=experiment.question,
+        decides=design.hypotheses,
+        comparison=design.comparison,
+        guardrails=_guardrail_text(design),
+        verdict_form=design.verdict_form,
+        subjects=design.roles,
         control=design.control,
         factors=experiment.factors,
-        cells=cells(experiment.factors),
         probes=PlannedProbes(count=len(probes.probes), digest=probes.digest, ids=probes.ids),
-        repeats=design.repeats,
-        calibration=Calibration(aa=design.aa, subject=design.control, trials=calibration_trials),
+        calibration=design.calibration if trials.calibration else "none",
         trials=trials,
-        order=order,
-        effects=_effects(experiment),
-        spend=estimate_spend(experiment.spend, trials),
-        verdict=design.verdict,
-        settings=design.settings,
-        notes=tuple(notes),
+        duration=estimate_duration(experiment, design, kinds, probes),
+        order=_order(design, alternating),
+        sensors=design.sensors,
+        effects=plan_effects,
+        spend=estimate_spend(experiment.spend, trials.total),
+        registration=registration or RegistrationStatus(),
+        provenance=design.provenance,
+        notes=(genre.design.note,),
     )
-    document = body.document()
-    del document["plan"]
-    return body.model_copy(update={"plan": schema.digest(document)})

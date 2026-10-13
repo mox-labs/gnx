@@ -1,0 +1,11 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.judge
+summary: A model scores the response against a rubric. Its readings never decide a verdict.
+options:
+  rubric: {type: string, required: true, description: "the rubric, or a path to it"}
+  model: {type: string, description: the model that judges}
+effects: [spend]
+needs: [response]
+metrics:
+  - {name: judged_score, direction: higher, shape: scalar, judged: true, description: the judge's score against the rubric}
+  - {name: judged_pass, direction: higher, shape: boolean, judged: true, description: whether the judge says the response meets the rubric}

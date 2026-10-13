@@ -3,8 +3,8 @@
 #   ix validate examples/catalog-routing
 #   ix plan examples/catalog-routing
 #
-# One subject and a bar. The probes are files: frontmatter is the truth a sensor measures
-# against, the body is the prompt.
+# One subject and a threshold. The probes are files: the body is the prompt, the
+# frontmatter is the truth the activation sensor measures against.
 name: catalog-routing
 question: Does the right skill fire for a real ask and stay quiet for a decoy?
 genre: evaluate
@@ -15,14 +15,10 @@ subjects:
     runtime: claude-sdk
     max_turns: 1            # the skill call happens in the first turn; stop there
     plugins: ["plugins/*"]
-    effects: ["spends money", "runs tools"]
 
 probes: {source: directory, path: probes}
 
-metrics:
-  - {name: activated_correctly, direction: higher, shape: boolean}
-
-primary: {metric: activated_correctly, statistic: rate}
-bar: {op: ">=", value: 0.9}
-repeats: 3
+primary: {metric: activated_correctly}
+threshold: {op: ">=", value: 0.9}
+metrics: [tokens_total]     # reported, not decided on
 spend: {ceiling: 2.00, per_trial: 0.05}

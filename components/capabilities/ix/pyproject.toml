@@ -1,7 +1,7 @@
 [project]
 name = "ix"
 version = "0.3.0"
-description = "ix: experiments on agents and services. Genres, subjects, probes and a plan, driven by one file"
+description = "ix: experiments on agents and services. One file with a genre; validate, plan and register it"
 # readme = "README.md"  # TODO: create when ready
 requires-python = ">=3.12"
 license = "MIT"
@@ -15,27 +15,19 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "python-frontmatter>=1.0",
-    "matrix",
-    "hardline",
-    "claude-agent-sdk>=0.1.51",  # see matrix's `claude` extra
 ]
 
-# ix declares its extension points (sensor, engine) and registers its built-ins through
-# matrix's one discovery group, exactly as a third-party sensor or engine does.
-[project.entry-points."matrix.extensions"]
-ix = "ix.composition.builtins:register"
-
-# Genres are data. A package registers a package of `*.yaml` genre files at the `ix.genre`
-# entry point, which ix owns; ix registers its own four the same way. The entry point is
-# read for its name and never called.
+# Genres and kinds are data. A package registers a package of `*.yaml` files at the
+# `ix.genre` or `ix.kind` entry point, which ix owns; ix registers its own the same way.
+# An entry point is read for its name and never called.
 [project.entry-points."ix.genre"]
-ix = "ix.genres"
+ix = "ix.builtin.genres"
+
+[project.entry-points."ix.kind"]
+ix = "ix.builtin.kinds"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
-deepeval = ["deepeval>=2.0"]
-# The Inspect AI engine: runs an ix experiment as an Inspect task (epochs, logs, log viewer).
-inspect = ["inspect-ai>=0.3.100"]
+dev = ["pytest>=8.0"]
 
 [project.scripts]
 ix = "ix.adapters._in.cli:main"
@@ -58,11 +50,6 @@ include = [
     "src/ix/py.typed",
 ]
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-# deepeval auto-registers a pytest plugin that opens a telemetry capture per session.
-addopts = "-p no:deepeval"
-
 # The house lint set: B (bugbear), SIM, TC on top of the base selection.
 [tool.ruff]
 line-length = 100
@@ -72,19 +59,16 @@ target-version = "py312"
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TC"]
 
 # pydantic reads a model's annotations at runtime, so the types they name cannot move into
-# a TYPE_CHECKING block. Record is the base of every model in the experiment model.
+# a TYPE_CHECKING block. Record and Stored are the bases of every model ix has.
 [tool.ruff.lint.flake8-type-checking]
-runtime-evaluated-base-classes = ["pydantic.BaseModel", "ix.domain.schema.Record"]
+runtime-evaluated-base-classes = [
+    "pydantic.BaseModel",
+    "ix.domain.schema.Record",
+    "ix.domain.schema.Stored",
+]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
-
-# deepeval is an optional extra and ships no stubs (no py.typed). Scoped to that module
-# so the missing-stub allowance can never mask an error in ix's own code — the alternative,
-# a bare `ignore_errors`, would have hidden the two Any-returns fixed in sensors_deepeval.
-[[tool.mypy.overrides]]
-module = ["deepeval.*"]
-ignore_missing_imports = true

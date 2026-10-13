@@ -1,8 +1,9 @@
 """The document ``ix --skill`` prints: how to write, check, plan and register an experiment.
 
-The genre sections are generated from the catalogue, so an installed third-party genre is
-taught the same way as ix's own. The worked examples are checked by the test suite: each one
-validates and plans.
+The genre and kind sections are generated from the installed records, so a third party's
+genre or kind is taught the same way as ix's own, and what the document says must be set is
+what ``validate`` enforces. The worked examples are minimal (they restate no default) and
+the test suite validates and plans each one.
 """
 
 from __future__ import annotations
@@ -10,36 +11,42 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ix.domain import schema
-from ix.domain.experiment import STATISTICS
+from ix.domain.errors import EXIT_CODES
+from ix.domain.experiment import ESTIMATORS, STATISTICS
+from ix.domain.kind import EFFECTS, KIND_FAMILIES, NOTE_PREFIX
+from ix.domain.plan import VERDICTS
 from ix.domain.problem import PROBLEM_KINDS
 
 if TYPE_CHECKING:
-    from ix.domain.genre import Catalogue, Genre
+    from ix.domain.genre import Genre, Genres
+    from ix.domain.kind import Kind, Kinds
+
+#: The commands ix has, in the order an author uses them.
+COMMANDS: tuple[tuple[str, str], ...] = (
+    ("ix validate <path>", "every problem at once, each with path, kind, message, fix"),
+    ("ix plan <path>", "the decision a run would equip and what it would cost; runs nothing"),
+    ("ix register <path>", "freeze the design beside the file, before any run"),
+    ("ix deviations <path>", "what changed since registration; exit 9 when anything did"),
+    ("ix genres", "the genres installed, and any genre file ix refused"),
+    ("ix kinds", "the subject kinds, probe kinds, sensors and environment kinds installed"),
+)
 
 _HEAD = """\
 # ix: writing and checking an experiment
 
 ix answers a question about a system with an experiment. You write one YAML file; ix checks
-it, shows what a run would do, and freezes the decision before anything runs.
+it, shows the decision a run would equip and what it would cost, and freezes the design
+before anything runs. **ix has no `run` command yet**: it checks, plans and registers.
 
 ## The loop
 
 ```
-ix validate <path> --json     # every problem at once, each with path, kind, message, fix
-ix plan <path> --json         # what a run would do: runs nothing, spends nothing
-ix register <path> --json     # freeze the decision parameters beside the file
-ix register <path> --check    # what has changed since registration
-ix genres --json              # the genres installed, and any genre file ix refused
+COMMANDS
 ```
 
-`<path>` is the experiment file, or a directory holding `experiment.yaml`. Fix every problem
-`validate` reports, then read the plan before asking for a run: it names the control, counts
-the trials and lists the effects.
-
-These commands read the experiment model described here. `ix run`, `ix results`,
-`ix compare`, `ix experiment ...` and `ix lab ...` still drive the earlier agent-eval
-harness, which reads its own `experiment.yaml` format (`sensors:`, `trials:`, `engine:`).
-`ix validate` says so when it is given one of those files.
+`<path>` is the experiment file, or a directory holding `experiment.yaml`. Every command
+takes `--json`. Fix every problem `validate` reports, read the plan (it states the decision
+first), then register.
 
 ## Choose the genre first
 
@@ -53,174 +60,234 @@ _FILE = """\
 ```yaml
 name: <one-token-name>
 question: <what you want to know, one sentence>
-hypothesis: <what you expect, in a sentence that could turn out false>
+rationale: <why you expect what you expect; optional>
 genre: <genre>
-subjects:                      # the variants under test, by name
-  <name>: {kind: <subject kind>, <that kind's options>, effects: [<what starting it does>]}
+subjects:                      # a mapping: name -> {kind, that kind's options}
+  <name>: {kind: <subject kind>, <option>: <value>}
 control: <subject name>        # only where the genre has a control; default: the first
-probes:                        # the stimulus: inline, or a source
-  - {kind: <probe kind>, <that kind's options>}
-factors:                       # sweep axes; every combination is a cell
+probes:                        # a list of probes, or one source
+  - {kind: <probe kind>, <option>: <value>, truth: {<key>: <value>}}
+factors:                       # conditions varied on purpose; every combination is a cell
   <name>: [<level>, <level>]
-environment: {provider: none}
-metrics:                       # every metric a decision reads is declared
-  - {name: <metric>, unit: <unit>, direction: higher|lower|neither, shape: <shape>, judged: false}
-primary: {metric: <metric>, statistic: <statistic>}
-bar: {op: ">=", value: 0.9}    # where the genre decides against a bar
-rule: <rule>                   # where the genre decides between subjects
-margin: 5%                     # 5% relative, 10pp percentage points, or a bare number
-guards:                        # metrics that must also not get worse
+environment: {kind: <environment kind>}
+primary: {metric: <metric>, statistic: <statistic>, estimator: <estimator>}
+threshold: {op: ">=", value: 0.9}   # where the genre decides against a threshold
+comparison: <comparison>            # where the genre compares subjects
+margin: 5%                          # 5% relative, 10pp percentage points, or a bare number
+guardrails:                         # metrics that must also hold: a margin or a threshold
   - {metric: <metric>, margin: 5%}
-repeats: 5
-seed: 1
+metrics: [<metric>]                 # further metrics to measure and report
+sensors:                            # only to give a sensor options, or to choose between two
+  - {kind: <sensor>, <option>: <value>}
+repeats: <n>
+seed: <n>
 spend: {ceiling: 5.00, per_trial: 0.02, currency: USD}
 ```
 
 Only `name`, `question`, `genre`, `subjects` and `probes` are always required; the genre
-says what else is. An unknown key is refused, so a typo cannot pass silently.
+says what else is, and supplies the rest. Leave out what you do not mean to change: the plan
+shows every value and whether it came from the experiment, the genre or ix.
 
-- **Subjects and probes bind a kind.** The keys beside `kind` are that kind's own options.
-  In an inline probe, `{name}` refers to a factor or to an option every subject sets.
-- **Probes from files:** `probes: {source: directory, path: probes}` reads one `.md` file
-  per probe: frontmatter is the probe's truth, the body is the prompt.
-- **Metrics:** shapes and their statistics are
+- **Every key is checked.** An unknown key is refused, at the top of the file and beside
+  every `kind`: a kind declares its options, and `validate` reports `option_unknown`,
+  `option_missing` and `option_invalid`. A key starting with `NOTE` is a note and is ignored.
+- **The hypothesis is rendered** from the genre, the metric and the margin or threshold, so
+  you do not write one. The plan prints it as `Decides:`.
+- **Metrics come from sensors.** You name a metric; ix selects the one sensor that provides
+  it and that the subjects and probes can feed. No sensor: `metric_unprovided`. Two:
+  `metric_ambiguous`, settled by listing one under `sensors:`.
+- **A model-judged metric never decides.** Whether a metric is judged is declared by its
+  sensor. A judged metric is refused as `primary` and as a guardrail in any genre with a
+  verdict (`judged_gate`); it can still be reported under `metrics:`.
+- **Two reductions.** `statistic` reduces one trial's reading to a number; `estimator`
+  combines the trials. By the shape of a reading:
 SHAPES
-  With no `statistic`, ix reads the first one listed for the shape.
-- **A model-judged metric never decides a gate.** Declare a metric a model scores as
-  `judged: true`. It is refused as `primary` and as a guard in any genre with a verdict.
-- **Effects** are what the file declares under `effects:`; the plan lists them. State what
-  starts a process, reaches the network, runs tools or spends money.
-- **Spend:** with `per_trial` and `ceiling`, validate refuses a plan estimated over the
-  ceiling.
+  With no `statistic`, ix takes the first listed. With no `estimator`, a boolean combines as
+  `rate` and anything else as the genre's estimator.
+- **Placeholders.** In an inline probe, `{name}` is a factor, or an option every subject
+  sets; anything else is `unbound_placeholder`.
+- **Probes from files.** `probes: {source: directory, path: probes}` reads one `.md` file
+  per probe: the body is the prompt, the frontmatter is the probe's truth (reference data a
+  sensor measures against; it never reaches the subject). A truth key no sensor in use
+  reads is `truth_unclaimed`. Sources: SOURCES.
+- **Effects** come from the kinds. `effects:` beside a `kind` adds to them and cannot remove
+  one. A run that spends money needs `spend.ceiling` (`spend_unbounded`).
+
+## Kinds
+
+Subjects and probes must fit: a probe kind needs facets, and every subject's kind must offer
+them (`kind_unfit`). A sensor needs facets from the subjects or from what the probes leave
+behind. Required options are marked `*`.
+
+KINDS
+
+Effects: EFFECTS
 
 ## Registration
 
-`ix register` writes `<file-stem>.registration.json` beside the experiment: the digests of
-the file and of the probe set, the genre, the primary metric, the margin, the repeats, the
-seed and the spend ceiling. Register once the plan is right and before any run. A change
-after that is a deviation; `ix register <path> --check` lists them, and `ix register` on a
-changed experiment is refused with exit 3 so the earlier record is never silently replaced.
+`ix register <path>` writes `<file-stem>.registration.json` beside the experiment. It holds
+the design as resolved (what you chose and what the genre supplied: comparison, margin,
+threshold, guardrails, control, repeats, seed, order, calibration, estimators, the analysis
+and its parameters, the sensors), and the digests of the probe set, the experiment and the
+plan you read.
+
+Digests are over meaning: a comment, key order or a default written out is not a change. A
+reworded `question` or `rationale` changes the experiment's digest and not the plan's.
+
+`ix deviations <path>` lists what differs from the registration and exits 9 when anything
+does. `ix register` on a changed experiment is refused (exit 3) and the record is kept. To
+replace it on purpose: `ix register <path> --amend --reason "<why>"`, which keeps the
+superseded record and the reason inside the new one.
 
 ## Output and exit codes
 
-`--json` prints one document on stdout with a `schema` field: `ix.v2.validation`,
-`ix.v2.plan`, `ix.v1.registered`, `ix.v1.deviations`, `ix.v1.genres`. With `--json`, an
-error is one JSON line on stderr: `{"error": {"kind", "message", "fix"}}`.
+`--json` prints one document on stdout with a `schema` field: `ix.v1.validation`,
+`ix.v1.plan`, `ix.v1.registered`, `ix.v1.deviations`, `ix.v1.genres`, `ix.v1.kinds`.
+
+A command that fails prints one envelope on stderr, as one JSON line under `--json`:
+
+```json
+{"schema": "ix.v1.error",
+ "error": {"kind": "...", "message": "...", "fix": "...", "problems": [], "deviations": []}}
+```
+
+`error.kind` is `config`, `conflict`, `not_found` or `failure`. `problems` and `deviations`
+are always present. `ix validate` on an invalid file and `ix deviations` that finds any are
+not failures: each prints its own document on stdout and exits non-zero.
+
+A problem is `{path, kind, message, fix, allowed, got, source}`: `allowed` lists the legal
+values where the set is closed, `got` is what was written. A validation with
+`"complete": false` stopped at the file's shape; fix those problems and validate again.
 
 | Exit | Meaning |
 |------|---------|
-| 0 | done; for `validate`, the experiment is valid |
-| 2 | usage: a bad flag or argument |
-| 3 | config: the experiment is invalid, or `register` met a changed experiment |
-| 4 | not found: no experiment file, or no registration to check |
+EXITS
 
 ## Problem kinds
 
-KINDS
+PROBLEMS
+
+Tolerate a kind you do not know: the set grows.
 """
 
-#: A worked example per built-in genre, by short name. Each validates and plans as written.
+#: A minimal example per built-in genre, by short name. None restates a default; the test
+#: suite validates and plans each one as written.
 EXAMPLES: dict[str, str] = {
     "evaluate": """\
-name: search-slo
-question: Does the search endpoint answer within 300 ms at the 95th percentile?
+name: skill-routing
+question: Does the review skill fire for a real ask and stay quiet for a decoy?
 genre: evaluate
 subjects:
-  search: {kind: http, base_url: "http://127.0.0.1:8080", effects: ["network to 127.0.0.1:8080"]}
+  catalog: {kind: agent, max_turns: 1, plugins: [plugins/review]}
 probes:
-  - {kind: http-load, target: "{base_url}/search?q=foo", load_model: open, rate: 20/s, duration: 2m}
-metrics:
-  - {name: latency, unit: ms, direction: lower, shape: histogram}
-primary: {metric: latency, statistic: p95}
-bar: {op: "<", value: 300ms}
+  - id: real-ask
+    kind: prompt
+    prompt: Review this pull request for security problems.
+    truth: {expectation: must_trigger, expected_skill: security-review}
+  - id: decoy
+    kind: prompt
+    prompt: What is the capital of France?
+    truth: {expectation: should_not_trigger, expected_skill: security-review}
+primary: {metric: activated_correctly}
+threshold: {op: ">=", value: 0.9}
+spend: {ceiling: 2.00, per_trial: 0.05}
 """,
     "compare": """\
-name: skill-description
-question: Does the rewritten description route better than the current one?
-hypothesis: rewritten is better than current on activated_correctly
+name: proxy-streaming
+question: Does streaming keep time to first byte without costing memory?
 genre: compare
 subjects:
-  current:   {kind: agent, plugins: [plugins/current], effects: [spends money, runs tools]}
-  rewritten: {kind: agent, plugins: [plugins/rewritten], effects: [spends money, runs tools]}
-probes:
-  - {id: real-ask, kind: prompt, prompt: "Review this pull request for security problems."}
-  - {id: decoy, kind: prompt, prompt: "What is the capital of France?"}
-metrics:
-  - {name: activated_correctly, direction: higher, shape: boolean}
-primary: {metric: activated_correctly}
-rule: superiority
-spend: {ceiling: 5.00, per_trial: 0.02}
-""",
-    "characterise": """\
-name: proxy-memory-curve
-question: How does peak memory grow with artifact size and concurrency?
-genre: characterise
-subjects:
-  proxy: {kind: process, command: [./proxy], effects: [starts process ./proxy]}
-factors:
-  size: [1MiB, 64MiB, 1GiB]
-  concurrency: [1, 8, 64]
+  buffered:  {kind: process, command: [./proxy, --buffered], url: "http://127.0.0.1:8080"}
+  streaming: {kind: process, command: [./proxy, --streaming], url: "http://127.0.0.1:8080"}
 probes:
   - kind: http-load
-    target: "http://127.0.0.1:8080/blobs/{size}"
+    target: "{url}/blobs/64MiB"
     load_model: open
-    rate: "{concurrency}0/s"
+    rate: 80/s
     duration: 60s
-metrics:
-  - {name: memory_peak, unit: bytes, direction: lower, shape: scalar}
-primary: {metric: memory_peak, statistic: max}
+primary: {metric: ttfb, statistic: p99}
+comparison: non-inferiority
+margin: 5%
+guardrails:
+  - {metric: memory_peak, margin: 0%}
+""",
+    "characterize": """\
+name: proxy-memory-curve
+question: How does peak memory grow with artifact size and request rate?
+genre: characterize
+subjects:
+  proxy: {kind: process, command: [./proxy], url: "http://127.0.0.1:8080"}
+factors:
+  size: [1MiB, 64MiB, 1GiB]
+  rate: [10/s, 80/s, 640/s]
+probes:
+  - kind: http-load
+    target: "{url}/blobs/{size}"
+    load_model: open
+    rate: "{rate}"
+    duration: 60s
+primary: {metric: memory_peak, estimator: max}
 """,
     "regress": """\
 name: proxy-gate
 question: May this build ship against the last release?
 genre: regress
 subjects:
-  baseline:  {kind: process, command: [./build/release/proxy], effects: [starts process]}
-  candidate: {kind: process, command: [./build/candidate/proxy], effects: [starts process]}
+  baseline:  {kind: process, command: [./build/release/proxy], url: "http://127.0.0.1:8080"}
+  candidate: {kind: process, command: [./build/candidate/proxy], url: "http://127.0.0.1:8080"}
 probes:
   - kind: http-load
-    target: "http://127.0.0.1:8080/blobs/64MiB"
+    target: "{url}/blobs/64MiB"
     load_model: open
     rate: 80/s
     duration: 60s
-metrics:
-  - {name: ttfb, unit: ms, direction: lower, shape: histogram}
 primary: {metric: ttfb, statistic: p99}
 margin: 5%
 """,
 }
 
 
+def _count(low: int, high: int | None) -> str:
+    if high == low:
+        return str(low)
+    return f"{low} or more" if high is None else f"{low} to {high}"
+
+
 def _genre_section(genre: Genre) -> str:
     label = schema.short(genre.name)
-    roles = ", ".join(
-        f"{role.name} ({role.min}"
-        + ("" if role.max == role.min else f" to {role.max}" if role.max else " or more")
-        + ")"
-        for role in genre.subjects
-    )
-    defaults = genre.defaults
+    roles = ", ".join(f"{role.name} ({_count(role.min, role.max)})" for role in genre.roles)
+    design = genre.design
     supplied = [
-        f"repeats {defaults.repeats.value} (at least {defaults.min_repeats.value})",
-        "subjects interleaved" if defaults.interleave.value else "subjects in order",
+        f"repeats {design.repeats.default} (at least {design.repeats.min})",
+        f"order {design.order}",
+        f"estimator {design.estimator}",
     ]
-    if defaults.aa.value:
-        supplied.append("an A/A calibration on the control")
-    if defaults.rule is not None:
-        supplied.append(f"rule {defaults.rule.value}")
+    if design.calibration != "none":
+        supplied.append(f"calibration {design.calibration} (the control against itself)")
+    if genre.default_comparison is not None:
+        supplied.append(f"comparison {genre.default_comparison}")
     lines = [
-        f"### {label}" + (f" (narrows {schema.short(genre.extends)})" if genre.extends else ""),
+        f"### {label}"
+        + (f" (narrows {schema.short(genre.extends)})" if genre.extends else "")
+        + (f"  `{genre.name}`" if label == genre.name else ""),
         "",
         f"*{genre.question}*",
         "",
         f"- Subjects: {roles}.",
         f"- Factors: {genre.factors}.",
-        f"- You must set: {', '.join(genre.requires) or 'only the always-required keys'}.",
-        f"- Rules: {', '.join(genre.rules) or 'none; do not set `rule`'}.",
-        f"- Verdict: {'holds, fails or inconclusive' if genre.gated else 'none; estimates only'}.",
-        f"- ix supplies: {'; '.join(supplied)}. These defaults are provisional.",
+        f"- You must set: {', '.join(genre.author_must_set) or 'only the always-required keys'}.",
+    ]
+    if genre.comparisons:
+        lines.append("- Comparisons:")
+        lines += [f"  - `{name}`: {form}" for name, form in genre.comparisons.items()]
+    else:
+        lines.append(f"- Decides: {genre.hypothesis_form}")
+        lines.append("- Comparisons: none; do not set `comparison`.")
+    lines += [
+        f"- Verdict: {VERDICTS[genre.verdict_form]}.",
+        f"- The genre supplies: {'; '.join(supplied)}. {design.note.capitalize()}.",
         "",
-        genre.skill.rstrip(),
+        genre.guidance.rstrip(),
     ]
     example = EXAMPLES.get(label)
     if example is not None:
@@ -228,13 +295,66 @@ def _genre_section(genre: Genre) -> str:
     return "\n".join(lines)
 
 
-def render(catalogue: Catalogue) -> str:
-    """The skill document for the genres in ``catalogue``."""
-    shapes = "\n".join(
-        f"  `{shape}`: {', '.join(statistics) or 'no statistic; it cannot decide'}."
-        for shape, statistics in STATISTICS.items()
+def _kind_line(kind: Kind) -> str:
+    options = ", ".join(
+        f"`{name}`{'*' if option.required else ''}"
+        + (f" ({'|'.join(option.allowed)})" if option.allowed else f" ({option.type})")
+        for name, option in kind.options.items()
     )
-    kinds = ", ".join(f"`{kind}`" for kind in sorted(PROBLEM_KINDS))
-    sections = "\n\n".join(_genre_section(genre) for genre in catalogue.genres.values())
-    body = _FILE.replace("SHAPES", shapes).replace("KINDS", kinds + ".")
-    return f"{_HEAD}\n{sections}\n\n{body}"
+    parts = [f"- **`{schema.short(kind.name)}`**: {kind.summary}"]
+    parts.append(f"  options: {options or 'none'}")
+    facets = []
+    if kind.needs:
+        facets.append(f"needs {', '.join(kind.needs)}")
+    if kind.offers:
+        facets.append(f"offers {', '.join(kind.offers)}")
+    if kind.effects:
+        facets.append(f"effects {', '.join(kind.effects)}")
+    if kind.truth:
+        facets.append(f"reads truth {', '.join(kind.truth)}")
+    if facets:
+        parts.append(f"  {'; '.join(facets)}")
+    for metric in kind.metrics:
+        traits = [metric.shape, f"{metric.direction} is better"]
+        if metric.unit:
+            traits.insert(1, metric.unit)
+        if metric.judged:
+            traits.append("JUDGED by a model")
+        parts.append(f"  metric `{metric.name}` ({', '.join(traits)}): {metric.description}")
+    return "\n".join(parts)
+
+
+def _kinds_section(kinds: Kinds) -> str:
+    titles = {
+        "subject": "Subject kinds (`subjects.<name>.kind`)",
+        "probe": "Probe kinds (`probes[].kind`)",
+        "sensor": "Sensors (selected by metric; `sensors[].kind` to name one)",
+        "environment": "Environment kinds (`environment.kind`)",
+    }
+    blocks = []
+    for family in KIND_FAMILIES:
+        lines = "\n".join(_kind_line(kind) for kind in kinds.of(family)) or "- (none installed)"
+        blocks.append(f"### {titles[family]}\n\n{lines}")
+    return "\n\n".join(blocks)
+
+
+def render(genres: Genres, kinds: Kinds, probe_sources: list[str]) -> str:
+    """The skill document for the installed genres, kinds and probe sources."""
+    width = max(len(command) for command, _ in COMMANDS)
+    commands = "\n".join(f"{command:<{width}}   # {what}" for command, what in COMMANDS)
+    shapes = "\n".join(
+        f"  - `{shape}`: statistic {', '.join(STATISTICS[shape])}; "
+        f"estimator {', '.join(ESTIMATORS[shape])}"
+        for shape in STATISTICS
+    )
+    body = (
+        _FILE.replace("SHAPES", shapes)
+        .replace("NOTE", NOTE_PREFIX)
+        .replace("SOURCES", ", ".join(f"`{name}`" for name in probe_sources) or "(none)")
+        .replace("KINDS", _kinds_section(kinds))
+        .replace("EFFECTS", "; ".join(f"`{name}` {what}" for name, what in EFFECTS.items()) + ".")
+        .replace("EXITS", "\n".join(f"| {code} | {what} |" for code, what in EXIT_CODES.items()))
+        .replace("PROBLEMS", ", ".join(f"`{kind}`" for kind in sorted(PROBLEM_KINDS)) + ".")
+    )
+    sections = "\n\n".join(_genre_section(genre) for genre in genres.genres.values())
+    return f"{_HEAD.replace('COMMANDS', commands)}\n{sections}\n\n{body}"

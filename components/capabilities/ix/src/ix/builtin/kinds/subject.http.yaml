@@ -1,0 +1,9 @@
+schema: ix.v1.kind
+name: ix.v1.subject.http
+summary: An endpoint that is already running; ix only sends it requests.
+options:
+  base_url: {type: string, required: true, description: the endpoint's base URL}
+  headers: {type: mapping, description: headers sent with every request}
+  auth: {type: string, description: "where the credential is, such as env:TOKEN; never the credential itself"}
+effects: [network]
+offers: [url]
