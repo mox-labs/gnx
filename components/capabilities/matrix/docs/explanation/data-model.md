@@ -1,126 +1,175 @@
 # The data model
 
-A run's values live in a **Construct**: one typed table per topic, plus a ledger of every row
-in the order it landed. Each row is an **Artifact**. The Construct belongs to a **Run**, the
-observed record of one execution. A **ConstructStore** keeps finished runs.
+A run's rows live in a **Construct**: one typed table per kind, plus a **ledger** of every row
+in the order it landed. The Construct belongs to a **Run**, the observed record of one
+execution. A **ConstructStore** keeps the record as it is made.
 
 ---
 
-## Artifact
-
-One value produced on one topic during a run, with its provenance. A frozen pydantic model.
-
-| Field | Type | Meaning |
-|-------|------|---------|
-| `id` | `str` | uuid4 hex |
-| `run_id` | `str` | the run it belongs to |
-| `topic` | `str` | the topic it was produced on |
-| `type_url` | `str` | the topic's type |
-| `producer` | `str` | the member alias that produced it, or `$input` for a flow input |
-| `port` | `str` | the producer's port name (the input's name for `$input`) |
-| `value` | `Any` | the value itself |
-| `episode` | `int` | which repetition of the flow produced it; `0` for a single run |
-| `timestamp` | `datetime` | UTC |
-
-`Artifact.create(*, run_id, topic, type_url, producer, port, value, episode=0)` stamps `id`
-and `timestamp`. The executor is the only caller in a run.
-
 ## Construct
 
-Typed tables, one per topic. A topic carries exactly one type (the compiler enforces it), so
-each table has one schema. Several producers on one topic (fan-in) append rows to the same
-table.
+A **kind** is the type URL of some data, and it is the schema of its table. The rows of
+`acme.v1.review` are reviews: the records themselves, with nothing wrapped around them. Each
+kind has one provider (the wiring enforces it), so a table holds one writer's rows in the
+order it handed them over. Run inputs are tables too.
 
 ```python
 construct = run.construct
 
-construct.rows("loud")            # tuple[Artifact, ...], in the order they landed; () if none
-construct.values("loud")          # tuple of the values on that topic
-construct.last("loud")            # the most recent Artifact; NotFoundError if there is none
-construct.by_type("demo.v1.text") # every artifact of that type, across topics, in ledger order
-construct.topics()                # {topic: type_url} for every topic declared or seen
-construct.ledger                  # every artifact, in append order
-"loud" in construct               # True if the topic has at least one row
-len(construct)                    # number of artifacts
+construct.rows("demo.v1.shout")        # the rows, in the order they landed; () if none
+construct.last("demo.v1.shout")        # the most recent row; NotFoundError if there is none
+construct.kinds()                      # every table: the run's kinds, then matrix.v1.ledger
+construct.ledger                       # every row's LedgerEntry, in the order rows were appended
+construct.provenance("demo.v1.shout")  # the ledger entries for that kind's rows, in row order
+construct.torn                         # entries whose row never landed; () for a live run
+"demo.v1.shout" in construct           # True if the kind has at least one row
+len(construct)                         # number of rows, the ledger's own aside
 ```
 
-`last` on an empty topic raises `NotFoundError`, which lists the topics that do have rows.
+`last` on an empty kind raises `NotFoundError`, which lists the kinds that do have rows.
 
-Rows are append-only and the executor is their only writer. Within a level, the executor
-appends results in the members' declaration order, not completion order, so a Construct reads
-the same however its members were scheduled. `append` refuses a row whose type differs from
-the type its topic already carries.
+Rows are append-only and the executor is their only writer. Components never receive the
+Construct. A component gets `Inputs`: for each kind it requires, a tuple of that kind's rows,
+each its own deep copy. That is what makes `requires` the true data dependencies, and why a
+component that mutates what it read changes neither the record nor what another component
+sees. The record keeps its own copy of a row too, so a component that goes on to change an
+object after handing it over does not change what was recorded. Rows must therefore be data
+that can be copied, not live handles.
 
-Components never receive the Construct. A member gets `Inputs`, holding deep copies of just
-the values on the topics it bound: the last value for an ordinary port, a tuple of every value
-for a `many` port. That is what makes the declared ports the true data dependencies, and why
-a component that mutates its input cannot alter a recorded artifact.
+### The ledger
+
+Provenance is one more typed table. Its kind is `matrix.v1.ledger`, and every row in every
+other table has exactly one entry in it:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `seq` | `int` | the row's place in the run's order, from 0 |
+| `kind` | `str` | the table the row is in |
+| `row` | `int` | the row's 0-based position in that table |
+| `component` | `str` | the component that handed it over, or `$input` for a run input |
+| `time` | `datetime` | UTC |
+
+`construct.rows("matrix.v1.ledger")` is the same thing as `construct.ledger`. No component
+may provide or require the ledger's kind.
+
+**The pointer** from an entry to its row is `(kind, row)`: the table, and a position in it.
+Tables are append-only with one writer, so a position never changes, and nothing has to be
+added to a record to make it addressable. The alternative, an id carried in every row, would
+put matrix's field inside the caller's record, which is the wrapper the model does without.
+
+**The write order** is the entry first, then the row. Both go through to the store before the
+append returns. The two cannot be made one atomic write across two tables, so the order
+decides what a kill between them leaves:
+
+- entry first (what matrix does): an entry pointing one past the end of its table. A reader
+  can see that, and nothing is unaccounted for;
+- row first: a row with no entry. A reader cannot tell it from a row that belongs, and its
+  provenance is gone.
+
+So a row never exists without its ledger entry. The reverse, an entry without its row, is a
+**torn tail**: `Construct.restore` (and so `store.load`) keeps every entry whose row exists
+and reports the others in `construct.torn`. The two writes are consecutive and nothing is
+written after one fails, so a torn tail is the ledger's last entry and nothing else. A stored
+record that could not have come from that order (a row with no entry, entries out of step
+with their table) is damaged, and a `StoreError`.
+
+Order across kinds (`seq`) is the order rows arrived, which depends on scheduling when
+components run side by side. Order within one kind is its provider's.
 
 ## Run
 
-The observed state of one execution, kept apart from the `Flow`, which a run never changes.
+The observed state of one execution, kept apart from the wiring, which a run never changes.
 
 | Field | Type | Meaning |
 |-------|------|---------|
 | `run_id` | `str` | given to `Executor.run`, or a fresh uuid4 hex |
-| `flow` | `str` | the flow's name |
-| `construct` | `Construct` | every value produced, flow inputs included |
+| `construct` | `Construct` | every row recorded, run inputs included |
 | `status` | `"running" \| "completed" \| "failed" \| "cancelled"` | |
 | `started`, `ended` | `datetime` | UTC; `ended` is `None` while running |
-| `failures` | `list[dict]` | `{member, kind, message}` for each member that failed |
-| `members` | `dict[str, dict]` | alias to `{status, reason?, duration_ms?, abandoned?}`: how each member ended |
-| `releases` | `list[dict]` | `{member, status, error}` for each deferred release, in the order called |
+| `failures` | `list[dict]` | `{component, kind, message}` for each component that failed |
+| `components` | `dict[str, dict]` | name to `{status, reason?, duration_ms?, abandoned?}`: how each component ended |
+| `releases` | `list[dict]` | `{component, status, error}` for each deferred release, in the order called |
 | `events_dropped` | `int` | events no observer received |
-| `episode` | `int` | stamped on every artifact the run produces |
 
-`run.outputs(topic)` is `run.construct.values(topic)`.
+`run.rows(kind)` is `run.construct.rows(kind)`. `run.document()` is the run as a JSON-ready
+document (`matrix.v1.run`), without its tables.
 
-Flow inputs are recorded first, with producer `$input`. A provide port the member returned
-but the flow left unbound is checked against its declaration and then dropped: only bound
-topics become tables.
+Run inputs are recorded first, by `$input`. Then each row is recorded when its component
+hands it over (`ctx.provide`) or, for what it returns, when it ends.
 
-When a member fails, the executor stops or skips the others as `Limits.on_failure` says,
+When a component fails, the executor stops or skips the others as `Limits.on_failure` says,
 records each failure, calls the deferred releases, and raises `RunError`. `RunError.run` is
 the partial Run, with `status == "failed"`, and `RunError.construct` is its Construct. A
-cancelled run raises `RunCancelled` with the partial Run in the same way. A member that was
-stopped but returned within its grace has its values recorded like any other.
+cancelled run raises `RunCancelled` with the partial Run in the same way. A component that
+was stopped but returned within its grace has its rows recorded like any other.
 
-## Saving a run
+## Keeping a run
 
-A `ConstructStore` keeps finished runs and gives back their Constructs. Two adapters ship:
+A `ConstructStore` is given to `Executor.run(..., store=)`. The executor opens the run in it
+before anything starts, appends each row as it lands, and finishes the run when it ends. So
+the record is outside the process the whole time: it can be read while the run is going, and
+a run that is killed leaves everything it had recorded.
 
-- `MemoryConstructStore()` keeps `Run` objects in a dict, values as given. For tests and
-  single-process callers.
-- `JsonlConstructStore(root)` writes one directory per run:
+Two adapters ship:
+
+- `MemoryConstructStore()` keeps runs in a dict, rows as given. For tests and single-process
+  callers.
+- `JsonlConstructStore(root, fsync=False)` keeps one directory per run:
 
 ```
-<root>/<run_id>/run.json        {"schema": "matrix.v1.run", run_id, flow, status, episode,
-                                 started, ended, failures,
-                                 "tables": {topic: {"type_url", "rows", "file"}}}
-<root>/<run_id>/<topic>.jsonl   one artifact per line:
-                                 seq, id, producer, port, episode, timestamp, value
+<root>/<run_id>/run.json                {"schema": "matrix.v1.run", run_id, status, started,
+                                         ended, components, failures, releases,
+                                         "tables": {kind: {"file", "rows"}}}
+<root>/<run_id>/<kind>.jsonl            one row per line: the typed record itself
+<root>/<run_id>/matrix.v1.ledger.jsonl  one line per row landed: seq, kind, row, component, time
 ```
 
-One file per topic means one schema per file, so `jq` or DuckDB's `read_json_auto` reads a
-table without matrix installed. `seq` is the artifact's position in the ledger, which `load`
-uses to rebuild the ledger order. Topic names with characters outside `[A-Za-z0-9._-]` are
-sanitised in the file name; `run.json` maps each topic to its file. Each file is written to a
-temporary name and renamed, so a crashed save does not leave a half-written table.
+One kind per file means one schema per file, so `jq` or DuckDB's `read_json_auto` reads a
+table without matrix installed.
+
+**While a run is going**, `run.json` says `running` (and names the process writing it) and
+every table file exists. Each row is one `write` of one whole line to a file opened for
+appending, made before the append returns, so a process killed at any moment leaves every row
+it had appended. With `fsync=True` each row is also flushed to the disk, which survives the
+machine going down and costs a disk flush per row. A line cut short by a kill is the last line
+of its file and has no newline; readers do not count it as a row.
+
+**When a run ends**, `run.json` is replaced in one rename by the final document, with the row
+count of each table. A reader sees the record as it was while running or the finished one,
+never a mixture.
 
 ```python
-from matrix import JsonlConstructStore
+from matrix import Executor, JsonlConstructStore
 
 store = JsonlConstructStore("runs/")
-store.save(run)                        # -> "runs/<run_id>"
-store.runs()                           # saved run ids, oldest first
-store.describe(run.run_id)["tables"]   # {"loud": {"type_url": "demo.v1.text", "rows": 1, ...}}
-construct = store.load(run.run_id)     # the Construct, ledger order restored
+run = await Executor().run(wiring, inputs, store=store, run_id="nightly-7")
+
+store.runs()                         # run ids, oldest first
+store.describe("nightly-7")          # the run.json document
+construct = store.load("nightly-7")  # the Construct, ledger included
+construct.torn                       # () unless the run was cut off between two writes
 ```
 
 The store contract:
 
-- `save` never rewrites a run; saving a run id that already exists is a `ConfigError`.
-- `load` returns the Construct as saved. From the JSONL store, values come back as JSON data,
-  not as the Python objects that produced them (a pydantic model comes back as a dict).
+- `open` on a run id that already exists is a `StoreError`: a record is never reopened or
+  rewritten.
+- `append(kind, row)` is durable when it returns. A store that cannot append, or cannot
+  finish, fails the run: `RunError` with kind `store`. After one failed write nothing more is
+  written to that record.
+- `load` works on a run in any state. From the JSONL store rows come back as JSON data, not
+  as the Python objects that produced them (a pydantic model comes back as a dict).
+- `describe` returns `status` as recorded for a finished run. For one that never finished it
+  counts the rows on disk, reports `torn`, and says `running`, or `interrupted` when the
+  process that was writing it, on this host, is gone. From another host a dead run still
+  reads `running`: matrix does not guess.
 - A missing run is a `NotFoundError` naming the runs that exist.
 - A run id must be a safe directory name (`[A-Za-z0-9._-]`, not `.` or `..`).
+
+## Large values
+
+A row is read whole by every component that requires its kind and written whole to the store.
+A value too large for that (a sample series, a capture, a workspace) stays where it is, and
+the row says where, with a `Ref` (kind `matrix.v1.ref`): `uri`, `media_type`, `size`,
+`digest`. A component provides a `Ref` on its own or as a field of its own record. matrix
+records it like any row; it does not fetch, copy or verify what it points at.

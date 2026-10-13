@@ -19,9 +19,9 @@ observer that blocks the event loop itself; an observer doing slow I/O must be `
 That makes observers telemetry, **not** an audit channel: an audit hook would have to be able
 to abort the operation, which this port deliberately does not offer.
 
-**Event names are namespaced**, root first, like type URLs: ``matrix.member.end``,
+**Event names are namespaced**, root first, like type URLs: ``matrix.component.end``,
 ``acme.probe.sample``. matrix owns ``matrix.*`` (the names below); a component emits under any
-other root through its :class:`~matrix.domain.flow.RunContext`. Observers treat a name they
+other root through its :class:`~matrix.domain.component.RunContext`. Observers treat a name they
 do not know as opaque. A ``*.start``/``*.end`` pair shares a ``span`` id.
 
 The shape is versioned by ``schema``; within ``matrix.v1.event`` fields are only ever added.
@@ -49,14 +49,14 @@ logger = logging.getLogger("matrix.observer")
 
 EVENT_SCHEMA = "matrix.v1.event"
 
-#: The names matrix emits, and the fields each carries beyond ``member``.
-RUN_START = "matrix.run.start"  # flow
-RUN_END = "matrix.run.end"  # flow, status, artifacts, duration_ms
-MEMBER_START = "matrix.member.start"
-MEMBER_STOPPING = "matrix.member.stopping"  # reason
-MEMBER_END = "matrix.member.end"  # status, reason?, duration_ms?, kind?, abandoned?
-MEMBER_LATE = "matrix.member.late"  # call: the context method used after the member ended
-ARTIFACT_APPEND = "matrix.artifact.append"  # topic, type_url, producer, port
+#: The names matrix emits, and the fields each carries beyond ``component``.
+RUN_START = "matrix.run.start"  # components
+RUN_END = "matrix.run.end"  # status, rows, duration_ms
+COMPONENT_START = "matrix.component.start"
+COMPONENT_STOPPING = "matrix.component.stopping"  # reason
+COMPONENT_END = "matrix.component.end"  # status, reason?, duration_ms?, kind?, abandoned?
+COMPONENT_LATE = "matrix.component.late"  # call: the context method used after it ended
+ROW_APPEND = "matrix.row.append"  # kind, row, seq
 RELEASE_START = "matrix.release.start"
 RELEASE_END = "matrix.release.end"  # status, error?
 AGENT_START = "matrix.agent.start"  # agent, model
@@ -76,8 +76,8 @@ class Event:
     run_id: str | None = None
     parent: str | None = None
     fields: dict[str, Any] = field(default_factory=dict)
-    #: The member the event is about, or that emitted it. ``None`` for run-level events.
-    member: str | None = None
+    #: The component the event is about, or that emitted it. ``None`` for run-level events.
+    component: str | None = None
     time: datetime = field(default_factory=lambda: datetime.now(UTC))
     schema: str = EVENT_SCHEMA
 
@@ -90,7 +90,7 @@ class Event:
             "run_id": self.run_id,
             "span": self.span,
             "parent": self.parent,
-            "member": self.member,
+            "component": self.component,
             "fields": self.fields,
         }
 
@@ -220,19 +220,19 @@ class SpanScope:
 
     run_id: str
     span: str
-    member: str
+    component: str
     channel: Channel
 
 
-#: The scope of the flow member running in this task, so an agent it calls reports as that
-#: member's child, through the run's channel, without the member threading ids through.
+#: The scope of the component running in this task, so an agent it calls reports as that
+#: component's child, through the run's channel, without the component threading ids through.
 CURRENT_SPAN: ContextVar[SpanScope | None] = ContextVar("matrix_span", default=None)
 
 
 async def emit(observers: Sequence[Observer], event: Event) -> None:
     """Emit from code that may or may not be inside a run (a bound agent).
 
-    Inside a run the event goes through the run's channel, so it cannot stall the member;
+    Inside a run the event goes through the run's channel, so it cannot stall the component;
     outside one there is no channel, and the observers are called here and now.
     """
     scope = CURRENT_SPAN.get()

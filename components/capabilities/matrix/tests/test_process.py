@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from matrix import Executor, Flow, Inputs, Limits, Member, RunCancelled, RunError, compile_flow
+from matrix import Executor, Inputs, Limits, RunCancelled, RunContext, RunError, wire
 from matrix.process import spawn
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -42,17 +42,17 @@ _CHILD_OF_STUBBORN = (
 class Shell:
     """Spawns a child, learns the grandchild's pid, then does what ``then`` says."""
 
-    requires: dict[str, Any] = {}
-    provides = {"out": "acme.v1.text"}
+    requires: tuple[str, ...] = ()
+    provides = ("acme.v1.text",)
 
     def __init__(self, then: str, child: str = _CHILD, grace_s: float = 5.0) -> None:
         self._then, self._child, self._grace_s = then, child, grace_s
         self.pids: list[int] = []
         self.ready = asyncio.Event()
 
-    async def run(self, inputs: Inputs) -> dict[str, Any]:
+    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
         process = await spawn(
-            inputs.context,
+            ctx,
             [sys.executable, "-c", self._child],
             grace_s=self._grace_s,
             stdout=asyncio.subprocess.PIPE,
@@ -64,7 +64,7 @@ class Shell:
             raise RuntimeError("kaput")
         if self._then == "hang":
             await asyncio.Event().wait()
-        return {"out": "done"}
+        return {"acme.v1.text": "done"}
 
 
 def _alive(pid: int) -> bool:
@@ -91,17 +91,17 @@ async def _gone(pids: list[int]) -> bool:
 
 
 def _flow(component: Shell) -> Any:
-    return compile_flow(Flow("f", (Member("shell", component, {"out": "t"}),)))
+    return wire({"shell": component})
 
 
 async def test_the_whole_group_is_killed_when_the_run_completes() -> None:
     shell = Shell("return")
     run = await Executor().run(_flow(shell))
-    assert run.releases == [{"member": "shell", "status": "released", "error": None}]
+    assert run.releases == [{"component": "shell", "status": "released", "error": None}]
     assert await _gone(shell.pids)
 
 
-async def test_the_whole_group_is_killed_when_the_member_fails() -> None:
+async def test_the_whole_group_is_killed_when_the_component_fails() -> None:
     shell = Shell("raise")
     with pytest.raises(RunError):
         await Executor().run(_flow(shell))
@@ -115,7 +115,7 @@ async def test_the_whole_group_is_killed_when_the_run_is_cancelled() -> None:
     task.cancel()
     with pytest.raises(RunCancelled) as e:
         await task
-    assert e.value.run.releases == [{"member": "shell", "status": "released", "error": None}]
+    assert e.value.run.releases == [{"component": "shell", "status": "released", "error": None}]
     assert await _gone(shell.pids)
 
 

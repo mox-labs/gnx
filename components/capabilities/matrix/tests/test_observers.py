@@ -12,14 +12,13 @@ from rich.console import Console
 from matrix import (
     Event,
     Executor,
-    Flow,
     Inputs,
     MatrixConfig,
-    Member,
+    RunContext,
     RunError,
-    compile_flow,
     compose,
     default_registry,
+    wire,
 )
 from matrix.adapters._out.observers.console import ConsoleObserver
 from matrix.adapters._out.observers.jsonl import JsonlObserver
@@ -27,24 +26,21 @@ from matrix.adapters._out.observers.jsonl import JsonlObserver
 if TYPE_CHECKING:
     from pathlib import Path
 
-TEXT = "acme.v1.text"
+OUT = "acme.v1.out"
 
 
 class Step:
-    """A component whose body is the coroutine function it is given."""
+    """A component whose body is a coroutine function of its context; what the body returns
+    is one row of the kind the step provides."""
 
-    requires: dict[str, Any] = {}
-    provides = {"out": TEXT}
-
-    def __init__(self, body: Any) -> None:
+    def __init__(self, body: Any, *, provides: str | None = None) -> None:
+        self.requires: frozenset[str] = frozenset()
+        self.provides = frozenset([provides] if provides else [])
         self._body = body
 
-    async def run(self, inputs: Inputs) -> dict[str, Any]:
-        return {"out": await self._body(inputs.context)}
-
-
-def flow_of(*members: Member) -> Any:
-    return compile_flow(Flow("f", members))
+    async def run(self, inputs: Inputs, ctx: RunContext) -> Any:
+        row = await self._body(ctx)
+        return {kind: row for kind in self.provides}
 
 
 async def _ok(ctx: Any) -> str:
@@ -54,14 +50,14 @@ async def _ok(ctx: Any) -> str:
 async def test_the_jsonl_observer_writes_one_document_per_event(tmp_path: Path) -> None:
     path = tmp_path / "nested" / "events.jsonl"
     observer = JsonlObserver(path)
-    run = await Executor([observer]).run(flow_of(Member("a", Step(_ok), {"out": "t"})))
+    run = await Executor([observer]).run(wire({"a": Step(_ok, provides=OUT)}))
     observer.close()
     lines = [json.loads(line) for line in path.read_text().splitlines()]
     assert [d["name"] for d in lines] == [
         "matrix.run.start",
-        "matrix.member.start",
-        "matrix.member.end",
-        "matrix.artifact.append",
+        "matrix.component.start",
+        "matrix.row.append",
+        "matrix.component.end",
         "matrix.run.end",
     ]
     assert {d["schema"] for d in lines} == {"matrix.v1.event"}
@@ -70,25 +66,25 @@ async def test_the_jsonl_observer_writes_one_document_per_event(tmp_path: Path) 
 
 
 async def test_the_jsonl_observer_defaults_to_stderr(capsys: pytest.CaptureFixture[str]) -> None:
-    await Executor([JsonlObserver()]).run(flow_of(Member("a", Step(_ok))))
+    await Executor([JsonlObserver()]).run(wire({"a": Step(_ok)}))
     out, err = capsys.readouterr()
     assert out == ""
     assert json.loads(err.splitlines()[0])["name"] == "matrix.run.start"
 
 
 @pytest.mark.parametrize("terminal", [False, True])
-async def test_the_console_observer_says_how_each_member_ended(terminal: bool) -> None:
+async def test_the_console_observer_says_how_each_component_ended(terminal: bool) -> None:
     async def boom(ctx: Any) -> str:
         raise RuntimeError("kaput")
 
     screen = io.StringIO()
     console = Console(file=screen, force_terminal=terminal, no_color=True, width=100)
-    compiled = flow_of(Member("good", Step(_ok), {"out": "t"}), Member("bad", Step(boom)))
+    wiring = wire({"good": Step(_ok, provides=OUT), "bad": Step(boom)})
     with pytest.raises(RunError):
-        await Executor([ConsoleObserver(console)]).run(compiled)
+        await Executor([ConsoleObserver(console)]).run(wiring)
     text = screen.getvalue()
     assert "good completed" in text and "bad failed" in text
-    assert text.count("run ") == 2 and "failed in" in text
+    assert "started: good, bad" in text and "failed in" in text
     if not terminal:
         assert "good started" in text  # no live display to show it; a line instead
 

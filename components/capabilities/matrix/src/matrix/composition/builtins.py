@@ -16,7 +16,10 @@ from matrix.adapters._out.runtime.mock import MockRuntime, MockRuntimeConfig
 from matrix.adapters._out.runtime.model import ModelAgentRuntimeConfig
 from matrix.domain.agent import AgentResponse
 from matrix.domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
+from matrix.domain.component import LEDGER
+from matrix.domain.construct import LedgerEntry
 from matrix.domain.ids import type_url
+from matrix.domain.ref import REF, Ref
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -110,9 +113,11 @@ def register(registry: Registry) -> None:
         _agent_step,
         config=AgentStepConfig,
         needs={"agents"},
-        summary="An agent as a flow member: inputs rendered into its task, its reply on ports",
+        summary="An agent as a component: the rows it requires rendered into its task",
     )
     registry.register_payload(AGENT_RESPONSE, AgentResponse)
+    registry.register_payload(LEDGER, LedgerEntry)
+    registry.register_payload(REF, Ref)
     registry.register(
         "payload-type", TASK, str, summary="A task for an agent: plain text", stability="stable"
     )
@@ -128,7 +133,7 @@ def register(registry: Registry) -> None:
         observer_type_url("console"),
         _console,
         effects=set(),
-        summary="Progress on stderr: member states and elapsed time, live on a terminal",
+        summary="Progress on stderr: component states and elapsed time, live on a terminal",
     )
     registry.register(
         "observer",

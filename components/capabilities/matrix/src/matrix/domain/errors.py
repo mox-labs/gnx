@@ -7,10 +7,11 @@ the exit code their CLIs use:
 =============  ====  ==========================================================
 kind           exit  meaning, and the caller's next move
 =============  ====  ==========================================================
-``config``     3     a config, definition, flow or argument is invalid: fix it
+``config``     3     a config, definition, wiring or argument is invalid: fix it
 ``not_found``  4     a name or type URL is not registered or configured
-``contract``   1     a component broke its declared ports (a bug in it)
+``contract``   1     a component broke what it declares (a bug in it)
 ``component``  1     a component raised while running (its failure)
+``store``      1     the run's record could not be written or read: fix the store
 ``transient``  5     unavailable, rate-limited or timed out: retry later
 ``auth``       6     credentials missing or refused: fix credentials
 ``unknown``    1     anything else that went wrong
@@ -30,13 +31,16 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from matrix.domain.construct import Construct
 
-ErrorKind = Literal["config", "not_found", "contract", "component", "transient", "auth", "unknown"]
+ErrorKind = Literal[
+    "config", "not_found", "contract", "component", "store", "transient", "auth", "unknown"
+]
 
 EXIT_CODES: dict[str, int] = {
     "config": 3,
     "not_found": 4,
     "contract": 1,
     "component": 1,
+    "store": 1,
     "transient": 5,
     "auth": 6,
     "unknown": 1,
@@ -71,7 +75,7 @@ class MatrixError(Exception):
 
 
 class ConfigError(MatrixError, ValueError):
-    """A config, agent definition, flow, or component config is invalid.
+    """A config, agent definition, wiring, or component config is invalid.
 
     Always names where the bad value came from (a file, a key path, a type URL).
     """
@@ -89,19 +93,27 @@ class NotFoundError(MatrixError, KeyError):
 
 
 class CompilationError(ConfigError):
-    """A flow is malformed: an unbound port, a type mismatch on a topic, or a cycle."""
+    """Components cannot be wired: a kind nobody provides, two providers of one, a cycle."""
 
 
 class ContractError(MatrixError):
-    """A component broke its declared ports: a missing, extra or ill-typed output."""
+    """A component broke what it declares: a row of a kind it does not provide, or an
+    ill-typed one."""
 
     kind: ErrorKind = "contract"
 
 
 class ComponentError(MatrixError):
-    """A component raised while the flow ran. The original exception is the cause."""
+    """A component raised while it ran. The original exception is the cause."""
 
     kind: ErrorKind = "component"
+
+
+class StoreError(MatrixError):
+    """The run's record could not be kept or read back: a write failed, a run id is already
+    taken, or a stored record contradicts itself. A run whose record cannot be kept fails."""
+
+    kind: ErrorKind = "store"
 
 
 RuntimeReason = Literal[
@@ -152,17 +164,18 @@ class AgentRuntimeError(MatrixError):
 
 
 class RunError(MatrixError):
-    """A flow run failed. ``run`` is the partial :class:`Run`; the member's error is the cause.
+    """A run failed. ``run`` is the partial :class:`Run`; the component's error is the cause.
 
-    Nothing produced before the failure is lost: ``run.construct`` holds it. ``run.failures``
-    lists every member that failed, ``run.members`` how each one ended, and ``run.releases``
-    what became of each deferred release.
+    Nothing recorded before the failure is lost: ``run.construct`` holds it.
+    ``run.failures`` lists every component that failed, ``run.components`` how each one
+    ended, and ``run.releases`` what became of each deferred release. ``component`` is the
+    name of the first to fail (``$input`` when a run input could not be recorded).
     """
 
-    def __init__(self, message: str, *, run: Any, member: str, cause_kind: ErrorKind) -> None:
-        super().__init__(message, member=member)
+    def __init__(self, message: str, *, run: Any, component: str, cause_kind: ErrorKind) -> None:
+        super().__init__(message, component=component)
         self.run = run
-        self.member = member
+        self.component = component
         self._cause_kind = cause_kind
 
     @property
@@ -176,14 +189,14 @@ class RunError(MatrixError):
 
 
 class RunCancelled(asyncio.CancelledError):  # noqa: N818 - it is a cancellation, not an Error
-    """The task running a flow was cancelled (by its caller, Ctrl-C or SIGTERM).
+    """The task awaiting a run was cancelled (by its caller, Ctrl-C or SIGTERM).
 
-    Raised only after the run stopped its members and called every deferred release, so it is
+    Raised only after the run stopped its components and called every deferred release, so it is
     still a ``CancelledError`` to asyncio and to callers. ``run`` is the partial :class:`Run`;
     its ``status`` says how far it got (``cancelled``, or ``completed``/``failed`` when the
     cancellation arrived as the run was already ending).
     """
 
     def __init__(self, run: Any) -> None:
-        super().__init__(f"run {run.run_id} of flow {run.flow!r} was cancelled")
+        super().__init__(f"run {run.run_id} was cancelled")
         self.run = run

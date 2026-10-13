@@ -13,13 +13,16 @@ order:
 Nothing is called: composition makes no model call and no tool call. Every failure is a
 ConfigError naming the key path and the legal values.
 
-**Needs.** An extension declares the shared things it needs (``agents``, ``models``, ``cwd``)
-when it registers; composition hands over exactly those. Nothing is matched by field name.
+:meth:`Container.wire` then turns a list of ``{name, type, config}`` entries (the config's
+``matrix.components``, or the caller's own) into components and wires them by kind.
+
+**Needs.** An extension declares the shared things it needs (``agents``, ``models``, ``cwd``;
+a component may also ask for its ``name``) when it registers; composition hands over exactly
+those. Nothing is matched by field name.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -29,14 +32,14 @@ from matrix.composition.builtins import RUNTIME_PREFIX, observer_type_url, runti
 from matrix.composition.builtins import register as register_builtins
 from matrix.domain.agent import AgentDefinition, BoundAgent
 from matrix.domain.agent_step import AGENT_STEP
-from matrix.domain.config import Config, MatrixConfig
-from matrix.domain.errors import ConfigError, NotFoundError
+from matrix.domain.component import Wiring, wire
+from matrix.domain.config import ComponentConfig, Config, MatrixConfig
+from matrix.domain.errors import CompilationError, ConfigError, MatrixError, NotFoundError
 from matrix.domain.executor import Executor
-from matrix.domain.flow import CompiledFlow, Flow, Member, compile_flow
 from matrix.domain.registry import ENTRY_POINT_GROUP, Registry
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from matrix.domain.observer import Observer
     from matrix.domain.ports._out.agent_runtime import AgentRuntime
@@ -44,7 +47,7 @@ if TYPE_CHECKING:
 
 
 class Container:
-    """What composition produced: agents by name, and the means to compile and run flows."""
+    """What composition produced: agents by name, and the means to wire and run components."""
 
     def __init__(
         self,
@@ -122,32 +125,71 @@ class Container:
             **{k: v for k, v in self._context.items() if k != "cwd"},
         }
 
-    def compile(self, flow: Flow) -> CompiledFlow:
-        """Compile ``flow``, building members given by extension id through the registry.
+    def wire(
+        self,
+        components: Sequence[ComponentConfig | Mapping[str, Any]] | None = None,
+        *,
+        inputs: Iterable[str] | None = None,
+    ) -> Wiring:
+        """Build each ``{name, type, config}`` entry through the registry and wire them.
 
-        The compiled flow carries each member's declared effects. An ``agent-step`` member
-        has its agent's runtime's effects; a member built outside the registry has unknown
-        effects.
+        ``inputs`` are the kinds the caller will supply to a run. Both default to what the
+        config holds (``matrix.components``, ``matrix.inputs``). Every problem is reported
+        at once, as one CompilationError: an entry that cannot be built, and whatever
+        :func:`~matrix.domain.component.wire` finds in those that can.
+
+        The wiring carries each component's declared effects. An ``agent-step`` has its
+        agent's runtime's effects.
         """
-        needs = self.needs()
+        entries = [
+            c if isinstance(c, ComponentConfig) else ComponentConfig.model_validate(dict(c))
+            for c in (self._config.matrix.components if components is None else components)
+        ]
+        kinds = self._config.matrix.inputs if inputs is None else tuple(inputs)
+        built: dict[str, Any] = {}
+        effects: dict[str, frozenset[str] | None] = {}
+        problems: list[str] = []
+        seen: set[str] = set()
+        for entry in entries:
+            where = f"components.{entry.name}"
+            if entry.name in seen:
+                problems.append(f"{where}: name used twice")
+                continue
+            seen.add(entry.name)
+            try:
+                built[entry.name] = self._registry.create(
+                    "component",
+                    entry.type,
+                    entry.config,
+                    needs={**self.needs(), "name": entry.name},
+                    where=where,
+                )
+                effects[entry.name] = self._effects(entry)
+            except MatrixError as e:
+                problems.extend(e.details.get("problems") or [f"{where}: {e.message}"])
+        try:
+            wiring = wire(
+                built, inputs=kinds, schemas=self._registry.payload_schemas(), effects=effects
+            )
+            if not problems:
+                return wiring
+        except CompilationError as e:
+            problems.extend(e.details["problems"])
+        raise CompilationError(
+            f"the components cannot be wired ({len(problems)} problem"
+            f"{'s' if len(problems) != 1 else ''}):\n  " + "\n  ".join(problems),
+            problems=problems,
+            fix="fix each listed component or kind; every problem is reported at once",
+        )
 
-        def resolve(extension: str, config: dict[str, Any], where: str) -> Any:
-            return self._registry.create("component", extension, config, needs=needs, where=where)
-
-        compiled = compile_flow(flow, resolve=resolve, schemas=self._registry.payload_schemas())
-        return replace(compiled, effects={m.alias: self._effects(m) for m in flow.members})
-
-    def _effects(self, member: Member) -> frozenset[str] | None:
-        if not isinstance(member.component, str):
-            return None
-        if member.component == AGENT_STEP:
-            agent = (member.config or {}).get("agent")
-            spec = self._config.matrix.agents.get(str(agent))
+    def _effects(self, entry: ComponentConfig) -> frozenset[str] | None:
+        if entry.type == AGENT_STEP:
+            spec = self._config.matrix.agents.get(str(entry.config.get("agent")))
             runtime = self._config.matrix.runtimes.get(spec.runtime) if spec else None
             if runtime is None:
                 return None
             return self._registry.entry("runtime", runtime_type_url(runtime.type)).effects
-        return self._registry.entry("component", member.component).effects
+        return self._registry.entry("component", entry.type).effects
 
     def executor(self) -> Executor:
         return Executor(self._observers)

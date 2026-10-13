@@ -1,14 +1,16 @@
 """OpenTelemetry spans and metrics from matrix events. Requires ``matrix[otel]``.
 
 **Spans.** Every ``*.start``/``*.end`` pair becomes a span, parented as the events are:
-``matrix.run`` over ``matrix.member`` over whatever the member opened (``ctx.span``) or called.
+``matrix.run`` over ``matrix.component`` over whatever the component opened (``ctx.span``) or
+called.
 ``matrix.agent.*`` becomes ``invoke_agent {name}``, following the GenAI semantic conventions.
 
 **Metrics.** Derived from the same events, never measured separately, so an event log replays
 into the numbers an exporter saw:
 
-* ``matrix.run.duration`` (histogram, s) by flow and status;
-* ``matrix.member.duration`` (histogram, s) and ``matrix.member.count`` by member and status;
+* ``matrix.run.duration`` (histogram, s) by status;
+* ``matrix.component.duration`` (histogram, s) and ``matrix.component.count``, by component
+  and status;
 * ``matrix.agent.tokens`` (by agent and ``gen_ai.token.type``) and ``matrix.agent.cost_usd``;
 * ``matrix.events.dropped``;
 * every ``ctx.measure`` as an instrument named by the measure, of the kind it declares.
@@ -26,9 +28,9 @@ from typing import TYPE_CHECKING, Any
 from matrix.domain.observer import (
     AGENT_END,
     AGENT_START,
+    COMPONENT_END,
     EVENTS_DROPPED,
     MEASURE,
-    MEMBER_END,
     RUN_END,
 )
 
@@ -54,8 +56,8 @@ class OtelObserver:
         meter = metrics.get_meter("matrix")
         self._meter = meter
         self._run_duration = meter.create_histogram("matrix.run.duration", unit="s")
-        self._member_duration = meter.create_histogram("matrix.member.duration", unit="s")
-        self._member_count = meter.create_counter("matrix.member.count")
+        self._component_duration = meter.create_histogram("matrix.component.duration", unit="s")
+        self._component_count = meter.create_counter("matrix.component.count")
         self._agent_tokens = meter.create_counter("matrix.agent.tokens", unit="{token}")
         self._agent_cost = meter.create_counter("matrix.agent.cost_usd", unit="USD")
         self._dropped = meter.create_counter("matrix.events.dropped")
@@ -76,7 +78,7 @@ class OtelObserver:
     def _end_span(self, event: Event) -> None:
         span = self._open.pop(event.span, None)
         if span is None:
-            return  # an end with no start: a member skipped before it ran
+            return  # an end with no start: a component skipped before it ran
         for key, value in _attributes(event).items():
             span.set_attribute(key, value)
         status = event.fields.get("status")
@@ -92,14 +94,12 @@ class OtelObserver:
         status = str(fields.get("status"))
         if event.name == RUN_END:
             seconds = fields.get("duration_ms", 0) / 1000
-            self._run_duration.record(
-                seconds, {"matrix.flow": str(fields.get("flow")), "matrix.status": status}
-            )
-        elif event.name == MEMBER_END:
-            about = {"matrix.member": str(event.member), "matrix.status": status}
-            self._member_count.add(1, about)
+            self._run_duration.record(seconds, {"matrix.status": status})
+        elif event.name == COMPONENT_END:
+            about = {"matrix.component": str(event.component), "matrix.status": status}
+            self._component_count.add(1, about)
             if "duration_ms" in fields:
-                self._member_duration.record(fields["duration_ms"] / 1000, about)
+                self._component_duration.record(fields["duration_ms"] / 1000, about)
         elif event.name == AGENT_END:
             agent = {"gen_ai.agent.name": str(fields.get("agent"))}
             for direction in ("input", "output"):
@@ -127,8 +127,8 @@ class OtelObserver:
                 record = self._meter.create_gauge(name, unit=unit).set
             self._measures[(name, kind)] = record
         about = {k: v for k, v in (fields.get("attrs") or {}).items() if _plain(v)}
-        if event.member is not None:
-            about["matrix.member"] = event.member
+        if event.component is not None:
+            about["matrix.component"] = event.component
         record(value, about)
 
 
@@ -153,8 +153,8 @@ def _attributes(event: Event) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
     if event.name in (AGENT_START, AGENT_END):
         attributes["gen_ai.operation.name"] = "invoke_agent"
-    if event.member is not None:
-        attributes["matrix.member"] = event.member
+    if event.component is not None:
+        attributes["matrix.component"] = event.component
     for key, value in event.fields.items():
         if value is None or not _plain(value):
             continue

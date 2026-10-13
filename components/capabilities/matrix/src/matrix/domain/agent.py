@@ -76,7 +76,7 @@ class AgentResponse(BaseModel):
 
 
 class BoundAgent:
-    """A definition bound to a runtime: what a flow member or an eval actually calls."""
+    """A definition bound to a runtime: what a component or an eval actually calls."""
 
     def __init__(
         self,
@@ -107,8 +107,8 @@ class BoundAgent:
         span = uuid.uuid4().hex
         name = self._definition.name
         scope = CURRENT_SPAN.get()
-        run_id, parent, member = (
-            (scope.run_id, scope.span, scope.member) if scope else (None, None, None)
+        run_id, parent, component = (
+            (scope.run_id, scope.span, scope.component) if scope else (None, None, None)
         )
         await emit(
             self._observers,
@@ -118,7 +118,7 @@ class BoundAgent:
                 run_id,
                 parent,
                 {"agent": name, "model": self._definition.model},
-                member,
+                component,
             ),
         )
         started = time.monotonic()
@@ -140,4 +140,4 @@ class BoundAgent:
             return response
         finally:
             fields["duration_ms"] = int((time.monotonic() - started) * 1000)
-            await emit(self._observers, Event(AGENT_END, span, run_id, parent, fields, member))
+            await emit(self._observers, Event(AGENT_END, span, run_id, parent, fields, component))

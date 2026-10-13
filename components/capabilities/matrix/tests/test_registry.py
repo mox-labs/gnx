@@ -33,9 +33,9 @@ def test_config_is_validated_and_needs_are_handed_over() -> None:
 def test_bad_config_names_every_key_path() -> None:
     registry = Registry().register("component", "acme.v1.thing", build, config=Settings)
     with pytest.raises(ConfigError) as e:
-        registry.create("component", "acme.v1.thing", {"sise": 3}, where="flow.members.t")
+        registry.create("component", "acme.v1.thing", {"sise": 3}, where="components.t")
     problems = e.value.details["problems"]
-    assert any("flow.members.t.size" in p for p in problems)
+    assert any("components.t.size" in p for p in problems)
     assert any("sise" in p for p in problems)
     assert "matrix describe acme.v1.thing" in (e.value.fix or "")
 

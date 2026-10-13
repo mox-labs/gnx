@@ -1,7 +1,7 @@
 [project]
 name = "matrix"
-version = "0.3.0"
-description = "matrix: the executor. Typed components wired into flows, and agents composed from config"
+version = "0.4.0"
+description = "matrix: components wired by kind, a durable record of every run, and agents composed from config"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
