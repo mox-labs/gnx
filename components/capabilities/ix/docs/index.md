@@ -1,26 +1,13 @@
 # ix
 
-ix answers a question about a system with an experiment. The experiment model (`ix validate`,
-`ix plan`, `ix register`, `ix genres`) is described in the [README](../README.md) and taught
-by `ix --skill`. The pages below describe the agent-eval harness (`ix run`, `ix results`,
-`ix compare`, `ix experiment`, `ix lab`): probes put to subjects for a number of trials,
-judged by sensors, reported with their uncertainty, and compared without guessing.
+ix answers a question about a system with an experiment: one YAML file that names its genre,
+its subjects, its probes and the metric that decides. ix validates the file, plans it and
+registers it. It does not run an experiment.
 
-## How-to
-
-| Document | Description |
-|----------|-------------|
-| [Running experiments](how-to/running-experiments.md) | Create a lab, write probes and subjects, share config with matrix, run, read faults, compare, add a sensor |
-
-## Explanation
-
-| Document | Description |
-|----------|-------------|
-| [What is ix?](explanation/what-is-ix.md) | Why trials and repeats, who owns a failure, the two kinds of uncertainty, how ix is extended |
-
-## Reference
-
-| Document | Description |
-|----------|-------------|
-| [Experiment format](reference/experiment-format.md) | Config tiers, `experiment.yaml`, probes, subjects, sensors, engines, results and comparison fields |
-| [Domain models](reference/domain-models.md) | Probe, Subject, Trial, Reading; the Sensor, Engine and Storage ports; registry entries and type URLs |
+| Document | What it covers |
+|----------|----------------|
+| [README](../README.md) | The loop, an experiment, the plan, genres, kinds, registration, the library, output |
+| `ix --skill` | How to write an experiment: each genre, each kind and its options, the problem kinds. Generated from what is installed |
+| `ix genres --json`, `ix kinds --json` | The installed genres and kinds as records |
+| [CHANGELOG](../CHANGELOG.md) | What each release changed |
+| [SECURITY](../SECURITY.md) | What ix reads, writes and never does |

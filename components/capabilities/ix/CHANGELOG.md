@@ -1,31 +1,34 @@
 # Changelog — ix
 
-## 0.3.0 — 2026-10-12
+## 0.3.0 — 2026-10-13
 
-ix gains a model of the experiment itself: one file that names its genre, and commands that check it, plan it and freeze its decision before anything runs. Nothing in this release starts a subject. The agent-eval harness (`ix run`, `ix results`, `ix compare`, `ix experiment`, `ix lab`) is unchanged and keeps its own file format.
+ix is now the experiment model and nothing else: one file that names its genre, and commands that check it, plan it and register it. The agent-eval harness is removed. **ix does not run an experiment in this release**; there is no `ix run`.
+
+### Removed (breaking)
+
+- **The agent-eval harness**: the commands `ix run`, `ix results`, `ix compare`, `ix experiment` and `ix lab`; the engines (native and Inspect AI), the sensors' implementations, the simulated runtime, the results store, the config tiers (`ix.yaml`, `~/.ix/config.yaml`), and its documents (`ix.v1.results`, `ix.v1.results-list`, `ix.v1.comparison`, `ix.v1.labs`, `ix.v1.init`).
+- The dependencies on `matrix`, `hardline` and `claude-agent-sdk`, the `inspect` and `deepeval` extras, and the `matrix.extensions` entry point.
+- The earlier `experiment.yaml` format (`sensors:`/`sensor:`, `trials:`, `engine:`, `subjects:` as a list). A file in that format is refused key by key like any other unknown key; nothing converts it.
 
 ### Added
 
-- **The experiment file** (`ix.v2.experiment`): `name`, `question`, `hypothesis`, `genre`, `subjects` (a map of name to a binding with a `kind`), `control`, `probes` (inline, or `{source: directory, path: ...}`), `factors`, `environment`, `metrics`, `primary`, `bar`, `rule`, `margin`, `guards`, `repeats`, `seed`, `spend`. Unknown keys are refused.
-- **Genres as data** (`ix.v1.genre`): `evaluate`, `compare`, `characterise` and `regress` (which extends `compare`) are YAML records in `ix/genres/`. A genre declares subject roles and their cardinality, whether factors are forbidden, allowed or required, the fields an experiment must set, the rules it may name, design defaults, the analysis by id, the verdict kind and the report sections. Every default carries a note; the built-in ones are marked provisional pending the experimentation canon.
-- **Extension by narrowing.** A genre extends at most one other, one level deep, and may only tighten it. A file that loosens its parent, changes the analysis or the verdict kind, or adds a role is refused with one `genre_narrowing` problem per violation; a deeper chain is refused with `genre_depth`.
-- **The `ix.genre` entry point.** A package registers a package of genre YAML files there, and ix registers its own the same way; the entry point is read and never called. A `genres/` directory beside an experiment adds that lab's genres. Two files declaring one name are both refused; a file that cannot be read does not affect the others.
-- **`ix validate <path>`**: every problem in one batch, each with `path`, `kind`, `message` and `fix`; exit 3 when invalid. `ix.PROBLEM_KINDS` is the vocabulary.
-- **A model-judged metric never decides a gate.** A metric declared `judged: true` is refused as `primary` and as a guard in any genre with a verdict (`judged_gate`).
-- **`ix plan <path>`**: the subjects with their roles and which is the control, the cells, the probes, the repeats, the A/A calibration pass, the order rule and seed, the declared effects, the estimated spend, and every design value with its source (the experiment, the genre, or ix). Pure: the same file gives the same digest.
-- **`ix register <path>`**: writes `<file-stem>.registration.json` beside the experiment with the file digest, the probe-set digest, the genre, the primary metric, the margin, the repeats, the seed and the spend ceiling. `--check` lists deviations from it and writes nothing. Registering an experiment that has changed since is refused (kind `conflict`, exit 3) and the record is kept.
-- **`ix genres`**: the catalogue, and each refused genre file with its problems.
-- **`ix --skill`**: how to write an experiment for each installed genre, with an example per built-in genre that the test suite validates and plans.
-- **A declared library API**: `ix.__all__` names `load`, `validate`, `resolve`, `plan`, `register`, `deviations`, `catalogue`, `skill`, the records and the errors. The new commands call only these. `import ix` loads no host runtime.
-- Example experiments: `examples/proxy-streaming` (a service comparison over a 3 x 3 sweep) and `examples/catalog-routing` (an agent evaluation with probes in files).
-- A test that scans imports: `ix.domain` and `ix.application` import no adapter, no host and no I/O or tool library. Three modules of the harness's domain are listed as exemptions, and the list can only shrink.
+- **The experiment file** (`ix.v1.experiment`): `name`, `question`, `rationale`, `genre`, `subjects` (name to `{kind, options}`), `control`, `probes` (a list, or `{source: directory, path}`), `factors`, `environment`, `sensors`, `metrics`, `primary`, `threshold`, `comparison`, `margin`, `guardrails`, `repeats`, `seed`, `spend`. Unknown keys are refused at the top of the file and beside every `kind`.
+- **Genres as data** (`ix.v1.genre`): `evaluate`, `compare`, `characterize` and `regress` (which extends `compare`). A genre declares `roles`, the factor policy, `must_set`, `comparisons` (each with the sentence it claims), `design` (`repeats: {default, min}`, `order`, `calibration`, `estimator`, and a note on its standing), the analysis, `verdict_form`, the report sections and `guidance`. Extension is narrowing only, one level deep; a child cannot add or change an analysis parameter.
+- **Kinds as data** (`ix.v1.kind`): subject kinds `process`, `http`, `agent`; probe kinds `prompt`, `http-load`, `inspect-task`; sensors `timing`, `memory`, `activation`, `function-test`, `usage`, `judge`; environment kinds `none`, `process`, `compose`. Each declares its options (types, required), effects, the facets it offers and needs, and for a sensor its metrics (with whether a model judges them) and the probe truth it reads. They are declarations: nothing here starts or measures anything.
+- **Entry points `ix.genre` and `ix.kind`**: a package registers a package of YAML files; ix registers its own the same way. A lab keeps `genres/` and `kinds/` beside its experiment. Two files declaring one name are both refused.
+- **`ix validate`**: every problem in one batch, each with `path`, `kind`, `message`, `fix`, `allowed` and `got`. It checks the experiment against its genre; every kind's options (`kind_unknown`, `option_unknown`, `option_missing`, `option_invalid`); that probe kinds fit subject kinds (`kind_unfit`); that every named metric has exactly one provider (`metric_unprovided`, `metric_ambiguous`, `metric_mismatch`); probe truth no sensor reads (`truth_unclaimed`); and spend (`spend_unbounded`, `spend_over_ceiling`). `complete: false` when the file did not load and the later checks did not run.
+- **A model-judged metric never decides.** `judged` is declared by the sensor and is not a key of the experiment file. A judged metric is refused as `primary` and as a guardrail in any genre with a verdict (`judged_gate`).
+- **Two reductions**: `statistic` reduces one trial's reading (`p99` of a histogram); `estimator` combines the trials (`mean`; `rate` for a boolean), defaulted by the genre.
+- **`ix plan`**: the question, the hypothesis rendered from the genre (`Decides:`), the guardrails and the form of the verdict; then subjects and roles, the trial arithmetic, the estimated duration where probe kinds declare one, the order, the sensors, the effects (from the kinds, plus any the author added), the spend, the registration status, and every design value with its source. The digest is over meaning: stable against a comment, key order, a default written out, reworded prose and a field a later ix adds.
+- **`ix register`**: writes `<file-stem>.registration.json` with the design as resolved (what the file sets and what the genre supplies) and the digests of the probe set, the experiment and the plan. A changed experiment is refused (exit 3). `--amend --reason "<why>"` replaces the record and keeps the superseded one, with the reason and the deviations accepted, inside it. A stored record tolerates fields this ix does not know.
+- **`ix deviations`**: lists each frozen value that changed; exits 9 when any did.
+- **`ix genres`, `ix kinds`, `ix --skill`**: the installed genres and kinds, and a document generated from them that teaches how to write an experiment, with a minimal example per built-in genre.
+- **One error envelope** (`ix.v1.error`) for every failing command, usage errors included, always with `problems` and `deviations`. One exit-code table (`ix.EXIT_CODES`): 0, 1, 2 usage, 3 config, 4 not found, 9 deviations.
+- **A declared library API** (`ix.__all__`): `load`, `validate`, `resolve`, `plan`, `register`, `deviations`, `genres`, `kinds`, `skill`, `error_document`, the documents they return, `Experiment`, `Genre`, `Kind`, the errors, `PROBLEM_KINDS` and `EXIT_CODES`. Each function takes a path or an `Experiment` built in memory.
+- Examples: `examples/proxy-streaming` (a service comparison) and `examples/catalog-routing` (an agent evaluation with probes in files).
+- Tests that scan imports: `ix.domain` and `ix.application` import only from an allowlist; only `ix.composition` imports an outbound adapter; the command line imports only `ix`; nothing imports a host.
 
 ### Changed
 
-- `ix --help` lists the experiment-model commands beside the harness commands and says which is which.
-- Where a new document shares a name with a harness document, it takes a new version instead of a second shape under one id: `ix.v2.experiment`, `ix.v2.validation`, `ix.v2.plan`. The harness still prints `ix.v1.*`.
-
-### Notes
-
-- `ix run` reads neither the experiment model nor a registration. `ix validate` given a harness `experiment.yaml` reports `earlier_format` and names `ix experiment validate`.
-- The options a subject, probe or environment gives beside `kind` are stored and not checked: no kind adapter is attached. The plan's effects are those the file declares, and the plan says so.
+- Every document id is `ix.v1.*`.
+- SECURITY.md describes what ix now reads and writes.
