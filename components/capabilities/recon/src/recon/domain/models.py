@@ -3,16 +3,22 @@
 No infrastructure dependencies. These flow through the hexagon.
 
 Every model forbids unknown keys: a misspelt ``normalise:`` or ``preserve-raw:`` is a config
-error with a path, not a silently ignored line.
+error with a path, not a silently ignored line. The one exception is made by the planner
+before a config reaches these models: a top-level key beginning with ``_`` is dropped.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL, type_url_problem
+
+#: The largest response body a source may return unless its entry says otherwise. Large
+#: enough for a long PDF or a full page of API results; small enough that one bad URL
+#: cannot fill memory.
+DEFAULT_MAX_BYTES = 50_000_000
 
 # --- Value Objects ---
 
@@ -70,6 +76,9 @@ class SourceEntry(BaseModel):
     API sources provide URL + auth + rate limits.
     Web sources provide URL + rate limits for page fetching.
     Local sources provide a filesystem path (used as cwd by CLI collectors).
+
+    ``max_bytes`` bounds one HTTP response body from this source, counted after any
+    content-encoding is undone. A larger body fails the table instead of being buffered.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -81,6 +90,7 @@ class SourceEntry(BaseModel):
     rate_limit: RateLimitConfig = RateLimitConfig()
     user_agent: str | None = None
     timeout: float = 60.0
+    max_bytes: int = Field(default=DEFAULT_MAX_BYTES, gt=0)
 
 
 # --- Collector Entry ---
@@ -145,7 +155,7 @@ class ReconConfig(BaseModel):
 
     `preserve_raw: true` appends every fetched response (HTTP body, CLI stdout) to the
     archive's capture log, `archive/<ts>/captures.jsonl`, with the bodies content-addressed
-    under `archive/<ts>/raw/<sha256>`. See docs/reference/capture-format.md. It enables:
+    under `archive/<ts>/raw/<sha256>`. See `recon --skill -r capture-format`. It enables:
       - Re-normalization without re-fetching (a `capture` collector reads the log)
       - Audit: prove what the server actually said
       - Experimentation: try a different normalize spec on the same snapshot

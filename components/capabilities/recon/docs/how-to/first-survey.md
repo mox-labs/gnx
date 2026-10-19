@@ -9,7 +9,7 @@ You'll learn the **probe → normalize → survey** workflow by doing it. Total 
 Install recon from the gnx repository:
 
 ```bash
-uv tool install "recon @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
@@ -50,7 +50,7 @@ catalog:
       env: GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.9.0 (first-survey walkthrough)"
+    user_agent: "dep-releases (you@example.com)"   # optional; default: recon/<version>
 
 collectors:
   - name: probe
@@ -64,13 +64,13 @@ collectors:
 
 > **Auth note.** GitHub's API requires the `Bearer ` prefix on the token. `auth.prefix` prepends it to whatever `$GITHUB_TOKEN` holds. Without the prefix, GitHub returns 401. For legacy classic PATs you can also use `prefix: "token "`.
 
-Plan it first. A dry run validates the config and prints what the survey would do (the URL, the effects) without sending anything:
+Plan it first. A dry run validates the config and prints what the survey would do (the request as it would be sent: method, URL with its query string, headers with the token `REDACTED`; and the effects) without sending anything:
 
 ```bash
 recon survey dep-releases --dry-run
 ```
 
-If the config has mistakes, every one is listed with its location (`collectors[0].endpoint: ...`) and the command exits 3. If `GITHUB_TOKEN` is unset you get a warning: the request would go out unauthenticated. Then run it:
+If the config has mistakes, every one is listed with its location (`collectors.0.endpoint: ...`) and the command exits 3. If `GITHUB_TOKEN` is unset you get a warning: the request would go out unauthenticated. Then run it:
 
 ```bash
 recon survey dep-releases
@@ -79,12 +79,12 @@ recon survey dep-releases
 You should see:
 
 ```
-Mission: dep-releases — 1 run(s) from 1 collector(s), 1 source(s)
+1 run(s) from 1 collector(s), 1 source(s)
   probe: 1 records
 /Users/you/project/.recon/dep-releases/archive/2026-04-06-143022-123456
 ```
 
-One request, one record, one timestamped archive. The last line, the archive path, is the only thing on stdout, so it pipes; `--json` prints the whole result instead, every table's status included.
+One request, one record, one timestamped archive. The last line, the archive path, is the only thing on stdout (the summary and any warning go to stderr), so it pipes; `--json` prints the whole result instead, every table's status included.
 
 ## Stage 2 — Inspect the raw shape
 
@@ -108,6 +108,8 @@ cat .recon/dep-releases/archive/*/probe.jsonl | jq .
 ```
 
 Read off the shape: `tag_name` is at the top level, `published_at` is a string timestamp, `author` is a nested object where `login` is the field that matters, `html_url` is the web-viewable link. There's a lot of noise in the raw response — URLs for the API's own routing, numeric IDs that don't matter, metadata fields that are never queried. The normalize spec is about throwing the noise away and keeping what's load-bearing.
+
+> **Two shapes to catch here.** GitHub returns a bare list, so each release is a record. An API that wraps its list in an object (arXiv's Atom feed under `feed.entry`, OpenAlex under `results`) needs `extract:` naming it; without it the table is one record holding everything, and the survey warns `extract_missing` with the path to set. Probe such an API with two or three records, not one: the survey recognizes the wrapped list only when it holds two or more, and a collector that already has `extract:` is never warned. And a field that is an object keyed by data rather than by names, such as OpenAlex's `abstract_inverted_index`, can stop SQL reading the table: the survey warns `table_unreadable`; normalize the field (`$inverted_index`) or leave it out.
 
 ## Stage 3 — Write the normalize spec
 
@@ -166,7 +168,7 @@ catalog:
       env: GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.9.0 (dep-releases monitor)"
+    user_agent: "dep-releases (you@example.com)"
 
 collectors:
   - name: tokio
@@ -211,10 +213,11 @@ recon survey dep-releases
 ```
 
 ```
-Mission: dep-releases — 3 run(s) from 3 collector(s), 1 source(s)
+3 run(s) from 3 collector(s), 1 source(s)
   tokio: 10 records
   axum: 10 records
   serde: 10 records
+/Users/you/project/.recon/dep-releases/archive/2026-04-06-151107-654321
 ```
 
 Three JSONL files in the latest archive, one per collector. The `probe` collector is gone because you renamed it — that file only lives in the earlier archive.
@@ -259,7 +262,7 @@ Recon is mechanical, so it runs without Claude present. A cron entry:
 
 Every hour, a fresh timestamped archive lands under `.recon/dep-releases/archive/`. The next time Claude looks, it can diff the latest archive against the previous one to find releases that are new — without needing to have been awake when they shipped.
 
-If a table fails (GitHub down, token expired), the archive is still written and marked incomplete, and the exit code says what kind of failure it was: 5 when every failure was transient (retry later), 6 when any failed on credentials (replace the token), 1 otherwise. `recon status` shows which archives are incomplete.
+If a table fails (GitHub down, token expired), the archive is still written and marked incomplete, and the exit code says what kind of failure it was: 5 when every failure was transient (retry later), 6 when any failed on credentials (replace the token), 8 otherwise. `recon status` shows which archives are incomplete, and the archive's `telemetry.jsonl` shows what happened to each table and each request: every `recon.collect` and `recon.http.request` span that ended with `status: error` names its `error.type` (`503`, `auth`, `httpx.ConnectTimeout`).
 
 ## Where to go next
 
@@ -269,4 +272,3 @@ If a table fails (GitHub down, token expired), the archive is still written and 
 - `recon --skill -r normalize-spec` — full normalize spec syntax including the built-in transforms (`$html2text`, `$inverted_index`, `$join`, `$first`, `$markitdown`)
 - [capture-mcp-results.md](./capture-mcp-results.md) — normalize results an MCP tool already fetched, captured by a Claude Code hook
 - [capability.md](../explanation/capability.md) — the deeper "why" behind the tool
-- The `examples/` directory in the skill bundle — ready-to-run configs for probe-then-survey, code mining, and API monitoring

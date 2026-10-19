@@ -1,5 +1,91 @@
 # Changelog — recon
 
+## 0.11.0
+
+### Changed (breaking)
+
+- **recon follows the exit codes and error envelope the capability CLIs agree on.** `conflict` exits 7 and `query` 10, each code one kind. A failed table's unclassified error has the shared kind `run_failed`, as its survey does; `collection` is gone. The envelope is `{kind, message, fix, complete, problems, details}`, and a problem `{path, kind, message, fix, allowed, got, source}`. A problem's `path` is dotted (`collectors.0.type`, was `collectors[0].type`), and its kinds are the shared ones: `missing_key`, `invalid_value`, `name_unknown`, `name_taken`, `wrong_shape`, `yaml_syntax` (were `missing`, `invalid`, `unknown_name`, `duplicate`). `recon.EXIT_NEXT` says what to do on each kind; `recon.ConfigError` is a `ValueError` and `recon.NotFoundError` a `KeyError`.
+- **Warnings are problem records**, in the `warnings` list of `recon.v1.plan`, `recon.v1.survey` and now `recon.v1.query-rows`, with kinds `env_unset`, `plugin_broken`, `otel_unavailable` and `telemetry_failed`. They were strings.
+- **`recon init` takes `-c/--config FILE`**, as `survey` does; `--from` is gone. `init` and the library's `recon.init` take `config=`, not `source=`.
+- **A `local` source's relative `url` is relative to the project root**, not to the directory recon runs in, so a mission scans the same directories wherever it is run from.
+- **A survey whose failed tables are neither credential failures nor all transient exits 8** (`run_failed`), not 1, which it shared with `unknown`.
+- **`recon query --archive <id>`** names the archive to read; the flag was `--run`.
+- **A `cli` command that exits 1 with something on stderr fails its table.** Exit 1 counts as success only when stderr is empty (grep's and rg's "no match"). A failed command's error ends with the last 4 KB of its stderr.
+- **`$markitdown` fails the table on a file it cannot read or convert**, naming the file. It returned an empty string, which read as an empty document. A converter whose dependency is missing is a `config` error.
+- **The operations return typed records** (`recon.SurveyDocument`, `recon.StatusDocument`, ...), one per `recon.v1.*` shape; `.document()` is what `--json` prints. A table's `error` in `meta.yaml` and the survey document always carries `fix`, null when there is none.
+
+### Added
+
+- **Telemetry.** Every survey writes its event log, `telemetry.jsonl`, into its archive: a `recon.v1.event` line at the start and end of each span (`recon.survey`, one `recon.collect` per table, one `recon.http.request` per attempt to send a request, with OpenTelemetry's HTTP client attributes, semconv v1.44.0). The same spans, and the counters `recon.collect.records` and `recon.collect.failures`, go through the OpenTelemetry API; with the new `otel` extra, setting the standard `OTEL_*` variables is enough for the `recon` command to export them over OTLP. `import recon` uses the API only and never installs the SDK; a program configures OpenTelemetry itself or calls the new `recon.configure_telemetry()`. No secret and no body is recorded.
+- **`init` is idempotent**: run again with the same config, it changes nothing and succeeds. A different config is a `conflict` that names `--replace`, which `init` now takes. `recon.v1.mission` says what happened as `outcome`: `created`, `unchanged` or `replaced`.
+- **`recon status <mission>`** lists every archive of that mission, oldest first, as the `history` of its one entry in `missions` (`missions[0].history`): each archive's `id` (what `query --archive` takes), `path`, `started_at`, `finished_at`, `state` and tables. Every `ArchiveStatus` carries the two times; the library's `recon.status()` takes the mission.
+- **Query output says where its rows came from**: `recon.v1.query-rows` has `archive_id` beside `archive`, and the human output names the archive on stderr. `query --help` says where archive ids come from and how to read an older archive's table or a table's raw lines; a row is cited by its line in one archive's table file, which `WITH ORDINALITY` numbers (see the skill's Reading results; a glob across archives numbers all its files' lines as one, and their columns can differ).
+- **Three warnings**, problem records in the document's `warnings`: `fan_out_mixed` when a plan's collector with no `source:` would run against catalog sources of different types; `extract_missing` when a survey's table of an `api` or `capture` collector with neither `extract:` nor `normalize:` gets one record holding a list of two or more objects, naming the path to set as `extract:` (a collector with `extract:` is never warned: its one record is a record, and a list inside it is its own); `table_unreadable` when a survey writes, or a query's archive holds, a table SQL cannot read. For collector-type authors, `CollectorType(extracts=True)` opts a type into the `extract_missing` check. Human output prints each warning's `fix`.
+- **`-` reads a config from stdin**: `recon init m -c -`, `recon survey m -c -`.
+- **The library takes `root=`** on `init`, `plan`, `survey`, `status`, `query` and `capture`: the project whose `.recon/` to use, so a program need not change directory.
+- **`complete` says when checking stopped early**: false in the error envelope when part of the config could not be checked (an entry of the wrong shape, a file that is not YAML), so more problems may follow the fixes.
+
+### Fixed
+
+- **One table SQL cannot read no longer fails every query.** An OpenAlex record kept with its word-keyed `abstract_inverted_index` (surveyed without `normalize:`, as the probe step says) held keys differing only in case, DuckDB could not make a view of that table, and every query on every table failed as `unknown`, "report this as a bug". Each table's view is now made on its own: a query of the other tables runs with a `table_unreadable` warning naming the table, why, and the fix (normalize the field with `$inverted_index`, or read the raw lines with `read_ndjson_objects`); a query of that table fails as `query` (exit 10) with the same fix. The survey that wrote the table warns too, so it is found before the first query.
+- **A failed query's fix is about what failed.** Every SQL error's fix was "query one of these tables", so `Binder Error: UNNEST not supported here` sent an agent looking for another table. Only a missing table is told the tables there are; any other error's fix quotes DuckDB's message and links DuckDB's SQL documentation, `unnest` beside an aggregate is given the subquery that works, and a binder error from a glob that spans archives (`archive/*/<table>.jsonl`) says their columns can differ and to read one archive's file by its path. `EXIT_NEXT` for `query` says so.
+- **The dry run shows the request a run would send.** An `api` run showed its URL without the query string, so `params:` (search, filter, per_page) and an `auth.param` were invisible; it now shows the method, the URL with every query parameter, the headers the mission decides (User-Agent, the auth header) and the body, with the credential `REDACTED` as telemetry has it. A `web` run shows its method and headers too.
+- **An unknown key no longer hides the other problems of its entry.** A collector with a misspelt key and an unknown type reported only the key; the entry is now checked again without the key. A collector naming a source that did not parse is no longer also told the source is missing.
+- **A URL's own query string is kept.** A web source or endpoint with `?id=3` was fetched without it; params are now added to the query rather than replacing it.
+- **Human output is not wrapped off a terminal**, so a piped path or command stays whole; tables are laid out as wide as their cells.
+- **Ctrl-C under `--json` prints the envelope as stderr's first line**; a blank line came before it.
+- **`recon capture` on a terminal says what it wants** (exit 2, usage) instead of waiting in silence for a payload.
+- **`init -t` with `-c` is a usage error**; the template was ignored without a word.
+- **An archive reads incomplete unless its survey finished.** The marker is written when the archive is made and removed only after `meta.yaml` is written with every table succeeded, so a survey stopped by SIGTERM or killed no longer reads `ok`.
+- **SIGTERM is handled as Ctrl-C:** the survey exits 130 and kills the command its current table was running, which kept running before.
+- **A `cli` command's timeout holds while it is still printing**; it applied only once stdout closed, so a command that never closed it hung the survey.
+- **A command that writes a lot to stderr no longer blocks** on a full pipe; stderr is drained as the command runs.
+- **A `cli` command's stdin is empty.** It inherited recon's, so a tool that reads stdin when given no path could wait on it until its timeout.
+- **Every collection error carries a `fix`**: HTTP failures by kind, a timed-out or failed command, a body that is not the declared format, a capture line that cannot be trusted.
+- **The built-in templates send the default User-Agent**, which names the running version; they had set `recon/0.9.0` explicitly. The `package-registries` template's usage named a template that does not exist.
+
+### Packaging
+
+- recon is installed from the repository at its release tag: `uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=components/capabilities/recon"`. The package carries a readme, its license file, classifiers and project URLs.
+
+## 0.10.0 — 2026-10-12
+
+Fixes for cases where recon gave a wrong answer without saying so, and for three places where collected data or an installed plugin could reach further than the mission's config allowed.
+
+### Changed (breaking)
+
+- **An empty table reports `records: 0`.** It reported 1, because the `{"_empty": true}` line that keeps the file readable was counted, and `SELECT count(*)` on the table returned 1. The line is still written; it is no longer counted and the table's view has no rows. `meta.yaml` files written by 0.9.0 keep the number they recorded.
+- **An unresolved `{placeholder}` in a `params:` value is a config error** at plan time, located as `collectors[i].params.<key>`. The parameter used to be left out of the request without a word. So was any value that merely contained a `{` (a SPARQL query, a JSON filter); those are now sent as written.
+- **`recon query` is confined to the mission's archives.** SQL can read files under `.recon/<mission>/archive/` (earlier archives included) and nothing else: no other path, no `INSTALL` or `LOAD`, no URL. It used to run on an unrestricted DuckDB connection, where `read_text('/etc/hosts')` returned the file.
+- **`$markitdown` reads only what the mission declares and never fetches.** The file a record names must be under the mission directory or a catalog source with `type: local`; a URL (`http:`, `https:`, `file:`, `data:`) is refused. Either is a config error with a fix, where it used to fetch the URL or read the file. Use a `web` collector to fetch a document.
+- **A response body is bounded.** A source has `max_bytes` (default 50,000,000, counted after decompression). A larger body fails its table with kind `collection` instead of being buffered. Raise `max_bytes` on a source that serves larger documents.
+- **The default User-Agent is `recon/<version> (+https://github.com/mox-labs/gnx)`** for `api` and `web` sources. An `api` source with no `user_agent:` used to send a desktop browser's string. A source's own `user_agent:` is sent as written; set one for a site that refuses the default.
+- **For collector-type authors:** recon applies `normalize:` to the records of any type that does not declare `normalizes=True`, so a type that applies the spec itself must now say so. `ctx.env` holds only the `auth.env` variables of the sources that type's collectors use; reading any other name raises a config error. `ctx.user_agent` is what to send when a source sets none. A `Problem` carries a `kind`, a `fix` and the value written (`got`).
+- **Every failure prints one envelope**, `{"schema": "recon.v1.error", "error": {"kind", "message", "fix", "details", "problems"}}`: a usage error and Ctrl-C included, which used to print click's prose or a traceback. Values that sat beside `kind` (a failed survey's `archive` and `failed` tables) are in `details`. A problem carries `path`, `kind`, `message`, `fix` and `got`. For a person, the first line reads `error (<kind>): <message>`.
+- **Ctrl-C exits 130** with kind `interrupted`, the code every gnx capability CLI uses; the exit codes are `recon.EXIT_CODES`, held to `components/capabilities/exit-codes.json`.
+- **`-r` names a reference that exists.** `recon --skill -r <unknown>` exits 2 and lists the names; `-r` without `--skill` is a usage error. Each reference prints with `-r`, including `capture-format`; the docs page `docs/reference/capture-format.md` is the same text, and a test holds the two equal.
+- **`response_format: html` or `text` on an `api` collector is a plan problem.** It wrote a table with no records and reported success. A `capture` collector still takes both.
+- **`init` has no `research` template redirect**; an unknown template is `not_found` with the list.
+- The skill's `examples/` directory is gone: its missions are in `-r config-patterns` and in the skill text, and every mission the text shows is planned by the tests.
+
+### Added
+
+- **A library API.** `import recon` gives `init`, `plan`, `survey`, `status`, `query`, `templates` and `capture`, each returning the document the CLI prints under `--json`, plus `survey_failure`, `skill`, the errors and the tables `EXIT_CODES`, `EXIT_MEANINGS`, `ERROR_KINDS` and `PROBLEM_KINDS`. The CLI calls only these.
+- **`query --json` says `state: incomplete`** for an archive a table failed in, whose rows may be partial; only the human output warned before.
+- **A survey cut short by Ctrl-C marks its archive incomplete**, so `status` and `query` no longer take it for a whole one.
+- **Determinism is a tested contract**: the same mission and the same answers from its sources give the same records, and the time reaches an archive only through the clock port (`recon.application.survey`).
+- Top-level config keys beginning with `_` are ignored. A config can hold notes, or a YAML anchor that several collectors alias (`_normalize: &spec {...}`), without tripping the unknown-key check that 0.9.0 introduced. Every other unknown key is still an error, and so is a `_key` inside a source or collector.
+- `max_bytes` on a catalog source.
+- A failed table's `error` carries a `fix` when the error names its remedy, in `survey --json` and `meta.yaml`; an error that escapes a command keeps its own `fix` on the `--json` error line.
+
+### Fixed
+
+- `recon --help` lists every exit code with what to do next.
+- The CLI runs on rich-click, like the other capability CLIs. Paths are resolved by recon's own code instead of glom, with the same results for every path the normalize reference documents; a list index (`authors.0.name`) and a bare `*` over an object's values are documented.
+- A plugin collector type that did not apply `normalize:` wrote raw records for a config the plan had accepted. The spec is now applied for it.
+- A collector type's factory was handed the whole process environment.
+- The built-in `factual-ground` template's SPARQL `query` parameter was never sent (it contains braces).
+
 ## 0.9.0 — 2026-10-09
 
 Agents are recon's main callers, so this release makes its boundary say what happened in a form a program can act on, and plans every survey before it touches anything.

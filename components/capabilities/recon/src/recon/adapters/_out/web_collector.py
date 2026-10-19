@@ -18,9 +18,11 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from recon.application.transforms import BUILTIN_TRANSFORMS, apply_normalize
+from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.collector import CollectorType
-from recon.domain.exceptions import CollectionError
+from recon.domain.errors import CollectionError
+from recon.domain.http import reported_url
+from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -41,10 +43,12 @@ class WebCollector:
         self,
         requester: Requester,
         converter: DocumentConverter,
+        user_agent: str,
         transforms: Mapping[str, Transform] = BUILTIN_TRANSFORMS,
     ) -> None:
         self._requester = requester
         self._converter = converter
+        self._user_agent = user_agent
         self._transforms = transforms
 
     def collect(
@@ -56,15 +60,10 @@ class WebCollector:
     ) -> Iterator[dict[str, Any]]:
         if not source:
             msg = f"Web collector '{entry.name}' requires a source"
-            raise CollectionError(msg, kind="config")
+            raise CollectionError(msg, kind="config", fix="add source: <a catalog source>")
 
         url = _url(entry, source)
-        headers = {
-            "User-Agent": source.user_agent or "recon/web",
-            # Widened from HTML-only so non-HTML content types (PDF, DOCX,
-            # images, audio) are served directly by the origin.
-            "Accept": "*/*",
-        }
+        headers = _headers(source, self._user_agent)
         resp: HttpResponse = self._requester.get(source, url, headers=headers)
 
         if captures is not None:
@@ -104,10 +103,30 @@ def _url(entry: CollectorEntry, source: SourceEntry) -> str:
     return f"{url}{entry.endpoint}" if entry.endpoint else url
 
 
+def _headers(source: SourceEntry, user_agent: str) -> dict[str, str]:
+    return {
+        "User-Agent": source.user_agent or user_agent,
+        # Any type: the converter handles PDF, DOCX, images and audio as well as HTML.
+        "Accept": "*/*",
+    }
+
+
+def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
+    """The request a run sends, as the api type describes one."""
+    if source is None:
+        return {}
+    return {
+        "method": "GET",
+        "url": reported_url(_url(entry, source)),
+        "headers": _headers(source, DEFAULT_USER_AGENT),
+    }
+
+
 collector_type = CollectorType(
-    create=lambda ctx: WebCollector(ctx.requester, ctx.converter, ctx.transforms),
+    create=lambda ctx: WebCollector(ctx.requester, ctx.converter, ctx.user_agent, ctx.transforms),
     effects=frozenset({"network"}),
     summary="HTTP GET → document converted to markdown → one record",
     requires_source=True,
-    describe=lambda entry, source: {"method": "GET", "url": _url(entry, source)} if source else {},
+    normalizes=True,
+    describe=_describe,
 )

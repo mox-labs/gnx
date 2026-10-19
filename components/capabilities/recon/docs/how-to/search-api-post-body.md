@@ -9,7 +9,7 @@ This walkthrough uses **Exa** (neural search) because the auth is simple and the
 Install recon from the gnx repository (see [first-survey.md](./first-survey.md) for an editable install from a checkout):
 
 ```bash
-uv tool install "recon @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
@@ -29,7 +29,7 @@ Three config knobs make POST-body APIs work:
 
 Plus one templating knob that keeps the config generic:
 
-4. **`{placeholder}` substitution in body strings** — values from `params:` are substituted recursively into string values in `body:`. Non-strings (ints, bools, lists, nested dicts) pass through untouched. This is the same `substitute()` mechanism recon already uses for `endpoint` path interpolation and `cli.run` commands. **If any `{foo}` remains unresolved after substitution, `recon survey --dry-run` (and every survey, which plans first) reports it as a config problem at `collectors[i].body` and exits 3 before anything is sent** — loud local failure beats silent server-side 400s or empty results. Add every `{foo}` you reference to `params:`.
+4. **`{placeholder}` substitution in body strings** — values from `params:` are substituted recursively into string values in `body:`. Non-strings (ints, bools, lists, nested dicts) pass through untouched. This is the same `substitute()` mechanism recon already uses for `endpoint` path interpolation and `cli.run` commands. **If any `{foo}` remains unresolved after substitution, `recon survey --dry-run` (and every survey, which plans first) reports it as a config problem at `collectors.<i>.body` and exits 3 before anything is sent** — loud local failure beats silent server-side 400s or empty results. Add every `{foo}` you reference to `params:`.
 
 ## Create the mission
 
@@ -52,7 +52,7 @@ catalog:
       env: EXA_API_KEY
       # no prefix — Exa uses raw x-api-key
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.9.0 (exa-discovery walkthrough)"
+    user_agent: "exa-discovery (you@example.com)"   # optional; default: recon/<version>
 
 collectors:
   - name: probe
@@ -81,7 +81,7 @@ recon survey exa-discovery
 Expected output:
 
 ```
-Mission: exa-discovery — 1 run(s) from 1 collector(s), 1 source(s)
+1 run(s) from 1 collector(s), 1 source(s)
   probe: 1 records
 /Users/you/project/.recon/exa-discovery/archive/2026-04-19-113022-123456
 ```
@@ -159,7 +159,7 @@ catalog:
       header: x-api-key
       env: EXA_API_KEY
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.9.0 (exa-discovery survey)"
+    user_agent: "exa-discovery (you@example.com)"
 
 collectors:
   - name: neural-search
@@ -192,8 +192,9 @@ recon survey exa-discovery
 ```
 
 ```
-Mission: exa-discovery — 1 run(s) from 1 collector(s), 1 source(s)
+1 run(s) from 1 collector(s), 1 source(s)
   neural-search: 15 records
+/Users/you/project/.recon/exa-discovery/archive/2026-04-19-114510-654321
 ```
 
 ## Stage 5 — Query

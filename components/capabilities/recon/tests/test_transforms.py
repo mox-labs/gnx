@@ -1,18 +1,19 @@
-"""Tests for transforms — glom-based path resolution + normalize specs."""
+"""The normalize language: path resolution, specs, and the built-in transforms."""
 
 import pytest
 
-from recon.application.transforms import (
+from recon.domain.errors import ConfigError
+from recon.domain.normalize import (
     BUILTIN_TRANSFORMS,
     apply_normalize,
     first,
     html2text,
     inverted_index,
     join,
+    nested_records,
     resolve_path,
     spec_problems,
 )
-from recon.domain.exceptions import ConfigError
 
 
 class TestHtml2Text:
@@ -90,6 +91,28 @@ class TestResolvePath:
 
     def test_none_data(self):
         assert resolve_path(None, "x") is None
+
+    def test_a_list_index(self):
+        data = {"authors": [{"name": "Alice"}, {"name": "Bob"}]}
+        assert resolve_path(data, "authors.1.name") == "Bob"
+        assert resolve_path(data, "authors.2.name") is None
+
+    def test_a_digit_is_a_key_in_an_object(self):
+        assert resolve_path({"a": {"1": "one"}}, "a.1") == "one"
+
+    def test_a_bare_star_is_the_list_or_the_object_s_values(self):
+        assert resolve_path({"items": [1, 2]}, "items.*") == [1, 2]
+        assert resolve_path({"x": {"y": 2}}, "*") == [{"y": 2}]
+        assert resolve_path({"items": "text"}, "items.*") is None
+
+    def test_a_list_map_with_an_item_missing_the_rest_is_none(self):
+        """Pinned semantics: one item lacking the rest of the path makes the whole column
+        None, not a list with a hole."""
+        assert resolve_path({"a": [{"n": 1}, {}]}, "a.*.n") is None
+
+    def test_a_second_star_is_refused(self):
+        with pytest.raises(ValueError, match="Nested list-maps"):
+            resolve_path({}, "a.*.b.*.c")
 
 
 class TestApplyNormalize:
@@ -194,24 +217,147 @@ class TestMarkitdown:
     """Test $markitdown transform via markitdown (registered under recon.transforms).
 
     markitdown handles PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP, HTML,
-    images (OCR), audio. Tests cover the roundtrip + the best-effort failure
-    contract (missing file returns empty string, does not raise).
+    images (OCR), audio. Tests cover the roundtrip, the best-effort failure
+    contract (a missing file returns an empty string, does not raise), and the
+    confinement: the value comes from collected data, so it may name only a file under
+    the directories the mission declares, and never a URL.
     """
 
-    def test_roundtrip_csv(self, tmp_path):
+    @pytest.fixture
+    def dirs(self, tmp_path):
+        declared = tmp_path / "declared"
+        outside = tmp_path / "outside"
+        declared.mkdir()
+        outside.mkdir()
+        (declared / "data.csv").write_text("name,city\nAlice,Paris\nBob,Berlin\n")
+        (outside / "secret.csv").write_text("key,value\ntoken,hunter2\n")
+        return declared, outside
+
+    def test_roundtrip_csv(self, dirs):
         """Create a simple CSV, convert to markdown via $markitdown."""
         from recon.adapters._out.markitdown_converter import markitdown_path
 
-        csv_path = tmp_path / "data.csv"
-        csv_path.write_text("name,city\nAlice,Paris\nBob,Berlin\n")
-
-        text = markitdown_path(str(csv_path))
+        declared, _outside = dirs
+        text = markitdown_path(str(declared / "data.csv"), roots=[declared])
         # markitdown converts CSV to a markdown table — check for cell values
         assert "Alice" in text
         assert "Paris" in text
 
-    def test_missing_file_returns_empty(self):
-        """Non-existent file returns empty string (best-effort contract)."""
+    def test_a_missing_file_fails_the_table_naming_it(self, dirs):
+        """Changed requirement: a file $markitdown cannot read is an error, not an empty
+        string, because an empty column reads as an empty document."""
+        from recon.adapters._out.markitdown_converter import markitdown_path
+        from recon.domain.errors import CollectionError
+
+        declared, _outside = dirs
+        with pytest.raises(CollectionError) as excinfo:
+            markitdown_path(str(declared / "nonexistent.pdf"), roots=[declared])
+        assert excinfo.value.kind == "run_failed"
+        assert "nonexistent.pdf" in str(excinfo.value) and excinfo.value.fix
+
+    def test_a_file_markitdown_cannot_convert_fails_the_table(self, dirs):
+        from recon.adapters._out.markitdown_converter import markitdown_path
+        from recon.domain.errors import CollectionError
+
+        declared, _outside = dirs
+        (declared / "blob.bin").write_bytes(b"\x00\x01\x02\xff\xfe")
+        with pytest.raises(CollectionError) as excinfo:
+            markitdown_path(str(declared / "blob.bin"), roots=[declared])
+        assert excinfo.value.kind == "run_failed" and excinfo.value.fix
+
+    def test_a_missing_converter_dependency_is_a_config_error(self, dirs, monkeypatch):
+        import markitdown
+
+        from recon.adapters._out.markitdown_converter import markitdown_path
+        from recon.domain.errors import CollectionError
+
+        def missing(self, path):
+            raise markitdown.MissingDependencyException("pdfminer is not installed")
+
+        monkeypatch.setattr(markitdown.MarkItDown, "convert_local", missing)
+        declared, _outside = dirs
+        with pytest.raises(CollectionError) as excinfo:
+            markitdown_path(str(declared / "data.csv"), roots=[declared])
+        assert excinfo.value.kind == "config" and "[all]" in excinfo.value.fix
+
+    def test_a_defect_inside_markitdown_is_not_classified(self, dirs, monkeypatch):
+        """Only markitdown's own errors and an unreadable file are classified; a bug
+        propagates as itself."""
+        import markitdown
+
         from recon.adapters._out.markitdown_converter import markitdown_path
 
-        assert markitdown_path("/nonexistent/file.pdf") == ""
+        def broken(self, path):
+            raise ZeroDivisionError
+
+        monkeypatch.setattr(markitdown.MarkItDown, "convert_local", broken)
+        with pytest.raises(ZeroDivisionError):
+            markitdown_path(str(dirs[0] / "data.csv"), roots=[dirs[0]])
+
+    @pytest.mark.parametrize("value", [None, "", 42, ["a.pdf"]])
+    def test_a_value_that_is_not_a_path_returns_empty(self, dirs, value):
+        from recon.adapters._out.markitdown_converter import markitdown_path
+
+        assert markitdown_path(value, roots=[dirs[0]]) == ""
+
+    def _refused(self, value, roots):
+        from recon.adapters._out.markitdown_converter import markitdown_path
+        from recon.domain.errors import CollectionError
+
+        with pytest.raises(CollectionError) as excinfo:
+            markitdown_path(value, roots=roots)
+        assert excinfo.value.kind == "config"
+        assert "hunter2" not in str(excinfo.value)
+        return excinfo.value
+
+    def test_a_file_outside_the_declared_directories_is_refused(self, dirs):
+        declared, outside = dirs
+        error = self._refused(str(outside / "secret.csv"), [declared])
+        assert "local" in error.fix
+
+    def test_dot_dot_does_not_escape(self, dirs):
+        declared, _outside = dirs
+        self._refused(str(declared / ".." / "outside" / "secret.csv"), [declared])
+
+    def test_a_symlink_does_not_escape(self, dirs):
+        declared, outside = dirs
+        (declared / "link.csv").symlink_to(outside / "secret.csv")
+        self._refused(str(declared / "link.csv"), [declared])
+
+    def test_with_no_declared_directory_nothing_is_read(self, dirs):
+        declared, _outside = dirs
+        self._refused(str(declared / "data.csv"), [])
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "http://127.0.0.1:9/doc.html",
+            "https://127.0.0.1:9/doc.pdf",
+            "HTTPS://127.0.0.1:9/doc.pdf",
+            "data:text/plain;base64,aHVudGVyMg==",
+        ],
+    )
+    def test_a_uri_is_refused_not_fetched(self, dirs, uri):
+        error = self._refused(uri, [dirs[0]])
+        assert "web" in error.fix
+
+    def test_a_file_uri_is_refused_even_inside_a_declared_directory(self, dirs):
+        declared, _outside = dirs
+        self._refused((declared / "data.csv").as_uri(), [declared])
+
+
+class TestNestedRecords:
+    """What a survey looks for in a table's one record: the list of records it holds."""
+
+    def test_the_longest_list_of_objects_wins(self):
+        record = {"feed": {"links": [{"h": 1}, {"h": 2}], "entry": [{"i": 1}, {"i": 2}, {"i": 3}]}}
+        assert nested_records(record) == ("feed.entry", 3)
+
+    def test_a_list_of_scalars_or_of_one_object_is_not_records(self):
+        assert nested_records({"tags": ["a", "b", "c"], "one": [{"a": 1}]}) is None
+
+    def test_lists_are_not_searched_inside_and_depth_is_bounded(self):
+        assert nested_records({"rows": [{"inner": [{"a": 1}, {"a": 2}]}]}) is None
+        deep = {"a": {"b": {"c": {"d": {"e": [{"x": 1}, {"x": 2}]}}}}}
+        assert nested_records(deep) is None
+        assert nested_records(deep, depth=5) == ("a.b.c.d.e", 2)

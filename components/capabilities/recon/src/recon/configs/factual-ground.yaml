@@ -3,10 +3,11 @@
 # Demonstrates:
 #   • two no-auth HTTP APIs with very different shapes
 #   • SPARQL query embedded in a YAML param block
-#   • deeply-nested JSON unpacking via glom-style paths
+#   • deeply-nested JSON unpacking via dotted paths
 #
 # Neither API requires authentication. Both ask for a descriptive
-# user-agent (already set at the source level).
+# user-agent: recon sends recon/<version> with its URL unless a source sets
+# `user_agent:`; set one with your contact to be reachable.
 #
 # Usage:
 #   recon init facts --template factual-ground
@@ -20,13 +21,11 @@ catalog:
     type: api
     url: https://en.wikipedia.org/w
     rate_limit: { rps: 5, burst: 3 }
-    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
 
   - name: wikidata
     type: api
     url: https://query.wikidata.org
     rate_limit: { rps: 1, burst: 1 }
-    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
     timeout: 90
 
 collectors:

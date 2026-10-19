@@ -7,15 +7,17 @@ from pathlib import Path
 import pytest
 
 from recon.adapters._out.capture_collector import CaptureCollector, body_format
+from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.cli_collector import CliCollector
-from recon.application.captures import FilesystemCaptureLog, record_hook_payload
-from recon.application.recon import run
-from recon.domain.exceptions import CollectionError, ConfigError
+from recon.adapters._out.system_clock import SystemClock
+from recon.application.captures import record_hook_payload
+from recon.domain.errors import CollectionError, ConfigError
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from tests.recon_fakes import run_survey as run
 
 
 def _log(mission: Path) -> FilesystemCaptureLog:
-    return FilesystemCaptureLog(mission / "captures")
+    return FilesystemCaptureLog(mission / "captures", SystemClock())
 
 
 def _external(log, tool, response):
@@ -79,6 +81,55 @@ def test_xml_bodies_parse_by_content_type(tmp_path):
     assert _collect(tmp_path, extract="feed.entry", normalize={"t": "title"}) == [{"t": "T"}]
 
 
+_ARXIV_FEED = b"""<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:arxiv="http://arxiv.org/schemas/atom"
+      xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <entry>
+    <title>Mamba</title>
+    <arxiv:primary_category term="cs.LG"/>
+  </entry>
+</feed>"""
+
+
+def test_arxiv_namespaced_keys_have_one_colon(tmp_path):
+    """Regression: the prefixes ended in a colon and xmltodict adds its own, so keys came
+    out ``arxiv::primary_category`` and the documented path matched nothing."""
+    _log(tmp_path).record(
+        collector="arxiv",
+        source=None,
+        kind="http",
+        request={},
+        status=200,
+        content_type="application/atom+xml",
+        headers={},
+        body=_ARXIV_FEED,
+    )
+    spec = {"title": "title", "venue": "arxiv:primary_category.@term"}
+    assert _collect(tmp_path, extract="feed.entry", normalize=spec) == [
+        {"title": "Mamba", "venue": "cs.LG"}
+    ]
+    [feed] = _collect(tmp_path, extract="feed")
+    assert feed["opensearch:totalResults"] == "1"
+
+
+def test_a_capture_line_without_an_id_names_its_file_and_line(tmp_path):
+    """Regression: a line without ``id`` raised KeyError, so the table failed as kind
+    ``unknown`` with the message ``'id'``."""
+    _external(_log(tmp_path), "t", {"title": "A"})
+    log = tmp_path / "captures" / "captures.jsonl"
+    line = json.loads(log.read_text())
+    del line["id"]
+    log.write_text(json.dumps(line) + "\n")
+
+    with pytest.raises(CollectionError) as excinfo:
+        _collect(tmp_path)
+    error = excinfo.value
+    assert error.kind == "run_failed"
+    assert f"{log}:1" in str(error) and "'id'" in str(error)
+    assert error.fix
+
+
 @pytest.mark.parametrize(
     ("ct", "fmt"),
     [
@@ -105,7 +156,7 @@ def test_fan_out_keeps_each_sources_captures(tmp_path):
 
 def test_glob_over_archive_logs(tmp_path):
     for ts in ("2026-01-01", "2026-01-02"):
-        log = FilesystemCaptureLog(tmp_path / "archive" / ts)
+        log = FilesystemCaptureLog(tmp_path / "archive" / ts, SystemClock())
         _external(log, "t", {"day": ts})
     records = _collect(tmp_path, path="archive/*/captures.jsonl")
     assert [r["day"] for r in records] == ["2026-01-01", "2026-01-02"]
@@ -151,5 +202,5 @@ def test_renormalize_a_survey_without_refetching():
         )
         second, results = run(again, {"capture": CaptureCollector(mission)}, mission)
         lines = (second / "renorm.jsonl").read_text().splitlines()
-    assert results[0]["status"] == "ok"
+    assert results[0].status == "ok"
     assert [json.loads(x) for x in lines] == [{"value": 1}, {"value": 2}]

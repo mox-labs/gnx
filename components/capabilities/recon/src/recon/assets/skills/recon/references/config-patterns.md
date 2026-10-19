@@ -17,7 +17,7 @@ Complete config examples for common recon use cases. Copy, adapt, write to `.rec
 
 ## Code Mining (Multi-Repo)
 
-Fan-out across multiple repositories. Collectors run against every catalog entry.
+Fan-out across multiple repositories. Collectors run against every catalog entry. Give `rg` an explicit path (`.`): with none it reads stdin, which recon's command inherits, and waits out its timeout.
 
 ```yaml
 catalog:
@@ -37,11 +37,12 @@ catalog:
 collectors:
   - name: scars
     type: cli
-    run: "rg --json -C3 'note that|SAFETY|INVARIANT|must not|never|critical|be careful' --type rust"
+    run: "rg --json -C3 'note that|SAFETY|INVARIANT|must not|never|critical|be careful' --type rust ."
     normalize:
+      kind: type                       # rg --json also prints begin, context, end and summary lines
       file: "data.path.text"
       line: "data.line_number"
-      content: "data.lines.text|$first"
+      content: "data.lines.text"
 
   - name: oscillations
     type: cli
@@ -49,15 +50,16 @@ collectors:
 
   - name: signatures
     type: cli
-    run: "rg --json 'pub (fn|struct|trait|enum|type)' --type rust"
+    run: "rg --json 'pub (fn|struct|trait|enum|type)' --type rust ."
     normalize:
+      kind: type
       file: "data.path.text"
       line: "data.line_number"
-      content: "data.lines.text|$first"
+      content: "data.lines.text"
 
   - name: unsafe-census
     type: cli
-    run: "rg --json 'unsafe' --type rust --count-matches"
+    run: "rg --count-matches 'unsafe' --type rust ."   # text: <file>:<count> per line
 ```
 
 **Produces:** `scars-tokio.jsonl`, `scars-tower.jsonl`, `signatures-tokio.jsonl`, etc.
@@ -65,7 +67,7 @@ collectors:
 **Query example:**
 ```sql
 SELECT file, line, content FROM scars_tokio
-WHERE content LIKE '%SAFETY%'
+WHERE kind = 'match' AND content LIKE '%SAFETY%'
 ```
 
 ---
@@ -84,11 +86,12 @@ collectors:
   - name: todos
     type: cli
     source: project
-    run: "rg --json 'TODO|FIXME|HACK|XXX' --type-add 'src:*.{rs,py,ts}' --type src"
+    run: "rg --json 'TODO|FIXME|HACK|XXX' --type-add 'src:*.{rs,py,ts}' --type src ."
     normalize:
+      kind: type
       file: "data.path.text"
       line: "data.line_number"
-      content: "data.lines.text|$first"
+      content: "data.lines.text"
 
   - name: recent-changes
     type: cli
@@ -97,7 +100,7 @@ collectors:
 
   - name: issues
     type: cli
-    run: "gh issue list --repo owner/repo --json title,body,labels,state --limit 50"
+    run: "gh issue list --repo owner/repo --json title,body,labels,state --limit 50 --jq '.[]'"
     normalize:
       title: title
       body: body
@@ -113,7 +116,7 @@ collectors:
 
 code-maat emits CSV. Recon consumes JSONL. A small python pipeline bridges the two. Each collector generates a per-run logfile, runs one analysis, and pipes the CSV through `csv.DictReader` → `json.dumps`.
 
-**Install:** `brew install code-maat` (macOS) or download the standalone jar from the release page. The binary is `maat`.
+**Install:** download the standalone jar from the code-maat release page and put a `maat` script on `PATH` that runs `java -jar <path to the jar> "$@"` (the command runs in `/bin/sh`, so a shell alias does not reach it).
 
 **Pattern:**
 
@@ -220,13 +223,7 @@ Monitor content sources on a recurring schedule. Two phases: set up the config o
 
 ### Phase 1: Setup (one-time)
 
-Create the mission config. Use the recon skill (`--skill recon`) to have Claude generate it:
-
-```
-claude --skill recon "Set up a weekly arxiv + S2 tracker for collaborative intelligence papers"
-```
-
-Claude writes `.recon/arxiv-weekly/config.yaml`:
+Write the mission, then `recon init arxiv-weekly -c <file>` and plan it with `recon survey arxiv-weekly --dry-run`:
 
 ```yaml
 catalog:
@@ -280,25 +277,21 @@ collectors:
 
 ### Phase 2: Schedule (recurring)
 
-The config exists. Now schedule a recurring survey — the scheduled agent runs recon and analyzes the diff:
+Run the survey on a schedule, for example from cron every Monday at 09:00:
 
 ```
-/schedule create --cron "0 9 * * 1" --prompt "Run recon survey arxiv-weekly. Read the JSONL results. If a previous archive exists, compare and report: new papers, rising citations, anything relevant to collaborative intelligence. Write a summary to .recon/arxiv-weekly/digest.md."
+0 9 * * 1 cd /path/to/project && recon survey arxiv-weekly --json
 ```
 
-Every Monday at 9am, the scheduled agent:
-1. Runs `recon survey arxiv-weekly` (config already exists)
-2. Reads the new archive's JSONL files
-3. Compares with the previous archive
-4. Writes a digest
+Each run adds one archive. To report what changed, compare the latest archive with the one before it (`recon status arxiv-weekly` lists them).
 
 The config never changes — only the archives accumulate.
 
-**Query across archives:**
+**What is new since an earlier archive** (its id from `recon status arxiv-weekly`; run from the project root):
 ```sql
-SELECT title, published, authors FROM arxiv_new
-WHERE published > '2026-03-25'
-ORDER BY published DESC
+SELECT title, published FROM arxiv_new
+EXCEPT
+SELECT title, published FROM read_json_auto('.recon/arxiv-weekly/archive/<archive id>/arxiv-new.jsonl')
 ```
 
 ---
@@ -317,7 +310,7 @@ catalog:
       env: GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.9.0 (release-monitor)"
+    user_agent: "release-monitor/1 (mailto:you@example.org)"
 
 collectors:
   - name: tokio-releases
@@ -347,7 +340,7 @@ collectors:
       url: html_url
 ```
 
-**PyPI variant** — use the web collector since PyPI's public API is JSON-over-HTTPS at well-known URLs:
+**PyPI variant** — PyPI's JSON API is an `api` collector with no auth:
 
 ```yaml
 catalog:
@@ -361,8 +354,8 @@ collectors:
     source: pypi
     endpoint: /pydantic/json
     extract: "releases"
-    # Raw releases is a dict keyed by version — inspect with probe first,
-    # then write a normalize spec that extracts version keys + metadata.
+    # releases is one object keyed by version, so this is one record whose columns are
+    # the versions; probe it before writing a normalize spec.
 ```
 
 ---
@@ -416,8 +409,9 @@ collectors:
   - name: npm-outdated
     type: cli
     source: project
-    run: "npm outdated --json || true"    # npm returns exit 1 when updates exist
-    # JSON output — object keyed by package name
+    run: "npm outdated --json | jq -c 'to_entries[] | {package: .key} + .value'"
+    # npm prints one indented object keyed by package; jq makes one line per package
+    # (the pipeline's exit is jq's, so npm's exit 1 for "updates exist" does not fail it)
 
   - name: uv-tree
     type: cli
@@ -427,13 +421,13 @@ collectors:
   - name: python-audit
     type: cli
     source: project
-    run: "uv run pip-audit --format=json || true"
-    # Vulnerability audit — JSON list of findings
+    run: "uv run pip-audit --format=json | jq -c '.dependencies[]'"
+    # one line per dependency: {name, version, vulns: [...]}
 ```
 
 **Query example:**
 ```sql
-SELECT * FROM python_audit WHERE vulns IS NOT NULL
+SELECT name, version, vulns FROM python_audit WHERE len(vulns) > 0
 ```
 
 ---
@@ -470,13 +464,13 @@ collectors:
 
 Each collector produces one record per page with markdown content. Claude can then SQL-query for specific topics or diff across time to catch doc changes.
 
-For bulk crawls (dozens of pages), prefer generating the config programmatically from a sitemap, or use a sitemap-based collector chain.
+For dozens of pages, generate the collectors from a sitemap with a script: each page is one `web` collector.
 
 ---
 
 ## Issue Triage Across Repos
 
-Pull open issues from multiple GitHub repos for triage review. Uses `gh` CLI via the cli collector — inherits the user's gh auth automatically.
+Pull open issues from multiple GitHub repos for triage review. Uses `gh` CLI via the cli collector — inherits the user's gh auth automatically. `gh --json` prints one JSON array, which a `cli` collector would keep as a single `{line_number, line}` record; `--jq '.[]'` prints one object per line, one record each.
 
 ```yaml
 catalog:
@@ -488,7 +482,7 @@ collectors:
   - name: issues-tokio
     type: cli
     source: repo-a
-    run: "gh issue list --repo tokio-rs/tokio --state open --json number,title,labels,createdAt,author --limit 50"
+    run: "gh issue list --repo tokio-rs/tokio --state open --json number,title,labels,createdAt,author --limit 50 --jq '.[]'"
     normalize:
       number: number
       title: title
@@ -499,7 +493,7 @@ collectors:
   - name: issues-axum
     type: cli
     source: repo-a
-    run: "gh issue list --repo tokio-rs/axum --state open --json number,title,labels,createdAt,author --limit 50"
+    run: "gh issue list --repo tokio-rs/axum --state open --json number,title,labels,createdAt,author --limit 50 --jq '.[]'"
     normalize:
       number: number
       title: title
@@ -510,7 +504,7 @@ collectors:
   - name: prs-review-requested
     type: cli
     source: repo-a
-    run: "gh search prs --review-requested=@me --state=open --json number,title,repository,url --limit 30"
+    run: "gh search prs --review-requested=@me --state=open --json number,title,repository,url --limit 30 --jq '.[]'"
     normalize:
       number: number
       title: title
@@ -531,7 +525,7 @@ SELECT 'axum', title FROM issues_axum WHERE 'bug' = ANY(labels)
 
 Exa, Firecrawl, Serper, Tavily, Perplexity, Linkup, and most modern search APIs take a POST with a JSON body instead of GET + query-string. Recon supports this via `method: POST` + `body:` on the collector, and `auth.prefix:` on the source (for `Authorization: Bearer $KEY` style auth).
 
-**Keep configs as templates.** Put the changing values in `params:` and reference them as `{placeholder}` in `body:` string values. The substitution is recursive through dicts and lists; non-string values (ints, bools) pass through literally. This means swapping a search term is a one-line edit — no regeneration of the whole YAML, no LLM in the loop for a mechanical operation. **Unresolved `{foo}` raises `CollectionError` before the request fires**, listing the missing keys — so a forgotten `params:` entry fails loudly at probe time instead of silently at production scale.
+**Keep configs as templates.** Put the changing values in `params:` and reference them as `{placeholder}` in `body:` string values. The substitution is recursive through dicts and lists; non-string values (ints, bools) pass through literally. This means swapping a search term is a one-line edit — no regeneration of the whole YAML, no LLM in the loop for a mechanical operation. **An unresolved `{foo}` is a plan problem** (`unresolved`, exit 3) naming the placeholder, so a forgotten `params:` entry fails before any request is sent. Every `params:` entry is also sent as a query parameter.
 
 ### Exa — neural and keyword search
 
@@ -716,7 +710,7 @@ collectors:
 
 ### Composed mission — Exa discovery → Firecrawl scrape
 
-Two collectors, two sources, one mission. Run Exa search first, then pipe URLs into a Firecrawl scrape collector. Because recon is mechanical, you run this in two missions (or one mission run twice with config edits) — Claude reads the Exa archive, writes URLs into a second config, and runs the scrape.
+Two missions: an Exa search, then a Firecrawl scrape of the URLs it found. recon does not feed one collector's output into another, so Claude reads the first archive and writes the second mission.
 
 ```yaml
 # mission 1: exa.yaml — discovery
@@ -739,7 +733,7 @@ collectors:
     normalize: { title: title, url: url, score: score }
 ```
 
-After `recon survey exa-discovery`, query `SELECT url FROM discovery WHERE score > 0.6`, take the URLs, and scaffold a second mission that fans out a Firecrawl scrape collector across those URLs (one collector per URL, or a catalog of `api` sources each with a different endpoint pre-baked).
+`recon init exa-discovery -c exa.yaml`, `recon survey exa-discovery`, then `recon query exa-discovery "SELECT url FROM discovery WHERE score > 0.6"`. Write a second mission with one Firecrawl `scrape` collector per URL, each with its own `params: {target_url: ...}`, and survey it.
 
 ### Auth prefix cheatsheet
 

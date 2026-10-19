@@ -8,16 +8,24 @@ from pathlib import Path
 import pytest
 import yaml
 
+import recon
 from recon.adapters._out.api_collector import ApiCollector
+from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import CliCollector
 from recon.adapters._out.http_requester import HttpxRequester
+from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.web_collector import WebCollector
-from recon.application.recon import failure_kind, run
-from recon.application.utilization import RateLimiter
+from recon.application.survey import Survey
+from recon.composition import DEFAULT_USER_AGENT
 from recon.domain.converters import ConversionResult
-from recon.domain.exceptions import ReconError
+from recon.domain.documents import TableError, TableOutcome, failure_kind
+from recon.domain.errors import CollectionError
 from recon.domain.models import ReconConfig
+from recon.domain.ratelimit import RateLimiter
 from recon.domain.substitution import substitute
+from recon.domain.telemetry import Telemetry
+from tests.recon_fakes import FixedClock, ScriptedRequester
+from tests.recon_fakes import run_survey as run
 
 
 class _NoOpConverter:
@@ -32,11 +40,12 @@ class _NoOpConverter:
 
 
 def _collectors():
-    req = HttpxRequester(RateLimiter())
+    clock = SystemClock()
+    req = HttpxRequester(RateLimiter(clock), clock)
     return {
         "cli": CliCollector(),
-        "api": ApiCollector(req),
-        "web": WebCollector(req, _NoOpConverter()),
+        "api": ApiCollector(req, {}, DEFAULT_USER_AGENT),
+        "web": WebCollector(req, _NoOpConverter(), DEFAULT_USER_AGENT),
     }
 
 
@@ -227,7 +236,7 @@ class TestReconRun:
         assert tables["plain"]["type_url"] == "recon.v1.records"
         assert tables["typed"]["type_url"] == "acme.papers.v1.hit"
         assert tables["typed"]["records"] == 1 and "seconds" in tables["typed"]
-        assert tables["bad"]["error"]["kind"] == "collection"
+        assert tables["bad"]["error"]["kind"] == "run_failed"
         assert "exit 2" in tables["bad"]["error"]["message"]
         assert records == [{"a": 1}], "records stay as normalized: no injected type fields"
 
@@ -298,27 +307,27 @@ class TestReconRun:
             records = [json.loads(line) for line in lines]
             assert records == [{"_empty": True}]
 
-
-class TestCollisionDetection:
-    def test_pinned_and_fanout_collide(self):
-        """Fan-out of `foo` over source `arxiv` produces `foo-arxiv`,
-        same name as a pinned collector `foo-arxiv`. Pre-flight must catch it."""
+    def test_an_empty_table_reports_zero_records(self):
+        """The sentinel keeps the file readable; it is not a record. Counting it made an
+        empty table indistinguishable from a table with one row."""
+        events: list[dict] = []
         config = ReconConfig.model_validate(
             {
-                "catalog": [{"name": "arxiv", "type": "local", "url": "/tmp"}],
                 "collectors": [
-                    {"name": "foo", "type": "cli", "run": "echo hi"},
-                    {"name": "foo-arxiv", "type": "cli", "source": "arxiv", "run": "echo hi"},
+                    {"name": "empty", "type": "cli", "run": "true"},
+                    {"name": "one", "type": "cli", "run": "echo hi"},
                 ],
             }
         )
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            with pytest.raises(ReconError, match="Output name collision"):
-                run(config, _collectors(), mission)
-            # No archive dir should have been created
-            assert not (mission / "archive").exists()
+            archive, results = run(config, _collectors(), mission, on_event=events.append)
+            meta = yaml.safe_load((archive / "meta.yaml").read_text())
+
+        assert {r.name: r.records for r in results} == {"empty": 0, "one": 1}
+        assert {t["name"]: t["records"] for t in meta["tables"]} == {"empty": 0, "one": 1}
+        assert {e["name"]: e["records"] for e in events} == {"empty": 0, "one": 1}
 
 
 class TestAtomicJsonlWrite:
@@ -351,7 +360,7 @@ class TestIncompleteSentinel:
             mission = Path(tmp) / "m"
             mission.mkdir()
             archive, results = run(config, _collectors(), mission)
-            statuses = {r["name"]: r["status"] for r in results}
+            statuses = {r.name: r.status for r in results}
             assert statuses == {"ok": "ok", "bad": "error"}
             assert (archive / ".incomplete").exists()
             assert (archive / "meta.yaml").exists()
@@ -411,7 +420,7 @@ class TestPreserveRaw:
         assert capture["body"] == f"raw/{sha}"
         assert capture["sha256"] == sha
         assert capture["bytes"] == len(body_bytes)
-        assert capture["request"]["commands"] == ["printf '{\"a\": 1}\\n{\"a\": 2}\\n'"]
+        assert capture["request"]["commands"] == ['printf \'{"a": 1}\\n{"a": 2}\\n\'']
 
     def test_jsonl_still_produced_alongside_raw(self):
         """Raw doesn't replace processed output — both exist."""
@@ -431,7 +440,7 @@ class TestPreserveRaw:
             assert (archive / "captures.jsonl").exists()
 
     def test_capture_log_is_not_a_query_table(self):
-        from recon.application.query import available_tables
+        from recon.adapters._out.duckdb_query import DuckdbQuery
 
         config = ReconConfig.model_validate(
             {"preserve_raw": True, "collectors": [{"name": "t", "type": "cli", "run": "true"}]}
@@ -440,7 +449,7 @@ class TestPreserveRaw:
             mission = Path(tmp) / "m"
             mission.mkdir()
             archive, _ = run(config, _collectors(), mission)
-            assert available_tables(archive) == ["t"]
+            assert DuckdbQuery().tables(archive) == ["t"]
 
 
 class TestFailureKind:
@@ -448,12 +457,15 @@ class TestFailureKind:
 
     @staticmethod
     def _results(*kinds):
-        return [
-            {"name": f"t{i}", "status": "error", "error": {"kind": k, "message": ""}}
-            if k
-            else {"name": f"t{i}", "status": "ok"}
-            for i, k in enumerate(kinds)
-        ]
+        def table(i, kind):
+            ok = TableOutcome(name=f"t{i}", file=f"t{i}.jsonl", collector="c", type="cli",
+                              source=None, type_url="recon.v1.records")  # fmt: skip
+            if kind is None:
+                return ok
+            error = TableError(kind=kind, message="")
+            return ok.model_copy(update={"status": "error", "error": error})
+
+        return [table(i, k) for i, k in enumerate(kinds)]
 
     def test_all_ok_is_none(self):
         assert failure_kind(self._results(None, None)) is None
@@ -462,11 +474,13 @@ class TestFailureKind:
         assert failure_kind(self._results(None, "transient", "transient")) == "transient"
 
     def test_any_auth_wins(self):
-        assert failure_kind(self._results("transient", "auth", "collection")) == "auth"
+        assert failure_kind(self._results("transient", "auth", "run_failed")) == "auth"
 
-    def test_mixed_is_collection(self):
-        assert failure_kind(self._results("transient", "collection")) == "collection"
-        assert failure_kind(self._results("unknown")) == "collection"
+    def test_mixed_is_run_failed(self):
+        """A survey whose failures are neither auth nor all transient exits ``run_failed``
+        (8), the kind an unclassified table failure carries too."""
+        assert failure_kind(self._results("transient", "run_failed")) == "run_failed"
+        assert failure_kind(self._results("unknown")) == "run_failed"
 
 
 class TestEventCallback:
@@ -491,14 +505,47 @@ class TestEventCallback:
         assert ok_event["records"] == 1
 
 
+class TestTableErrorCarriesItsFix:
+    """A collector that knows the remedy says so; the table's error keeps it."""
+
+    class _Refuses:
+        def __init__(self, fix):
+            self._fix = fix
+
+        def collect(self, entry, source, *, captures=None):
+            raise CollectionError("limit reached", kind="run_failed", fix=self._fix)
+            yield {}
+
+    def _error(self, tmp_path, fix):
+        config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
+        events: list[dict] = []
+        archive, results = run(config, {"x": self._Refuses(fix)}, tmp_path, on_event=events.append)
+        meta = yaml.safe_load((archive / "meta.yaml").read_text())
+        error = results[0].document()["error"]
+        assert meta["tables"][0]["error"] == error
+        return error, events[0]
+
+    def test_fix_reaches_the_results_meta_and_event(self, tmp_path):
+        error, event = self._error(tmp_path, "raise the limit")
+        assert error == {
+            "kind": "run_failed",
+            "message": "[t] limit reached",
+            "fix": "raise the limit",
+        }
+        assert event["fix"] == "raise the limit"
+
+    def test_an_error_without_a_remedy_has_a_null_fix(self, tmp_path):
+        """Changed requirement: a table error is one record, so ``fix`` is always present,
+        null when the collector named no remedy (as in the error envelope)."""
+        error, _event = self._error(tmp_path, None)
+        assert error == {"kind": "run_failed", "message": "[t] limit reached", "fix": None}
+
+
 class TestSinkClosesTheGenerator:
-    """`_sink` must close a SUSPENDED generator when the consumer fails.
+    """`write_table` must close a SUSPENDED generator when the consumer fails, so the
+    collector's cleanup runs: subprocess kill, httpx close, rate-limit release.
 
-    Regression test, and the discriminating case took two tries to find. A typing pass
-    removed `contextlib.closing(records)` to silence a mypy type-var error, dropping the
-    cleanup the docstring promises — subprocess kill, httpx close, rate-limit release.
-
-    Why the obvious tests do not catch it:
+    Why the obvious tests do not catch a missing `contextlib.closing(records)`:
       - normal completion — the generator exhausts, so it is already closed;
       - the generator itself raises — it terminated, so it is already closed;
       - refcount GC closes an abandoned generator once its last reference drops.
@@ -518,8 +565,6 @@ class TestSinkClosesTheGenerator:
         return d
 
     def test_suspended_generator_is_closed_when_the_consumer_fails(self, tmp_path):
-        from recon.application.recon import _sink
-
         closed = []
 
         def make():
@@ -532,17 +577,15 @@ class TestSinkClosesTheGenerator:
 
         gen = make()  # reference held: GC must not be what closes it
         with pytest.raises(ValueError):
-            _sink(gen, tmp_path / "out.jsonl")
+            ArchiveFiles(SystemClock()).write_table(tmp_path, "out", gen)
         assert closed == [True], (
             "the generator was suspended when the consumer raised; closing() must run its "
-            "finally before _sink returns, or the upstream collector never releases its "
+            "finally before write_table returns, or the upstream collector never releases its "
             "subprocess / httpx client / rate-limit token"
         )
         assert inspect.getgeneratorstate(gen) == inspect.GEN_CLOSED
 
     def test_generator_closed_on_normal_completion(self, tmp_path):
-        from recon.application.recon import _sink
-
         closed = []
 
         def make():
@@ -553,19 +596,111 @@ class TestSinkClosesTheGenerator:
                 closed.append(True)
 
         gen = make()
-        assert _sink(gen, tmp_path / "out.jsonl") == 2
+        assert ArchiveFiles(SystemClock()).write_table(tmp_path, "out", gen) == 2
         assert closed == [True]
         assert inspect.getgeneratorstate(gen) == inspect.GEN_CLOSED
 
     def test_partial_tmp_is_removed_on_failure(self, tmp_path):
-        from recon.application.recon import _sink
-
         def make():
             yield {"a": 1}
             raise RuntimeError("boom")
 
         out = tmp_path / "out.jsonl"
         with pytest.raises(RuntimeError):
-            _sink(make(), out)
+            ArchiveFiles(SystemClock()).write_table(tmp_path, "out", make())
         assert not out.exists()
         assert not out.with_suffix(out.suffix + ".tmp").exists(), "partial .tmp must be cleaned"
+
+
+class TestAnUnfinishedArchiveReadsIncomplete:
+    """The marker is written when the archive is made and removed only when the survey
+    finishes, so any way of not finishing leaves it."""
+
+    def test_the_marker_exists_while_the_survey_runs(self, tmp_path):
+        seen: list[bool] = []
+
+        class Looks:
+            def collect(self, entry, source, *, captures=None):
+                [archive] = (tmp_path / "archive").iterdir()
+                seen.append((archive / ".incomplete").exists())
+                yield {"a": 1}
+
+        config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
+        archive, _ = run(config, {"x": Looks()}, tmp_path)
+        assert seen == [True]
+        assert not (archive / ".incomplete").exists(), "removed once every table succeeded"
+
+    def test_a_meta_yaml_that_cannot_be_written_leaves_the_marker(self, tmp_path):
+        class NoMeta(ArchiveFiles):
+            def write_meta(self, archive, meta):
+                raise OSError("disk full")
+
+        events: list[dict] = []
+        clock = SystemClock()
+        config = ReconConfig.model_validate(
+            {"collectors": [{"name": "t", "type": "cli", "run": "echo '{\"a\": 1}'"}]}
+        )
+        archives = NoMeta(clock)
+        started = clock.now()
+        archive = archives.create(tmp_path, "a")
+        survey = Survey(archives, clock, recon.__version__, Telemetry([], clock), events.append)
+        [table] = survey.run(config, _collectors(), archive, started=started)
+        assert table.status == "ok"
+        assert (archive / ".incomplete").exists()
+        assert [e["kind"] for e in events if e["kind"] == "archive_warning"] == ["archive_warning"]
+
+
+class TestOneRecordHoldingTheRecords:
+    """Regression: an api source read without the ``extract:`` its records sit under (arXiv
+    without ``extract: feed.entry``) gave one record, the whole feed, and "ok"."""
+
+    BODY = json.dumps({"feed": {"title": "q", "entry": [{"id": "1"}, {"id": "2"}]}})
+
+    #: The probe the skill recommends, one paper, read with the right extract: the one
+    #: record is a paper, and its authors are its own list.
+    ONE_PAPER = json.dumps({"feed": {"title": "q", "entry": [
+        {"id": "1", "author": [{"name": "a"}, {"name": "b"}, {"name": "c"}]},
+    ]}})  # fmt: skip
+    ONE_WORK = json.dumps({"meta": {"count": 1}, "results": [
+        {"id": "W1", "concepts": [{"id": f"C{i}", "score": 0.5} for i in range(18)]},
+    ]})  # fmt: skip
+
+    def _survey(self, tmp_path, entry, body=BODY):
+        config = ReconConfig.model_validate({
+            "catalog": [{"name": "arxiv", "url": "https://export.arxiv.test"}],
+            "collectors": [{"name": "papers", "type": "api", "source": "arxiv",
+                            "endpoint": "/api/query", **entry}],
+        })  # fmt: skip
+        requester = ScriptedRequester({"https://export.arxiv.test/api/query": body})
+        clock = FixedClock()
+        archives = ArchiveFiles(clock)
+        archive = archives.create(tmp_path, "a")
+        survey = Survey(archives, clock, "0", Telemetry([], clock), extracts={"api"})
+        collectors = {"api": ApiCollector(requester, {}, DEFAULT_USER_AGENT)}
+        tables = survey.run(config, collectors, archive, started=clock.now())
+        return tables, survey.warnings
+
+    def test_one_record_holding_a_list_of_objects_is_warned_with_the_extract(self, tmp_path):
+        tables, [warning] = self._survey(tmp_path, {})
+        assert tables[0].status == "ok" and tables[0].records == 1
+        assert warning.kind == "extract_missing" and warning.path == "collectors.0.extract"
+        assert warning.fix == "set extract: feed.entry on collector 'papers', then survey again"
+
+    @pytest.mark.parametrize(
+        ("body", "extract"),
+        [(ONE_PAPER, "feed.entry"), (ONE_WORK, "results")],
+        ids=["arxiv", "openalex"],
+    )
+    def test_a_probe_that_extracts_one_record_is_not_warned_about_its_own_lists(
+        self, tmp_path, body, extract
+    ):
+        """Regression (changed requirement): a correct extract and a one-record probe were
+        told to set ``extract: feed.entry.author`` (arXiv) or ``results.concepts`` (OpenAlex),
+        a fix that would have made a table of authors. A collector with an extract is never
+        warned."""
+        tables, warnings = self._survey(tmp_path, {"extract": extract}, body)
+        assert tables[0].records == 1 and warnings == []
+
+    def test_the_right_extract_is_not_warned(self, tmp_path):
+        tables, warnings = self._survey(tmp_path, {"extract": "feed.entry"})
+        assert tables[0].records == 2 and warnings == []

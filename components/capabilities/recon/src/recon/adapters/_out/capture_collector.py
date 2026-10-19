@@ -1,6 +1,6 @@
 """CaptureCollector — normalize bodies some earlier fetch already captured.
 
-Reads capture logs (format recon.v1.capture, docs/reference/capture-format.md) and turns
+Reads capture logs (format recon.v1.capture, `recon --skill -r capture-format`) and turns
 each matching capture's body into records with the usual ``extract`` + ``normalize``. The
 bodies may come from an earlier survey (``preserve_raw: true``), from ``recon capture``
 (a Claude Code hook on MCP tools), or from any other tool that writes the format. Nothing
@@ -34,12 +34,12 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from recon.adapters._out.parsing import parse_body, parse_line, to_records
-from recon.application.captures import read_captures
-from recon.application.transforms import BUILTIN_TRANSFORMS, apply_normalize
+from recon.adapters._out.capture_files import read_captures
+from recon.adapters._out.parsing import parse_body, parse_line
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.collector import CollectorType
-from recon.domain.exceptions import CollectionError
+from recon.domain.errors import CollectionError
+from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, to_records
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -112,7 +112,11 @@ class CaptureCollector:
                 f"(relative to {self._mission_dir}). Captures are written by `recon capture` "
                 "and by surveys with preserve_raw: true"
             )
-            raise CollectionError(msg, kind="config")
+            raise CollectionError(
+                msg,
+                kind="config",
+                fix="point path: at an existing captures.jsonl, or capture first",
+            )
         return logs
 
 
@@ -158,5 +162,7 @@ collector_type = CollectorType(
     create=lambda ctx: CaptureCollector(ctx.mission_dir, ctx.transforms),
     effects=frozenset({"filesystem"}),
     summary="capture log (recon.v1.capture) → bodies → records; fetches nothing",
+    normalizes=True,  # the spec may address the capture line itself, as `_capture.*`
+    extracts=True,
     describe=_describe,
 )

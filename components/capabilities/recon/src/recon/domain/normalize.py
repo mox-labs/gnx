@@ -1,0 +1,248 @@
+"""The normalize language: paths into a record, the spec that maps them to columns, and the
+built-in transforms.
+
+A spec maps each output column to ``path`` or ``path|$transform``::
+
+    title: title                          # a key
+    pdf_url: "openAccessPdf.url"          # a nested key
+    first_author: "authors.0.name"        # a list index
+    authors: "authors.*.name"             # the path after ``*`` taken from every item
+    abstract: "description|$html2text"    # resolve, then transform
+
+A path that does not resolve gives ``None``, never an error: one record lacking a field must
+not fail a table. A list-map gives ``None`` when any item lacks the rest of the path. One
+``*`` per path; a second is a config error, reported by :func:`spec_problems` before a run.
+
+Transforms are extensions registered under the entry-point group ``recon.transforms`` and
+looked up by name without the ``$``; the pure built-ins live here.
+"""
+
+from __future__ import annotations
+
+from html.parser import HTMLParser
+from typing import TYPE_CHECKING, Any
+
+from recon.domain.errors import ConfigError
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from recon.domain.collector import Transform
+
+_LIST_MAP = "*"
+
+
+class _UnresolvedError(Exception):
+    """The path does not resolve in this value."""
+
+
+def _step(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        raise _UnresolvedError
+    if isinstance(value, list) and key.isdigit() and int(key) < len(value):
+        return value[int(key)]
+    raise _UnresolvedError
+
+
+def _walk(value: Any, keys: list[str]) -> Any:
+    for index, key in enumerate(keys):
+        if key != _LIST_MAP:
+            value = _step(value, key)
+            continue
+        items = list(value.values()) if isinstance(value, dict) else value
+        if not isinstance(items, list):
+            raise _UnresolvedError
+        rest = keys[index + 1 :]
+        return [_walk(item, rest) for item in items] if rest else items
+    return value
+
+
+def path_problem(path: str) -> str | None:
+    """Why ``path`` is not a path recon can resolve, or None."""
+    if path.split(".").count(_LIST_MAP) > 1:
+        return f"Nested list-maps not supported: {path!r}"
+    return None
+
+
+def resolve_path(data: Any, path: str) -> Any:
+    """The value at ``path`` in ``data``, or None when it does not resolve."""
+    if path_problem(path) is not None:
+        raise ValueError(path_problem(path))
+    try:
+        return _walk(data, path.split("."))
+    except _UnresolvedError:
+        return None
+
+
+def parse_expression(expr: str) -> tuple[str, str | None]:
+    """Split ``path|$transform`` into (path, transform name without ``$``, or None).
+
+    Raises ValueError when the part after the pipe is not ``$name``.
+    """
+    if "|" not in expr:
+        return expr.strip(), None
+    path, _, transform = expr.rpartition("|")
+    transform = transform.strip()
+    if not transform.startswith("$") or len(transform) < 2:
+        raise ValueError(f"after '|' expected a transform like $html2text, got {transform!r}")
+    return path.strip(), transform[1:]
+
+
+def spec_problems(spec: Mapping[str, Any], transforms: Mapping[str, Transform]) -> dict[str, str]:
+    """Every problem in a normalize spec, by output column. Empty when the spec is sound.
+
+    Checked before a run, so an unknown transform or an unsupported path is a config error at
+    validation, never a column silently left empty mid-survey.
+    """
+    problems: dict[str, str] = {}
+    for column, expr in spec.items():
+        if not isinstance(expr, str):
+            problems[column] = f"expected a path string, got {type(expr).__name__}"
+            continue
+        try:
+            path, transform = parse_expression(expr)
+        except ValueError as exc:
+            problems[column] = str(exc)
+            continue
+        if (problem := path_problem(path)) is not None:
+            problems[column] = problem
+        elif transform is not None and transform not in transforms:
+            installed = ", ".join(f"${name}" for name in sorted(transforms)) or "(none)"
+            problems[column] = f"unknown transform ${transform}; installed: {installed}"
+    return problems
+
+
+def apply_normalize(
+    raw: dict[str, Any],
+    spec: Mapping[str, str],
+    transforms: Mapping[str, Transform] | None = None,
+) -> dict[str, Any]:
+    """The record ``spec`` makes of ``raw``: one key per column, in the spec's order.
+    ``transforms`` defaults to the pure built-ins.
+
+    Raises ConfigError for a spec :func:`spec_problems` would have reported; reaching that
+    means validation was skipped.
+    """
+    transforms = BUILTIN_TRANSFORMS if transforms is None else transforms
+    result: dict[str, Any] = {}
+    for column, expr in spec.items():
+        try:
+            path, transform_name = parse_expression(expr)
+            value = resolve_path(raw, path)
+        except ValueError as exc:
+            raise ConfigError(f"normalize.{column}: {exc}") from exc
+        if transform_name is not None:
+            transform = transforms.get(transform_name)
+            if transform is None:
+                raise ConfigError(f"normalize.{column}: unknown transform ${transform_name}")
+            value = transform(value)
+        result[column] = value
+    return result
+
+
+def to_records(data: Any, extract: str | None) -> list[dict[str, Any]]:
+    """The records in a parsed body: the value at ``extract`` (or the body), as a list of
+    objects. A single object is one record; anything in a list that is not an object is
+    dropped."""
+    if extract and isinstance(data, dict | list):
+        data = resolve_path(data, extract)
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        return [data]
+    return []
+
+
+def nested_records(record: dict[str, Any], *, depth: int = 4) -> tuple[str, int] | None:
+    """The path to the longest list of two or more objects inside ``record``, and how many
+    objects it holds; None when there is none. Only objects are searched, ``depth`` keys
+    deep: a list of records is the response's spine (arXiv's ``feed.entry``), not something
+    inside a record.
+
+    A source that returns one record holding such a list was most likely read without the
+    ``extract:`` that names it.
+    """
+    best: tuple[str, int] | None = None
+    level: list[tuple[str, dict[str, Any]]] = [("", record)]
+    for _ in range(depth):
+        below: list[tuple[str, dict[str, Any]]] = []
+        for prefix, value in level:
+            for key, child in value.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                if isinstance(child, dict):
+                    below.append((path, child))
+                elif isinstance(child, list):
+                    objects = sum(1 for item in child if isinstance(item, dict))
+                    if objects >= 2 and (best is None or objects > best[1]):
+                        best = (path, objects)
+        level = below
+    return best
+
+
+# --- built-in transforms -------------------------------------------------------------------
+
+
+class _TextExtractor(HTMLParser):
+    _SKIPPED = ("script", "style", "noscript")
+    _BREAKS = ("p", "br", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._skip = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIPPED:
+            self._skip = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIPPED:
+            self._skip = False
+        if tag in self._BREAKS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            self.parts.append(data)
+
+
+def html2text(html: str | None) -> str:
+    """The text of an HTML fragment: tags, scripts and styles removed, one line per block."""
+    if not html:
+        return ""
+    parser = _TextExtractor()
+    parser.feed(html)
+    lines = "".join(parser.parts).splitlines()
+    return "\n".join(line.strip() for line in lines if line.strip())
+
+
+def inverted_index(index: dict[str, list[int]] | None) -> str:
+    """The text an OpenAlex ``abstract_inverted_index`` encodes (word -> positions)."""
+    if not index:
+        return ""
+    placed = sorted((position, word) for word, positions in index.items() for position in positions)
+    return " ".join(word for _, word in placed)
+
+
+def join(items: list[object] | None, separator: str = ", ") -> str:
+    if not items:
+        return ""
+    return separator.join(str(item) for item in items)
+
+
+def first(items: list[object] | None) -> object | None:
+    if not items:
+        return None
+    return items[0]
+
+
+#: The pure built-ins. ``$markitdown`` is built in too, but it reads a file, so it is an
+#: adapter and reaches a survey only through the entry-point group.
+BUILTIN_TRANSFORMS: Mapping[str, Transform] = {
+    "html2text": html2text,
+    "inverted_index": inverted_index,
+    "join": join,
+    "first": first,
+}

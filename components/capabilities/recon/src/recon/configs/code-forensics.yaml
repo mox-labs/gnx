@@ -6,8 +6,9 @@
 #   • patterns fan-out (run one collector N times with different {pattern})
 #   • no HTTP, no auth, fully offline
 #
-# Works on any git repo. Default target is the current working directory
-# at survey time — edit `url:` below to point at a different path.
+# Works on any git repo. The default target, `url: .`, is the project the mission
+# lives in (the root of its git repository), wherever the survey is run from; edit
+# `url:` below to point at a different path.
 #
 # Usage:
 #   recon init my-scan --template code-forensics

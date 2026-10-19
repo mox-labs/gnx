@@ -1,22 +1,32 @@
-# Normalize Spec Reference
+# Normalize spec
 
-Normalize specs map API/CLI output fields to uniform output columns. Each entry is `output_column: "source.path|$transform"`.
+A normalize spec maps each output column to a path into the record, optionally piped through a transform: `output_column: "source.path|$transform"`. It applies to every collector type, after `extract`.
 
-## Path Syntax
+## Contents
 
-Path resolution uses [glom](https://glom.readthedocs.io/) with our `*` list-map syntax on top.
+- Path syntax
+- Pipe syntax
+- Built-in transforms
+- Capture collectors: `_capture`
+- Response formats
+- Extract path
+
+## Path syntax
+
+A path is keys separated by `.`:
 
 | Pattern | Meaning | Example |
 |---------|---------|---------|
-| `field` | Direct access | `title` → `record["title"]` |
-| `a.b.c` | Nested dotted path | `openAccessPdf.url` → `record["openAccessPdf"]["url"]` |
-| `a.*.b` | List-map | `authors.*.name` → `[author["name"] for author in record["authors"]]` |
-| `a.*.b.c` | Deep list-map | `authorships.*.author.display_name` |
-| `a.*` | Bare list | `items.*` → the list itself |
+| `field` | a key | `title` → `record["title"]` |
+| `a.b.c` | a nested key | `openAccessPdf.url` → `record["openAccessPdf"]["url"]` |
+| `a.0.b` | a list index | `authors.0.name` → the first author's name |
+| `a.*.b` | the rest of the path, from every item | `authors.*.name` → `[a["name"] for a in record["authors"]]` |
+| `a.*.b.c` | the same, deeper | `authorships.*.author.display_name` |
+| `a.*` | the list itself (an object's values, for an object) | `items.*` |
 
-Missing fields return `None` (no error).
+A path that does not resolve gives `null`, never an error: one record lacking a field must not fail a table. With `*`, the whole column is `null` when any item lacks the rest of the path. One `*` per path; a second is a plan problem. A digit is a key in an object and an index in a list. A key that itself holds a `.` cannot be reached.
 
-### Examples from Real APIs
+### Examples from real APIs
 
 ```yaml
 # Semantic Scholar
@@ -40,7 +50,7 @@ venue: "arxiv:primary_category.@term"  # XML attribute key
 authors: "author.*.name"              # list-map
 ```
 
-## Pipe Syntax
+## Pipe syntax
 
 Append `|$transform` to apply a transform after path resolution:
 
@@ -52,18 +62,18 @@ abstract: "metadata.description|$html2text"
 
 The pipe is always `|` (no spaces required). Transform names start with `$`.
 
-**An unknown transform is a config error.** `recon survey --dry-run` (and every survey, which plans first) reports it at `collectors[i].normalize.<column>` with the list of installed transforms, and exits 3 before anything runs. So is a nested list-map (`a.*.b.*.c`) or a pipe without a `$name`.
+**An unknown transform is a plan problem.** `recon survey --dry-run` (and every survey, which plans first) reports it at `collectors.<i>.normalize.<column>` with the installed transforms, and exits 3 before anything runs. So is a path with two `*` (`a.*.b.*.c`) or a pipe without a `$name`.
 
 Transforms are extensions: each is registered under the entry-point group `recon.transforms`, and `recon status --json` lists what is installed (`plugins.transforms`). A package installed alongside recon can add its own.
 
-## Built-in Transforms
+## Built-in transforms
 
 | Transform | Input | Output | Use case |
 |-----------|-------|--------|----------|
 | `$html2text` | HTML string | Plain text | Strip tags from API descriptions |
 | `$inverted_index` | `{"word": [pos, ...]}` | Reconstructed text | OpenAlex abstract format |
 | `$join` | `list` | `str` (comma-separated) | Flatten author lists to string |
-| `$first` | `list` | First element or `None` | Extract first match from ripgrep |
+| `$first` | `list` | First element or `None` | Keep the first of a list-map |
 | `$markitdown` | Local file path string | Markdown text | Convert a PDF, DOCX, PPTX, XLSX, EPub, CSV, image or audio file a record names (markitdown) |
 
 ### $html2text
@@ -78,6 +88,8 @@ description: "content|$html2text"
 ### $inverted_index
 
 Reconstructs text from OpenAlex inverted index format where words map to position arrays.
+
+Normalize this field, or leave it out, before querying: an object keyed by words often holds two that differ only in case ("The", "the"), and SQL cannot make columns of those, so a table that keeps the raw index cannot be queried (`table_unreadable`).
 
 ```yaml
 abstract: "abstract_inverted_index|$inverted_index"
@@ -98,21 +110,25 @@ departments: "departments.*.name|$join"
 Returns first element of a list, or `None` if empty.
 
 ```yaml
-content: "data.lines.text|$first"
-# ["matched line", "context"] → "matched line"
+match: "data.submatches.*.match.text|$first"    # rg --json: the first matched text
+# ["TODO", "FIXME"] → "TODO"
 ```
+
+On a string, `$first` returns its first character: apply it only to a list.
 
 ### $markitdown
 
-Converts the local file a field names to markdown via markitdown. Returns an empty string if the file is missing or conversion fails, so one unreadable file does not fail the table.
+Converts the local file a field names to markdown via markitdown. A value that is not a path (null, empty, a number) gives an empty string. A file that is missing or unreadable, or that markitdown cannot convert, fails the table with an error naming the file, because an empty column would read as an empty document; a converter whose dependency is missing is a `config` error.
 
 ```yaml
 full_text: "pdf_path|$markitdown"
 ```
 
-To fetch and convert a remote document, use a `web` collector instead: it converts by content type.
+The path comes from collected data, so it is confined to what the mission declares: the file must be under the mission directory (`.recon/<mission>/`) or under a catalog source with `type: local`. A relative path is resolved against the directory `recon` runs in. A path outside those directories fails the table with a `config` error whose `fix` says to add the directory as a `local` source.
 
-## Capture Collectors: `_capture`
+`$markitdown` never fetches. A value that is a URL (`http:`, `https:`, `file:`, `data:`) fails the table the same way. To fetch and convert a remote document, use a `web` collector instead: it converts by content type, through the rate limiter and the capture log.
+
+## Capture collectors: `_capture`
 
 In a `capture` collector, a normalize path may start with `_capture` to read the capture line the record came from, as well as the record itself:
 
@@ -126,30 +142,33 @@ normalize:
 
 `_capture` exists only while normalizing; without a normalize spec, records are written exactly as parsed.
 
-## Response Formats
+## Response formats
 
-API collectors support different response formats via `response_format`:
+An `api` collector parses its body as `response_format`:
 
 | Format | Parser | Use case |
 |--------|--------|----------|
-| `json` (default) | `resp.json()` | Most REST APIs |
-| `xml` | `xmltodict` with namespace handling | arXiv, PubMed |
+| `json` (default) | JSON | most REST APIs |
+| `xml` | xmltodict, with namespace handling | arXiv, PubMed |
 
-`html` and `text` are accepted values but return raw response text — they don't produce structured records for normalize specs. Use the `web` collector type instead for HTML pages.
+`html` and `text` are a plan problem on an `api` collector, since they would give a table with no records; convert a page with a `web` collector instead. A `capture` collector takes all four: `html` and `text` bodies are read line by line, as a `cli` collector reads stdout.
 
 ### XML Namespace Handling
 
-arXiv responses use XML namespaces. The parser strips common namespaces and prefixes others:
+XML parsing keeps keys short for the namespaces it knows; any other namespace's elements are keyed `<namespace URI>:<name>`:
 
 ```yaml
 response_format: xml
 # "http://www.w3.org/2005/Atom" → stripped (no prefix)
 # "http://arxiv.org/schemas/atom" → "arxiv:" prefix
+# "http://a9.com/-/spec/opensearch/1.1/" → "opensearch:" prefix
 ```
+
+`entry`, `author`, `link` and `category` are always lists, even with one element, so `author.*.name` works for a single author.
 
 Access XML attributes with `@` prefix: `"arxiv:primary_category.@term"`.
 
-## Extract Path
+## Extract path
 
 The `extract` field navigates to the record array before normalize specs apply:
 
@@ -160,4 +179,6 @@ extract: "results"           # OpenAlex: response.results[...]
 extract: "hits.hits"         # Zenodo: response.hits.hits[...]
 ```
 
-Uses the same dotted-path resolution (via glom). If the extracted value is a single dict, it becomes `[dict]`. Non-dict items in lists are filtered out.
+It uses the path syntax above. A single object at the path is one record; in a list, anything that is not an object is dropped.
+
+Without the `extract` a response needs, its records stay inside one record, the whole response. A survey that gets exactly one record holding a list of two or more objects, from a collector with neither `extract:` nor `normalize:`, warns (`extract_missing`) and names the list's path to set as `extract`. A collector with `extract:` is never warned: its one record is a record, and a list inside it (a paper's `author`) is that record's own.

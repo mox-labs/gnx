@@ -16,7 +16,7 @@
 #
 # Usage:
 #   recon init gh-audit --template github-audit
-#   # edit {owner} and {repo} placeholders below (in params, twice each)
+#   # edit the {owner} and {repo} values below (in each collector's params)
 #   # export GITHUB_TOKEN if you have one
 #   recon survey gh-audit
 
@@ -29,7 +29,6 @@ catalog:
       env: GITHUB_TOKEN
       prefix: "Bearer "
     rate_limit: { rps: 0.5, burst: 2 }
-    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
     timeout: 60
 
 collectors:

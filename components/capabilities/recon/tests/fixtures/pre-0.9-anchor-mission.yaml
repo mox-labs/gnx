@@ -1,0 +1,52 @@
+# A mission written for recon 0.8, kept as a regression fixture.
+#
+# Cut down from an authored eight-collector bibliographic survey: the structure is the
+# original's (one catalog source, one normalize spec shared through a YAML anchor held by a
+# top-level `_normalize` key, every collector aliasing it); the search terms and the contact
+# address are replaced, and six of the eight collectors are dropped.
+
+catalog:
+  - name: openalex
+    type: api
+    url: https://api.openalex.org
+    user_agent: "recon/0.8.0 (mailto:you@example.org)"
+    rate_limit: { rps: 8, burst: 4 }
+    timeout: 30
+
+# Shared normalize spec applied to every collector below (DRY via YAML anchor).
+# Recon's normalize requires per-collector block; the anchor is a duplicate-suppressor.
+_normalize: &openalex_normalize
+  title: display_name
+  authors: "authorships.*.author.display_name"
+  year: publication_year
+  abstract: "abstract_inverted_index|$inverted_index"
+  venue: "primary_location.source.display_name"
+  is_oa: "primary_location.is_oa"
+  pdf_url: "primary_location.pdf_url"
+  doi: doi
+  citations: cited_by_count
+  type: type
+  openalex_id: id
+
+collectors:
+  - name: attention_mechanisms
+    type: api
+    source: openalex
+    endpoint: /works
+    params:
+      search: "attention mechanisms sequence transduction"
+      per_page: "50"
+      select: "id,doi,display_name,authorships,publication_year,abstract_inverted_index,primary_location,cited_by_count,type"
+    extract: "results"
+    normalize: *openalex_normalize
+
+  - name: retrieval_augmentation
+    type: api
+    source: openalex
+    endpoint: /works
+    params:
+      search: "retrieval augmented generation knowledge intensive"
+      per_page: "50"
+      select: "id,doi,display_name,authorships,publication_year,abstract_inverted_index,primary_location,cited_by_count,type"
+    extract: "results"
+    normalize: *openalex_normalize
