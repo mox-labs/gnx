@@ -8,6 +8,7 @@ decides, and whether a metric is judged is its sensor's word, not the author's.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -58,11 +59,13 @@ def test_an_invalid_experiment_has_no_design(
 
 def test_a_problem_kind_outside_the_vocabulary_cannot_be_made() -> None:
     with pytest.raises(ValueError, match="not a problem kind"):
-        problem("x", "made_up", "nope")
+        problem("x", kind="made_up", message="nope")
 
 
 def test_a_fix_is_built_from_what_is_allowed() -> None:
-    found = problem("design.order", "invalid_value", "bad", allowed=["a", "b"], got="c")
+    found = problem(
+        "design.order", kind="invalid_value", message="bad", allowed=["a", "b"], got="c"
+    )
     assert found.fix == "order: one of a, b" and found.allowed == ("a", "b")
 
 
@@ -133,7 +136,9 @@ def _missing_key(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
 
 
 def _invalid_value(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
-    return _api(write, {**c, "repeats": "many"})
+    """A value of the right type that the schema refuses. (``repeats: many`` is the wrong
+    shape: a string where a number goes, as matrix's loader reads it.)"""
+    return _api(write, {**c, "repeats": 0})
 
 
 def _genre_unknown(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
@@ -188,8 +193,8 @@ def _kind_unfit(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     # A load probe needs a url; an agent offers none. (The primary still has its sensor:
     # timing reads what the load probe leaves behind.)
     c["subjects"] = {
-        "old": {"kind": "agent", "model": "a"},
-        "new": {"kind": "agent", "model": "b"},
+        "old": {"kind": "agent-session", "runtime": "mock", "model": "a"},
+        "new": {"kind": "agent-session", "runtime": "mock", "model": "b"},
     }
     c["probes"][0]["target"] = "http://127.0.0.1:8080/x"
     return _found({**c, "spend": {"ceiling": 1}}, v)
@@ -249,7 +254,7 @@ def _estimator_illegal(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
 def _judged_gate(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     del e["probes"][0]["truth"]  # nothing reads it once activation is not in use
     e["primary"] = {"metric": "judged_pass"}
-    e["sensors"] = [{"kind": "judge", "rubric": "rubric.md"}]
+    e["sensors"] = [{"kind": "judge", "runtime": "model", "rubric": "rubric.md"}]
     return _found(e, v)
 
 
@@ -263,8 +268,21 @@ def _probes_empty(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return _found({**c, "probes": []}, v) - {("primary.metric", "metric_unprovided")}
 
 
-def _probe_source(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
-    return _api(write, {**e, "probes": {"source": "directory", "path": "nowhere"}})
+def _probe_file(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    """A probe file in the probes/ folder that is not YAML frontmatter: matrix's loader
+    reports it, naming the file."""
+    data = {key: value for key, value in e.items() if key != "probes"}
+    file = write(data)
+    (file.parent / "probes").mkdir()
+    (file.parent / "probes" / "broken.md").write_text("---\nid: [unclosed\n---\nAsk.\n")
+    result = ix.validate(file)
+    _well_formed(result.problems)
+    assert all(p.source.endswith("broken.md") for p in result.problems), result.problems
+    return {(p.path, p.kind) for p in result.problems}
+
+
+def _probes_folder_missing(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    return _api(write, {key: value for key, value in e.items() if key != "probes"})
 
 
 def _probe_duplicate_id(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
@@ -342,53 +360,117 @@ def _kind_rejected(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return _lab(write, c, "kinds", {"name": "lab.v1.sensor.bad", "summary": "s"})
 
 
-CASES: dict[str, tuple[Any, str]] = {
-    "yaml_syntax": (_yaml_syntax, ""),
-    "schema_unsupported": (_schema_unsupported, "schema"),
-    "wrong_shape": (_wrong_shape, "subjects"),
-    "unknown_key": (_unknown_key, "arms"),
-    "missing_key": (_missing_key, "question"),
-    "invalid_value": (_invalid_value, "repeats"),
-    "genre_unknown": (_genre_unknown, "genre"),
-    "genre_roles": (_genre_roles, "subjects"),
-    "genre_factors": (_genre_factors, "factors"),
-    "must_set": (_must_set, "threshold"),
-    "repeats_below_min": (_repeats_below_min, "repeats"),
-    "control_unknown": (_control_unknown, "control"),
-    "control_not_applicable": (_control_not_applicable, "control"),
-    "comparison_not_allowed": (_comparison_not_allowed, "comparison"),
-    "margin_required": (_margin_required, "margin"),
-    "guardrail_form": (_guardrail_form, "guardrails.0.margin"),
-    "kind_unknown": (_kind_unknown, "probes.0.kind"),
-    "kind_unfit": (_kind_unfit, "probes.0.kind"),
-    "option_unknown": (_option_unknown, "probes.0.durration"),
-    "option_missing": (_option_missing, "probes.0.duration"),
-    "option_invalid": (_option_invalid, "probes.0.load_model"),
-    "metric_unprovided": (_metric_unprovided, "primary.metric"),
-    "metric_ambiguous": (_metric_ambiguous, "primary.metric"),
-    "metric_mismatch": (_metric_mismatch, "metrics.0.shape"),
-    "metric_direction": (_metric_direction, "primary.metric"),
-    "statistic_illegal": (_statistic_illegal, "primary.statistic"),
-    "estimator_illegal": (_estimator_illegal, "primary.estimator"),
-    "judged_gate": (_judged_gate, "primary.metric"),
-    "unit_mismatch": (_unit_mismatch, "guardrails.0.threshold.value"),
-    "probes_empty": (_probes_empty, "probes"),
-    "probe_source": (_probe_source, "probes.path"),
-    "probe_duplicate_id": (_probe_duplicate_id, "probes"),
-    "truth_unclaimed": (_truth_unclaimed, "probes.0.truth.expected_skil"),
-    "unbound_placeholder": (_unbound_placeholder, "probes.0.target"),
-    "spend_over_ceiling": (_spend_over_ceiling, "spend.ceiling"),
-    "spend_unbounded": (_spend_unbounded, "spend.ceiling"),
-    "genre_invalid": (_genre_invalid, ""),
-    "genre_duplicate": (_genre_duplicate, "name"),
-    "genre_extends_unknown": (_genre_extends_unknown, "extends"),
-    "genre_depth": (_genre_depth, "extends"),
-    "genre_narrowing": (_genre_narrowing, "must_set"),
-    "kind_invalid": (_kind_invalid, ""),
-    "kind_duplicate": (_kind_duplicate, "name"),
-    "subjects_differ_in": (_subjects_differ_in, "subjects.streaming"),
-    "genre_rejected": (_genre_rejected, ""),
-    "kind_rejected": (_kind_rejected, ""),
+def _kind_unimplemented(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    """Asked of a vocabulary that says what can run: everything but the memory sensor."""
+    c["guardrails"] = [{"metric": "memory_peak", "margin": "5%"}]
+    runs = frozenset(v.kinds.kinds) - {"ix.v1.sensor.memory"}
+    examined = examine(c, replace(v, adapters=runs), base=".")
+    assert examined.problems == ()
+    return {(p.path, p.kind) for p in examined.warnings}
+
+
+def _analysis_unimplemented(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    foreign = {
+        "name": "lab.v1.genre.sequential",
+        "question": "Does it hold as the data comes in?",
+        "hypothesis_form": "{subject} has {metric} {threshold}",
+        "roles": [{"name": "subject", "min": 1, "max": 1}],
+        "factors": "allowed",
+        "must_set": ["primary", "threshold"],
+        "design": {"repeats": {"default": 3, "min": 1}, "order": "sequential",
+                   "calibration": "none", "note": "a lab's own"},
+        "analysis": {"id": "lab.v1.analysis.sequential"},
+        "verdict_form": "three-way",
+        "report": ["question"],
+        "guidance": "A lab's genre whose analysis this ix does not have.",
+    }  # fmt: skip
+    file = write({**e, "genre": "lab.v1.genre.sequential"})
+    (file.parent / "genres").mkdir()
+    (file.parent / "genres" / "sequential.yaml").write_text(yaml.safe_dump(foreign))
+    result = ix.validate(file)
+    assert result.valid
+    return {(p.path, p.kind) for p in result.warnings if p.kind != "kind_unimplemented"}
+
+
+def _validated(write: Write, data: dict[str, Any]) -> Pairs:
+    """The problems ``ix.validate`` finds in ``data`` written to a file: the adapters' review
+    included, which the use case alone does not run."""
+    return {(p.path, p.kind) for p in ix.validate(write(data)).problems}
+
+
+def _option_inapplicable(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    """A skill given to a session on the mock runtime, which would refuse it."""
+    e["subjects"]["catalog"]["skills"] = ["skills/review"]
+    return _validated(write, e)
+
+
+def _unobservable(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    """A skill evaluated on claude-sdk with the Skill tool left out: it can never fire."""
+    e["subjects"]["catalog"] = {
+        "kind": "agent-session",
+        "runtime": "claude-sdk",
+        "max_turns": 1,
+        "tools": ["Read"],
+    }
+    return _validated(write, e)
+
+
+#: Each case by the scenario it builds: (the case, the path, the problem kind it reports).
+#: Changed requirement: an unknown genre, kind, control subject or parent genre is the
+#: shared ``name_unknown``, and a genre, kind or probe id defined twice the shared
+#: ``name_taken``, so several scenarios report one kind.
+CASES: dict[str, tuple[Any, str, str]] = {
+    "yaml_syntax": (_yaml_syntax, "", "yaml_syntax"),
+    "schema_unsupported": (_schema_unsupported, "schema", "schema_unsupported"),
+    "wrong_shape": (_wrong_shape, "subjects", "wrong_shape"),
+    "unknown_key": (_unknown_key, "arms", "unknown_key"),
+    "missing_key": (_missing_key, "question", "missing_key"),
+    "invalid_value": (_invalid_value, "repeats", "invalid_value"),
+    "genre_unknown": (_genre_unknown, "genre", "name_unknown"),
+    "genre_roles": (_genre_roles, "subjects", "genre_roles"),
+    "genre_factors": (_genre_factors, "factors", "genre_factors"),
+    "must_set": (_must_set, "threshold", "must_set"),
+    "repeats_below_min": (_repeats_below_min, "repeats", "repeats_below_min"),
+    "control_unknown": (_control_unknown, "control", "name_unknown"),
+    "control_not_applicable": (_control_not_applicable, "control", "control_not_applicable"),
+    "comparison_not_allowed": (_comparison_not_allowed, "comparison", "comparison_not_allowed"),
+    "margin_required": (_margin_required, "margin", "margin_required"),
+    "guardrail_form": (_guardrail_form, "guardrails.0.margin", "guardrail_form"),
+    "kind_unknown": (_kind_unknown, "probes.0.kind", "name_unknown"),
+    "kind_unfit": (_kind_unfit, "probes.0.kind", "kind_unfit"),
+    "option_unknown": (_option_unknown, "probes.0.durration", "option_unknown"),
+    "option_missing": (_option_missing, "probes.0.duration", "option_missing"),
+    "option_invalid": (_option_invalid, "probes.0.load_model", "option_invalid"),
+    "option_inapplicable": (_option_inapplicable, "subjects.catalog.skills", "option_inapplicable"),
+    "unobservable": (_unobservable, "subjects.catalog.tools", "unobservable"),
+    "metric_unprovided": (_metric_unprovided, "primary.metric", "metric_unprovided"),
+    "metric_ambiguous": (_metric_ambiguous, "primary.metric", "metric_ambiguous"),
+    "metric_mismatch": (_metric_mismatch, "metrics.0.shape", "metric_mismatch"),
+    "metric_direction": (_metric_direction, "primary.metric", "metric_direction"),
+    "statistic_illegal": (_statistic_illegal, "primary.statistic", "statistic_illegal"),
+    "estimator_illegal": (_estimator_illegal, "primary.estimator", "estimator_illegal"),
+    "judged_gate": (_judged_gate, "primary.metric", "judged_gate"),
+    "unit_mismatch": (_unit_mismatch, "guardrails.0.threshold.value", "unit_mismatch"),
+    "probes_empty": (_probes_empty, "probes", "probes_empty"),
+    "probe_file": (_probe_file, "", "yaml_syntax"),
+    "probes_folder_missing": (_probes_folder_missing, "probes", "probes_empty"),
+    "probe_duplicate_id": (_probe_duplicate_id, "probes", "name_taken"),
+    "truth_unclaimed": (_truth_unclaimed, "probes.0.truth.expected_skil", "truth_unclaimed"),
+    "unbound_placeholder": (_unbound_placeholder, "probes.0.target", "unbound_placeholder"),
+    "spend_over_ceiling": (_spend_over_ceiling, "spend.ceiling", "spend_over_ceiling"),
+    "spend_unbounded": (_spend_unbounded, "spend.ceiling", "spend_unbounded"),
+    "genre_invalid": (_genre_invalid, "", "genre_invalid"),
+    "genre_duplicate": (_genre_duplicate, "name", "name_taken"),
+    "genre_extends_unknown": (_genre_extends_unknown, "extends", "name_unknown"),
+    "genre_depth": (_genre_depth, "extends", "genre_depth"),
+    "genre_narrowing": (_genre_narrowing, "must_set", "genre_narrowing"),
+    "kind_invalid": (_kind_invalid, "", "kind_invalid"),
+    "kind_duplicate": (_kind_duplicate, "name", "name_taken"),
+    "subjects_differ_in": (_subjects_differ_in, "subjects.streaming", "subjects_differ_in"),
+    "kind_unimplemented": (_kind_unimplemented, "sensors", "kind_unimplemented"),
+    "analysis_unimplemented": (_analysis_unimplemented, "genre", "analysis_unimplemented"),
+    "genre_rejected": (_genre_rejected, "", "genre_rejected"),
+    "kind_rejected": (_kind_rejected, "", "kind_rejected"),
 }
 
 #: Cases that go through a refused genre or kind file, where the file's own problems come
@@ -400,32 +482,32 @@ _THROUGH_A_FILE = {
 
 
 def test_every_published_kind_has_a_case() -> None:
-    assert set(CASES) == set(PROBLEM_KINDS)
+    assert {kind for _, _, kind in CASES.values()} == set(PROBLEM_KINDS)
 
 
-@pytest.mark.parametrize("kind", sorted(CASES))
+@pytest.mark.parametrize("scenario", sorted(CASES))
 def test_each_problem_kind_is_reported_at_its_path(
-    kind: str,
+    scenario: str,
     compare_data: dict[str, Any],
     evaluate_data: dict[str, Any],
     vocabulary: Vocabulary,
     write_experiment: Write,
 ) -> None:
-    case, path = CASES[kind]
+    case, path, kind = CASES[scenario]
     found = case(compare_data, evaluate_data, vocabulary, write_experiment)
     assert (path, kind) in found, found
 
 
-@pytest.mark.parametrize("kind", sorted(set(CASES) - _THROUGH_A_FILE))
+@pytest.mark.parametrize("scenario", sorted(set(CASES) - _THROUGH_A_FILE))
 def test_one_mistake_is_reported_as_one_kind(
-    kind: str,
+    scenario: str,
     compare_data: dict[str, Any],
     evaluate_data: dict[str, Any],
     vocabulary: Vocabulary,
     write_experiment: Write,
 ) -> None:
     """A single mistake does not fan out into unrelated problems."""
-    case, _ = CASES[kind]
+    case, _, kind = CASES[scenario]
     found = case(compare_data, evaluate_data, vocabulary, write_experiment)
     assert {found_kind for _, found_kind in found} == {kind}, found
 
@@ -462,7 +544,7 @@ def test_a_validation_that_stopped_at_the_files_shape_says_so(
     compare_data["primary"] = {"metric": "nope"}  # a later check would catch this
     partial = ix.validate(write_experiment({**compare_data, "repeats": "many"}))
     assert not partial.valid and partial.complete is False
-    assert [p.kind for p in partial.problems] == ["invalid_value"]
+    assert [p.kind for p in partial.problems] == ["wrong_shape"]
     full = ix.validate(write_experiment(compare_data))
     assert not full.valid and full.complete is True
     assert [p.kind for p in full.problems] == ["metric_unprovided"]
@@ -480,7 +562,7 @@ def test_a_refused_genre_file_brings_its_own_problems(
     result = ix.validate(file)
     assert not result.valid and result.genre == ""
     assert [(p.path, p.kind, p.source) for p in result.problems] == [
-        ("genre", "genre_unknown", ""),
+        ("genre", "name_unknown", ""),
         ("must_set", "genre_narrowing", str(genre_file)),
         ("verdict_form", "genre_narrowing", str(genre_file)),
     ]
@@ -520,7 +602,7 @@ class TestPlaceholders:
     def test_probe_files_are_content_and_are_not_scanned(
         self, evaluate_data: dict[str, Any], write_experiment: Write
     ) -> None:
-        file = write_experiment({**evaluate_data, "probes": {"source": "directory"}})
+        file = write_experiment({k: v for k, v in evaluate_data.items() if k != "probes"})
         (file.parent / "probes").mkdir()
         (file.parent / "probes" / "a.md").write_text("---\nexpectation: must_trigger\n---\n{x}\n")
         assert ix.validate(file).valid
@@ -605,7 +687,7 @@ class TestGenreRequirements:
 class TestJudgedMetricNeverDecides:
     """Enforced by the sensor's declaration, in every genre with a verdict."""
 
-    _JUDGE = [{"kind": "judge", "rubric": "rubrics/quality.md"}]
+    _JUDGE = [{"kind": "judge", "runtime": "model", "rubric": "rubrics/quality.md"}]
 
     @pytest.fixture
     def judged_data(self, evaluate_data: dict[str, Any]) -> dict[str, Any]:
@@ -670,7 +752,8 @@ class TestJudgedMetricNeverDecides:
         (file.parent / "kinds" / "judge.yaml").write_text(yaml.safe_dump(honest))
         redeclared = ix.validate(file)
         assert not redeclared.valid
-        assert "kind_unknown" in {p.kind for p in redeclared.problems}
+        assert "judged_gate" in {p.kind for p in redeclared.problems}  # ix's judge still holds
+        assert "ix.v1.sensor.judge" in ix.kinds(file.parent).rejected
 
     def test_the_refusal_makes_the_experiment_unplannable(
         self, judged_data: dict[str, Any], write_experiment: Write
@@ -699,3 +782,41 @@ class TestJudgedMetricNeverDecides:
         }
         del data["threshold"]
         assert _found(data, vocabulary) == set()
+
+
+# --- what the interval methods cannot decide on ----------------------------------------
+
+
+def test_a_min_or_a_max_never_decides(compare_data: dict[str, Any], vocabulary: Vocabulary) -> None:
+    """A min or a max has no interval ix can stand behind at these trial counts. Before,
+    a bootstrap of one decided anyway; now ``validate`` refuses it where a verdict rests on
+    it, and still allows it to be measured and reported."""
+    compare_data["primary"] = {"metric": "ttfb", "statistic": "p99", "estimator": "max"}
+    (problem,) = _problems(compare_data, vocabulary)
+    assert (problem.path, problem.kind, problem.got) == (
+        "primary.estimator",
+        "estimator_illegal",
+        "max",
+    )
+    assert problem.allowed == ("mean", "median")
+    compare_data["primary"] = {"metric": "ttfb", "statistic": "p99"}
+    compare_data["metrics"] = ["throughput"]
+    assert _problems(compare_data, vocabulary) == ()
+
+
+def test_a_rate_is_never_compared_in_percent(
+    compare_data: dict[str, Any], vocabulary: Vocabulary
+) -> None:
+    compare_data["guardrails"] = [{"metric": "error_rate", "margin": "5%"}]
+    (problem,) = _problems(compare_data, vocabulary)
+    assert (problem.path, problem.kind) == ("guardrails.0.margin", "unit_mismatch")
+    assert "5pp" in problem.fix
+    compare_data["guardrails"] = [{"metric": "error_rate", "margin": "1pp"}]
+    assert _problems(compare_data, vocabulary) == ()
+
+
+def test_a_median_needs_six_blocks(compare_data: dict[str, Any], vocabulary: Vocabulary) -> None:
+    compare_data["primary"] = {"metric": "ttfb", "statistic": "p99", "estimator": "median"}
+    assert _problems({**compare_data, "repeats": 6}, vocabulary) == ()
+    (problem,) = _problems({**compare_data, "repeats": 5}, vocabulary)
+    assert (problem.path, problem.kind, problem.got) == ("repeats", "repeats_below_min", 5)

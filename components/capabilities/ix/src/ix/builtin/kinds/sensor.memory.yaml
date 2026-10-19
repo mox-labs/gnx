@@ -1,9 +1,8 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.memory
-summary: Peak memory of the subject's process, sampled while the probe runs.
+summary: Peak resident memory of the subject's process group, sampled while the probe runs.
 options:
-  source: {type: string, allowed: [rss, cgroup], description: which counter is read}
-  interval: {type: duration, description: time between samples}
+  interval: {type: duration, description: time between samples; 200ms when absent}
 needs: [pid]
 metrics:
-  - {name: memory_peak, unit: bytes, direction: lower, shape: scalar, description: the highest memory use seen during the trial}
+  - {name: memory_peak, unit: bytes, direction: lower, shape: scalar, description: the highest resident memory sampled during the trial}

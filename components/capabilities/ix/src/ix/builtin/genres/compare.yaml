@@ -9,19 +9,17 @@ factors: allowed
 must_set: [primary, comparison]
 comparisons:
   superiority: "{variant} is better than {control} on {metric}"
-  non-inferiority: "{variant} is no worse than {control} by more than {margin} on {metric}"
+  non-inferiority: "{variant} is at most {margin} worse than {control} on {metric}"
   equivalence: "{variant} is within {margin} of {control} on {metric}"
 design:
-  repeats: {default: 5, min: 3}
+  repeats: {default: 10, min: 5}
   order: interleaved
   calibration: aa
   estimator: mean
-  note: "provisional: pending the experimentation canon"
-analysis:
-  id: ix.v1.analysis.compare
-  params: {pairing: control, correction: holm}
+  note: "checked by simulation at its minimum repeats: t, Fieller, order-statistic and score intervals; holds at the full level, fails corrected by Holm; A/A as a check (ix design record, 2026-10-19)"
+analysis: {id: ix.v1.analysis.compare}
 verdict_form: three-way
-report: [question, design, estimates, noise_floor, failures, warrant, raw]
+report: [question, design, estimates, calibration, failures, warrant, raw]
 guidance: |
   Use compare when there are two or more ways of doing something and you must choose.
   One subject is the control: the first, unless `control: <name>` says otherwise. Every
@@ -30,8 +28,17 @@ guidance: |
   is better. `non-inferiority` claims it is no worse than the control by more than
   `margin`; `equivalence` claims it is within `margin` either way. Those two need a
   margin: the largest loss you would still accept.
+  Choose the comparison for the claim. Two subjects that do not differ are inconclusive
+  under `superiority`, which asks for a difference, and hold under `non-inferiority` once
+  the interval stays above `-margin`. A rate's margin is in points (`10pp`) or as a
+  share, never in percent.
+  Read `ix plan` before you run: once an earlier run of this experiment exists, it states
+  the smallest difference this many repeats can detect. A margin below it will rarely hold.
   Add `guardrails:` for metrics that must also hold, each within its own `margin` of the
   control or against an absolute `threshold`.
   Change one thing between a variant and the control; ix warns when more than one differs.
-  What would falsify it: the interval of the difference lies on the wrong side of the
-  margin. A difference inside the noise floor is inconclusive, never a win.
+  The control also runs against itself (A/A). If it differs from itself, the environment
+  did not hold still and the run is inconclusive, whatever the variant did.
+  What would falsify it: the interval of the difference lies wholly on the wrong side of
+  the margin (of zero, for superiority). An interval that crosses that boundary is
+  inconclusive, never a win.

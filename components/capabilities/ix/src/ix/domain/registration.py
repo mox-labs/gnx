@@ -1,21 +1,13 @@
 """Registration: an experiment's design, frozen before anything runs.
 
 A registration stores the resolved design (what the author chose and what the genre
-supplied: comparison, margin, threshold, guardrails, control, repeats, seed, order,
-calibration, estimators, the analysis and its parameters, the sensors), the digest of the
-probe set, the digest of the experiment and the digest of the plan that was reviewed.
-Whatever differs later is a **deviation**: a fact to be recorded and printed in the report,
-so a decision cannot move after the numbers are in without the reader seeing it.
+supplied) and the digests of the probe set, the experiment and the reviewed plan. Whatever
+differs later is a **deviation**: recorded and printed in the report, so a decision cannot
+move after the numbers are in without the reader seeing it. A design value that only one of
+two records holds is not compared, so a record written by a newer ix still loads.
 
-**What is not a deviation.** The digests are over meaning (see :mod:`ix.domain.schema`), so
-a comment, key order or a default written out changes nothing. A reworded question or
-rationale changes the experiment's digest and not the plan's.
-
-**Stored, so tolerant.** A registration written by a newer ix loads: unknown fields are
-ignored, and a design value one record lacks is not compared.
-
-**Amending** replaces the frozen design on purpose. The superseded record is kept inside the
-new one with the stated reason and the deviations it accepted.
+**Amending** replaces the frozen design on purpose; the superseded record is kept inside the
+new one with the reason and the deviations it accepted.
 """
 
 from __future__ import annotations
@@ -26,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import Field, field_validator
 
 from ix.domain import schema
-from ix.domain.errors import EXIT_BY_KIND, ConfigError
+from ix.domain.errors import EXIT_CODES, ConfigError
 from ix.domain.schema import Record, Stored
 
 if TYPE_CHECKING:
@@ -50,6 +42,18 @@ class Deviation(Stored):
     registered: Any = None
     current: Any = None
     message: str = ""
+
+    def text(self) -> str:
+        """The deviation in one line, each value as an author writes it in YAML."""
+        return f"{self.field}: registered {_yaml(self.registered)}, now {_yaml(self.current)}"
+
+
+def _yaml(value: Any) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 class Amendment(Stored):
@@ -107,7 +111,7 @@ class Deviations(Record):
     @property
     def exit_code(self) -> int:
         """What a command that printed this document exits with."""
-        return EXIT_BY_KIND["deviations" if self.deviations else "ok"]
+        return EXIT_CODES["deviations" if self.deviations else "ok"]
 
 
 class RegistrationConflictError(ConfigError):

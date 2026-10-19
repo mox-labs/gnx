@@ -1,21 +1,25 @@
 """The use cases of the experiment model: examine, validate, plan, register, deviations.
 
-Each takes data: an experiment (or the parsed file it should be), the genres and kinds it
-may name, and what a stored registration held. Reading and writing files is the composition
-root's work; the one port used here is the probe source. Nothing starts a subject, applies a
-probe or spends anything.
+Each takes data: an experiment (or the data it should be), the probes read from its folder
+when it writes none inline, the genres and kinds it may name, and what a stored registration
+held. Reading and writing files is the composition root's work. Nothing starts a subject,
+applies a probe or spends anything.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from ix.domain.errors import ConfigError, NotFoundError, ProbeSourceError
-from ix.domain.experiment import Experiment, ProbeSet, probe_set
-from ix.domain.plan import Plan, RegistrationStatus, plan
+from ix.domain import schema
+from ix.domain.analysis import Spread, spread
+from ix.domain.design import select_sensors
+from ix.domain.errors import ConfigError, NotFoundError
+from ix.domain.experiment import PROBES_FOLDER, Experiment, ProbeConfig, ProbeSet, probe_set
+from ix.domain.plan import Plan, RegistrationStatus, estimate_spend, plan, sensitivity
+from ix.domain.ports import Review, Surroundings
 from ix.domain.problem import InvalidExperimentError, Problem, Validation, problem
 from ix.domain.registration import (
     Deviations,
@@ -26,24 +30,38 @@ from ix.domain.registration import (
     deviations,
     freeze,
 )
+from ix.domain.report import design_of
 from ix.domain.validation import check, parse, validation
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
     from ix.domain.design import Design
     from ix.domain.genre import Genre, Genres
     from ix.domain.kind import Kinds
-    from ix.domain.ports import ProbeSource
+    from ix.domain.run import RunRecord
 
 
 @dataclass(frozen=True)
 class Vocabulary:
-    """What an experiment may name: the genres, the kinds, and the probe sources by name."""
+    """What an experiment may name: the genres and the kinds."""
 
     genres: Genres
     kinds: Kinds
-    probe_sources: Mapping[str, ProbeSource]
+    #: The kinds (type URLs) a run could carry out here; None when nothing was said.
+    adapters: frozenset[str] | None = None
+    #: The ceiling of a run that spends and whose experiment sets none (ix's settings).
+    spend_cap: float | None = None
+
+
+@dataclass(frozen=True)
+class FolderProbes:
+    """What the probes folder beside an experiment held: its probes, or None when there is
+    no such folder; and every problem with its files."""
+
+    location: str
+    probes: tuple[ProbeConfig, ...] | None = None
+    problems: tuple[Problem, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,12 +97,41 @@ def unreadable(source: str, problems: list[Problem]) -> Examined:
     )
 
 
-def examine(
-    experiment: Experiment | Any, vocabulary: Vocabulary, *, base: str, source: str = ""
-) -> Examined:
-    """Check an experiment, or the parsed data of an experiment file.
+def _probes(
+    experiment: Experiment, folder: FolderProbes | None
+) -> tuple[ProbeSet | None, list[Problem]]:
+    """The probes a run would apply: those written inline, or else the folder's."""
+    if experiment.probes:
+        return probe_set(experiment.probes), []
+    if folder is None or (folder.probes is None and not folder.problems):
+        where = folder.location if folder is not None else f"{PROBES_FOLDER}/"
+        return None, [
+            problem(
+                "probes",
+                kind="probes_empty",
+                message=f"the experiment writes no probes and there is no folder {where} to "
+                "read them from, so a run would apply no stimulus",
+                fix=f"write probes: [...] in the file, or put one file per probe in "
+                f"{PROBES_FOLDER}/ beside it",
+            )
+        ]
+    if folder.probes is None:
+        return None, list(folder.problems)
+    return probe_set(folder.probes), list(folder.problems)
 
-    ``base`` is the directory relative paths in the experiment resolve against. Never raises
+
+def examine(
+    experiment: Experiment | object,
+    vocabulary: Vocabulary,
+    *,
+    base: str,
+    source: str = "",
+    folder: FolderProbes | None = None,
+) -> Examined:
+    """Check an experiment, or the data an experiment should be.
+
+    ``base`` is the directory relative paths in the experiment resolve against; ``folder``
+    is what its probes folder held, read only when it writes no probes inline. Never raises
     on a wrong experiment: the problems are in the result.
     """
     source = source or "<experiment>"
@@ -95,29 +142,15 @@ def examine(
             return unreadable(source, problems)
         experiment = parsed
 
-    probes: ProbeSet | None = None
-    if isinstance(experiment.probes, tuple):
-        probes = probe_set(experiment.probes)
-    else:
-        names = sorted(vocabulary.probe_sources)
-        reader = vocabulary.probe_sources.get(experiment.probes.source)
-        if reader is None:
-            problems.append(
-                problem(
-                    "probes.source",
-                    "probe_source",
-                    f"no probe source named {experiment.probes.source!r}",
-                    allowed=names,
-                    got=experiment.probes.source,
-                )
-            )
-        else:
-            try:
-                probes = probe_set(reader.probes(experiment.probes.options, base))
-            except ProbeSourceError as error:
-                problems.append(problem(error.path, "probe_source", str(error), fix=error.fix))
-
-    checked = check(experiment, vocabulary.genres, vocabulary.kinds, probes)
+    probes, problems = _probes(experiment, folder)
+    checked = check(
+        experiment,
+        vocabulary.genres,
+        vocabulary.kinds,
+        probes,
+        adapters=vocabulary.adapters,
+        spend_cap=vocabulary.spend_cap,
+    )
     return Examined(
         source=source,
         experiment=experiment,
@@ -127,6 +160,48 @@ def examine(
         problems=(*problems, *checked.problems),
         warnings=checked.warnings,
     )
+
+
+def reviewed(
+    examined: Examined, vocabulary: Vocabulary, adapter: Callable[[str], object], *, base: str
+) -> Examined:
+    """``examined`` with what the adapters of its subjects and sensors find wrong added to
+    its problems: each that is a :class:`~ix.domain.ports.Review`, ``adapter(kind)`` giving
+    the adapter of a kind (its type URL) or None. What only an adapter can tell (an option
+    its runtime refuses, a setting that leaves a sensor nothing to observe) is then a
+    problem like any other. ``base`` is the directory the experiment's relative paths
+    resolve against."""
+    experiment, probes = examined.experiment, examined.probes
+    if experiment is None:
+        return examined
+    instruments = select_sensors(experiment, vocabulary.kinds, probes)
+    inline = bool(experiment.probes)
+    placed = tuple(
+        (f"probes.{index if inline else probe.id}", probe)
+        for index, probe in enumerate(probes.probes if probes else ())
+    )
+
+    def around(path: str) -> Surroundings:
+        return Surroundings(path=path, base=base, sensors=instruments.sensors, probes=placed)
+
+    found: list[Problem] = []
+    for name, subject in experiment.subjects.items():
+        built = adapter(schema.url("subject", subject.kind))
+        if isinstance(built, Review):
+            found += built.review(subject.options, around(f"subjects.{name}"))
+    listed = {
+        schema.url("sensor", entry.kind): index for index, entry in enumerate(experiment.sensors)
+    }
+    for sensor in instruments.sensors:
+        built = adapter(sensor.kind)
+        if isinstance(built, Review):
+            index = listed.get(sensor.kind)
+            found += built.review(
+                sensor.options, around("sensors" if index is None else f"sensors.{index}")
+            )
+    if not found:
+        return examined
+    return replace(examined, problems=(*examined.problems, *found), design=None)
 
 
 def validate(examined: Examined) -> Validation:
@@ -141,7 +216,19 @@ def validate(examined: Examined) -> Validation:
     )
 
 
-def _valid(examined: Examined, verb: str) -> tuple[Experiment, Genre, Design, ProbeSet]:
+@dataclass(frozen=True)
+class Valid:
+    """The parts of an experiment that has no problem."""
+
+    experiment: Experiment
+    genre: Genre
+    design: Design
+    probes: ProbeSet
+
+
+def valid(examined: Examined, verb: str) -> Valid:
+    """The parts of a valid experiment, or :class:`InvalidExperimentError` with every
+    problem. ``verb`` is what the caller meant to do with it (``planned``, ``run``)."""
     if (
         examined.problems
         or examined.experiment is None
@@ -155,24 +242,46 @@ def _valid(examined: Examined, verb: str) -> tuple[Experiment, Genre, Design, Pr
             fix=f"ix validate {examined.source}"
             if examined.source != "<experiment>"
             else "ix.validate(experiment) lists them",
+            complete=examined.complete,
         )
-    return examined.experiment, examined.genre, examined.design, examined.probes
+    return Valid(
+        experiment=examined.experiment,
+        genre=examined.genre,
+        design=examined.design,
+        probes=examined.probes,
+    )
+
+
+def require_valid(examined: Examined, verb: str) -> None:
+    """Raise :class:`InvalidExperimentError`, with every problem, unless the experiment is
+    valid: an invalid experiment is the first thing to say, before anything is read from
+    its registration or its runs."""
+    valid(examined, verb)
 
 
 def design(examined: Examined) -> Design:
     """The design of a valid experiment."""
-    return _valid(examined, "resolved")[2]
+    return valid(examined, "resolved").design
 
 
-def _current(
+def standing(
     examined: Examined, vocabulary: Vocabulary, *, now: str, version: str
 ) -> tuple[Plan, Registration]:
-    experiment, genre, resolved, probes = _valid(examined, "planned")
-    made = plan(experiment, genre, resolved, probes, vocabulary.kinds)
+    """The plan of a valid experiment and its registration as it would be frozen now."""
+    checked = valid(examined, "planned")
+    made = plan(
+        checked.experiment,
+        checked.genre,
+        checked.design,
+        checked.probes,
+        vocabulary.kinds,
+        adapters=vocabulary.adapters,
+        spend_cap=vocabulary.spend_cap,
+    )
     current = freeze(
-        experiment,
-        resolved,
-        probes,
+        checked.experiment,
+        checked.design,
+        checked.probes,
         plan_digest=made.digest,
         registered_at=now,
         ix_version=version,
@@ -199,16 +308,77 @@ def stored_registration(document: Mapping[str, Any] | None, location: str) -> Re
         ) from error
 
 
+def earlier_spread(design: Design, earlier: Iterable[RunRecord]) -> Spread | None:
+    """How much the primary varied in the first of ``earlier`` (latest first) that finished
+    and measured the same primary, read the same way; None when none did. A run a stand-in
+    answered any trial of (a dry run) measured the harness, not the subjects, and is passed
+    over."""
+    primary = design.primary
+    if primary is None:
+        return None
+    for record in earlier:
+        if record.status != "completed":
+            continue
+        if any(interaction.simulated for interaction in record.interactions):
+            continue
+        try:
+            ran = design_of(record)
+        except ConfigError:
+            continue  # written by another ix: its design cannot be read here
+        # The spread is of the same numbers only if the primary, how it is compared (the
+        # margin's basis) and whether there is a control are the same.
+        basis = ran.margin.basis if ran.margin else None
+        if (
+            ran.primary != primary
+            or basis != (design.margin.basis if design.margin else None)
+            or (ran.control is None) != (design.control is None)
+        ):
+            continue
+        found = spread(ran, record.trials, record.interactions, record.readings, run=record.run)
+        if found is not None:
+            return found
+    return None
+
+
+def earlier_cost(earlier: Iterable[RunRecord]) -> tuple[float, str] | None:
+    """The mean cost of a trial in the first of ``earlier`` (latest first) whose trials
+    reported one, with its run id; trials a stand-in answered are left out. None when no
+    run did."""
+    for record in earlier:
+        costs = [
+            interaction.cost_usd
+            for interaction in record.interactions
+            if interaction.cost_usd is not None and not interaction.simulated
+        ]
+        if costs:
+            return sum(costs) / len(costs), record.run
+    return None
+
+
 def make_plan(
     examined: Examined,
     vocabulary: Vocabulary,
     stored: Registration | None,
     *,
     location: str = "",
-    version: str = "",
+    unstartable: tuple[str, ...] = (),
+    earlier: Iterable[RunRecord] = (),
 ) -> Plan:
-    """What a run would do, and where the experiment stands against its registration."""
-    made, current = _current(examined, vocabulary, now="", version=version)
+    """What a run would do, where the experiment stands against its registration, the
+    ``unstartable`` subjects the host found, and, from the ``earlier`` runs of the
+    experiment (latest first), how small an effect it can detect and what it should
+    cost."""
+    made, current = standing(examined, vocabulary, now="", version="")
+    checked = valid(examined, "planned")
+    blocks = checked.design.repeats * len(checked.probes.probes)
+    earlier = list(earlier)
+    sensed = sensitivity(checked.design, blocks, earlier_spread(checked.design, earlier))
+    spend = estimate_spend(
+        checked.experiment.spend,
+        made.trials.total,
+        spend_cap=vocabulary.spend_cap,
+        observed=earlier_cost(earlier),
+    )
     if stored is None:
         status = RegistrationStatus(status="none", location=location)
     else:
@@ -216,7 +386,15 @@ def make_plan(
         status = RegistrationStatus(
             status="deviations" if found else "matches", deviations=len(found), location=location
         )
-    return made.model_copy(update={"registration": status})
+    return made.model_copy(
+        update={
+            "registration": status,
+            "unstartable": unstartable,
+            "sensitivity": sensed,
+            "spend": spend,
+            "warnings": examined.warnings,
+        }
+    )
 
 
 def register(
@@ -235,7 +413,7 @@ def register(
     deviations: refused, unless ``amend_reason`` is given; then ``amended``, with the
     superseded record and the reason kept inside the new one.
     """
-    _, current = _current(examined, vocabulary, now=now, version=version)
+    _, current = standing(examined, vocabulary, now=now, version=version)
     if stored is None:
         if amend_reason is not None:
             raise NotFoundError(
@@ -266,10 +444,9 @@ def find_deviations(
     stored: Registration | None,
     *,
     location: str = "",
-    version: str = "",
 ) -> Deviations:
     """How the experiment differs from its registration."""
-    _, current = _current(examined, vocabulary, now="", version=version)
+    _, current = standing(examined, vocabulary, now="", version="")
     if stored is None:
         raise NotFoundError(
             f"{examined.source} is not registered",

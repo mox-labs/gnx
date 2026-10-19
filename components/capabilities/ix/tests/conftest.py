@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
-from ix.adapters._out.declaration_files import GenreFiles, KindFiles
-from ix.adapters._out.probe_directory import DirectoryProbes
+from ix.adapters._out.matrix_documents import GenreFiles, KindFiles
 from ix.application.experiments import Vocabulary
+from ix.composition import type_url_problem
 from ix.domain.genre import Genres, genres
 from ix.domain.kind import Kinds, kinds
 
@@ -33,6 +33,7 @@ _COMPARE: dict[str, Any] = {
             "kind": "http-load",
             "target": "{url}/x",
             "load_model": "open",
+            "rate": "80/s",
             "duration": "60s",
         }
     ],
@@ -45,7 +46,8 @@ _EVALUATE: dict[str, Any] = {
     "name": "routing",
     "question": "Does the right skill fire?",
     "genre": "evaluate",
-    "subjects": {"catalog": {"kind": "agent", "max_turns": 1}},
+    # The mock runtime: a test that runs this by mistake spends nothing.
+    "subjects": {"catalog": {"kind": "agent-session", "runtime": "mock", "max_turns": 1}},
     "probes": [
         {
             "id": "ask",
@@ -60,23 +62,27 @@ _EVALUATE: dict[str, Any] = {
 }
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "slow: the full simulation of the statistics; IX_SLOW=1 pytest -m slow"
+    )
+
+
 @pytest.fixture(scope="session")
 def builtin_genres() -> Genres:
     """ix's four genres, read from the package (no entry-point discovery)."""
-    return genres(GenreFiles(packages=["ix.builtin.genres"]).files())
+    return genres(GenreFiles(packages=["ix.builtin.genres"]).files(), grammar=type_url_problem)
 
 
 @pytest.fixture(scope="session")
 def builtin_kinds() -> Kinds:
     """ix's kinds, read from the package (no entry-point discovery)."""
-    return kinds(KindFiles(packages=["ix.builtin.kinds"]).files())
+    return kinds(KindFiles(packages=["ix.builtin.kinds"]).files(), grammar=type_url_problem)
 
 
 @pytest.fixture(scope="session")
 def vocabulary(builtin_genres: Genres, builtin_kinds: Kinds) -> Vocabulary:
-    return Vocabulary(
-        genres=builtin_genres, kinds=builtin_kinds, probe_sources={"directory": DirectoryProbes()}
-    )
+    return Vocabulary(genres=builtin_genres, kinds=builtin_kinds)
 
 
 @pytest.fixture

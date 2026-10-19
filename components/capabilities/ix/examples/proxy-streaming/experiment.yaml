@@ -41,7 +41,6 @@ factors:
 probes:
   - id: download
     kind: http-load
-    tool: k6
     target: "{url}/blobs/{size}"
     load_model: open        # open vs closed changes what latency means
     rate: "{rate}"
@@ -54,4 +53,4 @@ comparison: non-inferiority
 margin: 5%
 guardrails:
   - {metric: throughput, margin: 5%}
-  - {metric: memory_peak, estimator: max, margin: 0%}
+  - {metric: memory_peak, margin: 5%}

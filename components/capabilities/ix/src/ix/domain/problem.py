@@ -16,40 +16,44 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import Field, field_validator
 
 from ix.domain import schema
-from ix.domain.errors import EXIT_BY_KIND, ConfigError, IxError
+from ix.domain.errors import EXIT_CODES, ConfigError, IxError
 from ix.domain.schema import Record
 
 if TYPE_CHECKING:
     from pydantic import ValidationError
 
 #: Every kind a problem or a warning can have. A consumer should tolerate a kind it does not
-#: know: the set grows.
+#: know: the set grows. The first eight are the kinds every capability shares
+#: (``components/capabilities/error-envelope.json``): ``name_unknown`` is a genre, kind,
+#: subject or parent genre named and not defined, ``name_taken`` a genre, kind or probe id
+#: defined twice; the rest are ix's.
 PROBLEM_KINDS: frozenset[str] = frozenset(
     {
-        # the file as a document
+        # shared: the file as a document, and names
         "yaml_syntax",
         "schema_unsupported",
         "wrong_shape",
         "unknown_key",
         "missing_key",
         "invalid_value",
+        "name_unknown",
+        "name_taken",
         # the experiment against its genre
-        "genre_unknown",
         "genre_roles",
         "genre_factors",
         "must_set",
         "repeats_below_min",
-        "control_unknown",
         "control_not_applicable",
         "comparison_not_allowed",
         "margin_required",
         "guardrail_form",
         # kinds and their options
-        "kind_unknown",
         "kind_unfit",
         "option_unknown",
         "option_missing",
         "option_invalid",
+        "option_inapplicable",
+        "unobservable",
         # metrics and the decision
         "metric_unprovided",
         "metric_ambiguous",
@@ -61,26 +65,28 @@ PROBLEM_KINDS: frozenset[str] = frozenset(
         "unit_mismatch",
         # probes, placeholders and spend
         "probes_empty",
-        "probe_source",
-        "probe_duplicate_id",
         "truth_unclaimed",
         "unbound_placeholder",
         "spend_over_ceiling",
         "spend_unbounded",
         # genre and kind files
         "genre_invalid",
-        "genre_duplicate",
-        "genre_extends_unknown",
         "genre_depth",
         "genre_narrowing",
         "kind_invalid",
-        "kind_duplicate",
         # warnings
         "subjects_differ_in",
+        "kind_unimplemented",
+        "analysis_unimplemented",
         "genre_rejected",
         "kind_rejected",
     }
 )
+
+
+#: matrix's own kinds, which a problem carried over from matrix (a run that could not be
+#: wired, a telemetry warning) may have. ``validate`` reports none of them.
+CARRIED_KINDS: frozenset[str] = frozenset({"unprovided", "cycle", "extra_missing", "permissive"})
 
 
 class Problem(Record):
@@ -100,16 +106,16 @@ class Problem(Record):
     @field_validator("kind")
     @classmethod
     def _known(cls, kind: str) -> str:
-        if kind not in PROBLEM_KINDS:
+        if kind not in PROBLEM_KINDS | CARRIED_KINDS:
             raise ValueError(f"{kind!r} is not a problem kind")
         return kind
 
 
 def problem(
     path: str,
+    *,
     kind: str,
     message: str,
-    *,
     fix: str | None = None,
     allowed: tuple[str, ...] | list[str] = (),
     got: Any = None,
@@ -150,21 +156,31 @@ class Validation(Record):
     @property
     def exit_code(self) -> int:
         """What a command that printed this document exits with."""
-        return EXIT_BY_KIND["ok" if self.valid else "config"]
+        return EXIT_CODES["ok" if self.valid else "config"]
 
 
 class InvalidExperimentError(ConfigError):
     """An experiment that cannot be planned or registered. ``problems`` says why, in full."""
 
-    def __init__(self, message: str, problems: tuple[Problem, ...], *, fix: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        problems: tuple[Problem, ...],
+        *,
+        fix: str | None = None,
+        complete: bool = True,
+    ):
         super().__init__(message, fix=fix)
         self.problems = problems
+        self.complete = complete
 
 
 def error_document(error: IxError) -> dict[str, Any]:
-    """The ``ix.v1.error`` envelope: the one shape a failing command prints.
+    """The ``ix.v1.error`` envelope: the one shape a failing command prints, as
+    ``components/capabilities/error-envelope.json`` agrees it.
 
-    ``problems`` and ``deviations`` are always present and empty when the error has none.
+    ``complete``, ``details``, ``problems`` and ``deviations`` are always present;
+    ``complete`` is false when checking stopped before every problem was found.
     """
     return {
         "schema": schema.ERROR,
@@ -172,6 +188,8 @@ def error_document(error: IxError) -> dict[str, Any]:
             "kind": error.kind,
             "message": str(error),
             "fix": error.fix,
+            "complete": error.complete,
+            "details": error.details,
             "problems": [item.document() for item in error.problems],
             "deviations": [item.document() for item in error.deviations],
         },
@@ -180,17 +198,17 @@ def error_document(error: IxError) -> dict[str, Any]:
 
 # --- pydantic errors as problems ---------------------------------------------------------
 
-#: Tags of the ``probes`` union, which pydantic puts in an error's location and no author
-#: wrote. Angle brackets keep them apart from any key a file can hold.
-UNION_TAGS = frozenset({"<inline>", "<from-source>"})
-
 _QUOTED = re.compile(r"'([^']*)'")
-_NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+#: pydantic error types that say a value has the wrong type or structure: the same reading
+#: matrix's loader gives them, so a file and an object built in memory report alike.
+_SHAPE = re.compile(
+    r"^(dict|list|tuple|set|frozenset|model|model_attributes|string|int|float|bool|"
+    r"none_required|is_instance|dataclass|arguments)_type$|^(int|float|bool)_parsing$"
+)
 
 
 def _path(loc: tuple[Any, ...], prefix: str) -> str:
-    parts = [str(part) for part in loc if part not in UNION_TAGS]
-    return ".".join(([prefix] if prefix else []) + parts)
+    return ".".join(([prefix] if prefix else []) + [str(part) for part in loc])
 
 
 def _scalar(value: Any) -> Any:
@@ -210,21 +228,26 @@ def from_validation_error(
         if item["type"] == "extra_forbidden":
             found = problem(
                 path,
-                "unknown_key",
-                f"{key!r} is not a key ix knows here",
-                fix=f"remove {key!r} or correct its spelling; `ix --skill` lists the keys",
+                kind="unknown_key",
+                message=f"{key!r} is not a key ix knows here",
+                fix=f"remove {key!r} or correct its spelling; `ix --skill -r experiment` lists "
+                "the keys",
                 source=source,
             )
         elif item["type"] == "missing":
             found = problem(
-                path, "missing_key", f"{key!r} is required", fix=f"add {key!r}", source=source
+                path,
+                kind="missing_key",
+                message=f"{key!r} is required",
+                fix=f"add {key!r}",
+                source=source,
             )
         elif item["type"] == "literal_error" and key == "schema":
             allowed = _QUOTED.findall(str(context.get("expected", "")))
             found = problem(
                 path,
-                "schema_unsupported",
-                f"this ix does not read schema {got!r} here",
+                kind="schema_unsupported",
+                message=f"this ix does not read schema {got!r} here",
                 fix=f"schema: {allowed[0]}, or leave 'schema' out" if allowed else None,
                 allowed=allowed,
                 got=got,
@@ -234,19 +257,9 @@ def from_validation_error(
             allowed = _QUOTED.findall(str(context.get("expected", "")))
             found = problem(
                 path,
-                "invalid_value",
-                f"{key!r} is one of {', '.join(allowed)}; got {got!r}",
+                kind="invalid_value",
+                message=f"{key!r} is one of {', '.join(allowed)}; got {got!r}",
                 allowed=allowed,
-                got=got,
-                source=source,
-            )
-        elif item["type"] == "string_pattern_mismatch" and context.get("pattern") == _NAME_PATTERN:
-            found = problem(
-                path,
-                "invalid_value",
-                f"{got!r} is not a name: a name is one token of letters, digits, '_', '.' "
-                "and '-', starting with a letter or digit",
-                fix=f"rename it to one token, for example {_token(got)!r}",
                 got=got,
                 source=source,
             )
@@ -254,16 +267,11 @@ def from_validation_error(
             message = item["msg"].removeprefix("Value error, ")
             found = problem(
                 path,
-                "invalid_value",
-                message,
+                kind="wrong_shape" if _SHAPE.match(str(item["type"])) else "invalid_value",
+                message=message,
                 fix=f"give {path or 'the file'} a value that fits: {message}",
                 got=got,
                 source=source,
             )
         problems.append(found)
     return problems
-
-
-def _token(value: Any) -> str:
-    token = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-.")
-    return token or "name"

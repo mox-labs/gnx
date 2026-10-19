@@ -12,6 +12,7 @@ still be measured and reported.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -19,16 +20,24 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from ix.domain import schema
-from ix.domain.design import assign_roles, kind_uses, resolve, select_sensors
+from ix.domain.analysis import ANALYSES, analysis_unsupported
+from ix.domain.design import (
+    assign_roles,
+    kind_uses,
+    missing_adapters,
+    resolve,
+    select_sensors,
+)
 from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment
 from ix.domain.genre import CONTROL
+from ix.domain.intervals import MEDIAN_MIN
 from ix.domain.kind import NOTE_PREFIX, placeholders
 from ix.domain.plan import count_trials, effects, estimate_spend
 from ix.domain.problem import Problem, Validation, from_validation_error, problem
 
 if TYPE_CHECKING:
     from ix.domain.design import Design, Instruments
-    from ix.domain.experiment import Guardrail, MetricRef, ProbeSet, Threshold
+    from ix.domain.experiment import Guardrail, Margin, MetricRef, ProbeSet, Threshold
     from ix.domain.genre import Genre, Genres
     from ix.domain.kind import Kinds, Metric
 
@@ -46,51 +55,21 @@ _MUST_SET_FIX = {
 
 
 def parse(data: Any) -> tuple[Experiment | None, list[Problem]]:
-    """An experiment from a file's data, or every reason it is not one."""
+    """An experiment from data already read (an object built in memory, or a mapping), or
+    every reason it is not one."""
     if not isinstance(data, Mapping):
         return None, [
             problem(
                 "",
-                "wrong_shape",
-                "an experiment file is a YAML mapping",
+                kind="wrong_shape",
+                message="an experiment is a mapping of keys to values",
                 fix="start with name:, question:, genre:, subjects:, probes:",
             )
         ]
-    # Two slips an author makes with the shape, each with the sentence that fixes it;
-    # pydantic's own account of them points at the wrong key.
-    slips: list[Problem] = []
-    if isinstance(data.get("subjects"), list):
-        slips.append(
-            problem(
-                "subjects",
-                "wrong_shape",
-                "subjects is a mapping of each subject's name to its kind and options, not a list",
-                fix="subjects: {<name>: {kind: <subject kind>, ...}}",
-            )
-        )
-    probes = data.get("probes")
-    if isinstance(probes, Mapping) and "source" not in probes:
-        slips.append(
-            problem(
-                "probes",
-                "wrong_shape",
-                "probes is a list of probes, or one mapping that names a source; this "
-                "mapping names no source",
-                fix="probes: [{kind: <probe kind>, ...}]  (a list, each item starting with '-')"
-                if "kind" in probes
-                else "probes: {source: directory, path: probes}",
-            )
-        )
     try:
         return Experiment.model_validate(dict(data)), []
     except ValidationError as error:
-        slipped = tuple(slip.path for slip in slips)
-        rest = [
-            found
-            for found in from_validation_error(error)
-            if not any(found.path == key or found.path.startswith(key + ".") for key in slipped)
-        ]
-        return None, slips + rest
+        return None, from_validation_error(error)
 
 
 @dataclass(frozen=True)
@@ -117,8 +96,8 @@ def _genre(experiment: Experiment, genres: Genres) -> tuple[Genre | None, list[P
         return None, [
             problem(
                 "genre",
-                "genre_unknown",
-                f"genre {experiment.genre!r} is declared by a genre file ix refused",
+                kind="name_unknown",
+                message=f"genre {experiment.genre!r} is declared by a genre file ix refused",
                 fix="fix the genre file (its problems follow), or use one of: "
                 f"{', '.join(known) or '(none)'}",
                 allowed=known,
@@ -129,8 +108,8 @@ def _genre(experiment: Experiment, genres: Genres) -> tuple[Genre | None, list[P
     return None, [
         problem(
             "genre",
-            "genre_unknown",
-            f"no genre named {experiment.genre!r}",
+            kind="name_unknown",
+            message=f"no genre named {experiment.genre!r}",
             allowed=known,
             got=experiment.genre,
         )
@@ -138,29 +117,42 @@ def _genre(experiment: Experiment, genres: Genres) -> tuple[Genre | None, list[P
 
 
 def _against_genre(experiment: Experiment, genre: Genre) -> list[Problem]:
-    problems: list[Problem] = []
-    label = schema.short(genre.name)
+    return [
+        *_factors(experiment, genre),
+        *_must_set(experiment, genre),
+        *_comparison(experiment, genre),
+        *_repeats(experiment, genre),
+        *_guardrail_forms(experiment, genre),
+    ]
 
+
+def _factors(experiment: Experiment, genre: Genre) -> list[Problem]:
+    label = schema.short(genre.name)
     if genre.factors == "forbidden" and experiment.factors:
-        problems.append(
+        return [
             problem(
                 "factors",
-                "genre_factors",
-                f"genre {label} takes no factors",
+                kind="genre_factors",
+                message=f"genre {label} takes no factors",
                 fix="remove 'factors', or use a genre that varies conditions",
             )
-        )
+        ]
     if genre.factors == "required" and not experiment.factors:
-        problems.append(
+        return [
             problem(
                 "factors",
-                "genre_factors",
-                f"genre {label} varies at least one factor and none is declared",
+                kind="genre_factors",
+                message=f"genre {label} varies at least one factor and none is declared",
                 fix="factors: {<name>: [<level>, <level>]}",
             )
-        )
+        ]
+    return []
 
+
+def _must_set(experiment: Experiment, genre: Genre) -> list[Problem]:
+    label = schema.short(genre.name)
     comparisons = tuple(genre.comparisons)
+    problems: list[Problem] = []
     for field in genre.must_set:
         value = getattr(experiment, field)
         supplied = bool(value) or value == 0
@@ -170,21 +162,28 @@ def _against_genre(experiment: Experiment, genre: Genre) -> list[Problem]:
             problems.append(
                 problem(
                     field,
-                    "must_set",
-                    f"genre {label} needs {field!r} and the experiment does not set it",
+                    kind="must_set",
+                    message=f"genre {label} needs {field!r} and the experiment does not set it",
                     fix=f"comparison: one of {', '.join(comparisons)}"
                     if field == "comparison"
                     else _MUST_SET_FIX[field],
                     allowed=comparisons if field == "comparison" else (),
                 )
             )
+    return problems
 
+
+def _comparison(experiment: Experiment, genre: Genre) -> list[Problem]:
+    """A comparison the genre does not make, and a margin its comparison needs."""
+    label = schema.short(genre.name)
+    comparisons = tuple(genre.comparisons)
+    problems: list[Problem] = []
     if experiment.comparison is not None and experiment.comparison not in genre.comparisons:
         problems.append(
             problem(
                 "comparison",
-                "comparison_not_allowed",
-                f"genre {label} makes no comparison between subjects"
+                kind="comparison_not_allowed",
+                message=f"genre {label} makes no comparison between subjects"
                 if not comparisons
                 else f"genre {label} does not make the comparison {experiment.comparison!r}",
                 fix=None if comparisons else "remove 'comparison'",
@@ -201,40 +200,47 @@ def _against_genre(experiment: Experiment, genre: Genre) -> list[Problem]:
         problems.append(
             problem(
                 "margin",
-                "margin_required",
-                f"comparison {comparison} is stated in terms of a margin: the largest loss "
+                kind="margin_required",
+                message=f"comparison {comparison} is stated in terms of a margin: the largest loss "
                 "that still counts as no worse",
                 fix="margin: 5%",
             )
         )
-
-    floor = genre.design.repeats.min
-    if experiment.repeats is not None and experiment.repeats < floor:
-        problems.append(
-            problem(
-                "repeats",
-                "repeats_below_min",
-                f"genre {label} needs at least {floor} repeats to carry its finding; "
-                f"{experiment.repeats} given",
-                fix=f"repeats: {floor}, or leave 'repeats' out for the genre's "
-                f"{genre.design.repeats.default}",
-                got=experiment.repeats,
-            )
-        )
-
-    if genre.role(CONTROL) is None:
-        for index, guardrail in enumerate(experiment.guardrails):
-            if guardrail.margin is not None:
-                problems.append(
-                    problem(
-                        f"guardrails.{index}.margin",
-                        "guardrail_form",
-                        f"genre {label} has no control to be within a margin of; a "
-                        "guardrail here is an absolute threshold",
-                        fix='threshold: {op: "<", value: <bound>}',
-                    )
-                )
     return problems
+
+
+def _repeats(experiment: Experiment, genre: Genre) -> list[Problem]:
+    floor = genre.design.repeats.min
+    if experiment.repeats is None or experiment.repeats >= floor:
+        return []
+    return [
+        problem(
+            "repeats",
+            kind="repeats_below_min",
+            message=f"genre {schema.short(genre.name)} needs at least {floor} repeats to carry "
+            f"its finding; {experiment.repeats} given",
+            fix=f"repeats: {floor}, or leave 'repeats' out for the genre's "
+            f"{genre.design.repeats.default}",
+            got=experiment.repeats,
+        )
+    ]
+
+
+def _guardrail_forms(experiment: Experiment, genre: Genre) -> list[Problem]:
+    """A guardrail with a margin, in a genre with no control to be within a margin of."""
+    if genre.role(CONTROL) is not None:
+        return []
+    return [
+        problem(
+            f"guardrails.{index}.margin",
+            kind="guardrail_form",
+            message=f"genre {schema.short(genre.name)} has no control to be within a margin "
+            "of; a guardrail here is an absolute threshold",
+            fix='threshold: {op: "<", value: <bound>}',
+        )
+        for index, guardrail in enumerate(experiment.guardrails)
+        if guardrail.margin is not None
+    ]
 
 
 def _fit(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> list[Problem]:
@@ -242,7 +248,7 @@ def _fit(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> list[
     if probes is None:
         return []
     problems: list[Problem] = []
-    inline = isinstance(experiment.probes, tuple)
+    inline = bool(experiment.probes)
     reported: set[tuple[str, str]] = set()
     for index, probe in enumerate(probes.probes):
         probe_kind = kinds.get("probe", probe.kind)
@@ -264,9 +270,9 @@ def _fit(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> list[
             problems.append(
                 problem(
                     f"probes.{index}.kind" if inline else "probes",
-                    "kind_unfit",
-                    f"probe kind {probe.kind} needs {', '.join(lacking)} and subject {name} "
-                    f"(kind {subject.kind}) offers "
+                    kind="kind_unfit",
+                    message=f"probe kind {probe.kind} needs {', '.join(lacking)} and subject "
+                    f"{name} (kind {subject.kind}) offers "
                     f"{', '.join(subject_kind.offers) or 'nothing'}",
                     fix=f"apply {probe.kind} to a subject of kind "
                     f"{' or '.join(fitting) or '(none installed)'}, or use a probe kind that "
@@ -284,8 +290,8 @@ def _threshold_unit(path: str, threshold: Threshold | None, metric: Metric) -> l
     return [
         problem(
             f"{path}.value",
-            "unit_mismatch",
-            f"the threshold is in {threshold.unit!r} and {metric.name} is in "
+            kind="unit_mismatch",
+            message=f"the threshold is in {threshold.unit!r} and {metric.name} is in "
             f"{metric.unit or '(no unit)'!r}",
             fix=f"state the threshold in {metric.unit}"
             if metric.unit
@@ -296,18 +302,32 @@ def _threshold_unit(path: str, threshold: Threshold | None, metric: Metric) -> l
     ]
 
 
+@dataclass(frozen=True)
+class _Deciding:
+    """What a decision's checks need from the genre and the probes: whether the genre
+    decides, the estimator it supplies, and the blocks per cell a run would have (None
+    while the probes are unknown)."""
+
+    decides: bool
+    estimator: str
+    blocks: int | None
+
+
 def _reads(
     ref: MetricRef | Guardrail,
     path: str,
     instruments: Instruments,
+    deciding: _Deciding,
     *,
-    decides: bool,
     directional: bool,
+    margin: tuple[str, Margin] | None = None,
 ) -> list[Problem]:
-    """Check one metric a decision reads: legal reductions, and fit to decide."""
+    """Check one metric a decision reads: legal reductions, and fit to decide. ``margin`` is
+    the margin the decision is read against, with its path."""
     metric = instruments.metrics.get(ref.metric)
     if metric is None:
         return []  # unprovided or ambiguous: reported where the sensor was sought
+    decides = deciding.decides
     problems: list[Problem] = []
     statistics, estimators = STATISTICS[metric.shape], ESTIMATORS[metric.shape]
     if ref.statistic is not None and ref.statistic not in statistics:
@@ -319,8 +339,8 @@ def _reads(
         problems.append(
             problem(
                 f"{path}.statistic",
-                "statistic_illegal",
-                f"{metric.name} is a {metric.shape}; {ref.statistic!r} does not reduce one "
+                kind="statistic_illegal",
+                message=f"{metric.name} is a {metric.shape}; {ref.statistic!r} does not reduce one "
                 f"trial's {metric.shape} reading{hint}",
                 fix=(f"remove 'statistic' and write estimator: {ref.statistic}" if hint else None),
                 allowed=statistics,
@@ -331,8 +351,9 @@ def _reads(
         problems.append(
             problem(
                 f"{path}.estimator",
-                "estimator_illegal",
-                f"{metric.name} is a {metric.shape}; {ref.estimator!r} does not combine its trials",
+                kind="estimator_illegal",
+                message=f"{metric.name} is a {metric.shape}; {ref.estimator!r} does not combine "
+                "its trials",
                 allowed=estimators,
                 got=ref.estimator,
             )
@@ -341,8 +362,8 @@ def _reads(
         problems.append(
             problem(
                 f"{path}.metric",
-                "judged_gate",
-                f"{metric.name} is judged by a model (its sensor declares it), and a "
+                kind="judged_gate",
+                message=f"{metric.name} is judged by a model (its sensor declares it), and a "
                 "model-judged reading never decides",
                 fix=f"decide on a metric no model judges, and keep {metric.name} under "
                 "'metrics:' to report it",
@@ -353,26 +374,92 @@ def _reads(
         problems.append(
             problem(
                 f"{path}.metric",
-                "metric_direction",
-                f"{metric.name} has direction 'neither', so 'better' and 'no worse' have no "
-                "meaning for it",
+                kind="metric_direction",
+                message=f"{metric.name} has direction 'neither', so 'better' and 'no worse' have "
+                "no meaning for it",
                 fix="decide on a metric whose direction is higher or lower, or bound "
                 f"{metric.name} with a threshold",
                 got=metric.name,
+            )
+        )
+    if decides:
+        problems += _decidable(ref, path, metric, deciding, margin)
+    return problems
+
+
+def _decidable(
+    ref: MetricRef | Guardrail,
+    path: str,
+    metric: Metric,
+    deciding: _Deciding,
+    margin: tuple[str, Margin] | None,
+) -> list[Problem]:
+    """What the interval methods cannot decide on: a min or a max, a rate in percent, and a
+    median with fewer blocks than its interval needs."""
+    problems: list[Problem] = []
+    rate = metric.shape in ("boolean", "count")
+    estimator = ref.estimator or (ESTIMATORS[metric.shape][0] if rate else deciding.estimator)
+    if estimator in ("min", "max") and estimator in ESTIMATORS[metric.shape]:
+        problems.append(
+            problem(
+                f"{path}.estimator",
+                kind="estimator_illegal",
+                message=f"{estimator} has no interval ix can stand behind at these trial "
+                "counts, so it never decides"
+                + ("" if ref.estimator else "; the genre supplies it"),
+                fix="estimator: mean, or estimator: median; keep the "
+                f"{estimator} under 'metrics:' to report it",
+                allowed=("mean", "median"),
+                got=estimator,
+            )
+        )
+    if rate and margin is not None and margin[1].basis == "relative":
+        where, given = margin
+        problems.append(
+            problem(
+                where,
+                kind="unit_mismatch",
+                message=f"{metric.name} is a rate, and a margin in percent of a rate near 0 "
+                f"is unstable; ix compares rates in percentage points or as a share",
+                fix=f"margin: {given.value:g}pp (percentage points) or a share such as 0.05",
+                allowed=("pp", "a bare share"),
+                got=given.text(),
+            )
+        )
+    if estimator == "median" and deciding.blocks is not None and deciding.blocks < MEDIAN_MIN:
+        problems.append(
+            problem(
+                "repeats",
+                kind="repeats_below_min",
+                message=f"a median's interval needs {MEDIAN_MIN} blocks (repeats x probes) in a "
+                f"cell; this run would have {deciding.blocks}",
+                fix=f"raise repeats so repeats x probes is at least {MEDIAN_MIN}, or decide on "
+                "the mean",
+                got=deciding.blocks,
             )
         )
     return problems
 
 
 def _decision(
-    experiment: Experiment, genre: Genre | None, instruments: Instruments
+    experiment: Experiment, genre: Genre | None, instruments: Instruments, probes: ProbeSet | None
 ) -> list[Problem]:
     problems: list[Problem] = []
-    decides = genre is not None and genre.decides
     compares = genre is not None and (experiment.comparison or genre.default_comparison) is not None
+    repeats = experiment.repeats or (genre.design.repeats.default if genre else 1)
+    deciding = _Deciding(
+        decides=genre is not None and genre.decides,
+        estimator=genre.design.estimator if genre else "mean",
+        blocks=None if probes is None else repeats * len(probes.probes),
+    )
     if experiment.primary is not None:
         problems += _reads(
-            experiment.primary, "primary", instruments, decides=decides, directional=compares
+            experiment.primary,
+            "primary",
+            instruments,
+            deciding,
+            directional=compares,
+            margin=("margin", experiment.margin) if compares and experiment.margin else None,
         )
         metric = instruments.metrics.get(experiment.primary.metric)
         if metric is not None:
@@ -380,7 +467,12 @@ def _decision(
     for index, guardrail in enumerate(experiment.guardrails):
         path = f"guardrails.{index}"
         problems += _reads(
-            guardrail, path, instruments, decides=decides, directional=guardrail.margin is not None
+            guardrail,
+            path,
+            instruments,
+            deciding,
+            directional=guardrail.margin is not None,
+            margin=(f"{path}.margin", guardrail.margin) if guardrail.margin else None,
         )
         metric = instruments.metrics.get(guardrail.metric)
         if metric is not None:
@@ -390,8 +482,6 @@ def _decision(
 
 def _placeholders(experiment: Experiment) -> list[Problem]:
     """An inline probe's ``{name}`` must be a factor, or an option every subject sets."""
-    if not isinstance(experiment.probes, tuple):
-        return []
     shared = [set(subject.options) for subject in experiment.subjects.values()]
     bound = sorted(set(experiment.factors) | (set.intersection(*shared) if shared else set()))
     problems: list[Problem] = []
@@ -402,8 +492,8 @@ def _placeholders(experiment: Experiment) -> list[Problem]:
                     problems.append(
                         problem(
                             f"probes.{index}.{key}",
-                            "unbound_placeholder",
-                            f"{{{name}}} is bound to nothing",
+                            kind="unbound_placeholder",
+                            message=f"{{{name}}} is bound to nothing",
                             fix=f"declare factors: {{{name}: [...]}}, set {name!r} on every "
                             "subject, or write the value out",
                             allowed=bound,
@@ -422,8 +512,8 @@ def _probes(
         return [
             problem(
                 "probes",
-                "probes_empty",
-                "the experiment has no probes, so a run would apply no stimulus",
+                kind="probes_empty",
+                message="the experiment has no probes, so a run would apply no stimulus",
                 fix="add at least one probe",
             )
         ]
@@ -431,8 +521,8 @@ def _probes(
     problems = [
         problem(
             "probes",
-            "probe_duplicate_id",
-            f"probe id {probe_id!r} is used more than once; readings join on it",
+            kind="name_taken",
+            message=f"probe id {probe_id!r} is used more than once; readings join on it",
             fix="give each probe its own id",
             got=probe_id,
         )
@@ -446,16 +536,22 @@ def _probes(
             for key in kind.truth
         }
     )
-    inline = isinstance(experiment.probes, tuple)
+    inline = bool(experiment.probes)
     for index, probe in enumerate(probes.probes):
+        declared = kinds.get("probe", probe.kind)
+        options = declared.options if declared is not None else {}
         for key in probe.truth:
             if key in read or key.startswith(NOTE_PREFIX):
                 continue
+            path = f"probes.{index if inline else probe.id}.truth.{key}"
+            if key in options:
+                problems.append(_misplaced_option(path, key, probe.truth[key], inline=inline))
+                continue
             problems.append(
                 problem(
-                    f"probes.{index if inline else probe.id}.truth.{key}",
-                    "truth_unclaimed",
-                    f"no sensor in use reads the truth key {key!r}, so nothing would be "
+                    path,
+                    kind="truth_unclaimed",
+                    message=f"no sensor in use reads the truth key {key!r}, so nothing would be "
                     "measured against it",
                     fix=f"correct its spelling, name a metric whose sensor reads it, or "
                     f"prefix a note with {NOTE_PREFIX!r}",
@@ -466,9 +562,36 @@ def _probes(
     return problems
 
 
-def _spend(experiment: Experiment, design: Design, kinds: Kinds, probes: ProbeSet) -> list[Problem]:
+def _misplaced_option(path: str, key: str, value: Any, *, inline: bool) -> Problem:
+    """A truth key no sensor reads that is an option of the probe's kind: written where the
+    probe reads truth, so the probe never sees it."""
+    shown = json.dumps(value) if isinstance(value, str) else "..."
+    if inline:
+        where = f"write it beside `kind`, out of `truth:` (`{key}: {shown}`)"
+    else:
+        where = (
+            f"write it under `options:` in the probe file's frontmatter (`options: {{{key}: "
+            f"{shown}}}`); every other frontmatter key but id, kind and effects is truth"
+        )
+    return problem(
+        path,
+        kind="truth_unclaimed",
+        message=f"{key!r} is an option of the probe's kind, written where the probe reads "
+        "truth: no sensor reads it there and the probe never sees it",
+        fix=where,
+        got=key,
+    )
+
+
+def _spend(
+    experiment: Experiment,
+    design: Design,
+    kinds: Kinds,
+    probes: ProbeSet,
+    spend_cap: float | None,
+) -> list[Problem]:
     trials = count_trials(experiment, design, len(probes.probes))
-    estimate = estimate_spend(experiment.spend, trials.total)
+    estimate = estimate_spend(experiment.spend, trials.total, spend_cap=spend_cap)
     problems: list[Problem] = []
     spenders = sorted(
         {e.source for e in effects(experiment, design, kinds, probes) if e.effect == "spend"}
@@ -477,9 +600,9 @@ def _spend(experiment: Experiment, design: Design, kinds: Kinds, probes: ProbeSe
         problems.append(
             problem(
                 "spend.ceiling",
-                "spend_unbounded",
-                f"a run would spend money ({', '.join(spenders)}) and the experiment sets no "
-                "ceiling",
+                kind="spend_unbounded",
+                message=f"a run would spend money ({', '.join(spenders)}) and neither the "
+                "experiment nor ix's settings (spend_cap) set a ceiling",
                 fix="spend: {ceiling: <the most this run may cost>, per_trial: <your estimate>}",
             )
         )
@@ -491,8 +614,8 @@ def _spend(experiment: Experiment, design: Design, kinds: Kinds, probes: ProbeSe
         problems.append(
             problem(
                 "spend.ceiling",
-                "spend_over_ceiling",
-                f"the run is estimated at {estimate.estimated:g} {estimate.currency} "
+                kind="spend_over_ceiling",
+                message=f"the run is estimated at {estimate.estimated:g} {estimate.currency} "
                 f"({estimate.basis}), over the ceiling of {estimate.ceiling:g}",
                 fix="lower repeats, probes or cells, or raise spend.ceiling to at least "
                 f"{estimate.estimated:g}",
@@ -523,9 +646,9 @@ def _parity(experiment: Experiment, control: str | None) -> list[Problem]:
             warnings.append(
                 problem(
                     f"subjects.{name}",
-                    "subjects_differ_in",
-                    f"{name} differs from the control {control} in {', '.join(differing)}; a "
-                    "difference in the result cannot be attributed to one of them",
+                    kind="subjects_differ_in",
+                    message=f"{name} differs from the control {control} in {', '.join(differing)}; "
+                    "a difference in the result cannot be attributed to one of them",
                     fix="change one option per variant, or accept the confound and say so in "
                     "the report",
                     got=differing,
@@ -534,9 +657,93 @@ def _parity(experiment: Experiment, control: str | None) -> list[Problem]:
     return warnings
 
 
-def check(experiment: Experiment, genres: Genres, kinds: Kinds, probes: ProbeSet | None) -> Checked:
+def _unrunnable(
+    experiment: Experiment,
+    design: Design,
+    probes: ProbeSet,
+    adapters: frozenset[str],
+    quarantined: tuple[str, ...],
+) -> list[Problem]:
+    """A warning for each kind in use with no adapter here, and for an analysis this ix
+    does not have."""
+    elsewhere = (
+        f"; an extension failed to load and may be the one that registers it "
+        f"({'; '.join(quarantined)}): `matrix catalog` shows why"
+        if quarantined
+        else ""
+    )
+    warnings = [
+        problem(
+            where,
+            kind="kind_unimplemented",
+            message=f"this ix has no adapter for {schema.family_of(kind) or 'kind'} kind "
+            f"{schema.short(kind)}: the experiment can be checked, planned and registered, "
+            "and `ix run` would refuse it",
+            fix="use a kind `ix kinds` marks runnable, or run it where an adapter for "
+            f"{schema.short(kind)} is installed{elsewhere}",
+            got=schema.short(kind),
+        )
+        for where, kind in missing_adapters(experiment, design, probes, adapters)
+    ]
+    unsupported = analysis_unsupported(design.analysis)
+    if unsupported is not None:
+        warnings.append(
+            problem(
+                "genre",
+                kind="analysis_unimplemented",
+                message=f"{unsupported}: `ix run` would refuse the experiment",
+                fix="use a genre whose analysis is one of: " + ", ".join(sorted(ANALYSES)),
+                allowed=sorted(ANALYSES),
+                got=design.analysis.id,
+            )
+        )
+    return warnings
+
+
+def _refused(experiment: Experiment, genres: Genres, kinds: Kinds) -> list[Problem]:
+    """A warning for each genre file and kind file that was refused, but the genre the
+    experiment names (a problem already says why)."""
+    used = schema.url("genre", experiment.genre)
+    warnings = [
+        problem(
+            "",
+            kind="genre_rejected",
+            message=f"genre file {name} was refused ({len(refused)} problem(s)) and is not among "
+            "the genres",
+            fix="`ix genres` shows why",
+            source=refused[0].source,
+        )
+        for name, refused in genres.rejected.items()
+        if name != used
+    ]
+    warnings += [
+        problem(
+            "",
+            kind="kind_rejected",
+            message=f"kind file {name} was refused ({len(refused)} problem(s)) and is not among "
+            "the kinds",
+            fix="`ix kinds` shows why",
+            source=refused[0].source,
+        )
+        for name, refused in kinds.rejected.items()
+    ]
+    return warnings
+
+
+def check(
+    experiment: Experiment,
+    genres: Genres,
+    kinds: Kinds,
+    probes: ProbeSet | None,
+    *,
+    adapters: frozenset[str] | None = None,
+    spend_cap: float | None = None,
+) -> Checked:
     """Every problem with a loaded experiment. ``probes`` is None when they could not be
-    read (the caller reports why)."""
+    read (the caller reports why). ``adapters`` is the kinds (type URLs) a run could carry
+    out here; a kind in use that is not among them is a warning, since the experiment is
+    still a valid declaration. ``spend_cap`` is the ceiling ix's settings give a run that
+    spends when the experiment sets none."""
     genre, problems = _genre(experiment, genres)
     control: str | None = None
     roles_fit = False
@@ -551,7 +758,7 @@ def check(experiment: Experiment, genres: Genres, kinds: Kinds, probes: ProbeSet
     problems += _fit(experiment, kinds, probes)
     instruments = select_sensors(experiment, kinds, probes)
     problems += instruments.problems
-    problems += _decision(experiment, genre, instruments)
+    problems += _decision(experiment, genre, instruments, probes)
     problems += _placeholders(experiment)
     problems += _probes(experiment, probes, kinds, instruments)
 
@@ -561,33 +768,13 @@ def check(experiment: Experiment, genres: Genres, kinds: Kinds, probes: ProbeSet
         else None
     )
     if design is not None and probes is not None:
-        problems += _spend(experiment, design, kinds, probes)
+        problems += _spend(experiment, design, kinds, probes, spend_cap)
 
     warnings = _parity(experiment, control if genre and genre.role(CONTROL) else None)
-    used = schema.url("genre", experiment.genre)
-    for name, refused in genres.rejected.items():
-        if name != used:
-            warnings.append(
-                problem(
-                    "",
-                    "genre_rejected",
-                    f"genre file {name} was refused ({len(refused)} problem(s)) and is not "
-                    "among the genres",
-                    fix="`ix genres` shows why",
-                    source=refused[0].source,
-                )
-            )
-    for name, refused in kinds.rejected.items():
-        warnings.append(
-            problem(
-                "",
-                "kind_rejected",
-                f"kind file {name} was refused ({len(refused)} problem(s)) and is not among "
-                "the kinds",
-                fix="`ix kinds` shows why",
-                source=refused[0].source,
-            )
-        )
+    # Said of a valid experiment only: an invalid one cannot run for reasons already given.
+    if not problems and design is not None and probes is not None and adapters is not None:
+        warnings += _unrunnable(experiment, design, probes, adapters, kinds.quarantined)
+    warnings += _refused(experiment, genres, kinds)
     return Checked(
         problems=tuple(problems),
         warnings=tuple(warnings),
@@ -605,7 +792,6 @@ def validation(
     genre: Genre | None = None,
     complete: bool = True,
 ) -> Validation:
-    """The validation document for what was found."""
     return Validation(
         experiment=experiment,
         source=source,

@@ -8,11 +8,11 @@ roles:
 factors: allowed
 must_set: [primary, threshold]
 design:
-  repeats: {default: 3, min: 1}
+  repeats: {default: 10, min: 5}
   order: interleaved
   calibration: none
   estimator: mean
-  note: "provisional: pending the experimentation canon"
+  note: "checked by simulation at its minimum repeats: t, order-statistic and score intervals; holds at the full level, fails corrected by Holm (ix design record, 2026-10-19)"
 analysis: {id: ix.v1.analysis.evaluate}
 verdict_form: three-way
 report: [question, design, estimates, failures, warrant, raw]
@@ -23,6 +23,9 @@ guidance: |
   Give exactly one subject. To ask which of two subjects is better, use compare.
   A guardrail here is another absolute threshold, since there is no control to be within
   a margin of.
+  Read `ix plan` before you run: for a pass rate it says what the best case (every trial
+  passing) can show, and with an earlier run the smallest margin over the threshold this
+  many repeats can detect.
   What would falsify it: the interval of the primary lies on the wrong side of the
   threshold. An interval that straddles it is inconclusive; more repeats or more probes
   are the remedy, not a looser threshold.

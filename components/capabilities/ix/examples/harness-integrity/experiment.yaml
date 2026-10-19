@@ -1,0 +1,31 @@
+# Does the grading path grade correctly?
+#
+#   ix validate examples/harness-integrity
+#   ix run examples/harness-integrity --exploratory
+#
+# Every probe carries a canned answer (mock_response), which matrix's mock runtime gives
+# back: nothing is spent and no model answers, so the report says "Dry run" and gives no
+# verdict. What it shows is what the real sensors made of answers whose grades are known:
+# the correct solution passes every test, the partial one passes the weighted share its
+# tiers give it, the one that raises scores 0 and is recorded rather than crashing the run,
+# and the reply with no code scores 0. ix's own tests run this experiment and hold each
+# reading to those grades.
+name: harness-integrity
+question: Do the function-test and outcome sensors grade answers of known worth as they should?
+genre: evaluate
+
+subjects:
+  canned:
+    kind: agent-session
+    runtime: mock
+
+# One file per probe in probes/: the frontmatter is the truth the sensors read, and
+# options.mock_response the answer the mock runtime gives.
+
+primary: {metric: tests_passed}
+threshold: {op: ">=", value: 0.5}
+metrics: [tests_score, tests_pass_share, outcome_score, turns]
+sensors:
+  - {kind: outcome, graders: graders.py}
+repeats: 5
+spend: {ceiling: 0}

@@ -15,8 +15,10 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
+from click.testing import CliRunner
 
 import ix
+from ix.adapters._in.cli import main
 from ix.application.experiments import Vocabulary, examine, make_plan
 from ix.domain.experiment import Experiment
 from ix.domain.plan import Plan, cells
@@ -49,13 +51,43 @@ class TestPlanStatesTheDecision:
         ]
         made = _plan(compare_data, vocabulary)
         assert made.question == "Is streaming no worse than buffered?"
-        assert made.decides == ("streaming is no worse than buffered by more than 5% on ttfb p99",)
+        assert made.decides == ("streaming is at most 5% worse than buffered on ttfb p99",)
         assert made.comparison == "non-inferiority"
         assert made.guardrails == (
-            "throughput no worse than buffered by more than 5%",
+            "throughput at most 5% worse than buffered",
             "error_rate < 0.01",
         )
         assert (made.verdict_form, made.verdict) == ("three-way", "holds / fails / inconclusive")
+
+    def test_the_decision_reads_as_a_sentence_and_the_margin_says_whose_it_is(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary, write_experiment: Write
+    ) -> None:
+        """Regression: for "is the 25 ms build slower than the 20 ms build?", regress printed
+        "build25 is no worse than build20 by more than 5%", and nothing said where the 5%
+        came from."""
+        subjects = compare_data["subjects"]
+        regress = {
+            **compare_data,
+            "genre": "regress",
+            "subjects": {"build20": subjects["buffered"], "build25": subjects["streaming"]},
+            "primary": {"metric": "latency", "statistic": "p50"},
+        }
+        del regress["comparison"]
+        made = _plan(regress, vocabulary)
+        assert made.decides == ("build25 is at most 5% worse than build20 on latency p50",)
+        (margin,) = [value for value in made.provenance if value.path == "margin"]
+        assert (margin.value, margin.source) == ("5%", "experiment")
+        assert "the person's decision" in margin.note
+        # A margin in the metric's own unit says the unit.
+        absolute = _plan({**regress, "margin": 3}, vocabulary)
+        assert absolute.decides == ("build25 is at most 3 ms worse than build20 on latency p50",)
+        shown = CliRunner(env={"COLUMNS": "200"}).invoke(
+            main, ["plan", str(write_experiment(regress))]
+        )
+        assert (
+            "Margin:       5%, set in the experiment: the largest loss still counted as no "
+            "worse; the person's decision, made before the run"
+        ) in shown.stdout
 
     def test_the_genre_is_carried_short_and_as_its_url(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
@@ -101,9 +133,11 @@ class TestPlanCounts:
         compare_data["factors"] = {"size": ["1MiB", "64MiB", "1GiB"], "rate": ["10/s", "80/s"]}
         made = _plan(compare_data, vocabulary)
         trials = made.trials
-        assert (trials.subjects, trials.cells, trials.probes, trials.repeats) == (2, 6, 1, 5)
-        assert (trials.measured, trials.calibration, trials.total) == (60, 30, 90)
-        assert trials.text() == "2 subjects x 6 cells x 1 probe x 5 repeats = 60, + 30 A/A = 90"
+        assert (trials.subjects, trials.cells, trials.probes, trials.repeats) == (2, 6, 1, 10)
+        assert (trials.measured, trials.calibration, trials.total) == (120, 60, 180)
+        assert trials.text() == (
+            "2 subjects x 6 cells x 1 probe x 10 repeats = 120, + 60 A/A = 180"
+        )
         assert made.calibration == "aa"
 
     def test_no_calibration_where_the_genre_has_none(
@@ -111,7 +145,7 @@ class TestPlanCounts:
     ) -> None:
         made = _plan(evaluate_data, vocabulary)
         assert made.calibration == "none" and made.trials.calibration == 0
-        assert made.trials.text() == "1 subject x 1 cell x 1 probe x 3 repeats = 3"
+        assert made.trials.text() == "1 subject x 1 cell x 1 probe x 10 repeats = 10"
 
     def test_the_json_plan_counts_cells_and_does_not_enumerate_them(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
@@ -127,7 +161,7 @@ class TestPlanCounts:
         compare_data["probes"][0]["warmup"] = "15s"
         made = _plan(compare_data, vocabulary)
         assert made.duration.seconds == made.trials.total * 75
-        assert made.duration.text().startswith("about 19m (15 trials, probe time only")
+        assert made.duration.text().startswith("about 38m (30 trials, probe time only")
 
     def test_duration_follows_a_factor_through_a_placeholder(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
@@ -135,7 +169,7 @@ class TestPlanCounts:
         compare_data["factors"] = {"length": ["30s", "2m"]}
         compare_data["probes"][0]["duration"] = "{length}"
         made = _plan(compare_data, vocabulary)
-        assert made.duration.seconds == (30 + 120) * 5 * 3
+        assert made.duration.seconds == (30 + 120) * 10 * 3
 
     def test_duration_is_not_invented(
         self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
@@ -164,12 +198,13 @@ class TestPlanCounts:
         assert unpriced.estimated is None and unpriced.ceiling == 5
         assert "per_trial" in unpriced.basis
 
-    def test_the_provisional_note_is_said_once(
+    def test_the_genres_note_is_said_once(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:
         made = _plan(compare_data, vocabulary)
-        assert made.notes == ("provisional: pending the experimentation canon",)
-        assert not any("provisional" in value.note for value in made.provenance)
+        (note,) = made.notes
+        assert note.startswith("checked by simulation") and "design record" in note
+        assert not any("design record" in value.note for value in made.provenance)
 
     def test_an_invalid_experiment_is_not_planned(
         self, compare_data: dict[str, Any], write_experiment: Write
@@ -235,7 +270,6 @@ class TestPlanDigest:
                 update={"genres": {**genres, compare.name: renoted}}
             ),
             kinds=vocabulary.kinds,
-            probe_sources=vocabulary.probe_sources,
         )
         assert _plan(compare_data, moved).digest == before.digest
         assert _plan(compare_data, moved).notes == ("settled by the canon",)
@@ -311,20 +345,15 @@ class TestRegister:
         assert design["sensors"][0]["kind"] == "ix.v1.sensor.timing"
         # What the genre supplied is in the record, not just the genre's name.
         assert (design["repeats"], design["order"], design["calibration"]) == (
-            5,
+            10,
             "interleaved",
             "aa",
         )
-        assert design["analysis"] == {
-            "id": "ix.v1.analysis.compare",
-            "params": {"pairing": "control", "correction": "holm"},
-        }
+        assert design["analysis"] == {"id": "ix.v1.analysis.compare", "params": {}}
         assert design["primary"] == {"metric": "ttfb", "statistic": "p99", "estimator": "mean"}
         assert design["margin"] == {"value": 5.0, "basis": "relative"}
         assert design["comparison"] == "non-inferiority" and design["control"] == "buffered"
-        assert design["hypotheses"] == [
-            "streaming is no worse than buffered by more than 5% on ttfb p99"
-        ]
+        assert design["hypotheses"] == ["streaming is at most 5% worse than buffered on ttfb p99"]
 
     def test_the_record_is_named_after_the_file(
         self, compare_data: dict[str, Any], tmp_path: Path
@@ -412,7 +441,7 @@ class TestDeviations:
             ({"seed": 5}, "design.seed"),
             ({"primary": {"metric": "latency", "statistic": "p99"}}, "design.primary.metric"),
             ({"primary": {"metric": "ttfb", "statistic": "p50"}}, "design.primary.statistic"),
-            ({"primary": {"metric": "ttfb", "statistic": "p99", "estimator": "max"}},
+            ({"primary": {"metric": "ttfb", "statistic": "p99", "estimator": "median"}},
              "design.primary.estimator"),
             ({"guardrails": [{"metric": "throughput", "margin": "5%"}]}, "design.guardrails"),
             ({"genre": "regress"}, "design.genre"),
@@ -433,7 +462,7 @@ class TestDeviations:
         found = ix.deviations(file)
         fields = [d.field for d in found.deviations]
         assert field in fields, fields
-        assert fields[-1] == "plan_digest" and found.exit_code == 9
+        assert fields[-1] == "plan_digest" and found.exit_code == 14
         named = next(d for d in found.deviations if d.field == field)
         assert named.registered != named.current and "after registration" in named.message
 
@@ -459,7 +488,8 @@ class TestDeviations:
     def test_a_changed_probe_file_deviates(
         self, evaluate_data: dict[str, Any], write_experiment: Write
     ) -> None:
-        file: Path = write_experiment({**evaluate_data, "probes": {"source": "directory"}})
+        data = {key: value for key, value in evaluate_data.items() if key != "probes"}
+        file: Path = write_experiment(data)
         (file.parent / "probes").mkdir()
         probe = file.parent / "probes" / "ask.md"
         probe.write_text("---\nexpectation: must_trigger\n---\nReview this change.\n")
@@ -483,11 +513,11 @@ class TestDeviations:
         ix.register(file)
         assert ix.deviations(file).deviations == ()
 
-        gate["design"] = {"repeats": {"default": 9, "min": 3}}
+        gate["design"] = {"repeats": {"default": 12, "min": 5}}
         genre_file.write_text(yaml.safe_dump(gate))
         moved = ix.deviations(file)
         assert [d.field for d in moved.deviations] == ["design.repeats", "plan_digest"]
-        assert (moved.deviations[0].registered, moved.deviations[0].current) == (5, 9)
+        assert (moved.deviations[0].registered, moved.deviations[0].current) == (10, 12)
         assert ix.plan(file).registration.status == "deviations"
 
     def test_every_value_a_genre_supplies_is_frozen(
@@ -515,7 +545,6 @@ class TestDeviations:
                     update={"genres": {**vocabulary.genres.genres, compare.name: changed}}
                 ),
                 kinds=vocabulary.kinds,
-                probe_sources=vocabulary.probe_sources,
             )
 
         examined = examine(compare_data, vocabulary, base=".")
@@ -524,10 +553,10 @@ class TestDeviations:
             "design.order": under(order="sequential"),
             "design.calibration": under(calibration="none"),
             "design.primary.estimator": under(estimator="median"),
-            "design.analysis.params.correction": under(
-                analysis=compare.analysis.model_copy(
-                    update={"params": {"pairing": "control", "correction": "none"}}
-                )
+            # A parameter where the registration held none is not a path both records hold;
+            # the plan it changes is.
+            "plan_digest": under(
+                analysis=compare.analysis.model_copy(update={"params": {"correction": "none"}})
             ),
             "design.analysis.id": under(
                 analysis=compare.analysis.model_copy(update={"id": "ix.v1.analysis.other"})
@@ -614,12 +643,12 @@ class TestAmend:
         file: Path = write_experiment(compare_data)
         original = ix.register(file).registration
         write_experiment({**compare_data, "margin": "10%"})
-        amended = ix.register(file, amend="the 5% margin was below the noise floor")
+        amended = ix.register(file, amend="the 5% margin was below what 10 repeats can detect")
         assert amended.outcome == "amended"
         record = amended.registration
         assert record.design["margin"] == {"value": 10.0, "basis": "relative"}
         (amendment,) = record.amendments
-        assert amendment.reason == "the 5% margin was below the noise floor"
+        assert amendment.reason == "the 5% margin was below what 10 repeats can detect"
         assert amendment.amended_at
         kept = {k: v for k, v in original.document().items() if k != "amendments"}
         assert amendment.superseded == kept
@@ -697,14 +726,13 @@ class TestExperimentObjects:
     def test_base_says_where_relative_paths_resolve(
         self, evaluate_data: dict[str, Any], tmp_path: Path
     ) -> None:
-        (tmp_path / "tasks").mkdir()
-        (tmp_path / "tasks" / "ask.md").write_text("---\nexpectation: must_trigger\n---\nHi.\n")
-        experiment = ix.Experiment.model_validate(
-            {**evaluate_data, "probes": {"source": "directory", "path": "tasks"}}
-        )
+        (tmp_path / "probes").mkdir()
+        (tmp_path / "probes" / "ask.md").write_text("---\nexpectation: must_trigger\n---\nHi.\n")
+        del evaluate_data["probes"]
+        experiment = ix.Experiment.model_validate(evaluate_data)
         assert ix.plan(experiment, base=tmp_path).probes.ids == ("ask",)
         assert [p.kind for p in ix.validate(experiment, base=tmp_path / "nowhere").problems] == [
-            "probe_source"
+            "probes_empty"
         ]
 
     def test_registering_one_needs_to_be_told_where(
@@ -723,63 +751,68 @@ class TestExperimentObjects:
 # --- the one port, and binding other adapters ------------------------------------------
 
 
-class TestProbeSourceSeam:
-    """A probe source is keyed by the name an experiment writes; adding one is one adapter
-    and no change to the model."""
+class TestTheProbesFolder:
+    """Probes not written inline are the files of the ``probes`` folder beside the
+    experiment, read through matrix's loader: one probe a file, markdown or YAML."""
 
-    class _Fixed:
-        def __init__(self, count: int) -> None:
-            self.count, self.calls = count, 0
+    def _lab(self, write: Write, data: dict[str, Any], files: dict[str, str]) -> Path:
+        file: Path = write({key: value for key, value in data.items() if key != "probes"})
+        (file.parent / "probes").mkdir()
+        for name, text in files.items():
+            (file.parent / "probes" / name).write_text(text)
+        return file
 
-        def probes(self, options: Any, base: str) -> tuple[Any, ...]:
-            from ix.domain.experiment import Probe
-
-            self.calls += 1
-            return tuple(
-                Probe(
-                    id=f"{options.get('prefix', 'p')}-{n}", kind="prompt", options={"prompt": "Hi"}
-                )
-                for n in range(self.count)
-            )
-
-    def test_a_second_source_is_one_adapter(self, evaluate_data: dict[str, Any]) -> None:
-        from ix.composition import Root
-
-        source = self._Fixed(4)
-        bound = Root(probe_sources={"memory": source})
-        evaluate_data["probes"] = {"source": "memory", "prefix": "case"}
-        evaluate_data["primary"] = {"metric": "tokens_total"}
-        evaluate_data["threshold"] = {"op": "<", "value": 20000}
-        experiment = Experiment.model_validate(evaluate_data)
-        plan = bound.plan(experiment)
-        assert plan.probes.ids == ("case-0", "case-1", "case-2", "case-3")
-        assert plan.trials.total == 4 * 3 and source.calls == 1
-
-    def test_an_unknown_source_lists_the_ones_there_are(
-        self, evaluate_data: dict[str, Any]
-    ) -> None:
-        evaluate_data["probes"] = {"source": "dataset", "id": "humaneval"}
-        (problem,) = ix.validate(Experiment.model_validate(evaluate_data)).problems
-        assert (problem.path, problem.kind, problem.got) == (
-            "probes.source",
-            "probe_source",
-            "dataset",
-        )
-        assert problem.allowed == ("directory",)
-
-    def test_a_source_refuses_an_option_it_does_not_take(
+    def test_files_are_read_in_name_order_each_named_by_its_stem(
         self, evaluate_data: dict[str, Any], write_experiment: Write
     ) -> None:
-        file: Path = write_experiment(
-            {**evaluate_data, "probes": {"source": "directory", "pth": "x"}}
+        file = self._lab(
+            write_experiment,
+            evaluate_data,
+            {
+                "b-ask.md": "---\nexpectation: must_trigger\nexpected_skill: review\n---\nAsk.\n",
+                "a-decoy.yaml": "id: decoy\nexpectation: should_not_trigger\nprompt: Rename x.\n",
+                "notes.txt": "not a probe",
+            },
         )
+        plan = ix.plan(file)
+        assert plan.probes.ids == ("decoy", "b-ask")
+        design = ix.resolve(file)
+        assert design.experiment == "routing"
+
+    def test_an_id_two_files_declare_names_both_files(
+        self, evaluate_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        ask = "---\nid: ask\nexpectation: must_trigger\nexpected_skill: review\n---\nAsk.\n"
+        file = self._lab(write_experiment, evaluate_data, {"one.md": ask, "two.md": ask})
         (problem,) = ix.validate(file).problems
-        assert (problem.path, problem.kind) == ("probes.pth", "probe_source")
+        assert (problem.path, problem.kind, problem.got) == ("id", "name_taken", "ask")
+        assert problem.source.endswith("two.md") and "one.md" in problem.message
+
+    def test_inline_probes_leave_the_folder_unread(
+        self, evaluate_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        file: Path = write_experiment(evaluate_data)
+        (file.parent / "probes").mkdir()
+        (file.parent / "probes" / "broken.md").write_text("---\nid: [\n")
+        assert ix.validate(file).valid
+
+    def test_an_experiment_object_reads_the_folder_of_its_base(
+        self, evaluate_data: dict[str, Any], tmp_path: Path
+    ) -> None:
+        (tmp_path / "probes").mkdir()
+        (tmp_path / "probes" / "ask.md").write_text(
+            "---\nexpectation: must_trigger\nexpected_skill: review\n---\nReview this.\n"
+        )
+        del evaluate_data["probes"]
+        experiment = Experiment.model_validate(evaluate_data)
+        assert ix.plan(experiment, base=tmp_path).probes.ids == ("ask",)
+        (problem,) = ix.validate(experiment, base=tmp_path / "elsewhere").problems
+        assert problem.kind == "probes_empty"
 
     def test_the_root_can_be_bound_to_pinned_genres_and_kinds(
         self, compare_data: dict[str, Any]
     ) -> None:
-        from ix.adapters._out.declaration_files import GenreFiles, KindFiles
+        from ix.adapters._out.matrix_documents import GenreFiles, KindFiles
         from ix.composition import Root
 
         pinned = Root(
@@ -792,4 +825,82 @@ class TestProbeSourceSeam:
         assert pinned.plan(experiment).digest == ix.plan(experiment).digest
         empty = Root(GenreFiles(packages=[]), KindFiles(packages=[]))
         kinds = {p.kind for p in empty.validate(experiment).problems}
-        assert kinds == {"genre_unknown", "kind_unknown", "metric_unprovided"}
+        assert kinds == {"name_unknown", "metric_unprovided"}  # the genre and the kinds
+
+
+class TestSensitivity:
+    """What a plan says about the smallest effect a run can detect."""
+
+    def test_without_an_earlier_run_it_is_unknown_and_says_how_to_learn_it(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        made = _plan(compare_data, vocabulary)
+        assert made.sensitivity.detectable is None and made.sensitivity.blocks == 10
+        assert made.sensitivity.text.startswith("unknown:")
+        assert "ix run --exploratory" in made.sensitivity.text
+
+    def test_a_pass_rate_that_cannot_reach_its_threshold_is_said_before_the_run(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Ten trials, every one passing, show a pass rate only above 0.72: a threshold of
+        0.9 cannot hold, and the plan says so with the trials it would take (35)."""
+        made = _plan(evaluate_data, vocabulary)
+        assert made.sensitivity.text.startswith("This run cannot hold: with 10 trials")
+        assert "it takes 35 trials per cell" in made.sensitivity.text
+        enough = _plan({**evaluate_data, "repeats": 35}, vocabulary)
+        assert not enough.sensitivity.text.startswith("This run cannot hold")
+
+    def test_the_spread_of_an_earlier_run_gives_the_detectable_difference(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        from ix.domain.analysis import Spread
+        from ix.domain.intervals import t_quantile
+        from ix.domain.plan import sensitivity
+
+        made = _plan(compare_data, vocabulary)
+        examined = examine(compare_data, vocabulary, base=".")
+        assert examined.design is not None
+        spread = Spread(run="r1", metric="ttfb", statistic="p99", unit="%", sd=2.0, n=10)
+        found = sensitivity(examined.design, made.sensitivity.blocks, spread)
+        expected = (t_quantile(0.975, 9) + t_quantile(0.8, 9)) * 2.0 / 10**0.5
+        assert found.detectable == pytest.approx(expected) and found.source == "r1"
+        assert "at least 1.99% better than -5%" in found.text and "run r1" in found.text
+
+    def test_the_plan_reads_the_spread_from_the_latest_finished_run(
+        self, write_experiment: Write
+    ) -> None:
+        from ix_fakes import experiment, fake_registry
+
+        from ix.composition import Root
+
+        root = Root(registry=fake_registry())
+        file = write_experiment(experiment(variant_ms=50.0))
+        before = root.plan(file)
+        assert before.sensitivity.text.startswith("unknown:")
+        root.run(file, exploratory=True)
+        after = root.plan(file)
+        sensed = after.sensitivity
+        assert sensed.detectable is not None and sensed.source.startswith("fake-compare-")
+        assert sensed.unit == "%" and sensed.blocks == 5
+        # It changes with the runs, not with what a run would do: the digest stays.
+        assert after.digest == before.digest
+
+    def test_a_dry_run_says_nothing_of_how_much_the_subject_varies(
+        self, evaluate_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        """Regression: the plan took its spread from a dry run, whose canned replies are the
+        harness's and not the subject's, and stated what a real run could detect from it."""
+        decoy = {
+            "id": "decoy",
+            "kind": "prompt",
+            "prompt": "Rename a variable.",
+            "truth": {"expectation": "should_not_trigger", "expected_skill": "review"},
+        }
+        evaluate_data["probes"].append(decoy)
+        for probe in evaluate_data["probes"]:
+            probe["mock_response"] = "No skill needed."
+        file = write_experiment(evaluate_data)
+        report = ix.run(file, exploratory=True)
+        assert report.simulated == "all"  # one probe passes and one fails: a spread of 0.5
+        sensed = ix.plan(file).sensitivity
+        assert sensed.detectable is None and "unknown:" in sensed.text

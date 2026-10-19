@@ -1,57 +1,72 @@
 """The experiment: one file that declares a question and how it will be answered.
 
-An experiment names its **genre** (the decision the answer must inform), its **subjects** (the
-configurations under test), its **probes** (what is applied to them), the metric that
-decides, and the decision parameters the genre asks for. Everything it leaves out is
-supplied by the genre, and :mod:`ix.domain.design` shows which.
+It names its **genre** (the decision the answer informs), its **subjects**, its **probes**,
+the metric that decides and the decision parameters the genre asks for; the genre supplies
+the rest. A genre constrains values, never the shape of this record.
 
-One field set serves every genre: a genre constrains values and cardinalities, never the
-shape of this record.
+A subject, a probe, a sensor and the environment each name a *kind*; the keys beside
+``kind`` are that kind's options, held to the kind's declaration. A key starting with ``x-``
+is a note and is not checked.
 
-A subject, a probe, a sensor and the environment each name a *kind* (``process``,
-``http-load``, ``timing``, ``compose``). The keys beside ``kind`` are that kind's options;
-the kind's declaration says which exist, and ``validate`` holds the file to it. An option
-key starting with ``x-`` is a note and is not checked.
-
-**Two reductions.** A decision reads one number per subject per cell. ``statistic`` reduces
-one trial's observation to a number (the p99 of a latency histogram); ``estimator`` combines
-the trials' numbers (their mean, or the rate of a boolean). Both have defaults.
+**Two reductions.** ``statistic`` reduces one trial's observation to a number (the p99 of a
+latency histogram); ``estimator`` combines the trials' numbers (their mean, or the rate of a
+boolean).
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from itertools import product
 from typing import Annotated, Any, Literal
 
-from pydantic import Discriminator, Field, StringConstraints, Tag, field_validator, model_validator
+from pydantic import AfterValidator, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from ix.domain import schema
 from ix.domain.schema import Record, canonical
 
+_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def _one_token(value: str) -> str:
+    if _TOKEN.match(value) is None:
+        token = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.") or "name"
+        raise ValueError(
+            f"{value!r} is not a name: a name is one token of letters, digits, '_', '.' and "
+            f"'-', starting with a letter or digit; for example {token!r}"
+        )
+    return value
+
+
 #: A name an author gives a subject, a factor or a metric. It appears in paths and in
 #: ``{placeholders}``, so it is one token.
-Name = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")]
+Name = Annotated[str, AfterValidator(_one_token)]
 
-#: One level of a factor.
 Level = bool | int | float | str
 
-Shape = Literal["boolean", "scalar", "histogram", "series"]
+#: The shape of one trial's reading: one boolean; one number; a distribution (histogram) or a
+#: series, each reduced to named statistics; or a ``count``, events out of units (failed
+#: requests out of requests sent), which ix keeps as the two counts.
+Shape = Literal["boolean", "scalar", "histogram", "series", "count"]
 Direction = Literal["higher", "lower", "neither"]
 
 #: Per-trial reductions, by the shape of one reading. A boolean or a scalar reading is
-#: already one number, so its only statistic is ``value``.
+#: already one number, so its only statistic is ``value``; a count's is its ``rate``.
 STATISTICS: dict[str, tuple[str, ...]] = {
     "boolean": ("value",),
     "scalar": ("value",),
+    "count": ("rate",),
     "histogram": ("p50", "p90", "p95", "p99", "p999", "mean", "min", "max"),
     "series": ("max", "min", "mean", "last"),
 }
 
-#: Across-trial estimators, by the shape of one reading. Booleans combine as a rate; every
-#: other shape has been reduced to a number per trial, and numbers combine as below.
+#: Across-trial estimators, by the shape of one reading. Booleans combine as a rate over
+#: trials, and counts as a rate pooled over every unit; every other shape has been reduced to
+#: a number per trial, and numbers combine as below.
 ESTIMATORS: dict[str, tuple[str, ...]] = {
     "boolean": ("rate",),
+    "count": ("rate",),
     "scalar": ("mean", "median", "min", "max"),
     "histogram": ("mean", "median", "min", "max"),
     "series": ("mean", "median", "min", "max"),
@@ -183,8 +198,9 @@ def _fold(data: Any, reserved: frozenset[str]) -> Any:
     return folded
 
 
-class Subject(Record):
-    """One subject: a configuration under test, by the kind of thing it is.
+class SubjectConfig(Record):
+    """One subject as the experiment configures it: the subject kind it is (a registered
+    type) and that kind's options. The configuration under test.
 
     ``effects`` adds to what the kind declares it does; it can remove nothing.
     """
@@ -200,8 +216,9 @@ class Subject(Record):
         return _fold(data, frozenset({"kind", "description", "effects", "options"}))
 
 
-class Probe(Record):
-    """One probe: a declared stimulus, by the kind that says what applying it means.
+class ProbeConfig(Record):
+    """One probe as the experiment configures it: the probe kind that says what applying
+    it means (a registered type) and that kind's options.
 
     ``truth`` is reference data a sensor measures against (an expected skill, test cases).
     It never reaches the subject.
@@ -219,22 +236,60 @@ class Probe(Record):
         return _fold(data, frozenset({"id", "kind", "effects", "truth", "options"}))
 
 
-class SourcedProbes(Record):
-    """Where the probes are, when they are not written inline: ``{source: directory,
-    path: probes}``. The keys beside ``source`` are that source's options."""
+#: Where probes are read from when the experiment writes none inline: this folder beside the
+#: experiment file, one file per probe.
+PROBES_FOLDER = "probes"
 
-    source: str = Field(min_length=1)
+#: The suffixes of the files in :data:`PROBES_FOLDER` that are read as probes.
+PROBE_SUFFIXES = (".md", ".yaml", ".yml")
+
+#: The keys a probe file uses for the probe itself; every other key is the probe's truth.
+_PROBE_KEYS = frozenset({"id", "kind", "effects", "truth", "options", "body", "prompt"})
+
+
+class ProbeFile(Record):
+    """One probe as a file in :data:`PROBES_FOLDER` declares it: a markdown file (YAML
+    frontmatter, then the prompt) or a YAML file.
+
+    The text after a markdown file's frontmatter, its ``body``, is the ``prompt``. ``id``
+    (default: the file's name without its suffix), ``kind`` (default ``prompt``), ``effects``
+    and ``options`` are the probe's own; every other key is its truth, beside any written
+    under ``truth:``. A ``prompt`` probe's text is its ``prompt`` option even when empty, so
+    validation can say it is missing.
+    """
+
+    id: str = ""
+    kind: str = Field(default="prompt", min_length=1)
+    effects: tuple[str, ...] = ()
+    truth: dict[str, Any] = {}
     options: dict[str, Any] = {}
+    prompt: str | None = Field(default=None, alias="body")
 
     @model_validator(mode="before")
     @classmethod
-    def _options(cls, data: Any) -> Any:
-        return _fold(data, frozenset({"source", "options"}))
+    def _truth(cls, data: Any) -> Any:
+        if not isinstance(data, Mapping):
+            return data
+        rest = {key: value for key, value in data.items() if key not in _PROBE_KEYS}
+        written = data.get("truth", {})
+        if not rest or not isinstance(written, Mapping):
+            return data  # nothing to gather, or a wrong type the field's own check reports
+        kept = {key: value for key, value in data.items() if key in _PROBE_KEYS}
+        return {**kept, "truth": {**rest, **written}}
+
+    def config(self) -> ProbeConfig:
+        """The probe as the same probe written inline would be."""
+        options = dict(self.options)
+        if self.prompt is not None and (self.prompt.strip() or self.kind == "prompt"):
+            options["prompt"] = self.prompt
+        return ProbeConfig(
+            id=self.id, kind=self.kind, effects=self.effects, truth=self.truth, options=options
+        )
 
 
-class SensorSelection(Record):
-    """A sensor the author names: to give it options, or to say which of two sensors
-    provides a metric both could."""
+class SensorConfig(Record):
+    """A sensor the author names, as a sensor kind (a registered type) and its options: to
+    give it options, or to say which of two sensors provides a metric both could."""
 
     kind: str = Field(min_length=1)
     effects: tuple[str, ...] = ()
@@ -246,8 +301,9 @@ class SensorSelection(Record):
         return _fold(data, frozenset({"kind", "effects", "options"}))
 
 
-class Environment(Record):
-    """What must be up before the trials and down after them, and is not under test."""
+class EnvironmentConfig(Record):
+    """What must be up before the trials and down after them, and is not under test: the
+    environment kind (a registered type) and its options."""
 
     kind: str = Field(default="none", min_length=1)
     effects: tuple[str, ...] = ()
@@ -267,14 +323,10 @@ class Spend(Record):
     currency: str = "USD"
 
 
-def _probes_tag(value: Any) -> str:
-    return "<from-source>" if isinstance(value, Mapping | SourcedProbes) else "<inline>"
-
-
-Probes = Annotated[
-    Annotated[tuple[Probe, ...], Tag("<inline>")] | Annotated[SourcedProbes, Tag("<from-source>")],
-    Discriminator(_probes_tag),
-]
+def _shape_slip(error_type: str, message: str) -> PydanticCustomError:
+    """A value of the wrong shape, with the sentence that fixes it. The error type is one a
+    loader reads as ``wrong_shape``."""
+    return PydanticCustomError(error_type, message)
 
 
 class Experiment(Record):
@@ -292,16 +344,18 @@ class Experiment(Record):
     genre: str = Field(min_length=1)
 
     #: The configurations under test, in the order written. The genre gives each a role.
-    subjects: dict[Name, Subject] = Field(min_length=1)
+    subjects: dict[Name, SubjectConfig] = Field(min_length=1)
     #: Which subject is the control, where the genre has one. Default: the first.
     control: Name | None = None
-    probes: Probes
+    #: The probes, written inline. Left out, they are the files in the ``probes`` folder
+    #: beside the experiment file.
+    probes: tuple[ProbeConfig, ...] = ()
     #: Conditions varied on purpose. Every combination of levels is a cell.
     factors: dict[Name, tuple[Level, ...]] = {}
-    environment: Environment = Environment()
+    environment: EnvironmentConfig = EnvironmentConfig()
     #: Sensors named explicitly. Most experiments need none: ix selects the sensor that
     #: provides each metric the decision reads.
-    sensors: tuple[SensorSelection, ...] = ()
+    sensors: tuple[SensorConfig, ...] = ()
 
     #: Further metrics to measure and report, each optionally with what is expected of it.
     metrics: tuple[MetricExpectation, ...] = ()
@@ -315,6 +369,28 @@ class Experiment(Record):
     seed: int | None = Field(default=None, ge=0)
     spend: Spend | None = None
 
+    @field_validator("subjects", mode="before")
+    @classmethod
+    def _subjects_shape(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            raise _shape_slip(
+                "dict_type",
+                "subjects is a mapping of each subject's name to its kind and options, not a "
+                "list: subjects: {<name>: {kind: <subject kind>, ...}}",
+            )
+        return value
+
+    @field_validator("probes", mode="before")
+    @classmethod
+    def _probes_shape(cls, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            raise _shape_slip(
+                "list_type",
+                "probes is a list of probes, each item starting with '-'; leave it out to read "
+                f"one file per probe from the {PROBES_FOLDER}/ folder beside the experiment",
+            )
+        return value
+
     @field_validator("factors")
     @classmethod
     def _levels(cls, factors: dict[str, tuple[Level, ...]]) -> dict[str, tuple[Level, ...]]:
@@ -327,7 +403,9 @@ class Experiment(Record):
 
     @field_validator("metrics")
     @classmethod
-    def _unique_metrics(cls, metrics: tuple[MetricExpectation, ...]) -> Any:
+    def _unique_metrics(
+        cls, metrics: tuple[MetricExpectation, ...]
+    ) -> tuple[MetricExpectation, ...]:
         names = [metric.name for metric in metrics]
         repeated = sorted({name for name in names if names.count(name) > 1})
         if repeated:
@@ -335,13 +413,9 @@ class Experiment(Record):
         return metrics
 
     def digest(self, *, operative: bool = False) -> str:
-        """Digest of what the experiment declares.
-
-        It is over the fields that differ from their defaults, so a comment, key order, a
-        default written out and a field a later ix adds leave it unchanged. ``operative``
-        leaves the prose out (the question, the rationale, descriptions): that digest
-        changes only when what a run would do changes.
-        """
+        """Digest of what the experiment declares, over :func:`~ix.domain.schema.canonical`.
+        ``operative`` leaves the prose out (the question, the rationale, descriptions): that
+        digest changes only when what a run would do changes."""
         data = canonical(self)
         if operative:
             for field in PROSE_FIELDS:
@@ -351,10 +425,20 @@ class Experiment(Record):
         return schema.digest(data)
 
 
+def cells(factors: dict[str, tuple[Level, ...]]) -> tuple[dict[str, Level], ...]:
+    """Every combination of factor levels, the first factor varying slowest. No factors:
+    one cell with no levels."""
+    names = list(factors)
+    return tuple(
+        dict(zip(names, levels, strict=True))
+        for levels in product(*(factors[name] for name in names))
+    )
+
+
 class ProbeSet(Record):
     """The probes a run would apply, in order, and the digest that pins them."""
 
-    probes: tuple[Probe, ...]
+    probes: tuple[ProbeConfig, ...]
     digest: str
 
     @property
@@ -362,7 +446,7 @@ class ProbeSet(Record):
         return tuple(probe.id for probe in self.probes)
 
 
-def probe_set(probes: tuple[Probe, ...]) -> ProbeSet:
+def probe_set(probes: tuple[ProbeConfig, ...]) -> ProbeSet:
     """Name every probe and pin the set. A probe with no ``id`` is ``probe-<n>``, from 1."""
     named = tuple(
         probe if probe.id else probe.model_copy(update={"id": f"probe-{index}"})

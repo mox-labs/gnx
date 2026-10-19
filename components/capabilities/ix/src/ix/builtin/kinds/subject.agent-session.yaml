@@ -1,16 +1,27 @@
 schema: ix.v1.kind
-name: ix.v1.subject.agent
-summary: An agent definition; each trial is one fresh session.
+name: ix.v1.subject.agent-session
+summary: An agent on a matrix runtime; each trial is a fresh session in a working directory of its own.
 options:
-  runtime: {type: string, description: the agent runtime that plays the definition}
+  runtime:
+    type: string
+    required: true
+    description: "the matrix runtime that runs the agent: one of the choices, or any runtime installed. There is no default, so spending is never implicit"
+    choices:
+      claude-sdk: the Claude Agent SDK, with tools; spends
+      model: one call through hardline, no tools; spends
+      mock: canned replies; spends nothing
+  definition: {type: path, description: "a Claude Code agent file: its body is the system prompt; its tools, model and maxTurns apply unless set here"}
   model: {type: string, description: the model the agent uses}
-  system_prompt: {type: string, description: "the system prompt, or a path to it"}
+  system_prompt: {type: string, description: the system prompt}
+  tools: {type: list, description: "the tools the agent may call; [] is none at all"}
   max_turns: {type: integer, description: turns after which the session is stopped}
-  plugins: {type: list, description: plugins loaded into the session}
-  skills: {type: list, description: skills available to the agent}
-  tools: {type: list, description: tools the agent may call}
-  permission_mode: {type: string, description: how tool calls are approved when nobody is present}
-  setting_sources: {type: list, description: which ambient settings the session reads}
-  cwd: {type: string, description: the directory the agent works in}
-effects: [spend, tools]
-offers: [agent]
+  permission_mode: {type: string, allowed: [default, acceptEdits, plan, bypassPermissions, dontAsk, auto], description: "claude-sdk: how tool calls are approved when nobody is present"}
+  setting_sources: {type: list, description: "claude-sdk: which ambient settings the session reads (user, project, local); [] reads none, so nothing on this machine leaks in"}
+  plugins: {type: list, description: "claude-sdk: plugin folders (relative to the experiment; a * matches several) or {type: local, path}"}
+  skills: {type: list, description: "claude-sdk: skill folders (each holding SKILL.md), copied into the session's .claude/skills"}
+  fixtures: {type: list, description: "files and folders, relative to the experiment, copied into each trial's working directory before the session starts"}
+  setup: {type: list, description: "a command run in the working directory after the fixtures are copied, before the session: [python3, seed.py]"}
+  loop: {type: mapping, description: "more rounds after the first: {strategy: self-review | test-feedback, rounds, prompt, until}"}
+  runtime_options: {type: mapping, description: "further options of the runtime's own config (model: temperature, max_tokens; claude-sdk: fallback_model)"}
+effects: [spend, tools, process, filesystem]
+offers: [agent, workdir]

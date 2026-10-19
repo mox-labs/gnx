@@ -29,16 +29,24 @@ from ix.domain.experiment import (
     Threshold,
 )
 from ix.domain.genre import CONTROL, AnalysisRef, Calibration, Order, VerdictForm
-from ix.domain.kind import Metric, check_options
+from ix.domain.kind import Confusion, Metric, check_options
 from ix.domain.problem import InvalidExperimentError, Problem, problem
 from ix.domain.schema import Record
 
 if TYPE_CHECKING:
-    from ix.domain.experiment import Experiment, ProbeSet
+    from ix.domain.experiment import (
+        EnvironmentConfig,
+        Experiment,
+        ProbeConfig,
+        ProbeSet,
+        SensorConfig,
+        SubjectConfig,
+    )
     from ix.domain.genre import Genre
     from ix.domain.kind import Kind, Kinds
 
-Source = Literal["experiment", "genre", "ix"]
+#: Where a resolved value came from.
+Origin = Literal["experiment", "genre", "ix"]
 
 
 class SourcedValue(Record):
@@ -46,7 +54,7 @@ class SourcedValue(Record):
 
     path: str
     value: Level | None
-    source: Source
+    source: Origin
     note: str = ""
 
 
@@ -59,12 +67,14 @@ class RoleAssignment(Record):
 
 
 class SelectedSensor(Record):
-    """A sensor a run would use, the metrics it is there for, and who chose it."""
+    """A sensor a run would use, the metrics it is there for, and who chose it; and the
+    confusion its kind declares, which a report tabulates."""
 
     kind: str
     metrics: tuple[str, ...]
     options: dict[str, Any] = {}
-    source: Source = "ix"
+    source: Origin = "ix"
+    confusion: Confusion | None = None
 
     @property
     def label(self) -> str:
@@ -134,8 +144,8 @@ def assign_roles(
             problems.append(
                 problem(
                     "control",
-                    "control_unknown",
-                    f"control names {control!r}, which is not a subject",
+                    kind="name_unknown",
+                    message=f"control names {control!r}, which is not a subject",
                     allowed=names,
                     got=control,
                 )
@@ -145,8 +155,8 @@ def assign_roles(
         problems.append(
             problem(
                 "control",
-                "control_not_applicable",
-                f"genre {label} has no control role; its roles are "
+                kind="control_not_applicable",
+                message=f"genre {label} has no control role; its roles are "
                 f"{', '.join(role.name for role in genre.roles)}",
                 fix="remove 'control', or use a genre that compares against a control",
                 got=experiment.control,
@@ -170,8 +180,8 @@ def assign_roles(
             problems.append(
                 problem(
                     "subjects",
-                    "genre_roles",
-                    f"genre {label} needs {_count(role.min, role.max)} subject(s) in role "
+                    kind="genre_roles",
+                    message=f"genre {label} needs {_count(role.min, role.max)} subject(s) in role "
                     f"{role.name!r}; {count} given ({len(names)} subject(s) in all)",
                     fix=f"give {_count(*genre.subject_bounds)} subject(s), or choose a genre "
                     f"that fits {len(names)}",
@@ -206,37 +216,50 @@ def named_metrics(experiment: Experiment) -> list[tuple[str, str]]:
     return named
 
 
-def select_sensors(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> Instruments:
-    """Resolve every named metric to the one sensor that provides it."""
-    problems: list[Problem] = []
+type _Choice = tuple[Kind, Origin, dict[str, Any]]
 
+
+def _offered(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> set[str] | None:
+    """The facets a sensor may need here: those every subject offers, and what any probe
+    leaves behind. None while any kind in play is unknown (that is reported where it is
+    named)."""
     subject_kinds = [kinds.get("subject", subject.kind) for subject in experiment.subjects.values()]
-    probe_kinds = (
-        None if probes is None else [kinds.get("probe", probe.kind) for probe in probes.probes]
-    )
-    # What sensors may need: facets every subject offers, and what any probe leaves behind.
-    # Unknown while any kind in play is unknown (that is reported where it is named).
-    offered: set[str] | None = None
-    if probe_kinds is not None and all(subject_kinds) and all(probe_kinds):
-        offered = set.intersection(*(set(kind.offers) for kind in subject_kinds if kind))
-        offered |= {facet for kind in probe_kinds if kind for facet in kind.offers}
+    if probes is None:
+        return None
+    probe_kinds = [kinds.get("probe", probe.kind) for probe in probes.probes]
+    if not all(subject_kinds) or not all(probe_kinds):
+        return None
+    offered = set.intersection(*(set(kind.offers) for kind in subject_kinds if kind))
+    return offered | {facet for kind in probe_kinds if kind for facet in kind.offers}
 
-    def fits(sensor: Kind) -> bool:
-        return offered is None or set(sensor.needs) <= offered
 
+def _fits(sensor: Kind, offered: set[str] | None) -> bool:
+    return offered is None or set(sensor.needs) <= offered
+
+
+def _provides(sensor: Kind, metric: str) -> bool:
+    return any(declared.name == metric for declared in sensor.metrics)
+
+
+def _listed(
+    experiment: Experiment, kinds: Kinds, offered: set[str] | None
+) -> tuple[list[tuple[int, Kind]], list[Problem]]:
+    """The sensors the experiment lists under ``sensors:``, by position, and each that the
+    subjects and probes cannot feed."""
     listed: list[tuple[int, Kind]] = []
+    problems: list[Problem] = []
     for index, selection in enumerate(experiment.sensors):
         sensor = kinds.get("sensor", selection.kind)
         if sensor is None:
-            continue  # kind_unknown is reported where the kind is named
+            continue  # an unknown kind is reported where the kind is named
         listed.append((index, sensor))
-        if not fits(sensor):
+        if not _fits(sensor, offered):
             lacking = sorted(set(sensor.needs) - (offered or set()))
             problems.append(
                 problem(
                     f"sensors.{index}.kind",
-                    "kind_unfit",
-                    f"sensor {schema.short(sensor.name)} needs {', '.join(lacking)}, which "
+                    kind="kind_unfit",
+                    message=f"sensor {schema.short(sensor.name)} needs {', '.join(lacking)}, which "
                     "the subjects and probes of this experiment do not offer "
                     f"(they offer: {', '.join(sorted(offered or ())) or 'nothing'})",
                     fix="remove this sensor, or use subject and probe kinds that offer "
@@ -244,86 +267,113 @@ def select_sensors(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None
                     got=selection.kind,
                 )
             )
+    return listed, problems
 
-    chosen: dict[str, tuple[Kind, Source, dict[str, Any]]] = {}
-    for path, name in named_metrics(experiment):
-        if name in chosen:
-            continue
-        explicit = [(i, s) for i, s in listed if any(m.name == name for m in s.metrics)]
-        installed = [s for s in kinds.of("sensor") if any(m.name == name for m in s.metrics)]
-        if len(explicit) == 1:
-            index, sensor = explicit[0]
-            chosen[name] = (sensor, "experiment", dict(experiment.sensors[index].options))
-        elif len(explicit) > 1:
-            problems.append(
-                problem(
-                    path,
-                    "metric_ambiguous",
-                    f"metric {name!r} is provided by more than one sensor listed under 'sensors'",
-                    fix=f"list only one sensor that provides {name!r}",
-                    allowed=[schema.short(s.name) for _, s in explicit],
-                    got=name,
-                )
+
+def _chosen_by_ix(
+    path: str, metric: str, kinds: Kinds, offered: set[str] | None
+) -> tuple[_Choice | None, list[Problem]]:
+    """The one installed sensor that provides ``metric`` and can be fed here."""
+    installed = [sensor for sensor in kinds.of("sensor") if _provides(sensor, metric)]
+    fitting = [sensor for sensor in installed if _fits(sensor, offered)]
+    if len(fitting) == 1:
+        (sensor,) = fitting
+        label = schema.short(sensor.name)
+        return (sensor, "ix", {}), [
+            problem(
+                "sensors",
+                kind="option_missing",
+                message=f"metric {metric!r} comes from sensor {label}, which requires option "
+                f"{required!r}",
+                fix=f"sensors: [{{kind: {label}, {required}: <value>}}]",
             )
-        else:
-            fitting = [sensor for sensor in installed if fits(sensor)]
-            if len(fitting) == 1:
-                sensor = fitting[0]
-                chosen[name] = (sensor, "ix", {})
-                for required in sensor.required:
-                    label = schema.short(sensor.name)
-                    problems.append(
-                        problem(
-                            "sensors",
-                            "option_missing",
-                            f"metric {name!r} comes from sensor {label}, which requires "
-                            f"option {required!r}",
-                            fix=f"sensors: [{{kind: {label}, {required}: <value>}}]",
-                        )
-                    )
-            elif len(fitting) > 1:
-                labels = [schema.short(sensor.name) for sensor in fitting]
-                problems.append(
-                    problem(
-                        path,
-                        "metric_ambiguous",
-                        f"metric {name!r} is provided by {len(fitting)} sensors: "
-                        f"{', '.join(labels)}",
-                        fix=f"say which: sensors: [{{kind: {labels[0]}}}]",
-                        allowed=labels,
-                        got=name,
-                    )
-                )
-            else:
-                available = sorted(
-                    {m.name for s in kinds.of("sensor") if fits(s) for m in s.metrics}
-                )
-                if installed:
-                    sensor = installed[0]
-                    lacking = sorted(set(sensor.needs) - (offered or set()))
-                    message = (
-                        f"metric {name!r} comes from sensor {schema.short(sensor.name)}, "
-                        f"which needs {', '.join(lacking)}; the subjects and probes here "
-                        "do not offer that"
-                    )
-                else:
-                    message = f"no installed sensor provides a metric named {name!r}"
-                problems.append(
-                    problem(
-                        path,
-                        "metric_unprovided",
-                        message,
-                        fix="name a metric a sensor provides here: "
-                        f"{', '.join(available) or '(none)'} (`ix kinds` lists them)",
-                        allowed=available,
-                        got=name,
-                    )
-                )
+            for required in sensor.required({})
+        ]
+    if len(fitting) > 1:
+        labels = [schema.short(sensor.name) for sensor in fitting]
+        return None, [
+            problem(
+                path,
+                kind="metric_ambiguous",
+                message=f"metric {metric!r} is provided by {len(fitting)} sensors: "
+                + ", ".join(labels),
+                fix=f"say which: sensors: [{{kind: {labels[0]}}}]",
+                allowed=labels,
+                got=metric,
+            )
+        ]
+    return None, [_unprovided(path, metric, kinds, installed, offered)]
 
+
+def _unprovided(
+    path: str, metric: str, kinds: Kinds, installed: list[Kind], offered: set[str] | None
+) -> Problem:
+    available = sorted(
+        {declared.name for sensor in kinds.of("sensor") if _fits(sensor, offered)
+         for declared in sensor.metrics}
+    )  # fmt: skip
+    if installed:
+        sensor = installed[0]
+        lacking = sorted(set(sensor.needs) - (offered or set()))
+        message = (
+            f"metric {metric!r} comes from sensor {schema.short(sensor.name)}, which needs "
+            f"{', '.join(lacking)}; the subjects and probes here do not offer that"
+        )
+    else:
+        message = f"no installed sensor provides a metric named {metric!r}"
+    return problem(
+        path,
+        kind="metric_unprovided",
+        message=message,
+        fix="name a metric a sensor provides here: "
+        f"{', '.join(available) or '(none)'} (`ix kinds` lists them)",
+        allowed=available,
+        got=metric,
+    )
+
+
+def _choose(
+    path: str,
+    metric: str,
+    experiment: Experiment,
+    kinds: Kinds,
+    listed: list[tuple[int, Kind]],
+    offered: set[str] | None,
+) -> tuple[_Choice | None, list[Problem]]:
+    """The sensor that provides ``metric``: the one listed under ``sensors:`` that does,
+    or else the one ix finds."""
+    explicit = [(index, sensor) for index, sensor in listed if _provides(sensor, metric)]
+    if len(explicit) == 1:
+        ((index, sensor),) = explicit
+        return (sensor, "experiment", dict(experiment.sensors[index].options)), []
+    if len(explicit) > 1:
+        return None, [
+            problem(
+                path,
+                kind="metric_ambiguous",
+                message=f"metric {metric!r} is provided by more than one sensor listed under "
+                "'sensors'",
+                fix=f"list only one sensor that provides {metric!r}",
+                allowed=[schema.short(sensor.name) for _, sensor in explicit],
+                got=metric,
+            )
+        ]
+    return _chosen_by_ix(path, metric, kinds, offered)
+
+
+def _declared(sensor: Kind, metric: str) -> Metric:
+    return next(declared for declared in sensor.metrics if declared.name == metric)
+
+
+def _mismatches(experiment: Experiment, chosen: dict[str, _Choice]) -> list[Problem]:
+    """Each unit, direction or shape the experiment expects of a metric that its sensor
+    declares otherwise."""
+    problems: list[Problem] = []
     for index, expected in enumerate(experiment.metrics):
         if expected.name not in chosen:
             continue
-        declared = next(m for m in chosen[expected.name][0].metrics if m.name == expected.name)
+        sensor = chosen[expected.name][0]
+        declared = _declared(sensor, expected.name)
         for field in ("unit", "direction", "shape"):
             stated = getattr(expected, field)
             actual = getattr(declared, field)
@@ -331,90 +381,169 @@ def select_sensors(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None
                 problems.append(
                     problem(
                         f"metrics.{index}.{field}",
-                        "metric_mismatch",
-                        f"{expected.name} is expected with {field} {stated!r}; sensor "
-                        f"{schema.short(chosen[expected.name][0].name)} provides it with "
-                        f"{field} {actual!r}",
+                        kind="metric_mismatch",
+                        message=f"{expected.name} is expected with {field} {stated!r}; sensor "
+                        f"{schema.short(sensor.name)} provides it with {field} {actual!r}",
                         fix=f"{field}: {actual}" if actual else f"remove {field!r}",
                         allowed=[actual] if actual else [],
                         got=stated,
                     )
                 )
+    return problems
 
-    by_sensor: dict[str, SelectedSensor] = {}
-    for index, sensor in listed:  # a listed sensor is used even when no decision reads it
-        by_sensor[sensor.name] = SelectedSensor(
+
+def _selected(
+    experiment: Experiment, listed: list[tuple[int, Kind]], chosen: dict[str, _Choice]
+) -> tuple[SelectedSensor, ...]:
+    """Each sensor a run would use: every listed one, even when no decision reads it, and
+    every one chosen for a metric; each reading every metric it declares a flag for."""
+    kinds = {sensor.name: sensor for _, sensor in listed}
+    kinds |= {sensor.name: sensor for sensor, _, _ in chosen.values()}
+    by_sensor = {
+        sensor.name: SelectedSensor(
             kind=sensor.name,
             metrics=(),
             options=dict(experiment.sensors[index].options),
             source="experiment",
+            confusion=sensor.confusion,
         )
-    for name, (sensor, source, options) in chosen.items():
+        for index, sensor in listed
+    }
+    for metric, (sensor, origin, options) in chosen.items():
         current = by_sensor.get(sensor.name)
         by_sensor[sensor.name] = SelectedSensor(
             kind=sensor.name,
-            metrics=(*(current.metrics if current else ()), name),
+            metrics=(*(current.metrics if current else ()), metric),
             options=current.options if current else options,
-            source=current.source if current else source,
+            source=current.source if current else origin,
+            confusion=sensor.confusion,
         )
-    metrics = {
-        name: next(m for m in sensor.metrics if m.name == name)
-        for name, (sensor, _, _) in chosen.items()
-    }
-    return Instruments(sensors=tuple(by_sensor.values()), metrics=metrics, problems=tuple(problems))
+    for name, selected in list(by_sensor.items()):
+        flagged = [m.name for m in kinds[name].metrics if m.flag and m.name not in selected.metrics]
+        if flagged:
+            by_sensor[name] = selected.model_copy(update={"metrics": (*selected.metrics, *flagged)})
+    return tuple(by_sensor.values())
+
+
+def select_sensors(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> Instruments:
+    """Resolve every named metric to the one sensor that provides it."""
+    offered = _offered(experiment, kinds, probes)
+    listed, problems = _listed(experiment, kinds, offered)
+    chosen: dict[str, _Choice] = {}
+    for path, metric in named_metrics(experiment):
+        if metric in chosen:
+            continue
+        choice, found = _choose(path, metric, experiment, kinds, listed, offered)
+        problems += found
+        if choice is not None:
+            chosen[metric] = choice
+    problems += _mismatches(experiment, chosen)
+    sensors = _selected(experiment, listed, chosen)
+    declared = {metric: _declared(sensor, metric) for metric, (sensor, _, _) in chosen.items()}
+    for _, sensor in listed:
+        declared |= {m.name: m for m in sensor.metrics if m.flag and m.name not in declared}
+    for sensor, _, _ in chosen.values():
+        declared |= {m.name: m for m in sensor.metrics if m.flag and m.name not in declared}
+    return Instruments(sensors=sensors, metrics=declared, problems=tuple(problems))
+
+
+@dataclass(frozen=True)
+class KindUse:
+    """One place the experiment names a kind: where, which kind, the options written beside
+    it, and the effects the author added."""
+
+    path: str
+    kind: Kind
+    options: dict[str, Any]
+    effects: tuple[str, ...]
 
 
 def kind_uses(
     experiment: Experiment, kinds: Kinds, probes: ProbeSet | None
-) -> tuple[list[tuple[str, Kind, dict[str, Any], tuple[str, ...]]], list[Problem]]:
-    """Every use of a kind in the experiment as (path, kind, options, author's effects),
-    and the problems with them: unknown kinds, and options the kind does not take."""
-    found: list[tuple[str, Kind, dict[str, Any], tuple[str, ...]]] = []
+) -> tuple[tuple[KindUse, ...], tuple[Problem, ...]]:
+    """Every use of a kind in the experiment, and the problems with them: unknown kinds, and
+    options the kind does not take."""
+    found: list[KindUse] = []
     problems: list[Problem] = []
-
     unknown: set[tuple[str, str]] = set()
 
     def bind(
-        path: str, family: str, name: str, options: dict[str, Any], effects: tuple[str, ...]
+        path: str,
+        *,
+        family: str,
+        entry: SubjectConfig | ProbeConfig | EnvironmentConfig | SensorConfig,
     ) -> None:
-        kind = kinds.get(family, name)
+        kind = kinds.get(family, entry.kind)
         if kind is None:
-            if (family, name) not in unknown:  # once per kind, however many probes name it
-                unknown.add((family, name))
+            if (family, entry.kind) not in unknown:  # once per kind, however many name it
+                unknown.add((family, entry.kind))
                 problems.append(
                     problem(
                         f"{path}.kind",
-                        "kind_unknown",
-                        f"no {family} kind named {name!r}",
+                        kind="name_unknown",
+                        message=f"no {family} kind named {entry.kind!r}",
                         allowed=kinds.names(family),
-                        got=name,
+                        got=entry.kind,
                     )
                 )
             return
-        found.append((path, kind, options, effects))
-        problems.extend(check_options(kind, options, path))
+        found.append(KindUse(path=path, kind=kind, options=entry.options, effects=entry.effects))
+        problems.extend(check_options(kind, entry.options, path))
 
-    environment = experiment.environment
-    bind("environment", "environment", environment.kind, environment.options, environment.effects)
+    bind("environment", family="environment", entry=experiment.environment)
     for name, subject in experiment.subjects.items():
-        bind(f"subjects.{name}", "subject", subject.kind, subject.options, subject.effects)
-    if isinstance(experiment.probes, tuple):
+        bind(f"subjects.{name}", family="subject", entry=subject)
+    if experiment.probes:
         for index, probe in enumerate(experiment.probes):
-            bind(f"probes.{index}", "probe", probe.kind, probe.options, probe.effects)
+            bind(f"probes.{index}", family="probe", entry=probe)
     elif probes is not None:
         for probe in probes.probes:
-            bind(f"probes.{probe.id}", "probe", probe.kind, probe.options, probe.effects)
+            bind(f"probes.{probe.id}", family="probe", entry=probe)
     for index, selection in enumerate(experiment.sensors):
-        bind(f"sensors.{index}", "sensor", selection.kind, selection.options, selection.effects)
-    return found, problems
+        bind(f"sensors.{index}", family="sensor", entry=selection)
+    return tuple(found), tuple(problems)
+
+
+def kinds_in_use(
+    experiment: Experiment, design: Design, probes: ProbeSet
+) -> tuple[tuple[str, str], ...]:
+    """Each kind a run of the experiment uses, once, as (where it is first named, the kind's
+    type URL)."""
+    uses: list[tuple[str, str]] = [
+        ("environment", schema.url("environment", experiment.environment.kind))
+    ]
+    uses += [
+        (f"subjects.{name}", schema.url("subject", subject.kind))
+        for name, subject in experiment.subjects.items()
+    ]
+    uses += [(f"probes.{probe.id}", schema.url("probe", probe.kind)) for probe in probes.probes]
+    uses += [("sensors", sensor.kind) for sensor in design.sensors]
+    first: dict[str, str] = {}
+    for where, kind in uses:
+        first.setdefault(kind, where)
+    return tuple((where, kind) for kind, where in first.items())
+
+
+def missing_adapters(
+    experiment: Experiment, design: Design, probes: ProbeSet, adapters: frozenset[str]
+) -> tuple[tuple[str, str], ...]:
+    """Each kind in use that ``adapters`` (kind type URLs) does not hold, as
+    :func:`kinds_in_use` gives it. A run needs every one."""
+    return tuple(
+        (where, kind)
+        for where, kind in kinds_in_use(experiment, design, probes)
+        if kind not in adapters
+    )
 
 
 # --- the hypothesis ----------------------------------------------------------------------
 
 
 def metric_text(ref: MetricRef | Guardrail) -> str:
-    """``ttfb p99``; a statistic of ``value`` adds nothing and is left out."""
-    return ref.metric if ref.statistic in (None, "value") else f"{ref.metric} {ref.statistic}"
+    """``ttfb p99``; a statistic of ``value`` (a boolean or a scalar) or ``rate`` (a count)
+    adds nothing and is left out."""
+    plain = ref.statistic in (None, "value", "rate")
+    return ref.metric if plain else f"{ref.metric} {ref.statistic}"
 
 
 def _hypotheses(experiment: Experiment, genre: Genre, design: Design) -> tuple[str, ...]:
@@ -423,9 +552,10 @@ def _hypotheses(experiment: Experiment, genre: Genre, design: Design) -> tuple[s
     ) or genre.hypothesis_form
     if not form:
         return ()
+    primary = design.metric(design.primary.metric) if design.primary else None
     shared = {
         "metric": metric_text(design.primary) if design.primary else "(no primary metric)",
-        "margin": design.margin.text() if design.margin else "(no margin)",
+        "margin": _margin_text(design.margin, primary) if design.margin else "(no margin)",
         "threshold": design.threshold.text() if design.threshold else "(no threshold)",
         "factors": " x ".join(experiment.factors) or "(no factors)",
     }
@@ -442,6 +572,14 @@ def _hypotheses(experiment: Experiment, genre: Genre, design: Design) -> tuple[s
     return tuple(sentences)
 
 
+def _margin_text(margin: Margin, metric: Metric | None) -> str:
+    """The margin as a sentence says it: ``5%``, ``10pp``, or a bare number in the
+    primary's unit (``3 ms``)."""
+    if margin.basis == "absolute" and metric is not None and metric.unit:
+        return f"{margin.value:g} {metric.unit}"
+    return margin.text()
+
+
 class _Blank(dict[str, str]):
     def __missing__(self, key: str) -> str:
         return f"({key})"
@@ -453,6 +591,85 @@ class _Blank(dict[str, str]):
 def _derived_seed(experiment: Experiment) -> int:
     """A seed for an experiment that names none: fixed by its name, so a plan repeats."""
     return int(schema.digest(experiment.name)[:8], 16)
+
+
+def _reductions(
+    path: str, ref: MetricRef | Guardrail, metric: Metric | None, genre: Genre
+) -> tuple[str | None, str | None, list[SourcedValue]]:
+    """The statistic and estimator a decision on ``ref`` uses, and where each came from."""
+    statistic, estimator = ref.statistic, ref.estimator
+    sourced: list[SourcedValue] = []
+    if statistic is not None:
+        sourced.append(_from("experiment", path=f"{path}.statistic", value=statistic))
+    elif metric is not None:
+        statistic = STATISTICS[metric.shape][0]
+        note = f"the first statistic of a {metric.shape}"
+        sourced.append(_from("ix", path=f"{path}.statistic", value=statistic, note=note))
+    if estimator is not None:
+        sourced.append(_from("experiment", path=f"{path}.estimator", value=estimator))
+    elif metric is not None and metric.shape == "boolean":
+        estimator = ESTIMATORS["boolean"][0]
+        sourced.append(
+            _from(
+                "ix", path=f"{path}.estimator", value=estimator, note="booleans combine as a rate"
+            )
+        )
+    elif metric is not None:
+        estimator = genre.design.estimator
+        sourced.append(_from("genre", path=f"{path}.estimator", value=estimator))
+    return statistic, estimator, sourced
+
+
+def _from(origin: Origin, *, path: str, value: Level | None, note: str = "") -> SourcedValue:
+    return SourcedValue(path=path, value=value, source=origin, note=note)
+
+
+@dataclass(frozen=True)
+class _Settings:
+    """The run's settings the experiment may leave to the genre or to ix."""
+
+    repeats: int
+    seed: int
+    comparison: str | None
+    sourced: tuple[SourcedValue, ...]
+
+
+def _settings(experiment: Experiment, genre: Genre, control: str | None) -> _Settings:
+    sourced: list[SourcedValue] = []
+    if control is not None and experiment.control is not None:
+        sourced.append(_from("experiment", path="control", value=control))
+    elif control is not None:
+        sourced.append(
+            _from("ix", path="control", value=control, note="the first subject is the control")
+        )
+
+    repeats = experiment.repeats if experiment.repeats is not None else genre.design.repeats.default
+    sourced.append(
+        _from(
+            "experiment" if experiment.repeats is not None else "genre",
+            path="repeats",
+            value=repeats,
+        )
+    )
+
+    if experiment.seed is not None:
+        seed = experiment.seed
+        sourced.append(_from("experiment", path="seed", value=seed))
+    else:
+        seed = _derived_seed(experiment)
+        note = "derived from the experiment's name; state seed: to pin it"
+        sourced.append(_from("ix", path="seed", value=seed, note=note))
+
+    sourced.append(_from("genre", path="order", value=genre.design.order))
+    sourced.append(_from("genre", path="calibration", value=genre.design.calibration))
+
+    comparison = experiment.comparison
+    if comparison is not None:
+        sourced.append(_from("experiment", path="comparison", value=comparison))
+    elif genre.default_comparison is not None:
+        comparison = genre.default_comparison
+        sourced.append(_from("genre", path="comparison", value=comparison))
+    return _Settings(repeats=repeats, seed=seed, comparison=comparison, sourced=tuple(sourced))
 
 
 def resolve(
@@ -477,65 +694,32 @@ def resolve(
             fix="ix validate reports every problem with its fix",
         )
     instruments = instruments or select_sensors(experiment, kinds, probes)
-    provenance: list[SourcedValue] = []
+    settings = _settings(experiment, genre, control)
+    provenance = list(settings.sourced)
 
-    def sourced(path: str, value: Level | None, source: Source, note: str = "") -> None:
-        provenance.append(SourcedValue(path=path, value=value, source=source, note=note))
-
-    if control is not None:
-        if experiment.control is not None:
-            sourced("control", control, "experiment")
-        else:
-            sourced("control", control, "ix", "the first subject is the control")
-
-    repeats = experiment.repeats if experiment.repeats is not None else genre.design.repeats.default
-    sourced("repeats", repeats, "experiment" if experiment.repeats is not None else "genre")
-
-    if experiment.seed is not None:
-        seed = experiment.seed
-        sourced("seed", seed, "experiment")
-    else:
-        seed = _derived_seed(experiment)
-        sourced("seed", seed, "ix", "derived from the experiment's name; state seed: to pin it")
-
-    sourced("order", genre.design.order, "genre")
-    sourced("calibration", genre.design.calibration, "genre")
-
-    comparison = experiment.comparison
-    if comparison is not None:
-        sourced("comparison", comparison, "experiment")
-    elif genre.default_comparison is not None:
-        comparison = genre.default_comparison
-        sourced("comparison", comparison, "genre")
-
-    def reductions(path: str, ref: MetricRef | Guardrail) -> tuple[str | None, str | None]:
-        metric = instruments.metrics.get(ref.metric)
-        statistic, estimator = ref.statistic, ref.estimator
-        if statistic is not None:
-            sourced(f"{path}.statistic", statistic, "experiment")
-        elif metric is not None:
-            statistic = STATISTICS[metric.shape][0]
-            sourced(
-                f"{path}.statistic", statistic, "ix", f"the first statistic of a {metric.shape}"
-            )
-        if estimator is not None:
-            sourced(f"{path}.estimator", estimator, "experiment")
-        elif metric is not None and metric.shape == "boolean":
-            estimator = ESTIMATORS["boolean"][0]
-            sourced(f"{path}.estimator", estimator, "ix", "booleans combine as a rate")
-        elif metric is not None:
-            estimator = genre.design.estimator
-            sourced(f"{path}.estimator", estimator, "genre")
-        return statistic, estimator
+    if experiment.margin is not None:
+        # The genres supply no margin: it is always the author's, and the plan says so.
+        note = (
+            "the largest difference either way still counted as none"
+            if settings.comparison == "equivalence"
+            else "the largest loss still counted as no worse"
+        ) + "; the person's decision, made before the run"
+        provenance.append(
+            _from("experiment", path="margin", value=experiment.margin.text(), note=note)
+        )
 
     primary = experiment.primary
     if primary is not None:
-        statistic, estimator = reductions("primary", primary)
+        metric = instruments.metrics.get(primary.metric)
+        statistic, estimator, sourced = _reductions("primary", primary, metric, genre)
+        provenance += sourced
         primary = MetricRef(metric=primary.metric, statistic=statistic, estimator=estimator)
 
     guardrails = []
     for index, guardrail in enumerate(experiment.guardrails):
-        statistic, estimator = reductions(f"guardrails.{index}", guardrail)
+        metric = instruments.metrics.get(guardrail.metric)
+        statistic, estimator, sourced = _reductions(f"guardrails.{index}", guardrail, metric, genre)
+        provenance += sourced
         guardrails.append(
             guardrail.model_copy(update={"statistic": statistic, "estimator": estimator})
         )
@@ -547,13 +731,13 @@ def resolve(
         control=control,
         primary=primary,
         threshold=experiment.threshold,
-        comparison=comparison,
+        comparison=settings.comparison,
         margin=experiment.margin,
         guardrails=tuple(guardrails),
         metrics=tuple(instruments.metrics.values()),
         sensors=instruments.sensors,
-        repeats=repeats,
-        seed=seed,
+        repeats=settings.repeats,
+        seed=settings.seed,
         order=genre.design.order,
         calibration=genre.design.calibration,
         analysis=genre.analysis,

@@ -1,0 +1,13 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.outcome
+summary: Grades the response with grader functions in a Python module the experiment owns, run in a separate process.
+options:
+  graders: {type: path, required: true, description: "the module, relative to the experiment: GRADERS maps a probe id (or a probe's truth grader) to a function of the response text, or of the text and the trial, returning a score from 0 to 1"}
+  timeout: {type: duration, description: time allowed for one grading; 30s when absent}
+  pass_above: {type: number, description: "the score above which outcome_passed is true; 0.5 when absent"}
+effects: [code]
+needs: [response]
+truth: [grader, expected_facts]
+metrics:
+  - {name: outcome_score, unit: ratio, direction: higher, shape: scalar, bounds: [0, 1], description: "the grader's score; without a grader, the share of expected_facts the response contains"}
+  - {name: outcome_passed, direction: higher, shape: boolean, description: the score is above pass_above}

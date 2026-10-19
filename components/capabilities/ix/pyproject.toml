@@ -1,21 +1,43 @@
 [project]
 name = "ix"
-version = "0.3.0"
-description = "ix: experiments on agents and services. One file with a genre; validate, plan and register it"
-# readme = "README.md"  # TODO: create when ready
+version = "0.5.0"
+description = "Experiments on agents and services: one file with a genre, validated, planned, registered, run and reported"
+readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
+# A copy of the repository's LICENSE: a package built from this directory alone carries it.
+license-files = ["LICENSE"]
 authors = [
     { name = "yzavyas", email = "yza.vyas@gmail.com" }
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
 
 dependencies = [
+    # This repository's matrix, not PyPI's project of that name: the workspace's
+    # [tool.uv.sources] resolves it, from a checkout and from a git URL alike. Bounded to the
+    # minor ix is built against: before 1.0 a matrix minor may break.
+    "matrix>=0.6,<0.7",
+    "httpx>=0.27",
+    "opentelemetry-api>=1.20",
     "rich-click>=1.8",
     "rich>=13",
     "pydantic>=2.0",
-    "pyyaml>=6.0",
-    "python-frontmatter>=1.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/mox-labs/gnx"
+Documentation = "https://mox-labs.github.io/gnx"
+Issues = "https://github.com/mox-labs/gnx/issues"
+Changelog = "https://github.com/mox-labs/gnx/blob/main/components/capabilities/ix/CHANGELOG.md"
 
 # Genres and kinds are data. A package registers a package of `*.yaml` files at the
 # `ix.genre` or `ix.kind` entry point, which ix owns; ix registers its own the same way.
@@ -26,8 +48,17 @@ ix = "ix.builtin.genres"
 [project.entry-points."ix.kind"]
 ix = "ix.builtin.kinds"
 
+# ix's run path, its extension points and its adapters, registered as every matrix
+# extension is; `matrix catalog` lists them.
+[project.entry-points."matrix.extensions"]
+ix = "ix.composition.extension:register"
+
+# An agent session runs on one of matrix's runtimes; each brings what it needs.
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+claude = ["matrix[claude]"]   # the claude-sdk runtime: Claude Agent SDK sessions
+models = ["matrix[models]"]   # the model runtime: one call through hardline (a judge's default)
+otel = ["matrix[otel]"]       # export of ix's and matrix's spans from the OTEL_* variables
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
 ix = "ix.adapters._in.cli:main"

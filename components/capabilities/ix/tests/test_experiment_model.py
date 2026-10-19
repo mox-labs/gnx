@@ -19,9 +19,9 @@ from ix.domain.experiment import (
     Experiment,
     Guardrail,
     Margin,
-    Probe,
-    SourcedProbes,
-    Subject,
+    ProbeConfig,
+    ProbeFile,
+    SubjectConfig,
     Threshold,
     probe_set,
 )
@@ -75,8 +75,10 @@ class TestExperimentRecord:
 
     def test_the_plain_names_belong_to_the_records(self, compare_data: dict[str, Any]) -> None:
         experiment = _load(compare_data)
-        assert isinstance(experiment.subjects["buffered"], Subject)
-        assert isinstance(experiment.probes, tuple) and isinstance(experiment.probes[0], Probe)
+        assert isinstance(experiment.subjects["buffered"], SubjectConfig)
+        assert isinstance(experiment.probes, tuple) and isinstance(
+            experiment.probes[0], ProbeConfig
+        )
 
     def test_subjects_keep_the_order_written(self, compare_data: dict[str, Any]) -> None:
         compare_data["subjects"] = {
@@ -106,11 +108,32 @@ class TestExperimentRecord:
         assert probe.truth == {"expectation": "must_trigger", "expected_skill": "review"}
         assert probe.options == {"prompt": "Review this change."}
 
-    def test_probes_are_inline_or_from_a_source(self, compare_data: dict[str, Any]) -> None:
-        compare_data["probes"] = {"source": "directory", "path": "tasks"}
-        source = _load(compare_data).probes
-        assert isinstance(source, SourcedProbes)
-        assert (source.source, source.options) == ("directory", {"path": "tasks"})
+    def test_probes_left_out_are_read_from_the_folder_by_convention(
+        self, compare_data: dict[str, Any]
+    ) -> None:
+        """No probes written: the record holds none, and the folder beside the file is read."""
+        del compare_data["probes"]
+        assert _load(compare_data).probes == ()
+
+    def test_a_probe_files_keys_beside_its_own_are_its_truth(self) -> None:
+        """The body is the prompt; id, kind, options and effects are the probe's; every other
+        key is truth, beside what is written under truth:."""
+        probe = ProbeFile.model_validate(
+            {
+                "id": "vague",
+                "expectation": "must_trigger",
+                "truth": {"expected_skill": "hardening"},
+                "options": {"timeout": "30s"},
+                "body": "Make onboarding better.\n",
+            }
+        ).config()
+        assert (probe.id, probe.kind) == ("vague", "prompt")
+        assert probe.truth == {"expectation": "must_trigger", "expected_skill": "hardening"}
+        assert probe.options == {"timeout": "30s", "prompt": "Make onboarding better.\n"}
+
+    def test_a_probe_file_of_another_kind_has_no_prompt_unless_it_has_text(self) -> None:
+        probe = ProbeFile.model_validate({"kind": "http-load", "target": "x"}).config()
+        assert "prompt" not in probe.options and probe.truth == {"target": "x"}
 
     def test_the_environment_names_its_kind_like_everything_else(
         self, compare_data: dict[str, Any]
@@ -157,12 +180,12 @@ class TestExperimentRecord:
                 Guardrail.model_validate(bad)
 
     def test_inline_probes_get_ids_and_a_digest(self) -> None:
-        probes = (Probe(kind="prompt"), Probe(id="named", kind="prompt"))
+        probes = (ProbeConfig(kind="prompt"), ProbeConfig(id="named", kind="prompt"))
         pinned = probe_set(probes)
         assert pinned.ids == ("probe-1", "named")
         assert pinned.digest == probe_set(probes).digest
-        changed = probe_set((Probe(kind="prompt", options={"prompt": "x"}), probes[1]))
-        retruthed = probe_set((Probe(kind="prompt", truth={"expectation": "x"}), probes[1]))
+        changed = probe_set((ProbeConfig(kind="prompt", options={"prompt": "x"}), probes[1]))
+        retruthed = probe_set((ProbeConfig(kind="prompt", truth={"expectation": "x"}), probes[1]))
         assert len({pinned.digest, changed.digest, retruthed.digest}) == 3
 
 
@@ -232,9 +255,10 @@ class TestFileProblems:
     def test_missing_keys_are_all_reported(self) -> None:
         _, problems = parse({"name": "x"})
         assert {(p.path, p.kind) for p in problems} == {
-            ("question", "missing_key"), ("genre", "missing_key"),
-            ("subjects", "missing_key"), ("probes", "missing_key"),
-        }  # fmt: skip
+            ("question", "missing_key"),
+            ("genre", "missing_key"),
+            ("subjects", "missing_key"),
+        }  # fmt: skip  (probes may be left out: they are then the probes/ folder's)
 
     def test_a_nested_path_names_the_key_the_author_wrote(
         self, compare_data: dict[str, Any]
@@ -281,24 +305,14 @@ class TestFileProblems:
         (problem,) = parse(compare_data)[1]
         assert (problem.path, problem.kind) == ("subjects", "wrong_shape")
         assert "mapping" in problem.message
-        assert problem.fix == "subjects: {<name>: {kind: <subject kind>, ...}}"
+        assert "subjects: {<name>: {kind: <subject kind>, ...}}" in problem.fix
 
     def test_probes_written_as_one_mapping(self, compare_data: dict[str, Any]) -> None:
-        """The other likely slip. It used to answer "'source' is required"."""
+        """The other likely slip, answered with both ways to write probes."""
         compare_data["probes"] = {"kind": "prompt", "prompt": "Hello"}
         (problem,) = parse(compare_data)[1]
         assert (problem.path, problem.kind) == ("probes", "wrong_shape")
-        assert "a list" in problem.fix and "source" not in problem.fix
-        compare_data["probes"] = {"path": "tasks"}
-        (problem,) = parse(compare_data)[1]
-        assert problem.fix == "probes: {source: directory, path: probes}"
-
-    def test_a_key_named_source_keeps_its_path(self, compare_data: dict[str, Any]) -> None:
-        """The path of ``probes.source`` used to be unprintable: a location part equal to a
-        union tag was stripped."""
-        compare_data["probes"] = {"source": ""}
-        (problem,) = parse(compare_data)[1]
-        assert problem.path == "probes.source"
+        assert "a list" in problem.fix and "probes/ folder" in problem.fix
 
     def test_not_a_mapping(self) -> None:
         (problem,) = parse(["name", "x"])[1]
@@ -364,7 +378,7 @@ class TestRoles:
         (problem,) = problems
         assert (problem.path, problem.kind, problem.got) == (
             "control",
-            "control_unknown",
+            "name_unknown",
             "bufered",
         )
         assert problem.allowed == ("buffered", "streaming")
@@ -524,9 +538,7 @@ class TestHypothesis:
         self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
     ) -> None:
         design = _design(compare_data, builtin_genres, builtin_kinds)
-        assert design.hypotheses == (
-            "streaming is no worse than buffered by more than 5% on ttfb p99",
-        )
+        assert design.hypotheses == ("streaming is at most 5% worse than buffered on ttfb p99",)
         better = _design(
             {**compare_data, "comparison": "superiority"}, builtin_genres, builtin_kinds
         )

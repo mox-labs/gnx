@@ -7,7 +7,8 @@ module nobody thought to forbid, and a call to the builtin ``open``.
 
 Outside the inner layers: only ``ix.composition`` wires adapters; outbound adapters know
 neither the use cases nor the command line; the command line reaches ix only through its
-declared API; and importing ``ix`` loads no host.
+declared API; importing ``ix`` loads no host; and matrix, which runs an experiment, is named
+only by ``ix.composition`` and by the adapters ``ix/adapters/*/matrix_*.py``.
 
 Every import counts, including one under ``TYPE_CHECKING``: a type-only dependency on a
 host is still a dependency on its shape.
@@ -32,17 +33,25 @@ PURE_STDLIB = frozenset(
     {
         "__future__",
         "collections",
+        "contextlib",
         "dataclasses",
         "hashlib",
         "itertools",
         "json",
+        "math",
         "re",
+        "statistics",
         "typing",
     }
 )
 
-#: Third-party packages an inner layer may import.
-THIRD_PARTY = frozenset({"pydantic"})
+#: What a layer may import beyond that. The application carries a trial out over ports, so
+#: it waits, times out and races a stop flag: that is ``asyncio``, and the domain has none.
+LAYER_STDLIB = {"domain": frozenset(), "application": frozenset({"asyncio"})}
+
+#: Third-party packages an inner layer may import: pydantic, and its core, whose
+#: ``PydanticCustomError`` is how a validator names the shape of what it refused.
+THIRD_PARTY = frozenset({"pydantic", "pydantic_core"})
 
 #: ix packages an inner layer may import, by layer.
 INNER = {"domain": ("ix.domain",), "application": ("ix.domain", "ix.application")}
@@ -73,7 +82,7 @@ def _violations(file: Path, layer: str) -> set[str]:
         if root == "ix":
             if not _within(module, INNER[layer]):
                 bad.add(module)
-        elif root not in PURE_STDLIB | THIRD_PARTY:
+        elif root not in PURE_STDLIB | THIRD_PARTY | LAYER_STDLIB[layer]:
             bad.add(root)
     for node in ast.walk(ast.parse(file.read_text(encoding="utf-8"))):
         if (
@@ -111,8 +120,8 @@ def test_the_scan_catches_what_it_claims(tmp_path: Path) -> None:
         "import click\n"
         "from rich.console import Console\n"
         "from pathlib import Path\n"
-        "import subprocess, datetime, time, random, uuid, zipfile, os\n"
-        "from ix.adapters._out.declaration_files import GenreFiles\n"
+        "import subprocess, datetime, time, random, uuid, zipfile, os, asyncio\n"
+        "from ix.adapters._out.matrix_documents import GenreFiles\n"
         "from ix.composition import root\n"
         "from ix.application.experiments import examine\n"
         "from ix.domain.schema import Record\n"
@@ -122,26 +131,35 @@ def test_the_scan_catches_what_it_claims(tmp_path: Path) -> None:
     )
     assert _violations(file, "domain") == {
         "yaml", "click", "rich", "pathlib", "subprocess", "datetime", "time", "random",
-        "uuid", "zipfile", "os", "ix.adapters._out.declaration_files", "ix.composition",
-        "ix.application.experiments", "matrix", "open()",
+        "uuid", "zipfile", "os", "asyncio", "ix.adapters._out.matrix_documents",
+        "ix.composition", "ix.application.experiments", "matrix", "open()",
     }  # fmt: skip
-    assert "ix.application.experiments" not in _violations(file, "application")
+    in_application = _violations(file, "application")
+    assert "ix.application.experiments" not in in_application
+    assert "asyncio" not in in_application and "matrix" in in_application
 
 
 def test_only_composition_wires_outbound_adapters() -> None:
-    """``ix.adapters._out`` is imported by ``ix.composition`` and by nothing else in ix."""
+    """Outside ``ix.adapters._out`` itself, ``ix.composition`` is the only importer of an
+    outbound adapter. (One adapter may build on another: a subject on the launcher.)"""
     importers = {
         file.relative_to(SRC).as_posix()
         for file in _files()
         if any(_within(module, ("ix.adapters._out",)) for module in _imports(file))
     }
-    assert importers == {"composition/__init__.py"}
+    outside = {name for name in importers if not name.startswith("adapters/_out/")}
+    assert outside == {"composition/__init__.py", "composition/extension.py"}
 
 
 def test_outbound_adapters_know_neither_use_cases_nor_the_command_line() -> None:
+    """An outbound adapter reaches the domain and its fellow adapters, nothing else in ix:
+    not the use cases, not the composition root, not the command line."""
     for file in _files("adapters", "_out"):
         reached = {m for m in _imports(file) if m.split(".")[0] == "ix"}
-        assert all(_within(m, ("ix.domain",)) for m in reached), (file.name, reached)
+        assert all(_within(m, ("ix.domain", "ix.adapters._out")) for m in reached), (
+            file.name,
+            reached,
+        )
 
 
 def test_the_facade_imports_no_adapter() -> None:
@@ -152,11 +170,63 @@ def test_the_facade_imports_no_adapter() -> None:
         assert not any(_within(m, ("ix.adapters", "ix.application")) for m in reached), name
 
 
-def test_nothing_in_ix_imports_a_host() -> None:
-    """No module names matrix. When a run path arrives, only ``ix.composition`` and the
-    matrix adapters may, and this test is where that is written down."""
-    for file in _files():
-        assert "matrix" not in {m.split(".")[0] for m in _imports(file)}, file
+def _names_matrix(file: Path) -> bool:
+    return "matrix" in {module.split(".")[0] for module in _imports(file)}
+
+
+def test_only_composition_and_the_matrix_adapters_name_matrix() -> None:
+    """matrix runs an experiment, and ix's whole assumption about it elsewhere is the
+    three-member ``Scope``. Only ``ix.composition`` and ``ix/adapters/*/matrix_*.py`` may
+    import it: the components matrix drives ix through, and the adapters ix drives matrix
+    through. Every other module, the domain and the use cases first, is held to none."""
+    importers = {file.relative_to(SRC).as_posix() for file in _files() if _names_matrix(file)}
+    allowed = {
+        file.relative_to(SRC).as_posix()
+        for file in _files()
+        if file.parent == SRC / "composition"
+        or (file.parent.parent == SRC / "adapters" and file.name.startswith("matrix_"))
+    }
+    assert importers <= allowed, importers - allowed
+    # The rule is about something: the adapters that speak to matrix exist and do.
+    assert {
+        "adapters/_in/matrix_components.py",
+        "adapters/_out/matrix_process.py",
+        "adapters/_out/matrix_runs.py",
+    } <= importers
+    for layer in ("domain", "application"):
+        assert not any(_names_matrix(file) for file in _files(layer)), layer
+
+
+def _registers(file: Path) -> bool:
+    """Whether ``file`` calls a registry's API to declare or register something."""
+    for node in ast.walk(ast.parse(file.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            method, receiver = node.func.attr, node.func.value
+            if method in {"register_payload", "add_point"} or (
+                method in {"register", "create", "entries"}
+                and isinstance(receiver, ast.Name | ast.Attribute)
+                and (receiver.id if isinstance(receiver, ast.Name) else receiver.attr).lstrip("_")
+                == "registry"
+            ):
+                return True
+    return False
+
+
+def test_only_composition_calls_the_registry() -> None:
+    """The registry will move; ix calls it from ``ix.composition`` alone, so the move is one
+    change in one place. An adapter hands over what it builds and never registers it."""
+    calling = {file.relative_to(SRC).as_posix() for file in _files() if _registers(file)}
+    assert calling and all(path.startswith("composition/") for path in calling), calling
+
+
+def test_the_scan_for_matrix_catches_a_type_only_import(tmp_path: Path) -> None:
+    file = tmp_path / "leak.py"
+    file.write_text(
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from matrix.domain import x\n"
+    )
+    assert _names_matrix(file)
+    file.write_text("from ix.domain.ports import Scope\n")
+    assert not _names_matrix(file)
 
 
 def test_the_command_line_calls_only_the_declared_api() -> None:
@@ -191,18 +261,24 @@ class TestLibrarySurface:
 
     def test_the_surface_is_functions_documents_authored_records_and_errors(self) -> None:
         """The rule for ``__all__``: a function, a document a function returns, a record an
-        author or an extension writes, an error, or one of two published tables. A record's
+        author or an extension writes, an error, or a published table. A record's
         parts are reachable as field types and are not exported."""
-        functions = {"load", "validate", "resolve", "plan", "register", "deviations",
-                     "genres", "kinds", "skill", "error_document"}  # fmt: skip
+        # Changed requirement: the command configures telemetry through the API, since it
+        # names nothing but ``ix``.
+        functions = {"load", "validate", "resolve", "plan", "register", "deviations", "run",
+                     "report", "runs", "genres", "kinds", "skill", "error_document",
+                     "configure_telemetry"}  # fmt: skip
         documents = {"Validation", "Problem", "Design", "Plan", "Registered", "Deviations",
-                     "Genres", "Kinds"}  # fmt: skip
+                     "Report", "Runs", "Genres", "Kinds"}  # fmt: skip
         authored = {"Experiment", "Genre", "Kind"}
         errors = {"IxError", "ConfigError", "NotFoundError", "InvalidExperimentError",
-                  "RegistrationConflictError"}  # fmt: skip
-        tables = {"PROBLEM_KINDS", "EXIT_CODES", "__version__"}
+                  "RegistrationConflictError", "UnregisteredError", "UsageError"}  # fmt: skip
+        # Changed requirement: the exit table's "what to do next" column (EXIT_NEXT) is
+        # published beside its codes and meanings, so help and the skill read one table.
+        tables = {"PROBLEM_KINDS", "ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT",
+                  "__version__"}  # fmt: skip
         assert set(ix.__all__) == functions | documents | authored | errors | tables
-        assert len(ix.__all__) < 30
+        assert len(ix.__all__) <= 40
 
     def test_no_declared_name_is_shadowed_by_a_subpackage(self) -> None:
         """Importing ``ix.<sub>`` binds ``<sub>`` on ``ix``; a function of the same name
@@ -210,7 +286,8 @@ class TestLibrarySurface:
         modules = {path.stem for path in SRC.iterdir() if path.is_dir() or path.suffix == ".py"}
         assert not (set(ix.__all__) & modules)
         ix.skill()  # reads the genre and kind packages
-        for name in ("genres", "kinds", "plan", "validate", "register", "deviations"):
+        for name in ("genres", "kinds", "plan", "validate", "register", "deviations", "run",
+                     "report", "runs"):  # fmt: skip
             assert callable(getattr(ix, name)), name
 
 
@@ -236,7 +313,8 @@ def test_the_domain_names_no_genre_and_no_kind() -> None:
     assert genres >= {"evaluate", "compare", "characterize", "regress"}
     assert kinds >= {"http-load", "function-test", "inspect-task", "compose", "judge"}
     # Words that are also plain English or a family name stay out of the scan.
-    names = (genres | kinds) - {"none", "process", "agent", "prompt", "usage", "memory", "timing"}
+    names = (genres | kinds) - {"none", "process", "prompt", "usage", "memory", "timing",
+                                "outcome"}  # fmt: skip
     for file in _files("domain"):
         tree = ast.parse(file.read_text(encoding="utf-8"))
         docstrings = {
@@ -252,3 +330,36 @@ def test_the_domain_names_no_genre_and_no_kind() -> None:
             ):
                 words = set(node.value.replace("_", " ").replace(",", " ").split())
                 assert not (words & names), f"{file.name}: {node.value!r}"
+
+
+def test_every_type_reachable_from_a_public_result_is_exported_from_ix_domain() -> None:
+    """Audit N6: a caller holding a report reaches ``analysis.findings[].decisions[]
+    .interval``; each such type has one public name, in ``ix.domain``. The check walks the
+    fields of every document ``ix`` exports and of every port."""
+    import typing
+
+    import pydantic
+
+    import ix.domain
+
+    public = set(ix.domain.__all__)
+    seen: set[type] = set()
+
+    def walk(annotation: object) -> None:
+        for argument in typing.get_args(annotation):
+            walk(argument)
+        if isinstance(annotation, type) and issubclass(annotation, pydantic.BaseModel):
+            if annotation in seen or annotation.__module__.split(".")[0] != "ix":
+                return
+            seen.add(annotation)
+            for field in annotation.model_fields.values():
+                walk(field.annotation)
+
+    for name in ("Report", "Plan", "Registered", "Deviations", "Validation", "Experiment",
+                 "Genre", "Kind", "Design", "Runs"):  # fmt: skip
+        walk(getattr(ix, name))
+    reachable = {model.__name__ for model in seen} - set(ix.__all__)
+    assert {"Interval", "Decision", "SubjectConfig", "Sensitivity"} <= reachable  # the walk works
+    assert reachable <= public, sorted(reachable - public)
+    for name in ix.domain.__all__:
+        assert getattr(ix.domain, name) is not None

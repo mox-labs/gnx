@@ -1,7 +1,10 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.activation
-summary: Whether the expected skill fired, or stayed quiet for a decoy.
+summary: Whether the expected skill fired, or stayed quiet for a decoy; the report tabulates expected against fired.
+options:
+  tool: {type: string, description: "the tool whose calls are skill activations; Skill when absent"}
 needs: [response]
 truth: [expectation, expected_skill]
 metrics:
-  - {name: activated_correctly, direction: higher, shape: boolean, description: "the skill fired when it should (expectation: must_trigger) and not when it should not (should_not_trigger)"}
+  - {name: activated_correctly, direction: higher, shape: boolean, description: "the skill fired when it should (expectation: must_trigger), nothing fired when nothing should (should_not_trigger); acceptable always passes"}
+confusion: {expected: expected, observed: fired, negative: none}

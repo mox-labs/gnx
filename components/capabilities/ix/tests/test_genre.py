@@ -18,15 +18,17 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from ix.adapters._out.declaration_files import GENRE_GROUP, GenreFiles
+from ix.adapters._out.matrix_documents import GENRE_GROUP, GenreFiles
+from ix.composition import type_url_problem
 from ix.domain.genre import (
     MUST_SETTABLE,
     Genre,
-    GenreFile,
     Genres,
     genres,
     narrowing_violations,
 )
+from ix.domain.problem import problem as a_problem
+from ix.domain.schema import DeclarationFile
 
 BUILT_IN = ("characterize", "compare", "evaluate", "regress")
 FORMS = {
@@ -63,7 +65,8 @@ def _genre(name: str = BASE, **changes: Any) -> dict[str, Any]:
 
 
 def _genres(*records: dict[str, Any]) -> Genres:
-    return genres(GenreFile(origin=f"file-{i}.yaml", data=r) for i, r in enumerate(records))
+    files = [DeclarationFile(origin=f"file-{i}.yaml", data=r) for i, r in enumerate(records)]
+    return genres(files, grammar=type_url_problem)
 
 
 def _child(**changes: Any) -> dict[str, Any]:
@@ -209,10 +212,11 @@ class TestBuiltInGenres:
         assert control is not None and (control.min, control.max) == (1, 1)
         assert variant is not None and (variant.min, variant.max) == (1, None)
 
-    def test_every_design_says_it_is_provisional(self, builtin_genres: Genres) -> None:
+    def test_every_design_says_how_it_was_checked(self, builtin_genres: Genres) -> None:
+        """Changed requirement: the designs said "provisional: pending the experimentation
+        canon"; their methods are now checked by simulation (test_calibration.py)."""
         for genre in builtin_genres.genres.values():
-            assert "provisional" in genre.design.note, genre.name
-            assert "experimentation canon" in genre.design.note, genre.name
+            assert "design record, 2026-10-19" in genre.design.note, genre.name
 
     def test_what_each_genre_asks_of_its_author(self, builtin_genres: Genres) -> None:
         asked = {g.label: g.author_must_set for g in builtin_genres.genres.values()}
@@ -240,7 +244,7 @@ class TestBuiltInGenres:
         file: not in a field that ix acts on (any word), and not in prose (the ids that are
         not also plain English)."""
         acted_on = {
-            *("process", "http", "agent"),
+            *("process", "http", "agent-session"),
             *("prompt", "http-load", "inspect-task"),
             *("timing", "memory", "activation", "function-test", "usage", "judge"),
             *("k6", "compose", "kind"),
@@ -291,8 +295,8 @@ class TestExtension:
             "extends": "compare",
             "comparisons": {"superiority": FORMS["superiority"]},
         }
-        files.append(GenreFile(origin="lab/genres/gate.yaml", data=gate))
-        found = genres(files)
+        files.append(DeclarationFile(origin="lab/genres/gate.yaml", data=gate))
+        found = genres(files, grammar=type_url_problem)
         loaded = found.get("acme.v1.genre.gate")
         assert loaded is not None, found.rejected
         assert loaded.extends == "ix.v1.genre.compare"
@@ -347,10 +351,11 @@ class TestExtension:
         assert "alpha" in found.rejected[CHILD][0].message
 
         files = [*GenreFiles(packages=["ix.builtin.genres"]).files()]
-        params = {"pairing": "control", "correction": "holm", "baseline": "stored"}
-        lab = {"name": "lab.v1.genre.x", "extends": "compare",
-               "analysis": {"id": "ix.v1.analysis.compare", "params": params}}  # fmt: skip
-        found = genres([*files, GenreFile(origin="genres/x.yaml", data=lab)])
+        added = {"id": "ix.v1.analysis.compare", "params": {"baseline": "stored"}}
+        lab = {"name": "lab.v1.genre.x", "extends": "compare", "analysis": added}
+        found = genres(
+            [*files, DeclarationFile(origin="genres/x.yaml", data=lab)], grammar=type_url_problem
+        )
         assert _paths(found, "lab.v1.genre.x") == ["analysis.params.baseline"]
 
     def test_calibration_can_be_added_and_not_removed(self) -> None:
@@ -400,7 +405,7 @@ class TestExtension:
     def test_an_unknown_parent_is_named_with_the_genres_there_are(self) -> None:
         found = _genres(_genre(), _child(extends="acme.v1.genre.missing"))
         (problem,) = found.rejected[CHILD]
-        assert problem.kind == "genre_extends_unknown"
+        assert problem.kind == "name_unknown"
         assert problem.got == "acme.v1.genre.missing" and BASE in problem.allowed
 
     def test_a_child_of_a_refused_parent_is_refused(self) -> None:
@@ -411,21 +416,25 @@ class TestExtension:
     def test_two_files_with_one_name_are_both_refused(self) -> None:
         found = _genres(_genre(), _genre(question="Another question?"), _genre())
         assert found.genres == {}
-        assert _kinds(found, BASE) == ["genre_duplicate"] * 3
+        assert _kinds(found, BASE) == ["name_taken"] * 3
         assert {p.source for p in found.rejected[BASE]} == {
             "file-0.yaml", "file-1.yaml", "file-2.yaml",
         }  # fmt: skip
 
     def test_a_broken_file_does_not_take_the_others_down(self) -> None:
+        unreadable_yaml = a_problem(
+            "", kind="yaml_syntax", message="the file is not valid YAML", source="broken.yaml"
+        )
         found = genres(
             [
-                GenreFile(origin="good.yaml", data=_genre()),
-                GenreFile(origin="broken.yaml", error="mapping values are not allowed here"),
-                GenreFile(origin="nameless.yaml", data={"question": "?"}),
-            ]
+                DeclarationFile(origin="good.yaml", data=_genre()),
+                DeclarationFile(origin="broken.yaml", problems=(unreadable_yaml,)),
+                DeclarationFile(origin="nameless.yaml", data={"question": "?"}),
+            ],
+            grammar=type_url_problem,
         )
         assert tuple(found.genres) == (BASE,)
-        assert _kinds(found, "broken.yaml") == ["genre_invalid"]
+        assert found.rejected["broken.yaml"] == (unreadable_yaml,)  # as the reader said it
         assert _kinds(found, "nameless.yaml") == ["genre_invalid"]
 
 
@@ -590,7 +599,7 @@ class TestGenreExtensionPoint:
         assert points.get("ix") == "ix.builtin.genres"
 
     def test_discovery_finds_the_built_ins(self) -> None:
-        assert set(BUILT_IN) <= set(genres(GenreFiles().files()).names())
+        assert set(BUILT_IN) <= set(genres(GenreFiles().files(), grammar=type_url_problem).names())
 
     def test_a_third_party_ships_a_genre_as_a_data_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -615,7 +624,7 @@ class TestGenreExtensionPoint:
             return found
 
         monkeypatch.setattr(metadata, "entry_points", entry_points)
-        found = genres(GenreFiles().files())
+        found = genres(GenreFiles().files(), grammar=type_url_problem)
         soaked = found.get("acme.v1.genre.soak")
         assert soaked is not None, found.rejected
         assert soaked.extends == "ix.v1.genre.characterize"
@@ -624,20 +633,23 @@ class TestGenreExtensionPoint:
 
     def test_a_package_that_cannot_be_read_is_one_refused_file(self) -> None:
         files = GenreFiles(packages=["ix.builtin.genres", "no_such_package_anywhere"]).files()
-        found = genres(files)
+        found = genres(files, grammar=type_url_problem)
         assert len(found.genres) == len(BUILT_IN)
-        assert [problems[0].kind for problems in found.rejected.values()] == ["genre_invalid"]
+        # The package named is not there: a name not defined.
+        assert [problems[0].kind for problems in found.rejected.values()] == ["name_unknown"]
 
     def test_a_lab_keeps_genres_beside_its_experiment(self, tmp_path: Path) -> None:
         (tmp_path / "genres").mkdir()
         gate = {"name": "lab.v1.genre.gate", "extends": "regress"}
         (tmp_path / "genres" / "gate.yaml").write_text(yaml.safe_dump(gate))
         library = GenreFiles(packages=["ix.builtin.genres"])
-        assert _kinds(genres(library.files(str(tmp_path))), "lab.v1.genre.gate") == ["genre_depth"]
+        found = genres(library.files(str(tmp_path)), grammar=type_url_problem)
+        assert _kinds(found, "lab.v1.genre.gate") == ["genre_depth"]
         gate["extends"] = "compare"
         (tmp_path / "genres" / "gate.yaml").write_text(yaml.safe_dump(gate))
-        assert genres(library.files(str(tmp_path))).get("lab.v1.genre.gate") is not None
-        assert genres(library.files()).get("lab.v1.genre.gate") is None
+        found = genres(library.files(str(tmp_path)), grammar=type_url_problem)
+        assert found.get("lab.v1.genre.gate") is not None
+        assert genres(library.files(), grammar=type_url_problem).get("lab.v1.genre.gate") is None
 
     def test_a_genre_file_is_data_and_loads_no_code(self, tmp_path: Path) -> None:
         """A YAML tag that would construct a Python object is a refused file, not a call."""
@@ -646,7 +658,8 @@ class TestGenreExtensionPoint:
         (tmp_path / "genres" / "evil.yaml").write_text(
             f"name: !!python/object/apply:pathlib.Path.touch [{str(marker)!r}]\n"
         )
-        found = genres(GenreFiles(packages=[]).files(str(tmp_path)))
+        found = genres(GenreFiles(packages=[]).files(str(tmp_path)), grammar=type_url_problem)
         assert not marker.exists()
         assert found.genres == {}
-        assert [p[0].kind for p in found.rejected.values()] == ["genre_invalid"]
+        # matrix's loader reads YAML safely: the tag is a syntax it refuses.
+        assert [p[0].kind for p in found.rejected.values()] == ["yaml_syntax"]

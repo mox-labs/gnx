@@ -8,17 +8,26 @@ roles:
   - {name: variant, min: 1, max: 1}
 must_set: [primary, comparison, margin]
 comparisons:
-  non-inferiority: "{variant} is no worse than {control} by more than {margin} on {metric}"
+  non-inferiority: "{variant} is at most {margin} worse than {control} on {metric}"
 default_comparison: non-inferiority
-report: [question, design, gate, estimates, noise_floor, baseline, failures, warrant, raw]
+report: [question, design, gate, estimates, calibration, baseline, failures, warrant, raw]
 guidance: |
   Use regress to gate a change: the candidate must be no worse than the baseline.
+  regress is compare narrowed to one variant, with the comparison fixed to
+  non-inferiority: a candidate that does not differ from the baseline holds once the
+  interval stays above `-margin`. It need not be better.
   The control is the baseline build and the one variant is the candidate. Rebuild the
   baseline and run it in the same experiment, so the two are measured under the same
   conditions.
-  Decide the margin before you run: the largest regression you would still ship. The
-  comparison is non-inferiority and is not yours to change here.
+  regress answers "may the candidate ship: is it no worse than the baseline?", not "is
+  the candidate slower?": for that, use compare with superiority, which asks for a
+  difference.
+  Decide the margin before you run: the largest regression you would still ship. It is
+  the person's decision, never ix's, and the plan says where it came from. The
+  comparison is not yours to change here.
   Register the experiment before any run (`ix register`), so the margin cannot move
-  once the numbers are in.
-  What would falsify it: the interval of the difference crosses the margin on the worse
-  side. Inconclusive does not pass a gate.
+  once the numbers are in. A run of an experiment that changed since its registration
+  gives no gate result until the registration is amended with a reason.
+  What would falsify it: the interval of the difference lies wholly beyond the margin on
+  the worse side. An interval that crosses the margin is inconclusive, and inconclusive
+  does not pass a gate.

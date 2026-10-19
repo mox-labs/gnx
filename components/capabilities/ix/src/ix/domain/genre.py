@@ -1,40 +1,29 @@
 """The genre: the shape of a decision, as data.
 
-A genre says which roles an experiment's subjects play, what the experiment must set, which
-comparisons it may make, how a run is laid out (repeats, order, calibration, estimator),
-which analysis decides, and what the report must contain. It is a record in a YAML file. It
-holds no code, and it has no field that can name a probe kind, a sensor, a subject kind or a
-tool: it ranges over the observation table, so genres and kinds add up instead of
-multiplying.
+A genre says which roles subjects play, what an experiment must set, which comparisons it
+may make, how a run is laid out, which analysis decides and what the report contains. It
+names no kind, sensor or tool, so genres and kinds add up instead of multiplying.
 
-**The hypothesis is rendered, not written.** Each comparison carries the sentence it claims
-(``"{variant} is no worse than {control} by more than {margin} on {metric}"``); a genre
-without comparisons has one ``hypothesis_form``. A comparison whose sentence mentions
+**The hypothesis is rendered, not written.** Each comparison carries the sentence it claims;
+a genre without comparisons has one ``hypothesis_form``. A sentence that mentions
 ``{margin}`` needs a margin: that is the only place the rule is stated.
 
-**Extension is narrowing.** A genre may ``extends`` one other, one level deep. The child
-starts from the parent's record and may only tighten it: raise a minimum, lower a maximum,
-require more, allow fewer comparisons, add report sections. It may not loosen the parent,
-touch the analysis or its parameters, change the verdict form or the estimator, or add a
-role, so a finding under the child is still a valid finding under the parent.
+**Extension is narrowing.** A child ``extends`` one parent, one level deep, and may only
+tighten it, so a finding under the child is still one under the parent.
 :func:`narrowing_violations` is that check.
-
-**The design is provisional.** Every genre's ``design`` carries a ``note`` saying where it
-stands; the built-in ones say they wait on the experimentation canon.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError, model_validator
 
 from ix.domain import schema
-from ix.domain.kind import placeholders
+from ix.domain.kind import claim, placeholders, unreadable
 from ix.domain.problem import Problem, from_validation_error, problem
-from ix.domain.schema import Record
+from ix.domain.schema import DeclarationFile, Record
 
 #: The role filled by ``control:`` in the experiment, or by the first subject.
 CONTROL = "control"
@@ -44,7 +33,6 @@ Order = Literal["interleaved", "sequential"]
 Calibration = Literal["aa", "none"]
 VerdictForm = Literal["three-way", "none"]
 
-#: The experiment fields a genre may require.
 MUST_SETTABLE: frozenset[str] = frozenset(
     {
         "rationale",
@@ -98,7 +86,7 @@ class GenreDesign(Record):
     #: ``interleaved``: subjects alternate in a seeded random order, so drift spreads over
     #: all of them. ``sequential``: in the order written.
     order: Order
-    #: ``aa``: the control also runs against itself, to measure the noise floor.
+    #: ``aa``: the control also runs against itself, a check that the environment held still.
     calibration: Calibration
     #: How the trials' numbers combine when the experiment names no estimator. A boolean
     #: metric always combines as a rate.
@@ -132,7 +120,6 @@ class Genre(Record):
     must_set: tuple[str, ...] = ()
     #: The comparisons an experiment of this genre may name, each with the sentence it claims.
     comparisons: dict[str, str] = {}
-    #: The comparison when the experiment names none.
     default_comparison: str | None = None
     design: GenreDesign
     analysis: AnalysisRef
@@ -170,6 +157,11 @@ class Genre(Record):
             )
         if not self.comparisons and not self.hypothesis_form:
             raise ValueError("a genre has comparisons, or a hypothesis_form, to render")
+        if self.verdict_form != "none" and self.design.estimator in ("min", "max"):
+            raise ValueError(
+                f"estimator {self.design.estimator} has no interval ix decides on, and this "
+                "genre gives a verdict; use mean or median"
+            )
         if self.design.calibration == "aa" and CONTROL not in names:
             raise ValueError(
                 f"calibration aa runs the control against itself; add a {CONTROL} role"
@@ -239,190 +231,204 @@ _ORDER_STRICTNESS = ("sequential", "interleaved")
 _CALIBRATION_STRICTNESS = ("none", "aa")
 
 
-def narrowing_violations(parent: Genre, child: Genre, *, source: str = "") -> list[Problem]:
-    """Every place ``child`` loosens ``parent`` or adds a mechanism. Empty: it only narrows."""
+#: One way a child loosens its parent: (path, what is wrong, the fix).
+type _Loosened = tuple[str, str, str]
 
-    def bad(path: str, message: str, fix: str) -> Problem:
-        return problem(
-            path,
-            "genre_narrowing",
-            f"{child.name} extends {child.extends} and may only tighten it: {message}",
-            fix=fix,
-            source=source,
-        )
 
-    problems: list[Problem] = []
-
-    parent_roles = {role.name: role for role in parent.roles}
-    child_roles = {role.name: role for role in child.roles}
-    for name in sorted(child_roles.keys() - parent_roles.keys()):
-        problems.append(
-            bad(
-                f"roles.{name}",
-                f"role {name!r} is not a role of the parent",
-                f"use the parent's roles: {sorted(parent_roles)}",
-            )
+def _roles_loosened(parent: Genre, child: Genre) -> list[_Loosened]:
+    was_roles = {role.name: role for role in parent.roles}
+    now_roles = {role.name: role for role in child.roles}
+    found: list[_Loosened] = [
+        (
+            f"roles.{name}",
+            f"role {name!r} is not a role of the parent",
+            f"use the parent's roles: {sorted(was_roles)}",
         )
-    for name in sorted(parent_roles.keys() - child_roles.keys()):
-        problems.append(
-            bad(
-                f"roles.{name}",
-                f"the parent's role {name!r} is missing",
-                f"keep role {name!r}; narrow its min and max instead of removing it",
-            )
+        for name in sorted(now_roles.keys() - was_roles.keys())
+    ]
+    found += [
+        (
+            f"roles.{name}",
+            f"the parent's role {name!r} is missing",
+            f"keep role {name!r}; narrow its min and max instead of removing it",
         )
-    for name in sorted(parent_roles.keys() & child_roles.keys()):
-        was, now = parent_roles[name], child_roles[name]
+        for name in sorted(was_roles.keys() - now_roles.keys())
+    ]
+    for name in sorted(was_roles.keys() & now_roles.keys()):
+        was, now = was_roles[name], now_roles[name]
         if now.min < was.min:
-            problems.append(
-                bad(
+            found.append(
+                (
                     f"roles.{name}.min",
                     f"min {now.min} is below the parent's {was.min}",
                     f"min: {was.min} or more",
                 )
             )
         if was.max is not None and (now.max is None or now.max > was.max):
-            problems.append(
-                bad(
+            above = now.max if now.max is not None else "unbounded"
+            found.append(
+                (
                     f"roles.{name}.max",
-                    f"max {now.max if now.max is not None else 'unbounded'} is above the "
-                    f"parent's {was.max}",
+                    f"max {above} is above the parent's {was.max}",
                     f"max: {was.max} or fewer",
                 )
             )
+    return found
 
+
+def _choices_loosened(parent: Genre, child: Genre) -> list[_Loosened]:
+    found: list[_Loosened] = []
     if parent.factors != "allowed" and child.factors != parent.factors:
-        problems.append(
-            bad(
+        found.append(
+            (
                 "factors",
                 f"the parent says factors are {parent.factors}; {child.factors} reopens it",
                 f"factors: {parent.factors}",
             )
         )
-
     dropped = sorted(set(parent.must_set) - set(child.must_set))
     if dropped:
-        problems.append(
-            bad(
+        found.append(
+            (
                 "must_set",
                 f"the parent requires {dropped} and the child does not",
                 f"keep {dropped} in must_set",
             )
         )
-
     added = sorted(set(child.comparisons) - set(parent.comparisons))
     if added:
-        problems.append(
-            bad(
+        found.append(
+            (
                 "comparisons",
                 f"comparisons {added} are not comparisons of the parent {list(parent.comparisons)}",
                 f"choose from {list(parent.comparisons)}",
             )
         )
     if parent.comparisons and not child.comparisons:
-        problems.append(
-            bad(
+        found.append(
+            (
                 "comparisons",
                 "the parent decides by a comparison and the child names none",
                 f"keep at least one of {list(parent.comparisons)}",
             )
         )
+    return found
 
-    if child.design.repeats.min < parent.design.repeats.min:
-        problems.append(
-            bad(
+
+def _design_loosened(parent: Genre, child: Genre) -> list[_Loosened]:
+    was, now = parent.design, child.design
+    found: list[_Loosened] = []
+    if now.repeats.min < was.repeats.min:
+        found.append(
+            (
                 "design.repeats.min",
-                f"min {child.design.repeats.min} is below the parent's {parent.design.repeats.min}",
-                f"min: {parent.design.repeats.min} or more",
+                f"min {now.repeats.min} is below the parent's {was.repeats.min}",
+                f"min: {was.repeats.min} or more",
             )
         )
     for field, scale in (("order", _ORDER_STRICTNESS), ("calibration", _CALIBRATION_STRICTNESS)):
-        was, now = getattr(parent.design, field), getattr(child.design, field)
-        if scale.index(now) < scale.index(was):
-            problems.append(
-                bad(
+        strict, relaxed = getattr(was, field), getattr(now, field)
+        if scale.index(relaxed) < scale.index(strict):
+            found.append(
+                (
                     f"design.{field}",
-                    f"the parent sets {field} {was} and the child relaxes it to {now}",
-                    f"{field}: {was}",
+                    f"the parent sets {field} {strict} and the child relaxes it to {relaxed}",
+                    f"{field}: {strict}",
                 )
             )
-    if child.design.estimator != parent.design.estimator:
-        problems.append(
-            bad(
+    if now.estimator != was.estimator:
+        found.append(
+            (
                 "design.estimator",
-                f"estimator {child.design.estimator!r} replaces the parent's "
-                f"{parent.design.estimator!r}, which changes what the finding means",
-                f"estimator: {parent.design.estimator}",
+                f"estimator {now.estimator!r} replaces the parent's "
+                f"{was.estimator!r}, which changes what the finding means",
+                f"estimator: {was.estimator}",
             )
         )
+    return found
 
-    if child.analysis.id != parent.analysis.id:
-        problems.append(
-            bad(
+
+def _analysis_loosened(parent: Genre, child: Genre) -> list[_Loosened]:
+    was, now = parent.analysis, child.analysis
+    found: list[_Loosened] = []
+    if now.id != was.id:
+        found.append(
+            (
                 "analysis.id",
-                f"analysis {child.analysis.id!r} replaces the parent's {parent.analysis.id!r}; "
-                "a child adds no mechanism",
-                f"id: {parent.analysis.id}",
+                f"analysis {now.id!r} replaces the parent's {was.id!r}; a child adds no mechanism",
+                f"id: {was.id}",
             )
         )
-    for key in sorted(child.analysis.params.keys() | parent.analysis.params.keys()):
-        fixed = parent.analysis.params.get(key)
-        given = child.analysis.params.get(key)
-        if key not in parent.analysis.params:
-            problems.append(
-                bad(
+    for key in sorted(now.params.keys() | was.params.keys()):
+        fixed, given = was.params.get(key), now.params.get(key)
+        if key not in was.params:
+            found.append(
+                (
                     f"analysis.params.{key}",
-                    f"parameter {key}={given!r} is not a parameter of the parent's analysis; "
-                    "a new parameter can change what the finding means",
+                    f"parameter {key}={given!r} is not a parameter of "
+                    "the parent's analysis; a new parameter can change what the finding means",
                     f"remove {key!r}",
                 )
             )
         elif given != fixed:
             change = (
-                "and the child drops it"
-                if key not in child.analysis.params
-                else f"and {given!r} changes it"
+                "and the child drops it" if key not in now.params else f"and {given!r} changes it"
             )
-            problems.append(
-                bad(
+            found.append(
+                (
                     f"analysis.params.{key}",
                     f"the parent fixes {key}={fixed!r} {change}",
                     f"{key}: {fixed}",
                 )
             )
+    return found
 
+
+def _outputs_loosened(parent: Genre, child: Genre) -> list[_Loosened]:
+    found: list[_Loosened] = []
     if child.verdict_form != parent.verdict_form:
-        problems.append(
-            bad(
+        found.append(
+            (
                 "verdict_form",
                 f"verdict form {child.verdict_form!r} differs from the parent's "
                 f"{parent.verdict_form!r}",
                 f"verdict_form: {parent.verdict_form}",
             )
         )
-
     missing = [item for item in parent.report if item not in child.report]
     if missing:
-        problems.append(
-            bad(
+        found.append(
+            (
                 "report",
                 f"the parent's report sections {missing} are missing",
                 f"keep {missing} and add to them",
             )
         )
-    return problems
+    return found
+
+
+def narrowing_violations(parent: Genre, child: Genre, *, source: str = "") -> list[Problem]:
+    """Every place ``child`` loosens ``parent`` or adds a mechanism. Empty: it only narrows."""
+    loosened = [
+        *_roles_loosened(parent, child),
+        *_choices_loosened(parent, child),
+        *_design_loosened(parent, child),
+        *_analysis_loosened(parent, child),
+        *_outputs_loosened(parent, child),
+    ]
+    return [
+        problem(
+            path,
+            kind="genre_narrowing",
+            message=f"{child.name} extends {child.extends} and may only tighten it: {message}",
+            fix=fix,
+            source=source,
+        )
+        for path, message, fix in loosened
+    ]
 
 
 # --- the set of genres -----------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class GenreFile:
-    """One genre file as read: where it is, and its data or why it could not be read."""
-
-    origin: str
-    data: Mapping[str, Any] | None = None
-    error: str = ""
 
 
 class Genres(Record):
@@ -456,8 +462,8 @@ def _merged(parent: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, An
     return merged
 
 
-def _invalid(origin: str, message: str, fix: str, path: str = "") -> Problem:
-    return problem(path, "genre_invalid", message, fix=fix, source=origin)
+def _invalid(origin: str, *, message: str, fix: str, path: str = "") -> Problem:
+    return problem(path, kind="genre_invalid", message=message, fix=fix, source=origin)
 
 
 def _build(data: Mapping[str, Any], origin: str) -> tuple[Genre | None, list[Problem]]:
@@ -472,114 +478,117 @@ def _build(data: Mapping[str, Any], origin: str) -> tuple[Genre | None, list[Pro
         ]
 
 
-def genres(files: Iterable[GenreFile]) -> Genres:
-    """Build the set of genres from genre files, resolving ``extends`` and checking narrowing.
+type _Rejected = dict[str, list[Problem]]
+type _Raw = dict[str, tuple[DeclarationFile, dict[str, Any]]]
 
-    A file with any problem is refused whole and the others are unaffected; a child of a
-    refused parent is refused with it.
-    """
-    rejected: dict[str, list[Problem]] = {}
-    raw: dict[str, tuple[str, dict[str, Any]]] = {}
+
+def _named(files: Iterable[DeclarationFile], rejected: _Rejected) -> _Raw:
+    """Each readable genre file by the name it declares; the rest go to ``rejected``."""
+    raw: _Raw = {}
     duplicated: set[str] = set()
-
     for file in files:
         if file.data is None:
-            rejected.setdefault(file.origin, []).append(
-                _invalid(
-                    file.origin,
-                    f"the genre file could not be read: {file.error}",
-                    "make the file a YAML mapping with the keys of ix.v1.genre",
-                )
-            )
+            rejected.setdefault(file.origin, []).extend(file.problems or unreadable(file.origin))
             continue
         name = file.data.get("name")
         if not isinstance(name, str) or not name:
             rejected.setdefault(file.origin, []).append(
                 _invalid(
                     file.origin,
-                    "the genre file has no name",
-                    "name: <namespace>.v1.genre.<name>",
-                    "name",
+                    message="the genre file has no name",
+                    fix="name: <namespace>.v1.genre.<name>",
+                    path="name",
                 )
             )
             continue
-        if name in raw or name in duplicated:
-            duplicated.add(name)
-            first = raw.pop(name, None)
-            for origin in [file.origin] + ([first[0]] if first else []):
-                rejected.setdefault(name, []).append(
-                    problem(
-                        "name",
-                        "genre_duplicate",
-                        f"{name} is declared by more than one genre file",
-                        fix="give one of them another name; ix refuses both so that "
-                        "neither silently wins",
-                        source=origin,
-                    )
-                )
-            continue
-        raw[name] = (file.origin, dict(file.data))
+        claim(name, file, dict(file.data), raw, duplicated, rejected, noun="genre")
+    return raw
 
-    accepted: dict[str, Genre] = {}
-    children: list[str] = []
-    for name, (origin, data) in raw.items():
-        if data.get("extends") is not None:
-            children.append(name)
-            continue
-        genre, problems = _build(data, origin)
-        if genre is None:
-            rejected.setdefault(name, []).extend(problems)
-        else:
-            accepted[name] = genre
 
-    for name in children:
-        origin, data = raw[name]
-        parent_name = schema.url("genre", str(data["extends"]))
-        if parent_name not in raw:
-            rejected.setdefault(name, []).append(
-                problem(
-                    "extends",
-                    "genre_extends_unknown",
-                    f"{name} extends {parent_name}, which is not a genre ix can see",
-                    allowed=sorted(raw),
-                    got=parent_name,
-                    source=origin,
-                )
+def _child(
+    name: str, origin: str, data: dict[str, Any], raw: _Raw, accepted: dict[str, Genre]
+) -> tuple[Genre | None, list[Problem]]:
+    """A genre that extends another, merged onto its parent and held to narrow it."""
+    parent_name = schema.url("genre", str(data["extends"]))
+    if parent_name not in raw:
+        return None, [
+            problem(
+                "extends",
+                kind="name_unknown",
+                message=f"{name} extends {parent_name}, which is not a genre ix can see",
+                allowed=sorted(raw),
+                got=parent_name,
+                source=origin,
             )
-            continue
-        if raw[parent_name][1].get("extends") is not None:
-            grandparent = schema.url("genre", str(raw[parent_name][1]["extends"]))
-            rejected.setdefault(name, []).append(
-                problem(
-                    "extends",
-                    "genre_depth",
-                    f"{name} extends {parent_name}, which itself extends {grandparent}; a "
-                    "genre extends at most one level",
-                    fix=f"extend {grandparent} directly",
-                    source=origin,
-                )
+        ]
+    parent_data = raw[parent_name][1]
+    if parent_data.get("extends") is not None:
+        grandparent = schema.url("genre", str(parent_data["extends"]))
+        return None, [
+            problem(
+                "extends",
+                kind="genre_depth",
+                message=f"{name} extends {parent_name}, which itself extends {grandparent}; a "
+                "genre extends at most one level",
+                fix=f"extend {grandparent} directly",
+                source=origin,
             )
-            continue
-        parent = accepted.get(parent_name)
-        if parent is None:
+        ]
+    parent = accepted.get(parent_name)
+    if parent is None:
+        return None, [
+            _invalid(
+                origin,
+                message=f"{name} extends {parent_name}, which was refused",
+                fix=f"fix {parent_name} first",
+                path="extends",
+            )
+        ]
+    merged = {**_merged(parent_data, data), "extends": parent_name}
+    genre, problems = _build(merged, origin)
+    if genre is None:
+        return None, problems
+    violations = narrowing_violations(parent, genre, source=origin)
+    return (None, violations) if violations else (genre, [])
+
+
+def genres(files: Iterable[DeclarationFile], *, grammar: schema.Grammar) -> Genres:
+    """Build the set of genres from genre files, resolving ``extends`` and checking narrowing.
+
+    A file with any problem is refused whole and the others are unaffected; a name
+    ``grammar`` refuses is a problem; a child of a refused parent is refused with it. When
+    two files declare one name, a file that does not own it is refused alone if the other
+    does, and both are refused otherwise.
+    """
+    rejected: _Rejected = {}
+    raw = _named(files, rejected)
+    for name, (file, _) in list(raw.items()):
+        misnamed = grammar(name)
+        if misnamed is not None:
             rejected.setdefault(name, []).append(
                 _invalid(
-                    origin,
-                    f"{name} extends {parent_name}, which was refused",
-                    f"fix {parent_name} first",
-                    "extends",
+                    file.origin,
+                    message=misnamed,
+                    fix=f"rename the genre: {schema.NAMING}",
+                    path="name",
                 )
             )
-            continue
-        merged = _merged(raw[parent_name][1], data)
-        merged["extends"] = parent_name
-        genre, problems = _build(merged, origin)
-        if genre is not None:
-            problems = narrowing_violations(parent, genre, source=origin)
-        if problems or genre is None:
-            rejected.setdefault(name, []).extend(problems)
-        else:
-            accepted[name] = genre
+            del raw[name]
+    accepted: dict[str, Genre] = {}
+    for name, (file, data) in raw.items():
+        if data.get("extends") is None:
+            genre, problems = _build(data, file.origin)
+            if genre is None:
+                rejected.setdefault(name, []).extend(problems)
+            else:
+                accepted[name] = genre
+    for name, (file, data) in raw.items():
+        if data.get("extends") is not None:
+            genre, problems = _child(name, file.origin, data, raw, accepted)
+            if genre is None:
+                rejected.setdefault(name, []).extend(problems)
+            else:
+                accepted[name] = genre
 
     return Genres(
         genres=dict(sorted(accepted.items())),

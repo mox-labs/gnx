@@ -8,11 +8,11 @@ roles:
 factors: required
 must_set: [primary]
 design:
-  repeats: {default: 3, min: 2}
+  repeats: {default: 5, min: 3}
   order: interleaved
   calibration: none
   estimator: mean
-  note: "provisional: pending the experimentation canon"
+  note: "estimates only: t, order-statistic and score intervals per cell (ix design record, 2026-10-19)"
 analysis: {id: ix.v1.analysis.characterize}
 verdict_form: none
 report: [question, design, estimates, failures, raw]
