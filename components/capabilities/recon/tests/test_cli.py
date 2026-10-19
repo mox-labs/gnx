@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from click import unstyle
 from click.testing import CliRunner
 
 import recon
@@ -465,7 +466,7 @@ class TestQueryProvenance:
         assert f"archive {archive.name}" in human.stderr
 
     def test_help_says_where_archive_ids_come_from_and_how_to_read_older_or_raw_files(self):
-        text = _invoke("query", "--help").stdout
+        text = " ".join(unstyle(_invoke("query", "--help").stdout).split())
         assert "recon status <mission>" in text and "--archive" in text
         assert "read_json_auto" in text and "read_ndjson_objects" in text
         assert "WITH ORDINALITY" in text

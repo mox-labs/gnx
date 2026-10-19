@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 import yaml
+from click import unstyle
 from click.testing import CliRunner, Result
 
 import ix
@@ -32,6 +33,11 @@ SRC = PACKAGE / "src" / "ix"
 
 def _run(*args: str) -> Result:
     return CliRunner(env={"COLUMNS": "80"}).invoke(main, list(args))
+
+
+def _help(*command: str) -> str:
+    """A command's help as plain text: Rich styles it wherever it sees a CI runner."""
+    return unstyle(_run(*command, "--help").stdout)
 
 
 def _json(result: Result) -> dict[str, Any]:
@@ -182,7 +188,7 @@ class TestErrorEnvelope:
         assert set(ERROR_KINDS) <= set(EXIT_CODES)
 
     def test_the_help_prints_each_exit_code_on_a_line_of_its_own(self) -> None:
-        lines = [line.strip() for line in _run("run", "--help").stdout.splitlines()]
+        lines = [line.strip() for line in _help("run").splitlines()]
         for kind, code in EXIT_CODES.items():
             assert any(line.startswith(f"{code}  {kind}:") for line in lines), kind
 
@@ -870,10 +876,10 @@ class TestRunReportAndRunsCommands:
         assert EXIT_CODES["unregistered"] == 15 and EXIT_CODES["run_failed"] == 8
         assert EXIT_CODES["running"] == 13 and EXIT_CODES["deviations"] == 14
         assert ix.UnregisteredError("x").exit_code == 15
-        help_text = " ".join(_run("run", "--help").stdout.split())
+        help_text = " ".join(_help("run").split())
         for said in ("--exploratory", "10 fails", "11 inconclusive", "exits 12", "exits 8"):
             assert said in help_text, said
-        report_help = " ".join(_run("report", "--help").stdout.split())
+        report_help = " ".join(_help("report").split())
         for said in ("10 fails", "11 inconclusive", "12 for a run that was stopped",
                      "8 for one the harness", "13 for a run that is still running"):  # fmt: skip
             assert said in report_help, said
