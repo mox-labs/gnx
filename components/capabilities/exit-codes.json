@@ -1,0 +1,17 @@
+{
+  "schema": "gnx.v1.exit-codes",
+  "description": "The exit codes the capability CLIs agree on. A tool that has one of these kinds exits with this code and never renames it. A tool's own kinds take codes from 10 up, each code one kind.",
+  "kinds": {
+    "ok": 0,
+    "unknown": 1,
+    "usage": 2,
+    "config": 3,
+    "not_found": 4,
+    "transient": 5,
+    "auth": 6,
+    "conflict": 7,
+    "run_failed": 8,
+    "store": 9,
+    "interrupted": 130
+  }
+}

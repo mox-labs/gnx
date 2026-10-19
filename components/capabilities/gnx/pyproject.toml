@@ -1,7 +1,7 @@
 [project]
 name = "gnx"
 version = "0.1.0"
-description = "gnx — the catalog: component registry, Claude Code marketplace, and agentic CLI for composable components."
+description = "gnx — the catalog: component registry, Claude Code marketplace, and agentic CLI for composable components"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [

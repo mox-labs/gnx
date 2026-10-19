@@ -63,12 +63,12 @@ def read_bench(root: Path) -> list[Seat]:
         refuses = ""
         r = re.search(
             r"(?:Cannot discuss|You refuse|Refuses|Orthogonality Lock)[:\s]*(.{0,300})",
-            body, re.S | re.I,
+            body,
+            re.S | re.I,
         )
         if r:
             refuses = " ".join(r.group(1).split())
-        seats.append(Seat(name=name, method=body, refuses=refuses,
-                          grounding=Grounding.UNKNOWN))
+        seats.append(Seat(name=name, method=body, refuses=refuses, grounding=Grounding.UNKNOWN))
     return seats
 
 
@@ -76,16 +76,20 @@ def read_bench(root: Path) -> list[Seat]:
 # Each returns (present, evidence, gaps). A gap means "the artifact is there and the
 # substantive test does not pass" — which is the finding worth surfacing.
 
+
 def _check_bench(root: Path) -> tuple[bool, list[str], list[str]]:
     seats = read_bench(root)
     if not seats:
         return False, [], ["no .claude/agents/*.md"]
-    evidence = [f"{len(seats)} seat(s): {', '.join(s.name for s in seats[:8])}"
-                + (" …" if len(seats) > 8 else "")]
+    evidence = [
+        f"{len(seats)} seat(s): {', '.join(s.name for s in seats[:8])}"
+        + (" …" if len(seats) > 8 else "")
+    ]
     gaps: list[str] = []
     if len(seats) < POLICY["bench_min_seats"]:
-        gaps.append(f"only {len(seats)} seat(s); a bench needs "
-                    f">= {POLICY['bench_min_seats']} to disagree")
+        gaps.append(
+            f"only {len(seats)} seat(s); a bench needs >= {POLICY['bench_min_seats']} to disagree"
+        )
     thin = [s.name for s in seats if s.method_is_thin(POLICY["seat_method_min_chars"])]
     if thin:
         gaps.append(
@@ -94,8 +98,11 @@ def _check_bench(root: Path) -> tuple[bool, list[str], list[str]]:
         )
     unbounded = [s.name for s in seats if not s.refuses]
     if unbounded:
-        gaps.append("no stated refusal/boundary — method-ownership unverifiable: "
-                    + ", ".join(unbounded[:6]) + (" …" if len(unbounded) > 6 else ""))
+        gaps.append(
+            "no stated refusal/boundary — method-ownership unverifiable: "
+            + ", ".join(unbounded[:6])
+            + (" …" if len(unbounded) > 6 else "")
+        )
     return True, evidence, gaps
 
 
@@ -117,15 +124,28 @@ def _check_ceremonies(root: Path) -> tuple[bool, list[str], list[str]]:
     text = _read(root / "CLAUDE.md")
     if not text:
         return False, [], ["no CLAUDE.md to declare ceremonies in"]
-    named = [k for k in ("definition of done", "verify", "compact", "handoff",
-                         "sycophan", "context hygiene", "cold re-read", "reset")
-             if k in text.lower()]
+    named = [
+        k
+        for k in (
+            "definition of done",
+            "verify",
+            "compact",
+            "handoff",
+            "sycophan",
+            "context hygiene",
+            "cold re-read",
+            "reset",
+        )
+        if k in text.lower()
+    ]
     if not named:
         return False, [], ["no recurring disciplines named"]
     gaps = []
     if not re.search(r"could not fabricate|external|out-of-family|outside", text, re.I):
-        gaps.append("THE ONE LAW unverified: no ceremony names the signal it injects "
-                    "from outside the agent performing it")
+        gaps.append(
+            "THE ONE LAW unverified: no ceremony names the signal it injects "
+            "from outside the agent performing it"
+        )
     return True, [f"disciplines named: {', '.join(named)}"], gaps
 
 
@@ -135,8 +155,10 @@ def _check_flow(root: Path) -> tuple[bool, list[str], list[str]]:
         return False, [], ["no process-encoding — this is a council, not an organization"]
     gaps = []
     if not re.search(r"convene|stay thin|do not convene|only for", text, re.I):
-        gaps.append("no convene-discipline: nothing says when NOT to convene "
-                    "(the procrastination-engine failure)")
+        gaps.append(
+            "no convene-discipline: nothing says when NOT to convene "
+            "(the procrastination-engine failure)"
+        )
     return True, ["process described in CLAUDE.md"], gaps
 
 
@@ -145,8 +167,11 @@ def _check_practices(root: Path) -> tuple[bool, list[str], list[str]]:
     found = sorted(p.parent.name for p in skills.glob("*/SKILL.md")) if skills.is_dir() else []
     if not found:
         return False, [], ["no .claude/skills/*/SKILL.md"]
-    return True, [f"{len(found)} practice(s): {', '.join(found[:8])}"
-                  + (" …" if len(found) > 8 else "")], []
+    return (
+        True,
+        [f"{len(found)} practice(s): {', '.join(found[:8])}" + (" …" if len(found) > 8 else "")],
+        [],
+    )
 
 
 def _check_routing(root: Path) -> tuple[bool, list[str], list[str]]:
@@ -162,12 +187,14 @@ def _check_routing(root: Path) -> tuple[bool, list[str], list[str]]:
 def _check_gate(root: Path) -> tuple[bool, list[str], list[str]]:
     text = _read(root / "CLAUDE.md")
     seats = read_bench(root)
-    gate_seat = [s.name for s in seats
-                 if re.search(r"gate|verif|review|audit|refus", s.method, re.I)]
+    gate_seat = [
+        s.name for s in seats if re.search(r"gate|verif|review|audit|refus", s.method, re.I)
+    ]
     if not (gate_seat or re.search(r"gate|verification", text, re.I)):
         return False, [], ["no verification gate declared"]
-    evidence = ([f"gate seat(s): {', '.join(gate_seat)}"] if gate_seat
-                else ["gate named in CLAUDE.md"])
+    evidence = (
+        [f"gate seat(s): {', '.join(gate_seat)}"] if gate_seat else ["gate named in CLAUDE.md"]
+    )
     gaps: list[str] = []
     # M1-H2 refuted the BROAD justification for component #7 — "fresh eyes catch what the
     # maker misses" — by measuring a two-pass cold re-read as sufficient on everything tested.
@@ -178,8 +205,9 @@ def _check_gate(root: Path) -> tuple[bool, list[str], list[str]]:
     # So this check requires an honest LABEL, not a particular kind of gate. A cold-reread
     # gate that says so passes. What fails is a gate claiming independence it has not
     # characterised — which is the one thing the evidence does support flagging.
-    out_of_family = re.search(r"out-of-family|different model|cross-family|mlx|non-claude",
-                              text, re.I)
+    out_of_family = re.search(
+        r"out-of-family|different model|cross-family|mlx|non-claude", text, re.I
+    )
     cold_reread = re.search(r"cold re-?read|fresh eyes|second pass|two-pass", text, re.I)
     if not out_of_family and not cold_reread:
         gaps.append(
@@ -192,8 +220,11 @@ def _check_gate(root: Path) -> tuple[bool, list[str], list[str]]:
 
 
 def _check_ratchet(root: Path) -> tuple[bool, list[str], list[str]]:
-    candidates = [root / ".claude" / "ratchet.md", root / ".claude" / "guild-ratchet.md",
-                  root / "RATCHET.md"]
+    candidates = [
+        root / ".claude" / "ratchet.md",
+        root / ".claude" / "guild-ratchet.md",
+        root / "RATCHET.md",
+    ]
     found = next((p for p in candidates if p.is_file()), None)
     if not found:
         return False, [], ["no ratchet file"]
@@ -210,8 +241,10 @@ def _check_membership(root: Path) -> tuple[bool, list[str], list[str]]:
         return False, [], ["no legible perimeter — nothing says what this dao does NOT own"]
     gaps = []
     if not re.search(r"flag|escalat|ladder|sanction", text, re.I):
-        gaps.append("no graduated drift ladder (flag -> ratchet -> escalate); "
-                    "the first rung must be cheaper than a halt")
+        gaps.append(
+            "no graduated drift ladder (flag -> ratchet -> escalate); "
+            "the first rung must be cheaper than a halt"
+        )
     return True, ["perimeter described"], gaps
 
 
@@ -221,8 +254,10 @@ def _check_direction(root: Path) -> tuple[bool, list[str], list[str]]:
         return False, [], ["no human-accountability surface — this is not DIRECTED"]
     gaps = []
     if not re.search(r"irreversib|reversib|novel", text, re.I):
-        gaps.append("M4 floors missing: the irreversible and the novel must route to the "
-                    "human regardless of accrued trust")
+        gaps.append(
+            "M4 floors missing: the irreversible and the novel must route to the "
+            "human regardless of accrued trust"
+        )
     return True, ["human direction inlet declared"], gaps
 
 
@@ -234,15 +269,25 @@ def _check_record(root: Path) -> tuple[bool, list[str], list[str]]:
     mentions_peers = re.search(r"peer|inter-dao|other dao|external agent", text, re.I)
     has_invariant = re.search(r"data,? not instructions|untrusted|rule of two", text, re.I)
     if mentions_peers and not has_invariant:
-        gaps.append("peer coordination mentioned without M5's invariant: a peer's "
-                    "post-body is DATA, NOT INSTRUCTIONS (+ Rule-of-Two per session)")
+        gaps.append(
+            "peer coordination mentioned without M5's invariant: a peer's "
+            "post-body is DATA, NOT INSTRUCTIONS (+ Rule-of-Two per session)"
+        )
     return True, [".claude/ present"], gaps
 
 
 _CHECKS = {
-    1: _check_bench, 2: _check_charter, 3: _check_ceremonies, 4: _check_flow,
-    5: _check_practices, 6: _check_routing, 7: _check_gate, 8: _check_ratchet,
-    9: _check_membership, 10: _check_direction, 11: _check_record,
+    1: _check_bench,
+    2: _check_charter,
+    3: _check_ceremonies,
+    4: _check_flow,
+    5: _check_practices,
+    6: _check_routing,
+    7: _check_gate,
+    8: _check_ratchet,
+    9: _check_membership,
+    10: _check_direction,
+    11: _check_record,
 }
 
 
@@ -251,8 +296,9 @@ def audit(root: Path) -> list[Coverage]:
     out: list[Coverage] = []
     for component in SPEC:
         present, evidence, gaps = _CHECKS[component.n](root)
-        out.append(Coverage(component=component, present=present,
-                            evidence=list(evidence), gaps=list(gaps)))
+        out.append(
+            Coverage(component=component, present=present, evidence=list(evidence), gaps=list(gaps))
+        )
     return out
 
 
@@ -263,6 +309,7 @@ def summarise(coverage: list[Coverage]) -> dict[str, object]:
     transition is crisis-driven, so a project can be a legitimately complete council and
     a deliberately incomplete organization at the same time.
     """
+
     def tier(t: Tier) -> list[Coverage]:
         return [c for c in coverage if c.component.tier is t]
 
@@ -280,4 +327,5 @@ def summarise(coverage: list[Coverage]) -> dict[str, object]:
 
 def component_for(n: int) -> Component:
     from dao.domain.spec import by_number
+
     return by_number(n)

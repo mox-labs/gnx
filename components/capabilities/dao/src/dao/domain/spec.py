@@ -43,13 +43,13 @@ class Tier(StrEnum):
 
 
 class Group(StrEnum):
-    COLLECTIVE = "collective"          # who does the work
-    CHARTER = "charter"                # the espoused normative commitments
-    HABITS = "habits"                  # how it operates, recurringly
-    PRAGMATICS = "pragmatics"          # how the project actually gets maintained
-    GOVERNANCE = "governance"          # governance of the collective, for effective cognition
-    DIRECTION = "direction"            # the human steering
-    BOUNDARY = "boundary"              # what it emits, how it talks to peers
+    COLLECTIVE = "collective"  # who does the work
+    CHARTER = "charter"  # the espoused normative commitments
+    HABITS = "habits"  # how it operates, recurringly
+    PRAGMATICS = "pragmatics"  # how the project actually gets maintained
+    GOVERNANCE = "governance"  # governance of the collective, for effective cognition
+    DIRECTION = "direction"  # the human steering
+    BOUNDARY = "boundary"  # what it emits, how it talks to peers
 
 
 class Component(BaseModel):

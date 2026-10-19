@@ -1,7 +1,7 @@
 [project]
 name = "hardline"
 version = "0.1.0"
-description = "Model runtime — one port for every model family: messages in, text or a validated object out, tagged with the family that answered."
+description = "Model runtime — one port for every model family: messages in, text or a validated object out, tagged with the family that answered"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
@@ -45,9 +45,6 @@ include = [
     "src/hardline/py.typed",
     "src/hardline/assets/*.md",
 ]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100

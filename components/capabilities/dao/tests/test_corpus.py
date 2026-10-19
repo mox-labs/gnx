@@ -43,8 +43,7 @@ def test_fields_and_grounding():
 
 
 def test_multi_valued_informs_splits():
-    tacit = next(x for x in parse_catalog(CATALOG)
-                 if x.name == "tacit-knowledge-elicitation")
+    tacit = next(x for x in parse_catalog(CATALOG) if x.name == "tacit-knowledge-elicitation")
     assert tacit.informs == ("cix:radix", "research:polanyi")
     assert tacit.informs_project("cix") == ("radix",)
     assert tacit.informs_project("research") == ("polanyi",)

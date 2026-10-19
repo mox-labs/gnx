@@ -200,9 +200,7 @@ def build_plugin(
         manifest["repository"] = spec["repository"]
     manifest = {k: v for k, v in manifest.items() if v not in (None, [], "")}
 
-    (pdir / ".claude-plugin" / "plugin.json").write_text(
-        json.dumps(manifest, indent=2) + "\n"
-    )
+    (pdir / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     entry = {
         "name": name,
@@ -279,9 +277,7 @@ def _tree_differs(a: Path, b: Path) -> list[str]:
         if not d.exists():
             return set()
         return {
-            str(p.relative_to(d))
-            for p in d.rglob("*")
-            if p.is_file() and ".DS_Store" not in p.name
+            str(p.relative_to(d)) for p in d.rglob("*") if p.is_file() and ".DS_Store" not in p.name
         }
 
     fa, fb = walk(a), walk(b)

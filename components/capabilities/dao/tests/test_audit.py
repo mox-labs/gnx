@@ -106,8 +106,7 @@ def test_out_of_family_gate_satisfies_the_test(tmp_path):
         "model distribution, per M1-H2.\n"
     )
     cov = audit(tmp_path)
-    assert not any("out-of-family" in g
-                   for g in next(c for c in cov if c.component.n == 7).gaps)
+    assert not any("out-of-family" in g for g in next(c for c in cov if c.component.n == 7).gaps)
 
 
 def test_honest_cold_reread_label_also_satisfies_it(tmp_path):
@@ -119,8 +118,7 @@ def test_honest_cold_reread_label_also_satisfies_it(tmp_path):
         "out-of-family anchor, and is labelled as such.\n"
     )
     cov = audit(tmp_path)
-    assert not any("out-of-family" in g
-                   for g in next(c for c in cov if c.component.n == 7).gaps)
+    assert not any("out-of-family" in g for g in next(c for c in cov if c.component.n == 7).gaps)
 
 
 def test_ratchet_without_trigger_is_partial(tmp_path):
@@ -152,8 +150,9 @@ def test_direction_without_reversibility_floors_is_partial(tmp_path):
     )
     cov = audit(tmp_path)
     assert _status(cov, 10) == "PARTIAL"
-    assert any("irreversible" in g.lower() for g in
-               next(c for c in cov if c.component.n == 10).gaps)
+    assert any(
+        "irreversible" in g.lower() for g in next(c for c in cov if c.component.n == 10).gaps
+    )
 
 
 def test_read_bench_prefers_frontmatter_name(tmp_path):
@@ -171,6 +170,7 @@ def test_every_component_declares_a_substantive_test():
 
 def test_council_components_all_carry_a_check():
     from dao.application.audit import _CHECKS
+
     assert set(_CHECKS) == {c.n for c in SPEC}
 
 

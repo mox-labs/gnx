@@ -22,8 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class DomainType(StrEnum):
     """dao-corpus/corpora/agent-craft splits its 76 domains two ways."""
 
-    FIGURE = "figure"   # a person whose method is the ground (dijkstra, feynman)
-    CRAFT = "craft"     # a discipline (ddd-domain-modeling, color-theory)
+    FIGURE = "figure"  # a person whose method is the ground (dijkstra, feynman)
+    CRAFT = "craft"  # a discipline (ddd-domain-modeling, color-theory)
 
 
 class Grounding(StrEnum):
@@ -64,11 +64,7 @@ class CorpusDomain(BaseModel):
 
     def informs_project(self, project: str) -> tuple[str, ...]:
         """The units this domain informs within one project."""
-        return tuple(
-            ref.split(":", 1)[1]
-            for ref in self.informs
-            if ref.startswith(f"{project}:")
-        )
+        return tuple(ref.split(":", 1)[1] for ref in self.informs if ref.startswith(f"{project}:"))
 
     @property
     def is_grounded(self) -> bool:

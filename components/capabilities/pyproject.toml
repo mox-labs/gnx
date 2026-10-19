@@ -1,26 +1,22 @@
 # The capabilities workspace.
 #
 # This is a uv workspace root, NOT the repo root. gnx's repo root identity is
-# `.claude-plugin/marketplace.json` — a Claude Code plugin marketplace — and its
-# root `pyproject.toml` is the standalone gnx CLI (py>=3.11). Capabilities are
+# `.claude-plugin/marketplace.json`, a Claude Code plugin marketplace. Capabilities are
 # runnables that BACK components (components/INTAKE.md §"Tool binding"), so their
 # Python-ness is scoped here and never leaks up to the marketplace root.
 #
-# Verified on uv 0.9.13: `uv lock`/`uv run` work from this directory and from
-# inside any member; the repo-root lock resolves only `gnx` and is unaffected.
-#
-# radix is excluded: it is a declarative-only Capability (SKILL.md + context/),
-# has no pyproject.toml, and was never a package — cix excluded it the same way.
+# `uv lock` and `uv run` work from this directory and from inside any member.
 
 [tool.uv.workspace]
 members = ["*"]
-exclude = ["radix"]
+# pytest writes __pycache__ beside conftest.py here, and it is no member.
+exclude = ["__pycache__"]
 
 # uv 0.9+ REQUIRES an explicit source entry for a workspace-internal dependency.
 # A member that declares a bare `matrix` dep fails to resolve without this, with
 # "`matrix` is included as a workspace member, but is missing an entry in
-# `tool.uv.sources`". cix declared this at its own workspace root, which is why
-# the member pyprojects port over unmodified.
+# `tool.uv.sources`". A package installed from a git URL with a subdirectory resolves
+# these too: uv clones the whole repository and finds this workspace root.
 [tool.uv.sources]
 matrix = { workspace = true }
 ix = { workspace = true }
@@ -37,20 +33,20 @@ dev = [
     "mypy>=1.8",
     "types-PyYAML",  # gnx + harness parse YAML; strict mypy needs the stubs
     "pytz>=2024.1",  # required by DuckDB TIMESTAMPTZ (recon)
-    "opentelemetry-sdk>=1.20",  # matrix/tests/test_orchestrator_tracing.py
+    "opentelemetry-sdk>=1.20",  # matrix's telemetry tests install an SDK provider
     # The `claude` extra: matrix's SDK runtime is typechecked and tested here, and no other
     # member brings the SDK in.
     "matrix[claude]",
     "ix",
-    "recon",
+    "recon[otel]",
     "gnx",
     "dao",
     "hardline",
 ]
 
-# Members set `asyncio_mode = "auto"` in their own pyprojects; pytest reads the
-# rootdir config, so invoking it from this workspace root needs it declared here
-# too or every async test errors on a missing marker.
+# The one pytest configuration. No member sets its own, so wherever pytest starts in the
+# workspace this is the rootdir, and conftest.py beside it (no test reaches a live model)
+# applies to every package's tests.
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 

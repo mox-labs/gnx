@@ -20,8 +20,10 @@ DEFAULT_CORPUS = Path.home() / "mox" / "packages" / "dao-corpus"
 CATALOG_REL = Path("corpora") / "agent-craft" / "CATALOG.md"
 
 # | domain | type | status | sources | cnf | informs |
-_ROW = re.compile(r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|"
-                  r"\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*$")
+_ROW = re.compile(
+    r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|"
+    r"\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*$"
+)
 _SEPARATOR = re.compile(r"^\|[\s|:-]+\|$")
 
 
