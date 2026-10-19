@@ -81,16 +81,16 @@ async def test_releases_run_after_a_component_raises_last_registered_first() -> 
         await Executor().run(wiring)
     run = e.value.run
     assert released == ["third", "second", "first"]
-    assert run.releases == [
+    assert [r.document() for r in run.releases] == [
         {"component": "use", "status": "released", "error": None},
         {"component": "provision", "status": "released", "error": None},
         {"component": "provision", "status": "released", "error": None},
     ]
     assert run.status == "failed" and run.rows(A) == ("handle",)
-    assert run.components["provision"]["status"] == "completed"
-    assert run.components["use"]["status"] == "failed"
+    assert run.components["provision"].status == "completed"
+    assert run.components["use"].status == "failed"
     # A teardown written as a component is skipped exactly when it is needed; a release is not.
-    assert run.components["teardown"] == {"status": "skipped", "reason": "policy: fast"}
+    assert run.components["teardown"].document() == {"status": "skipped", "reason": "policy: fast"}
 
 
 async def test_releases_run_on_success_too() -> None:
@@ -102,7 +102,7 @@ async def test_releases_run_on_success_too() -> None:
 
     run = await Executor().run(wire({"a": Step(body, provides=A)}))
     assert run.status == "completed" and released == ["x"]
-    assert run.components["a"]["status"] == "completed"
+    assert run.components["a"].status == "completed"
 
 
 async def test_a_failure_asks_running_components_to_stop_and_keeps_what_they_return() -> None:
@@ -128,11 +128,11 @@ async def test_a_failure_asks_running_components_to_stop_and_keeps_what_they_ret
         await Executor().run(wiring)
     run = e.value.run
     assert e.value.component == "bad"
-    assert run.components["sampler"]["status"] == "completed"
-    assert run.components["sampler"]["reason"] == "run_failed"
+    assert run.components["sampler"].status == "completed"
+    assert run.components["sampler"].reason == "run_failed"
     assert run.rows(A) == ("partial",)
-    assert run.components["after"] == {"status": "skipped", "reason": "policy: fast"}
-    assert [f["component"] for f in run.failures] == ["bad"]
+    assert run.components["after"].document() == {"status": "skipped", "reason": "policy: fast"}
+    assert [f.component for f in run.failures] == ["bad"]
 
 
 async def test_a_component_that_ignores_the_stop_request_is_cancelled_after_the_grace() -> None:
@@ -157,8 +157,8 @@ async def test_a_component_that_ignores_the_stop_request_is_cancelled_after_the_
         await Executor().run(wiring, limits=Limits(grace_s=0))
     run = e.value.run
     assert unwound == ["finally"]
-    assert run.components["deaf"]["status"] == "cancelled"
-    assert run.components["deaf"]["reason"] == "run_failed"
+    assert run.components["deaf"].status == "cancelled"
+    assert run.components["deaf"].reason == "run_failed"
     assert A not in run.construct
 
 
@@ -179,15 +179,15 @@ async def test_isolate_lets_independent_components_finish_and_skips_only_depende
         await Executor().run(wiring, limits=Limits(on_failure="isolate"))
     run = e.value.run
     assert run.status == "failed"
-    assert {name: c["status"] for name, c in run.components.items()} == {
+    assert {name: c.status for name, c in run.components.items()} == {
         "bad": "failed",
         "needs-bad": "skipped",
         "needs-that": "skipped",
         "free": "completed",
         "needs-free": "completed",
     }
-    assert run.components["needs-bad"]["reason"] == "upstream: bad"
-    assert run.components["needs-that"]["reason"] == "upstream: needs-bad"
+    assert run.components["needs-bad"].reason == "upstream: bad"
+    assert run.components["needs-that"].reason == "upstream: needs-bad"
     assert run.rows(D) == ("fine",)
 
 
@@ -228,9 +228,9 @@ async def test_cancelling_mid_component_stops_it_releases_and_keeps_the_partial_
     assert run.status == "cancelled" and run.ended is not None
     assert run.rows(A) == ("kept",)
     assert run.rows(B) == ("handed over before the cancel",)
-    assert run.components["hangs"]["status"] == "cancelled"
-    assert run.components["hangs"]["reason"] == "cancelled"
-    assert run.components["never-starts"] == {"status": "skipped", "reason": "cancelled"}
+    assert run.components["hangs"].status == "cancelled"
+    assert run.components["hangs"].reason == "cancelled"
+    assert run.components["never-starts"].document() == {"status": "skipped", "reason": "cancelled"}
     assert run.failures == []
 
 
@@ -248,7 +248,7 @@ async def test_a_cancelled_component_that_returns_within_the_grace_keeps_its_row
     with pytest.raises(RunCancelled) as e:
         await task
     assert e.value.run.rows(A) == ("what I had",)
-    assert e.value.run.components["m"]["status"] == "completed"
+    assert e.value.run.components["m"].status == "completed"
     assert e.value.run.status == "cancelled"
 
 
@@ -279,8 +279,8 @@ async def test_a_component_that_swallows_cancellation_is_abandoned_and_reported(
     run = e.value.run
     try:
         assert swallowed.is_set() and not let_go.is_set()  # it is still running
-        assert run.components["stubborn"]["status"] == "cancelled"
-        assert run.components["stubborn"]["abandoned"] is True
+        assert run.components["stubborn"].status == "cancelled"
+        assert run.components["stubborn"].abandoned is True
         assert released == ["released"]  # the run still ended, and still released
         kept[0].provide(A, "after the run ended")  # and it can no longer write to the record
         assert A not in run.construct
@@ -304,7 +304,7 @@ async def test_a_component_past_its_deadline_that_swallows_cancellation_fails_ab
         with pytest.raises(RunError, match="timed out after 0.01s") as e:
             await Executor().run(wiring, limits=limits)
         record = e.value.run.components["stubborn"]
-        assert (record["status"], record["reason"], record["abandoned"]) == (
+        assert (record.status, record.reason, record.abandoned) == (
             "failed",
             "deadline",
             True,
@@ -348,10 +348,10 @@ async def test_each_component_has_its_own_deadline() -> None:
     with pytest.raises(RunError, match="'hangs' timed out after 0.01s") as e:
         await Executor().run(wiring, limits=limits)
     run = e.value.run
-    assert run.components["hangs"]["status"] == "failed"
-    assert run.components["hangs"]["reason"] == "deadline"
+    assert run.components["hangs"].status == "failed"
+    assert run.components["hangs"].reason == "deadline"
     # The sibling with no deadline outlived the one that timed out, and was left alone.
-    assert run.components["unbounded"]["status"] == "completed"
+    assert run.components["unbounded"].status == "completed"
     assert run.rows(B) == ("done",)
 
 
@@ -364,15 +364,17 @@ async def test_a_deadline_is_a_stop_request_first_and_what_is_returned_is_kept()
     with pytest.raises(RunError, match="timed out") as e:
         await Executor().run(wiring, limits=Limits(deadline_s=0.01))
     run = e.value.run
-    assert run.components["m"]["status"] == "failed"
-    assert run.components["m"]["reason"] == "deadline"
+    assert run.components["m"].status == "failed"
+    assert run.components["m"].reason == "deadline"
     assert run.rows(A) == ("so far",)
 
 
 async def test_limits_naming_an_unknown_component_are_refused() -> None:
     wiring = wire({"a": Step(_boom)})
-    with pytest.raises(ConfigError, match="not in the run"):
+    with pytest.raises(ConfigError) as e:
         await Executor().run(wiring, limits=Limits(components={"b": ComponentLimits(deadline_s=1)}))
+    ((path, kind, allowed),) = [(p.path, p.kind, p.allowed) for p in e.value.problems]
+    assert (path, kind, allowed) == ("limits.components.b", "name_unknown", ("a",))
 
 
 async def test_a_release_that_raises_or_overruns_is_reported_and_the_rest_still_run() -> None:
@@ -395,7 +397,7 @@ async def test_a_release_that_raises_or_overruns_is_reported_and_the_rest_still_
     run = await Executor().run(wire({"a": Step(body, provides=A)}), limits=Limits(cleanup_s=0.01))
     assert released == ["last", "first"]
     assert run.status == "completed"  # a failed release is reported, not a failed run
-    assert run.releases == [
+    assert [r.document() for r in run.releases] == [
         {"component": "a", "status": "released", "error": None},
         {"component": "a", "status": "abandoned", "error": "still running after 0.01s"},
         {"component": "a", "status": "failed", "error": "OSError: device busy"},
@@ -431,7 +433,7 @@ async def test_a_release_deferred_after_the_component_ended_is_ignored(
 _SIGNALLED = """
     import asyncio, sys
     from pathlib import Path
-    from matrix import Executor, Limits, RunCancelled, wire
+    from matrix import Executor, Limits, RunCancelled, cancel_on_signals, wire
 
     marker = Path(sys.argv[1])
 
@@ -446,9 +448,10 @@ _SIGNALLED = """
 
     async def main():
         try:
-            await Executor().run(wire({"holds": Holds()}), limits=Limits(grace_s=0))
+            executor = Executor(interrupts=cancel_on_signals)
+            await executor.run(wire({"holds": Holds()}), limits=Limits(grace_s=0))
         except RunCancelled as e:
-            print(e.run.status, e.run.components["holds"]["status"], flush=True)
+            print(e.run.status, e.run.components["holds"].status, flush=True)
             raise
 
     try:

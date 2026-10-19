@@ -1,30 +1,18 @@
 """Observers: what happened during a run, for whoever wants to know.
 
 The executor, bound agents and components emit :class:`Event` records; observers receive them.
-Progress on a terminal, a JSONL stream an agent tails, and OpenTelemetry spans and metrics are
-all observers, so matrix's core imports none of them and a caller that wants none pays nothing.
 
 **Telemetry is not data.** Nothing a run produces depends on an event being delivered: the
-Construct is the record. That is what lets this channel be lossy on purpose.
+Construct is the record. So the channel is lossy on purpose, and **an observer cannot stall
+or fail a run**: events go onto a bounded queue (:class:`EventPolicy`), emitting never waits,
+an event that does not fit is dropped and counted (``matrix.events.dropped``,
+``Run.events_dropped``), an observer that raises is logged and skipped, and at its end a run
+waits at most ``drain_s`` for the queue. A synchronous observer that blocks the event loop is
+the one thing this cannot bound.
 
-**An observer cannot stall or fail a run.** Events go onto a bounded queue (:class:`EventPolicy`,
-4096 by default) and a dispatcher task hands them to the observers. Emitting never waits: when
-the queue is full the event is dropped and counted, the next event delivered is preceded by
-``matrix.events.dropped {count}``, and the run's total is on ``Run.events_dropped``. An observer
-that raises is logged and skipped. One that never returns holds up the *dispatcher*, so later
-events are dropped, but the run finishes on time: at its end the executor waits at most
-``drain_s`` for the queue and then leaves. The one thing this cannot bound is a synchronous
-observer that blocks the event loop itself; an observer doing slow I/O must be ``async``.
-
-That makes observers telemetry, **not** an audit channel: an audit hook would have to be able
-to abort the operation, which this port deliberately does not offer.
-
-**Event names are namespaced**, root first, like type URLs: ``matrix.component.end``,
-``acme.probe.sample``. matrix owns ``matrix.*`` (the names below); a component emits under any
-other root through its :class:`~matrix.domain.component.RunContext`. Observers treat a name they
-do not know as opaque. A ``*.start``/``*.end`` pair shares a ``span`` id.
-
-The shape is versioned by ``schema``; within ``matrix.v1.event`` fields are only ever added.
+**Event names are namespaced**, root first: matrix owns ``matrix.*``, and a component emits
+under its own root. A ``*.start``/``*.end`` pair shares a ``span`` id. Within
+``matrix.v1.event`` fields are only ever added.
 """
 
 from __future__ import annotations
@@ -36,7 +24,7 @@ import re
 import uuid
 from collections import deque
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -56,11 +44,15 @@ COMPONENT_START = "matrix.component.start"
 COMPONENT_STOPPING = "matrix.component.stopping"  # reason
 COMPONENT_END = "matrix.component.end"  # status, reason?, duration_ms?, kind?, abandoned?
 COMPONENT_LATE = "matrix.component.late"  # call: the context method used after it ended
+COMPONENT_RETRY = "matrix.component.retry"  # attempt, kind, error, wait_s
 ROW_APPEND = "matrix.row.append"  # kind, row, seq
 RELEASE_START = "matrix.release.start"
 RELEASE_END = "matrix.release.end"  # status, error?
-AGENT_START = "matrix.agent.start"  # agent, model
-AGENT_END = "matrix.agent.end"  # agent, status, tokens_*, cost_usd, model, family, duration_ms
+AGENT_START = "matrix.agent.start"  # agent, model, task (as sent)
+AGENT_END = "matrix.agent.end"  # agent, status, tokens_*, cost_usd, model, family, provider,
+#   duration_ms, tool_calls; reason and error when it failed
+TOOL_START = "matrix.tool.start"  # tool, call_id?, agent; timed as the runtime saw the call
+TOOL_END = "matrix.tool.end"  # tool, call_id?, agent, status, duration_ms
 MEASURE = "matrix.measure"  # name, value, unit, kind, attrs
 EVENTS_DROPPED = "matrix.events.dropped"  # count
 
@@ -72,8 +64,10 @@ _NAME = re.compile(r"^[a-z][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$")
 @dataclass(frozen=True)
 class Event:
     name: str
+    _: KW_ONLY
     span: str
     run_id: str | None = None
+    #: The span this one is under; None for the run's own span, which is under nothing.
     parent: str | None = None
     fields: dict[str, Any] = field(default_factory=dict)
     #: The component the event is about, or that emitted it. ``None`` for run-level events.
@@ -189,7 +183,10 @@ class Channel:
                 if self._unreported:
                     count, self._unreported = self._unreported, 0
                     notice = Event(
-                        EVENTS_DROPPED, uuid.uuid4().hex, self._run_id, fields={"count": count}
+                        EVENTS_DROPPED,
+                        span=uuid.uuid4().hex,
+                        run_id=self._run_id,
+                        fields={"count": count},
                     )
                     await deliver(self._observers, notice)
                 if event is not None:

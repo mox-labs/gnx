@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from matrix import (
     ComponentError,
@@ -163,13 +163,19 @@ async def test_wiring_runs_again_with_new_inputs() -> None:
 
 @pytest.mark.parametrize(
     ("given", "says"),
-    [({}, "missing inputs ['acme.v1.text']"), ({TEXT: "x", SCORE: 1}, "unknown inputs")],
+    [
+        ({}, [(f"inputs.{TEXT}", "missing_key")]),
+        ({TEXT: "x", SCORE: 1}, [(f"inputs.{SCORE}", "unknown_key")]),
+    ],
 )
-async def test_inputs_must_match_the_declaration(given: dict[str, Any], says: str) -> None:
+async def test_inputs_must_match_the_declaration(
+    given: dict[str, Any], says: list[tuple[str, str]]
+) -> None:
     wiring = wire({"up": Step(upper, requires=[TEXT], provides=[UPPER])}, inputs=[TEXT])
     with pytest.raises(ConfigError) as e:
         await Executor().run(wiring, given)
-    assert says in str(e.value)
+    assert [(p.path, p.kind) for p in e.value.problems] == says
+    assert all(p.allowed == (TEXT,) for p in e.value.problems)
 
 
 async def test_a_row_of_a_kind_it_does_not_provide_breaks_the_contract() -> None:
@@ -178,7 +184,7 @@ async def test_a_row_of_a_kind_it_does_not_provide_breaks_the_contract() -> None
 
     with pytest.raises(RunError) as e:
         await Executor().run(wire({"w": Step(body, provides=[TEXT])}))
-    assert e.value.kind == "contract" and e.value.component == "w"
+    assert (e.value.kind, e.value.cause_kind, e.value.component) == ("run_failed", "contract", "w")
     assert "returned rows of ['acme.v1.other'], which it does not provide" in str(e.value)
     assert e.value.run.rows(TEXT) == ()  # nothing from a broken return is recorded
 
@@ -231,7 +237,7 @@ async def test_a_failure_keeps_the_partial_run() -> None:
     run = e.value.run
     assert run.status == "failed" and e.value.component == "bad"
     assert run.rows(TEXT) == ("kept",)
-    assert run.failures == [
+    assert [f.document() for f in run.failures] == [
         {
             "component": "bad",
             "kind": "component",
@@ -239,7 +245,8 @@ async def test_a_failure_keeps_the_partial_run() -> None:
         }
     ]
     assert isinstance(e.value.__cause__, ComponentError)
-    assert e.value.kind == "component" and e.value.construct is run.construct
+    assert (e.value.kind, e.value.cause_kind) == ("run_failed", "component")
+    assert e.value.construct is run.construct and e.value.exit_code == 8
 
 
 async def test_a_component_past_its_deadline_is_a_failure_naming_it() -> None:
@@ -248,7 +255,7 @@ async def test_a_component_past_its_deadline_is_a_failure_naming_it() -> None:
 
     with pytest.raises(RunError, match="'slow' timed out after 0.01s") as e:
         await Executor().run(wire({"slow": Step(hangs)}), limits=Limits(deadline_s=0.01, grace_s=0))
-    assert e.value.kind == "component"
+    assert e.value.cause_kind == "component"
 
 
 def test_limits_are_checked_when_made() -> None:
@@ -259,7 +266,7 @@ def test_limits_are_checked_when_made() -> None:
         {"cleanup_s": 0},
         {"on_failure": "retry"},
     ):
-        with pytest.raises(ConfigError):
+        with pytest.raises(ValidationError):
             Limits(**bad)  # type: ignore[arg-type]
 
 

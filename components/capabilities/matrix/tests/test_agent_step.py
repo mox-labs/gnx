@@ -82,7 +82,24 @@ async def test_a_reply_without_json_breaks_the_declared_output() -> None:
     )
     with pytest.raises(RunError) as e:
         await box.executor().run(wiring, {TASK: "go"})
-    assert e.value.kind == "contract" and "holds no JSON" in str(e.value)
+    assert (e.value.kind, e.value.cause_kind) == ("run_failed", "contract")
+    assert "holds no JSON" in str(e.value) and e.value.exit_code == 8
+
+
+async def test_a_reply_without_json_says_what_the_agent_said_and_how_to_get_json() -> None:
+    """Regression: the error named neither the reply nor the remedy, and the run's error
+    dropped the cause's fix, so an agent driving matrix could not tell that ``output``
+    requires the reply to be JSON."""
+    box = container(reply="looks fine to me")
+    wiring = box.wire(
+        [{"name": "rev", "type": AGENT_STEP, "config": {"agent": "reviewer", "output": REVIEW}}],
+        inputs=[TASK],
+    )
+    with pytest.raises(RunError) as e:
+        await box.executor().run(wiring, {TASK: "go"})
+    assert "'looks fine to me'" in str(e.value) and "`output`" in str(e.value)
+    fix = e.value.payload()["error"]["fix"]
+    assert "one JSON document" in fix and "by_agent" in fix and "drop `output`" in fix
 
 
 async def test_a_reply_that_is_not_a_valid_row_of_the_output_kind_breaks_the_contract() -> None:
@@ -94,17 +111,52 @@ async def test_a_reply_that_is_not_a_valid_row_of_the_output_kind_breaks_the_con
     )
     with pytest.raises(RunError, match="not a valid acme.v1.review") as e:
         await box.executor().run(wiring, {TASK: "go"})
-    assert e.value.kind == "contract"
+    assert (e.value.kind, e.value.cause_kind) == ("run_failed", "contract")
 
 
 def test_two_agent_steps_each_name_the_kind_of_their_reply() -> None:
+    """Regression: the clash named the kind and ``provides``, not the key that fixes it."""
     box = container()
     step = {"type": AGENT_STEP, "config": {"agent": "reviewer"}}
-    with pytest.raises(CompilationError, match="a kind has one provider"):
+    with pytest.raises(CompilationError, match="a kind has one provider") as e:
         box.wire([{"name": "one", **step}, {"name": "two", **step}], inputs=[TASK])
+    (clash,) = e.value.problems
+    assert (clash.path, clash.kind, clash.got) == (
+        "components.two.config.response",
+        "name_taken",
+        AGENT_RESPONSE,
+    )
+    assert "one, two" in clash.message and "`response:`" in clash.fix
     second = {"type": AGENT_STEP, "config": {"agent": "reviewer", "response": "acme.v1.reply"}}
     wiring = box.wire([{"name": "one", **step}, {"name": "two", **second}], inputs=[TASK])
     assert wiring.providers == {AGENT_RESPONSE: "one", "acme.v1.reply": "two"}
+
+
+async def test_the_task_as_sent_is_on_the_response_row_and_the_agent_start_event() -> None:
+    """Regression: the rendered task was invisible after a run."""
+    box = container()
+    seen = RecordingObserver()
+    config = {"agent": "reviewer", "task": "R: {t}", "inputs": {"t": TASK}}
+    wiring = box.wire([{"name": "rev", "type": AGENT_STEP, "config": config}], inputs=[TASK])
+    run = await box.executor([seen]).run(wiring, {TASK: "x"})
+    assert run.rows(AGENT_RESPONSE)[0].task == "R: x"
+    (start,) = [e for e in seen.events if e.name == "matrix.agent.start"]
+    assert start.fields["task"] == "R: x"
+
+
+async def test_the_mock_replies_by_task_then_by_agent_then_by_default() -> None:
+    """Regression: the mock's ``responses`` keys were undocumented, and two agent steps on
+    one mock could not each get their own reply without matching the whole task text."""
+    mock = MockRuntime(
+        MockRuntimeConfig(
+            responses={"exact task": "by task"}, by_agent={"a": "by agent"}, default="default"
+        )
+    )
+    a, b = AgentDefinition(name="a"), AgentDefinition(name="b")
+    assert (await mock.run(a, "exact task")).content == "by task"
+    assert (await mock.run(a, "other")).content == "by agent"
+    assert (await mock.run(b, "other")).content == "default"
+    assert (await MockRuntime().run(b, "t")).content == "mock:b:t"
 
 
 async def test_several_rows_of_a_required_kind_are_rendered_as_a_list() -> None:
@@ -197,8 +249,8 @@ def _registry_with(cls: type) -> Any:
         ("timeout", "transient", True),
         ("auth", "auth", False),
         ("incapable", "config", False),
-        ("refused", "unknown", False),
-        ("failed", "unknown", False),
+        ("refused", "component", False),
+        ("failed", "component", False),
     ],
 )
 def test_runtime_failures_carry_whose_problem_they_are(
@@ -206,7 +258,7 @@ def test_runtime_failures_carry_whose_problem_they_are(
 ) -> None:
     error = AgentRuntimeError("x", reason=reason)
     assert (error.kind, error.retryable) == (kind, retryable)
-    assert error.payload()["error"]["reason"] == reason
+    assert error.payload()["error"]["details"]["reason"] == reason
 
 
 @pytest.mark.parametrize(
@@ -280,19 +332,18 @@ def test_the_container_reports_unbuildable_entries_with_the_wiring_problems() ->
                 {"name": "fine", "type": AGENT_STEP, "config": {"agent": "reviewer"}},
             ]
         )
-    problems = e.value.details["problems"]
-    assert "components.rev: agent-step: no agent named 'nobody'" in problems[0]
-    assert problems[1] == "components.rev: name used twice"
-    assert [p for p in problems if p.startswith("components.typo.")] == [
-        "components.typo.agent: Field required",
-        "components.typo.agnet: Extra inputs are not permitted",
+    found = [(p.path, p.kind) for p in e.value.problems]
+    assert found == [
+        ("components.rev.config", "name_unknown"),  # no agent named 'nobody'
+        ("components.rev", "name_taken"),
+        ("components.typo.config.agent", "missing_key"),
+        ("components.typo.config.agnet", "unknown_key"),
+        ("components.lost.type", "name_unknown"),
+        # ... and what is wrong with the wiring of the ones that could be built, in one report
+        ("components.fine.requires", "unprovided"),
     ]
-    assert "components.lost: no component 'acme.v1.unregistered' is registered" in problems[4]
-    # ... and what is wrong with the wiring of the ones that could be built, in the same report
-    assert problems[5] == (
-        "components.fine.requires: nothing provides 'matrix.v1.task' and it is not a run input"
-    )
-    assert len(problems) == 6
+    assert "no agent named 'nobody'" in e.value.problems[0].message
+    assert e.value.problems[4].got == "acme.v1.unregistered"
 
 
 def test_the_container_wires_the_components_its_config_lists() -> None:
@@ -335,4 +386,4 @@ async def test_every_offline_runtime_keeps_the_port_promise() -> None:
 
 def test_an_unknown_reason_is_a_failure_not_a_crash() -> None:
     error = AgentRuntimeError("quota exhausted", reason="quota")  # type: ignore[arg-type]
-    assert (error.kind, error.exit_code, error.retryable) == ("unknown", 1, False)
+    assert (error.kind, error.exit_code, error.retryable) == ("component", 8, False)

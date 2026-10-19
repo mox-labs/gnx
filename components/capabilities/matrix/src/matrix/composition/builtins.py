@@ -1,9 +1,10 @@
 """matrix's own extensions, registered through the same entry point as anyone else's.
 
 ``pyproject.toml`` declares ``[project.entry-points."matrix.extensions"] matrix = ...:register``,
-so :meth:`Registry.discover` finds the built-ins exactly as it finds a third party's: one
-discovery path, no special case. Optional dependencies are imported only when an entry is
-built, so registering costs nothing and a missing extra fails when used, saying what to install.
+so :func:`~matrix.composition.container.load_extensions` finds the built-ins exactly as it
+finds a third party's: one discovery path, no special case. Optional dependencies are
+imported only when an entry is built, so registering costs nothing and a missing extra fails
+when used, saying what to install.
 """
 
 from __future__ import annotations
@@ -14,22 +15,31 @@ from matrix.adapters._out.observers.jsonl import JsonlObserver, JsonlObserverCon
 from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig
 from matrix.adapters._out.runtime.mock import MockRuntime, MockRuntimeConfig
 from matrix.adapters._out.runtime.model import ModelAgentRuntimeConfig
+from matrix.adapters._out.stores.jsonl import (
+    JsonlConstructStore,
+    JsonlStoreConfig,
+    MemoryConstructStore,
+)
 from matrix.domain.agent import AgentResponse
 from matrix.domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
 from matrix.domain.component import LEDGER
 from matrix.domain.construct import LedgerEntry
+from matrix.domain.errors import missing_extra
 from matrix.domain.ids import type_url
 from matrix.domain.ref import REF, Ref
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from matrix.adapters._out.observers.console import ConsoleObserver
+    from matrix.adapters._out.observers.otel import OtelObserver
+    from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime
+    from matrix.adapters._out.runtime.model import ModelAgentRuntime
     from matrix.domain.ports._out.agent_runtime import Agent
     from matrix.domain.registry import Registry
 
 #: Runtime short names in config (``type: claude-sdk``) resolve under this prefix.
 RUNTIME_PREFIX = "matrix.v1.runtime."
-OBSERVER_PREFIX = "matrix.v1.observer."
 
 
 def runtime_type_url(name: str) -> str:
@@ -42,7 +52,7 @@ def observer_type_url(name: str) -> str:
     return name if "." in name else type_url("matrix", 1, f"observer.{name}")
 
 
-def _claude_sdk(config: ClaudeSdkRuntimeConfig, *, cwd: str | None = None) -> Any:
+def _claude_sdk(config: ClaudeSdkRuntimeConfig, *, cwd: str | None = None) -> ClaudeSdkRuntime:
     from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime
 
     if config.cwd is None and cwd is not None:
@@ -50,7 +60,9 @@ def _claude_sdk(config: ClaudeSdkRuntimeConfig, *, cwd: str | None = None) -> An
     return ClaudeSdkRuntime(config)
 
 
-def _model(config: ModelAgentRuntimeConfig, *, models: dict[str, Any] | None = None) -> Any:
+def _model(
+    config: ModelAgentRuntimeConfig, *, models: dict[str, Any] | None = None
+) -> ModelAgentRuntime:
     from matrix.adapters._out.runtime.model import ModelAgentRuntime
 
     if config.models is None and models is not None:
@@ -58,13 +70,20 @@ def _model(config: ModelAgentRuntimeConfig, *, models: dict[str, Any] | None = N
     return ModelAgentRuntime.from_config(config)
 
 
-def _otel() -> Any:
-    from matrix.adapters._out.observers.otel import OtelObserver
+def store_type_url(name: str) -> str:
+    """``jsonl`` → ``matrix.v1.store.jsonl``; a full type URL passes through."""
+    return name if "." in name else type_url("matrix", 1, f"store.{name}")
 
+
+def _otel() -> OtelObserver:
+    try:
+        from matrix.adapters._out.observers.otel import OtelObserver
+    except ImportError as e:  # the API is a dependency; a broken install still says what to do
+        raise missing_extra("otel", needed_by="the otel observer", module="opentelemetry") from e
     return OtelObserver()
 
 
-def _console() -> Any:
+def _console() -> ConsoleObserver:
     from matrix.adapters._out.observers.console import ConsoleObserver
 
     return ConsoleObserver()
@@ -79,7 +98,7 @@ def _agent_step(config: AgentStepConfig, *, agents: Mapping[str, Agent]) -> Agen
 
 
 def register(registry: Registry) -> None:
-    """Register matrix's runtimes, components, payload types and observers."""
+    """Register matrix's runtimes, components, payload types, observers and stores."""
     registry.register(
         "runtime",
         runtime_type_url("claude-sdk"),
@@ -126,7 +145,8 @@ def register(registry: Registry) -> None:
         observer_type_url("otel"),
         _otel,
         effects={"network"},
-        summary="OpenTelemetry spans and metrics from run events (requires matrix[otel])",
+        summary="OpenTelemetry spans and metrics on the GenAI conventions; exported when the "
+        "OTEL_* variables say where (requires matrix[otel])",
     )
     registry.register(
         "observer",
@@ -142,4 +162,20 @@ def register(registry: Registry) -> None:
         config=JsonlObserverConfig,
         effects={"filesystem"},
         summary="One JSON line per event, to a file or stderr: the stream an agent tails",
+    )
+    registry.register(
+        "store",
+        store_type_url("jsonl"),
+        JsonlConstructStore.from_config,
+        config=JsonlStoreConfig,
+        effects={"filesystem"},
+        summary="Each run a directory of JSONL tables, written as it goes, with its events",
+        stability="stable",
+    )
+    registry.register(
+        "store",
+        store_type_url("memory"),
+        MemoryConstructStore,
+        effects=set(),
+        summary="Runs kept in memory for the life of the process: tests and embedding",
     )

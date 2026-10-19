@@ -196,7 +196,7 @@ async def test_opening_an_existing_run_id_is_a_store_error(make: Any, tmp_path: 
     await Executor().run(wiring, store=store, run_id="taken")
     with pytest.raises(StoreError, match="never reopened or rewritten") as e:
         await Executor().run(wiring, store=store, run_id="taken")
-    assert e.value.kind == "store" and e.value.exit_code == 1
+    assert e.value.kind == "store" and e.value.exit_code == 9
     assert ran == ["ran"]  # refused before anything ran
 
 
@@ -296,10 +296,10 @@ async def test_a_store_that_fails_fails_the_run_with_kind_store() -> None:
     assert e.value.kind == "store" and e.value.component == "trials"
     assert isinstance(e.value.__cause__, StoreError) and caught == [e.value.__cause__]
     assert "no space left on device" in str(e.value)
-    assert run.status == "failed" and run.failures[0]["kind"] == "store"
-    assert run.components["trials"]["status"] == "failed"
-    assert stopping.is_set() and run.components["bystander"]["reason"] == "run_failed"
-    assert run.components["sense"] == {"status": "skipped", "reason": "store failed"}
+    assert run.status == "failed" and run.failures[0].kind == "store"
+    assert run.components["trials"].status == "failed"
+    assert stopping.is_set() and run.components["bystander"].reason == "run_failed"
+    assert run.components["sense"].document() == {"status": "skipped", "reason": "store failed"}
     assert released == ["released"]
     assert run.rows(TRIAL) == ({"seq": 0},)  # a row that was not kept is not in the record
     assert store.appends == 4  # and nothing was written after the failure
@@ -318,7 +318,7 @@ async def test_a_returned_row_or_an_input_the_store_cannot_keep_fails_the_run() 
     with pytest.raises(RunError) as supplied:
         await Executor().run(wiring, {SEED: 1}, store=Failing(on_append=1))
     assert (supplied.value.kind, supplied.value.component) == ("store", "$input")
-    assert supplied.value.run.components["trials"] == {
+    assert supplied.value.run.components["trials"].document() == {
         "status": "skipped",
         "reason": "store failed",
     }
@@ -331,7 +331,7 @@ async def test_a_run_that_cannot_be_finished_in_the_store_is_a_failed_run() -> N
     with pytest.raises(RunError) as e:
         await Executor().run(wire({"a": Step(body)}), store=Failing(on_finish=True))
     assert (e.value.kind, e.value.component) == ("store", "$store")
-    assert e.value.run.status == "failed" and e.value.run.components["a"]["status"] == "completed"
+    assert e.value.run.status == "failed" and e.value.run.components["a"].status == "completed"
 
 
 async def test_a_jsonl_writer_refuses_a_kind_the_run_has_no_table_for(tmp_path: Path) -> None:
@@ -405,3 +405,28 @@ def test_rows_handed_over_survive_sigkill_and_the_run_reads_as_interrupted(tmp_p
     assert loaded.rows(SEED) == (7,)
     assert [e.component for e in loaded.ledger] == ["$input", "trials", "trials", "trials"]
     assert loaded.torn == ()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_dead_writer_whose_pid_was_reused_still_reads_as_interrupted(tmp_path: Path) -> None:
+    """Regression: liveness was ``kill(pid, 0)``, so a SIGKILLed writer whose pid another
+    live process had taken read as ``running`` for ever."""
+    script = tmp_path / "killed.py"
+    script.write_text(textwrap.dedent(_KILLED))
+    runs = tmp_path / "runs"
+    with subprocess.Popen(
+        [sys.executable, str(script), str(runs)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    ) as proc:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "ready", proc.stderr and proc.stderr.read()
+        proc.send_signal(signal.SIGKILL)
+        proc.wait(timeout=60)
+    record_path = runs / "killed" / "run.json"
+    record = json.loads(record_path.read_text())
+    record["writer"]["pid"] = os.getpid()  # the pid now belongs to a live process: this one
+    record_path.write_text(json.dumps(record))
+    assert JsonlConstructStore(runs).describe("killed")["status"] == "interrupted"

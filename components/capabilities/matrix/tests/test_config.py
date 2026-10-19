@@ -3,8 +3,7 @@
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from matrix.adapters._out.config.yaml_source import YamlConfigSource
-from matrix.composition.config import deep_merge, load_config
+from matrix.composition.config import load_config
 from matrix.domain.config import Config, MatrixConfig
 from matrix.domain.errors import ConfigError
 
@@ -18,44 +17,6 @@ class SampleClientConfig(BaseModel):
 
     trials: int = 5
     sensor: str = "activation"
-
-
-# --- deep_merge ---
-
-
-class TestDeepMerge:
-    def test_flat_override(self):
-        assert deep_merge({"a": 1}, {"a": 2}) == {"a": 2}
-
-    def test_nested_override(self):
-        base = {"matrix": {"runtime": {"model": "old"}}}
-        override = {"matrix": {"runtime": {"model": "new"}}}
-        result = deep_merge(base, override)
-        assert result["matrix"]["runtime"]["model"] == "new"
-
-    def test_nested_partial_override(self):
-        """Override one nested key without clobbering siblings."""
-        base = {"matrix": {"runtime": {"model": "old", "max_tokens": 2048}}}
-        override = {"matrix": {"runtime": {"model": "new"}}}
-        result = deep_merge(base, override)
-        assert result["matrix"]["runtime"]["model"] == "new"
-        assert result["matrix"]["runtime"]["max_tokens"] == 2048
-
-    def test_list_replaces(self):
-        """Lists replace entirely — no merging."""
-        assert deep_merge({"a": [1, 2]}, {"a": [3]}) == {"a": [3]}
-
-    def test_new_keys_added(self):
-        assert deep_merge({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
-
-    def test_empty_override(self):
-        assert deep_merge({"a": 1}, {}) == {"a": 1}
-
-    def test_empty_base(self):
-        assert deep_merge({}, {"a": 1}) == {"a": 1}
-
-    def test_both_empty(self):
-        assert deep_merge({}, {}) == {}
 
 
 # --- MatrixConfig defaults ---
@@ -120,44 +81,6 @@ class TestConfig:
             config.client = SampleClientConfig(trials=99)
 
 
-# --- YamlConfigSource ---
-
-
-class TestYamlConfigSource:
-    def test_reads_yaml(self, tmp_path):
-        f = tmp_path / "config.yaml"
-        f.write_text("matrix:\n  definitions: [agents]\n")
-        source = YamlConfigSource(f)
-        data = source.read()
-        assert data["matrix"]["definitions"] == ["agents"]
-
-    def test_missing_file_returns_empty(self, tmp_path):
-        source = YamlConfigSource(tmp_path / "nonexistent.yaml")
-        assert source.read() == {}
-
-    def test_empty_file_returns_empty(self, tmp_path):
-        f = tmp_path / "empty.yaml"
-        f.write_text("")
-        source = YamlConfigSource(f)
-        assert source.read() == {}
-
-    def test_non_mapping_is_an_error_naming_the_file(self, tmp_path):
-        """A file that exists but is not a mapping is a mistake, not an empty tier.
-
-        Previously it read as {} — a config file that did nothing, silently.
-        """
-        f = tmp_path / "scalar.yaml"
-        f.write_text("just a string")
-        with pytest.raises(ConfigError, match="scalar.yaml: top level must be a mapping"):
-            YamlConfigSource(f).read()
-
-    def test_invalid_yaml_names_the_file(self, tmp_path):
-        f = tmp_path / "broken.yaml"
-        f.write_text("matrix: [unclosed")
-        with pytest.raises(ConfigError, match="broken.yaml: not valid YAML"):
-            YamlConfigSource(f).read()
-
-
 # --- load_config ---
 
 
@@ -196,6 +119,19 @@ class TestLoadConfig:
         )
         assert config.client.trials == 10  # not overridden by project
 
+    def test_definitions_from_a_stream_accumulate_and_stay_as_written(self, tmp_path):
+        import io
+
+        piped = io.StringIO("matrix:\n  definitions: [team-agents]\n")
+        project = tmp_path / "project.yaml"
+        project.write_text("matrix:\n  definitions: [project-agents]\n")
+
+        config = load_config(sources=[piped, project])
+        assert config.matrix.definitions == (
+            "team-agents",  # a stream has no folder to resolve against
+            str((tmp_path / "project-agents").resolve()),
+        )
+
     def test_custom_client_key(self, tmp_path):
         f = tmp_path / "matrix.yaml"
         f.write_text("radix:\n  trials: 42\n")
@@ -221,5 +157,37 @@ class TestLoadConfig:
         f.write_text("matrix:\n  agents:\n    a:\n      runtim: sdk\n")
         with pytest.raises(ConfigError) as e:
             load_config(SampleClientConfig, client_key="ix", sources=[f])
-        msg = str(e.value)
-        assert "matrix.agents.a.runtim" in msg and str(f) in msg
+        found = {(p.path, p.kind, p.source) for p in e.value.problems}
+        assert ("matrix.agents.a.runtim", "unknown_key", str(f)) in found
+        assert ("matrix.agents.a.runtime", "missing_key", str(f)) in found
+        assert e.value.details["sources"] == [str(f)]
+
+    def test_both_sections_are_checked_at_once(self, tmp_path):
+        """Every problem at once: the matrix section's and the tool's, in one error."""
+        f = tmp_path / "ix.yaml"
+        f.write_text("matrix:\n  bogus: 1\nix:\n  trials: many\n")
+        with pytest.raises(ConfigError) as e:
+            load_config(SampleClientConfig, client_key="ix", sources=[f])
+        assert {p.path for p in e.value.problems} == {"matrix.bogus", "ix.trials"}
+
+    def test_store_and_limits_are_config(self, tmp_path):
+        f = tmp_path / "matrix.yaml"
+        f.write_text(
+            "matrix:\n  store: {type: memory}\n"
+            "  limits:\n    concurrency: 2\n    retry: {attempts: 3, errors: [rate_limited]}\n"
+            "    components: {slow: {deadline_s: 9}}\n"
+        )
+        config = load_config(sources=[f]).matrix
+        assert config.store.type == "memory"
+        assert config.limits.concurrency == 2
+        assert config.limits.retry_of("other").attempts == 3
+        assert config.limits.of("slow")[0] == 9
+
+    def test_a_bad_limit_is_a_problem_at_its_path(self, tmp_path):
+        f = tmp_path / "matrix.yaml"
+        f.write_text("matrix:\n  limits:\n    retry: {attempts: 0, errors: [sometimes]}\n")
+        with pytest.raises(ConfigError) as e:
+            load_config(sources=[f])
+        by_path = {p.path: p for p in e.value.problems}
+        assert by_path["matrix.limits.retry.attempts"].kind == "invalid_value"
+        assert "rate_limited" in by_path["matrix.limits.retry.errors.0"].allowed

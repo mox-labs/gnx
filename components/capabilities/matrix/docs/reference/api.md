@@ -6,28 +6,128 @@ Every public name exported from `matrix`, the config it reads, the errors it rai
 ```python
 from matrix import (
     # type URLs
-    TypeUrl, check_type_url, is_type_url, parse_type_url, type_url,
+    TypeUrl,
+    check_type_url,
+    is_type_url,
+    parse_type_url,
+    type_url,
     # components and wiring
-    Component, Inputs, RunContext, Wiring, wire,
+    Component,
+    Inputs,
+    RunContext,
+    Wiring,
+    wire,
     # execution
-    Executor, Limits, ComponentLimits, ComponentStatus, Run, process,
+    Executor,
+    Limits,
+    ComponentLimits,
+    Retry,
+    Reuse,
+    ComponentStatus,
+    Run,
+    ComponentEnding,
+    ComponentFailure,
+    ReleaseOutcome,
+    process,
+    cancel_on_signals,
     # the Construct and its stores
-    Construct, LedgerEntry, LEDGER, Ref, REF,
-    ConstructStore, RunWriter, JsonlConstructStore, MemoryConstructStore,
+    Construct,
+    LedgerEntry,
+    LEDGER,
+    Ref,
+    REF,
+    ConstructStore,
+    RunWriter,
+    JsonlConstructStore,
+    MemoryConstructStore,
     # agents
-    Agent, AgentDefinition, AgentResponse, AgentRuntime, BoundAgent, DefinitionSource,
-    AgentStep, AgentStepConfig, AGENT_STEP, AGENT_RESPONSE, TASK,
+    Agent,
+    AgentDefinition,
+    AgentResponse,
+    AgentRuntime,
+    RUNTIME_LOGGER,
+    BoundAgent,
+    AgentStep,
+    AgentStepConfig,
+    AGENT_STEP,
+    AGENT_RESPONSE,
+    TASK,
     # registry
-    Registry, Entry, Failure, default_registry, runtime_type_url, observer_type_url,
+    Registry,
+    Entry,
+    Extension,
+    Failure,
+    default_registry,
+    load_extensions,
+    runtime_type_url,
+    observer_type_url,
+    store_type_url,
     # observers
-    Event, EventPolicy, Observer, RecordingObserver, configure_telemetry,
+    Event,
+    EventPolicy,
+    Observer,
+    RecordingObserver,
+    configure_telemetry,
+    Telemetry,
+    # loading documents as your own types
+    load,
+    load_each,
+    Loader,
+    Document,
+    DocumentSource,
+    BesideFile,
+    Accumulate,
+    Problem,
     # config and composition
-    Config, MatrixConfig, RuntimeConfig, ObserverConfig, AgentConfig, ComponentConfig,
-    ConfigSource, load_config, discover_sources, config_env_var, compose, Container,
+    Config,
+    MatrixConfig,
+    RuntimeConfig,
+    ObserverConfig,
+    AgentConfig,
+    ComponentConfig,
+    StoreConfig,
+    load_config,
+    discover_sources,
+    compose,
+    Container,
+    # what the matrix command prints
+    catalog,
+    describe_extension,
+    config_sources,
+    config_view,
+    check_config,
+    list_agents,
+    plan_config,
+    list_runs,
+    Catalog,
+    Extensions,
+    ConfigSources,
+    ConfigView,
+    CheckReport,
+    Agents,
+    Plan,
+    Runs,
     # errors
-    MatrixError, ConfigError, CompilationError, NotFoundError, ContractError, ComponentError,
-    StoreError, AgentRuntimeError, RunError, RunCancelled, ErrorKind, RuntimeReason,
+    MatrixError,
+    UsageError,
+    ConfigError,
+    CompilationError,
+    NotFoundError,
+    ContractError,
+    ComponentError,
+    StoreError,
+    SpendError,
+    AgentRuntimeError,
+    RunError,
+    RunCancelled,
+    ErrorKind,
+    RuntimeReason,
     EXIT_CODES,
+    EXITS_AS,
+    EXIT_MEANINGS,
+    EXIT_NEXT,
+    # the skill and the version
+    skill,
     __version__,
 )
 ```
@@ -50,24 +150,27 @@ matrix.v1.runtime.claude-sdk     ix.v1.sensor.activation     matrix.v1.agent-res
 - A URL matrix mints carries one version segment (`v1`, `v1alpha1`, `v2beta1`) after at least
   one namespace segment and before the resource.
 
-A **kind**, in matrix, is the type URL of some data. Kinds are checked with the grammar when
-components are wired; registry entries are checked the same way when they register.
+A **kind**, in matrix, is the type URL of some data. `wire` and `Registry.register` hold
+what they are given to the grammar and to the version segment: a kind or an entry without
+`v<N>` is refused. `is_type_url` checks the grammar alone.
 
 | Name | Signature | Behaviour |
 |------|-----------|-----------|
 | `is_type_url` | `(url: str) -> bool` | True if `url` is valid under the grammar |
 | `check_type_url` | `(url: str, *, where: str = "") -> str` | Returns `url`, or raises `ConfigError` saying why it is invalid, prefixed with `where` |
-| `parse_type_url` | `(url: str) -> TypeUrl` | Splits at the version segment; `ConfigError` if there is none |
+| `parse_type_url` | `(url: str, *, where: str = "") -> TypeUrl` | Splits at the version segment; `ConfigError` if there is none |
 | `type_url` | `(namespace: str, version: str \| int, resource: str) -> str` | Builds and validates; an `int` version becomes `v<N>`; refuses the `slick` namespace |
 | `TypeUrl` | `NamedTuple(namespace, version, resource)` | `str()` joins it back |
 
 ```python
 from matrix import ConfigError, is_type_url, parse_type_url, type_url
 
-type_url("ix", 1, "sensor.activation")          # 'ix.v1.sensor.activation'
-parse_type_url("matrix.v1.runtime.claude-sdk")   # TypeUrl(namespace='matrix', version='v1', resource='runtime.claude-sdk')
-is_type_url("matrix.v1/runtime.mock")            # False: '/' is not part of the grammar
-is_type_url("acme.v1.agent.reviewer")            # False: 'agent' is one of slick's kind names
+type_url("ix", 1, "sensor.activation")  # 'ix.v1.sensor.activation'
+parse_type_url(
+    "matrix.v1.runtime.claude-sdk"
+)  # TypeUrl(namespace='matrix', version='v1', resource='runtime.claude-sdk')
+is_type_url("matrix.v1/runtime.mock")  # False: '/' is not part of the grammar
+is_type_url("acme.v1.agent.reviewer")  # False: 'agent' is one of slick's kind names
 ```
 
 ---
@@ -136,6 +239,7 @@ wire(
     inputs: Iterable[str] = (),
     schemas: Mapping[str, type[BaseModel]] | None = None,
     effects: Mapping[str, frozenset[str] | None] | None = None,
+    fingerprints: Mapping[str, str] | None = None,
 ) -> Wiring
 ```
 
@@ -144,10 +248,12 @@ wire(
 - `inputs` are the kinds the caller will supply to every run.
 - `schemas` maps kinds to the models their rows must validate against.
 - `effects` maps names to what each component declares it may touch (`None` for unknown).
+- `fingerprints` maps names to a digest of what each component was built from; a later run
+  reuses a component's rows only when its digest is the same (`Container.wire` sets them).
 
-Raises `CompilationError` (kind `config`) whose message lists every problem, also available as
-`error.details["problems"]`. The checks: names; every kind is a type URL and none is
-`matrix.v1.ledger`; a component declares `requires` and `provides` as collections and has a
+Raises `CompilationError` (kind `config`) whose message lists every problem, each also a
+`Problem` in `error.problems` with the path of the component or kind it is about. The checks: names; every kind is a versioned type URL and none
+is `matrix.v1.ledger`; a component declares `requires` and `provides` as collections and has a
 `run`; a required kind is provided or is a run input; a kind has one provider, and a run input
 has none; no component requires what it provides; no cycle, which is reported naming its
 components and the kinds it runs through.
@@ -158,10 +264,10 @@ from matrix import CompilationError, wire
 try:
     wire({"one": One(), "two": Two(), "reader": Reader()})
 except CompilationError as e:
-    for problem in e.details["problems"]:
-        print(problem)
-# kind 'acme.v1.a' is provided by one, two; a kind has one provider (two streams of the same shape are two kinds)
-# components.reader.requires: nothing provides 'acme.v1.b' and it is not a run input
+    for problem in e.problems:
+        print(f"{problem.path} ({problem.kind}): {problem.message}")
+# components.two.provides (name_taken): kind 'acme.v1.a' is provided by one, two; a kind has one provider (two streams of the same shape are two kinds)
+# components.reader.requires (unprovided): nothing provides 'acme.v1.b' and it is not a run input
 ```
 
 ### `Wiring`
@@ -178,32 +284,63 @@ Frozen and reusable.
 | `effects` | `Mapping[str, frozenset[str] \| None]` | name to declared effects; `None` is unknown |
 | `kinds` | `tuple[str, ...]` | every kind a run has a table for: inputs, then provided |
 | `order()` | `-> tuple[str, ...]` | the components in one valid order of work; a view, not the schedule |
+| `fingerprints` | `Mapping[str, str]` | name to a digest of what the component was built from, when the caller knows it |
 | `declared_effects()` | `-> frozenset[str] \| None` | every declared effect; `None` if any component's are unknown |
 
 ---
 
 ## Execution
 
-### `Limits`
+### `Limits`, `ComponentLimits` and `Retry`
 
-Frozen. An invalid value raises `ConfigError`.
+Frozen pydantic models: `matrix.limits` in config is a `Limits`. An invalid value raises
+pydantic's `ValidationError` when built in Python, and is a problem at its key path when read
+from config.
 
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `concurrency` | `None` | how many components run at once (`>= 1`); `None` leaves it to the wiring |
-| `deadline_s` | `None` | bounds each component separately, from when it starts (`> 0`) |
+| `deadline_s` | `None` | bounds each component separately, from when it starts (`> 0`); each attempt has the whole of it |
 | `grace_s` | `5.0` | how long a component has to return after a stop request before it is cancelled (`>= 0`) |
 | `cleanup_s` | `30.0` | how long a cancelled component, or one deferred release, has to finish before it is abandoned (`> 0`) |
 | `on_failure` | `"fast"` | `fast`: the first failure stops every running component and skips the rest. `isolate`: only components that depend on the failed one are skipped |
-| `components` | `{}` | name to `ComponentLimits(deadline_s, grace_s, cleanup_s)`; a field left `None` inherits the run's |
+| `retry` | `Retry()` | the retry policy of every component; the default runs each once |
+| `spend_usd` | `None` | the most the run's agent sessions may spend, in USD, as their runtimes report it (`> 0`): a session that could pass it is not started (see below). `None`: no ceiling |
+| `components` | `{}` | name to `ComponentLimits(deadline_s, grace_s, cleanup_s, retry)`; a field left `None` inherits the run's |
+
+`limits.of(name)` is `(deadline_s, grace_s, cleanup_s)` for a component and
+`limits.retry_of(name)` its `Retry`.
+
+`Retry(attempts=1, backoff_s=1.0, multiplier=2.0, max_wait_s=60.0, errors=("transient",))`.
+A component that failed is run again when its error matches `errors` (its kind,
+`transient`, or its reason: `unavailable`, `rate_limited`, `timeout`), fewer than
+`attempts` attempts have been made, the run has not been asked to stop, and the failed
+attempt handed over no rows (a second attempt would add to the record, not replace what is
+there). It waits `backoff_s * multiplier ** (n - 1)` after attempt `n`, or the
+`retry_after_s` the error reported (an `AgentRuntimeError` carries the backend's
+`Retry-After`), never more than `max_wait_s`. A wait ends early when the run stops. Each
+retry is a `matrix.component.retry` event, and `ComponentEnding.attempts` counts them. The
+field is `errors`, not `on`: YAML reads a bare `on` key as `true`.
+
+`spend_usd` is held by the executor, which keeps each run's spend and makes every agent a
+component calls inside the run ask before a session starts. A runtime that bounds one session
+(`budget_usd`: the `claude-sdk` runtime's `max_budget_usd`) gets it only when what the run has
+spent, what the sessions in flight may still spend, and that bound stay within the ceiling; a
+runtime that bounds none gets it only while the ceiling is not reached, so sessions in flight
+may pass it. A session refused raises `SpendError` without starting, and its component fails
+with kind `spend`. A session's reported `cost_usd` is counted when it ends; one that reports
+none, or fails, counts its runtime's bound, or nothing. `Run.spend_usd` records the total.
 
 ### `Executor`
 
 `Executor(observers: Sequence[Observer] = (), *, events: EventPolicy | None = None,
-signals: bool = True)`. Stateless between runs; safe to share. `events` bounds the event
-queue (see [Observers](#observers)). With `signals=True`, while a run is in flight a SIGTERM
-or SIGINT that nothing else handles cancels the run, so a signalled run still releases; a
-host that installed its own handler keeps it. A second signal does what it always did.
+interrupts: Callable[[], AbstractContextManager[None]] = nullcontext)`. Stateless between
+runs; safe to share. `events` bounds the event queue (see [Observers](#observers)).
+`interrupts` is entered around each run in the task awaiting it. With
+`interrupts=matrix.cancel_on_signals`, while a run is in flight a SIGTERM or SIGINT that
+nothing else handles cancels the run, so a signalled run still releases; a host that
+installed its own handler keeps it, and a second signal does what it always did.
+`Container.executor()` passes it; an executor given none leaves signals alone.
 
 ```python
 async Executor.run(
@@ -213,16 +350,21 @@ async Executor.run(
     limits: Limits | None = None,
     store: ConstructStore | None = None,
     run_id: str | None = None,
+    reuse: Reuse | None = None,
 ) -> Run
 ```
 
-1. `inputs` must hold exactly the declared run inputs, or `ConfigError` names the missing and
-   unknown ones. Each maps a kind to one row, or to a list or tuple of rows. Each row is
+1. `inputs` must hold exactly the declared run inputs, or `ConfigError` lists a problem for
+   each missing (`inputs.<kind>`, `missing_key`) and unknown (`unknown_key`) one. Each maps a kind to one row, or to a list or tuple of rows. Each row is
    validated against its kind's schema, if one is registered (`ContractError` otherwise).
-   A name in `limits.components` that is not in the wiring is a `ConfigError`. All of this is
-   checked before anything runs.
+   A name in `limits.components` that is not in the wiring is a `ConfigError`
+   (`limits.components.<name>`, `name_unknown`). A `reuse` whose components depend on one
+   that is not reused is a `ConfigError`. All of this is checked before anything runs.
 2. With a `store`, the run's record is opened there. A run id that already exists is a
-   `StoreError`, raised before anything runs. The inputs are then recorded, by `$input`.
+   `StoreError`, raised before anything runs. The inputs are then recorded, by `$input`,
+   and the rows of each reused component, by that component, which ends `reused`. When the
+   store's writer keeps events (the JSONL store writes `events.jsonl`), it is attached as one
+   more observer for the run.
 3. Scheduling is by readiness: a component starts when the providers of every kind it requires
    have finished, subject to `limits.concurrency`. It gets `Inputs` for those kinds, each row
    a deep copy. A row that cannot be copied is a `ContractError`: rows must be data, not live
@@ -233,16 +375,20 @@ async Executor.run(
    fails its kind's schema is a `ContractError`.
 5. A component that raises becomes a `ComponentError` (a `MatrixError` it raises keeps its own
    kind); a component past its deadline is a `ComponentError` saying so, with
-   `details["reason"] == "timeout"`. Each failure is recorded in `run.failures`, and
-   `RunError` is raised from the first. A component whose provider did not complete is
-   `skipped`.
+   `details["reason"] == "timeout"`. A failure its retry policy covers is run again first.
+   Each failure is recorded in `run.failures`, and `RunError` is raised from the first: its
+   `kind` is `run_failed` when a component raised, broke its contract or was refused an
+   agent session by the spend ceiling (`cause_kind` keeps `component`, `contract` or
+   `spend`), and the cause's own kind otherwise (`store`, `transient`, `auth`, `config`); its
+   `fix` is the cause's. A component whose provider did not complete is `skipped`.
 6. Stopping a component is one sequence, whatever the cause (`deadline`, `run_failed`,
    `cancelled`): `ctx.stopping` is set; the component has `grace_s` to return, and what it
    returns is recorded; then its task is cancelled; if it is still running `cleanup_s` later
    it is abandoned and its record says `abandoned`. A component past its deadline is `failed`
    even when it returned within the grace.
 7. A store that cannot keep a row, or cannot finish the run, fails the run: `RunError` with
-   kind `store`, whatever `on_failure` says. Nothing more is written to that record.
+   kind `store`, whatever `on_failure` says. No row is appended to that record after the
+   failed one.
 8. When the run ends, every release registered with `ctx.defer` is called, last registered
    first, each bounded by `cleanup_s`, whatever the run's status. A synchronous release runs
    on the event loop and is not bounded. Then the store's record is finished.
@@ -259,24 +405,51 @@ running component by the same sequence, skips the rest, calls the releases, and 
 | `construct` | `Construct` | every row recorded |
 | `status` | `"running" \| "completed" \| "failed" \| "cancelled"` | |
 | `started` / `ended` | `datetime` / `datetime \| None` | UTC |
-| `failures` | `list[dict]` | `{"component", "kind", "message"}` per failed component. `component` is `$input` or `$store` when it was the record, not a component, that failed |
-| `components` | `dict[str, dict]` | name to how it ended: `status` (`ComponentStatus`: `completed`, `failed`, `cancelled`, `skipped`), `reason` when it was stopped (`deadline`, `run_failed`, `cancelled`) or skipped (`upstream: <name>`, `policy: fast`, `cancelled`, `store failed`), `duration_ms`, and `abandoned: true` when it ignored cancellation |
-| `releases` | `list[dict]` | `{"component", "status", "error"}` per deferred release, in the order called; `status` is `released`, `failed` or `abandoned` |
+| `failures` | `list[ComponentFailure]` | `component`, `kind`, `message` per failed component. `component` is `$input` or `$store` when it was the record, not a component, that failed |
+| `components` | `dict[str, ComponentEnding]` | name to how it ended: `status` (`ComponentStatus`: `completed`, `failed`, `cancelled`, `skipped`, `reused`), `reason` when it was stopped (`deadline`, `run_failed`, `cancelled`), skipped (`upstream: <name>`, `policy: fast`, `cancelled`, `store failed`) or reused (`from run <id>`), `duration_ms` (`None` when it never started), `abandoned` when it ignored cancellation, and `attempts` |
+| `reused_from` | `str \| None` | the run whose rows this one reused |
+| `fingerprints` | `dict[str, str]` | name to a digest of what the component was built from, when the wiring knows it |
+| `releases` | `list[ReleaseOutcome]` | `component`, `status`, `error` per deferred release, in the order called; `status` is `released`, `failed` or `abandoned` |
 | `events_dropped` | `int` | events no observer received |
+| `spend_usd` | `float \| None` | what the run's agent sessions cost, as their runtimes reported it (0.0 on the `mock`, which reports a cost of 0); `None` when none reported a cost (the `model` runtime reports none) |
 | `rows(kind)` | `-> tuple[Any, ...]` | the rows of `kind` |
 | `document()` | `-> dict` | the run as a `matrix.v1.run` document, without its tables |
 
-The component and run states are open vocabularies: a reader must tolerate one it does not
-know.
+`Run` and its three parts are pydantic models, exported from `matrix`. The parts are frozen,
+and each `document()` is the dict `run.document()` holds for it (a key of `ComponentEnding`
+is left out when it says nothing; `reused_from`, `fingerprints` and `spend_usd` appear in the
+run's document when set). The component and run states are open vocabularies: a reader must
+tolerate one it does not know.
+
+### `Reuse`
+
+`Reuse(run_id: str, rows: dict[str, dict[str, tuple[Any, ...]]])`: rows carried over from the
+run `run_id`, by component and kind. `Container.reuse(run_id)` builds it from a record: each
+component that completed there, was built from the same fingerprint, and whose providers are
+reused too. `Container.run(reuse_from=...)` and `matrix run --from` use it.
 
 ### `process`
 
 `await process.spawn(ctx, argv, *, grace_s=5.0, **options) -> asyncio.subprocess.Process`
 starts `argv` in its own process group and defers killing that group with the run: SIGTERM,
 then SIGKILL once `grace_s` has passed with the group still alive. `options` go to
-`asyncio.create_subprocess_exec`. `await process.kill_group(proc, grace_s=5.0)` does the kill
+`asyncio.create_subprocess_exec`. `ctx` is the component's `RunContext`, or anything with its
+`defer` (`process.Deferring`). `await process.kill_group(proc, grace_s=5.0)` does the kill
 directly; only the first call for a process signals. A child that moves itself to another
 session is not reached.
+
+`await process.start(argv, **options) -> asyncio.subprocess.Process` starts `argv` in its
+own process group and defers nothing: ending it is the caller's, with `kill_group`. Use the
+pair when a component starts and stops a child for each repetition of its work, so the run's
+releases do not grow with the repetitions:
+
+```python
+server = await process.start(["my-server"])
+try:
+    await measure(server)
+finally:
+    await process.kill_group(server)
+```
 
 ---
 
@@ -324,13 +497,20 @@ large or external value. matrix records it and does nothing else with it.
 | `store.load(run_id) -> Construct` | the record of a run in any state; `torn` reports entries with no row |
 | `store.describe(run_id) -> dict` | the `matrix.v1.run` document with each table's size. A run that never finished reads `running`, or `interrupted` when the store can tell its writer is gone |
 | `store.runs() -> list[str]` | run ids, oldest first |
+| `writer.events() -> Observer \| None` | optional: a sink for the run's events kept with its record; the executor closes it after the run |
+| `store.location(run_id) -> str` | optional: where the run's record is, or would be |
 
 A missing run is a `NotFoundError` naming those that exist. Anything a store cannot write or
 read back is a `StoreError`; the executor turns any other exception a store raises into one.
+The two optional members came later: a store without them keeps working, keeps no events,
+and is located by the run id.
 
-`JsonlConstructStore(root, *, fsync=False)` keeps a directory per run: `run.json`, and one
-`<kind>.jsonl` per table whose lines are the rows. `fsync=True` flushes each row to the disk.
-`MemoryConstructStore()` keeps runs in a dict, rows as given.
+`JsonlConstructStore(root, *, fsync=False)` keeps a directory per run: `run.json`, one
+`<kind>.jsonl` per table whose lines are the rows, and `events.jsonl`. `fsync=True` flushes
+each row to the disk. `MemoryConstructStore()` keeps runs in a dict, rows as given. Both are
+registered at the `store` point (`matrix.v1.store.jsonl` with `root` and `fsync`,
+`matrix.v1.store.memory`), and `matrix.store` in config chooses one; a package adds its own
+by registering there.
 
 ---
 
@@ -357,14 +537,16 @@ The runtime-neutral record of one session. Frozen.
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `content` | `str` | `""` | |
-| `tool_calls` | `tuple[dict, ...]` | `()` | `{name, input}` per call |
+| `tool_calls` | `tuple[dict, ...]` | `()` | `{name, input}` per call; a runtime that sees calls happen adds `id`, `started`, `ended` (ISO times) and `error`, and each becomes an `execute_tool` span |
 | `tokens_input`, `tokens_output` | `int` | `0` | |
 | `duration_ms` | `int` | `0` | |
 | `cost_usd` | `float \| None` | `None` | when the backend reports it |
 | `num_turns` | `int` | `0` | |
 | `family` | `str \| None` | `None` | model family that answered (`claude`, `qwen`, ...), stamped by the runtime |
+| `provider` | `str \| None` | `None` | who served it, by the GenAI conventions' provider names (`anthropic`), when known |
 | `model` | `str \| None` | `None` | model id or registry name, when known |
 | `stop` | `str \| None` | `None` | `completed`, or the limit reached (`max_turns`, `max_budget_usd`, ...). A limit is not a failure |
+| `task` | `str \| None` | `None` | the task as sent; an `agent-step` records it, after substituting its inputs |
 
 ### `AgentRuntime` (Protocol)
 
@@ -373,13 +555,25 @@ The runtime-neutral record of one session. Frozen.
 | `check` | `(definition) -> None` | **Required.** Raises `ConfigError` for a definition the runtime cannot honour. A runtime that accepts everything implements it as a no-op |
 | `run` | `async (definition, task: str) -> AgentResponse` | Returns a response whose `stop` says why the session ended, or raises `AgentRuntimeError` with a `reason`. Never an empty normal response for a failed session |
 
+Two members are optional, read with `getattr`: `warnings` (problems a reader of its config
+should see) and `budget_usd` (the most one session may spend in USD, which `spend_usd` holds
+each session to; absent or `None` is no bound).
+
+A runtime that also logs what its `warnings` say logs it at WARNING on the logger named
+`RUNTIME_LOGGER` (`matrix.runtime`), once per process, so a caller that builds a runtime per
+session is not told once per session. A program that reports `warnings` itself quiets that
+logger: the `matrix` command does, and so does ix.
+
 ### `Agent` (Protocol) and `BoundAgent`
 
 `Agent` is what callers use: `name` and `async run(task: str) -> AgentResponse`.
 
 `BoundAgent(definition, runtime, *, observers=())` satisfies it. Construction calls
 `runtime.check(definition)`, so a refusal happens at binding. Properties `name`,
-`definition`, `runtime`. `run(task)` emits `agent.start` and `agent.end`.
+`definition`, `runtime`. `run(task)` emits `matrix.agent.start` (with the `task` as sent)
+and `matrix.agent.end`, and a `matrix.tool.start` / `matrix.tool.end` pair, at the runtime's
+own times, for each tool call it timed. Inside a run, it first holds the session to the run's
+`spend_usd`, raising `SpendError` without starting it when it could pass the ceiling.
 
 ### Built-in runtimes
 
@@ -387,19 +581,19 @@ Registered at the `runtime` point. In config, `type:` takes the short name.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `claude-sdk` | `matrix.v1.runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (`[]` is hermetic), `plugins` (relative `path` resolved against `cwd`), `fallback_model`, `agents` | `cwd` | Extra `[claude]`. Accepts every definition. `bypassPermissions` and `dontAsk` log a WARNING. Stamps `family="claude"` |
-| `model` | `matrix.v1.runtime.model` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. One call, no tool loop: `check` refuses a definition that declares tools |
-| `mock` | `matrix.v1.runtime.mock` | `responses` (task to reply), `default` (reply for an unmatched task; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | Offline. Accepts every definition. Records `calls` |
+| `claude-sdk` | `matrix.v1.runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (`[]` is hermetic), `plugins` (relative `path` resolved against `cwd`), `fallback_model`, `max_budget_usd` (the most one session may spend: the SDK's own option, and the runtime's `budget_usd`), `agents` | `cwd` | Extra `[claude]`. Accepts every definition. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call |
+| `model` | `matrix.v1.runtime.model` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. An agent's `model` is a hardline registry name; unset, `default_model`, then the registry's default. One call, no tool loop: `check` refuses a definition that declares tools. Reports no cost, so `spend_usd` counts nothing for it |
+| `mock` | `matrix.v1.runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | Offline. Accepts every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports `cost_usd` 0.0, so a run on it records `spend_usd: 0.0`. Records `calls`, each `(agent, task)` |
 
 Classes: `matrix.adapters._out.runtime.claude_sdk.ClaudeSdkRuntime`,
 `matrix.adapters._out.runtime.model.ModelAgentRuntime`,
 `matrix.adapters._out.runtime.mock.MockRuntime`.
 
-### `DefinitionSource` (Protocol)
+### Agent definition files
 
-`load() -> list[AgentDefinition]`, `describe() -> str`.
-`matrix.adapters._out.definitions.markdown.MarkdownDefinitionSource(directory)` reads every
-`*.md` in a directory, in Claude Code's agent-file format:
+An `AgentDefinition` reads a Claude Code agent file as it stands, through the loader
+(`matrix.load(AgentDefinition, path)`, or the `matrix.definitions` directories, read with
+`load_each(..., name_from_file=True, suffixes=(".md",))`):
 
 ```markdown
 ---
@@ -413,7 +607,10 @@ color: blue                    # anything else is kept in metadata
 You are a careful reviewer...  (the body is the system prompt)
 ```
 
-Errors name the file. A missing directory is a `ConfigError`.
+The model, not the reader, says what each key means: `system_prompt` takes the file's
+`body` by alias, `max_turns` takes `maxTurns`, `tools` splits a comma string, and keys it does
+not interpret go to `metadata`. Every problem names its key and its file; a name defined
+twice, in one directory or across them, is a `name_taken` problem naming both files.
 
 ### `matrix.v1.agent-step`
 
@@ -428,15 +625,19 @@ A registered `component` that runs one composed agent. Constants:
 | `agent` | `str` | required | a composed agent's name |
 | `inputs` | `dict[str, str]` | `{"task": "matrix.v1.task"}` | placeholder name to kind; the kinds are the step's `requires` |
 | `task` | `str \| None` | `None` | template with `{placeholder}`s (`{{ }}` for literal braces). `None` is allowed only with exactly one input, whose rows are the task |
-| `response` | `str` | `matrix.v1.agent-response` | the kind the `AgentResponse` is provided as |
-| `output` | `str \| None` | `None` | a kind; the JSON the agent returned is provided as one row of it |
+| `response` | `str` | `matrix.v1.agent-response` | the kind the `AgentResponse` is provided as; one step per kind in a run |
+| `output` | `str \| None` | `None` | a kind; the reply, which must then be one JSON document, is provided as one row of it |
 
-It provides `response`, and `output` when set. A kind has one provider, so two agent steps in
-one run each name their own `response`. Rows are rendered as text: one row as itself (a string
+It provides `response`, and `output` when set. The `AgentResponse` carries the task as sent
+(`task`). A kind has one provider, so two agent steps in one run each name their own
+`response`; two on the default are a `name_taken` problem at the second step's
+`components.<name>.config.response`, whose fix says so. With `output`, ask for the JSON in the
+agent's prompt or the task, and give the mock that JSON. Rows are rendered as text: one row as itself (a string
 as is, a pydantic model as indented JSON, anything else through `json.dumps`), several rows as
 a JSON list; a required kind with no rows is a `ContractError`. The `output` row is the JSON
-document in the reply, either the whole reply or a fenced `json` block; a reply with no JSON
-document is a `ContractError`, and so is one that fails the kind's schema.
+document in the reply, either the whole reply or a fenced code block; a reply with no JSON
+document is a `ContractError` quoting the start of the reply, with a `fix` that says how to
+get JSON, and so is one that fails the kind's schema.
 
 ---
 
@@ -444,8 +645,8 @@ document is a `ContractError`, and so is one that fails the kind's schema.
 
 ### Extension points and entries
 
-Points matrix declares: `runtime`, `component`, `payload-type`, `observer`. Other packages
-declare their own with `add_point` (ix declares `sensor` and `engine`).
+Points matrix declares: `runtime`, `component`, `payload-type`, `observer`, `store`. Other packages
+declare their own with `add_point`, named under their own root (ix declares `ix.sensor`).
 
 `Entry` (frozen):
 
@@ -455,7 +656,7 @@ declare their own with `add_point` (ix declares `sensor` and `engine`).
 | `type_url` | `str` | |
 | `build` | `Callable` | called as `build(validated_config, **needs)`, or `build(**needs)` when `config` is `None`. For `payload-type`, the model itself |
 | `config` | `type[BaseModel] \| None` | the model its settings validate against |
-| `needs` | `frozenset[str]` | shared things composition must hand it: `agents`, `models`, `cwd`, or keys of `compose(context=...)` |
+| `needs` | `frozenset[str]` | shared things composition must hand it: `agents`, `models`, `cwd`, keys of `compose(context=...)`, and for a component `name`, its name in the run |
 | `effects` | `frozenset[str] \| None` | what it may touch: `network`, `subprocess`, `filesystem`, `model`. `None` is unknown, not none |
 | `summary` | `str` | |
 | `stability` | `"stable" \| "beta" \| "experimental"` | default `beta` |
@@ -463,28 +664,33 @@ declare their own with `add_point` (ix declares `sensor` and `engine`).
 
 `entry.describe()` returns all of it as a JSON-ready dict, with `config` as a JSON schema.
 
-`Failure(extension, origin, error)` records an extension that failed to load or a refused
-registration.
+`Failure(*, extension, origin, error)` records an extension that failed to load or a
+refused registration: `extension` is its entry point's name, `origin` its distribution.
+
+`Extension(*, name, origin, register)` is one extension to load: `register(registry)` is
+called with the registry, and anything it raises, importing included, quarantines it.
 
 ### `Registry`
 
 | Method | Signature | Behaviour |
 |--------|-----------|-----------|
 | `add_point` | `(point) -> Registry` | Declares an extension point |
-| `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta") -> Registry` | `ConfigError` for an undeclared point, an invalid type URL, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
-| `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the model's docstring |
+| `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta") -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
+| `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the first line of the model's docstring |
 | `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
 | `entries` | `(point=None) -> list[Entry]` | Sorted by point, then type URL |
 | `__contains__` | `((point, type_url)) -> bool` | |
-| `create` | `(point, type_url, config=None, *, needs=None, where="<config>") -> Any` | Validates `config` and builds the entry with the needs it declared. `ConfigError` for a missing need, for config given to an untyped entry, or for invalid config (each problem as a key path under `where`) |
+| `create` | `(point, type_url, config=None, *, needs=None, where="<config>") -> Any` | Validates `config` and builds the entry with the needs it declared. `NotFoundError` for an unregistered type URL; `ConfigError` for a missing need, for config given to an untyped entry, or for invalid config (each problem as a key path under `where`) |
 | `payload_schemas` | `() -> dict[str, type[BaseModel]]` | Every `payload-type` entry that is a pydantic model |
-| `discover` | `(group="matrix.extensions") -> Registry` | Loads every entry point in the group, in name order (see below) |
+| `load` | `(extensions: Iterable[Extension]) -> Registry` | Loads the extensions, in name order (see below) |
 
 Attributes: `points: set[str]`, `failures: list[Failure]`.
 
-`discover` rules:
+`load_extensions(registry, group="matrix.extensions") -> Registry` loads every entry point in
+the group into `registry`: each entry point's value is `register(registry) -> None`.
 
-- Each entry point's value is `register(registry) -> None`.
+`load` rules:
+
 - Registration is all-or-nothing per extension: if `register` raises part way, none of its
   entries or points stay, and the failure is recorded in `failures`.
 - An extension that registers at an undeclared point is retried once every other extension
@@ -497,7 +703,8 @@ Attributes: `points: set[str]`, `failures: list[Failure]`.
   both. Code calling `register` directly is treated as the owner.
 
 `default_registry(*, discover=True) -> Registry` returns a registry with every
-`matrix.extensions` entry point loaded. `discover=False` registers only matrix's built-ins.
+`matrix.extensions` entry point loaded. `discover=False` loads only matrix's built-ins, under
+the origin `matrix`.
 
 `runtime_type_url(name)` maps `claude-sdk` to `matrix.v1.runtime.claude-sdk`;
 `observer_type_url(name)` maps `otel` to `matrix.v1.observer.otel`. A name containing `.` is
@@ -518,6 +725,8 @@ Matrix's own entries:
 | `observer` | `matrix.v1.observer.console` | | none |
 | `observer` | `matrix.v1.observer.jsonl` | | `filesystem` |
 | `observer` | `matrix.v1.observer.otel` | | `network` |
+| `store` | `matrix.v1.store.jsonl` | | `filesystem` |
+| `store` | `matrix.v1.store.memory` | | none |
 
 A third-party extension:
 
@@ -527,7 +736,7 @@ acme = "acme.matrix_ext:register"
 ```
 
 ```python
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class Review(BaseModel):
@@ -538,6 +747,8 @@ class Review(BaseModel):
 
 
 class ScorerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")  # an unknown key is refused, by its path
+
     threshold: int = 3
 
 
@@ -592,11 +803,14 @@ shares a `span`. An agent called from inside a component reports that component'
 | `matrix.component.stopping` | the component's / run id | `reason` (`deadline`, `run_failed`, `cancelled`) |
 | `matrix.component.end` | the component's / run id | `status`, and when they apply `reason`, `duration_ms`, `kind`, `abandoned`. Exactly one per component; a skipped component has no start |
 | `matrix.component.late` | new id / run id | `call`: the context method used after the component ended |
+| `matrix.component.retry` | the component's / run id | `attempt` (the one about to start), `kind`, `error`, `wait_s` |
 | `matrix.row.append` | new id / run id | `kind`, `row`, `seq`: the row's ledger pointer and order |
 | `matrix.release.start` | new id / run id | |
 | `matrix.release.end` | same / run id | `status` (`released`, `failed`, `abandoned`), `error` |
 | `matrix.agent.start` | new id / the calling span | `agent`, `model` |
-| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`; or `status="error"`, `error`, `reason` |
+| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`; or `status="error"`, `error`, `reason`, `kind` |
+| `matrix.tool.start` | new id / the agent's span | `agent`, `tool`, `call_id`; timed when the runtime saw the call start |
+| `matrix.tool.end` | same / the agent's span | `agent`, `tool`, `call_id`, `status` (`ok`, `error`), `duration_ms`; timed when the runtime saw its result |
 | `matrix.measure` | new id / the calling span | `name`, `value`, `unit`, `kind`, `attrs` |
 | `matrix.events.dropped` | new id / none | `count` |
 | `<name>.start`, `<name>.end` | from `ctx.span` | the caller's fields; the end has `status` (`ok`, `error`) and `duration_ms` |
@@ -641,35 +855,131 @@ is going.
 
 ### The `otel` observer
 
-`matrix.v1.observer.otel`, enabled with `observers: [otel]`. Requires `[otel]`.
+`matrix.v1.observer.otel`. Attached by `observers: [otel]`, and to every composed container
+when the standard `OTEL_*` variables ask for export (below). It speaks only the OpenTelemetry
+API, a dependency of matrix, which does nothing until an application installs an SDK.
+`OtelObserver(*, tracer_provider=None, meter_provider=None)` takes providers of the caller's
+own; by default it uses the global ones. Instrumentation scope `matrix`, with matrix's
+version.
 
-Spans: one per `*.start`/`*.end` pair, parented as the events are, so `matrix.run` holds
-`matrix.component` holds whatever the component opened with `ctx.span`. An agent session is
-`invoke_agent {agent}` (`gen_ai.operation.name=invoke_agent`). Fields become attributes:
-`agent`, `model`, `tokens_input` and `tokens_output` map to `gen_ai.agent.name`,
-`gen_ai.request.model`, `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens`; other
-scalar fields become `<root>.<field>` under the event's root (`matrix.status`). A failed
-component or run, or an agent or span ending in error, sets the span status to ERROR.
+**Conventions.** The OpenTelemetry GenAI semantic conventions, as read on 2026-10-19 from
+their repository, `open-telemetry/semantic-conventions-genai`: no release tagged there yet,
+every name at status Development, building on semantic conventions v1.44.0. The repository
+gives no schema URL yet, so matrix's tracer sets none. When the conventions are released,
+the names here are re-checked against that release.
 
-Metrics, derived from the same events:
+Spans, one per `*.start`/`*.end` pair, parented as the events are and timed by the events'
+own times (not when the observer received them):
 
-| Instrument | Kind | Attributes |
-|------------|------|------------|
-| `matrix.run.duration` | histogram, s | `matrix.status` |
-| `matrix.component.duration` | histogram, s | `matrix.component`, `matrix.status` |
-| `matrix.component.count` | counter | `matrix.component`, `matrix.status` |
-| `matrix.agent.tokens` | counter | `gen_ai.agent.name`, `gen_ai.token.type` |
-| `matrix.agent.cost_usd` | counter | `gen_ai.agent.name` |
-| `matrix.events.dropped` | counter | |
-| the name given to `ctx.measure` | the measure's `kind` | the measure's scalar `attrs`, `matrix.component` |
+| Span | Kind | Attributes |
+|------|------|------------|
+| `invoke_workflow` (a run) | INTERNAL | `gen_ai.operation.name=invoke_workflow`, `matrix.run.id`, `matrix.status`; `error.type` when it failed |
+| `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.attempts`; `error.type` (the error's kind) when it failed. The conventions have no step |
+| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.cost_usd`; `error.type` (the runtime's `reason`) when it failed |
+| `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`; `error.type=tool_error` when the tool reported an error |
+| a component's `ctx.span(name)` | INTERNAL | its fields under its root (`acme.status`) |
 
-### `configure_telemetry`
+Metrics, derived from the same events, so an event log replays into the numbers an exporter
+saw. The conventions' names where they define one:
 
-`configure_telemetry(*, service_name="matrix", endpoint=None, console=False) -> None`
-configures the OpenTelemetry SDK's span exporter. `endpoint` is an OTLP gRPC endpoint and
-falls back to `OTEL_EXPORTER_OTLP_ENDPOINT`; `console=True` prints spans. With neither, it
-does nothing. It does not set up a metrics exporter: configure a `MeterProvider` directly.
-Requires `[otel]`.
+| Instrument | Kind, unit | Attributes |
+|------------|------------|------------|
+| `gen_ai.invoke_workflow.duration` | histogram, s | `gen_ai.operation.name`, `matrix.status`, `error.type` |
+| `gen_ai.invoke_agent.duration` | histogram, s | `gen_ai.agent.name`, `gen_ai.provider.name`, `gen_ai.response.model`, `error.type` |
+| `gen_ai.invoke_agent.tool_calls` | histogram, `{tool_call}` | `gen_ai.agent.name`, ... |
+| `gen_ai.execute_tool.duration` | histogram, s | `gen_ai.tool.name`, `gen_ai.agent.name`, `error.type` |
+| `gen_ai.client.inference.usage.input_tokens`, `..._output_tokens` | counter, `{token}` | `gen_ai.agent.name`, `gen_ai.provider.name`, `gen_ai.response.model`, `gen_ai.token.modality=unknown` (a session's total mixes whatever it exchanged) |
+
+and matrix's own where they define none: `matrix.component.duration` (histogram, s),
+`matrix.component.count`, `matrix.component.retries`, `matrix.agent.cost_usd` (USD),
+`matrix.events.dropped`, each by `matrix.component` and `matrix.status` where they apply;
+and the name given to each `ctx.measure`, of the measure's kind, with its scalar `attrs` and
+`matrix.component`.
+
+### `configure_telemetry` and the `OTEL_*` variables
+
+OpenTelemetry's rule holds: a library uses the API, an application installs the SDK.
+Composing, wiring and running never install a provider. An application entry point does:
+
+```python
+configure_telemetry(*, service_name=None, endpoint=None, console=False) -> Telemetry
+```
+
+`matrix run` calls it, and so may a tool built on matrix; a program that configures
+OpenTelemetry itself does not. With no arguments the standard variables decide:
+
+| Variable | What matrix does |
+|----------|------------------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (and `_TRACES_`, `_METRICS_` forms) | set: export is asked for; the OTLP exporters read it |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `otlp` (the default once export is asked for), `console` (to stderr: stdout is the command's document), `none`; a comma list; another value is a warning |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` (and `_TRACES_`) | `http/protobuf` (the spec's default) or `grpc`; another value is a warning |
+| `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | the resource; `service.name` is `matrix` when neither sets it (or `service_name`, which wins) |
+| `OTEL_SDK_DISABLED` | `true`: nothing is installed and no observer attached |
+
+When the variables ask for export, composition also attaches the `otel` observer to every
+container. `endpoint` exports OTLP there and `console=True` to stderr, whatever the variables
+say; without `[otel]` either raises `ConfigError` naming the install. When only the variables
+asked and `[otel]` is missing, nothing is exported and the returned `Telemetry`, the
+container's `warnings` and every `--json` document carry an `extra_missing` warning.
+
+`Telemetry`: `enabled`, `exporters` (`traces:otlp`, ...), `warnings`, and `shutdown()`, which
+flushes and stops what was installed. Call it when the work is done.
+
+**With nothing configured**, a run recorded by the JSONL store writes its events into its
+record, `events.jsonl`: the local sink.
+
+---
+
+## Loading documents
+
+One loader reads every document matrix reads, and any document a caller names a pydantic type
+for. A **source** reads plain data and knows nothing of types; the **loader** validates it as
+the caller's model, once, and reports every problem.
+
+```python
+load(model: type[M], location) -> M
+load_each(model: type[M], *locations, key="name", name_from_file=False,
+          suffixes=(".yaml", ".yml", ".md")) -> tuple[M, ...]
+load_config(client_type=None, client_key="matrix", sources=None, *, loader=None) -> Config
+```
+
+- A **location** is a path (`str` or `os.PathLike`), a folder or file inside an installed
+  package (`importlib.resources.files("acme") / "kinds"`), or an open text stream
+  (`sys.stdin`), which is read as YAML.
+- A **YAML file** is its mapping as it stands. A **markdown file** (`.md`, `.markdown`) is its
+  frontmatter mapping with the text after the frontmatter, exactly as written, under the key
+  `body`; with no frontmatter it is all body. What `body` means is the model's business: a
+  field takes it by alias (`prompt: str = Field("", alias="body")`).
+- `load` reads one document. Nothing there is a `NotFoundError`; a folder is a problem.
+- `load_each` reads every file whose suffix is in `suffixes`, in each folder, in file-name
+  order (a file is a folder of one). `key` names the field two documents may not share: a
+  repeat is a `name_taken` problem naming both files. `name_from_file` fills `key` from the
+  file's stem where a document leaves it out. One unreadable file hides nothing.
+- `load_config` merges the tiers (below), the `matrix:` section and the tool's validated in
+  one pass, so both sections' problems arrive together.
+
+Every problem is a `Problem` with the key `path` dotted from the document's root, a `kind`,
+the `message`, a `fix`, `allowed` where the set is closed, `got` when what was written is a
+scalar, and `source`, the file. Pydantic's errors map to the agreed kinds: an unknown key is
+`unknown_key`, a missing one `missing_key`, a value of the wrong type `wrong_shape`, a value of
+the right type the schema refuses `invalid_value`, a `schema` literal it does not read
+`schema_unsupported`; a file that does not parse is `yaml_syntax`. All arrive in one
+`ConfigError` (exit 3); `complete` is false when a file could not be read, since what it would
+have set was never checked.
+
+**Markers.** Two field annotations change how a value is placed, never what it means:
+`BesideFile()` resolves a relative path in the field (a string, or each string of a list)
+against the folder of the file that wrote it (a default no file wrote stays as it is);
+`Accumulate()` keeps a list from every tier
+when merging, in tier order and each once, instead of the last tier's.
+`matrix.definitions` carries both. They apply to a model's top-level fields.
+
+**Any source.** `Loader(source)` validates what any `DocumentSource` reads:
+`document(location) -> Document | None`, `documents(location, suffixes) -> tuple[Document,
+...] | None` and `beside(document, path) -> str`. A `Document` is `source` (as messages show
+it), `stem`, `data` (the mapping, or None) and `problem` (why there is none), and `folder`.
+`Loader.one`, `Loader.each` and `Loader.merge(sections, locations)` are the three
+operations; `load_config(..., loader=...)` and `compose(..., loader=...)` take one.
 
 ---
 
@@ -688,12 +998,16 @@ Requires `[otel]`.
 | 5 | `$MATRIX_CONFIG` | an explicit shared file; must exist |
 | 6 | `$<TOOL>_CONFIG` | an explicit tool file; must exist |
 
-Schema defaults sit below tier 1; a tool's command-line flags sit above tier 6. Absent files
-read as empty. A file that exists but is not a YAML mapping is a `ConfigError` naming it.
+Schema defaults sit below tier 1; the files the command line names (`matrix plan CONFIG...`)
+sit above tier 6, in the order named, and with `--only` they are read alone, none of the
+tiers. Absent files read as empty. Every problem names the file that set the value it is
+about.
 
-Merge rules: mappings merge key by key, later tiers winning; lists replace, except
-`matrix.definitions`, whose directories accumulate across tiers, each relative directory
-resolved against the file that declared it.
+Merge rules: mappings merge key by key, later tiers winning, so `runtimes` and `agents` hold
+every tier's entries; lists replace, except `matrix.definitions`, whose directories
+accumulate across tiers, each relative directory resolved against the file that declared it.
+An agent defined in two of them is one `name_taken` problem at `matrix.definitions`, and an
+agent that would use it is not checked (`complete` false).
 
 ### `MatrixConfig`
 
@@ -707,10 +1021,12 @@ The `matrix:` section. Frozen, unknown keys rejected.
 | `agents` | `dict[str, AgentConfig]` | `{}` | named agents |
 | `components` | `tuple[ComponentConfig, ...]` | `()` | the components of a run, each `{name, type, config}`. Their order of work is inferred; the order here means nothing |
 | `inputs` | `tuple[str, ...]` | `()` | the kinds a caller supplies when it runs `components` |
+| `store` | `StoreConfig` | `{type: jsonl}` | where runs are recorded: `type` (`jsonl`, `memory`, or a registered store's type URL) plus that store's options; `jsonl` keeps runs under `root` (default `.matrix/runs`, relative to the working directory) |
+| `limits` | `Limits` | `Limits()` | the bounds and retry policy every run keeps; see [`Limits`](#limits-componentlimits-and-retry) |
 | `models` | `dict \| None` | `None` | a hardline registry section (`{default?, models: {...}}`) handed to every `model` runtime that has none. `None` lets hardline read its own tiers |
 
-`RuntimeConfig`: `type` (a built-in short name or a full type URL) plus that runtime's own
-options as extra keys, validated by the runtime's config model.
+`RuntimeConfig` and `StoreConfig`: `type` (a built-in short name or a full type URL) plus that
+extension's own options as extra keys, validated by its config model.
 
 `ComponentConfig` (unknown keys rejected): `name` (this instance's name in the run), `type`
 (the type URL of a registered `component`), `config` (that component's own settings,
@@ -733,34 +1049,39 @@ matrix:
     sdk:   {type: claude-sdk, permission_mode: default, setting_sources: []}
     local: {type: model}
   observers:
-    - otel
     - {type: jsonl, path: runs/events.jsonl}
   agents:
     reviewer: {runtime: sdk}                                    # agents/reviewer.md
     triage:   {runtime: local, definition: reviewer, tools: [], model: qwen3-8b}
     greeter:  {runtime: local, system_prompt: "Say hello."}
+  store: {type: jsonl, root: runs}
+  limits:
+    deadline_s: 900
+    retry: {attempts: 3, errors: [transient]}
 mytool:
   trials: 3
 ```
 
 ### `Config[C]`
 
-Frozen, generic over a tool's pydantic model: `matrix: MatrixConfig`, `client: C`, and
+Frozen, generic over a tool's pydantic model: `matrix: MatrixConfig`, `client: C`,
 `sources: tuple[str, ...]`, every file consulted (lowest priority first, absent ones marked
-`(absent)`).
+`(absent)`, empty ones `(empty)`), and `origins`, each key path's file.
 
 ### `load_config`
 
 ```python
-load_config(client_type=None, client_key="matrix", sources=None) -> Config
+load_config(client_type=None, client_key="matrix", sources=None, *, loader=None) -> Config
 ```
 
 - `client_type`: the tool's pydantic model for its own section.
 - `client_key`: the tool's name: its section key and the `<tool>` in the tiers.
-- `sources`: paths (or `ConfigSource` objects) lowest priority first; `None` uses
+- `sources`: locations lowest priority first (paths, package files, streams); `None` uses
   `discover_sources(client_key)`.
+- `loader`: a `Loader` over another source.
 
-Raises `ConfigError` naming every bad key path (`matrix.agents.a.runtim`) and every file
+Raises `ConfigError` with a problem for every bad key path (`matrix.agents.a.runtim`) in
+either section, each naming the file that set it; `details["sources"]` lists every file
 consulted.
 
 ```python
@@ -773,18 +1094,15 @@ class MyToolConfig(BaseModel):
     trials: int = 5
 
 
-config = load_config(MyToolConfig, "mytool")   # reads matrix: and mytool: from every tier
+config = load_config(MyToolConfig, "mytool")  # reads matrix: and mytool: from every tier
 config.client.trials
 container = compose(config)
 ```
 
 `discover_sources(tool, project_root=None) -> list[Path]` returns the tier paths
 (`project_root` defaults to the working directory); a set but missing `$MATRIX_CONFIG` or
-`$<TOOL>_CONFIG` is a `ConfigError`. `config_env_var(tool)` gives the variable name:
-`"my-tool"` becomes `MY_TOOL_CONFIG`.
-
-`ConfigSource` (Protocol): `read() -> dict` (empty when absent, no validation) and
-`describe() -> str`.
+`$<TOOL>_CONFIG` is a `ConfigError`. The variable is the tool's name upper-cased, with `-`
+and `.` as `_`: `"my-tool"` reads `MY_TOOL_CONFIG`.
 
 ---
 
@@ -799,24 +1117,29 @@ compose(
     registry: Registry | None = None,
     base_dir: Path | str | None = None,
     source: str = "matrix",
-    definition_sources: Sequence[DefinitionSource] = (),
+    definitions: Iterable[AgentDefinition] = (),
     context: Mapping[str, Any] | None = None,
+    loader: Loader | None = None,
 ) -> Container
 ```
 
-Builds, in order: observers, runtimes (each resolved by type through the registry, options
-validated by its config model), definitions (every `*.md` in each `definitions` directory,
-plus `definition_sources`), and agents (each runtime's `check` runs here). Makes no model or
-tool call.
+Builds, in order: observers (and `otel` when the variables ask for export), runtimes (each
+resolved by type through the registry, options validated by its config model), the store,
+definitions (every `*.md` in each `definitions` directory, read by the loader, plus
+`definitions`), and agents (each runtime's `check` runs here). Makes no model or tool call,
+and installs no telemetry provider.
 
 - `registry` defaults to `default_registry()`.
 - `base_dir` anchors relative `definitions` directories that `load_config` did not already
   resolve; defaults to the working directory.
-- `source` prefixes error messages (`mytool.yaml: agents.triage.runtime: ...`).
+- `source` is the key every problem's path starts with (`matrix.agents.triage.runtime`).
 - `context` supplies shared needs, such as `{"cwd": "/path"}`, to extensions that declare them.
 
-Every failure is a `ConfigError` naming the key path and the legal values; one definition name
-in two directories is also a `ConfigError`.
+Every problem is reported at once, in one `ConfigError`, each with its key path, the legal
+values and, for a config from `load_config`, the file that set it. An agent whose runtime is
+configured but could not be built is not checked, and the error's `complete` is false. A
+registry without matrix's built-ins has no default store: the container then has none unless
+the config names one.
 
 ### `Container`
 
@@ -825,55 +1148,109 @@ in two directories is also a `ConfigError`.
 | `config`, `registry` | what it was composed from |
 | `runtimes`, `definitions`, `agents` | name to object |
 | `observers` | `tuple[Observer, ...]` |
+| `store` | the `ConstructStore` `matrix.store` built; `ConfigError` when there is none |
+| `limits` | `matrix.limits`, a `Limits` |
+| `warnings` | `tuple[Problem, ...]`: a permissive runtime, export asked for without its extra |
 | `agent(name)` | `BoundAgent`; `NotFoundError` listing configured agents |
 | `runtime(name)` | `AgentRuntime`; `NotFoundError` listing configured runtimes |
 | `bind(definition, runtime)` | a `BoundAgent` on the configured runtime named `runtime`, with the container's observers |
 | `needs()` | the shared needs: `agents`, `models`, `cwd`, plus `context` keys |
-| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas and each component's declared `effects` (an `agent-step` has its agent's runtime's). Both arguments default to the config's `matrix.components` and `matrix.inputs`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
-| `executor()` | an `Executor` with the container's observers |
+| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas, each component's declared `effects` (an `agent-step` has its agent's runtime's) and its `fingerprint`. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
+| `executor(observers=())` | an `Executor` with the container's observers (and these), given `cancel_on_signals` |
+| `async run(inputs=None, *, run_id=None, reuse_from=None, observers=())` | runs the configured components in the configured store within the configured limits; `run_id` defaults to `<UTC time>-<4 hex digits>`. `reuse_from` takes that run's inputs and reuses what it can |
+| `reuse(run_id, wiring=None)` | the `Reuse` a run of `wiring` may take from the recorded run |
+| `inputs_of(run_id, wiring=None)` | the run inputs that run recorded |
+| `location(run_id)` | where the store keeps, or would keep, the run |
+
+### What the `matrix` command prints
+
+Each function returns a frozen record whose `document()` is the `--json` document of the
+matching command; the command prints exactly that. None runs a component or calls a model.
+Each that reads a config takes `tool` (whose tiers), `config` (a location, or several,
+layered above them in order) and `only` (keyword: read the `config` locations alone, no
+tier; `UsageError` when there are none).
+
+| Function | Record (`schema`) | Raises |
+|----------|-------------------|--------|
+| `catalog(point=None, *, registry=None)` | `Catalog` (`matrix.v1.catalog`): `entries` (point, type_url, summary, stability, origin, needs, effects, configurable) and `failures` (extension, origin, error) | `UsageError` when `point` is not a declared point, with the points in `details["allowed"]` |
+| `describe_extension(type_url, *, registry=None)` | `Extensions` (`matrix.v1.extension`): one entry per point it is registered at, with its `config` JSON schema | `NotFoundError` listing the registered type URLs |
+| `config_sources(tool="matrix", config=None, *, only=False)` | `ConfigSources` (`matrix.v1.config-sources`): `sources`, lowest priority first | `ConfigError` |
+| `config_view(tool="matrix", config=None, *, only=False)` | `ConfigView` (`matrix.v1.config`): `tool`, `sources`, the merged `matrix` section | `ConfigError` |
+| `check_config(tool="matrix", config=None, *, only=False)` | `CheckReport` (`matrix.v1.check`): `ok`, `runtimes`, `agents`, `observers` (a count), `components` in one valid order of work, `sources`, `warnings` | what `compose` and `wire` raise; `complete` is false when the config did not compose and has components to wire |
+| `list_agents(tool="matrix", config=None, *, only=False)` | `Agents` (`matrix.v1.agents`): each agent's name, runtime, runtime_type, model, tools, description; `warnings` | what `compose` raises |
+| `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `effects`, `agent`, `runtime`, `attempts`), `agents` and `runtimes` in use, `effects`, `spend` (`agent_calls_min`, `agent_calls_max`, `cost_usd_max`: 0.0 when nothing calls a model, every session's `max_budget_usd` times its attempts summed, or `ceiling_usd` when lower, and null while a runtime that may call a model bounds no session; `ceiling_usd`, `limits.spend_usd`; `note`, how the bound was reached or which runtime keeps it unknown, and for a runtime that reports no cost, that the record's `spend_usd` leaves its sessions out), `store` (`type`, `location` with `RUN_ID` for the id), `limits` (what differs from the defaults), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
+| `list_runs(tool="matrix", config=None, *, only=False)` | `Runs` (`matrix.v1.runs`): `store` (its type URL) and `runs`, oldest first, each `run_id`, `status` (`interrupted` for one whose writer is gone), `started`, `ended`, `location`, `spend_usd`. Builds only the store: runtimes and agents are not built | `ConfigError` when the store cannot be built, `StoreError` when it cannot be read |
+
+`registry` defaults to `default_registry()`.
 
 ---
 
 ## Errors
 
 Every error matrix raises deliberately is a `MatrixError`. Each carries a `kind` (what the
-caller can do about it), an `exit_code`, an optional `fix` (one actionable sentence), and
-`details` (structured fields). `payload()` renders
-`{"error": {"kind", "message", "fix", ...details}}`.
+caller can do about it), an `exit_code`, a `fix` (one actionable sentence, or None),
+`problems` (each a `Problem`: what is wrong, at which key, in which file), `complete` (false
+when checking stopped before every problem was found) and `details` (the error's own facts).
+`payload()` renders the `matrix.v1.error` envelope, the shape the capability tools agree on:
+
+```json
+{"schema": "matrix.v1.error",
+ "error": {"kind": "config", "message": "...", "fix": "...", "complete": true,
+           "problems": [{"path": "matrix.runtimes.m.type", "kind": "name_unknown",
+                         "message": "...", "fix": "...", "allowed": ["mock"],
+                         "got": "nope", "source": "./matrix.yaml"}],
+           "details": {}}}
+```
+
+Every key is present; `fix` falls back to what to do next on the error's kind; `problems` and
+`details` are empty when there are none.
+
+Problem kinds: the agreed `yaml_syntax`, `schema_unsupported`, `wrong_shape`, `unknown_key`,
+`missing_key`, `invalid_value`, `name_unknown`, `name_taken`; and matrix's own `unprovided` (a
+required kind nothing provides), `cycle`, `extra_missing` and `permissive` (warnings carry
+these two). A consumer tolerates a kind it does not know.
+
+The exit codes are the ones the capability tools agree on, one kind per code:
 
 | Kind | Exit | Meaning, and the next move |
 |------|------|----------------------------|
-| `config` | 3 | a config, definition, wiring or argument is invalid: fix it |
-| `not_found` | 4 | a name or type URL is not registered or configured |
-| `contract` | 1 | a component broke what it declares (a bug in it) |
-| `component` | 1 | a component raised while running |
-| `store` | 1 | the run's record could not be written or read: fix the store |
-| `transient` | 5 | unavailable, rate-limited or timed out: retry later |
+| `unknown` | 1 | a failure matrix did not classify: a bug in matrix; report it |
+| `usage` | 2 | a bad command, flag or argument: correct the command |
+| `config` | 3 | a config, definition, wiring, input or argument is invalid: fix each problem |
+| `not_found` | 4 | a name, type URL, file or run that is not there |
+| `transient` | 5 | unavailable, rate-limited or timed out: retry later, or give the component a retry policy |
 | `auth` | 6 | credentials missing or refused |
-| `unknown` | 1 | anything else that went wrong |
+| `run_failed` | 8 | the run ran and a component failed: it raised, broke what it declares, or was refused an agent session by the spend ceiling |
+| `store` | 9 | the run's record could not be written or read: fix the store |
+| `interrupted` | 130 | interrupted (Ctrl-C, SIGTERM) before it finished: run it again |
 
-`EXIT_CODES` is this mapping; `ErrorKind` is the literal type of the kinds.
+`EXIT_CODES` is this mapping, plus `ok` (0) for success; `EXIT_MEANINGS` says what each
+means and `EXIT_NEXT` what to do next. Three error kinds are finer than an exit: `contract`,
+`component` and `spend` exit as `run_failed` (`EXITS_AS`). `ErrorKind` is the literal type of the kinds.
 
 | Class | Kind | Also | Raised when |
 |-------|------|------|-------------|
 | `MatrixError` | `unknown` | `Exception` | base class |
-| `ConfigError` | `config` | `ValueError` | a config, definition, type URL or argument is invalid |
-| `CompilationError` | `config` | `ConfigError` | components cannot be wired; `details["problems"]` lists every problem |
-| `NotFoundError` | `not_found` | `KeyError` | a name, type URL, kind with rows or run does not exist; the message lists those that do |
+| `UsageError` | `usage` | | the `matrix` command was given a command, flag or argument it does not take |
+| `ConfigError` | `config` | `ValueError` | a config, definition, document, type URL, input or argument is invalid (every problem in `problems`); or what the config selects needs an extra that is not installed (an `extra_missing` problem whose `fix` is the `uv` install) |
+| `CompilationError` | `config` | `ConfigError` | components cannot be wired; `problems` lists every problem |
+| `NotFoundError` | `not_found` | `KeyError` | a name, type URL, file, kind with rows or run does not exist; the message lists those that do |
 | `ContractError` | `contract` | | a row is of a kind its component does not provide, or fails its kind's schema; or a run input does |
 | `ComponentError` | `component` | | a component raised or passed its deadline; the original exception is the cause |
 | `StoreError` | `store` | | a row or a run could not be kept, a run id is taken, or a stored record contradicts itself |
+| `SpendError` | `spend` | | an agent session was not started: it could have taken the run past `limits.spend_usd`; `details` hold `agent`, `spent_usd`, `held_usd`, `ceiling_usd` and the runtime's `budget_usd` |
 | `AgentRuntimeError` | from `reason` | | an agent session failed |
-| `RunError` | the first failure's | | a run failed; `run` is the partial `Run`, `component` the name of the first to fail, `construct` the partial Construct |
+| `RunError` | `run_failed`, or the cause's | | a run failed; `run` is the partial `Run`, `component` the name of the first to fail, `cause_kind` its error's kind (`details["cause"]`), `construct` the partial Construct. `kind` is `run_failed` when the cause is `contract`, `component`, `spend` or `unknown`, and the cause's kind otherwise (`store`, `transient`, `auth`, `config`); `fix` is the cause's |
 
 `RunCancelled` is not a `MatrixError`: it is an `asyncio.CancelledError` (so asyncio and
 callers treat it as the cancellation it is) with one addition, `run`, the partial `Run`. Its
 `run.status` is `cancelled`, or `completed`/`failed` when the cancellation arrived as the run
 was already ending.
 
-`AgentRuntimeError(message, *, reason="failed", fix=None, **details)` maps its `reason`
-(`RuntimeReason`) to a kind; a reason matrix does not know maps to `unknown`. `retryable` is
-true for the transient ones:
+`AgentRuntimeError(message, *, reason="failed", fix=None, retry_after_s=None, **details)`
+maps its `reason` (`RuntimeReason`) to a kind; a reason matrix does not know maps to
+`component`. `retryable` is true for the transient ones; `retry_after_s` is the backend's own
+hint, which a retry policy honours:
 
 | `reason` | Kind | Meaning |
 |----------|------|---------|
@@ -881,50 +1258,60 @@ true for the transient ones:
 | `rate_limited` | `transient` | |
 | `timeout` | `transient` | |
 | `auth` | `auth` | credentials missing or refused |
-| `incapable` | `config` | the runtime cannot honour the definition (or is not installed) |
-| `refused` | `unknown` | the model declined |
-| `failed` | `unknown` | the session ran and broke |
+| `incapable` | `config` | the runtime cannot honour the definition, or a program it runs is not installed (the Claude Code CLI) |
+| `refused` | `component` | the model declined |
+| `failed` | `component` | the session ran and broke |
 
 ```python
 from matrix import AgentRuntimeError
 
-e = AgentRuntimeError("agent 'x': HTTP 429", reason="rate_limited")
-e.kind, e.retryable, e.exit_code   # ('transient', True, 5)
+e = AgentRuntimeError("agent 'x': HTTP 429", reason="rate_limited", retry_after_s=20)
+e.kind, e.retryable, e.exit_code  # ('transient', True, 5)
 ```
 
 ---
 
 ## The `matrix` command
 
-Read-only: it inspects extensions and configs and never runs a component or calls a model. Data
-goes to stdout, diagnostics to stderr.
+Data goes to stdout, diagnostics to stderr. Nothing prompts.
 
 | Command | Output (`--json` schema) |
 |---------|--------------------------|
-| `matrix catalog [--point P]` | every registered entry (point, type URL, stability, summary, origin, needs, effects, whether configurable) and every failed extension (`matrix.v1.catalog`) |
+| `matrix catalog [--point P]` | every registered entry (point, type URL, stability, summary, origin, needs, effects, whether configurable) and every failed extension (`matrix.v1.catalog`); a `--point` that is not a declared point is a `usage` error listing the points |
 | `matrix describe TYPE_URL` | the full entry, including its config JSON schema (`matrix.v1.extension`); `not_found` if nothing is registered under it |
-| `matrix config [--tool T] [--sources]` | the merged `matrix` section and the files consulted (`matrix.v1.config`); with `--sources`, only the files (`matrix.v1.config-sources`) |
-| `matrix check [--tool T]` | composes runtimes and agents, wires the configured components, and reports what composed (`matrix.v1.check`) |
-| `matrix agents [--tool T]` | each agent's name, runtime, runtime type, model, tools and description (`matrix.v1.agents`) |
-| `matrix --version` | the installed version |
+| `matrix config [CONFIG]... [--sources]` | the merged `matrix` section and the files consulted (`matrix.v1.config`); with `--sources`, only the files (`matrix.v1.config-sources`) |
+| `matrix check [CONFIG]...` | composes runtimes and agents, wires the configured components, and reports what composed (`matrix.v1.check`) |
+| `matrix agents [CONFIG]...` | each agent's name, runtime, runtime type, model, tools and description (`matrix.v1.agents`) |
+| `matrix plan [CONFIG]...` | what a run would do and spend, every problem at once; runs nothing (`matrix.v1.plan`) |
+| `matrix run [CONFIG]... [--input KIND=PATH]... [--run-id ID] [--from RUN_ID]` | runs the configured components; prints the run id, where it is recorded and, for a store that keeps files, each file of the record (`matrix.v1.run`, with `location`, `warnings` and the record's `tables`) |
+| `matrix runs [CONFIG]...` | the runs the configured store keeps, oldest first: id, status, start, what it spent (`$0.0123`, or `-` when no session reported a cost), location (`matrix.v1.runs`) |
+| `matrix --version` | `matrix, version X` |
+| `matrix --skill [-r NAME]` | the skill an agent reads (`matrix.skill()`), or one of its references (`config`, `agents`, `running`, `telemetry`, `loading`) |
 
-`--tool` (default `matrix`) selects whose config tiers to read. With `--json`, an error is the
-`payload()` document on stderr; without it, `error (<kind>): <message>` and `fix: <fix>`.
+Every command that reads config takes `--tool T` (default `matrix`, whose tiers to read),
+`CONFIG`, files layered above the tiers in the order named (`-` reads one from standard
+input), and `--only`, which reads the `CONFIG` files alone, none of the tiers. `run` reads each
+`--input` file as JSON lines, one row each (`-` is standard input; it can be read once). With
+`--json`, each document carries its `warnings`, and an error, a usage error included, is the
+`payload()` envelope on stderr; without it, warnings are `warning: <path>: <message>` lines
+and an error is `error (<kind>): <message>`, then each problem (`<path>: <message>`, with its
+`fix:` beneath it), then the error's own `fix: <fix>` when no problem already said it. A run
+that fails prints its
+`matrix.v1.run` document on stdout and the envelope on stderr. `matrix run` installs the
+OpenTelemetry SDK when the `OTEL_*` variables ask for export, and on a terminal shows
+progress on stderr. `matrix` with no command prints its help and exits 0.
 
-| Exit | Meaning |
-|------|---------|
-| 0 | ok |
-| 1 | failure (`contract`, `component`, `store`, `unknown`) |
-| 2 | usage |
-| 3 | config |
-| 4 | not found |
-| 5 | transient |
-| 6 | auth |
+Plan before you run: `plan` is free and reports every problem at once; `run` may call models
+and spend.
 
 ```console
-$ matrix check
-error (config): matrix: agents.greeter.runtime: 'sdk' is not a configured runtime. Configured: offline
-fix: name a runtime defined under matrix.runtimes
+$ matrix plan
+error (config): the config does not compose (2 problems):
+  matrix.runtimes.m.type: 'nope' is not a registered runtime (/work/matrix.yaml)
+    fix: use one of the registered runtimes, or install the package providing it
+  matrix.agents.greeter.runtime: 'sdk' is not a configured runtime (/work/matrix.yaml)
+    fix: name a runtime defined under matrix.runtimes
+fix: fix each problem listed: its path names the key, its fix what to write
 $ echo $?
 3
 ```

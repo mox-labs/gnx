@@ -4,20 +4,23 @@ What it requires and provides comes from its config, so the wiring knows nothing
 agents:
 
 * it **requires** the kinds its ``inputs`` name, and renders their rows into the task;
-* it **provides** the agent's reply, an :class:`AgentResponse`, under the kind ``response``
-  names; and, when ``output`` names a kind, the JSON the agent returned as one row of that
-  kind, which the executor validates against the kind's schema like any other row. An agent
-  that does not return parseable JSON broke its contract, and the run says so.
+* it **provides** the agent's reply, an :class:`AgentResponse` carrying the task as sent,
+  under the kind ``response`` names; and, when ``output`` names a kind, the JSON the agent
+  returned as one row of that kind, which the executor validates against the kind's schema
+  like any other row. The reply must then be one JSON document, alone or in a fenced
+  ```` ```json ```` block, so the agent's prompt or task must ask for it. An agent that does
+  not return parseable JSON broke its contract, and the run says so.
 
-A kind has one provider, so two agent steps in one run each name their own ``response``.
+A kind has one provider, so two agent steps in one run each name their own ``response``:
+the default, ``matrix.v1.agent-response``, serves one.
 
 Config::
 
     agent: reviewer                       # a composed agent, by name
     inputs: {diff: acme.v1.diff}          # placeholder -> the kind it stands for
     task: "Review this change:\\n{diff}"   # {placeholder}s; {{ }} for literal braces
-    response: acme.v1.review-reply        # default: matrix.v1.agent-response
-    output: acme.v1.review                # optional structured result kind
+    response: acme.v1.review-reply        # default: matrix.v1.agent-response; one per step
+    output: acme.v1.review                # optional: the reply, parsed as one JSON document
 """
 
 from __future__ import annotations
@@ -46,6 +49,13 @@ _FENCED = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
 
 class AgentStepConfig(BaseModel):
+    """An agent step: `agent` (a configured agent) run on `task`, a template whose
+    {placeholders} `inputs` fill with the rows of the kinds they name. `response` is the kind
+    its reply is provided as; a kind has one provider, so each agent step in a run names its
+    own (the default, matrix.v1.agent-response, serves one). `output`, when set, is a kind for
+    the reply parsed as JSON: the reply must then be one JSON document, so say so in the
+    agent's prompt or the task."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     agent: str
@@ -53,8 +63,9 @@ class AgentStepConfig(BaseModel):
     inputs: dict[str, str] = {"task": TASK}
     #: ``None``: a single input's value is the task as it stands.
     task: str | None = None
-    #: The kind the agent's :class:`AgentResponse` is provided as.
+    #: The kind the agent's :class:`AgentResponse` is provided as: one per step in a run.
     response: str = AGENT_RESPONSE
+    #: The kind the agent's reply is provided as, parsed: the reply must be one JSON document.
     output: str | None = None
 
 
@@ -110,11 +121,15 @@ class AgentStep:
             ) from e
 
     async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
-        response: AgentResponse = await self._agent.run(self.render(inputs))
+        task = self.render(inputs)
+        response: AgentResponse = await self._agent.run(task)
+        response = response.model_copy(update={"task": task})
         rows: dict[str, Any] = {self._config.response: response}
         if self._config.output is not None:
             # One row, whatever its shape: a JSON array the agent returned is not several.
-            rows[self._config.output] = (_json_result(response.content, self._config.output),)
+            rows[self._config.output] = (
+                _json_result(response.content, self._config.output, self._config.agent),
+            )
         return rows
 
 
@@ -128,13 +143,24 @@ def _text(value: Any) -> str:
     return json.dumps(value, indent=2, default=str)
 
 
-def _json_result(content: str, kind: str) -> Any:
+#: How much of a reply a contract error quotes.
+_EXCERPT = 200
+
+
+def _json_result(content: str, kind: str, agent: str) -> Any:
     for candidate in (content.strip(), *(m.group(1) for m in _FENCED.finditer(content))):
         try:
             return json.loads(candidate)
         except (json.JSONDecodeError, ValueError):
             continue
+    excerpt = content.strip()[:_EXCERPT] or "(empty)"
     raise ContractError(
-        f"the agent was to return a {kind} as JSON, but its reply holds no JSON document",
+        f"agent {agent!r} was to reply with JSON for {kind} (the step's `output`), but its "
+        f"reply holds no JSON document: {excerpt!r}",
+        fix=f"tell agent {agent!r} to reply with one JSON document for {kind}, alone or in a "
+        "```json block, in its system_prompt or the step's task; on the mock runtime, make its "
+        "reply that JSON (`by_agent`, `responses` or `default`); or drop `output` to keep the "
+        "reply as text",
         table=kind,
+        agent=agent,
     )

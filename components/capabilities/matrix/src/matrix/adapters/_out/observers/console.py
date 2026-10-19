@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 from rich.markup import escape
-from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
 
 from matrix.domain.observer import (
     COMPONENT_END,
@@ -46,7 +46,7 @@ class ConsoleObserver:
         self._live = self._console.is_terminal and not self._console.is_dumb_terminal
         self._progress: Progress | None = None
         self._runs = 0
-        self._rows: dict[str, Any] = {}
+        self._rows: dict[str, TaskID] = {}
 
     def on_event(self, event: Event) -> None:
         fields = event.fields

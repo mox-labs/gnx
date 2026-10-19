@@ -1,8 +1,4 @@
-"""AgentRuntime — hosts one agent session for a definition and a task.
-
-Adapters: the Claude Agent SDK (``matrix.v1.runtime.claude-sdk``), a single model call through
-hardline (``matrix.v1.runtime.model``), and a mock (``matrix.v1.runtime.mock``). Strands,
-Google ADK or agy are further adapters behind the same two calls.
+"""AgentRuntime: hosts one agent session for a definition and a task.
 
 **Assumes** a definition that passed ``check`` and a task string. **Guarantees** exactly one
 of: an :class:`AgentResponse` whose ``stop`` says why the session ended, or an
@@ -13,14 +9,26 @@ session. Content is a sample, never guaranteed; a caller judges it, the runtime 
 ``check(definition)`` is required: it raises ``ConfigError`` for a definition the runtime
 cannot honour (a single-call runtime handed tools), so binding refuses it before anything runs.
 A runtime that accepts every definition implements it as a no-op.
+
+Two members are optional, read with ``getattr`` so a runtime written before them works
+unedited: ``warnings`` (problems a reader of its config should see) and ``budget_usd`` (the
+most one session may spend in USD, which a run's spend ceiling holds for each session; absent
+or None, a session has no bound of its own).
+
+A runtime that also logs what its ``warnings`` say logs it on :data:`RUNTIME_LOGGER`, once per
+process, so a caller that builds a runtime per session is not told once per session. A
+program that reports ``warnings`` itself (the ``matrix`` command, ix) quiets that logger.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from matrix.domain.agent import AgentDefinition, AgentResponse
+
+#: The logger a runtime logs its config warnings on, once per process, at WARNING.
+RUNTIME_LOGGER: Final = "matrix.runtime"
 
 
 @runtime_checkable

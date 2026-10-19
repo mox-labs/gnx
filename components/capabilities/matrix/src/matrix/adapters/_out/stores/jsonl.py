@@ -5,6 +5,8 @@
     <root>/<run_id>/<kind>.jsonl             one row per line: the typed record itself
     <root>/<run_id>/matrix.v1.ledger.jsonl   one line per row landed: seq, kind, row,
                                                component, time
+    <root>/<run_id>/writer.lock              locked by the writing process while it lives
+    <root>/<run_id>/events.jsonl             the run's events, one ``matrix.v1.event`` a line
 
 One kind per file, and the kind is its schema, so ``duckdb``'s ``read_json_auto`` or ``jq``
 reads a table without matrix.
@@ -17,11 +19,20 @@ A line that was cut short is the last line of its file and has no newline; reade
 
 **When a run ends** ``run.json`` is replaced in one rename with the final document. A run
 that never got that far still reads ``running``; ``describe`` says ``interrupted`` instead
-when the process that was writing it, on this host, is gone.
+when the process that was writing it, on this host, is gone. "Gone" is read from
+``writer.lock``, which the writer holds an ``flock`` on from ``open`` until ``finish`` or its
+death, so a pid reused by another process cannot make a dead run read as running.
+
+**Events** are telemetry kept beside the record: lossy under load, flushed line by line, and
+never read back as data. Results are read from the tables.
+
+Type URLs: ``matrix.v1.store.jsonl`` (config: ``root``, default ``.matrix/runs`` under the
+working directory; ``fsync``) and ``matrix.v1.store.memory``.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -30,7 +41,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from matrix.domain.component import LEDGER
 from matrix.domain.construct import Construct
@@ -38,6 +49,22 @@ from matrix.domain.errors import ConfigError, NotFoundError, StoreError
 
 if TYPE_CHECKING:
     from matrix.domain.executor import Run
+    from matrix.domain.observer import Event
+
+#: The file a run's events are kept in, beside its tables.
+EVENTS = "events.jsonl"
+
+
+class JsonlStoreConfig(BaseModel):
+    """``matrix.store`` for ``type: jsonl``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The directory runs are kept under; relative to the working directory.
+    root: str = ".matrix/runs"
+    #: Flush every row to disk before ``append`` returns: survives the machine going down.
+    fsync: bool = False
+
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -63,21 +90,51 @@ def _lines(path: Path) -> list[bytes]:
     return path.read_bytes().split(b"\n")[:-1]
 
 
-def _alive(pid: int) -> bool:
+_LOCK = "writer.lock"
+
+
+def _hold(path: Path) -> int:
+    """Create ``path`` and hold an exclusive lock on it until the descriptor is closed."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return descriptor
+
+
+def _writer_alive(path: Path) -> bool:
+    """True while some process holds the lock on ``path``."""
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        descriptor = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
         return False
-    except OSError:
-        return True  # it exists, and is someone else's
-    return True
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(descriptor)  # closing releases a lock this call took
+    return False
+
+
+class _EventLog:
+    """The run's events, one ``matrix.v1.event`` document a line, flushed as written."""
+
+    def __init__(self, path: Path) -> None:
+        self._file = path.open("a", encoding="utf-8")
+
+    def on_event(self, event: Event) -> None:
+        self._file.write(json.dumps(event.document(), default=str) + "\n")
+        self._file.flush()
+
+    def close(self) -> None:
+        self._file.close()
 
 
 class _JsonlRunWriter:
-    def __init__(self, directory: Path, tables: dict[str, str], fsync: bool) -> None:
+    def __init__(self, directory: Path, tables: dict[str, str], fsync: bool, lock: int) -> None:
         self._directory = directory
         self._tables = tables
         self._fsync = fsync
+        self._lock = lock
         self._open: dict[str, int] = {}
         self._rows: dict[str, int] = dict.fromkeys(tables, 0)
 
@@ -109,6 +166,9 @@ class _JsonlRunWriter:
             ) from e
         self._rows[kind] += 1
 
+    def events(self) -> _EventLog:
+        return _EventLog(self._directory / EVENTS)
+
     def finish(self, run: Run) -> str:
         try:
             for descriptor in self._open.values():
@@ -121,6 +181,7 @@ class _JsonlRunWriter:
                 }
             }
             _replace(self._directory / "run.json", document, self._fsync)
+            os.close(self._lock)
         except OSError as e:
             raise StoreError(
                 f"could not finish run {run.run_id!r} at {self._directory}: {type(e).__name__}: {e}"
@@ -143,6 +204,13 @@ class JsonlConstructStore:
         self._root = Path(root)
         self._fsync = fsync
 
+    @classmethod
+    def from_config(cls, config: JsonlStoreConfig) -> JsonlConstructStore:
+        return cls(Path(config.root).expanduser(), fsync=config.fsync)
+
+    def location(self, run_id: str) -> str:
+        return str(self._dir(run_id))
+
     def _dir(self, run_id: str) -> Path:
         if _UNSAFE.search(run_id) or run_id in {"", ".", ".."}:
             raise ConfigError(f"run id {run_id!r} is not a safe directory name")
@@ -151,11 +219,13 @@ class JsonlConstructStore:
     def open(self, run: Run) -> _JsonlRunWriter:
         directory = self._dir(run.run_id)
         tables = {kind: _file(kind) for kind in run.construct.kinds()}
+        lock: int | None = None
         try:
             self._root.mkdir(parents=True, exist_ok=True)
             directory.mkdir()
             for name in tables.values():
                 (directory / name).touch()
+            lock = _hold(directory / _LOCK)
             document = run.document() | {
                 "writer": {"pid": os.getpid(), "host": socket.gethostname()},
                 "tables": {kind: {"file": name} for kind, name in tables.items()},
@@ -169,11 +239,13 @@ class JsonlConstructStore:
                 run_id=run.run_id,
             ) from None
         except OSError as e:
+            if lock is not None:
+                os.close(lock)
             raise StoreError(
                 f"could not open run {run.run_id!r} at {directory}: {type(e).__name__}: {e}",
                 run_id=run.run_id,
             ) from e
-        return _JsonlRunWriter(directory, tables, self._fsync)
+        return _JsonlRunWriter(directory, tables, self._fsync, lock)
 
     def _record(self, run_id: str) -> dict[str, Any]:
         path = self._dir(run_id) / "run.json"
@@ -199,7 +271,7 @@ class JsonlConstructStore:
         landed = sum(i["rows"] for kind, i in record["tables"].items() if kind != LEDGER)
         record["torn"] = max(0, record["tables"][LEDGER]["rows"] - landed)
         writer = record.get("writer") or {}
-        if writer.get("host") == socket.gethostname() and not _alive(int(writer.get("pid", 0))):
+        if writer.get("host") == socket.gethostname() and not _writer_alive(directory / _LOCK):
             record["status"] = "interrupted"
         return record
 
@@ -242,6 +314,9 @@ class _MemoryRunWriter:
         self._record["document"] = run.document()
         return run.run_id
 
+    def events(self) -> None:
+        return None
+
 
 class MemoryConstructStore:
     """Runs kept in a dict, rows as given. For tests and single-process callers."""
@@ -273,6 +348,9 @@ class MemoryConstructStore:
 
     def load(self, run_id: str) -> Construct:
         return Construct.restore(self._get(run_id)["tables"])
+
+    def location(self, run_id: str) -> str:
+        return run_id
 
     def describe(self, run_id: str) -> dict[str, Any]:
         record = self._get(run_id)

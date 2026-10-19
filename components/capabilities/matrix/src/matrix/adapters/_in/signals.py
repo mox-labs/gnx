@@ -62,10 +62,11 @@ def _fire(loop: asyncio.AbstractEventLoop) -> None:
 
 
 @contextmanager
-def cancel_on_signals(enabled: bool = True) -> Iterator[None]:
-    """While inside, a termination signal cancels the current task."""
+def cancel_on_signals() -> Iterator[None]:
+    """While inside, a termination signal cancels the current task. Pass it as an
+    :class:`~matrix.Executor`'s ``interrupts``."""
     task = asyncio.current_task()
-    if not enabled or task is None or threading.current_thread() is not threading.main_thread():
+    if task is None or threading.current_thread() is not threading.main_thread():
         yield
         return
     loop = asyncio.get_running_loop()

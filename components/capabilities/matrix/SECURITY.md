@@ -15,7 +15,7 @@ the runtime's `permission_mode` and `cwd` and by the definition's `tools`.
 
 A `model` runtime makes one model call through hardline and carries no local authority; it
 refuses any definition that declares tools rather than run it without them. Where that call's
-data goes is decided by the hardline registry — see hardline/SECURITY.md.
+data goes is decided by the hardline registry; hardline's own security notes cover it.
 
 ## Trust boundaries
 
@@ -32,8 +32,9 @@ grant. Review them like one.**
 What constrains it: each runtime's options are validated through the config model it registered
 with, with unknown keys rejected. `permission_mode` is a `Literal`, so an
 unrecognised mode fails at composition naming the legal set. Selecting `bypassPermissions`
-or `dontAsk` logs at WARNING, so a permissive run is visible in the output, not only in the
-config. Relative plugin paths are resolved against the runtime's `cwd`, never the process's.
+or `dontAsk` is a `permissive` warning in every document the `matrix` command prints, and is
+logged at WARNING on `matrix.runtime` once per process, so a permissive run is visible in the
+output, not only in the config. Relative plugin paths are resolved against the runtime's `cwd`, never the process's.
 
 What does not constrain it: nothing restricts `cwd`. A config naming `cwd: /` gets `/`.
 
@@ -93,4 +94,5 @@ with that SDK version installed.
 
 ## Reporting
 
-Open an issue on the gnx repository. There is no separate embargo channel.
+Open an issue on the gnx repository, https://github.com/mox-labs/gnx/issues. There is no
+separate embargo channel.

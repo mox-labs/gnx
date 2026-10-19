@@ -156,7 +156,7 @@ async def test_a_component_cannot_speak_for_matrix_or_without_a_namespace(
 
     with pytest.raises(RunError, match=says) as e:
         await Executor().run(wire({"m": Step(body)}))
-    assert e.value.kind == "contract"
+    assert (e.value.kind, e.value.cause_kind) == ("run_failed", "contract")
 
 
 async def test_the_stop_path_rows_and_releases_are_narrated() -> None:
@@ -230,12 +230,12 @@ async def test_using_a_context_after_the_component_ended_is_ignored_and_said_onc
 def test_the_recorder_keeps_only_its_last_events() -> None:
     recorder = RecordingObserver(limit=2)
     for name in ("acme.a", "acme.b", "acme.c"):
-        recorder.on_event(Event(name, "s"))
+        recorder.on_event(Event(name, span="s"))
     assert recorder.names() == ["acme.b", "acme.c"]
 
 
 def test_an_event_document_is_versioned_and_json_ready() -> None:
-    event = Event("acme.tick", "s1", "r1", "p1", {"n": 1}, "m")
+    event = Event("acme.tick", span="s1", run_id="r1", parent="p1", fields={"n": 1}, component="m")
     document = json.loads(json.dumps(event.document()))
     assert document == {
         "schema": "matrix.v1.event",

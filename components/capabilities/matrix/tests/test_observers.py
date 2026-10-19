@@ -97,6 +97,6 @@ def test_observers_are_composed_from_config_with_their_options(tmp_path: Path) -
     box = compose(config, registry=default_registry(discover=False))
     console, jsonl = box.observers
     assert isinstance(console, ConsoleObserver) and isinstance(jsonl, JsonlObserver)
-    jsonl.on_event(Event("acme.tick", "s"))
+    jsonl.on_event(Event("acme.tick", span="s"))
     jsonl.close()
     assert json.loads(path.read_text())["name"] == "acme.tick"

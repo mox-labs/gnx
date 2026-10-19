@@ -34,11 +34,14 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from matrix.domain.errors import CompilationError
-from matrix.domain.ids import problem as type_url_problem
+from matrix.domain.errors import CompilationError, invalid
+from matrix.domain.ids import versioned_problem
+from matrix.domain.problems import problem
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
+
+    from matrix.domain.problems import Problem
 
 #: A deferred release: called with no arguments; may return an awaitable.
 Release = Callable[[], Awaitable[None] | None]
@@ -59,7 +62,7 @@ class ContextHooks(Protocol):
     def emit(self, name: str, fields: dict[str, Any]) -> None: ...
 
     def measure(
-        self, name: str, value: float, unit: str, kind: str, attrs: dict[str, Any]
+        self, name: str, value: float, *, unit: str, kind: str, attrs: dict[str, Any]
     ) -> None: ...
 
     def span(self, name: str, fields: dict[str, Any]) -> AbstractAsyncContextManager[None]: ...
@@ -77,7 +80,9 @@ class _Detached:
     def emit(self, name: str, fields: dict[str, Any]) -> None:
         return None
 
-    def measure(self, name: str, value: float, unit: str, kind: str, attrs: dict[str, Any]) -> None:
+    def measure(
+        self, name: str, value: float, *, unit: str, kind: str, attrs: dict[str, Any]
+    ) -> None:
         return None
 
     @asynccontextmanager
@@ -120,7 +125,6 @@ class RunContext:
         hooks: ContextHooks | None = None,
     ) -> None:
         self.run_id = run_id
-        #: This component's name in the run.
         self.component = component
         #: ``time.monotonic()`` deadline for this component, or None.
         self.deadline = deadline
@@ -136,7 +140,8 @@ class RunContext:
         self._hooks.defer(release)
 
     def emit(self, name: str, /, **fields: Any) -> None:
-        """Emit one event named ``name`` with ``fields``."""
+        """Raises :class:`ContractError` for a ``name`` that is not namespaced, or is under
+        ``matrix.*``."""
         self._hooks.emit(name, fields)
 
     def measure(
@@ -152,7 +157,7 @@ class RunContext:
         """Record one measurement: a ``gauge`` reading, a ``counter`` increment, or one
         ``histogram`` observation. It travels as a ``matrix.measure`` event, so a metrics
         exporter and an event log see the same thing."""
-        self._hooks.measure(name, value, unit, kind, attrs)
+        self._hooks.measure(name, value, unit=unit, kind=kind, attrs=attrs)
 
     def span(self, name: str, /, **fields: Any) -> AbstractAsyncContextManager[None]:
         """``async with ctx.span("acme.probe"):`` emits ``acme.probe.start`` and
@@ -238,6 +243,10 @@ class Wiring:
     schemas: Mapping[str, type[BaseModel]] = field(default_factory=dict)
     #: name -> the effects its registration declares; ``None`` means unknown
     effects: Mapping[str, frozenset[str] | None] = field(default_factory=dict)
+    #: name -> a digest of what the component was built from (its type and config), when
+    #: the caller knows it: a later run reuses a component's rows only when its digest is
+    #: the same
+    fingerprints: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def kinds(self) -> tuple[str, ...]:
@@ -277,9 +286,10 @@ def wire(
     inputs: Iterable[str] = (),
     schemas: Mapping[str, type[BaseModel]] | None = None,
     effects: Mapping[str, frozenset[str] | None] | None = None,
+    fingerprints: Mapping[str, str] | None = None,
 ) -> Wiring:
     """Infer the wiring of ``components`` and check it. Raises CompilationError listing every
-    problem.
+    problem (``error.problems``, each with the path of the component or kind it is about).
 
     ``components`` maps each instance's name to the component, or is a sequence of
     components that each carry a ``name``. ``inputs`` are the kinds the caller will supply to
@@ -289,77 +299,13 @@ def wire(
     run input; no kind has two providers, and a run input has none; no component requires
     what it provides; the dependencies have no cycle.
     """
-    problems: list[str] = []
-    named: dict[str, Any] = {}
-    if isinstance(components, Mapping):
-        named = dict(components)
-    else:
-        for index, component in enumerate(components):
-            name = getattr(component, "name", None)
-            if not isinstance(name, str):
-                problems.append(
-                    f"components[{index}]: {type(component).__name__} has no name; give it a "
-                    "`name`, or pass a mapping of name to component"
-                )
-            elif name in named:
-                problems.append(f"components.{name}: name used twice")
-            else:
-                named[name] = component
-
+    problems: list[Problem] = []
+    named = _named(components, problems)
     run_inputs = frozenset(inputs)
     for kind in sorted(run_inputs):
-        _check_kind(kind, f"inputs.{kind}", problems)
-
-    requires: dict[str, tuple[str, ...]] = {}
-    provided_by: dict[str, list[str]] = {}
-    for name, component in named.items():
-        where = f"components.{name}"
-        if not isinstance(name, str) or not _NAME.match(name):
-            problems.append(f"{where}: a name must match {_NAME.pattern}")
-        declared: dict[str, Any] = {
-            side: getattr(component, side, None) for side in ("requires", "provides")
-        }
-        for side, kinds in declared.items():
-            if isinstance(kinds, str) or not isinstance(kinds, Collection):
-                problems.append(
-                    f"{where}.{side}: a component declares `{side}` as a collection of kinds"
-                )
-                declared[side] = ()
-        if not callable(getattr(component, "run", None)):
-            problems.append(f"{where}: a component has an async `run(inputs, ctx)`")
-        requires[name] = tuple(dict.fromkeys(declared["requires"]))
-        for kind in requires[name]:
-            _check_kind(kind, f"{where}.requires", problems)
-        for kind in dict.fromkeys(declared["provides"]):
-            if _check_kind(kind, f"{where}.provides", problems):
-                provided_by.setdefault(kind, []).append(name)
-            if kind in requires[name]:
-                problems.append(
-                    f"{where}: requires and provides {kind!r}; it cannot wait on itself"
-                )
-
-    for kind, names in provided_by.items():
-        if len(names) > 1:
-            problems.append(
-                f"kind {kind!r} is provided by {', '.join(names)}; a kind has one provider "
-                "(two streams of the same shape are two kinds)"
-            )
-        if kind in run_inputs:
-            problems.append(
-                f"kind {kind!r} is a run input and is also provided by {', '.join(names)}; "
-                "a kind has one source"
-            )
-    for name, kinds in requires.items():
-        for kind in kinds:
-            if (
-                kind not in provided_by
-                and kind not in run_inputs
-                and type_url_problem(kind) is None
-            ):
-                problems.append(
-                    f"components.{name}.requires: nothing provides {kind!r} and it is not a "
-                    "run input"
-                )
+        _check_kind(kind, "inputs", problems)
+    requires, provided_by = _declared(named, problems)
+    problems += _source_problems(requires, provided_by, run_inputs)
 
     providers = {kind: names[0] for kind, names in provided_by.items()}
     depends = {
@@ -370,24 +316,14 @@ def wire(
         )
         for name, kinds in requires.items()
     }
-    cycle = _cycle(depends)
-    if cycle:
-        through = sorted(
-            kind
-            for kind, provider in providers.items()
-            if provider in cycle and any(kind in requires[name] for name in cycle)
-        )
-        problems.append(
-            f"cycle: {' -> '.join([*cycle, cycle[0]])} (through {', '.join(through)}); to "
-            "repeat work, run again or repeat inside one component"
-        )
+    problems += _cycle_problems(depends, providers, requires)
 
     if problems:
-        raise CompilationError(
-            f"the components cannot be wired ({len(problems)} problem"
-            f"{'s' if len(problems) != 1 else ''}):\n  " + "\n  ".join(problems),
-            problems=problems,
+        raise invalid(
+            "the components cannot be wired",
+            problems,
             fix="fix each listed component or kind; every problem is reported at once",
+            error=CompilationError,
         )
     return Wiring(
         components=named,
@@ -396,16 +332,199 @@ def wire(
         depends=depends,
         schemas=dict(schemas or {}),
         effects=dict(effects or {}),
+        fingerprints=dict(fingerprints or {}),
     )
 
 
-def _check_kind(kind: Any, where: str, problems: list[str]) -> bool:
-    reason = type_url_problem(kind)
+def _named(
+    components: Mapping[str, Any] | Iterable[Any], problems: list[Problem]
+) -> dict[str, Any]:
+    """Each component by its name in the run."""
+    if isinstance(components, Mapping):
+        return dict(components)
+    named: dict[str, Any] = {}
+    for index, component in enumerate(components):
+        name = getattr(component, "name", None)
+        if not isinstance(name, str):
+            problems.append(
+                problem(
+                    f"components.{index}",
+                    "missing_key",
+                    f"{type(component).__name__} has no name",
+                    fix="give it a `name`, or pass a mapping of name to component",
+                )
+            )
+        elif name in named:
+            problems.append(
+                problem(
+                    f"components.{name}",
+                    "name_taken",
+                    "name used twice",
+                    fix="give each component its own name",
+                    got=name,
+                )
+            )
+        else:
+            named[name] = component
+    return named
+
+
+def _declared(
+    named: Mapping[str, Any], problems: list[Problem]
+) -> tuple[dict[str, tuple[str, ...]], dict[str, list[str]]]:
+    """What each component requires, and which components provide each kind, as declared."""
+    requires: dict[str, tuple[str, ...]] = {}
+    provided_by: dict[str, list[str]] = {}
+    for name, component in named.items():
+        where = f"components.{name}"
+        if not isinstance(name, str) or not _NAME.match(name):
+            problems.append(
+                problem(
+                    where,
+                    "invalid_value",
+                    f"a name must match {_NAME.pattern}",
+                    fix="name it with letters, digits, '.', '_' and '-', starting with a "
+                    "letter or digit",
+                    got=name,
+                )
+            )
+        declared: dict[str, Any] = {
+            side: getattr(component, side, None) for side in ("requires", "provides")
+        }
+        for side, kinds in declared.items():
+            if isinstance(kinds, str) or not isinstance(kinds, Collection):
+                problems.append(
+                    problem(
+                        f"{where}.{side}",
+                        "wrong_shape",
+                        f"a component declares `{side}` as a collection of kinds",
+                        fix=f"declare {side} = {{'<namespace>.v1.<name>', ...}}",
+                    )
+                )
+                declared[side] = ()
+        if not callable(getattr(component, "run", None)):
+            problems.append(
+                problem(
+                    where,
+                    "wrong_shape",
+                    "a component has an async `run(inputs, ctx)`",
+                    fix="define `async def run(self, inputs, ctx)`",
+                )
+            )
+        requires[name] = tuple(dict.fromkeys(declared["requires"]))
+        for kind in requires[name]:
+            _check_kind(kind, f"{where}.requires", problems)
+        for kind in dict.fromkeys(declared["provides"]):
+            if _check_kind(kind, f"{where}.provides", problems):
+                provided_by.setdefault(kind, []).append(name)
+            if kind in requires[name]:
+                problems.append(
+                    problem(
+                        where,
+                        "cycle",
+                        f"requires and provides {kind!r}; it cannot wait on itself",
+                        fix="provide a new kind, or do the repetition inside the component",
+                        got=kind,
+                    )
+                )
+    return requires, provided_by
+
+
+def _source_problems(
+    requires: Mapping[str, tuple[str, ...]],
+    provided_by: Mapping[str, list[str]],
+    run_inputs: frozenset[str],
+) -> list[Problem]:
+    """Each kind with more than one source, and each required kind with none."""
+    problems: list[Problem] = []
+    for kind, names in provided_by.items():
+        if len(names) > 1:
+            problems.append(
+                problem(
+                    f"components.{names[1]}.provides",
+                    "name_taken",
+                    f"kind {kind!r} is provided by {', '.join(names)}; a kind has one "
+                    "provider (two streams of the same shape are two kinds)",
+                    fix="give each stream its own kind",
+                    got=kind,
+                )
+            )
+        if kind in run_inputs:
+            problems.append(
+                problem(
+                    f"components.{names[0]}.provides",
+                    "name_taken",
+                    f"kind {kind!r} is a run input and is also provided by {', '.join(names)}; "
+                    "a kind has one source",
+                    fix=f"remove {kind!r} from the inputs, or from what the component provides",
+                    got=kind,
+                )
+            )
+    for name, kinds in requires.items():
+        for kind in kinds:
+            if (
+                kind not in provided_by
+                and kind not in run_inputs
+                and versioned_problem(kind) is None
+            ):
+                problems.append(
+                    problem(
+                        f"components.{name}.requires",
+                        "unprovided",
+                        f"nothing provides {kind!r} and it is not a run input",
+                        fix=f"add a component that provides {kind!r}, or list it as an input",
+                        got=kind,
+                    )
+                )
+    return problems
+
+
+def _cycle_problems(
+    depends: Mapping[str, tuple[str, ...]],
+    providers: Mapping[str, str],
+    requires: Mapping[str, tuple[str, ...]],
+) -> list[Problem]:
+    cycle = _cycle(depends)
+    if not cycle:
+        return []
+    through = sorted(
+        kind
+        for kind, provider in providers.items()
+        if provider in cycle and any(kind in requires[name] for name in cycle)
+    )
+    return [
+        problem(
+            f"components.{cycle[0]}",
+            "cycle",
+            f"cycle: {' -> '.join([*cycle, cycle[0]])} (through {', '.join(through)})",
+            fix="to repeat work, run again or repeat inside one component",
+        )
+    ]
+
+
+def _check_kind(kind: Any, where: str, problems: list[Problem]) -> bool:
+    reason = versioned_problem(kind)
     if reason is not None:
-        problems.append(f"{where}: {kind!r} is not a kind: {reason}")
+        problems.append(
+            problem(
+                where,
+                "invalid_value",
+                f"{kind!r} is not a kind: {reason}",
+                fix="name a kind '<namespace>.v<N>.<name>', e.g. 'acme.v1.review'",
+                got=kind,
+            )
+        )
         return False
     if kind == LEDGER:
-        problems.append(f"{where}: {LEDGER!r} is the run's own provenance table")
+        problems.append(
+            problem(
+                where,
+                "invalid_value",
+                f"{LEDGER!r} is the run's own provenance table",
+                fix="name a kind of your own",
+                got=kind,
+            )
+        )
         return False
     return True
 

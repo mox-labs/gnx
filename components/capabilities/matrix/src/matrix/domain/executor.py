@@ -1,41 +1,16 @@
 """The executor: run wired components with inputs, and record what happened as a :class:`Run`.
 
-**Scheduling is by readiness.** A component starts as soon as the providers of every kind it
-requires have finished; components that do not depend on each other run side by side, up to
-``Limits.concurrency`` when one is set. Nothing else orders the work.
+A component starts as soon as the providers of every kind it requires have finished; nothing
+else orders the work. Two rules the code cannot show at a glance:
 
-**The executor is the Construct's only writer.** A component gets
-:class:`~matrix.domain.component.Inputs`, the rows of the kinds it requires, each its own
-copy. Rows of the kinds it provides reach the record two ways: handed over while it runs
-(``ctx.provide``), and returned when it ends. Either way a row must be of a kind the
-component declared, and must validate against the kind's schema when one is registered;
-otherwise the component broke its contract. A row is recorded, and durable in the run's
-store, before the call that handed it over returns.
+**The executor is the Construct's only writer.** A row a component hands over
+(``ctx.provide``) or returns is checked against its declared kinds and the kind's schema,
+recorded, and durable in the run's store before the call that handed it over returns.
 
-**Every component ends in one state**: ``completed``, ``failed``, ``cancelled`` or ``skipped``
-(``Run.components``). **Every run ends in one of three**: ``completed``, ``failed`` (some
-component failed, or the record could not be kept; :class:`RunError` carries the partial Run)
-or ``cancelled`` (the caller, Ctrl-C or SIGTERM cancelled it; :class:`RunCancelled` carries
-the partial Run). Nothing recorded before the end is lost in either case.
-
-**One stop path.** A component is stopped the same way whatever the cause (its deadline
-passed, another component failed, the run was cancelled):
-
-1. *stop request*: ``ctx.stopping`` is set. A component that returns now keeps what it
-   returns;
-2. *grace*: the executor waits ``grace_s`` for that return;
-3. *cancel*: the component's task is cancelled, and its own ``finally`` blocks run. A
-   component that swallows the cancellation is **abandoned** after ``cleanup_s`` and
-   reported; matrix cannot stop in-process code that will not stop;
-4. *deferred release*: when the run ends, however it ends, everything components handed to
-   ``ctx.defer`` is called, last registered first, each bounded by ``cleanup_s``. A release
-   that raises or overruns is recorded in ``Run.releases``; it never stops the others.
-
-What this cannot bound: a component that blocks the event loop (synchronous work) stalls
-every deadline, sibling and release until it yields.
-
-Everything above is narrated as events on the run's channel (:mod:`matrix.domain.observer`),
-which components feed too, through ``ctx.emit``, ``ctx.measure`` and ``ctx.span``.
+**One stop path.** Whatever stops a component (its deadline, another's failure, the run's
+cancellation), it is asked to stop (``ctx.stopping``), given ``grace_s`` to return, then
+cancelled and given ``cleanup_s``, then abandoned. When the run ends, however it ends, every
+deferred release is called, last first, each bounded by ``cleanup_s``.
 """
 
 from __future__ import annotations
@@ -46,13 +21,13 @@ import inspect
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from matrix.domain.component import Component, Inputs, Release, RunContext, Wiring
 from matrix.domain.construct import INPUT, Construct
@@ -64,10 +39,12 @@ from matrix.domain.errors import (
     RunCancelled,
     RunError,
     StoreError,
+    invalid,
 )
 from matrix.domain.observer import (
     COMPONENT_END,
     COMPONENT_LATE,
+    COMPONENT_RETRY,
     COMPONENT_START,
     COMPONENT_STOPPING,
     CURRENT_SPAN,
@@ -85,7 +62,9 @@ from matrix.domain.observer import (
     SpanScope,
     check_event_name,
 )
-from matrix.domain.signals import cancel_on_signals
+from matrix.domain.ports._out.construct_store import events_of
+from matrix.domain.problems import problem
+from matrix.domain.spend import CURRENT_SPEND, Spend
 
 if TYPE_CHECKING:
     from matrix.domain.ports._out.construct_store import ConstructStore, RunWriter
@@ -94,56 +73,97 @@ logger = logging.getLogger("matrix.executor")
 
 RUN_SCHEMA = "matrix.v1.run"
 
-#: How a component ended. Open: a consumer must tolerate a state it does not know.
-ComponentStatus = Literal["completed", "failed", "cancelled", "skipped"]
+#: How a component ended: ``reused`` when its rows were carried over from an earlier run. Open:
+#: a consumer must tolerate a state it does not know.
+ComponentStatus = Literal["completed", "failed", "cancelled", "skipped", "reused"]
 #: Why a component was asked to stop.
 StopReason = Literal["deadline", "run_failed", "cancelled"]
+#: What a retry policy may name: any ``transient`` failure, or one of its reasons.
+RetryOn = Literal["transient", "unavailable", "rate_limited", "timeout"]
 
 #: The name a failure carries when the record could not be finished, rather than a component.
 STORE = "$store"
 
+#: The statuses after which a component's dependents may start.
+_DONE = frozenset({"completed", "reused"})
 
-@dataclass(frozen=True)
-class ComponentLimits:
+
+class Retry(BaseModel):
+    """When a component that failed is run again, and how long to wait first.
+
+    A failure is retried when it matches ``errors`` (its kind, ``transient``, or its reason:
+    ``unavailable``, ``rate_limited``, ``timeout``), fewer than ``attempts`` attempts have
+    been made, the run has not been asked to stop, and the failed attempt handed over no
+    rows: rows are part of the record, and a second attempt would add to them, not replace
+    them. The wait before attempt ``n + 1`` is ``backoff_s * multiplier ** (n - 1)``, or the
+    ``retry_after_s`` the failure reported, never more than ``max_wait_s``. Each attempt has
+    the component's whole deadline.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Attempts in all, the first included: 1 runs a component once.
+    attempts: int = Field(default=1, ge=1)
+    backoff_s: float = Field(default=1.0, ge=0)
+    multiplier: float = Field(default=2.0, ge=1)
+    max_wait_s: float = Field(default=60.0, ge=0)
+    #: The failures retried. (Not ``on``: YAML reads a bare ``on`` key as ``true``.)
+    errors: tuple[RetryOn, ...] = ("transient",)
+
+    def matches(self, error: MatrixError) -> bool:
+        """Whether this policy retries ``error``, attempts aside."""
+        reason = getattr(error, "reason", None) or error.details.get("reason")
+        return error.kind in self.errors or (error.kind == "transient" and reason in self.errors)
+
+    def wait_s(self, attempt: int, error: MatrixError) -> float:
+        """Seconds to wait after failed attempt ``attempt`` (from 1) before the next."""
+        hinted = getattr(error, "retry_after_s", None) or error.details.get("retry_after_s")
+        if isinstance(hinted, int | float) and not isinstance(hinted, bool) and hinted >= 0:
+            return min(float(hinted), self.max_wait_s)
+        return min(self.backoff_s * self.multiplier ** (attempt - 1), self.max_wait_s)
+
+
+class ComponentLimits(BaseModel):
     """Bounds for one component, overriding the run's. ``None`` inherits the run's value."""
 
-    deadline_s: float | None = None
-    grace_s: float | None = None
-    cleanup_s: float | None = None
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    def __post_init__(self) -> None:
-        _check_bounds(self.deadline_s, self.grace_s, self.cleanup_s)
+    deadline_s: float | None = Field(default=None, gt=0)
+    grace_s: float | None = Field(default=None, ge=0)
+    cleanup_s: float | None = Field(default=None, gt=0)
+    retry: Retry | None = None
 
 
-@dataclass(frozen=True)
-class Limits:
-    """Bounds on one run.
+class Limits(BaseModel):
+    """Bounds on one run: ``matrix.limits`` in config.
 
     ``concurrency`` caps how many components run at once; ``None`` (the default) leaves it to
     the wiring. ``deadline_s`` applies to each component separately, from the moment it
-    starts; ``components`` overrides it (and ``grace_s``, ``cleanup_s``) for the names it
-    lists. ``grace_s`` is how long a component has to return after a stop request before it
-    is cancelled; ``cleanup_s`` how long a cancelled component, or one deferred release, has
-    to finish before it is abandoned.
+    starts; ``components`` overrides it (and ``grace_s``, ``cleanup_s``, ``retry``) for the
+    names it lists. ``grace_s`` is how long a component has to return after a stop request
+    before it is cancelled; ``cleanup_s`` how long a cancelled component, or one deferred
+    release, has to finish before it is abandoned. ``retry`` is the :class:`Retry` policy of
+    every component; by default nothing is retried.
 
     ``on_failure``: ``fast`` (the default) stops every running component and skips the rest
     as soon as one fails; ``isolate`` skips only the components that depend on the failed one
     and lets the others finish. The run ends ``failed`` either way.
+
+    ``spend_usd`` is the most the run may spend on agent sessions, in USD, as the runtimes
+    report it: a session that could pass it is not started, and the component that asked for
+    it fails with kind ``spend`` (:mod:`matrix.domain.spend`). ``None``: no ceiling.
     """
 
-    concurrency: int | None = None
-    deadline_s: float | None = None
-    grace_s: float = 5.0
-    cleanup_s: float = 30.0
-    on_failure: Literal["fast", "isolate"] = "fast"
-    components: Mapping[str, ComponentLimits] = field(default_factory=dict)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    def __post_init__(self) -> None:
-        if self.concurrency is not None and self.concurrency < 1:
-            raise ConfigError(f"concurrency must be >= 1, got {self.concurrency}")
-        if self.on_failure not in ("fast", "isolate"):
-            raise ConfigError(f"on_failure must be 'fast' or 'isolate', got {self.on_failure!r}")
-        _check_bounds(self.deadline_s, self.grace_s, self.cleanup_s)
+    concurrency: int | None = Field(default=None, ge=1)
+    deadline_s: float | None = Field(default=None, gt=0)
+    grace_s: float = Field(default=5.0, ge=0)
+    cleanup_s: float = Field(default=30.0, gt=0)
+    on_failure: Literal["fast", "isolate"] = "fast"
+    retry: Retry = Retry()
+    spend_usd: float | None = Field(default=None, gt=0)
+    components: dict[str, ComponentLimits] = {}
 
     def of(self, name: str) -> tuple[float | None, float, float]:
         """``(deadline_s, grace_s, cleanup_s)`` for the component ``name``."""
@@ -154,35 +174,114 @@ class Limits:
             own.cleanup_s if own.cleanup_s is not None else self.cleanup_s,
         )
 
-
-def _check_bounds(deadline_s: float | None, grace_s: float | None, cleanup_s: float | None) -> None:
-    if deadline_s is not None and deadline_s <= 0:
-        raise ConfigError(f"deadline_s must be > 0, got {deadline_s}")
-    if grace_s is not None and grace_s < 0:
-        raise ConfigError(f"grace_s must be >= 0, got {grace_s}")
-    if cleanup_s is not None and cleanup_s <= 0:
-        raise ConfigError(f"cleanup_s must be > 0, got {cleanup_s}")
+    def retry_of(self, name: str) -> Retry:
+        """The retry policy of the component ``name``."""
+        own = self.components.get(name)
+        return own.retry if own is not None and own.retry is not None else self.retry
 
 
-@dataclass
-class Run:
-    """Observed state of one execution. Separate from the wiring, which a run never changes."""
+class _Record(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ComponentFailure(_Record):
+    """A component that failed, or ``$input``/``$store`` when the record could not be kept."""
+
+    component: str
+    #: The error's kind: ``contract``, ``component``, ``transient``, ``store``, ...
+    kind: str
+    message: str
+
+    def document(self) -> dict[str, Any]:
+        data: dict[str, Any] = self.model_dump(mode="json")
+        return data
+
+
+class ComponentEnding(_Record):
+    """How one component ended. ``reason`` says why it was stopped, skipped or reused;
+    ``duration_ms`` is None for one that never started; ``abandoned`` marks one that ignored
+    cancellation and may still be running; ``attempts`` counts the times it was run."""
+
+    status: ComponentStatus
+    reason: str | None = None
+    duration_ms: int | None = None
+    abandoned: bool = False
+    attempts: int = 1
+
+    def document(self) -> dict[str, Any]:
+        """``{status, reason?, duration_ms?, abandoned?, attempts?}``: a key is absent when
+        it says nothing."""
+        found: dict[str, Any] = {"status": self.status}
+        if self.duration_ms is not None:
+            found["duration_ms"] = self.duration_ms
+        if self.reason is not None:
+            found["reason"] = self.reason
+        if self.abandoned:
+            found["abandoned"] = True
+        if self.attempts > 1:
+            found["attempts"] = self.attempts
+        return found
+
+
+class ReleaseOutcome(_Record):
+    """What became of one deferred release. ``error`` is None when it was released."""
+
+    component: str
+    status: Literal["released", "failed", "abandoned"]
+    error: str | None = None
+
+    def document(self) -> dict[str, Any]:
+        data: dict[str, Any] = self.model_dump(mode="json")
+        return data
+
+
+class Reuse(_Record):
+    """Rows carried over from an earlier run: each listed component is not run, and its rows
+    are recorded as they were. A component may be reused only when every component it
+    depends on is reused too, so what it was given then is what it would be given now."""
+
+    #: The run the rows come from.
+    run_id: str
+    #: component name -> kind -> its rows, in the order they were recorded.
+    rows: dict[str, dict[str, tuple[Any, ...]]]
+
+
+class Run(BaseModel):
+    """Observed state of one execution. Separate from the wiring, which a run never changes.
+
+    The executor fills it in as the run goes; a caller reads it. ``construct`` is the run's
+    record, its tables; ``document()`` is the run as the store keeps it, without them.
+    """
 
     run_id: str
-    construct: Construct
     status: Literal["running", "completed", "failed", "cancelled"] = "running"
-    started: datetime = field(default_factory=lambda: datetime.now(UTC))
+    started: datetime = Field(default_factory=lambda: datetime.now(UTC))
     ended: datetime | None = None
-    #: ``{component, kind, message}`` for each component that failed
-    failures: list[dict[str, Any]] = field(default_factory=list)
-    #: name -> ``{status, reason?, duration_ms?, abandoned?}``: how each component ended.
-    #: ``abandoned`` marks one that ignored cancellation and may still be running.
-    components: dict[str, dict[str, Any]] = field(default_factory=dict)
-    #: ``{component, status, error}`` per deferred release, in the order they were called.
-    #: ``status`` is ``released``, ``failed`` (it raised) or ``abandoned`` (it overran).
-    releases: list[dict[str, Any]] = field(default_factory=list)
+    failures: list[ComponentFailure] = []
+    #: How each component ended, by name.
+    components: dict[str, ComponentEnding] = {}
+    #: Each deferred release, in the order they were called.
+    releases: list[ReleaseOutcome] = []
     #: Events emitted during the run that no observer received (telemetry is lossy).
     events_dropped: int = 0
+    #: The run whose rows this one reused, if any.
+    reused_from: str | None = None
+    #: name -> what the component was built from, as a digest, when the wiring knows it: what
+    #: a later run compares before it reuses the component's rows.
+    fingerprints: dict[str, str] = {}
+    #: What the run's agent sessions cost in USD, as their runtimes reported it; None when
+    #: none reported a cost.
+    spend_usd: float | None = None
+    _construct: Construct = PrivateAttr()
+
+    def __init__(self, *, construct: Construct, **fields: Any) -> None:
+        super().__init__(**fields)
+        self._construct = construct
+
+    @property  # BaseModel.construct is pydantic v1's deprecated constructor, never used here
+    def construct(self) -> Construct:  # type: ignore[override]
+        """The run's tables, one per kind, and its ledger."""
+        return self._construct
 
     def rows(self, kind: str) -> tuple[Any, ...]:
         """The rows of ``kind`` recorded in this run."""
@@ -190,24 +289,32 @@ class Run:
 
     def document(self) -> dict[str, Any]:
         """The run as a JSON-ready document (``matrix.v1.run``), without its tables."""
-        return {
+        found: dict[str, Any] = {
             "schema": RUN_SCHEMA,
             "run_id": self.run_id,
             "status": self.status,
             "started": self.started.isoformat(),
             "ended": self.ended.isoformat() if self.ended else None,
-            "components": self.components,
-            "failures": self.failures,
-            "releases": self.releases,
+            "components": {name: ending.document() for name, ending in self.components.items()},
+            "failures": [failure.document() for failure in self.failures],
+            "releases": [release.document() for release in self.releases],
         }
+        if self.reused_from is not None:
+            found["reused_from"] = self.reused_from
+        if self.fingerprints:
+            found["fingerprints"] = dict(self.fingerprints)
+        if self.spend_usd is not None:
+            found["spend_usd"] = self.spend_usd
+        return found
 
 
 class Executor:
     """Runs wired components. Stateless between runs; safe to share.
 
-    ``events`` bounds the telemetry a run may hold for its observers. ``signals=False``
-    leaves SIGTERM and SIGINT alone; the caller then owns turning them into cancellation
-    (see :mod:`matrix.domain.signals`).
+    ``events`` bounds the telemetry a run may hold for its observers. ``interrupts`` is
+    entered around each run, in the task awaiting it: the host's way of turning a signal into
+    the cancellation of that task (``matrix.cancel_on_signals`` does this for SIGTERM and
+    SIGINT). Without one, the host's signals are left alone.
     """
 
     def __init__(
@@ -215,11 +322,11 @@ class Executor:
         observers: Sequence[Observer] = (),
         *,
         events: EventPolicy | None = None,
-        signals: bool = True,
+        interrupts: Callable[[], AbstractContextManager[None]] = nullcontext,
     ) -> None:
         self._observers = tuple(observers)
         self._events = events or EventPolicy()
-        self._signals = signals
+        self._interrupts = interrupts
 
     async def run(
         self,
@@ -229,59 +336,56 @@ class Executor:
         limits: Limits | None = None,
         store: ConstructStore | None = None,
         run_id: str | None = None,
+        reuse: Reuse | None = None,
     ) -> Run:
         """Run ``wiring`` to a terminal state and return the Run.
 
         ``inputs`` maps each run-input kind to one row, or to a list or tuple of rows. With a
-        ``store``, the run's record is opened there before anything starts and every row is
-        durable in it as it lands.
+        ``store``, the run's record is opened there before anything starts, every row is
+        durable in it as it lands, and the run's events are kept beside it when the store
+        keeps them. ``reuse`` carries rows over from an earlier run for components that need
+        not run again.
 
         Raises :class:`RunError` when a component failed or the record could not be kept, and
         :class:`RunCancelled` when the calling task was cancelled; both carry the partial
         Run, and both are raised only after every component stopped and every deferred
         release was called. Raises StoreError, before anything runs, when the store cannot
-        open the run (its id is taken).
+        open the run (its id is taken), and ConfigError when the inputs, the limits or the
+        reuse do not fit the wiring.
         """
         limits = limits or Limits()
         supplied = {kind: _rows(value) for kind, value in (inputs or {}).items()}
-        missing = sorted(wiring.inputs - set(supplied))
-        unknown = sorted(set(supplied) - wiring.inputs)
-        if missing or unknown:
-            raise ConfigError(
-                (f"missing inputs {missing}" if missing else "")
-                + ("; " if missing and unknown else "")
-                + (f"unknown inputs {unknown}" if unknown else "")
-                + f". Run inputs: {sorted(wiring.inputs) or '(none)'}",
-                fix="supply exactly the kinds declared as run inputs",
-            )
-        strangers = sorted(set(limits.components) - set(wiring.components))
-        if strangers:
-            raise ConfigError(
-                f"limits name components {strangers} that are not in the run. "
-                f"Components: {sorted(wiring.components)}",
-                fix="key Limits.components by component name",
-            )
-        for kind, rows in supplied.items():
-            for row in rows:
-                _validate(wiring, kind, row, where=f"input {kind!r}")
-        run = Run(run_id=run_id or uuid.uuid4().hex, construct=Construct(wiring.kinds))
+        _check_inputs(wiring, supplied, limits)
+        if reuse is not None:
+            _check_reuse(wiring, reuse)
+        run = Run(
+            run_id=run_id or uuid.uuid4().hex,
+            construct=Construct(wiring.kinds),
+            reused_from=None if reuse is None else reuse.run_id,
+            fingerprints=dict(wiring.fingerprints),
+        )
         writer = _open(store, run) if store is not None else None
-        channel = Channel(self._observers, self._events, run.run_id)
+        sink = events_of(writer) if writer is not None else None
+        observers = self._observers if sink is None else (*self._observers, sink)
+        channel = Channel(observers, self._events, run.run_id)
         session = _Session(wiring, run, limits, channel, writer)
         # The run lives in its own task, shielded from the caller's cancellation: cancelling
         # the caller asks the run to stop, and the run answers once it has cleaned up.
-        main = asyncio.ensure_future(session.execute(supplied))
+        main = asyncio.ensure_future(session.execute(supplied, reuse))
         interrupted = False
-        with cancel_on_signals(self._signals):
-            while not main.done():
-                try:
-                    await asyncio.shield(main)
-                except asyncio.CancelledError:
-                    if main.cancelled():
-                        raise  # the loop is tearing every task down; nothing left to await
-                    interrupted = True
-                    session.cancel()
-        main.result()
+        try:
+            with self._interrupts():
+                while not main.done():
+                    try:
+                        await asyncio.shield(main)
+                    except asyncio.CancelledError:
+                        if main.cancelled():
+                            raise  # the loop is tearing every task down; nothing left to await
+                        interrupted = True
+                        session.cancel()
+            main.result()
+        finally:
+            _close(sink)
         if interrupted:
             raise RunCancelled(run)
         if session.first is not None:
@@ -291,8 +395,83 @@ class Executor:
                 run=run,
                 component=name,
                 cause_kind=cause.kind,
+                fix=cause.fix,
             ) from cause
         return run
+
+
+def _close(sink: Observer | None) -> None:
+    """Close the record's event log once the run's events have drained into it."""
+    close = getattr(sink, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            logger.exception("the run's event log could not be closed")
+
+
+def _check_reuse(wiring: Wiring, reuse: Reuse) -> None:
+    """Raise ConfigError unless every reused component is in the wiring, provides only what
+    it declares, and depends only on components that are reused too."""
+    problems: list[str] = []
+    for name, tables in reuse.rows.items():
+        if name not in wiring.components:
+            problems.append(f"{name!r} is not a component of this run")
+            continue
+        undeclared = sorted(set(tables) - set(wiring.components[name].provides))
+        if undeclared:
+            problems.append(f"{name!r} does not provide {undeclared}")
+        upstream = [d for d in wiring.depends[name] if d not in reuse.rows]
+        if upstream:
+            problems.append(f"{name!r} depends on {upstream}, which would run again")
+    if problems:
+        raise ConfigError(
+            f"rows from run {reuse.run_id!r} cannot be reused: " + "; ".join(problems),
+            fix="reuse only components whose providers are reused too",
+            run_id=reuse.run_id,
+        )
+
+
+def _check_inputs(wiring: Wiring, supplied: Mapping[str, tuple[Any, ...]], limits: Limits) -> None:
+    """Raise ConfigError unless ``supplied`` holds exactly the run inputs, each row meets its
+    kind's schema, and ``limits`` names only components of the run."""
+    problems = [
+        problem(
+            f"inputs.{kind}",
+            "missing_key",
+            f"the run input {kind!r} was not supplied",
+            fix=f"supply rows of {kind!r}",
+            allowed=sorted(wiring.inputs),
+        )
+        for kind in sorted(wiring.inputs - set(supplied))
+    ]
+    problems += [
+        problem(
+            f"inputs.{kind}",
+            "unknown_key",
+            f"{kind!r} is not a run input",
+            fix="supply exactly the kinds declared as run inputs",
+            allowed=sorted(wiring.inputs),
+            got=kind,
+        )
+        for kind in sorted(set(supplied) - wiring.inputs)
+    ]
+    problems += [
+        problem(
+            f"limits.components.{name}",
+            "name_unknown",
+            f"limits name {name!r}, which is not a component of the run",
+            fix="key limits.components by component name",
+            allowed=sorted(wiring.components),
+            got=name,
+        )
+        for name in sorted(set(limits.components) - set(wiring.components))
+    ]
+    if problems:
+        raise invalid("the run cannot start", problems)
+    for kind, rows in supplied.items():
+        for row in rows:
+            _validate(wiring, kind, row, where=f"input {kind!r}")
 
 
 def _open(store: ConstructStore, run: Run) -> RunWriter:
@@ -308,9 +487,50 @@ def _open(store: ConstructStore, run: Run) -> RunWriter:
     return writer
 
 
-@dataclass
+class _Progress:
+    """What changes while one component runs, each through one method."""
+
+    def __init__(self) -> None:
+        #: The executor's own stop flag; ``context.stopping`` mirrors it for the component.
+        self.stop = asyncio.Event()
+        self.reason: StopReason | None = None
+        self.running = False
+        #: The first store failure met while recording one of this component's rows.
+        self.broke: StoreError | None = None
+
+    def begin(self) -> None:
+        self.running = True
+
+    def end(self) -> None:
+        self.running = False
+
+    def request_stop(self, reason: StopReason) -> bool:
+        """Set the stop flag for ``reason``; False when a stop was already requested, whose
+        reason stands."""
+        if self.reason is not None:
+            return False
+        self.reason = reason
+        self.stop.set()
+        return True
+
+    def record_store_failure(self, error: StoreError) -> None:
+        self.broke = self.broke or error
+
+
+@dataclass(frozen=True)
+class _Outcome:
+    """How a component's task ended: its status, the error that failed it, and whether it
+    was abandoned still running."""
+
+    status: ComponentStatus
+    error: MatrixError | None = None
+    abandoned: bool = False
+
+
+@dataclass(frozen=True, kw_only=True)
 class _Step:
-    """One component's passage through a run."""
+    """One component's passage through a run: what it is and its bounds, fixed when it
+    starts, and its progress."""
 
     name: str
     component: Component
@@ -320,13 +540,8 @@ class _Step:
     cleanup_s: float
     context: RunContext
     hooks: _Hooks
-    #: The executor's own stop flag; ``context.stopping`` mirrors it for the component.
-    stop: asyncio.Event = field(default_factory=asyncio.Event)
-    reason: StopReason | None = None
-    running: bool = False
-    #: The store failure met while recording one of this component's rows, if any.
-    broke: StoreError | None = None
     span: str = field(default_factory=lambda: uuid.uuid4().hex)
+    progress: _Progress = field(default_factory=_Progress)
 
 
 class _Hooks:
@@ -337,17 +552,21 @@ class _Hooks:
         self._name = name
         self._cleanup_s = cleanup_s
         self._warned = False
-        self.closed = False
+        self._closed = False
+
+    def close(self) -> None:
+        """The component has ended: what it asks of its context from now on is ignored."""
+        self._closed = True
 
     def _late(self, call: str) -> bool:
         """Whether the component has ended; the first late call is reported, the rest quiet."""
-        if self.closed and not self._warned:
+        if self._closed and not self._warned:
             self._warned = True
             logger.warning(
                 "component %r used its context (%s) after it ended; ignored", self._name, call
             )
-            self._session.emit(COMPONENT_LATE, uuid.uuid4().hex, {"call": call}, self._name)
-        return self.closed
+            self._session.tell(COMPONENT_LATE, {"call": call}, component=self._name)
+        return self._closed
 
     def _parent(self) -> str:
         scope = CURRENT_SPAN.get()
@@ -368,9 +587,17 @@ class _Hooks:
     def emit(self, name: str, fields: dict[str, Any]) -> None:
         check_event_name(name)
         if not self._late("emit"):
-            self._session.emit(name, uuid.uuid4().hex, fields, self._name, self._parent())
+            self._session.emit(
+                name,
+                span=uuid.uuid4().hex,
+                fields=fields,
+                component=self._name,
+                parent=self._parent(),
+            )
 
-    def measure(self, name: str, value: float, unit: str, kind: str, attrs: dict[str, Any]) -> None:
+    def measure(
+        self, name: str, value: float, *, unit: str, kind: str, attrs: dict[str, Any]
+    ) -> None:
         check_event_name(name, what="measure")
         if kind not in MEASURE_KINDS:
             raise ContractError(
@@ -382,7 +609,13 @@ class _Hooks:
             )
         if not self._late("measure"):
             fields = {"name": name, "value": value, "unit": unit, "kind": kind, "attrs": attrs}
-            self._session.emit(MEASURE, uuid.uuid4().hex, fields, self._name, self._parent())
+            self._session.emit(
+                MEASURE,
+                span=uuid.uuid4().hex,
+                fields=fields,
+                component=self._name,
+                parent=self._parent(),
+            )
 
     @asynccontextmanager
     async def span(self, name: str, fields: dict[str, Any]) -> AsyncIterator[None]:
@@ -392,7 +625,9 @@ class _Hooks:
             yield
             return
         span = uuid.uuid4().hex
-        self._session.emit(f"{name}.start", span, fields, self._name, scope.span)
+        self._session.emit(
+            f"{name}.start", span=span, fields=fields, component=self._name, parent=scope.span
+        )
         token = CURRENT_SPAN.set(replace(scope, span=span))
         started = time.monotonic()
         status = "ok"
@@ -404,7 +639,9 @@ class _Hooks:
         finally:
             CURRENT_SPAN.reset(token)
             ended = {"status": status, "duration_ms": int((time.monotonic() - started) * 1000)}
-            self._session.emit(f"{name}.end", span, ended, self._name, scope.span)
+            self._session.emit(
+                f"{name}.end", span=span, fields=ended, component=self._name, parent=scope.span
+            )
 
 
 class _Session:
@@ -430,10 +667,16 @@ class _Session:
         self._wake = asyncio.Event()
         #: Why nothing more may start (a skip reason), once something stopped the run.
         self._halted: str | None = None
+        #: Set once something stopped the run: a component waiting to retry stops waiting.
+        self._halt_signal = asyncio.Event()
         self._cancelled = False
+        #: How many rows each component has handed over: one that has is never retried.
+        self._recorded: dict[str, int] = {}
         self.releases: list[tuple[str, Release, float]] = []
         #: The first failure, which :class:`RunError` reports as the cause.
         self.first: tuple[str, MatrixError] | None = None
+        #: What the run's agent sessions have spent, against ``limits.spend_usd``.
+        self.spend = Spend(limits.spend_usd)
 
     def cancel(self) -> None:
         """Ask the run to stop: every running component is stop-requested, the rest skipped."""
@@ -441,11 +684,16 @@ class _Session:
         self._halt("cancelled", "cancelled")
         self._wake.set()
 
-    async def execute(self, supplied: Mapping[str, tuple[Any, ...]]) -> None:
+    async def execute(
+        self, supplied: Mapping[str, tuple[Any, ...]], reuse: Reuse | None = None
+    ) -> None:
         run = self._run
         started = time.monotonic()
         self._channel.start()
-        self.emit(RUN_START, run.run_id, {"components": list(self._wiring.components)}, parent=None)
+        fields: dict[str, Any] = {"components": list(self._wiring.components)}
+        if reuse is not None:
+            fields["reused_from"] = reuse.run_id
+        self.emit(RUN_START, span=run.run_id, fields=fields, parent=None)
         try:
             try:
                 for kind, rows in supplied.items():
@@ -453,19 +701,22 @@ class _Session:
                         self._record(INPUT, kind, row)
             except StoreError as e:
                 self._failed(INPUT, e)
+            if reuse is not None and self._halted is None:
+                self._reuse(reuse)
             await self._schedule()
         finally:
             # Settled before the releases run: a cancellation that arrives while they do
             # still reaches the caller, but it did not stop any component.
             cancelled = self._cancelled
             await self._release()
+            run.spend_usd = self.spend.spent_usd if self.spend.counted else None
             run.ended = datetime.now(UTC)
             run.status = "cancelled" if cancelled else "failed" if run.failures else "completed"
             self._finish()
             self.emit(
                 RUN_END,
-                run.run_id,
-                {
+                span=run.run_id,
+                fields={
                     "status": run.status,
                     "rows": len(run.construct),
                     "duration_ms": int((time.monotonic() - started) * 1000),
@@ -479,6 +730,23 @@ class _Session:
                     run.run_id,
                     run.events_dropped,
                 )
+
+    def _reuse(self, reuse: Reuse) -> None:
+        """Record each reused component's rows as it recorded them, and end it ``reused``."""
+        for name in self._wiring.order():
+            tables = reuse.rows.get(name)
+            if tables is None:
+                continue
+            try:
+                for kind, rows in tables.items():
+                    for row in rows:
+                        self._record(name, kind, row)
+            except MatrixError as e:
+                self._failed(name, e)
+                return
+            ending = ComponentEnding(status="reused", reason=f"from run {reuse.run_id}")
+            self._run.components[name] = ending
+            self.tell(COMPONENT_END, ending.document(), component=name)
 
     def _finish(self) -> None:
         """Record how the run ended. A record that cannot be finished is a failed run."""
@@ -518,7 +786,7 @@ class _Session:
                 if name in ended or name in self._steps:
                     continue
                 waits = self._wiring.depends[name]
-                broken = [d for d in waits if d in ended and ended[d]["status"] != "completed"]
+                broken = [d for d in waits if d in ended and ended[d].status not in _DONE]
                 if self._halted is not None:
                     self._skip(name, self._halted)
                 elif broken:
@@ -533,142 +801,204 @@ class _Session:
         deadline_s, grace_s, cleanup_s = self._limits.of(name)
         component = self._wiring.components[name]
         hooks = _Hooks(self, name, cleanup_s)
+        deadline = None if deadline_s is None else time.monotonic() + deadline_s
         step = _Step(
-            name,
-            component,
-            frozenset(component.provides),
-            deadline_s,
-            grace_s,
-            cleanup_s,
-            RunContext(self.run_id, name, hooks=hooks),
-            hooks,
+            name=name,
+            component=component,
+            provides=frozenset(component.provides),
+            deadline_s=deadline_s,
+            grace_s=grace_s,
+            cleanup_s=cleanup_s,
+            context=RunContext(self.run_id, name, deadline, hooks=hooks),
+            hooks=hooks,
         )
         self._steps[name] = step
         self._drivers.add(asyncio.ensure_future(self._drive(step)))
 
     async def _drive(self, step: _Step) -> None:
-        """Run one component to a terminal state. Never raises: every ending is recorded."""
+        """Run one component to a terminal state, retrying it as its policy allows. Never
+        raises: every ending is recorded."""
         name = step.name
         if self._halted is not None:  # the run was stopped before this one got to start
             self._skip(name, self._halted)
             self._wake.set()
             return
-        self.emit(COMPONENT_START, step.span, {}, name)
+        self.tell(COMPONENT_START, {}, component=name, span=step.span)
         started = time.monotonic()
-        abandoned = False
-        error: MatrixError | None
-        try:
-            status, error, abandoned = await self._attempt(step, started)
-        except MatrixError as e:
-            status, error = "failed", e
-        finally:
-            step.running = False
-            step.hooks.closed = True
-        if step.broke is not None:
-            status, error = "failed", step.broke
-        record: dict[str, Any] = {
-            "status": status,
-            "duration_ms": int((time.monotonic() - started) * 1000),
-        }
-        if step.reason is not None:
-            record["reason"] = step.reason
-        if abandoned:
-            record["abandoned"] = True
+        retry = self._limits.retry_of(name)
+        attempt = 1
+        while True:
+            try:
+                outcome = await self._attempt(step)
+            except MatrixError as e:
+                outcome = _Outcome("failed", e)
+            finally:
+                step.progress.end()
+                step.hooks.close()
+            if step.progress.broke is not None:
+                outcome = _Outcome("failed", step.progress.broke, outcome.abandoned)
+            wait = self._retry_wait(step, outcome, retry, attempt)
+            if wait is None or not await self._waited(name, step, outcome, attempt, wait):
+                break
+            attempt += 1
+            step = self._restart(step)
+        if outcome.abandoned:
             logger.warning(
                 "component %r ignored cancellation for %ss and was abandoned; it may still be "
                 "running",
                 name,
                 step.cleanup_s,
             )
-        self._run.components[name] = record
-        fields = dict(record)
-        if error is not None:
-            fields["kind"] = error.kind
-        self.emit(COMPONENT_END, step.span, fields, name)
-        if error is not None:
-            self._failed(name, error)
+        ending = ComponentEnding(
+            status=outcome.status,
+            reason=step.progress.reason,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            abandoned=outcome.abandoned,
+            attempts=attempt,
+        )
+        self._run.components[name] = ending
+        fields = ending.document()
+        if outcome.error is not None:
+            fields["kind"] = outcome.error.kind
+        self.tell(COMPONENT_END, fields, component=name, span=step.span)
+        if outcome.error is not None:
+            self._failed(name, outcome.error)
         self._wake.set()
 
+    def _retry_wait(
+        self, step: _Step, outcome: _Outcome, retry: Retry, attempt: int
+    ) -> float | None:
+        """How long to wait before running ``step`` again, or None when it is not retried."""
+        error = outcome.error
+        if (
+            outcome.status != "failed"
+            or error is None
+            or outcome.abandoned
+            or attempt >= retry.attempts
+            or self._halted is not None
+            or step.progress.reason is not None
+            or self._recorded.get(step.name, 0) > 0
+            or not retry.matches(error)
+        ):
+            return None
+        return retry.wait_s(attempt, error)
+
+    async def _waited(
+        self, name: str, step: _Step, outcome: _Outcome, attempt: int, wait: float
+    ) -> bool:
+        """Report the retry and wait it out; False when the run was stopped meanwhile."""
+        error = outcome.error
+        fields = {
+            "attempt": attempt + 1,
+            "kind": None if error is None else error.kind,
+            "error": str(error),
+            "wait_s": wait,
+        }
+        self.tell(COMPONENT_RETRY, fields, component=name, span=step.span)
+        halted = asyncio.ensure_future(self._halt_signal.wait())
+        try:
+            await asyncio.wait({halted}, timeout=wait)
+        finally:
+            halted.cancel()
+        return self._halted is None
+
+    def _restart(self, step: _Step) -> _Step:
+        """A fresh context for the next attempt of ``step``: the same component and span."""
+        hooks = _Hooks(self, step.name, step.cleanup_s)
+        deadline = None if step.deadline_s is None else time.monotonic() + step.deadline_s
+        fresh = replace(
+            step,
+            context=RunContext(self.run_id, step.name, deadline, hooks=hooks),
+            hooks=hooks,
+            progress=_Progress(),
+        )
+        self._steps[step.name] = fresh
+        return fresh
+
     def _failed(self, name: str, error: MatrixError) -> None:
-        self._run.failures.append({"component": name, "kind": error.kind, "message": str(error)})
+        self._run.failures.append(
+            ComponentFailure(component=name, kind=error.kind, message=str(error))
+        )
         self.first = self.first or (name, error)
         if isinstance(error, StoreError):
             self._halt("store failed", "run_failed")  # no record, no run: whatever the policy
         elif self._limits.on_failure == "fast":
             self._halt("policy: fast", "run_failed")
 
-    async def _attempt(
-        self, step: _Step, started: float
-    ) -> tuple[ComponentStatus, MatrixError | None, bool]:
+    async def _attempt(self, step: _Step) -> _Outcome:
         """Inputs in, the stop path around the component, and how it ended."""
-        name = step.name
         inputs = Inputs(
             {
                 kind: _private(self._run.construct.rows(kind), kind)
                 for kind in step.component.requires
             }
         )
-        if step.deadline_s is not None:
-            step.context.deadline = started + step.deadline_s
-        scope = SpanScope(self.run_id, step.span, name, self._channel)
-        task = asyncio.ensure_future(_call(step.component, inputs, step.context, scope))
-        stopped = asyncio.ensure_future(step.stop.wait())
-        step.running = True
+        scope = SpanScope(self.run_id, step.span, step.name, self._channel)
+        task = asyncio.ensure_future(_call(step.component, inputs, step.context, scope, self.spend))
+        step.progress.begin()
+        sent = await self._await_with_stop_path(step, task)
+        return self._ending(step, task, sent=sent)
+
+    async def _await_with_stop_path(self, step: _Step, task: asyncio.Future[Any]) -> bool:
+        """Wait for ``task`` through the stop path: its deadline or a stop request, then
+        ``grace_s`` to return, then a cancellation and ``cleanup_s``. True when it had to be
+        cancelled."""
+        stopped = asyncio.ensure_future(step.progress.stop.wait())
         sent = False
         try:
             await asyncio.wait(
                 {task, stopped}, timeout=step.deadline_s, return_when=asyncio.FIRST_COMPLETED
             )
             if not task.done():
-                if step.reason is None:
-                    self._request_stop(step, "deadline")
+                self._request_stop(step, "deadline")
                 await asyncio.wait({task}, timeout=step.grace_s)
             if not task.done():
                 sent = task.cancel()
                 await asyncio.wait({task}, timeout=step.cleanup_s)
         finally:
             stopped.cancel()
+        return sent
 
+    def _ending(self, step: _Step, task: asyncio.Future[Any], *, sent: bool) -> _Outcome:
+        """How a component's task ended, given whether it was cancelled. What it returned in
+        time, or within the grace of a stop request, is recorded."""
+        name = step.name
         overran = ComponentError(
             f"component {name!r} timed out after {step.deadline_s}s",
             component=name,
             reason="timeout",
         )
+        on_deadline = step.progress.reason == "deadline"
         if not task.done():
             # It swallowed the cancellation. Nothing in-process can end it; say so and move on.
             task.add_done_callback(_retrieve)
-            if step.reason == "deadline":
-                return "failed", overran, True
-            return "cancelled", None, True
+            status: ComponentStatus = "failed" if on_deadline else "cancelled"
+            return _Outcome(status, overran if on_deadline else None, abandoned=True)
         if sent or task.cancelled():
             if not task.cancelled():
                 _retrieve(task)  # it returned or raised after the cancel: too late to count
-            if step.reason == "deadline":
-                return "failed", overran, False
-            if step.reason is not None:
-                return "cancelled", None, False
-            return (
+            if on_deadline:
+                return _Outcome("failed", overran)
+            if step.progress.reason is not None:
+                return _Outcome("cancelled")
+            return _Outcome(
                 "failed",
                 ComponentError(
                     f"component {name!r} raised CancelledError without being cancelled",
                     component=name,
                 ),
-                False,
             )
         raised = task.exception()
         if isinstance(raised, MatrixError):
-            return "failed", raised, False
+            return _Outcome("failed", raised)
         if raised is not None:
             failure = ComponentError(
                 f"component {name!r} failed: {type(raised).__name__}: {raised}", component=name
             )
             failure.__cause__ = raised
-            return "failed", failure, False
-        # Returned in time, or within the grace of a stop request: what it returned is kept.
+            return _Outcome("failed", failure)
         self._commit(step, task.result())
-        if step.reason == "deadline":
-            return "failed", overran, False
-        return "completed", None, False
+        return _Outcome("failed", overran) if on_deadline else _Outcome("completed")
 
     def _commit(self, step: _Step, result: Any) -> None:
         """Record what a component returned: every row checked first, then all appended."""
@@ -708,7 +1038,7 @@ class _Session:
         try:
             self._record(name, kind, row)
         except StoreError as e:
-            step.broke = step.broke or e
+            step.progress.record_store_failure(e)
             self._halt("store failed", "run_failed")
             raise
 
@@ -727,40 +1057,39 @@ class _Session:
                 f"the store could not append a row of {kind!r}: {type(e).__name__}: {e}",
                 table=kind,
             ) from e
-        self.emit(
+        self._recorded[name] = self._recorded.get(name, 0) + 1
+        self.tell(
             ROW_APPEND,
-            uuid.uuid4().hex,
             {"kind": kind, "row": entry.row, "seq": entry.seq},
-            None if name == INPUT else name,
+            component=None if name == INPUT else name,
         )
 
     def _request_stop(self, step: _Step, reason: StopReason) -> None:
-        if step.reason is not None:
-            return
-        step.reason = reason
-        step.context.stopping.set()
-        step.stop.set()
-        self.emit(COMPONENT_STOPPING, step.span, {"reason": reason}, step.name)
+        if step.progress.request_stop(reason):
+            step.context.stopping.set()
+            self.tell(COMPONENT_STOPPING, {"reason": reason}, component=step.name, span=step.span)
 
     def _halt(self, why: str, reason: StopReason) -> None:
         """Nothing more starts; everything running is asked to stop. The first cause stands."""
         if self._halted is None:
             self._halted = why
+            self._halt_signal.set()
         for step in self._steps.values():
-            if step.running:
+            if step.progress.running:
                 self._request_stop(step, reason)
 
     def _skip(self, name: str, why: str) -> None:
-        self._run.components[name] = {"status": "skipped", "reason": why}
-        self.emit(COMPONENT_END, uuid.uuid4().hex, {"status": "skipped", "reason": why}, name)
+        self._run.components[name] = ComponentEnding(status="skipped", reason=why)
+        self.tell(COMPONENT_END, {"status": "skipped", "reason": why}, component=name)
 
     async def _release(self) -> None:
         """Call every deferred release, last registered first, each under its own bound."""
         while self.releases:
             name, release, bound = self.releases.pop()
             span = uuid.uuid4().hex
-            self.emit(RELEASE_START, span, {}, name)
-            status, error = "released", None
+            self.tell(RELEASE_START, {}, component=name, span=span)
+            status: Literal["released", "failed", "abandoned"] = "released"
+            error: str | None = None
             try:
                 pending = release()
                 if inspect.isawaitable(pending):
@@ -778,24 +1107,49 @@ class _Session:
                 status, error = "failed", f"{type(e).__name__}: {e}"
             if error is not None:
                 logger.warning("a release deferred by %r %s: %s", name, status, error)
-            self._run.releases.append({"component": name, "status": status, "error": error})
-            self.emit(RELEASE_END, span, {"status": status, "error": error}, name)
+            self._run.releases.append(ReleaseOutcome(component=name, status=status, error=error))
+            self.tell(RELEASE_END, {"status": status, "error": error}, component=name, span=span)
 
     def emit(
         self,
         name: str,
+        *,
         span: str,
         fields: dict[str, Any],
         component: str | None = None,
-        parent: str | None = "",
+        parent: str | None,
     ) -> None:
-        """Put one event on the run's channel. ``parent`` defaults to the run's own span."""
-        under = self.run_id if parent == "" else parent
-        self._channel.emit(Event(name, span, self.run_id, under, fields, component))
+        """Put one event on the run's channel, under the span ``parent`` (None: under
+        nothing, which only the run's own events are)."""
+        self._channel.emit(
+            Event(
+                name,
+                span=span,
+                run_id=self.run_id,
+                parent=parent,
+                fields=fields,
+                component=component,
+            )
+        )
+
+    def tell(
+        self, name: str, fields: dict[str, Any], *, component: str | None, span: str | None = None
+    ) -> None:
+        """Put one event about the run's work on its channel, under the run's own span."""
+        self.emit(
+            name,
+            span=span or uuid.uuid4().hex,
+            fields=fields,
+            component=component,
+            parent=self.run_id,
+        )
 
 
-async def _call(component: Component, inputs: Inputs, ctx: RunContext, scope: SpanScope) -> Any:
+async def _call(
+    component: Component, inputs: Inputs, ctx: RunContext, scope: SpanScope, spend: Spend
+) -> Any:
     CURRENT_SPAN.set(scope)  # this task's own context: an agent it calls reports as its child
+    CURRENT_SPEND.set(spend)  # and is held to the run's spend ceiling
     return await component.run(inputs, ctx)
 
 

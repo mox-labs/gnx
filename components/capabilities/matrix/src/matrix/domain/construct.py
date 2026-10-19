@@ -2,15 +2,8 @@
 
 A **kind** is the type URL of some data, and it is the schema of its table: the rows of
 ``acme.v1.review`` are reviews, the records themselves, with nothing wrapped around them.
-Each kind has one provider, so a table has one writer's rows in the order it handed them over.
-
-Provenance is one more typed table, the **ledger** (kind ``matrix.v1.ledger``). Every row in
-every other table has exactly one :class:`LedgerEntry`: which component handed it over, when,
-its place in the run's order (``seq``), and a pointer to it.
-
-**The pointer** is ``(kind, row)``: the table, and the row's 0-based position in it. Tables
-are append-only with one writer, so a position never changes and nothing has to be added to a
-record to make it addressable.
+Provenance is one more table, the **ledger** (``matrix.v1.ledger``): every row in every other
+table has exactly one :class:`LedgerEntry`.
 
 **The write order** is ledger entry first, then the row; both are written through to the
 run's store before :meth:`Construct.append` returns. So a process killed between the two
@@ -21,9 +14,6 @@ written after one fails, so a torn tail is the ledger's last entry and nothing e
 
 Rows are append-only and the executor is their only writer. Components never receive the
 Construct; they get :class:`~matrix.domain.component.Inputs` holding the kinds they require.
-
-Persisted, a Construct is a directory of typed JSONL tables (see ``ConstructStore``), readable
-with ``jq`` or SQL without matrix installed.
 """
 
 from __future__ import annotations
@@ -44,7 +34,11 @@ INPUT = "$input"
 
 
 class LedgerEntry(BaseModel):
-    """One row's provenance: a row of the ``matrix.v1.ledger`` table. Immutable."""
+    """One row's provenance: a row of the ``matrix.v1.ledger`` table. Immutable.
+
+    It points at its row by ``(kind, row)``: the table, and the row's 0-based position in
+    it. Each kind has one provider and its table is append-only, so a position never changes
+    and nothing is added to a record to make it addressable."""
 
     model_config = ConfigDict(frozen=True)
 

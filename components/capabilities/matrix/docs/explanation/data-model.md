@@ -16,14 +16,14 @@ order it handed them over. Run inputs are tables too.
 ```python
 construct = run.construct
 
-construct.rows("demo.v1.shout")        # the rows, in the order they landed; () if none
-construct.last("demo.v1.shout")        # the most recent row; NotFoundError if there is none
-construct.kinds()                      # every table: the run's kinds, then matrix.v1.ledger
-construct.ledger                       # every row's LedgerEntry, in the order rows were appended
+construct.rows("demo.v1.shout")  # the rows, in the order they landed; () if none
+construct.last("demo.v1.shout")  # the most recent row; NotFoundError if there is none
+construct.kinds()  # every table: the run's kinds, then matrix.v1.ledger
+construct.ledger  # every row's LedgerEntry, in the order rows were appended
 construct.provenance("demo.v1.shout")  # the ledger entries for that kind's rows, in row order
-construct.torn                         # entries whose row never landed; () for a live run
-"demo.v1.shout" in construct           # True if the kind has at least one row
-len(construct)                         # number of rows, the ledger's own aside
+construct.torn  # entries whose row never landed; () for a live run
+"demo.v1.shout" in construct  # True if the kind has at least one row
+len(construct)  # number of rows, the ledger's own aside
 ```
 
 `last` on an empty kind raises `NotFoundError`, which lists the kinds that do have rows.
@@ -86,15 +86,22 @@ The observed state of one execution, kept apart from the wiring, which a run nev
 | `construct` | `Construct` | every row recorded, run inputs included |
 | `status` | `"running" \| "completed" \| "failed" \| "cancelled"` | |
 | `started`, `ended` | `datetime` | UTC; `ended` is `None` while running |
-| `failures` | `list[dict]` | `{component, kind, message}` for each component that failed |
-| `components` | `dict[str, dict]` | name to `{status, reason?, duration_ms?, abandoned?}`: how each component ended |
-| `releases` | `list[dict]` | `{component, status, error}` for each deferred release, in the order called |
+| `failures` | `list[ComponentFailure]` | `component`, `kind`, `message` for each component that failed |
+| `components` | `dict[str, ComponentEnding]` | name to `status`, `reason`, `duration_ms`, `abandoned`, `attempts`: how each component ended |
+| `releases` | `list[ReleaseOutcome]` | `component`, `status`, `error` for each deferred release, in the order called |
 | `events_dropped` | `int` | events no observer received |
+| `reused_from` | `str \| None` | the run whose rows this one reused |
+| `fingerprints` | `dict[str, str]` | name to a digest of what each component was built from |
 
-`run.rows(kind)` is `run.construct.rows(kind)`. `run.document()` is the run as a JSON-ready
-document (`matrix.v1.run`), without its tables.
+`Run` and its parts are pydantic models. `run.rows(kind)` is `run.construct.rows(kind)`.
+`run.document()` is the run as a JSON-ready document (`matrix.v1.run`), without its tables;
+each record above is there as its `document()`.
 
-Run inputs are recorded first, by `$input`. Then each row is recorded when its component
+Run inputs are recorded first, by `$input`, then the rows of any component reused from an
+earlier run, by that component, which ends `reused`. A component is reused only when it
+completed in that run, its fingerprint (its type and config, and for an agent step its
+agent's definition and runtime) is the same, and every component it depends on is reused
+too: so what it was given then is what it would be given now. Then each row is recorded when its component
 hands it over (`ctx.provide`) or, for what it returns, when it ends.
 
 When a component fails, the executor stops or skips the others as `Limits.on_failure` says,
@@ -105,12 +112,13 @@ was stopped but returned within its grace has its rows recorded like any other.
 
 ## Keeping a run
 
-A `ConstructStore` is given to `Executor.run(..., store=)`. The executor opens the run in it
+A `ConstructStore` is given to `Executor.run(..., store=)`, or chosen in config
+(`matrix.store`) and given by `Container.run`. The executor opens the run in it
 before anything starts, appends each row as it lands, and finishes the run when it ends. So
 the record is outside the process the whole time: it can be read while the run is going, and
 a run that is killed leaves everything it had recorded.
 
-Two adapters ship:
+The stores:
 
 - `MemoryConstructStore()` keeps runs in a dict, rows as given. For tests and single-process
   callers.
@@ -118,17 +126,22 @@ Two adapters ship:
 
 ```
 <root>/<run_id>/run.json                {"schema": "matrix.v1.run", run_id, status, started,
-                                         ended, components, failures, releases,
+                                         ended, components, failures, releases, spend_usd?,
                                          "tables": {kind: {"file", "rows"}}}
 <root>/<run_id>/<kind>.jsonl            one row per line: the typed record itself
 <root>/<run_id>/matrix.v1.ledger.jsonl  one line per row landed: seq, kind, row, component, time
+<root>/<run_id>/events.jsonl            the run's events, one matrix.v1.event a line (telemetry)
+<root>/<run_id>/writer.lock             held (flock) by the writing process while it lives
 ```
 
 One kind per file means one schema per file, so `jq` or DuckDB's `read_json_auto` reads a
-table without matrix installed.
+table without matrix installed. An agent step's reply rows are `AgentResponse`s that carry
+the task as sent (`task`) beside the reply (`content`), and each `matrix.agent.start` event
+carries it too, so a step that failed before its reply was recorded still shows what it was
+asked. `matrix run` prints these files when the run ends; `matrix runs` lists the runs.
 
-**While a run is going**, `run.json` says `running` (and names the process writing it) and
-every table file exists. Each row is one `write` of one whole line to a file opened for
+**While a run is going**, `run.json` says `running`, names the process writing it
+(`writer`: pid and host) and lists each table's file; every table file exists. Each row is one `write` of one whole line to a file opened for
 appending, made before the append returns, so a process killed at any moment leaves every row
 it had appended. With `fsync=True` each row is also flushed to the disk, which survives the
 machine going down and costs a disk flush per row. A line cut short by a kill is the last line
@@ -139,15 +152,17 @@ count of each table. A reader sees the record as it was while running or the fin
 never a mixture.
 
 ```python
+import asyncio
+
 from matrix import Executor, JsonlConstructStore
 
 store = JsonlConstructStore("runs/")
-run = await Executor().run(wiring, inputs, store=store, run_id="nightly-7")
+run = asyncio.run(Executor().run(wiring, inputs, store=store, run_id="nightly-7"))
 
-store.runs()                         # run ids, oldest first
-store.describe("nightly-7")          # the run.json document
+store.runs()  # run ids, oldest first
+store.describe("nightly-7")  # the run.json document
 construct = store.load("nightly-7")  # the Construct, ledger included
-construct.torn                       # () unless the run was cut off between two writes
+construct.torn  # () unless the run was cut off between two writes
 ```
 
 The store contract:
@@ -155,16 +170,17 @@ The store contract:
 - `open` on a run id that already exists is a `StoreError`: a record is never reopened or
   rewritten.
 - `append(kind, row)` is durable when it returns. A store that cannot append, or cannot
-  finish, fails the run: `RunError` with kind `store`. After one failed write nothing more is
-  written to that record.
+  finish, fails the run: `RunError` with kind `store`. After one failed append no row is
+  appended to that record; the store is still asked to finish it, as `failed`.
 - `load` works on a run in any state. From the JSONL store rows come back as JSON data, not
   as the Python objects that produced them (a pydantic model comes back as a dict).
 - `describe` returns `status` as recorded for a finished run. For one that never finished it
   counts the rows on disk, reports `torn`, and says `running`, or `interrupted` when the
-  process that was writing it, on this host, is gone. From another host a dead run still
-  reads `running`: matrix does not guess.
+  process that was writing it, on this host, no longer holds `writer.lock`. From another
+  host a dead run still reads `running`: matrix does not guess.
 - A missing run is a `NotFoundError` naming the runs that exist.
-- A run id must be a safe directory name (`[A-Za-z0-9._-]`, not `.` or `..`).
+- In the JSONL store a run id must be a safe directory name (`[A-Za-z0-9._-]`, not `.` or
+  `..`); any other is a `ConfigError` before anything runs.
 
 ## Large values
 

@@ -8,10 +8,10 @@ one component among others.
 
 matrix knows nothing about what a run is for. An eval harness, a review pipeline and a data
 transform are the same thing to it: components, the kinds they exchange, a registry to find
-them in, and config that says which to use. It refuses the rest: it does not repeat work,
+them in, and config that says which to use. It refuses the rest: it does not repeat a run,
 score anything, or carry any client's vocabulary.
 
-The type URL grammar is slick's. matrix carries its own copy until it depends on slick.
+The type URL grammar is slick's; matrix carries its own copy.
 
 ---
 
@@ -21,8 +21,9 @@ The type URL grammar is slick's. matrix carries its own copy until it depends on
 
 `acme.v1.review` names a kind of data: reviews. A kind is compared by equality and never
 dereferenced. It is the only thing two components need to agree on, and it is the schema of
-the table its rows are kept in. When a model is registered for a kind, every row of that kind
-is validated against it.
+the table its rows are kept in. When the wiring carries a model for a kind, every row of that
+kind is validated against it: `Container.wire` carries every registered payload type, and
+`wire` takes them as `schemas`.
 
 "Kind" here always means the kind of data. (slick uses the word for kinds of component; that
 is a different thing and stays with slick.)
@@ -58,7 +59,8 @@ the wiring:
 It raises one `CompilationError` listing every problem it found, so a broken set of
 components is fixed in one pass rather than one error at a time:
 
-1. every kind is a type URL, and none is `matrix.v1.ledger`, the run's own provenance table;
+1. every kind is a versioned type URL (`<namespace>.v<N>.<resource>`), and none is
+   `matrix.v1.ledger`, the run's own provenance table;
 2. every required kind is provided by some component or is a run input;
 3. no kind has two providers, and a run input has none;
 4. no component requires a kind it provides;
@@ -132,7 +134,9 @@ Nothing recorded before the end is lost.
 A release exists because the thing to undo usually outlives the component that made it: one
 component provisions, others use, and a teardown written as a component is skipped exactly
 when it is needed. `matrix.process.spawn` is the common case made to carry itself: the child
-gets its own process group, and killing the group is deferred. A component that needs
+gets its own process group, and killing the group is deferred. (`process.start` and
+`process.kill_group` are the two halves, for a component that starts a child per repetition
+and ends each one itself.) A component that needs
 something running beside its own work (a sampler beside a load) starts it itself and defers
 its stop; matrix has no notion of a sidecar.
 
@@ -179,13 +183,13 @@ and the run says so. The wiring knows nothing about agents.
 ## One registry for every extension
 
 The `Registry` holds **extension points** (`runtime`, `component`, `payload-type`,
-`observer`; other packages add their own, as ix adds `sensor` and `engine`) and the
-**entries** registered at each, keyed by type URL. An entry carries what a caller, human or
-agent, needs to decide whether to use it:
+`observer`, `store`; other packages add their own, named under their own root, as ix adds
+`ix.sensor`) and the **entries** registered at each, keyed by type URL. An entry carries
+what a caller, human or agent, needs to decide whether to use it:
 
 - `config`: the pydantic model its settings validate against;
-- `needs`: shared things composition hands it (`agents`, `models`, `cwd`), declared rather
-  than guessed from field names;
+- `needs`: shared things composition hands it (`agents`, `models`, `cwd`, and for a
+  component its own `name`), declared rather than guessed from field names;
 - `effects`: what it may touch (`network`, `subprocess`, `filesystem`, `model`). `None` means
   unknown, which is never read as "none";
 - `summary`, `stability` and `origin` (the package that registered it).
@@ -220,7 +224,15 @@ context: `ctx.emit` for an event, `ctx.measure` for a number, `ctx.span` for a t
 Names are namespaced like type URLs; `matrix.*` is matrix's, and a component uses its own
 root. Progress, logging, tracing and metrics are observers of those events, so the core
 imports none of them. An agent called from inside a component reports that component as its
-parent, so the `otel` observer nests an agent's span under the component that ran it.
+parent, so the `otel` observer nests an agent's span under the component that ran it, and a
+tool call the runtime timed under the agent: `invoke_workflow` over `matrix.component` over
+`invoke_agent` over `execute_tool`, the OpenTelemetry GenAI conventions' names.
+
+Two observers need no choosing. A run kept by the JSONL store writes its events into its own
+record, `events.jsonl`. And when the standard `OTEL_*` variables ask for export, every
+composed run gets the `otel` observer. That observer speaks only the OpenTelemetry API: matrix
+is a library, and installing an SDK, which decides where telemetry goes for the whole process,
+is the application's. `matrix run` is an application, so it does, from the same variables.
 
 Telemetry is not data. Events reach observers through a bounded queue and a dispatcher, never
 on the task that emitted them, so an observer cannot stall a run: one that raises is skipped,
@@ -234,16 +246,45 @@ audit channel: an audit hook would have to be able to stop the operation.
 A tool built on matrix (ix, or matrix's own CLI) names itself, and `load_config` reads the
 same tiers for every tool: `~/.matrix/config.yaml`, `~/.<tool>/config.yaml`, `./matrix.yaml`,
 `./<tool>.yaml`, then the files named by `$MATRIX_CONFIG` and `$<TOOL>_CONFIG`. Your runtimes
-and agents are declared once and every tool sees them. `matrix config --sources` lists the
-files consulted, so which file set a value is never a guess.
+and agents are declared once and every tool sees them. That cuts both ways: mappings merge
+and `definitions` directories accumulate, so a second config read on top of a project's shares
+its runtimes, agents and definitions, and an agent defined in both is a `name_taken` problem.
+`--only` reads the named files and no tier, for a config that should run on its own; its
+runs are still recorded in the store it names (`.matrix/runs` in the working directory by
+default).
+`matrix config --sources` lists the files consulted, and every problem names the file that
+set the value it is about.
+
+The config also declares a run: its components and inputs, where it is recorded (`store`,
+chosen from the registry like a runtime) and the limits it keeps. `matrix plan` composes and
+wires it and says what a run would do and spend, calling nothing; `matrix run` runs it, and
+`matrix runs` lists what was recorded and what each run spent. What a run may spend is bounded twice: a `claude-sdk`
+runtime's `max_budget_usd` ends one session at its limit, and `limits.spend_usd` stops the
+run starting any agent session that could take it past the ceiling, counting what each
+session reports. The executor holds that ceiling, not the components: an agent a component
+calls inside a run asks the run before its session starts.
+
+## One loader
+
+matrix reads several kinds of document: tiers of settings, folders of agent files, and, for
+the tools built on it, experiment files, probe folders and declarations. One mechanism reads
+them all. A source reads what is at a location into plain data and knows nothing of types; a
+markdown file is its frontmatter with its text under `body`. The loader takes the type from
+its caller and either merges the documents as tiers or collects one model per file, validates
+once, and reports every problem with its key path and its file. What `body` means is the
+type's business: an `AgentDefinition` takes it as its system prompt, an ix probe as its
+prompt.
 
 ## What matrix is not
 
-- **Not a scheduler or a service.** It is a library and a read-only CLI. There is no daemon.
-- **Not a retry engine.** A failed run raises with its partial state; repeating is the
-  caller's decision. The executor stops, cleans up and reports; it never tries again.
+- **Not a scheduler or a service.** It is a library and a CLI that runs one config at a time.
+  There is no daemon.
+- **Not a retry engine.** A retry policy runs a component again after a transient failure,
+  within the run, and never one that has already handed rows over. A failed run raises with
+  its partial state; running it again is the caller's decision, and `matrix run --from`
+  reuses what completed.
 - **Not a sandbox.** Components are in-process Python. Holding a component to its kinds is a
   correctness boundary, not a trust boundary. Agent sessions get whatever authority their runtime's
-  config grants; see [SECURITY.md](../../SECURITY.md).
+  config grants; the package's security notes (`SECURITY.md`) say what that means.
 - **Not domain-aware.** It has no notion of probes, sensors or hypotheses. Those are the
   vocabulary of the packages that register components.
