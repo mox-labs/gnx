@@ -119,7 +119,7 @@ jobs:
         run: just capabilities-standalone
 
       # Every lab experiment validates and plans through the installed CLI, so its genres
-      # and kinds resolve through their entry points. Nothing runs: ix has no `run`.
+      # and kinds resolve through their entry points. Nothing is run here.
       - name: lab experiments validate and plan
         run: just lab
 

@@ -6,8 +6,8 @@
 #   ix validate lab/catalog-routing
 #   ix plan lab/catalog-routing
 #
-# Repeats, order and the estimator are the evaluate genre's; the plan shows them. Three
-# repeats matter here: routing is stochastic, and one pass has no error bar.
+# Order and the estimator are the evaluate genre's; the plan shows them. Repeats are set
+# below: routing is stochastic, and one pass has no error bar.
 name: catalog-routing
 question: Does the right catalog component fire for a real ask, and stay quiet for a decoy?
 rationale: >-
@@ -17,7 +17,7 @@ genre: evaluate
 
 subjects:
   catalog:
-    kind: agent
+    kind: agent-session
     description: The gnx marketplace as shipped, loaded into a real agent session.
     runtime: claude-sdk
     # One turn: the Skill call happens in the first assistant turn, and stopping there
@@ -38,13 +38,15 @@ subjects:
       - {type: local, path: ../../plugins/rational-inquiry}
       - {type: local, path: ../../plugins/recon}
 
-# One .md file per probe: the body is the prompt; `expectation` and `expected_skill` in the
-# frontmatter are the truth the activation sensor measures against.
-probes: {source: directory, path: tasks}
+# The probes are the .md files in probes/: the body is the prompt; `expectation` and
+# `expected_skill` in the frontmatter are the truth the activation sensor measures against.
 
 primary: {metric: activated_correctly}
 threshold: {op: ">=", value: 0.9}
 
-# 8 probes x 3 repeats = 24 sessions. The per-trial figure is an estimate; the ceiling is
-# what stops a run that goes wrong.
+# 8 probes x 5 repeats = 40 sessions: the genre's minimum, and more than the 35 a pass
+# rate's interval needs to reach above 0.9 at all (the genre's default of 10 would cost
+# about 8 USD). The per-trial figure is an estimate; the ceiling is what stops a run that
+# goes wrong.
+repeats: 5
 spend: {ceiling: 5.00, per_trial: 0.10}

@@ -1,7 +1,6 @@
 # gnx — gate single-source-of-truth.
 # The git hook and CI both call `just`, so a local check and the CI check
-# cannot drift (the vaani pattern). cix shipped gates as ad-hoc bash and as
-# .githooks that were never wired; gnx fixes both — see CONTRIBUTING.md.
+# cannot drift. See CONTRIBUTING.md.
 
 set shell := ["bash", "-uc"]
 
@@ -9,7 +8,7 @@ set shell := ["bash", "-uc"]
 check: docs-check secrets grammar payloads projection
 
 # The CI gate (mirrors the hook; slow gates are added here as the CLI lands).
-ci: docs-check secrets-all grammar payloads projection capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone lab
+ci: docs-check secrets-all grammar payloads projection recon-skill capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone lab
 
 # `--project` not `--directory`: build reads ./components from the CWD, and
 # --directory would move the CWD into the workspace.
@@ -17,6 +16,15 @@ ci: docs-check secrets-all grammar payloads projection capabilities-test capabil
 # The committed plugin projection must match components/ (gnx build --check).
 projection:
     uv --project components/capabilities run gnx build --check
+
+recon-skill:
+    uv --project components/capabilities run python \
+        components/capabilities/recon/scripts/plugin_skill.py plugins/recon/skills/recon --check
+
+# recon against the live APIs it collects from; not in ci, since it depends on third parties.
+recon-live:
+    RECON_LIVE=1 uv --directory components/capabilities run --group dev \
+        python -m pytest recon/tests/test_integration.py -q
 
 # The gnx identity grammar over every manifest (GEP-0001/0002/0003).
 grammar:
@@ -32,14 +40,16 @@ payloads:
         python {{justfile_directory()}}/harness/validate_payload.py \
         {{justfile_directory()}}/components/agents {{justfile_directory()}}/components/skills
 
-# Lint the capability packages (the puma/x.uma house set: + B, SIM, TC).
+# Lint the capability packages (the puma/x.uma house set: + B, SIM, TC) and check their
+# formatting, the Python blocks in their Markdown included.
 capabilities-lint:
     uv --directory components/capabilities run ruff check hardline matrix ix recon dao gnx
+    uv --directory components/capabilities run ruff format --check hardline matrix ix recon dao gnx
 
 # Typecheck each capability FROM ITS OWN DIRECTORY. mypy resolves config from the
 # invocation rootdir, so running it from the workspace root silently applies the root
-# [tool.mypy] and ignores each package's scoped overrides (recon needs them for glom +
-# xmltodict, matrix for opentelemetry — none of which ship py.typed).
+# [tool.mypy] and ignores each package's scoped overrides (recon needs one for xmltodict,
+# matrix for the OTLP exporters — neither ships py.typed).
 # puma's gate does `cd puma && mypy src/xuma` for exactly this reason.
 #
 # All six are clean under --strict as of 2026-09-24 (hardline joined). Adding a package here is how it
@@ -56,7 +66,8 @@ capabilities-typecheck:
     done
     exit $fail
 
-# The capability packages: hardline, matrix, ix, recon, dao (gnx CLI has no tests yet).
+# The capability packages' tests: hardline, matrix, ix, recon, dao (the gnx CLI has none).
+# No test reaches a live model: components/capabilities/conftest.py refuses it.
 capabilities-test:
     uv --directory components/capabilities run --group dev \
         python -m pytest hardline/tests matrix/tests ix/tests recon/tests dao/tests -q
@@ -73,23 +84,10 @@ secrets:
 secrets-all:
     gitleaks detect --no-banner --redact
 
-# --- The gnx CLI is Python (leaning, cix-hexagonal inheritance), not yet built.
-# As it lands, its gates join `check` here, mirrored by CI, so nothing drifts:
-#
-# lint:
-#     uv run ruff check && uv run ruff format --check
-# typecheck:
-#     uv run mypy --strict src
-# test:
-#     uv run pytest
-
-# The simulated subject proves the harness end to end without credentials; the live one
-# needs ANTHROPIC_API_KEY and measures the catalog rather than the plumbing. See
-# lab/README.md for why those are different claims.
-#
-# Validate and plan every experiment in the lab. Nothing runs: ix has no `run`, so this
-# checks that each experiment is well-formed against the installed genres and kinds and
-# that the installed CLI resolves them through its entry points.
+# Validate and plan every experiment in the lab. Nothing runs: this checks that each
+# experiment is well-formed against the installed genres and kinds and that the installed
+# CLI resolves them through its entry points. A run of a lab experiment starts real agent
+# sessions and spends money, so it is never part of a gate.
 lab:
     uv --project components/capabilities run ix validate lab/catalog-routing
     uv --project components/capabilities run ix plan lab/catalog-routing
@@ -118,8 +116,9 @@ lab:
 # list: the repository resolves that dependency on every supported path because the
 # clone carries the workspace root, and severing the package from the repo — what
 # this recipe does on purpose — lets PyPI's unrelated `matrix` 3.0.0 fill the gap.
-# No package in the list has such a dependency; ix joined it when it stopped
-# depending on matrix.
+# ix is the one package with such a dependency: its run path is matrix components. It is
+# checked with matrix copied beside it and named explicitly, so the gap is filled by this
+# repository's matrix and ix's other imports are still held to what ix declares.
 capabilities-standalone:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -128,7 +127,9 @@ capabilities-standalone:
     for p in hardline matrix ix recon gnx dao; do
       cp -R components/capabilities/$p "$tmp/$p"
       probe=("$p" --help)
-      if ( cd "$tmp" && uv run --isolated --no-project --quiet --with ./$p "${probe[@]}" >/dev/null ); then
+      with=(--with ./$p)
+      if [ "$p" = ix ]; then with=(--with ./matrix --with ./ix); fi
+      if ( cd "$tmp" && uv run --isolated --no-project --quiet "${with[@]}" "${probe[@]}" >/dev/null ); then
         echo "  $p standalone OK"
       else
         echo "  $p standalone FAIL — an import is not in [project.dependencies]"; fail=1

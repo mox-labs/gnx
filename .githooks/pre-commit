@@ -1,8 +1,7 @@
 #!/bin/sh
 # Pre-commit gate. The justfile is the single source of truth — this hook only
 # delegates, so it cannot drift from CI. Wired by `git config core.hooksPath
-# .githooks` (see CONTRIBUTING.md). cix shipped this file but never wired it;
-# gnx wires it.
+# .githooks` (see CONTRIBUTING.md).
 
 if command -v just >/dev/null 2>&1; then
     just check
