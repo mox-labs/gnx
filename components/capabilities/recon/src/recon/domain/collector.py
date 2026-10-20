@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
     from recon.domain.capture import CaptureLog
     from recon.domain.converters import DocumentConverter
-    from recon.domain.exceptions import Problem
+    from recon.domain.errors import Problem
     from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, SourceEntry
 
@@ -64,6 +64,11 @@ class CollectorContext:
 
     Shared on purpose: one Requester (and so one rate limiter per source) serves every
     HTTP collector in a run. ``mission_dir`` anchors relative paths in a config.
+    ``user_agent`` is what an HTTP collector sends when its source sets none.
+
+    ``env`` is not the process environment. It holds only the variables the mission
+    declares for this type: the ``auth.env`` names of the catalog sources its collectors
+    run against. Reading any other name raises a config error that says where to declare it.
     """
 
     requester: Requester
@@ -71,6 +76,7 @@ class CollectorContext:
     transforms: Mapping[str, Transform]
     mission_dir: Path
     env: Mapping[str, str]
+    user_agent: str
 
 
 def _no_problems(entry: CollectorEntry) -> list[Problem]:
@@ -88,8 +94,15 @@ class CollectorType:
     - ``create`` builds the collector from the shared context.
     - ``effects`` declares what a run can touch; ``None`` means unknown.
     - ``requires_source`` makes a missing ``source`` (with an empty catalog) a plan error.
+    - ``normalizes`` says the collector applies ``entry.normalize`` itself. Left ``False``,
+      recon applies the spec to every record the collector yields, so a type cannot forget
+      it. Set it only when the spec needs something the records alone do not carry (the
+      capture collector's ``_capture`` scope).
+    - ``extracts`` says the collector finds its records at ``entry.extract`` in a body. A
+      survey whose table of this type gets one record holding a list of objects warns that
+      ``extract:`` may be missing, naming the list's path.
     - ``check`` returns problems in an entry, with paths relative to it (``run``,
-      ``endpoint``); the planner prefixes ``collectors[i].``. Pure: no I/O.
+      ``endpoint``); the planner prefixes ``collectors.<i>.``. Pure: no I/O.
     - ``describe`` returns what a planned run would do (the URL, the command) for a
       reviewer. Pure: no I/O, no network.
     """
@@ -98,7 +111,32 @@ class CollectorType:
     effects: frozenset[Effect] | None
     summary: str = ""
     requires_source: bool = False
+    normalizes: bool = False
+    extracts: bool = False
     check: Callable[[CollectorEntry], list[Problem]] = field(default=_no_problems)
     describe: Callable[[CollectorEntry, SourceEntry | None], dict[str, Any]] = field(
         default=_no_description
     )
+
+
+@dataclass(frozen=True)
+class BrokenPlugin:
+    """An entry point that could not be loaded. Reported, never fatal to other plugins."""
+
+    group: str
+    name: str
+    value: str
+    error: str
+
+    def describe(self) -> str:
+        return f"{self.group}:{self.name} ({self.value}) failed to load: {self.error}"
+
+
+@dataclass(frozen=True)
+class Plugins:
+    """Everything installed: collector types and transforms by name, and what failed to
+    load."""
+
+    collector_types: dict[str, CollectorType]
+    transforms: dict[str, Transform]
+    broken: list[BrokenPlugin]

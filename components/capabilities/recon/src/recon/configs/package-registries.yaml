@@ -12,7 +12,7 @@
 # No authentication required for any of the three registries.
 #
 # Usage:
-#   recon init track --template releases-track
+#   recon init track --template package-registries
 #   # edit the package names in the endpoints below
 #   recon survey track
 #   recon query track \
@@ -23,19 +23,16 @@ catalog:
     type: api
     url: https://pypi.org
     rate_limit: { rps: 5, burst: 3 }
-    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
 
   - name: npm
     type: api
     url: https://registry.npmjs.org
     rate_limit: { rps: 5, burst: 3 }
-    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
 
   - name: crates
     type: api
     url: https://crates.io
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
 
 collectors:
   # PyPI — path-based lookup by exact package name.

@@ -1,66 +1,52 @@
+# Does the right catalog component fire for a real ask, and stay quiet for a decoy?
+#
+# The catalog's promise is that a description routes correctly; this states that promise as
+# a measurement instead of an assertion.
+#
+#   ix validate lab/catalog-routing
+#   ix plan lab/catalog-routing
+#
+# Order and the estimator are the evaluate genre's; the plan shows them. Repeats are set
+# below: routing is stochastic, and one pass has no error bar.
 name: catalog-routing
-description: >-
-  Does the right catalog component fire for a real ask, and stay quiet for a decoy?
-  The catalog's promise is that a description routes correctly; this states that promise
-  as a measurement instead of an assertion.
+question: Does the right catalog component fire for a real ask, and stay quiet for a decoy?
+rationale: >-
+  A skill's description is all the model has to route on. If the descriptions are right,
+  must_trigger asks activate the named skill and decoys pitched near its vocabulary do not.
+genre: evaluate
 
-# engine: native (a matrix DAG per trial, the default) or inspect (an Inspect AI task per
-# repeat, with an .eval log per repeat under results/inspect/ — open with `inspect view`).
-# Override per run with --engine.
-engine: native
-
-# Two subjects, and the difference between them is the whole point.
-#
-#   simulated — simulates a 90/10 activation split. Proves the harness: DAG, store,
-#               aggregation, confusion matrix. Measures NOTHING about the catalog, and its
-#               results say so (answered by: simulated).
-#   live   — the real Claude Agent SDK with the projected plugins loaded. This is the
-#            one that actually measures whether the descriptions route.
-#
-# Run the live one with:  ix run catalog-routing --lab lab --subject catalog-live --trials 1
-#
-# A subject is an agent definition (max_turns, system_prompt, model, tools) plus the runtime
-# that plays it (runtime.type + that runtime's options): simulated, claude-sdk, or model.
 subjects:
-  - name: catalog-simulated
-    description: Simulated activation; harness check only.
-    config:
-      runtime:
-        type: simulated
-
-  - name: catalog-live
+  catalog:
+    kind: agent-session
     description: The gnx marketplace as shipped, loaded into a real agent session.
-    config:
-      # The agent definition. One turn: the Skill call happens in the first assistant turn,
-      # and stopping there measures routing rather than paying for the whole task.
-      max_turns: 1
-      # Where it runs. Deployment settings live on the runtime, not the definition.
-      runtime:
-        type: claude-sdk
-        # Hermetic — no ambient ~/.claude plugins leak in, so what is measured is this
-        # repo's projected catalog and nothing else.
-        setting_sources: []
-        # Unattended: no human is present to confirm a tool call. Requested explicitly,
-        # logged at WARNING by the runtime — see matrix/SECURITY.md M-1.
-        permission_mode: bypassPermissions
-        # Resolved against the experiment directory by the runtime, so this file stays
-        # machine-independent. The catalog as projected today: three plugins.
-        #
-        # KNOWN GAP (2026-09-24): five of the eight probes expect skills that left the
-        # catalog on 2026-08-19 (aces, trust-boundaries, dao — now in incubator/). A live
-        # run fails those probes by construction until they graduate or the probes change.
-        plugins:
-          - { type: local, path: ../../plugins/intent-hardening }
-          - { type: local, path: ../../plugins/rational-inquiry }
-          - { type: local, path: ../../plugins/recon }
+    runtime: claude-sdk
+    # One turn: the Skill call happens in the first assistant turn, and stopping there
+    # measures routing rather than paying for the whole task.
+    max_turns: 1
+    # Hermetic: no ambient ~/.claude plugins leak in, so what is measured is this repo's
+    # projected catalog and nothing else.
+    setting_sources: []
+    # Unattended: no human is present to confirm a tool call.
+    permission_mode: bypassPermissions
+    # The catalog as projected today: three plugins.
+    #
+    # KNOWN GAP (2026-09-24): five of the eight probes expect skills that left the catalog
+    # on 2026-08-19 (aces, trust-boundaries, dao; now in incubator/). Those probes fail by
+    # construction until the skills graduate or the probes change.
+    plugins:
+      - {type: local, path: ../../plugins/intent-hardening}
+      - {type: local, path: ../../plugins/rational-inquiry}
+      - {type: local, path: ../../plugins/recon}
 
-sensors:
-  - type: activation
+# The probes are the .md files in probes/: the body is the prompt; `expectation` and
+# `expected_skill` in the frontmatter are the truth the activation sensor measures against.
 
-# 5 trials per probe, 3 repeats of the whole run. The repeats are the point: a single
-# run's pass rate has no error bar, and routing is stochastic. `noise_floor_sd` across
-# repeats is what says whether a difference between two subjects is real.
-#
-# Override with `--trials 1` for a live run — 8 probes x 5 x 3 is 120 agent sessions.
-trials: 5
-repeats: 3
+primary: {metric: activated_correctly}
+threshold: {op: ">=", value: 0.9}
+
+# 8 probes x 5 repeats = 40 sessions: the genre's minimum, and more than the 35 a pass
+# rate's interval needs to reach above 0.9 at all (the genre's default of 10 would cost
+# about 8 USD). The per-trial figure is an estimate; the ceiling is what stops a run that
+# goes wrong.
+repeats: 5
+spend: {ceiling: 5.00, per_trial: 0.10}

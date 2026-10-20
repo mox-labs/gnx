@@ -1,0 +1,44 @@
+{
+  "language": "python",
+  "scan": ["src/matrix/**/*.py"],
+  "layers": [
+    {
+      "name": "domain",
+      "files": ["src/matrix/domain/*.py"],
+      "allow": ["__future__", "asyncio", "collections", "contextlib", "contextvars", "copy",
+                "dataclasses", "datetime", "inspect", "json", "logging", "re", "time",
+                "typing", "uuid", "pydantic", "matrix.domain"],
+      "forbid": ["opentelemetry", "yaml", "claude_agent_sdk", "hardline"]
+    },
+    {
+      "name": "ports",
+      "files": ["src/matrix/domain/ports/**/*.py"],
+      "allow": ["__future__", "dataclasses", "typing", "collections",
+                "matrix.domain.agent", "matrix.domain.construct", "matrix.domain.executor",
+                "matrix.domain.observer", "matrix.domain.problems"],
+      "forbid": ["opentelemetry", "yaml"]
+    },
+    {
+      "name": "adapters",
+      "files": ["src/matrix/adapters/_out/**/*.py", "src/matrix/adapters/__init__.py",
+                "src/matrix/adapters/_in/__init__.py", "src/matrix/adapters/_in/signals.py",
+                "src/matrix/adapters/_in/skill.py"],
+      "allow": ["*", "matrix.domain"]
+    },
+    {
+      "name": "cli",
+      "files": ["src/matrix/adapters/_in/cli.py"],
+      "allow": ["*", "matrix"]
+    },
+    {
+      "name": "process",
+      "files": ["src/matrix/process.py"],
+      "allow": ["*"]
+    },
+    {
+      "name": "root",
+      "files": ["src/matrix/__init__.py", "src/matrix/composition/**/*.py"],
+      "allow": ["*", "matrix"]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.text-match
+summary: Checks the reply's text against plain rules (starts with, ends with, contains, excludes, equals, matches a regular expression), no code of your own needed.
+options:
+  starts_with: {type: string, description: "the reply starts with this"}
+  ends_with: {type: string, description: "the reply ends with this"}
+  contains: {type: any, description: "the reply contains this text, or every text of a list"}
+  excludes: {type: any, description: "the reply contains none of this text, or of a list of texts"}
+  equals: {type: string, description: "the reply is exactly this"}
+  matches: {type: string, description: "a Python regular expression found somewhere in the reply (anchor it with ^ and $ for the whole)"}
+  ignore_case: {type: boolean, description: "compare without regard to case; false when absent"}
+  strip: {type: boolean, description: "ignore whitespace at the start and end of the reply; true when absent"}
+needs: [response]
+truth: [starts_with, ends_with, contains, excludes, equals, matches]
+metrics:
+  - {name: text_matched, direction: higher, shape: boolean, description: "every check given passed: the sensor's options apply to every probe, and a check in a probe's truth replaces the option of the same name"}

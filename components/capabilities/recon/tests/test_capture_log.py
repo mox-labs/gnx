@@ -11,14 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from recon.application.captures import (
-    REDACTED,
-    FilesystemCaptureLog,
-    read_captures,
-    record_hook_payload,
-    redact_headers,
-)
-from recon.domain.exceptions import CollectionError, ConfigError
+from recon.adapters._out.capture_files import FilesystemCaptureLog, read_captures
+from recon.adapters._out.system_clock import SystemClock
+from recon.application.captures import record_hook_payload
+from recon.domain.capture import REDACTED, redact_headers
+from recon.domain.errors import CollectionError, ConfigError
 
 
 def _record(log: FilesystemCaptureLog, body: bytes = b"{}", **overrides) -> dict:
@@ -33,14 +30,14 @@ def _record(log: FilesystemCaptureLog, body: bytes = b"{}", **overrides) -> dict
         "body": body,
     }
     kwargs.update(overrides)
-    return log.record(**kwargs)
+    return log.record(**kwargs).document()
 
 
 # --- R-2: credential-bearing response headers ---
 
 
 def test_set_cookie_value_never_reaches_disk(tmp_path: Path) -> None:
-    log = FilesystemCaptureLog(tmp_path)
+    log = FilesystemCaptureLog(tmp_path, SystemClock())
     line = _record(log, headers={"Set-Cookie": "session=SECRET-TOKEN; HttpOnly"})
 
     assert "SECRET-TOKEN" not in log.log_path.read_text()
@@ -50,7 +47,7 @@ def test_set_cookie_value_never_reaches_disk(tmp_path: Path) -> None:
 def test_redaction_keeps_the_key_so_the_capture_stays_evidence(tmp_path: Path) -> None:
     """Dropping the header would lose the fact that the server set one at all."""
     line = _record(
-        FilesystemCaptureLog(tmp_path),
+        FilesystemCaptureLog(tmp_path, SystemClock()),
         headers={"Set-Cookie": "s=1", "Content-Type": "application/json"},
     )
 
@@ -75,7 +72,7 @@ def test_ordinary_headers_pass_through_untouched() -> None:
 
 
 def test_a_line_carries_every_documented_field(tmp_path: Path) -> None:
-    log = FilesystemCaptureLog(tmp_path)
+    log = FilesystemCaptureLog(tmp_path, SystemClock())
     line = _record(log, body=b'{"a": 1}')
     on_disk = json.loads(log.log_path.read_text())
 
@@ -101,7 +98,7 @@ def test_a_line_carries_every_documented_field(tmp_path: Path) -> None:
 
 
 def test_identical_bodies_are_stored_once_and_logged_twice(tmp_path: Path) -> None:
-    log = FilesystemCaptureLog(tmp_path)
+    log = FilesystemCaptureLog(tmp_path, SystemClock())
     first = _record(log, body=b"same")
     second = _record(log, body=b"same")
 
@@ -112,15 +109,15 @@ def test_identical_bodies_are_stored_once_and_logged_twice(tmp_path: Path) -> No
 
 
 def test_append_only_across_log_instances(tmp_path: Path) -> None:
-    _record(FilesystemCaptureLog(tmp_path), body=b"1")
-    _record(FilesystemCaptureLog(tmp_path), body=b"2")
+    _record(FilesystemCaptureLog(tmp_path, SystemClock()), body=b"1")
+    _record(FilesystemCaptureLog(tmp_path, SystemClock()), body=b"2")
 
     bodies = [body for _line, body in read_captures(tmp_path / "captures.jsonl")]
     assert bodies == [b"1", b"2"]
 
 
 def test_a_stream_is_hashed_and_moved_on_finalize(tmp_path: Path) -> None:
-    log = FilesystemCaptureLog(tmp_path)
+    log = FilesystemCaptureLog(tmp_path, SystemClock())
     path = log.stream_path("cmd")
     path.write_text("line 1\nline 2\n")
     line = log.finalize_stream(
@@ -129,7 +126,7 @@ def test_a_stream_is_hashed_and_moved_on_finalize(tmp_path: Path) -> None:
 
     assert line is not None
     assert not path.exists(), "the temp stream file is moved under its hash"
-    assert (tmp_path / line["body"]).read_text() == "line 1\nline 2\n"
+    assert (tmp_path / line.body).read_text() == "line 1\nline 2\n"
     assert (
         log.finalize_stream(
             "cmd", source=None, kind="cli", request={}, status=0, content_type="text/plain"
@@ -185,6 +182,25 @@ def test_reader_refuses_what_it_cannot_trust(tmp_path: Path, override, message) 
         list(read_captures(log))
 
 
+@pytest.mark.parametrize("field", ["id", "collector", "kind", "sha256"])
+def test_reader_refuses_a_line_without_a_field_required_to_read(tmp_path: Path, field) -> None:
+    """Regression: the format marks these required to read, and a line without
+    ``sha256`` was accepted."""
+    line = _line()
+    del line[field]
+    log = _write_log(tmp_path, line)
+    with pytest.raises(CollectionError, match=rf"captures\.jsonl:1: .*'{field}'") as excinfo:
+        list(read_captures(log))
+    assert excinfo.value.kind == "run_failed" and excinfo.value.fix
+
+
+@pytest.mark.parametrize("field", ["id", "collector", "kind", "sha256"])
+def test_reader_refuses_a_required_field_that_is_not_a_string(tmp_path: Path, field) -> None:
+    log = _write_log(tmp_path, _line(**{field: 7}))
+    with pytest.raises(CollectionError, match=rf"captures\.jsonl:1: .*'{field}'"):
+        list(read_captures(log))
+
+
 def test_reader_refuses_a_tampered_body(tmp_path: Path) -> None:
     line = _line(b"original")
     log = _write_log(tmp_path, line, body=None)
@@ -222,8 +238,8 @@ def _payload(**overrides) -> dict:
 
 
 def test_hook_payload_becomes_an_external_capture(tmp_path: Path) -> None:
-    log = FilesystemCaptureLog(tmp_path)
-    line = record_hook_payload(log, _payload())
+    log = FilesystemCaptureLog(tmp_path, SystemClock())
+    line = record_hook_payload(log, _payload()).document()
 
     assert line["kind"] == "external"
     assert line["collector"] == "mcp__exa__web_search_exa"
@@ -239,18 +255,20 @@ def test_hook_payload_becomes_an_external_capture(tmp_path: Path) -> None:
 
 def test_hook_payload_prefers_the_mcp_server_object(tmp_path: Path) -> None:
     payload = _payload(mcp_server={"name": "plugin_research_exa", "source": "plugin"})
-    line = record_hook_payload(FilesystemCaptureLog(tmp_path), payload)
-    assert line["source"] == "plugin_research_exa"
+    line = record_hook_payload(FilesystemCaptureLog(tmp_path, SystemClock()), payload)
+    assert line.source == "plugin_research_exa"
 
 
 def test_hook_string_response_is_stored_as_text(tmp_path: Path) -> None:
-    line = record_hook_payload(FilesystemCaptureLog(tmp_path), _payload(tool_response="plain"))
-    assert line["content_type"] == "text/plain"
-    assert (tmp_path / line["body"]).read_bytes() == b"plain"
+    line = record_hook_payload(
+        FilesystemCaptureLog(tmp_path, SystemClock()), _payload(tool_response="plain")
+    )
+    assert line.content_type == "text/plain"
+    assert (tmp_path / line.body).read_bytes() == b"plain"
 
 
 @pytest.mark.parametrize("payload", [[], "x", {"tool_name": "t"}, {"tool_response": {}}])
 def test_hook_payload_without_required_fields_is_a_config_error(tmp_path: Path, payload) -> None:
     with pytest.raises(ConfigError):
-        record_hook_payload(FilesystemCaptureLog(tmp_path), payload)
+        record_hook_payload(FilesystemCaptureLog(tmp_path, SystemClock()), payload)
     assert not (tmp_path / "captures.jsonl").exists()

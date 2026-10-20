@@ -1,0 +1,11 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.tool-usage
+summary: Whether the agent used the expected tool with the expected command and arguments, called directly or through Bash.
+options:
+  tool: {type: string, required: true, description: "the tool expected: a tool's name, or a program the agent runs through Bash (memex)"}
+needs: [response]
+truth: [expectation, expected_command, expected_args]
+metrics:
+  - {name: tool_used_correctly, direction: higher, shape: boolean, description: "the tool was used with the expected command (arguments aside) when it should be, and not used when it should not (expectation: should_not_trigger)"}
+  - {name: tool_usage_score, unit: ratio, direction: higher, shape: scalar, bounds: [0, 1], description: "1: the expected command and arguments; 0.5: the command with other arguments; 0: neither, or the tool used when it should not be"}
+confusion: {expected: expected, observed: used, negative: none}

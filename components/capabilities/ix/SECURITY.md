@@ -1,226 +1,199 @@
 # Security — ix
 
-ix runs experiments: it sends probes to agent runtimes and measures what comes back. One
-of its sensors **executes model-generated code in this process**. That is the intended
-behaviour of a code-generation benchmark and the single most important thing on this page.
+ix validates, plans and registers an experiment, and runs one. Validating, planning and
+registering read files, compute, and write one registration file. **Running does what the
+experiment file says**: it starts programs, sends network requests, runs agent sessions
+that call a model, use tools on this machine and spend money, and runs code (the agent's,
+and the experiment's own graders) in child processes.
 
-Audience: anyone running `ix run` against an experiment they did not author.
+Audience: anyone running ix against an experiment, a genre or a kind they did not author.
 
-## Blast radius
+## What ix touches
 
-`ix run` will, depending on the experiment's sensors:
+| Command | Reads | Writes |
+|---|---|---|
+| `validate`, `plan`, `deviations` | the experiment file (or standard input, given `-`); genre and kind files; probe files; the registration file; ix's settings; for `plan`, the runs under `.ix/runs` | nothing |
+| `register` | the same | `<file-stem>.registration.json` beside the experiment |
+| `genres`, `kinds`, `--skill` | genre and kind files | nothing |
+| `run` | the same as `validate`, and the environment | `<experiment directory>/.ix/runs/<run id>/` (or under `runs:` in ix's settings); temporary directories it removes; whatever the programs and sessions it starts write |
+| `report`, `runs` | the experiment file; the runs under `.ix/runs` | nothing |
 
-- spawn agent runtimes through matrix (see matrix's `SECURITY.md` — the agent's authority
-  is decided there, by config that lives in *your* `experiment.yaml`);
-- **execute untrusted Python in the ix process** (`FunctionTestSensor`);
-- write results under the lab directory.
+`run` also **starts**: each `process` subject's `command`, each `process` environment
+service's `command`, `k6` for an `http-load` probe, `ps` for the `memory` sensor, an agent
+session for each trial of an `agent-session` subject (on `claude-sdk`, the Claude Code CLI,
+through the Claude Agent SDK), a subject's `setup` command, and a Python child process for
+each `function-test` reading, each `outcome` reading and each round of a `test-feedback`
+loop. And it **sends**: HTTP requests from k6 to each probe's `target`; readiness checks to
+`ready` and `url`; each prompt, and what the session does, to the model provider of the
+session's runtime; each reply and its rubric to the judge's model provider; and spans to
+an OpenTelemetry endpoint when the `OTEL_*` variables name one.
 
 ## Trust boundaries
 
-### 1. Model-generated code → this process (`FunctionTestSensor`)
+### 1. Files are data
 
-The sensor extracts Python from the subject's response, writes it to a temp file, imports
-it, and calls the named function. The imported module runs **in this process, with this
-process's privileges** — filesystem, network and subprocess access included.
+The experiment file, genre files, kind files, probe files and ix's settings are parsed with
+`yaml.safe_load`, through matrix's loader. A YAML tag that would construct a Python object
+is a parse error and the file is refused; the test suite holds this for genre files with a
+tag that would create a file if it ran. The registration is JSON.
 
-This is deliberate. A function-test benchmark cannot grade code without running it. It is
-written down because an implicit trust boundary is one nobody reviews.
+### 2. An installed genre or kind package is imported
 
-What constrains it:
+Genres and kinds are found through the `ix.genre` and `ix.kind` entry points. An entry point
+names a package of YAML files. ix never calls the entry point, but locating the files
+imports the package, so **that package's `__init__.py` runs**. An adapter registered at
+ix's points through `matrix.extensions` is code by design, and runs when a run uses its
+kind. This is the trust you already gave by installing the package; ix adds nothing to it
+and removes nothing from it. A `genres/` or `kinds/` directory beside an experiment holds
+YAML only and imports nothing.
 
-- `self._timeout` bounds runaway execution via `SIGALRM`.
-- The temp file is created with `mkstemp` — atomically, mode 0600 — and unlinked in a
-  `finally`.
+### 3. Paths in an experiment are followed
 
-What does **not** constrain it:
+Probes not written inline are read from the `probes/` folder beside the experiment.
+`fixtures`, `skills`, `plugins`, `definition`, `graders` and `rubric_file` are read from
+where they point, relative to the experiment or absolute, as the user running ix. A probe
+file's content goes into the probe set's digest; the plan prints probe ids and the digest,
+not the content. The registration is written beside the experiment file, under a name
+derived from the file's own name.
 
-- **`SIGALRM` does not exist on Windows.** There, `_exec_with_timeout` degrades to a plain
-  call and there is *no timeout at all*. This is logged at WARNING rather than left silent,
-  because the absence of the bound is the thing worth knowing.
-- Nothing sandboxes filesystem, network, or subprocess access. Import-time side effects run
-  before any timeout logic can inspect the module.
+### 4. A declaration is a claim, not a control
 
-**Run this against code from a source you are willing to execute, or run ix in a
-container.** There is no middle setting.
+A kind declares its effects (`process`, `network`, `spend`, `tools`, `code`, `containers`,
+`filesystem`) and the plan reports them. That is a statement by whoever wrote the kind file,
+and ix has no code that enforces it. Two properties limit how it can mislead:
 
-### 2. Experiment directory → sensor configuration
+- an experiment can add effects to what a kind declares and cannot remove one;
+- two files declaring the same kind are both refused, so a lab's `kinds/` directory cannot
+  quietly redeclare a built-in kind with fewer effects, or a sensor's metric as not judged.
 
-An experiment is a directory of YAML and Markdown. `graders_module` is resolved relative
-to the experiment directory and imported. A subject's `runtime:` (in `experiment.yaml` or
-`subjects/*.md`) becomes the options of the matrix runtime that plays it, so **an experiment
-chooses the agent's permission mode, tools and plugins**. A subject that names an agent
-(`agent: reviewer`) takes those from matrix's config instead: `./matrix.yaml` and `./ix.yaml`
-in the directory ix runs in, `~/.matrix/config.yaml`, `~/.ix/config.yaml`, and the files
-`$MATRIX_CONFIG` and `$IX_CONFIG` name. Those files are part of the grant too.
+A third-party kind package is trusted to describe itself honestly, as in boundary 2.
 
-Installing someone else's experiment is equivalent to installing their code. Run
-`ix run <experiment> --plan` first: it lists every subject's runtime and which sessions are
-live.
+### 5. The registration is not tamper-proof
 
-### 3. Probe frontmatter → sensor state
+A registration is a plain file. Its purpose is to make a change of design visible, not to
+prevent one: anyone who can edit the experiment can edit or delete the record. Keep both in
+version control, where an edit to the record is itself a visible change.
 
-Frontmatter is untyped YAML and reaches sensors as `metadata`. Values are coerced at the
-boundary (`filesystem_store.py`, `sensors.py`) rather than trusted — see I-3 below. This
-is a correctness boundary, not a trust boundary; a malformed probe mis-scores a run, it
-does not gain authority.
+### 6. An experiment file is a program to run
 
-### 4. Optional third-party evaluators
+`ix run` executes the `command` of every `process` subject and environment service, and an
+agent subject's `setup`, with the user's environment and privileges, in the directory the
+experiment names. **Running an experiment you did not write is running its author's
+commands.** Nothing is sandboxed. `ix plan` shows what a run would start (`Effects:`)
+without starting it; read the plan, and the file, before running someone else's.
 
-`DeepEvalSensor` is behind an optional extra. Its `judge:` names a configured matrix agent,
-whose runtime decides where the judge's prompts go, or else a model name, run on matrix's
-`model` runtime, where the hardline registry row decides (hardline/SECURITY.md). Without a
-judge, deepeval calls its own default provider.
+What ix does to bound it:
 
-See I-7 for deepeval's telemetry.
+- a command is an argument list passed to `exec`, never a shell string, so nothing in the
+  file is interpreted by a shell;
+- `ix run` refuses an unregistered experiment unless told `--exploratory`, so a run is
+  normally of a design someone froze on purpose;
+- each program is started in its own process group and the group is killed when its trial
+  (or, for the environment, the run) ends, on completion, failure, Ctrl-C and SIGTERM alike.
+  `kill -9` of ix itself leaves them running; a later trial whose subject's address already
+  answers is recorded as a harness failure and not measured.
 
-### 5. The Inspect engine
+### 7. An agent session acts on this machine
 
-`engine: inspect` runs each repeat as an Inspect AI task with `model="none"`: Inspect's own
-model is never called, and the subject runs through ix's agent factory exactly as on the
-native engine. Inspect writes an `.eval` log per repeat under `results/inspect/` containing
-**every prompt and every response** — treat the directory like the results it is. The
-engine's `max_samples` defaults to 1, matching the native engine's `concurrency` default;
-raise it when the subject's runtime and provider can take parallel calls.
+An `agent-session` subject on the `claude-sdk` runtime is a Claude Code session with the
+tools its definition allows. Its tools act as the user who runs ix, with ix's environment,
+credentials included, as `permission_mode` allows: `bypassPermissions` approves every tool
+call, and `ix plan` and the run's report say so in their `warnings`, once per subject. Each trial's session starts in a fresh temporary directory, removed when the trial
+ends, but nothing confines a tool to that directory. `setting_sources: []` keeps this
+machine's own settings and plugins out of the session; without it the session reads them.
+The session sees its prompt and the files copied in; it never sees the probe's truth.
+
+matrix builds the session and owns its authority: matrix's SECURITY.md has the detail. The
+`model` runtime makes one model call through hardline with no tools, and the `mock` runtime
+calls no model. `ix run --dry-run` puts every session, and a judge, on `mock`, so it calls
+no model and spends nothing; it still copies the fixtures, runs a subject's `setup` command
+and runs the code the sensors run (section 8), as a real run would.
+
+### 8. Code runs in a child process that is not a sandbox
+
+`function-test` and `outcome` run code: `function-test` the code the agent wrote (and a
+`test-feedback` loop the same, between rounds), `outcome` the graders module the experiment
+names. Each runs in a child Python process started with `-I`, in a fresh temporary
+directory, with a time limit (30 seconds unless `timeout` says otherwise) after which its
+process group is ended, and with only `PATH` and the locale in its environment, so no
+credential of ix's environment is in reach through it. **That is not a sandbox**: the code
+can still read and write files, open sockets and start programs as the user ix runs as.
+Model-written code is untrusted; run code from a subject you would run yourself, or run ix
+in a container. A graders module is trusted as far as the experiment's author is. Neither
+is imported by `validate` or `plan`.
+
+### 9. A run spends money up to a ceiling
+
+A kind that spends needs a ceiling before the experiment is valid: `spend.ceiling`, or
+`spend_cap` in ix's settings. A run adds up the cost each session reported and stops
+starting trials once the next could take it past the ceiling; a runtime that reports no
+cost is held to the declared `per_trial`, or stopped after one trial. The ceiling is checked
+between trials, so one trial can take a run past it. A judge's spend counts against it.
+
+### 10. Load is sent where the file says
+
+An `http-load` probe sends requests to its `target` for its `duration`, at the rate or
+concurrency the file gives. ix does not check that the target is yours. Pointing one at a
+service you do not operate is a load test of that service.
+
+The k6 script is fixed text shipped in ix. A probe's URL, method and headers reach it as
+JSON in an environment variable, so nothing an experiment writes is interpolated into code.
+
+### 11. Credentials
+
+A `http` subject's `auth: env:NAME` names the variable that holds a bearer token. The token
+is read when the subject is reached, passed to k6 in its environment, and is not written to
+the experiment, the registration, the run's record or the generated script. It is visible,
+like any environment variable, to processes that can read k6's environment. Headers written
+literally under `headers:` are part of the experiment and are stored in the run's manifest:
+do not put a secret there. A model runtime finds its own credentials (the Claude Code CLI's,
+or the keys hardline's registry names); ix neither reads nor stores them.
+
+### 12. The record holds what the run saw
+
+`.ix/runs/` holds the experiment as run (commands, URLs, literal headers), the design, every
+measurement, and for an agent trial the prompt, the reply, every tool call with its input
+(the commands a session ran included), each round's transcript and the files collected.
+Keep it out of version control if any of that is private. A record is plain files: it can be
+edited, and `ix report` reports what the files say.
 
 ## Findings
 
-### I-1 — `mktemp` race in `FunctionTestSensor._load_function` (fixed 2026-08-17, CWE-377)
+### I-8 — `ix` is a taken name on PyPI (2026-10-09)
 
-The sensor used `tempfile.mktemp()`, which only *reserves a name*. Between the name being
-returned and `write_text()` opening it, another local process could create a symlink at
-that path — pointing the write anywhere the ix process can write, and pointing the
-subsequent import at a file the attacker controls.
+`ix` on PyPI is an unrelated package. Observed 2026-10-09: a throwaway extension package
+that declared `dependencies = ["ix"]`, installed beside ix with `uv run --with <package>`,
+pulled PyPI's `ix` instead of this one, and its import failed before this ix's CLI ran.
 
-Fixed: `tempfile.mkstemp()`, which creates the file atomically with mode 0600 and returns
-an open fd. The write now goes through `os.fdopen(fd, "w")` — the path is never re-opened
-by name.
+On the git-subdirectory install path it resolves correctly: uv clones the whole repository,
+finds `components/capabilities/pyproject.toml` as the workspace root, and applies its
+`[tool.uv.sources]`. It resolves to the stranger whenever a third-party package names `ix`
+as a bare dependency, which is what a package shipping genres or kinds would naturally
+write.
 
-### I-2 — unguarded `spec` / `spec.loader` (fixed 2026-08-17)
+Until a naming decision is made, a package extending ix should depend on it by git URL at
+a release's tag
+(`ix @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix`),
+not by bare name.
 
-`importlib.util.spec_from_file_location` can return `None`, and `spec.loader` can be
-`None`. Unguarded, both surfaced as a bare `AttributeError` that said nothing about what
-failed. Now raises `ImportError` naming the file. Robustness, not a vulnerability.
+### Earlier findings
 
-### I-3 — aggregation crashed on a third-party sensor (fixed 2026-08-18)
-
-`Reading.score` is optional and `Sensor` is a Protocol, so a sensor outside this package
-may report only `passed`. `aggregate_readings` summed the raw tuple and raised `TypeError`
-— **after every trial in the run had already been paid for**. Now falls back to the
-boolean, which is the documented contract ("the sensor is the grader").
-
-Regression: `ix/tests/ix/test_strict_regressions.py`.
-
-### I-4 — `expected_skill: null` silently un-scored a probe (fixed 2026-08-18)
-
-`ActivationSensor.from_config`'s comprehension guarded on
-`p.metadata.get(...) or config.expected_skill` but stored `p.metadata.get(..., default)`.
-A probe carrying an explicit empty `expected_skill:` passed the guard on the *config's*
-truthiness and then stored its own `None`. The sensor read that back as "no expectation"
-and scored the probe against nothing while still reporting a verdict for it — a silently
-wrong measurement, which in an eval harness is the worst kind of bug.
-
-Regression: `ix/tests/ix/test_strict_regressions.py`.
-
-### I-5 — a fractional score overrode the sensor's verdict (fixed 2026-08-18)
-
-`aggregate_readings` set `ProbeResult.passed = score > 0.5`, discarding `Reading.passed`
-entirely. For a binary sensor the two agree. For `FunctionTestSensor` they diverge: a
-submission failing 1 of 4 test cases scores 0.75 and was **reported as PASS** while the
-sensor had already ruled it incorrect.
-
-In a benchmark a wrong verdict is worse than a crash — a crash gets noticed. Now the
-verdict is the sensor's (majority of trials passed) and aggregation only counts, which is
-what its own docstring says it does.
-
-Found by `lab/sensor-integrity` on its first run, not by review. Regression:
-`ix/tests/ix/test_strict_regressions.py`.
-
-### I-6 — a bare `matrix` dependency is safe only because the workspace travels with it (2026-09-06)
-
-`ix` declares `matrix` in `[project.dependencies]` with no source. `matrix` is also a real
-name on PyPI — an unrelated config-parsing library, currently 3.0.0 — so the name is
-ambiguous and what resolves depends entirely on whether the resolver can see this
-repository's workspace root.
-
-**On the distribution path gnx actually uses, it resolves correctly.** Verified
-2026-09-06 against `origin/main`:
-
-```
-$ uvx --from "git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/ix" ...
-Building matrix @ git+https://github.com/mox-labs/gnx@a4658f8#subdirectory=components/capabilities/matrix
-Building ix     @ git+https://github.com/mox-labs/gnx@a4658f8#subdirectory=components/capabilities/ix
-matrix version: 0.1.0
-```
-
-uv clones the whole repository to build the subdirectory, discovers
-`components/capabilities/pyproject.toml` as the workspace root, and applies its
-`[tool.uv.sources]`. Both packages are built from the same pinned commit. Every ix module
-imports cleanly.
-
-**It resolves to the stranger only when the package is severed from the repository** — a
-path install of a copied `ix/`, or `pip install ix` — where the workspace root is not
-present. Then uv takes PyPI's `matrix` 3.0.0, installs successfully, renders `ix --help`
-without complaint (click never touches matrix), and fails later at
-`from matrix import AgentResponse`. Verified by copying `ix/` outside the tree.
-
-So this is a **latent** finding, not a live one: the exposure is real but no supported
-install path reaches it. Two things keep it on the list rather than closed:
-
-1. The safety comes from a property of the *transport* (git clones the whole repo), not
-   from anything ix declares. A future path that publishes ix's wheel on its own — or any
-   consumer who vendors the directory — loses the guarantee silently.
-2. The failure mode is silent-then-late rather than an install error, and the package that
-   fills the gap is chosen by whoever owns the name on the public index.
-
-Not fixed, because the fix is a naming decision rather than a typo. Options: publish under
-a distinct distribution name, pin a direct git URL in ix's own dependency list, or declare
-ix repository-only and fail loudly when the workspace is absent. yzavyas's call.
-
-`ix` is excluded from `just capabilities-standalone` for the same reason — that gate
-severs the package from the repository on purpose, which is the one condition under which
-ix legitimately cannot resolve. It is not a defect the gate is entitled to flag.
-
-### I-8 — `ix` is a taken name on PyPI too (2026-10-09)
-
-The same ambiguity as I-6 applies to ix's own name. `ix` on PyPI is an unrelated package.
-Observed 2026-10-09: a throwaway extension package that declared `dependencies = ["ix"]`,
-installed beside ix with `uv run --with <package>`, pulled PyPI's `ix` instead of this one.
-Its import failed with `ModuleNotFoundError: No module named 'scipy'`, raised from that
-package's `ix/__init__.py`, before ix's CLI ran.
-
-**On the git-subdirectory install path it resolves correctly**, for the reason given in I-6:
-uv clones the whole repository, finds `components/capabilities/pyproject.toml` as the
-workspace root, and applies its `[tool.uv.sources]`. **It resolves to the stranger whenever
-ix's directory is installed severed from the repository**, and whenever a third-party
-package names `ix` as a bare dependency, which is what an extension registering a sensor or
-engine would naturally write.
-
-A latent finding, like I-6: no supported install path reaches it, but the safety comes from
-the transport rather than from anything ix declares. Until a naming decision is made, a
-package extending ix should depend on it by git URL
-(`ix @ git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/ix`), not by
-bare name.
-
-### I-7 — deepeval sends usage telemetry by default (mitigated 2026-09-24)
-
-deepeval reports usage telemetry unless `DEEPEVAL_TELEMETRY_OPT_OUT` is set, and installing it
-registers a pytest plugin that opens a telemetry capture on every test session in the
-environment — including suites that never touch deepeval.
-
-Mitigated: `_build_metric` sets `DEEPEVAL_TELEMETRY_OPT_OUT=1` with `setdefault` before
-deepeval is first imported, so the default is off and an operator's explicit choice still
-wins. The workspace and ix pytest configs pass `-p no:deepeval`. Residual: this is a
-process-global environment default, and deepeval's `__init_subclass__` hook wraps the judge
-adapter's `generate` in deepeval's tracing, which reports only when a Confident AI key is set.
+I-1 to I-7 concerned code this package no longer has: a sensor that executed generated code
+in process, the scoring of results, an earlier dependency on `matrix`, and an optional
+evaluator's telemetry. That code was removed in 0.3.0 and the findings went with it; they
+are in the repository's history. Generated code runs again from 0.5.0, in a child process
+(boundary 8), never in ix's own.
 
 ## Not covered
 
-- ix does not sandbox generated code. See boundary 1.
-- ix does not verify experiment provenance. There is no signature on an experiment
-  directory.
-- `--simulate` (`--mock` is a deprecated alias) uses a seeded PRNG for run reproducibility.
-  It is not a security control and its seed is not a secret.
+- ix does not verify the provenance of an experiment, a genre or a kind. Nothing is signed.
+- ix does not check that a subject's `command`, a probe's `target` or a plugin an agent
+  session loads is safe to use. It reports what the kinds declare and then, on `ix run`,
+  does what the file says.
+- ix does not limit what a started program, an agent's tools or the code a sensor runs may
+  do, or how much load a probe may send.
 
 ## Reporting
 
-Open an issue on the gnx repository. Pre-gen-0 component; no embargo channel.
+Open an issue on the gnx repository, https://github.com/mox-labs/gnx/issues. There is no
+separate embargo channel.

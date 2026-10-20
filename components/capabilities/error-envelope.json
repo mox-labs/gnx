@@ -1,0 +1,37 @@
+{
+  "schema": "gnx.v1.error-envelope",
+  "description": "The one shape every capability CLI prints for a failing command under --json, on stderr, and the one problem record inside it. `<tool>` is the tool's own schema namespace (matrix, ix, recon). A consumer tolerates keys and problem kinds it does not know: both sets grow.",
+  "envelope": {
+    "schema": "<tool>.v1.error",
+    "error": {
+      "kind": "a kind from exit-codes.json, or one of the tool's own",
+      "message": "what went wrong, one sentence",
+      "fix": "what to do next",
+      "complete": "false when checking stopped before every problem was found; fix these and check again",
+      "problems": "a list of problem records; empty when the error has none",
+      "details": "a mapping of the error's own facts; empty when it has none"
+    }
+  },
+  "problem": {
+    "path": "the offending key, dotted from the document root",
+    "kind": "a kind from problem_kinds, or one of the tool's own",
+    "message": "what is wrong with it",
+    "fix": "what to write instead",
+    "allowed": "the legal values where the set is closed; empty otherwise",
+    "got": "what was written, when it is a scalar; null otherwise",
+    "source": "the file the problem is in, when that is not the document the command was given"
+  },
+  "problem_kinds": {
+    "yaml_syntax": "the file is not valid YAML or frontmatter",
+    "schema_unsupported": "the document names a schema this tool does not read",
+    "wrong_shape": "a value has the wrong type or structure",
+    "unknown_key": "a key the schema does not have",
+    "missing_key": "a required key is absent",
+    "invalid_value": "a value of the right type that the schema refuses",
+    "name_unknown": "a name or type URL that is not registered or defined",
+    "name_taken": "a name defined twice"
+  },
+  "warning": {
+    "description": "Warnings travel inside the command's own --json document as `warnings: [problem]`, never only as prose on stderr."
+  }
+}

@@ -1,16 +1,14 @@
-"""Type URLs — the names everything is registered and typed under.
+"""Type URLs: the names everything is registered and typed under.
 
-The grammar is slick's (SD-13, GEP-0001): dot-separated lowercase kebab segments, compared by
-equality and never dereferenced. A slick kind name (``capability``, ``skill``, ``flow``,
-``agent``) is never a whole segment, and ``slick.*`` is reserved for slick's own primitives::
+Dot-separated lowercase kebab segments, compared by equality and never dereferenced. A kind
+name (``capability``, ``skill``, ``flow``, ``agent``) is never a whole segment, and
+``slick.*`` is reserved::
 
     matrix.v1.runtime.claude-sdk     ix.v1.sensor.activation     matrix.v1.agent-response
 
-matrix carries its own copy of the check until it depends on slick; the tests run slick's
-grammar cases so the two cannot drift. Names matrix *mints* also carry one version segment
-(``v1``, ``v1alpha1``, ``v2beta1``) after at least one namespace segment, so a reader can tell
-the namespace from the resource. This is the only module that builds or splits a type URL;
-everyone else compares strings.
+What is registered or wired as a kind also carries one version segment (``v1``,
+``v1alpha1``, ``v2beta1``) after at least one namespace segment, so a reader can tell the
+namespace from the resource and a change of shape gets a new name.
 """
 
 from __future__ import annotations
@@ -65,27 +63,50 @@ def check_type_url(url: str, *, where: str = "") -> str:
             "Expected e.g. 'matrix.v1.runtime.claude-sdk'",
             fix="use dot-separated lowercase kebab segments with a version, as in "
             "'<namespace>.v1.<resource>'",
+            value=url,
         )
     return url
 
 
-def parse_type_url(url: str) -> TypeUrl:
-    """Split a minted type URL at its version segment. Raises ConfigError if it has none."""
-    check_type_url(url)
+def _split(url: str) -> TypeUrl | None:
     segments = url.split(".")
     for i, segment in enumerate(segments):
         if _VERSION.match(segment) and 0 < i < len(segments) - 1:
             return TypeUrl(".".join(segments[:i]), segment, ".".join(segments[i + 1 :]))
-    raise ConfigError(
-        f"{url!r} has no version segment between its namespace and its resource",
-        fix="mint as '<namespace>.v<N>.<resource>', e.g. 'ix.v1.sensor.activation'",
-    )
+    return None
+
+
+def versioned_problem(url: str) -> str | None:
+    """Why ``url`` is not a versioned type URL (``<namespace>.v<N>.<resource>``), or None.
+
+    What may be registered or wired is versioned: it is a name others depend on.
+    """
+    reason = problem(url)
+    if reason is None and _split(url) is None:
+        return "it has no version segment (v<N>) between its namespace and its resource"
+    return reason
+
+
+def parse_type_url(url: str, *, where: str = "") -> TypeUrl:
+    """Split a versioned type URL at its version segment. Raises ConfigError if it is not
+    one; ``where`` prefixes the message."""
+    check_type_url(url, where=where)
+    split = _split(url)
+    if split is None:
+        prefix = f"{where}: " if where else ""
+        raise ConfigError(
+            f"{prefix}{url!r} has no version segment between its namespace and its resource",
+            fix="name it '<namespace>.v<N>.<resource>', e.g. 'acme.v1.review'",
+            value=url,
+        )
+    return split
 
 
 def type_url(namespace: str, version: str | int, resource: str) -> str:
     """Build and validate a type URL: ``type_url("ix", 1, "sensor.activation")``.
 
-    Refuses to mint into ``slick.*`` (SD-13: reserved for slick's primitives).
+    Raises :class:`ConfigError` for ``slick`` or any namespace under it, which is reserved
+    for slick's own primitives.
     """
     ver = f"v{version}" if isinstance(version, int) else version
     if namespace == "slick" or namespace.startswith("slick."):

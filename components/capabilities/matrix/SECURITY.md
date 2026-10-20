@@ -1,6 +1,6 @@
 # Security — matrix
 
-matrix composes agents and runs flows of components. It holds no secrets of its own and opens no
+matrix composes agents and runs components. It holds no secrets of its own and opens no
 listening socket, but it is the package that **decides how much authority an agent session
 gets**. That makes its defaults and its config validation, not its code paths, the
 interesting surface.
@@ -15,7 +15,7 @@ the runtime's `permission_mode` and `cwd` and by the definition's `tools`.
 
 A `model` runtime makes one model call through hardline and carries no local authority; it
 refuses any definition that declares tools rather than run it without them. Where that call's
-data goes is decided by the hardline registry — see hardline/SECURITY.md.
+data goes is decided by the hardline registry; hardline's own security notes cover it.
 
 ## Trust boundaries
 
@@ -32,8 +32,9 @@ grant. Review them like one.**
 What constrains it: each runtime's options are validated through the config model it registered
 with, with unknown keys rejected. `permission_mode` is a `Literal`, so an
 unrecognised mode fails at composition naming the legal set. Selecting `bypassPermissions`
-or `dontAsk` logs at WARNING, so a permissive run is visible in the output, not only in the
-config. Relative plugin paths are resolved against the runtime's `cwd`, never the process's.
+or `dontAsk` is a `permissive` warning in every document the `matrix` command prints, and is
+logged at WARNING on `matrix.runtime` once per process, so a permissive run is visible in the
+output, not only in the config. Relative plugin paths are resolved against the runtime's `cwd`, never the process's.
 
 What does not constrain it: nothing restricts `cwd`. A config naming `cwd: /` gets `/`.
 
@@ -47,11 +48,11 @@ there — see M-3, fixed.
 `setting_sources: []` is the hermetic setting — no ambient `~/.claude` or project plugin
 config leaks into the subprocess. Any evaluation that claims reproducibility should set it.
 
-### 3. Declared ports
+### 3. Declared kinds
 
-Each flow member receives `Inputs` holding only the values on the topics it bound, never the
-run's Construct, and an output that breaks its declared ports or its type's schema raises
-`ContractError`. This is a correctness boundary, not a trust boundary: a component is
+Each component receives `Inputs` holding only the rows of the kinds it requires, never the
+run's Construct, and a row of a kind it does not provide, or one that fails its kind's schema,
+raises `ContractError`. This is a correctness boundary, not a trust boundary: a component is
 in-process Python and can reach anything the process can.
 
 ## Findings
@@ -87,10 +88,11 @@ with that SDK version installed.
 - matrix does not sandbox agent sessions. Isolation is the caller's job — a container, a
   scratch `cwd`, or a definition with `tools: []`.
 - matrix does not redact agent output. An agent that reads a secret and prints it puts that
-  secret in an `Artifact` and an `AgentResponse`.
+  secret in an `AgentResponse`, which is recorded as a row and written to the run's store.
 - Entry-point discovery (`matrix.extensions`) imports every installed extension at
   composition. Installing a package is trusting it.
 
 ## Reporting
 
-Open an issue on the gnx repository. There is no separate embargo channel.
+Open an issue on the gnx repository, https://github.com/mox-labs/gnx/issues. There is no
+separate embargo channel.

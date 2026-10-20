@@ -29,20 +29,32 @@ enforce this — they share the same pattern, so they cannot disagree.
 ## Gates: the justfile is the single source of truth
 
 The hook and CI both call `just`, so a local check and the CI check cannot
-drift. This is deliberate — cix's gates were ad-hoc bash that fell out of sync
-with CI, and its `.githooks` were never wired at all. gnx fixes both.
+drift.
 
 ```sh
-just check        # what every commit must pass: docsite check + staged secret scan
-just docs-check   # svelte-kit sync + svelte-check + tsc --noEmit
-just secrets      # gitleaks over staged changes
-just ci           # the full CI gate
+just              # list every gate
+just check        # what every commit must pass: the docsite, a staged secret scan,
+                  # the identity grammar, component payloads, the plugin projection
+just ci           # the full CI gate: also the capability packages' tests, lint,
+                  # strict typecheck and standalone install, and the lab
+just lab          # validate and plan the lab's experiments; nothing is run
 ```
+
+The capability packages (`components/capabilities/`) are one uv workspace. Run their tests
+from there, or through `just capabilities-test`:
+
+```sh
+uv --project components/capabilities run pytest components/capabilities/ix/tests -q
+```
+
+No test reaches a live model: `components/capabilities/conftest.py` refuses every call
+where an agent session or a model call would spend money, and fails the test that made it.
+Use matrix's `mock` runtime, or a fake, instead.
 
 ## One-time setup: wire the hooks
 
 Git does not use `.githooks/` unless you point it there. Run this once after
-cloning (the cix lesson — committed hooks that nothing ever ran):
+cloning:
 
 ```sh
 git config core.hooksPath .githooks
@@ -57,7 +69,6 @@ message on every commit. CI mirrors both.
 - [bun](https://bun.com) — the docsite (`docs/experience`) runs on it.
 - [just](https://just.systems) — the gate runner.
 - [gitleaks](https://github.com/gitleaks/gitleaks) — the secret scanner.
-
-The gnx CLI itself (Python, leaning) is designed, not yet built; its lint /
-typecheck / test gates join `just check` as it lands. See
-[the status page](docs/content/reference/3-status.md).
+- [uv](https://docs.astral.sh/uv/) — the capability packages' workspace.
+- [k6](https://k6.io) — only to run ix's service experiments (`ix run` on an
+  `http-load` probe); no gate needs it.

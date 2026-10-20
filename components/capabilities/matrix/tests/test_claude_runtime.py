@@ -5,6 +5,7 @@ import types
 
 import pytest
 
+import matrix
 from matrix import AgentDefinition
 from matrix.domain.agent import AgentResponse
 
@@ -227,12 +228,34 @@ class TestPermissionMode:
         assert "ix.yaml" in msg and "permission_mode" in msg
         assert "bypassPermissions" in msg, "the error must name the legal values"
 
-    def test_a_permissive_mode_is_logged_so_the_choice_is_visible(self, fake_sdk, caplog):
+    def test_a_permissive_mode_is_logged_so_the_choice_is_visible(
+        self, fake_sdk, caplog, monkeypatch
+    ):
+        from matrix.adapters._out.runtime import claude_sdk
+
+        monkeypatch.setattr(claude_sdk, "_LOGGED", set())
         with caplog.at_level("WARNING"):
             _runtime(permission_mode="bypassPermissions")
         assert any("bypassPermissions" in r.getMessage() for r in caplog.records), (
             "selecting a permissive mode must appear in the run record, not only the config"
         )
+        assert {r.name for r in caplog.records} == {matrix.RUNTIME_LOGGER}
+
+    def test_a_permissive_mode_is_logged_once_per_process_not_once_per_runtime(
+        self, fake_sdk, caplog, monkeypatch
+    ):
+        """Regression: ix builds a runtime per session, and a 20-trial pilot printed the
+        warning 20 times. Each runtime still carries it in its ``warnings``."""
+        from matrix.adapters._out.runtime import claude_sdk
+
+        monkeypatch.setattr(claude_sdk, "_LOGGED", set())
+        with caplog.at_level("WARNING"):
+            built = [_runtime(permission_mode="bypassPermissions") for _ in range(20)]
+            _runtime(permission_mode="dontAsk")
+        logged = [r.getMessage() for r in caplog.records]
+        assert len(logged) == 2, logged
+        assert sum("bypassPermissions" in line for line in logged) == 1
+        assert all(len(runtime.warnings) == 1 for runtime in built)
 
     def test_safe_mode_is_not_logged(self, fake_sdk, caplog):
         with caplog.at_level("WARNING"):
@@ -299,3 +322,48 @@ class TestSessionEnding:
         _install(monkeypatch, _FakeAssistantMessage([_FakeTextBlock("cut off")]))
         with pytest.raises(AgentRuntimeError, match="without a result"):
             await _runtime().run(_defn(), "hi")
+
+
+class _FakeIdToolUseBlock:
+    def __init__(self, id: str, name: str, input: dict):
+        self.id, self.name, self.input = id, name, input
+
+
+class _FakeToolResultBlock:
+    def __init__(self, tool_use_id: str, is_error: bool = False):
+        self.tool_use_id, self.is_error = tool_use_id, is_error
+
+
+class _FakeUserMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+@pytest.mark.anyio
+async def test_a_tool_call_is_timed_from_its_request_to_its_result(fake_sdk) -> None:
+    """What lets matrix report each call as an ``execute_tool`` span."""
+    import claude_agent_sdk
+
+    async def fake_query(prompt, options=None):
+        yield _FakeAssistantMessage([_FakeIdToolUseBlock("toolu_1", "Read", {"path": "x"})])
+        yield _FakeUserMessage([_FakeToolResultBlock("toolu_1", is_error=True)])
+        yield _FakeUserMessage("plain text is no tool result")
+        yield _FakeResultMessage()
+
+    claude_agent_sdk.query = fake_query  # type: ignore[attr-defined]
+    claude_agent_sdk.ToolUseBlock = _FakeIdToolUseBlock  # type: ignore[attr-defined]
+    response = await _runtime().run(_defn(), "go")
+    (call,) = response.tool_calls
+    assert (call["name"], call["id"], call["error"]) == ("Read", "toolu_1", True)
+    assert call["started"] <= call["ended"]
+    assert response.provider == "anthropic"
+
+
+def test_a_permissive_mode_is_a_warning_composition_carries(fake_sdk) -> None:
+    (warning,) = _runtime(permission_mode="bypassPermissions").warnings
+    assert (warning.path, warning.kind, warning.got) == (
+        "permission_mode",
+        "permissive",
+        "bypassPermissions",
+    )
+    assert _runtime().warnings == ()

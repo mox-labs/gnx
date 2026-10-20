@@ -1,0 +1,11 @@
+schema: ix.v1.kind
+name: ix.v1.probe.prompt
+summary: One prompt put to an agent session; what the session said and did is what is measured.
+options:
+  prompt: {type: string, required: true, description: "the text put to the agent; a probe file's body"}
+  collect: {type: list, description: "files of the working directory, read back after the session and kept in the record for sensors to grade"}
+  feedback: {type: mapping, description: "for a test-feedback loop: {function_name, test_cases}, the tests whose failures the agent is shown"}
+  mock_response: {type: string, description: "what the mock runtime replies to this probe; any other runtime ignores it"}
+  timeout: {type: duration, description: "how long one session (every round of it) may take before the trial is a harness timeout; 600s when absent"}
+needs: [agent]
+offers: [response, usage]

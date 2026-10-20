@@ -71,19 +71,13 @@ Reach for something else when:
 - You need live streaming or pub/sub — recon does snapshots, not streams
 - You want an autonomous research agent that decides what to fetch — recon runs the config you wrote, it doesn't decide
 
-Recon pairs naturally with [craft-research](../../../../plugins/craft-research/) when the downstream work is literature synthesis with verified provenance. The pipeline there looks like: recon collects, extract pulls atomic claims per source, scrutiny verifies, synthesis integrates, audit traces the chain end-to-end. Recon is the first link. But craft-research is optional — recon is useful anywhere Claude needs structured indirection over external data.
+In a literature review recon is the first link: it collects, and extracting claims per source, verifying them and synthesizing happen downstream, over the tables it wrote. Recon is useful anywhere Claude needs structured indirection over external data, research or not.
 
-## Contrast with autonomous research agents
+## Why recon does not decide what to fetch
 
-Several open-source projects aim at the same general space: produce a finished research report from a single prompt. gpt-researcher, Tongyi DeepResearch, Alibaba's AutoResearch, and others. They optimize for output quality and time-to-deliverable. You type a question, the system produces a report in fifteen minutes.
+Recon runs the config you wrote. It does not choose the sources, and it does not write the report. That is deliberate: the divergent work, deciding what to collect and what the result means, stays with the human and Claude working together, because that is where new connections come from and where the human learns something. Recon removes the mechanical ceremony around that work and leaves the thinking where it is.
 
-Recon isn't competing with those tools. The bets are different.
-
-Those tools bet that an LLM alone can do novel synthesis — that with enough scaffolding, pattern-matching over a corpus becomes indistinguishable from reasoning. The empirical evidence says the synthesis is regression toward the mean of what the corpus already says. Competent surveys, not genuine insight. And the human, being a passive consumer of a finished deliverable, doesn't learn anything in the process.
-
-Recon bets the other way: divergent thinking stays with the human and with Claude working together, because that's where novel connections come from. The mechanical ceremony around the work is what recon removes. What's left is the thinking — and the human is in the loop where the thinking matters.
-
-If the goal is a finished report in twenty minutes with no involvement, pick an autonomous agent. If the goal is a queryable dataset that the human and Claude can reason over together — noticing patterns, questioning outliers, following threads across sources — recon is the bridge.
+If the goal is a finished report with no involvement, recon is the wrong tool. If the goal is a queryable dataset that the human and Claude can reason over together (noticing patterns, questioning outliers, following threads across sources), recon is the bridge.
 
 ## The one-sentence version
 

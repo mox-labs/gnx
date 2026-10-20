@@ -81,6 +81,7 @@ Another tool may write either kind, or a log anywhere else that a `capture` coll
 A `capture` collector refuses — with an error naming the file and line — any line that:
 
 - is not a JSON object, or has a `schema` other than `recon.v1.capture`;
+- lacks a field the table marks required to read (`id`, `collector`, `kind`, `sha256`), or has one that is not a string;
 - has a `body` that is not `raw/<64 hex>` (no other path, absolute or relative, is ever opened);
 - names a body that is missing, or whose bytes do not hash to `sha256`.
 

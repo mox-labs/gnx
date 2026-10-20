@@ -1,0 +1,242 @@
+"""recon's errors, the problems a plan finds, and the one exit-code table.
+
+Every error has a ``kind`` that says what the caller should do next, a message that names
+what is wrong, a ``fix`` (the next command to run or the config line to change), and
+``details``: structured fields such as the archive a failed survey left. :data:`EXIT_CODES`
+gives the exit code of every kind, :data:`EXIT_MEANINGS` what each means and
+:data:`EXIT_NEXT` what to do about it; the command line, the skill text and the tests read
+these and no other. The kinds every capability CLI shares have the codes agreed in
+``components/capabilities/exit-codes.json``, and the problem record and its shared kinds
+are the ones ``components/capabilities/error-envelope.json`` agrees; the tests hold recon
+to both. recon's own kinds take codes from 10 up, one kind per code.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Literal
+
+ErrorKind = Literal[
+    "unknown",
+    "usage",
+    "config",
+    "not_found",
+    "transient",
+    "auth",
+    "conflict",
+    "run_failed",
+    "query",
+    "interrupted",
+]
+
+#: The kinds an error can have, as ``error.kind`` in the ``recon.v1.error`` envelope.
+ERROR_KINDS: tuple[ErrorKind, ...] = (
+    "unknown",
+    "usage",
+    "config",
+    "not_found",
+    "transient",
+    "auth",
+    "conflict",
+    "run_failed",
+    "query",
+    "interrupted",
+)
+
+#: The exit code of each outcome and error kind.
+EXIT_CODES: dict[str, int] = {
+    "ok": 0,
+    "unknown": 1,
+    "usage": 2,
+    "config": 3,
+    "not_found": 4,
+    "transient": 5,
+    "auth": 6,
+    "conflict": 7,
+    "run_failed": 8,
+    "query": 10,
+    "interrupted": 130,
+}
+
+#: What each kind in :data:`EXIT_CODES` means.
+EXIT_MEANINGS: dict[str, str] = {
+    "ok": "done",
+    "unknown": "a failure recon did not classify",
+    "usage": "a bad command, flag or argument",
+    "config": "the mission config or another input is invalid",
+    "not_found": "no such mission, archive or template",
+    "transient": "every failed table failed transiently (HTTP 429, 5xx, network); the "
+    "archive is kept, marked incomplete",
+    "auth": "a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete",
+    "conflict": "init, or survey -c, would overwrite a different mission config",
+    "run_failed": "a table failed, and not only on credentials or transiently; the archive "
+    "is kept, marked incomplete",
+    "query": "the SQL failed, or reached outside the mission's archives",
+    "interrupted": "the command was interrupted (Ctrl-C or SIGTERM) before it finished; a "
+    "survey's archive is marked incomplete",
+}
+
+#: What to do next on each kind in :data:`EXIT_CODES`.
+EXIT_NEXT: dict[str, str] = {
+    "ok": "go on: plan, survey, query, in that order",
+    "unknown": "report it as a bug in recon, with the command that raised it",
+    "usage": "correct the command; `recon <command> --help` lists its arguments",
+    "config": "fix each problem at its `path` as its `fix` says, then plan again; when "
+    "`complete` is false, more problems may follow the fix",
+    "not_found": "run the command the error's `fix` names",
+    "transient": "survey again later",
+    "auth": "set the variable the failing source's auth.env names to a valid key, then "
+    "survey again",
+    "conflict": "add --replace to overwrite it, or choose another mission name",
+    "run_failed": "read each failed table's error and fix its cause, then plan and survey again",
+    "query": "correct the SQL as the error's `fix` says; for a missing table, it names the "
+    "tables there are",
+    "interrupted": "run the command again",
+}
+
+#: The kinds a problem or a warning can have, as ``problems[].kind`` and ``warnings[].kind``:
+#: the shared vocabulary first, then recon's own. A consumer tolerates a kind it does not
+#: know: the set grows.
+PROBLEM_KINDS: tuple[str, ...] = (
+    "yaml_syntax",
+    "wrong_shape",
+    "unknown_key",
+    "missing_key",
+    "invalid_value",
+    "name_unknown",
+    "name_taken",
+    # a {placeholder} nothing fills
+    "unresolved",
+    # warnings
+    "env_unset",
+    "plugin_broken",
+    "otel_unavailable",
+    "telemetry_failed",
+    # an unpinned collector fans out over sources of different types
+    "fan_out_mixed",
+    # a table came back as one record holding the list of records
+    "extract_missing",
+    # a table's file that SQL cannot read as a table
+    "table_unreadable",
+)
+
+
+@dataclass(frozen=True)
+class Problem:
+    """One finding in a mission config, located by a path dotted from its root
+    (``collectors.2.type``), or a warning about the run it describes.
+
+    ``allowed`` lists the legal values where the set is closed; ``got`` is the value that was
+    written, when it is a scalar worth quoting back; ``source`` names the file the problem is
+    in when it is not the config the command was given.
+    """
+
+    path: str
+    message: str
+    kind: str = "invalid_value"
+    fix: str = ""
+    got: str | int | float | bool | None = None
+    allowed: tuple[str, ...] = ()
+    source: str = ""
+
+    def __str__(self) -> str:
+        return f"{self.path}: {self.message}" if self.path else self.message
+
+    def document(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "kind": self.kind,
+            "message": self.message,
+            "fix": self.fix,
+            "allowed": list(self.allowed),
+            "got": self.got,
+            "source": self.source,
+        }
+
+
+class ReconError(Exception):
+    """Base for every error recon raises on purpose.
+
+    ``complete`` is false when checking stopped before every problem was found.
+    """
+
+    kind: ErrorKind = "unknown"
+    fix: str | None = None
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: ErrorKind | None = None,
+        fix: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        if kind is not None:
+            self.kind = kind
+        if fix is not None:
+            self.fix = fix
+        self.details: dict[str, Any] = dict(details or {})
+        self.problems: list[Problem] = []
+        self.complete = True
+
+    @property
+    def message(self) -> str:
+        return str(self.args[0]) if self.args else type(self).__name__
+
+    def __str__(self) -> str:
+        return self.message
+
+    @property
+    def exit_code(self) -> int:
+        return EXIT_CODES[self.kind]
+
+
+class UsageError(ReconError):
+    """A command was given a flag, an argument or a name it does not take."""
+
+    kind: ErrorKind = "usage"
+
+
+class ConfigError(ReconError, ValueError):
+    """Invalid input. ``problems`` lists every finding, not just the first; ``complete`` is
+    false when a finding stopped the checks that would have found more."""
+
+    kind: ErrorKind = "config"
+
+    def __init__(
+        self,
+        message: str,
+        problems: list[Problem] | None = None,
+        *,
+        fix: str | None = None,
+        complete: bool = True,
+    ) -> None:
+        super().__init__(message, fix=fix)
+        self.problems = list(problems or [])
+        self.complete = complete
+
+
+class NotFoundError(ReconError, KeyError):
+    """A named mission, archive or template does not exist."""
+
+    kind: ErrorKind = "not_found"
+
+
+class ConflictError(ReconError):
+    """The operation would overwrite something that differs from what it would write."""
+
+    kind: ErrorKind = "conflict"
+
+
+class QueryError(ReconError):
+    """SQL against an archive failed."""
+
+    kind: ErrorKind = "query"
+
+
+class CollectionError(ReconError):
+    """Collection failed. ``kind`` says whether retrying (transient) or a new key (auth)
+    helps; any other failure is ``run_failed``, or ``config`` when the mission must change."""
+
+    kind: ErrorKind = "run_failed"

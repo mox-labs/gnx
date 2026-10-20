@@ -1,0 +1,14 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.function-test
+summary: Runs the probe's test cases against code from the response, or from a file the agent wrote, in a separate Python process.
+options:
+  timeout: {type: duration, description: time allowed for all the tests of one trial; 30s when absent}
+  file: {type: string, description: "a file the probe collected from the working directory (collect:) to test instead of the response's last python block"}
+  pass_at: {type: number, description: "the weighted score at which tests_passed is true; 1 (every test) when absent"}
+effects: [code]
+needs: [response]
+truth: [function_name, test_cases, tiers]
+metrics:
+  - {name: tests_passed, direction: higher, shape: boolean, description: "the weighted score reached pass_at"}
+  - {name: tests_pass_share, unit: ratio, direction: higher, shape: count, description: test cases that passed out of test cases run}
+  - {name: tests_score, unit: ratio, direction: higher, shape: scalar, bounds: [0, 1], description: "the share of the weight of the test cases that passed, each case weighted by its tier"}

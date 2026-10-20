@@ -1,0 +1,27 @@
+# characterize: how does one subject behave across a range?
+schema: ix.v1.genre
+name: ix.v1.genre.characterize
+question: How does this subject behave across the range, and where does it bend?
+hypothesis_form: "{subject} is measured on {metric} across {factors}"
+roles:
+  - {name: subject, min: 1, max: 1}
+factors: required
+must_set: [primary]
+design:
+  repeats: {default: 5, min: 3}
+  order: interleaved
+  calibration: none
+  estimator: mean
+  note: "estimates only: t, order-statistic and score intervals per cell (ix design record, 2026-10-19)"
+analysis: {id: ix.v1.analysis.characterize}
+verdict_form: none
+report: [question, design, estimates, failures, raw]
+guidance: |
+  Use characterize when you want the curve, not a decision: how a subject behaves as one
+  or more factors change.
+  Declare the factors and their levels under `factors:`; every combination is a cell and
+  every cell is measured. Keep the grid as small as the question allows: trials multiply.
+  There is no verdict, so there is no threshold, margin or comparison to state. A
+  model-judged metric may be the primary here.
+  Report estimates with their intervals per cell. To turn a point on the curve into a
+  decision, write an evaluate or a compare for that point.

@@ -7,12 +7,14 @@ so tests pass fakes directly.
 import pytest
 
 from recon.adapters._out.api_collector import ApiCollector
-from recon.adapters._out.parsing import ensure_list as _ensure_list
-from recon.adapters._out.parsing import extract as _extract
-from recon.application.captures import REDACTED, FilesystemCaptureLog
-from recon.domain.exceptions import CollectionError
+from recon.adapters._out.capture_files import FilesystemCaptureLog
+from recon.adapters._out.system_clock import SystemClock
+from recon.composition import DEFAULT_USER_AGENT
+from recon.domain.capture import REDACTED
+from recon.domain.errors import CollectionError
 from recon.domain.http import HttpResponse
 from recon.domain.models import AuthConfig, CollectorEntry, SourceEntry
+from recon.domain.normalize import resolve_path, to_records
 from recon.domain.substitution import find_unresolved, substitute
 
 
@@ -59,33 +61,33 @@ def _ok_response(body_text: str, content_type: str = "application/json") -> Http
 class TestExtract:
     def test_dotted_path(self):
         data = {"feed": {"entry": [{"title": "test"}]}}
-        assert _extract(data, "feed.entry") == [{"title": "test"}]
+        assert resolve_path(data, "feed.entry") == [{"title": "test"}]
 
     def test_single_level(self):
-        assert _extract({"data": [1, 2]}, "data") == [1, 2]
+        assert resolve_path({"data": [1, 2]}, "data") == [1, 2]
 
     def test_missing(self):
-        assert _extract({"a": 1}, "b") is None
+        assert resolve_path({"a": 1}, "b") is None
 
     def test_deep_missing(self):
-        assert _extract({"a": {"b": 1}}, "a.c") is None
+        assert resolve_path({"a": {"b": 1}}, "a.c") is None
 
 
 class TestEnsureList:
     def test_list_of_dicts(self):
-        assert _ensure_list([{"a": 1}, {"b": 2}]) == [{"a": 1}, {"b": 2}]
+        assert to_records([{"a": 1}, {"b": 2}], None) == [{"a": 1}, {"b": 2}]
 
     def test_filters_non_dicts(self):
-        assert _ensure_list([{"a": 1}, "skip", 42]) == [{"a": 1}]
+        assert to_records([{"a": 1}, "skip", 42], None) == [{"a": 1}]
 
     def test_single_dict(self):
-        assert _ensure_list({"a": 1}) == [{"a": 1}]
+        assert to_records({"a": 1}, None) == [{"a": 1}]
 
     def test_string(self):
-        assert _ensure_list("text") == []
+        assert to_records("text", None) == []
 
     def test_none(self):
-        assert _ensure_list(None) == []
+        assert to_records(None, None) == []
 
 
 class TestResolveAuth:
@@ -96,7 +98,7 @@ class TestResolveAuth:
         req = _FakeRequester(_ok_response('{"data": []}'))
         src = SourceEntry(name="s", url="https://x", auth=auth)
         entry = CollectorEntry(name="t", type="api", source="s", endpoint="/q", params={"q": "a"})
-        list(ApiCollector(req, env=env).collect(entry, src))
+        list(ApiCollector(req, env=env, user_agent=DEFAULT_USER_AGENT).collect(entry, src))
         return req.calls[0]
 
     def test_header_no_prefix(self):
@@ -142,8 +144,12 @@ class TestResolveAuth:
         req = _FakeRequester(resp)
         src = SourceEntry(name="s", url="https://x", auth=AuthConfig(param="api_key", env="K"))
         entry = CollectorEntry(name="t", type="api", source="s", endpoint="/q")
-        log = FilesystemCaptureLog(tmp_path)
-        list(ApiCollector(req, env={"K": "k-SECRET"}).collect(entry, src, captures=log))
+        log = FilesystemCaptureLog(tmp_path, SystemClock())
+        list(
+            ApiCollector(req, env={"K": "k-SECRET"}, user_agent=DEFAULT_USER_AGENT).collect(
+                entry, src, captures=log
+            )
+        )
 
         import json
         from urllib.parse import parse_qs, urlsplit
@@ -158,7 +164,7 @@ class TestCollectThroughRequester:
     def test_basic_get_yields_records(self):
         resp = _ok_response('{"data": [{"title": "A"}, {"title": "B"}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, env={})
+        col = ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT)
 
         source = SourceEntry(name="s", url="https://x")
         entry = CollectorEntry(name="t", type="api", source="s", endpoint="/q", extract="data")
@@ -173,7 +179,7 @@ class TestCollectThroughRequester:
     def test_post_with_body(self):
         resp = _ok_response('{"results": [{"ok": true}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, env={})
+        col = ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT)
 
         source = SourceEntry(name="exa", url="https://api.exa.ai")
         entry = CollectorEntry(
@@ -192,7 +198,7 @@ class TestCollectThroughRequester:
     def test_get_without_body(self):
         resp = _ok_response('{"data": [{"x": 1}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, env={})
+        col = ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT)
 
         source = SourceEntry(name="s", url="https://x")
         entry = CollectorEntry(name="g", type="api", source="s", endpoint="/q", extract="data")
@@ -202,7 +208,7 @@ class TestCollectThroughRequester:
     def test_templated_body_end_to_end(self):
         resp = _ok_response('{"results": [{"ok": true}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, env={})
+        col = ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT)
 
         source = SourceEntry(name="exa", url="https://api.exa.ai")
         entry = CollectorEntry(
@@ -220,7 +226,7 @@ class TestCollectThroughRequester:
 
     def test_missing_placeholder_raises_before_request(self):
         req = _FakeRequester()  # no canned response; should never be called
-        col = ApiCollector(req, env={})
+        col = ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT)
 
         source = SourceEntry(name="exa", url="https://api.exa.ai")
         entry = CollectorEntry(
@@ -236,6 +242,62 @@ class TestCollectThroughRequester:
         with pytest.raises(CollectionError, match="unresolved placeholder"):
             list(col.collect(entry, source))
         assert req.calls == [], "Requester must not be invoked when body has unresolved vars"
+
+
+class TestUserAgent:
+    """Unless the mission says otherwise, recon says who it is."""
+
+    def _sent(self, **source_fields):
+        req = _FakeRequester(_ok_response("[]"))
+        source = SourceEntry(name="s", url="https://x", **source_fields)
+        entry = CollectorEntry(name="c", type="api", source="s", endpoint="/q")
+        list(ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT).collect(entry, source))
+        return req.calls[0]["headers"]["User-Agent"]
+
+    def test_the_default_names_recon_its_version_and_where_to_find_it(self):
+        from recon import __version__
+
+        ua = self._sent()
+        assert ua.startswith(f"recon/{__version__} ")
+        assert "github.com/mox-labs/gnx" in ua
+        assert "Mozilla" not in ua and "Chrome" not in ua
+
+    def test_a_mission_s_own_user_agent_is_sent_as_written(self):
+        assert self._sent(user_agent="my-survey/2 (mailto:me@example.org)") == (
+            "my-survey/2 (mailto:me@example.org)"
+        )
+
+
+class TestParams:
+    """Every ``params`` value is sent as written, or the collector refuses to run.
+
+    A value still holding a ``{placeholder}`` used to be left out of the query string
+    without a word, and so was any value that merely contained a brace.
+    """
+
+    SPARQL = "SELECT ?p WHERE { ?p wdt:P106 wd:Q82594 . }"
+
+    def _collect(self, params):
+        req = _FakeRequester(_ok_response("[]"))
+        source = SourceEntry(name="s", url="https://x")
+        entry = CollectorEntry(name="c", type="api", source="s", endpoint="/q", params=params)
+        list(ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT).collect(entry, source))
+        return req
+
+    def test_a_value_containing_braces_is_sent(self):
+        req = self._collect({"format": "json", "query": self.SPARQL})
+        assert req.calls[0]["params"] == {"format": "json", "query": self.SPARQL}
+
+    def test_an_unresolved_placeholder_raises_before_the_request(self):
+        req = _FakeRequester()  # no canned response; must never be called
+        source = SourceEntry(name="s", url="https://x")
+        entry = CollectorEntry(
+            name="c", type="api", source="s", endpoint="/q", params={"q": "{topic}", "n": "5"}
+        )
+        with pytest.raises(CollectionError, match=r"params.*\{topic\}") as excinfo:
+            list(ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT).collect(entry, source))
+        assert excinfo.value.kind == "config"
+        assert req.calls == []
 
 
 class TestSubstituteUnified:

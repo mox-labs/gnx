@@ -1,9 +1,11 @@
 """Integration tests against live APIs and real filesystems.
 
-Run with: pytest tests/test_integration.py -v
+The live-API classes call third-party services, so they run only when asked:
+``RECON_LIVE=1 pytest tests/test_integration.py``. The filesystem ones always run.
 """
 
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -13,15 +15,22 @@ from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.cli_collector import CliCollector
 from recon.adapters._out.http_requester import HttpxRequester
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
+from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.web_collector import WebCollector
-from recon.application.recon import run
-from recon.application.utilization import RateLimiter
-from recon.domain.exceptions import CollectionError
+from recon.composition import DEFAULT_USER_AGENT
+from recon.domain.errors import CollectionError
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.domain.ratelimit import RateLimiter
+from tests.recon_fakes import run_survey as run
+
+live = pytest.mark.skipif(
+    not os.environ.get("RECON_LIVE"), reason="calls live APIs; set RECON_LIVE=1 to run"
+)
 
 
 def _requester():
-    return HttpxRequester(RateLimiter())
+    clock = SystemClock()
+    return HttpxRequester(RateLimiter(clock), clock)
 
 
 def _collectors():
@@ -29,25 +38,26 @@ def _collectors():
     conv = MarkitdownConverter()
     return {
         "cli": CliCollector(),
-        "api": ApiCollector(req),
-        "web": WebCollector(req, conv),
+        "api": ApiCollector(req, {}, DEFAULT_USER_AGENT),
+        "web": WebCollector(req, conv, DEFAULT_USER_AGENT),
     }
 
 
 def _api_records(entry, source):
     """Helper — materializes the streaming iterator for test assertions."""
-    return list(ApiCollector(_requester()).collect(entry, source))
+    return list(ApiCollector(_requester(), {}, DEFAULT_USER_AGENT).collect(entry, source))
 
 
 # --- OpenAlex (no auth, fast) ---
 
 
+@live
 class TestOpenAlexLive:
     def test_search(self):
         source = SourceEntry(
             name="openalex",
             url="https://api.openalex.org",
-            user_agent="recon/0.7.0 (mailto:test@example.com)",
+            user_agent="recon-tests (mailto:test@example.com)",
         )
         entry = CollectorEntry(
             name="test",
@@ -76,7 +86,7 @@ class TestOpenAlexLive:
         source = SourceEntry(
             name="openalex",
             url="https://api.openalex.org",
-            user_agent="recon/0.7.0 (mailto:test@example.com)",
+            user_agent="recon-tests (mailto:test@example.com)",
         )
         entry = CollectorEntry(
             name="test",
@@ -110,7 +120,7 @@ class TestOpenAlexLive:
                     {
                         "name": "openalex",
                         "url": "https://api.openalex.org",
-                        "user_agent": "recon/0.7.0 (mailto:test@example.com)",
+                        "user_agent": "recon-tests (mailto:test@example.com)",
                     }
                 ],
                 "collectors": [
@@ -144,6 +154,7 @@ class TestOpenAlexLive:
 # --- Semantic Scholar (rate limited without API key) ---
 
 
+@live
 class TestS2Live:
     def test_search_or_rate_limited(self):
         """S2 works if under rate limit, raises CollectionError if 429."""
@@ -176,6 +187,7 @@ class TestS2Live:
 # --- arXiv (XML, can be slow) ---
 
 
+@live
 class TestArxivLive:
     def test_xml_search(self):
         """arXiv returns XML, parsed via xmltodict. Skips on timeout."""
@@ -207,6 +219,7 @@ class TestArxivLive:
 # --- Zenodo (HTML descriptions) ---
 
 
+@live
 class TestZenodoLive:
     def test_html2text_transform(self):
         """Zenodo descriptions are HTML, $html2text strips tags."""
@@ -214,7 +227,7 @@ class TestZenodoLive:
             name="zenodo",
             url="https://zenodo.org/api",
             rate_limit={"rps": 1, "burst": 2},
-            user_agent="recon/0.9.0 (https://github.com/mox-labs/gnx)",
+            user_agent=DEFAULT_USER_AGENT,
         )
         entry = CollectorEntry(
             name="test",

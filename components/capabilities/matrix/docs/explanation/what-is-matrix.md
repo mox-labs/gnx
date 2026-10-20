@@ -1,101 +1,149 @@
 # What is matrix?
 
-matrix is an executor. It takes components that declare typed ports, a flow that wires those
-ports together through topics, and the values a caller supplies; it checks the wiring, runs
-the members in dependency order, and records every value they produce. It also composes
-agents from config, so an agent can be run on its own or as one member of a flow.
+matrix is an executor. It takes components that declare the kinds of data they require and
+provide, and the rows a caller supplies; it infers who waits on whom, checks that wiring,
+runs each component when what it requires is ready, and records every row they produce, as
+they produce it. It also composes agents from config, so an agent can be run on its own or as
+one component among others.
 
-matrix knows nothing about what a flow is for. An eval harness, a review pipeline and a data
-transform are the same thing to it: components with ports, wired through topics.
+matrix knows nothing about what a run is for. An eval harness, a review pipeline and a data
+transform are the same thing to it: components, the kinds they exchange, a registry to find
+them in, and config that says which to use. It refuses the rest: it does not repeat a run,
+score anything, or carry any client's vocabulary.
 
-The wiring rules and the type URL grammar are slick's. matrix carries its own copy of both
-until it depends on slick.
+The type URL grammar is slick's; matrix carries its own copy.
 
 ---
 
 ## The model
 
-### Components declare ports
+### A kind is the type URL of some data
 
-A component declares two maps of **ports**: `requires` (what it reads) and `provides` (what it
-writes). Each port has a name and a type, given as a type URL such as `acme.v1.diff`:
+`acme.v1.review` names a kind of data: reviews. A kind is compared by equality and never
+dereferenced. It is the only thing two components need to agree on, and it is the schema of
+the table its rows are kept in. When the wiring carries a model for a kind, every row of that
+kind is validated against it: `Container.wire` carries every registered payload type, and
+`wire` takes them as `schemas`.
+
+"Kind" here always means the kind of data. (slick uses the word for kinds of component; that
+is a different thing and stays with slick.)
+
+### A component declares what it requires and provides
 
 ```python
 class Count:
-    requires = {"text": "demo.v1.text"}
-    provides = {"length": "demo.v1.count"}
+    requires = {"demo.v1.shout"}
+    provides = {"demo.v1.count"}
 
-    async def run(self, inputs):
-        return {"length": len(inputs["text"])}
+    async def run(self, inputs, ctx):
+        return {"demo.v1.count": sum(len(line) for line in inputs["demo.v1.shout"])}
 ```
 
-`Component` is a `typing.Protocol`, so the class above is a component without importing
-matrix. A port can be given as a `Port` instead of a bare type URL, to mark it:
+`requires` and `provides` are sets of kinds, and `run(inputs, ctx)` does the work. That is
+the whole protocol. `Component` is a `typing.Protocol`, so the class above is a component
+without importing matrix. Configuration reaches a component when it is built, never through
+`run`.
 
-- `Port(url, many=True)` on a required port: it receives every value on its topic, as a
-  tuple. This is how a member takes input from several producers (fan-in).
-- `Port(url, optional=True)` on a required port: it may be left unbound, and the component
-  then sees no value for it. On a provided port: the component may leave it out of its result.
+A component's **name** is the name of the configured instance in a run, not of its class, so
+one class can be used twice under two names.
 
-A port name cannot be both required and provided by one component.
+### Wiring is inferred
 
-### Members bind ports to topics
+Nobody declares an edge. `wire(components, inputs=...)` reads the declarations and derives
+the wiring:
 
-A **member** is one use of a component in a flow, under an alias. Its `bindings` map port
-names to **topic** names. A topic is a named rendezvous: whoever provides onto `loud` and
-whoever requires from `loud` are connected. There are no edges to declare; matrix derives
-them from the bindings. `after` adds an ordering between members that exchange no data.
+- a component depends on the provider of each kind it requires;
+- a kind the caller supplies when the run starts is a **run input** and has no provider;
+- each kind has exactly one provider.
 
-The same component can appear as several members, each with its own bindings.
+It raises one `CompilationError` listing every problem it found, so a broken set of
+components is fixed in one pass rather than one error at a time:
 
-### Flows take named inputs
+1. every kind is a versioned type URL (`<namespace>.v<N>.<resource>`), and none is
+   `matrix.v1.ledger`, the run's own provenance table;
+2. every required kind is provided by some component or is a run input;
+3. no kind has two providers, and a run input has none;
+4. no component requires a kind it provides;
+5. the dependencies have no cycle.
 
-A **flow** is a set of members plus **inputs**: topics, each with a type, that the caller
-supplies when it runs the flow. This is where outside data enters. A component never closes
-over the subject of a run; it reads it from a bound topic like any other value.
+One provider per kind is what lets the wiring be inferred at all: with two, a component that
+requires the kind would not know whom to wait for. Two streams of the same shape are two
+kinds. There is no way to wire a loop; work that must repeat is repeated by whoever runs the
+wiring again, or inside one component.
 
-A flow is desired state. Running it never changes it.
-
-### Compiling checks the wiring
-
-`compile_flow(flow)` checks every rule and raises one `CompilationError` listing every
-problem it found, so a broken flow is fixed in one pass rather than one error at a time:
-
-1. every binding names a port the component declares;
-2. every required port is bound, unless it is optional;
-3. every topic carries exactly one type;
-4. every topic someone reads has a producer or is a flow input, and nothing produces onto a
-   flow input;
-5. a topic fed only by optional outputs may stay empty, so it feeds only optional or `many`
-   ports;
-6. a topic with several producers feeds only ports declared `many`; their values arrive in the
-   producers' declaration order;
-7. no cycle, through topics or `after`.
-
-The last rule is a placeholder, and the error says so. A flow that must repeat does so by
-running an acyclic flow again under a bound, never by wiring a loop.
-
-The result, a `CompiledFlow`, groups members into **levels**: every member of a level depends
-only on earlier levels. It is reusable; compile once, run many times.
+The result, a `Wiring`, is reusable: wire once, run many times with different inputs.
+`wiring.order()` shows one valid order of work, for a reader; the executor does not use it.
 
 ### Running produces a Run
 
-`Executor.run(compiled, inputs)` checks that the caller supplied exactly the declared inputs,
-then runs the flow level by level. Within a level, up to `Limits.concurrency` members run at
-once, and `Limits.member_timeout_s` bounds each one.
+`Executor.run(wiring, inputs)` checks that the caller supplied exactly the declared run
+inputs, records them, and then schedules **by readiness**: a component starts as soon as the
+providers of every kind it requires have finished. Components that do not depend on each
+other run side by side (`Limits.concurrency` caps how many, when set), so a four-hour soak
+does not hold up an unrelated component that could have finished in a second.
 
-Each member receives `Inputs`: the values on the topics it bound, by port name, plus a
-`RunContext` (run id, its own alias, episode, deadline). It never sees the run's state or its
-neighbours, and each value is its own deep copy, so mutating what it read changes neither the
-record nor what a sibling sees. Values that flow between members must therefore be data that
-can be copied, not live handles. It returns a mapping of provide-port name to value, and the executor holds it to
-that: an undeclared or missing port is a `ContractError`, and so is a value that fails the
-schema registered for its type.
+Each component receives `Inputs`: for each kind it requires, a tuple of that kind's rows, and
+nothing else. It never sees the run's record or its neighbours, and each row is its own deep
+copy, so mutating what it read changes neither the record nor what another component sees.
+Rows must therefore be data that can be copied, not live handles.
 
-The result is a `Run`: the observed state of one execution, with its status, its failures,
-and a `Construct` holding every value produced. When a member fails, the rest of its level is
-allowed to finish (work already paid for is kept), and then `RunError` is raised carrying the
-partial Run. Nothing produced before the failure is lost.
+Rows of the kinds it provides leave a component two ways, and it may use both:
+
+- **returned** from `run`, as a mapping of kind to one row or to a list of rows;
+- **handed over while it runs**, with `ctx.provide(kind, row)`.
+
+Either way the executor holds the component to what it declared: a row of a kind it does not
+provide is a `ContractError`, and so is a row that fails the schema registered for its kind.
+
+Handing rows over as they are made is what makes a long-running component safe to kill. When
+`ctx.provide` returns, the row is part of the run's record and durable in the run's store; a
+component that returns everything at the end has nothing recorded until then. The components
+that require a kind still start only when its provider has finished, so they see all of its
+rows, however they were handed over.
+
+The result is a `Run`: the observed state of one execution, with its status, how each
+component ended, its failures, and a `Construct` holding every row. See
+[the data model](data-model.md) for the Construct, its ledger, and how a run is kept on disk.
+
+### Every run ends, and cleans up
+
+A run ends `completed`, `failed` or `cancelled`; each component ends `completed`, `failed`,
+`cancelled` or `skipped`. What makes that true is that there is one way to stop a component,
+whatever the reason:
+
+1. **Stop request.** `ctx.stopping` is set. A component that returns now keeps what it
+   returns.
+2. **Grace.** The executor waits `grace_s` for that.
+3. **Cancel.** The component's task is cancelled and its own `finally` blocks run. A
+   component that swallows the cancellation is abandoned after `cleanup_s` and reported as
+   such.
+4. **Deferred release.** At the end of the run, everything components handed to `ctx.defer`
+   is called, last registered first, each bounded by `cleanup_s`.
+
+The reasons are a component's own deadline (`Limits.deadline_s`, overridden per component by
+`Limits.components`), another component's failure, and cancellation of the run, which is also
+what SIGTERM and Ctrl-C become while a run is in flight.
+
+When a component fails, `Limits.on_failure` decides what happens to the others. `fast` (the
+default) stops every running component and skips the rest: the caller is usually paying for
+each one, and a failed provider makes its dependents pointless. `isolate` skips only the
+components that depend on the failed one and lets the others finish. Either way `RunError` is
+raised carrying the partial Run, and a cancelled run raises `RunCancelled` the same way.
+Nothing recorded before the end is lost.
+
+A release exists because the thing to undo usually outlives the component that made it: one
+component provisions, others use, and a teardown written as a component is skipped exactly
+when it is needed. `matrix.process.spawn` is the common case made to carry itself: the child
+gets its own process group, and killing the group is deferred. (`process.start` and
+`process.kill_group` are the two halves, for a component that starts a child per repetition
+and ends each one itself.) A component that needs
+something running beside its own work (a sampler beside a load) starts it itself and defers
+its stop; matrix has no notion of a sidecar.
+
+Two limits are real and stated. matrix cannot preempt in-process Python, so a component that
+blocks the event loop stalls every deadline until it yields. And no release runs after
+`kill -9` of the run itself, so a component that provisions something expensive keeps its own
+record of it; what does survive is every row handed over before the kill.
 
 ## Agents are composed, not constructed
 
@@ -122,25 +170,26 @@ harness can keep an infrastructure failure out of an agent's score.
 `compose(config)` builds runtimes, loads definitions and binds agents from a `matrix:` config
 section, and returns a `Container`. Composition makes no model call and no tool call.
 
-### An agent in a flow
+### An agent as a component
 
-`matrix.v1.agent-step` is a registered component that runs one composed agent. Its required
-ports are whatever its config declares (`inputs`); their values are rendered into a task
-template. It provides `response` (the `AgentResponse`) and, when its config names an `output`
-type, `result`: the JSON the agent returned. The executor validates `result` against that
-type's schema like any other output, so an agent that does not return the promised structure
-breaks its contract and the run says so. The compiler knows nothing about agents.
+`matrix.v1.agent-step` is a registered component that runs one composed agent. What it
+requires and provides comes from its config: it requires the kinds its `inputs` name, and
+their rows are rendered into a task template. It provides the agent's `AgentResponse` under
+the kind `response` names and, when its config names an `output` kind, the JSON the agent
+returned as one row of that kind. The executor validates that row against the kind's schema
+like any other, so an agent that does not return the promised structure breaks its contract
+and the run says so. The wiring knows nothing about agents.
 
 ## One registry for every extension
 
 The `Registry` holds **extension points** (`runtime`, `component`, `payload-type`,
-`observer`; other packages add their own, as ix adds `sensor` and `engine`) and the
-**entries** registered at each, keyed by type URL. An entry carries what a caller, human or
-agent, needs to decide whether to use it:
+`observer`, `store`; other packages add their own, named under their own root, as ix adds
+`ix.sensor`) and the **entries** registered at each, keyed by type URL. An entry carries
+what a caller, human or agent, needs to decide whether to use it:
 
 - `config`: the pydantic model its settings validate against;
-- `needs`: shared things composition hands it (`agents`, `models`, `cwd`), declared rather
-  than guessed from field names;
+- `needs`: shared things composition hands it (`agents`, `models`, `cwd`, and for a
+  component its own `name`), declared rather than guessed from field names;
 - `effects`: what it may touch (`network`, `subprocess`, `filesystem`, `model`). `None` means
   unknown, which is never read as "none";
 - `summary`, `stability` and `origin` (the package that registered it).
@@ -158,36 +207,84 @@ whole, so nothing replaces a built-in by sorting before it. Between two packages
 own the name, the first in entry-point name order keeps it and the second is refused, naming
 both. Install order never decides.
 
-Because entries declare their effects, a compiled flow can say what it may touch.
-`Container.compile` records each member's effects (an `agent-step` member has its agent's
-runtime's), and `CompiledFlow.declared_effects()` is their union, or `None` when any member's
-effects are unknown.
+`Container.wire` is where the registry meets the model: it takes a list of
+`{name, type, config}` entries (the config's `matrix.components`, or the caller's own), builds
+each through the registry, and wires them.
+
+Because entries declare their effects, a wiring can say what it may touch. `Container.wire`
+records each component's effects (an `agent-step` has its agent's runtime's), and
+`Wiring.declared_effects()` is their union, or `None` when any component's effects are
+unknown.
 
 ## Observers, not built-in tracing
 
-The executor and bound agents emit `Event`s (`run.start`, `member.end`, `artifact.append`,
-`agent.end`, ...). Tracing, logging and cost metering are observers of those events, so the
-core imports none of them. An agent called from inside a member reports that member as its
-parent, so the `otel` observer nests an agent's span under the member that ran it.
+The executor and bound agents emit `Event`s (`matrix.run.start`, `matrix.component.end`,
+`matrix.row.append`, `matrix.agent.end`, ...), and a component adds its own through its
+context: `ctx.emit` for an event, `ctx.measure` for a number, `ctx.span` for a timed block.
+Names are namespaced like type URLs; `matrix.*` is matrix's, and a component uses its own
+root. Progress, logging, tracing and metrics are observers of those events, so the core
+imports none of them. An agent called from inside a component reports that component as its
+parent, so the `otel` observer nests an agent's span under the component that ran it, and a
+tool call the runtime timed under the agent: `invoke_workflow` over `matrix.component` over
+`invoke_agent` over `execute_tool`, the OpenTelemetry GenAI conventions' names.
 
-An observer that raises is logged and skipped; it cannot stop a run. That makes observers
-telemetry, not an audit channel.
+Two observers need no choosing. A run kept by the JSONL store writes its events into its own
+record, `events.jsonl`. And when the standard `OTEL_*` variables ask for export, every
+composed run gets the `otel` observer. That observer speaks only the OpenTelemetry API: matrix
+is a library, and installing an SDK, which decides where telemetry goes for the whole process,
+is the application's. `matrix run` is an application, so it does, from the same variables.
+
+Telemetry is not data. Events reach observers through a bounded queue and a dispatcher, never
+on the task that emitted them, so an observer cannot stall a run: one that raises is skipped,
+one that is slow makes the queue fill and events drop (counted, and reported), and one that
+never returns costs the run a bounded wait at its end. Nothing a run produces depends on an
+event arriving; results are read from the `Run` or its store. For the same reason observers are not an
+audit channel: an audit hook would have to be able to stop the operation.
 
 ## Configuration is shared
 
 A tool built on matrix (ix, or matrix's own CLI) names itself, and `load_config` reads the
 same tiers for every tool: `~/.matrix/config.yaml`, `~/.<tool>/config.yaml`, `./matrix.yaml`,
 `./<tool>.yaml`, then the files named by `$MATRIX_CONFIG` and `$<TOOL>_CONFIG`. Your runtimes
-and agents are declared once and every tool sees them. `matrix config --sources` lists the
-files consulted, so which file set a value is never a guess.
+and agents are declared once and every tool sees them. That cuts both ways: mappings merge
+and `definitions` directories accumulate, so a second config read on top of a project's shares
+its runtimes, agents and definitions, and an agent defined in both is a `name_taken` problem.
+`--only` reads the named files and no tier, for a config that should run on its own; its
+runs are still recorded in the store it names (`.matrix/runs` in the working directory by
+default).
+`matrix config --sources` lists the files consulted, and every problem names the file that
+set the value it is about.
+
+The config also declares a run: its components and inputs, where it is recorded (`store`,
+chosen from the registry like a runtime) and the limits it keeps. `matrix plan` composes and
+wires it and says what a run would do and spend, calling nothing; `matrix run` runs it, and
+`matrix runs` lists what was recorded and what each run spent. What a run may spend is bounded twice: a `claude-sdk`
+runtime's `max_budget_usd` ends one session at its limit, and `limits.spend_usd` stops the
+run starting any agent session that could take it past the ceiling, counting what each
+session reports. The executor holds that ceiling, not the components: an agent a component
+calls inside a run asks the run before its session starts.
+
+## One loader
+
+matrix reads several kinds of document: tiers of settings, folders of agent files, and, for
+the tools built on it, experiment files, probe folders and declarations. One mechanism reads
+them all. A source reads what is at a location into plain data and knows nothing of types; a
+markdown file is its frontmatter with its text under `body`. The loader takes the type from
+its caller and either merges the documents as tiers or collects one model per file, validates
+once, and reports every problem with its key path and its file. What `body` means is the
+type's business: an `AgentDefinition` takes it as its system prompt, an ix probe as its
+prompt.
 
 ## What matrix is not
 
-- **Not a scheduler or a service.** It is a library and a read-only CLI. There is no daemon.
-- **Not a retry engine.** A failed run raises with its partial state; repeating is the
-  caller's decision.
-- **Not a sandbox.** Components are in-process Python. Port checking is a correctness
-  boundary, not a trust boundary. Agent sessions get whatever authority their runtime's
-  config grants; see [SECURITY.md](../../SECURITY.md).
+- **Not a scheduler or a service.** It is a library and a CLI that runs one config at a time.
+  There is no daemon.
+- **Not a retry engine.** A retry policy runs a component again after a transient failure,
+  within the run, and never one that has already handed rows over. A failed run raises with
+  its partial state; running it again is the caller's decision, and `matrix run --from`
+  reuses what completed.
+- **Not a sandbox.** Components are in-process Python. Holding a component to its kinds is a
+  correctness boundary, not a trust boundary. Agent sessions get whatever authority their runtime's
+  config grants; the package's security notes (`SECURITY.md`) say what that means.
 - **Not domain-aware.** It has no notion of probes, sensors or hypotheses. Those are the
   vocabulary of the packages that register components.

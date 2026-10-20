@@ -2,10 +2,6 @@
 
 A marketplace of composable components for agents.
 
-**Under construction.** gnx is pre-generation-0.
-
-Three plugins are installable today, cut from 7 components.
-
 ```
 /plugin marketplace add mox-labs/gnx
 /plugin install rational-inquiry@gnx
@@ -40,15 +36,27 @@ plus a `bundles.yaml` entry.
 | Package | Does | Docs |
 |---|---|---|
 | `hardline` | one port for every model family — local MLX, ollama, Gemini, Claude — tagged with the family that answered | [README](components/capabilities/hardline/README.md) · [SECURITY](components/capabilities/hardline/SECURITY.md) |
-| `matrix` | runs component DAGs with enforced reads, and composes agents from a definition plus a runtime | [README](components/capabilities/matrix/README.md) · [SECURITY](components/capabilities/matrix/SECURITY.md) |
-| `ix` | runs experiments — evals, benchmarks, QoS — on a native engine or Inspect AI | [README](components/capabilities/ix/README.md) · [SECURITY](components/capabilities/ix/SECURITY.md) |
-| `recon` | heterogeneous sources in, structured JSONL out | [SECURITY](components/capabilities/recon/SECURITY.md) |
-| `dao` | stands up and audits a project's agent organization | [SECURITY](components/capabilities/dao/SECURITY.md) |
+| `matrix` | runs components wired by the kinds of data they exchange, records every row as a run goes, and composes agents from a definition plus a runtime | [README](components/capabilities/matrix/README.md) · [SECURITY](components/capabilities/matrix/SECURITY.md) |
+| `ix` | decides a question about an AI agent or a service by experiment — an agent evaluation, a service comparison — written as one file with a genre: validated, planned, registered before it runs, and reported as a verdict | [README](components/capabilities/ix/README.md) · [SECURITY](components/capabilities/ix/SECURITY.md) |
+| `recon` | heterogeneous sources in, structured JSONL out, queried with SQL | [README](components/capabilities/recon/README.md) · [SECURITY](components/capabilities/recon/SECURITY.md) |
+| `dao` | stands up and audits a project's agent organization | [README](components/capabilities/dao/README.md) · [SECURITY](components/capabilities/dao/SECURITY.md) |
 
-Each is `mypy --strict` clean, tested, and installable on its own from only its declared
-dependencies — `just ci` enforces all three. Each `SECURITY.md` names the package's trust
-boundaries and the findings already fixed — `matrix` and `ix` both execute things, and the
-boundary that isn't written down is the one nobody reviews.
+Each is `mypy --strict` clean, tested, and installable from this repository from only its
+declared dependencies — `just ci` enforces all three. Each `SECURITY.md` names the
+package's trust boundaries and the findings already fixed — `matrix` and `ix` execute
+things, and the boundary that isn't written down is the one nobody reviews.
+
+A capability is installed from this repository at its release's tag; none is on a package
+index, where the names `matrix` and `ix` belong to other projects:
+
+```
+uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.6.0#subdirectory=components/capabilities/matrix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=components/capabilities/recon"
+```
+
+`ix` depends on `matrix`; installed from the git URL, uv takes it from the same repository.
+Each package's README has its extras and its library install line.
 
 ## Stack placement
 
@@ -67,12 +75,12 @@ distribution surface, not the only possible one.
 just              # list every gate
 just check        # what a commit must pass (the pre-commit hook calls this)
 just ci           # the full gate, mirrored by .github/workflows/ci.yml
-just evals        # run the lab's experiments offline, on both engines
+just lab          # validate and plan the lab's experiments (nothing is run)
 ```
 
 One `justfile` is the single source of truth for gates, so a local check and the CI check
 cannot drift. See [CONTRIBUTING.md](CONTRIBUTING.md), and `lab/README.md` for how the
-experiments distinguish "the harness works" from "the catalog works".
+experiments state the catalog's claims as measurements.
 
 ## License
 

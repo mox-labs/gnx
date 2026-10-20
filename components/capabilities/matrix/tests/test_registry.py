@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from matrix import ConfigError, NotFoundError, Registry, default_registry
+from matrix import ConfigError, NotFoundError, Registry, default_registry, load_extensions
 
 
 class Settings(BaseModel):
@@ -33,10 +33,9 @@ def test_config_is_validated_and_needs_are_handed_over() -> None:
 def test_bad_config_names_every_key_path() -> None:
     registry = Registry().register("component", "acme.v1.thing", build, config=Settings)
     with pytest.raises(ConfigError) as e:
-        registry.create("component", "acme.v1.thing", {"sise": 3}, where="flow.members.t")
-    problems = e.value.details["problems"]
-    assert any("flow.members.t.size" in p for p in problems)
-    assert any("sise" in p for p in problems)
+        registry.create("component", "acme.v1.thing", {"sise": 3}, where="components.t")
+    found = {(p.path, p.kind) for p in e.value.problems}
+    assert found == {("components.t.size", "missing_key"), ("components.t.sise", "unknown_key")}
     assert "matrix describe acme.v1.thing" in (e.value.fix or "")
 
 
@@ -96,8 +95,8 @@ def test_a_broken_extension_is_quarantined_and_the_rest_load(
 ) -> None:
     good = _entry_point("good", lambda r: r.register("component", "good.v1.x", build), "good-pkg")
     bad = _entry_point("bad", ImportError("no module named nope"), "bad-pkg")
-    monkeypatch.setattr("matrix.domain.registry.entry_points", lambda group: [bad, good])
-    registry = Registry().discover()
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: [bad, good])
+    registry = load_extensions(Registry())
     assert ("component", "good.v1.x") in registry
     assert registry.entry("component", "good.v1.x").origin == "good-pkg"
     (failure,) = registry.failures
@@ -114,8 +113,8 @@ def test_a_collision_names_both_origins_whatever_the_install_order(
     first = _entry_point("a-first", claims, "pkg-a")
     second = _entry_point("b-second", claims, "pkg-b")
     for order in ([first, second], [second, first]):
-        monkeypatch.setattr("matrix.domain.registry.entry_points", lambda group, o=order: o)
-        registry = Registry().discover()
+        monkeypatch.setattr("matrix.composition.container.entry_points", lambda group, o=order: o)
+        registry = load_extensions(Registry())
         assert registry.entry("component", "shared.v1.x").origin == "pkg-a"  # name order
         (failure,) = registry.failures
         assert "pkg-a" in failure.error and "pkg-b" in failure.error
@@ -152,8 +151,8 @@ def test_an_extension_at_a_point_declared_later_is_retried(
         registry.add_point("sensor")
 
     eps = [_entry_point("acme", sensor_plugin, "acme"), _entry_point("ix", owner, "ix")]
-    monkeypatch.setattr("matrix.domain.registry.entry_points", lambda group: eps)
-    registry = Registry().discover()
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
+    registry = load_extensions(Registry())
     assert ("sensor", "acme.v1.sensor.x") in registry
     assert registry.failures == []
 
@@ -163,9 +162,9 @@ def test_a_point_nobody_declares_is_still_a_failure(monkeypatch: pytest.MonkeyPa
         registry.register("sensor", "acme.v1.sensor.x", build)
 
     monkeypatch.setattr(
-        "matrix.domain.registry.entry_points", lambda group: [_entry_point("acme", orphan)]
+        "matrix.composition.container.entry_points", lambda group: [_entry_point("acme", orphan)]
     )
-    (failure,) = Registry().discover().failures
+    (failure,) = load_extensions(Registry()).failures
     assert "no extension point 'sensor'" in failure.error
 
 
@@ -175,9 +174,9 @@ def test_registration_is_all_or_nothing(monkeypatch: pytest.MonkeyPatch) -> None
         raise RuntimeError("broke half way")
 
     monkeypatch.setattr(
-        "matrix.domain.registry.entry_points", lambda group: [_entry_point("acme", half)]
+        "matrix.composition.container.entry_points", lambda group: [_entry_point("acme", half)]
     )
-    registry = Registry().discover()
+    registry = load_extensions(Registry())
     assert ("component", "acme.v1.first") not in registry
     assert "broke half way" in registry.failures[0].error
 
@@ -193,8 +192,50 @@ def test_an_extension_cannot_shadow_a_namespace_it_does_not_own(
         registry.register("runtime", "matrix.v1.runtime.mock", lambda: "hijacked")
 
     eps = [_entry_point("aaa", impostor, "aaa"), _entry_point("matrix", matrix_register, "matrix")]
-    monkeypatch.setattr("matrix.domain.registry.entry_points", lambda group: eps)
-    registry = Registry().discover()
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
+    registry = load_extensions(Registry())
     assert registry.entry("runtime", "matrix.v1.runtime.mock").origin == "matrix"
     assert ("runtime", "aaa.v1.runtime.fine") not in registry  # the impostor is dropped whole
     assert any(f.extension == "aaa" and "namespace" in f.error for f in registry.failures)
+
+
+def test_a_quarantined_impostor_is_named_by_its_entry_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from matrix.composition.builtins import register as matrix_register
+
+    def impostor(registry: Registry) -> None:
+        registry.register("runtime", "matrix.v1.runtime.mock", lambda: "hijacked")
+
+    eps = [
+        _entry_point("a-mock-plugin", impostor, "aaa-dist"),
+        _entry_point("matrix", matrix_register, "matrix"),
+    ]
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
+    (failure,) = load_extensions(Registry()).failures
+    assert (failure.extension, failure.origin) == ("a-mock-plugin", "aaa-dist")
+
+
+def test_the_built_ins_alone_still_belong_to_matrix() -> None:
+    registry = default_registry(discover=False)
+    assert {entry.origin for entry in registry.entries()} == {"matrix"}
+
+
+def test_a_payload_schemas_summary_is_the_first_line_of_its_docstring() -> None:
+    class Review(BaseModel):
+        """A code review.
+
+        Every finding has a file and a line, and the verdict is one of three words.
+        """
+
+    registry = Registry().register_payload("acme.v1.review", Review)
+    assert registry.entry("payload-type", "acme.v1.review").summary == "A code review."
+
+
+def test_a_type_url_without_a_version_segment_is_refused_at_registration() -> None:
+    """Regression: ``Registry().register('component', 'acme.scorer', ...)`` succeeded, though
+    what is registered is a name others depend on and must be versioned."""
+    with pytest.raises(ConfigError) as raised:
+        Registry().register("component", "acme.scorer", lambda: None)
+    assert "version segment" in raised.value.message
+    assert raised.value.details["value"] == "acme.scorer"

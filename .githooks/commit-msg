@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate conventional commit format. Mirrors the CI commit-lint job.
 
-Lifted from cix; gnx wires it via core.hooksPath so it actually runs.
+Wired by `git config core.hooksPath .githooks` (see CONTRIBUTING.md).
 """
 
 import re

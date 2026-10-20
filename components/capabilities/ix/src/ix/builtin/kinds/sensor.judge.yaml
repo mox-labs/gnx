@@ -1,0 +1,26 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.judge
+summary: A model scores the response against a rubric. Its readings never decide a verdict.
+options:
+  rubric: {type: string, description: "the rubric; or rubric_file"}
+  rubric_file: {type: path, description: "a file holding the rubric, relative to the experiment"}
+  runtime:
+    type: string
+    required: true
+    description: "the matrix runtime that runs the judge: one of the choices, or any runtime installed. There is no default, so spending is never implicit"
+    choices:
+      model: one call through hardline; spends
+      claude-sdk: a one-turn Claude Agent SDK session with no tools; spends
+      mock: a canned reply; spends nothing
+  model: {type: string, description: the model that judges}
+  runtime_options: {type: mapping, description: further options of the judge runtime's own config}
+  repeats: {type: integer, description: "how many times the judge reads each response, to check that it agrees with itself; 1 when absent"}
+  pass_at: {type: number, description: "the score at which judged_pass is true; 0.5 when absent"}
+effects: [spend]
+needs: [response]
+metrics:
+  - {name: judged_score, unit: ratio, direction: higher, shape: scalar, judged: true, bounds: [0, 1], description: "the judge's score against the rubric, the mean of its repeats"}
+  - {name: judged_pass, direction: higher, shape: boolean, judged: true, description: "the score reached pass_at"}
+  - {name: judge_agreement, unit: ratio, direction: higher, shape: scalar, judged: true, bounds: [0, 1], description: "the share of the judge's repeats that agree with their majority on pass or fail"}
+  - {name: judge_inconsistent, direction: lower, shape: boolean, judged: true, flag: "the judge's repeated readings of one response disagreed on pass or fail: its scores are not reliable here", description: the judge's repeats disagreed on pass or fail}
+  - {name: judge_in_family, direction: lower, shape: boolean, flag: "the judge is of the subject's model family, and may favour its own family's answers: judge with another family", description: "the judge's model family is the subject's, as each runtime stamped it"}

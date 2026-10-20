@@ -1,132 +1,174 @@
-"""The Construct — one run's blackboard: typed tables of artifacts, in the order they landed.
+"""The Construct: one run's record. A table per kind, and a ledger of what landed when.
 
-A flow's members exchange values through **topics** (slick SD-08: a binding maps a port to a
-topic; topics are the rendezvous). Each topic carries exactly one type, so a topic is a table
-with one schema, and the Construct is the set of those tables for one run. Rows are
-:class:`Artifact` records: the value plus who produced it, on which port, when.
+A **kind** is the type URL of some data, and it is the schema of its table: the rows of
+``acme.v1.review`` are reviews, the records themselves, with nothing wrapped around them.
+Provenance is one more table, the **ledger** (``matrix.v1.ledger``): every row in every other
+table has exactly one :class:`LedgerEntry`.
+
+**The write order** is ledger entry first, then the row; both are written through to the
+run's store before :meth:`Construct.append` returns. So a process killed between the two
+leaves an entry pointing one past the end of its table, never a row that nothing accounts
+for. A reader detects that: :meth:`Construct.restore` keeps every entry whose row exists and
+reports the others as :attr:`Construct.torn`. The two writes are consecutive and nothing is
+written after one fails, so a torn tail is the ledger's last entry and nothing else.
 
 Rows are append-only and the executor is their only writer. Components never receive the
-Construct; they get :class:`~matrix.domain.flow.Inputs` holding just what they bound. Several
-producers on one topic (fan-in, slick SD-09) simply append rows to the same table.
-
-Persisted, a Construct is a directory of typed JSONL tables (see ``ConstructStore``), the
-same shape a recon archive and ix results use, so one reader serves all three.
+Construct; they get :class:`~matrix.domain.component.Inputs` holding the kinds they require.
 """
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
-from matrix.domain.errors import NotFoundError
+from matrix.domain.component import LEDGER
+from matrix.domain.errors import NotFoundError, StoreError
 
-#: The producer recorded for a value supplied to the flow from outside (a flow input).
-INPUT_PRODUCER = "$input"
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Mapping, Sequence
+
+#: The component recorded for a row supplied to the run from outside (a run input).
+INPUT = "$input"
 
 
-class Artifact(BaseModel):
-    """One value produced on one topic during a run, with its provenance. Immutable."""
+class LedgerEntry(BaseModel):
+    """One row's provenance: a row of the ``matrix.v1.ledger`` table. Immutable.
+
+    It points at its row by ``(kind, row)``: the table, and the row's 0-based position in
+    it. Each kind has one provider and its table is append-only, so a position never changes
+    and nothing is added to a record to make it addressable."""
 
     model_config = ConfigDict(frozen=True)
 
-    id: str
-    run_id: str
-    topic: str
-    type_url: str
-    #: The member alias that produced it, or ``$input`` for a flow input.
-    producer: str
-    #: The producer's port name (the flow input's name for ``$input``).
-    port: str
-    value: Any
-    #: Which repetition of the flow produced it; 0 for a single run.
-    episode: int = 0
-    timestamp: datetime
-
-    @staticmethod
-    def create(
-        *,
-        run_id: str,
-        topic: str,
-        type_url: str,
-        producer: str,
-        port: str,
-        value: Any,
-        episode: int = 0,
-    ) -> Artifact:
-        """Stamp an id and a UTC time."""
-        return Artifact(
-            id=uuid.uuid4().hex,
-            run_id=run_id,
-            topic=topic,
-            type_url=type_url,
-            producer=producer,
-            port=port,
-            value=value,
-            episode=episode,
-            timestamp=datetime.now(UTC),
-        )
+    #: The row's place in the run's order, from 0. Order across kinds is arrival order.
+    seq: int
+    #: The table the row is in.
+    kind: str
+    #: The row's 0-based position in that table.
+    row: int
+    #: The name of the component that handed it over, or ``$input`` for a run input.
+    component: str
+    time: datetime
 
 
 class Construct:
-    """Append-only typed tables, one per topic, plus the ledger of every row in order."""
+    """Append-only typed tables, one per kind, plus the ledger of every row in order."""
 
-    def __init__(self, topics: dict[str, str] | None = None) -> None:
-        #: topic -> the one type_url it carries
-        self._types: dict[str, str] = dict(topics or {})
-        self._ledger: list[Artifact] = []
-        self._rows: dict[str, list[Artifact]] = {}
+    def __init__(self, kinds: Iterable[str] = ()) -> None:
+        self._rows: dict[str, list[Any]] = {kind: [] for kind in kinds}
+        self._ledger: list[LedgerEntry] = []
+        self._sink: Callable[[str, Any], None] | None = None
+        #: Ledger entries whose row never landed: a run killed between the two writes.
+        #: Always empty for a run in this process; set by :meth:`restore`.
+        self.torn: tuple[LedgerEntry, ...] = ()
 
-    def append(self, artifact: Artifact) -> None:
-        """Add a row. Only the executor (and stores loading a saved run) call this."""
-        known = self._types.setdefault(artifact.topic, artifact.type_url)
-        if known != artifact.type_url:
-            raise ValueError(
-                f"topic {artifact.topic!r} carries {known!r}, not {artifact.type_url!r}"
-            )
-        self._ledger.append(artifact)
-        self._rows.setdefault(artifact.topic, []).append(artifact)
+    def write_through(self, sink: Callable[[str, Any], None]) -> None:
+        """Send every row appended from now on to ``sink(kind, row)`` (a store's writer).
 
-    def rows(self, topic: str) -> tuple[Artifact, ...]:
-        """Every artifact on ``topic``, in the order it landed. Empty if none."""
-        return tuple(self._rows.get(topic, ()))
+        If the sink raises, that row is not recorded, the error propagates, and nothing more
+        is written through: a record that failed once is not appended to again.
+        """
+        self._sink = sink
 
-    def values(self, topic: str) -> tuple[Any, ...]:
-        """The values on ``topic``, in order."""
-        return tuple(a.value for a in self._rows.get(topic, ()))
+    def append(self, kind: str, row: Any, *, component: str) -> LedgerEntry:
+        """Add ``row`` to ``kind``'s table: ledger entry first, then the row.
 
-    def last(self, topic: str) -> Artifact:
-        """The most recent artifact on ``topic``. Raises NotFoundError listing the topics."""
-        rows = self._rows.get(topic)
+        Only the executor calls this. Returns the entry, once both are written through.
+        """
+        if kind == LEDGER:
+            raise ValueError(f"{LEDGER} is written by the Construct itself")
+        table = self._rows.setdefault(kind, [])
+        entry = LedgerEntry(
+            seq=len(self._ledger),
+            kind=kind,
+            row=len(table),
+            component=component,
+            time=datetime.now(UTC),
+        )
+        if self._sink is not None:
+            sink, self._sink = self._sink, None
+            sink(LEDGER, entry)
+            sink(kind, row)
+            self._sink = sink
+        self._ledger.append(entry)
+        table.append(row)
+        return entry
+
+    @classmethod
+    def restore(cls, tables: Mapping[str, Sequence[Any]]) -> Construct:
+        """Rebuild a Construct from stored tables, the ledger's among them.
+
+        Entries whose row is missing are left out and reported in :attr:`torn`. A row with
+        no entry, or entries out of order, cannot come from the write order above: that is a
+        damaged record, and a StoreError.
+        """
+        construct = cls(kind for kind in tables if kind != LEDGER)
+        torn: list[LedgerEntry] = []
+        for raw in tables.get(LEDGER, ()):
+            entry = raw if isinstance(raw, LedgerEntry) else LedgerEntry.model_validate(raw)
+            stored = tables.get(entry.kind, ())
+            table = construct._rows.setdefault(entry.kind, [])
+            if entry.row >= len(stored):
+                torn.append(entry)
+                continue
+            if entry.row != len(table):
+                raise StoreError(
+                    f"the ledger is out of order at seq {entry.seq}: it points at row "
+                    f"{entry.row} of {entry.kind!r} where row {len(table)} comes next",
+                    table=entry.kind,
+                )
+            construct._ledger.append(entry)
+            table.append(stored[entry.row])
+        for kind, stored in tables.items():
+            if kind != LEDGER and len(stored) > len(construct._rows[kind]):
+                raise StoreError(
+                    f"table {kind!r} holds {len(stored)} rows but the ledger accounts for "
+                    f"{len(construct._rows[kind])}",
+                    table=kind,
+                )
+        construct.torn = tuple(torn)
+        return construct
+
+    def rows(self, kind: str) -> tuple[Any, ...]:
+        """Every row of ``kind``, in the order it landed. Empty if none.
+
+        ``rows("matrix.v1.ledger")`` is the ledger: provenance is a table like the others.
+        """
+        if kind == LEDGER:
+            return tuple(self._ledger)
+        return tuple(self._rows.get(kind, ()))
+
+    def last(self, kind: str) -> Any:
+        """The most recent row of ``kind``. Raises NotFoundError listing the kinds with rows."""
+        rows = self._rows.get(kind)
         if not rows:
-            available = ", ".join(sorted(self._rows)) or "(none)"
+            available = ", ".join(sorted(k for k, v in self._rows.items() if v)) or "(none)"
             raise NotFoundError(
-                f"no artifact on topic {topic!r}. Topics with artifacts: {available}",
-                topic=topic,
+                f"no row of kind {kind!r}. Kinds with rows: {available}", table=kind
             )
         return rows[-1]
 
-    def by_type(self, type_url: str) -> tuple[Artifact, ...]:
-        """Every artifact of ``type_url`` across topics, in ledger order."""
-        return tuple(a for a in self._ledger if a.type_url == type_url)
+    def provenance(self, kind: str) -> tuple[LedgerEntry, ...]:
+        """The ledger entries for ``kind``'s rows, in row order."""
+        return tuple(e for e in self._ledger if e.kind == kind)
 
-    def topics(self) -> dict[str, str]:
-        """Each topic seen or declared, with the type it carries."""
-        return dict(self._types)
+    def kinds(self) -> tuple[str, ...]:
+        """Every table the run has, the ledger's last."""
+        return (*self._rows, LEDGER)
 
     @property
-    def ledger(self) -> tuple[Artifact, ...]:
-        """Every artifact, in the order it was appended."""
+    def ledger(self) -> tuple[LedgerEntry, ...]:
+        """Every row's entry, in the order the rows were appended."""
         return tuple(self._ledger)
 
-    def __contains__(self, topic: str) -> bool:
-        return bool(self._rows.get(topic))
+    def __contains__(self, kind: str) -> bool:
+        return bool(self._rows.get(kind))
 
     def __len__(self) -> int:
         return len(self._ledger)
 
     def __repr__(self) -> str:
-        trace = ", ".join(f"{a.producer}.{a.port} → {a.topic}" for a in self._ledger)
-        return f"Construct({len(self._ledger)} artifacts: {trace})" if trace else "Construct(empty)"
+        sizes = ", ".join(f"{kind}: {len(rows)}" for kind, rows in self._rows.items() if rows)
+        return f"Construct({sizes})" if sizes else "Construct(empty)"

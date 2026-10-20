@@ -1,0 +1,35 @@
+# One server and a copy that waits half as long again per request (60 ms against 40),
+# compared on latency. The gap is wide enough that a busy machine does not hide it.
+#
+#   ix register examples/delay-server/slower.yaml
+#   ix run examples/delay-server/slower.yaml
+#
+# The subject is server.py beside this file: it answers every request after a fixed delay.
+# One trial is a few seconds of load from k6. The run takes about two minutes.
+name: delay-slower
+question: Is a server that waits 50% longer per request faster than the one it would replace?
+genre: compare
+
+subjects:
+  baseline:
+    kind: process
+    command: [python3, server.py, --port, "18473", --delay-ms, "40"]
+    url: "http://127.0.0.1:18473"
+    ready: "http://127.0.0.1:18473/healthz"
+  candidate:
+    kind: process
+    command: [python3, server.py, --port, "18473", --delay-ms, "60"]
+    url: "http://127.0.0.1:18473"
+    ready: "http://127.0.0.1:18473/healthz"
+
+probes:
+  - id: get
+    kind: http-load
+    target: "{url}/work"
+    load_model: closed
+    concurrency: 4
+    duration: 3s
+    warmup: 1s
+
+primary: {metric: latency, statistic: p50}
+comparison: superiority

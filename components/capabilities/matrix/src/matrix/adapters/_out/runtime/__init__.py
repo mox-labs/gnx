@@ -1,1 +1,1 @@
-"""AgentRuntime adapters: claude-sdk, model (via hardline), mock."""
+"""AgentRuntime adapters. ``matrix catalog`` lists the installed ones."""

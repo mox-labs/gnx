@@ -1,46 +1,37 @@
 # lab — experiments against the catalog
 
 A **lab** is a directory of experiments; each experiment is a directory with an
-`experiment.yaml` and a `tasks/` folder of probes. This lab is where gnx measures its own
-claims instead of asserting them.
+`experiment.yaml` and its probes. This lab is where gnx states its own claims as
+measurements instead of assertions.
 
 ```
-ix run catalog-routing  --lab lab --subject catalog-simulated --seed 42
-ix run sensor-integrity --lab lab                      # its subject is the simulator
-ix run sensor-integrity --lab lab --engine inspect     # same experiment on Inspect AI
-ix results catalog-routing --lab lab
+ix validate lab/catalog-routing      # every problem at once, nothing run
+ix plan lab/catalog-routing          # the decision, the trials, the effects, the spend
+ix register lab/catalog-routing      # freeze the design before a run
+ix run lab/catalog-routing           # real agent sessions: this spends money
 ```
-
-Either engine gives the same readings for the same experiment; `inspect` also leaves an
-`.eval` log per repeat under `results/inspect/` (open with `inspect view`).
 
 Run from the repo root, with the capabilities workspace:
 
 ```
-uv --project components/capabilities run ix run catalog-routing --lab lab --subject catalog-simulated --seed 42
+uv --project components/capabilities run ix plan lab/catalog-routing
 ```
+
+`just lab` validates and plans every experiment here, and CI runs it. Neither runs one: a
+run starts real agent sessions on the `claude-sdk` runtime and spends up to the
+experiment's ceiling. Runs are kept under each experiment's `.ix/runs/`, which git ignores.
 
 ## The experiments
 
-| Experiment | Question | Sensor | Needs credentials |
+| Experiment | Genre | Question | Decides on |
 |---|---|---|---|
-| `catalog-routing` | Does the right skill trigger, and do decoys stay quiet? | `activation` | live subject only |
-| `sensor-integrity` | Does the grading path itself grade correctly? | `function-test` | no |
-
-The live subject needs no API key: the Claude Agent SDK drives the authenticated `claude`
-CLI. The installed SDK (`claude-agent-sdk >= 0.1.51`) strips `CLAUDECODE` from the child
-process itself, so this works from inside a Claude Code session without `matrix`'s runtime
-touching `os.environ` (matrix/SECURITY.md M-3, fixed 2026-10-02).
-
-```
-ix run catalog-routing --lab lab --subject catalog-live --trials 1
-```
+| `catalog-routing` | `evaluate` | Does the right skill trigger, and do decoys stay quiet? | `activated_correctly >= 0.9` |
 
 ### catalog-routing
 
 > **Known gap (2026-09-24).** Five of the eight probes expect skills that left the catalog on
-> 2026-08-19 — `aces`, `trust-boundaries` and `dao` are in `incubator/`. The live subject loads
-> the three plugins that ship, so a live run fails those probes by construction. The
+> 2026-08-19 — `aces`, `trust-boundaries` and `dao` are in `incubator/`. The subject loads
+> the three plugins that ship, so a run would fail those probes by construction. The
 > measurement below predates the cut.
 
 The catalog's whole promise is that a description makes the right component fire at the
@@ -48,15 +39,10 @@ right moment. That is a measurable claim, and this is the measurement: `must_tri
 probes name a real ask, `should_not_trigger` probes are decoys pitched near a skill's
 vocabulary without needing it.
 
-`--simulate` exercises the full harness — DAG, store, aggregation, confusion matrix — on a
-simulated 90/10 activation split. **It does not measure the catalog.** A simulated run that
-reports 90% tells you the plumbing works; only a live run tells you the descriptions do.
-Both are useful and they are not the same claim.
-
 ### First live reading — 2026-08-18, 24 sessions
 
-`--subject catalog-live --trials 1`, three repeats. **75.0% pass**, per-run 75.0 / 87.5 /
-75.0, noise floor sd 0.072.
+Taken with the harness ix had at the time. One session per probe, three repeats. **75.0% pass**, per-run
+75.0 / 87.5 / 75.0, noise floor sd 0.072.
 
 | probe | expected | fired | |
 |---|---|---|---|
@@ -111,24 +97,23 @@ spec, so the plain-language triggers at the front are buried under doctrine.
 Not yet acted on. When it is, this experiment is how we find out whether the fix worked —
 which is the reason to write the measurement before the fix, not after.
 
-### sensor-integrity
+### sensor-integrity (moved)
 
-Runs offline, and deliberately so. Each probe carries a `mock_response` holding the code a
-subject "returned", so the experiment measures **the sensor** rather than a model:
-extraction from markdown fences, execution under timeout, and scoring against test cases.
-
-That path is also ix's sharpest trust boundary — it imports and runs model-generated
-Python in-process (see `components/capabilities/ix/SECURITY.md`, boundary 1). An eval that
-never exercises it leaves the riskiest code unproven, so the probe set includes code that
-fails its tests and code that raises, not only code that passes.
+This experiment fed canned responses through the function-test grader to check
+extraction, execution under a time limit and scoring. It tested the grader, not a subject,
+so it lives with ix now: `components/capabilities/ix/examples/harness-integrity` gives
+answers of known worth on matrix's `mock` runtime to the real `function-test` and `outcome`
+sensors, spends nothing, and ix's tests run it and hold each reading to its grade.
 
 ## Adding an experiment
 
 ```
 lab/<name>/
-  experiment.yaml     # subjects, sensors, trials
-  tasks/*.md          # one probe per file: frontmatter + prompt body
+  experiment.yaml     # question, genre, subjects, probes, the metric that decides
+  probes/*.md         # one probe per file: frontmatter is truth, the body is the prompt
 ```
 
-Probe frontmatter is untyped YAML read into `Probe.metadata`; each sensor reads the keys
-it needs (`expectation`, `expected_skill`, `function_name`, `test_cases`, `mock_response`).
+`ix --skill -r experiment` and `ix --skill -r kinds` teach the file: every key, each kind and
+its options, each sensor and the metrics it provides. A probe's frontmatter is its truth, the reference data a sensor
+measures against; a key no sensor in use reads is refused by `ix validate`, so a typo does
+not pass silently.

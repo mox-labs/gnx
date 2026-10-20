@@ -1,14 +1,31 @@
-"""Core protocols: Sensor, SensorClass, AgentFactory, Engine, Storage.
+"""The ports of ix: what the model and the run path ask of the world.
 
-* A **Sensor** measures a trial and produces readings, like an instrument. It declares the
-  probe truth keys it reads (``truth_keys``), so a probe key no sensor reads is caught as a
-  typo when the experiment loads, not ignored.
-* An **AgentFactory** turns a subject into a runnable agent for one trial.
-* An **Engine** *executes*: it runs every probe × trial of one repeat and returns the trials.
-  It never decides how a trial is judged. The experiment hands it ``measure`` (its one
-  measuring rule), which an engine that must score as it goes (Inspect) calls; the experiment
-  then measures every trial with the same function, so results never depend on the engine.
-* A **Storage** loads experiments and persists what a run produced.
+Each hides a decision that changes: how a subject is started and stopped (:class:`Subject`),
+which tool applies a stimulus (:class:`Probe`), how a measurement is taken
+(:class:`Sensor`), and what is brought up around the subjects (:class:`Environment`).
+:class:`Scope` is all ix assumes of whatever runs its work. The rest are optional, so an
+adapter need not answer what it cannot tell: a subject or a sensor may also be a
+:class:`Review` and a :class:`StandIn`, a subject a :class:`Preflight`, an environment a
+:class:`Liveness`, and a scope :class:`Traced`. Without one there is nothing to check, to
+stand in or to trace, and the run proceeds. A kind's options, effects, facets and metrics
+are data (:mod:`ix.domain.kind`), not part of these ports.
+
+Each port is named for what it is to a run; what an experiment writes for one is its config
+(:class:`~ix.domain.experiment.SubjectConfig`, ``ProbeConfig``, ``SensorConfig``,
+``EnvironmentConfig``): the kind, a registered type, and that kind's options.
+
+**Contracts the signatures do not show.**
+
+* *Order.* ``reach`` is entered before any ``watch``; every ``watch`` exits before ``reach``
+  does; ``sense`` is called only for an interaction that has no failure.
+* *Failure.* ``reach`` and ``apply`` raise :class:`~ix.domain.run.SubjectError` when the
+  subject failed and :class:`~ix.domain.run.HarnessError` when the harness or its tool did;
+  anything else is read as the harness's. None of these fails the run.
+* *Release.* Leaving ``reach`` releases everything it started, however it is left.
+* *Spend.* A facet ``apply`` returns reports what applying the probe cost under
+  :data:`~ix.domain.run.COST`; a sensor that spends to measure says so in :class:`Sensed`.
+  The run adds both up and holds them to its ceiling.
+* *Blocking.* Every method that waits is ``async`` and yields.
 """
 
 from __future__ import annotations
@@ -17,110 +34,206 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from pathlib import Path
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
-    from matrix import Agent
+    from ix.domain.design import SelectedSensor
+    from ix.domain.experiment import EnvironmentConfig, ProbeConfig, SubjectConfig
+    from ix.domain.problem import Problem
+    from ix.domain.run import Bindings, Interaction, Target
 
-    from ix.domain.models import ExperimentConfig, ExperimentResults, TrialRecord
-    from ix.domain.types import Probe, Reading, Subject, Trial
+#: What a sensor returns for one metric of one trial: a boolean, a number, each statistic
+#: of the trial's distribution by name (a histogram or a series), or ``{events, units}``
+#: (a count: failed requests out of requests sent).
+type Measured = bool | float | Mapping[str, float]
+
+
+@dataclass(frozen=True)
+class Sensed:
+    """What a sensor read from one interaction, when it has more to say than its numbers:
+    ``detail`` (the skill that fired, the tests that failed), kept with each of its readings,
+    and ``cost_usd``, what measuring cost (a model asked to judge)."""
+
+    values: Mapping[str, Measured]
+    detail: Mapping[str, Any] = field(default_factory=dict)
+    cost_usd: float | None = None
+
+
+class Flag(Protocol):
+    """A flag that is set once: an ``asyncio.Event`` is one."""
+
+    def is_set(self) -> bool: ...
+
+    async def wait(self) -> Any: ...
+
+
+class Scope(Protocol):
+    """All ix assumes of whatever runs its components."""
+
+    #: Set when the run is asked to finish now. Work that returns soon after keeps what it
+    #: has recorded.
+    @property
+    def stopping(self) -> Flag: ...
+
+    def defer(self, release: Callable[[], Awaitable[None] | None], /) -> None:
+        """Register something to undo when the run ends, however it ends."""
+        ...
+
+    def emit(self, name: str, /, **fields: Any) -> None:
+        """Say that something happened. Telemetry: it may be dropped, and nothing reads a
+        result from it."""
+        ...
+
+
+class Span(Protocol):
+    """One span of ix's own work, open while its ``with`` block runs."""
+
+    def set(self, **attributes: Any) -> None:
+        """Add attributes, as known by the time the work ends."""
+        ...
+
+    def event(self, name: str, /, **attributes: Any) -> None:
+        """Record that something happened inside the span."""
+        ...
 
 
 @runtime_checkable
+class Traced(Protocol):
+    """Optional for a :class:`Scope`: spans of ix's own work (a trial, a sensor reading one),
+    under ix's own instrumentation scope. Telemetry: nothing reads a result from it."""
+
+    def trace(self, name: str, /, **attributes: Any) -> AbstractContextManager[Span]: ...
+
+
+class Subject(Protocol):
+    """Brings one subject up for one trial and takes it down again. May also be a
+    :class:`Preflight`."""
+
+    def reach(
+        self, name: str, subject: SubjectConfig, *, base: str
+    ) -> AbstractAsyncContextManager[Target]:
+        """Bring the subject up and yield how to address it; release it on exit.
+
+        ``subject`` has its options filled in for the trial's cell.
+        """
+        ...
+
+
+@runtime_checkable
+class Preflight(Protocol):
+    """Optional for a :class:`Subject`: what it can tell before anything starts."""
+
+    def unstartable(self, subject: SubjectConfig, *, base: str) -> str | None:
+        """Why ``subject`` cannot be started as written, in words; None when nothing says it
+        cannot. ``base`` is the directory the experiment's relative paths resolve against."""
+        ...
+
+
+@dataclass(frozen=True)
+class Surroundings:
+    """An entry of the experiment as a :class:`Review` sees it: where it is written
+    (``subjects.agent``, ``sensors.0``), the directory its relative paths resolve against,
+    every sensor a run would use with its options, and every probe with where it is
+    written (``probes.0``, or ``probes.<id>`` for a probe read from a file)."""
+
+    path: str
+    base: str
+    sensors: tuple[SelectedSensor, ...] = ()
+    probes: tuple[tuple[str, ProbeConfig], ...] = ()
+
+
+@runtime_checkable
+class Review(Protocol):
+    """Optional for a :class:`Subject` or a :class:`Sensor`: what is wrong with how an entry
+    is written that only its adapter can tell, from the experiment alone: an option the
+    runtime it names would refuse, a setting that leaves a sensor nothing to observe. It
+    asks nothing of the host (that is a :class:`Preflight`'s), so what it finds is a problem
+    with the experiment, and ``validate`` reports it."""
+
+    def review(self, options: Mapping[str, Any], around: Surroundings) -> Sequence[Problem]:
+        """Every problem with the entry whose options are ``options``, each ``path`` dotted
+        from the experiment's root; none when its options are of the wrong shape, which the
+        kind's declaration reports."""
+        ...
+
+
+@dataclass(frozen=True)
+class StoodIn:
+    """An entry's options rewritten to run on a stand-in, and a note for each thing changed
+    or set aside on the way."""
+
+    options: Mapping[str, Any]
+    notes: tuple[str, ...] = ()
+
+
+@runtime_checkable
+class StandIn(Protocol):
+    """Optional for a :class:`Subject`, :class:`Probe` or :class:`Sensor`: the same entry
+    on a stand-in that touches no model and spends nothing, for a dry run, which checks
+    the harness and never the subject. A subject without one cannot be dry run."""
+
+    def stand_in(self, options: Mapping[str, Any]) -> StoodIn: ...
+
+
+class Probe(Protocol):
+    """Applies one stimulus to a target."""
+
+    def budget_s(self, options: Mapping[str, Any]) -> float | None:
+        """The longest one application may take before it is a harness timeout; None for
+        no bound."""
+        ...
+
+    async def apply(
+        self, options: Mapping[str, Any], target: Target, *, seed: int
+    ) -> Mapping[str, Mapping[str, Any]]:
+        """Apply the stimulus and return what it left behind, by the facet the probe kind
+        offers. ``options`` are the probe's, with every placeholder filled in for this
+        trial. ``seed`` is the trial's own, drawn from the registered seed: a probe kind that
+        makes a random choice (a sampled payload, a jittered arrival) draws it from ``seed``,
+        so a rerun of the plan applies the same stimulus. One that chooses nothing ignores
+        it."""
+        ...
+
+
 class Sensor(Protocol):
-    """Measures a trial and produces readings.
+    """Measures: during the probe when it must (``watch``), from the interaction after."""
 
-    Ground truth (test cases, expectations) is read from the probes at construction, by the
-    keys the sensor declares in ``truth_keys``; the trial gives it a probe id to look its
-    truth up and a response to measure.
-    """
+    def watch(
+        self, target: Target, options: Mapping[str, Any]
+    ) -> AbstractAsyncContextManager[dict[str, Any]] | None:
+        """Watch the target while the probe runs, or return None when there is nothing to
+        watch. What the context yields is complete once the context has exited, and is
+        stored in the interaction under this sensor's kind."""
+        ...
 
-    @property
-    def name(self) -> str: ...
-
-    def measure(self, trial: Trial) -> list[Reading]: ...
-
-
-@runtime_checkable
-class SensorClass(Protocol):
-    """A sensor *class*: what a third party registers at ix's ``sensor`` extension point.
-
-    ``truth_keys`` names the probe frontmatter keys it reads. ``from_config`` builds it from
-    its validated config, the experiment's probes, and ``judge``: a function returning a
-    matrix agent for a model or agent name, for sensors that ask a model to grade.
-    """
-
-    truth_keys: frozenset[str]
-
-    def from_config(
-        self,
-        config: Any,
-        probes: tuple[Probe, ...] = ...,
-        *,
-        judge: Callable[[str], Agent] | None = ...,
-    ) -> Sensor: ...
+    async def sense(
+        self, interaction: Interaction, *, truth: Mapping[str, Any], options: Mapping[str, Any]
+    ) -> Mapping[str, Measured] | Sensed:
+        """This sensor's metrics for one interaction, by metric name, or a :class:`Sensed`
+        that holds them with what more it has to say. A metric it cannot give is left out;
+        raising gives every metric a ``sensor`` failure. ``options`` are the sensor's, each
+        option its kind declares a ``path`` already resolved against the experiment's
+        directory."""
+        ...
 
 
-class AgentFactory(Protocol):
-    """Builds the agent that plays ``subject`` for one trial of one repeat.
+class Environment(Protocol):
+    """Brings up what the subjects need around them, once per run. May also be a
+    :class:`Liveness`."""
 
-    Per trial rather than per subject so a simulated runtime can seed each trial of each
-    repeat independently. Seeding on the trial alone made every repeat of a seeded run
-    replay identical draws, so the noise floor across repeats was 0 by construction.
-    """
-
-    def __call__(self, subject: Subject, trial_index: int, run_index: int = 0) -> Agent: ...
-
-
-@dataclass(frozen=True)
-class EngineRun:
-    """Everything an engine needs for one repeat of an experiment."""
-
-    experiment: str
-    probes: tuple[Probe, ...]
-    subject: Subject
-    agents: AgentFactory
-    trials: int
-    #: The experiment's measuring rule. Call it to score a trial as it completes (it is
-    #: memoised, so the experiment's own pass costs nothing extra); never judge otherwise.
-    measure: Callable[[Trial], list[Reading]]
-    run_index: int = 0
-    #: Call as each trial completes, in completion order: progress only, never results.
-    on_trial: Callable[[Trial], None] | None = None
-    #: The sensors' combined name, for engines that label their own logs.
-    sensor_name: str = ""
-
-
-@dataclass(frozen=True)
-class EngineOutcome:
-    #: Exactly one trial per (probe, trial index), in probe × trial order; a failed session
-    #: is a trial with an error, never a missing one.
-    trials: list[Trial]
-    #: Engine-specific provenance a reader can open, e.g. the Inspect ``.eval`` log path.
-    artifacts: dict[str, str] = field(default_factory=dict)
+    async def up(self, environment: EnvironmentConfig, *, base: str, scope: Scope) -> Bindings:
+        """Bring the environment up and return each service by name with how to reach it.
+        Whatever is started is released through ``scope.defer``, so it comes down when the
+        run ends however that happens."""
+        ...
 
 
 @runtime_checkable
-class Engine(Protocol):
-    @property
-    def name(self) -> str: ...
+class Liveness(Protocol):
+    """Optional for an :class:`Environment`: whether what it brought up is still up,
+    asked after each trial."""
 
-    async def run(self, run: EngineRun) -> EngineOutcome: ...
-
-
-class Storage(Protocol):
-    """Persistence boundary: experiments in, trial records and summaries out."""
-
-    def load_experiment(self, path: Path) -> ExperimentConfig: ...
-
-    def list_experiments(self, base: Path) -> list[Path]: ...
-
-    def append_trials(
-        self, experiment: str, subject: str, run_id: str, records: list[TrialRecord]
-    ) -> Path: ...
-
-    def save_summary(self, experiment: str, results: ExperimentResults) -> Path: ...
-
-    def load_summary(self, experiment: str, subject: str) -> ExperimentResults: ...
-
-    def subjects_with_results(self, experiment: str) -> list[str]: ...
+    async def lost(self, bindings: Bindings) -> str | None:
+        """Why a service ``up`` returned as ``bindings`` is no longer up, in words; None
+        while every one is."""
+        ...

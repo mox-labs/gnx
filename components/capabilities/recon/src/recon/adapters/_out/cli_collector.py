@@ -1,36 +1,49 @@
-"""CliCollector — runs shell commands, yields records line-by-line.
+"""CliCollector: runs shell commands and yields records line by line.
 
-Uses subprocess.Popen with a streaming stdout pipe so large outputs (e.g.
-`rg --json` across a huge tree) don't materialize in memory before parsing.
-Each stdout line is parsed and yielded as a record; memory usage is O(1) in
-the number of records produced.
+stdout is read as it arrives, so a large output (``rg --json`` across a huge tree) is never
+held in memory whole. The command runs in its own session (POSIX), so a timeout, an
+abandoned read or an interrupt kills its whole process group, not just the shell. stderr is
+drained as the command runs and its tail kept for the error message, so a command that
+writes a lot to it cannot block on a full pipe. stdin is empty: a command that reads it
+(``rg`` given no path) reads nothing, rather than waiting on recon's own stdin.
 
 Registered as the built-in collector type ``cli`` (entry-point group ``recon.collectors``).
 """
 
 from __future__ import annotations
 
+import contextlib
+import os
+import selectors
+import signal
 import subprocess
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recon.adapters._out.parsing import parse_line
-from recon.application.transforms import BUILTIN_TRANSFORMS, apply_normalize
 from recon.domain.collector import CollectorType
-from recon.domain.exceptions import CollectionError, Problem
+from recon.domain.errors import CollectionError, Problem
+from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
 from recon.domain.substitution import substitute
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Callable, Generator, Iterator, Mapping
 
     from recon.domain.capture import CaptureLog
     from recon.domain.collector import Transform
     from recon.domain.models import CollectorEntry, SourceEntry
     from recon.domain.shell import ShellRunner
 
+#: The most of a command's stderr kept for its error message: the end, where the reason is.
+STDERR_TAIL_BYTES = 4096
+
+_READ_CHUNK = 65536
+
 
 class PopenRunner:
-    """Default ShellRunner — Popen + iterate stdout lines, optional tee."""
+    """The ShellRunner over ``/bin/sh``. A timer kills the command at its timeout, so the
+    deadline holds however slowly the lines are read, and no clock is read here."""
 
     def run_lines(
         self,
@@ -39,76 +52,99 @@ class PopenRunner:
         timeout: float,
         *,
         capture_path: Path | None = None,
-        capture_exit: list[int] | None = None,
-    ) -> Iterator[str]:
-        import os
-        import signal
-
-        # shell=True is intentional — configs are trusted local input.
+    ) -> Generator[str, None, int]:
+        # shell=True is intentional: configs are trusted local input.
         proc = subprocess.Popen(  # noqa: S602
             cmd,
             shell=True,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             cwd=cwd,
-            # Start the child in its own process group so timeout kills the
-            # whole tree, not just the shell.
-            preexec_fn=os.setsid if os.name == "posix" else None,
+            start_new_session=True,
+        )
+        expired = threading.Event()
+
+        def expire() -> None:
+            expired.set()
+            _kill_group(proc)
+
+        timer = threading.Timer(timeout, expire)
+        timer.daemon = True
+        timer.start()
+        stderr = bytearray()
+        try:
+            with _tee(capture_path) as tee:
+                for line in _stdout_lines(proc, stderr):
+                    tee(line)
+                    yield line.removesuffix("\n").removesuffix("\r")
+            proc.wait()
+        finally:
+            timer.cancel()
+            _kill_group(proc)
+            proc.wait()
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+        if expired.is_set():
+            raise CollectionError(
+                f"Command timed out after {timeout}s: {cmd}",
+                fix="raise the source's timeout:, or make the command finish sooner",
+            )
+        code = proc.returncode
+        tail = stderr.decode("utf-8", errors="replace").strip()
+        # grep and rg exit 1, silently, when nothing matched; any other failure says why.
+        if code == 0 or (code == 1 and not tail):
+            return code
+        where = f" in {cwd}" if cwd else ""
+        raise CollectionError(
+            f"Command failed (exit {code}): {cmd}" + (f"\n{tail}" if tail else ""),
+            fix=f"run the command by hand{where} to see why it failed, then fix run:",
         )
 
-        tee_file = None
-        if capture_path is not None:
-            # Append mode: if called twice (e.g., patterns fan-out across one
-            # entry), concatenate into one captured body.
-            capture_path.parent.mkdir(parents=True, exist_ok=True)
-            tee_file = open(capture_path, "a")  # noqa: SIM115
 
-        try:
-            assert proc.stdout is not None
-            # Iterate stdout as lines flow. Pull-based backpressure applies;
-            # tee writes happen at the same rate as consumer reads.
-            for raw_line in proc.stdout:
-                if tee_file is not None:
-                    tee_file.write(raw_line)
-                yield raw_line.rstrip("\n")
-
-            try:
-                _stdout, stderr = proc.communicate(timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
-                if os.name == "posix":
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+def _stdout_lines(proc: subprocess.Popen[bytes], stderr: bytearray) -> Iterator[str]:
+    """Each stdout line, decoded, as it completes; meanwhile the tail of stderr into
+    ``stderr``. Ends when both pipes have closed."""
+    assert proc.stdout is not None and proc.stderr is not None
+    with selectors.DefaultSelector() as selector:
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        selector.register(proc.stderr, selectors.EVENT_READ)
+        pending = b""
+        while selector.get_map():
+            for key, _events in selector.select():
+                chunk = os.read(key.fd, _READ_CHUNK)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                elif key.fileobj is proc.stderr:
+                    stderr += chunk
+                    del stderr[:-STDERR_TAIL_BYTES]
                 else:
-                    proc.kill()
-                proc.wait()
-                msg = f"Command timed out after {timeout}s: {cmd}"
-                raise CollectionError(msg) from exc
+                    *complete, pending = (pending + chunk).split(b"\n")
+                    for raw in complete:
+                        yield (raw + b"\n").decode("utf-8", errors="replace")
+        if pending:
+            yield pending.decode("utf-8", errors="replace")
 
-            if capture_exit is not None:
-                capture_exit.append(proc.returncode)
 
-            if proc.returncode not in (0, 1):
-                err = (stderr or "").strip()
-                detail = f"\n{err}" if err else ""
-                msg = f"Command failed (exit {proc.returncode}): {cmd}{detail}"
-                raise CollectionError(msg)
-        finally:
-            if tee_file is not None:
-                try:
-                    tee_file.flush()
-                    tee_file.close()
-                except Exception:  # noqa: BLE001
-                    pass
-            # Guarantee cleanup on consumer abandonment (GeneratorExit).
-            try:
-                if proc.poll() is None:
-                    if os.name == "posix":
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    else:
-                        proc.kill()
-                    proc.wait(timeout=5)
-            except Exception:  # noqa: BLE001
-                pass
+def _kill_group(proc: subprocess.Popen[bytes]) -> None:
+    """Kill the command and everything it started, unless it has already been reaped (until
+    then its pid, and so its group id, cannot be reused)."""
+    if proc.returncode is None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+
+
+@contextlib.contextmanager
+def _tee(path: Path | None) -> Iterator[Callable[[str], object]]:
+    """A function writing each line to ``path`` (appended: a pattern fan-out concatenates
+    into one body), or one that does nothing when there is no path."""
+    if path is None:
+        yield lambda line: None
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        yield f.write
 
 
 class CliCollector:
@@ -131,7 +167,7 @@ class CliCollector:
     ) -> Iterator[dict[str, Any]]:
         if not entry.run:
             msg = f"Collector '{entry.name}' has type=cli but no 'run' field"
-            raise CollectionError(msg, kind="config")
+            raise CollectionError(msg, kind="config", fix='run: "<the shell command>"')
 
         cwd = _cwd(source)
         timeout = source.timeout if source else 300.0
@@ -144,27 +180,12 @@ class CliCollector:
 
         try:
             for pattern, cmd in commands:
-                index = 0
-                for line in self._runner.run_lines(
-                    cmd,
-                    cwd,
-                    timeout,
-                    capture_path=capture_path,
-                    capture_exit=exit_codes,
-                ):
-                    index += 1
-                    record = parse_line(line, index)
-                    if record is None:
-                        continue
-                    if pattern is not None:
-                        record["_pattern"] = pattern
-                    if entry.normalize:
-                        record = apply_normalize(record, entry.normalize, self._transforms)
-                    yield record
+                lines = self._runner.run_lines(cmd, cwd, timeout, capture_path=capture_path)
+                exit_codes.append((yield from self._records(lines, entry, pattern)))
         finally:
             if captures is not None:
-                # Finalize even on mid-iteration abandonment — preserves partial
-                # captures for audit.
+                # Finalize even on mid-iteration abandonment: preserves partial captures
+                # for audit.
                 captures.finalize_stream(
                     entry.name,
                     source=source.name if source else None,
@@ -177,6 +198,28 @@ class CliCollector:
                     status=exit_codes[-1] if exit_codes else None,
                     content_type="text/plain",
                 )
+
+    def _records(
+        self, lines: Generator[str, None, int], entry: CollectorEntry, pattern: str | None
+    ) -> Generator[dict[str, Any], None, int]:
+        """The records of one command's lines; returns the command's exit code."""
+        with contextlib.closing(lines):
+            index = 0
+            while True:
+                try:
+                    line = next(lines)
+                except StopIteration as finished:
+                    exit_code: int = finished.value
+                    return exit_code
+                index += 1
+                record = parse_line(line, index)
+                if record is None:
+                    continue
+                if pattern is not None:
+                    record["_pattern"] = pattern
+                if entry.normalize:
+                    record = apply_normalize(record, entry.normalize, self._transforms)
+                yield record
 
 
 def _cwd(source: SourceEntry | None) -> Path | None:
@@ -204,9 +247,23 @@ def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[s
 
 def _check(entry: CollectorEntry) -> list[Problem]:
     if not entry.run:
-        return [Problem("run", "a cli collector needs run: (the shell command)")]
+        return [
+            Problem(
+                "run",
+                "a cli collector needs run: (the shell command)",
+                kind="missing_key",
+                fix="run: \"rg --json 'TODO'\"",
+            )
+        ]
     if "{pattern}" in entry.run and not entry.patterns:
-        return [Problem("patterns", "run: uses {pattern} but no patterns: are listed")]
+        return [
+            Problem(
+                "patterns",
+                "run: uses {pattern} but no patterns: are listed",
+                kind="missing_key",
+                fix="list the values under patterns:, or remove {pattern} from run:",
+            )
+        ]
     return []
 
 
@@ -223,6 +280,7 @@ collector_type = CollectorType(
     create=lambda ctx: CliCollector(transforms=ctx.transforms),
     effects=frozenset({"subprocess"}),
     summary="shell command → stdout lines (JSON objects or text) → records",
+    normalizes=True,
     check=_check,
     describe=_describe,
 )

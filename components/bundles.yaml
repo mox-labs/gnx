@@ -34,9 +34,8 @@ marketplace:
       A catalog of composable components. Your agent composes capability from the
       catalog, and you govern it.
 
-# Defaults applied to every plugin that does not override them. The cix inheritance was
-# hardcoded MIT + Mox Labs in the projector, which would have mislabelled anything
-# carrying a different license; here it is a default with an escape hatch.
+# Defaults applied to every plugin that does not override them. A plugin carrying another
+# license or author sets its own; nothing is hardcoded in the projector.
 defaults:
   license: MIT
   author:
@@ -68,7 +67,7 @@ plugins:
   # components/capabilities/recon; only its authored skill projects, from the path where it
   # lives inside the package.
   - name: recon
-    version: 0.9.0
+    version: 0.11.0
     category: research
     description: >-
       Heterogeneous sources in, structured data out. Fetch from APIs, CLIs, and web

@@ -1,0 +1,9 @@
+schema: ix.v1.kind
+name: ix.v1.probe.inspect-task
+summary: One sample of an Inspect AI task put to an agent.
+options:
+  task: {type: string, required: true, description: the Inspect task to draw the sample from}
+  sample: {type: string, description: the id of the sample within the task}
+  task_args: {type: mapping, description: arguments the task takes}
+needs: [agent]
+offers: [response, usage]

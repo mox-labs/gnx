@@ -1,50 +1,35 @@
 """The registry: extension points, and the implementations registered at each.
 
-An **extension point** is a named place where implementations of one protocol plug in
-(``runtime``, ``component``, ``payload-type``, ``observer``; ix adds ``sensor`` and
-``engine``). An **entry** is one implementation, registered under a type URL, with:
+An **entry** is one implementation at one point, under a type URL. Its ``effects`` say what
+it may touch; ``None`` means unknown, which is never read as "none".
 
-* ``config``: the pydantic model its config validates against (typed extension config: the
-  type URL selects the implementation, the model checks its settings);
-* ``needs``: shared things composition hands it (``agents``, ``models``, ``cwd``), declared,
-  never matched by field name;
-* ``effects``: what it may touch (``network``, ``subprocess``, ``filesystem``, ``model``).
-  ``None`` means **unknown**, which is never read as "none" (slick SD-12);
-* ``summary``, ``stability`` (``stable``/``beta``/``experimental``) and ``origin`` (the
-  distribution that registered it).
-
-Everything, built-ins included, arrives the same way: an entry point in the
-``matrix.extensions`` group whose value is ``register(registry) -> None``. One extension that
-fails to import or register is **quarantined**: recorded in :attr:`Registry.failures`,
-reported by ``matrix catalog``, and the rest load.
+Everything, built-ins included, arrives as an :class:`Extension`. One that fails to load or
+register is **quarantined**: recorded in :attr:`Registry.failures`, and the rest load.
 
 **Namespaces have owners.** A distribution owns the type URLs whose root segment is its own
-name (``matrix`` owns ``matrix.*``, ``ix`` owns ``ix.*``). When two extensions register the
-same type URL, the owner keeps it whichever loads first, and the other extension is
-quarantined whole: an extension cannot replace a built-in by sorting before it. Between two
-non-owners the first in entry-point name order keeps it and the second is refused, naming
-both; install order never decides.
+name (``matrix`` owns ``matrix.*``). When two extensions register one type URL, the owner
+keeps it whichever loads first, and the other is quarantined whole. Between two non-owners
+the first in name order keeps it and the second is refused, naming both.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
-from matrix.domain.errors import ConfigError, NotFoundError
-from matrix.domain.ids import check_type_url
+from matrix.domain.errors import ConfigError, NotFoundError, invalid
+from matrix.domain.ids import parse_type_url
+from matrix.domain.problems import from_validation_error, problem
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
-ENTRY_POINT_GROUP = "matrix.extensions"
 Stability = Literal["stable", "beta", "experimental"]
 
 #: The points matrix owns. Packages add theirs with :meth:`Registry.add_point`.
-MATRIX_POINTS = ("runtime", "component", "payload-type", "observer")
+MATRIX_POINTS = ("runtime", "component", "payload-type", "observer", "store")
 
 
 @dataclass(frozen=True)
@@ -88,13 +73,25 @@ def _owns(origin: str, type_url: str) -> bool:
     return type_url.split(".", 1)[0] == name
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Failure:
-    """An extension that could not be loaded, or a registration that was refused."""
+    """An extension that could not be loaded, or a registration that was refused.
+    ``extension`` is its entry point's name; ``origin`` the distribution it came from."""
 
     extension: str
     origin: str
     error: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class Extension:
+    """One extension to load: its entry point's name, the distribution it comes from, and
+    its ``register(registry)``. Anything ``register`` raises, importing included,
+    quarantines the extension."""
+
+    name: str
+    origin: str
+    register: Callable[[Registry], None]
 
 
 @dataclass
@@ -103,9 +100,11 @@ class Registry:
     failures: list[Failure] = field(default_factory=list)
     _entries: dict[tuple[str, str], Entry] = field(default_factory=dict)
     _origin: str = "(direct)"
+    #: The entry point name of each distribution loaded so far.
+    _extensions: dict[str, str] = field(default_factory=dict)
 
     def add_point(self, point: str) -> Registry:
-        """Declare an extension point owned by the caller (ix declares ``sensor``)."""
+        """Declare an extension point owned by the caller."""
         self.points.add(point)
         return self
 
@@ -123,14 +122,15 @@ class Registry:
     ) -> Registry:
         """Register ``build(config, **needs)`` (or ``build(**needs)`` when untyped).
 
-        Raises ConfigError for an unknown point, a malformed type URL, or a duplicate.
+        Raises ConfigError for an unknown point, a type URL without a version segment, or a
+        duplicate.
         """
         if point not in self.points:
             raise _UnknownPointError(
                 f"no extension point {point!r}. Points: {', '.join(sorted(self.points))}",
                 fix="register at an existing point, or have its owner declare it",
             )
-        check_type_url(type_url, where=f"{point} registration")
+        parse_type_url(type_url, where=f"{point} registration")
         key = (point, type_url)
         existing = self._entries.get(key)
         if existing is not None:
@@ -142,10 +142,10 @@ class Registry:
                 }
                 self.failures.append(
                     Failure(
-                        existing.origin,
-                        existing.origin,
-                        f"registered {point} {type_url!r} in {self._origin}'s namespace; "
-                        "all of its entries were dropped",
+                        extension=self._extensions.get(existing.origin, existing.origin),
+                        origin=existing.origin,
+                        error=f"registered {point} {type_url!r} in {self._origin}'s "
+                        "namespace; all of its entries were dropped",
                     )
                 )
             else:
@@ -170,10 +170,10 @@ class Registry:
     def register_payload(
         self, type_url: str, model: type[BaseModel], summary: str = ""
     ) -> Registry:
-        """Register the schema values of ``type_url`` must validate against."""
-        return self.register(
-            "payload-type", type_url, model, summary=summary or (model.__doc__ or "").strip()
-        )
+        """Register the schema values of ``type_url`` must validate against. Without a
+        ``summary``, the first line of the model's docstring is its summary."""
+        first_line = (model.__doc__ or "").strip().split("\n", 1)[0]
+        return self.register("payload-type", type_url, model, summary=summary or first_line)
 
     def entry(self, point: str, type_url: str) -> Entry:
         found = self._entries.get((point, type_url))
@@ -203,34 +203,45 @@ class Registry:
         config: Mapping[str, Any] | None = None,
         *,
         needs: Mapping[str, Any] | None = None,
-        where: str = "<config>",
+        where: str = "",
     ) -> Any:
-        """Validate ``config`` and build the entry, handing it the needs it declared."""
+        """Validate ``config`` and build the entry, handing it the needs it declared.
+
+        ``where`` is the key path of the config in its document (``matrix.runtimes.fast``):
+        every problem's path starts with it. Raises NotFoundError for a type URL nothing
+        registered, and ConfigError listing every problem with the config.
+        """
         entry = self.entry(point, type_url)
         available = dict(needs or {})
         missing = sorted(entry.needs - set(available))
         if missing:
             raise ConfigError(
-                f"{where}: {type_url} needs {missing}, which composition did not provide",
+                f"{where or type_url}: {type_url} needs {missing}, which composition did not "
+                "provide",
                 fix="compose it through matrix.compose, or pass the needs explicitly",
             )
         given = {n: available[n] for n in entry.needs}
         if entry.config is None:
             if config:
-                raise ConfigError(
-                    f"{where}: {type_url} takes no config, but got keys {sorted(config)}"
+                raise invalid(
+                    f"{type_url} takes no config",
+                    [
+                        problem(
+                            f"{where}.{key}" if where else str(key),
+                            "unknown_key",
+                            f"{type_url} takes no config, but got {key!r}",
+                            fix=f"remove {key!r}",
+                        )
+                        for key in sorted(config)
+                    ],
                 )
             return entry.build(**given)
         try:
             validated = entry.config.model_validate(dict(config or {}))
         except ValidationError as e:
-            problems = [
-                f"{where}.{'.'.join(str(p) for p in err['loc']) or '(root)'}: {err['msg']}"
-                for err in e.errors()
-            ]
-            raise ConfigError(
-                f"invalid config for {type_url}:\n  " + "\n  ".join(problems),
-                problems=problems,
+            raise invalid(
+                f"invalid config for {type_url}",
+                from_validation_error(e, prefix=where),
                 fix=f"see `matrix describe {type_url}` for its config schema",
             ) from None
         return entry.build(validated, **given)
@@ -242,40 +253,41 @@ class Registry:
             if isinstance(e.build, type) and issubclass(e.build, BaseModel)
         }
 
-    def discover(self, group: str = ENTRY_POINT_GROUP) -> Registry:
-        """Load every ``group`` entry point, in name order; quarantine any that fail.
+    def load(self, extensions: Iterable[Extension]) -> Registry:
+        """Load ``extensions`` in name order; quarantine any that fail.
 
         Each extension registers all-or-nothing: if its ``register`` raises part way, none of
-        its entries stay. An extension that registers at a point not yet declared (a sensor
-        plugin loading before ix declares ``sensor``) is retried once the others have loaded.
+        its entries stay. An extension that registers at a point not yet declared (a plugin
+        loading before the package that owns the point) is retried once the others have loaded.
         """
-        pending = sorted(entry_points(group=group), key=lambda e: e.name)
+        pending = sorted(extensions, key=lambda extension: extension.name)
         for attempt in (1, 2):
             deferred = []
-            for ep in pending:
-                origin = ep.dist.name if ep.dist is not None else ep.value
-                error = self._load(ep, origin)
+            for extension in pending:
+                error = self._load(extension)
                 if error is None:
                     continue
                 if attempt == 1 and isinstance(error, _UnknownPointError):
-                    deferred.append(ep)
+                    deferred.append(extension)
                 else:
                     self.failures.append(
-                        Failure(ep.name, origin, f"{type(error).__name__}: {error}")
+                        Failure(
+                            extension=extension.name,
+                            origin=extension.origin,
+                            error=f"{type(error).__name__}: {error}",
+                        )
                     )
             pending = deferred
         return self
 
-    def _load(self, ep: Any, origin: str) -> Exception | None:
+    def _load(self, extension: Extension) -> Exception | None:
         before = dict(self._entries)
         points = set(self.points)
         failures = len(self.failures)
-        self._origin = origin
+        self._origin = extension.origin
+        self._extensions[extension.origin] = extension.name
         try:
-            register = ep.load()
-            if not callable(register):
-                raise TypeError(f"{ep.value} is not callable; expected register(registry)")
-            register(self)
+            extension.register(self)
         except Exception as e:
             self._entries = before  # all-or-nothing
             self.points = points

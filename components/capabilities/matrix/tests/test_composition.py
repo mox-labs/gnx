@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import subprocess
+import sys
+from importlib.metadata import version
 from typing import TYPE_CHECKING
 
 import pytest
@@ -12,6 +16,7 @@ from matrix import (
     BoundAgent,
     ConfigError,
     MatrixConfig,
+    NotFoundError,
     Registry,
     compose,
     default_registry,
@@ -96,26 +101,72 @@ def test_unknown_runtime_type_lists_registered() -> None:
         compose(
             _config(runtimes={"x": {"type": "strands"}}), registry=default_registry(discover=False)
         )
-    msg = str(e.value)
-    assert "runtimes.x.type: 'strands'" in msg and "claude-sdk" in msg and "mock" in msg
+    (found,) = e.value.problems
+    assert (found.path, found.kind, found.got) == (
+        "matrix.runtimes.x.type",
+        "name_unknown",
+        "strands",
+    )
+    assert {"claude-sdk", "mock", "model"} <= set(found.allowed)
 
 
 def test_runtime_option_typo_names_runtime_and_key() -> None:
     with pytest.raises(ConfigError) as e:
-        compose(_config(runtimes={"m": {"type": "mock", "defualt": "x"}}), source="ix.yaml")
-    assert "ix.yaml: runtimes.m" in str(e.value) and "defualt" in str(e.value)
+        compose(_config(runtimes={"m": {"type": "mock", "defualt": "x"}}), source="ix.matrix")
+    assert [(p.path, p.kind) for p in e.value.problems] == [
+        ("ix.matrix.runtimes.m.defualt", "unknown_key")
+    ]
 
 
 def test_agent_naming_an_unconfigured_runtime() -> None:
-    with pytest.raises(
-        ConfigError, match=r"agents\.a\.runtime: 'sdk' is not a configured runtime. Configured: m"
-    ):
-        compose(_config(runtimes={"m": {"type": "mock"}}, agents={"a": {"runtime": "sdk"}}))
+    with pytest.raises(ConfigError) as e:
+        compose(
+            _config(
+                runtimes={"m": {"type": "mock"}},
+                agents={"a": {"runtime": "sdk", "system_prompt": "x"}},
+            )
+        )
+    (found,) = e.value.problems
+    assert (found.path, found.kind, found.got, found.allowed) == (
+        "matrix.agents.a.runtime",
+        "name_unknown",
+        "sdk",
+        ("m",),
+    )
 
 
 def test_agent_with_no_definition_and_no_inline_prompt() -> None:
-    with pytest.raises(ConfigError, match=r"agents\.ghost: no definition named 'ghost'"):
+    with pytest.raises(ConfigError, match=r"no definition named 'ghost'") as e:
         compose(_config(runtimes={"m": {"type": "mock"}}, agents={"ghost": {"runtime": "m"}}))
+    assert [p.path for p in e.value.problems] == ["matrix.agents.ghost.definition"]
+
+
+def test_every_composition_problem_is_reported_at_once() -> None:
+    """Regression (S14): a bad runtime type hid the agent naming a runtime that is not there."""
+    with pytest.raises(ConfigError) as e:
+        compose(
+            _config(
+                runtimes={"m": {"type": "nope"}},
+                agents={"a": {"runtime": "zz", "system_prompt": "x"}},
+            )
+        )
+    assert [p.path for p in e.value.problems] == [
+        "matrix.runtimes.m.type",
+        "matrix.agents.a.runtime",
+    ]
+    assert e.value.complete
+
+
+def test_an_agent_whose_runtime_could_not_be_built_is_reported_as_unchecked() -> None:
+    with pytest.raises(ConfigError) as e:
+        compose(
+            _config(
+                runtimes={"m": {"type": "nope"}},
+                agents={"a": {"runtime": "m", "system_prompt": "x"}},
+            )
+        )
+    assert [p.path for p in e.value.problems] == ["matrix.runtimes.m.type"]
+    assert e.value.complete is False  # the runtime's check of the agent was never made
 
 
 def test_named_definition_that_was_not_loaded_is_an_error_even_with_inline_prompt() -> None:
@@ -129,8 +180,9 @@ def test_named_definition_that_was_not_loaded_is_an_error_even_with_inline_promp
 
 
 def test_missing_definitions_directory(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="does not exist"):
+    with pytest.raises(ConfigError, match="no folder or file") as e:
         compose(_config(definitions=["nope"]), base_dir=tmp_path)
+    assert [p.path for p in e.value.problems] == ["matrix.definitions"]
 
 
 def test_duplicate_definition_across_sources(tmp_path: Path) -> None:
@@ -138,8 +190,39 @@ def test_duplicate_definition_across_sources(tmp_path: Path) -> None:
     other = tmp_path / "more"
     other.mkdir()
     (other / "reviewer.md").write_text("again")
-    with pytest.raises(ConfigError, match="'reviewer' is defined in both"):
+    with pytest.raises(ConfigError) as e:
         compose(_config(definitions=["agents", "more"]), base_dir=tmp_path)
+    (found,) = e.value.problems
+    assert (found.kind, found.got, found.source) == (
+        "name_taken",
+        "reviewer",
+        str(other / "reviewer.md"),
+    )
+    assert str(tmp_path / "agents" / "reviewer.md") in found.message
+
+
+def test_a_definition_in_two_tiers_is_one_problem_at_the_key_that_read_both(
+    tmp_path: Path,
+) -> None:
+    """Regression: a second config's definitions accumulated onto the first's, and the clash
+    came back at the path ``name`` with no fix, followed by a misleading "no definition named
+    'claimer' was loaded" for the agent that used it."""
+    from matrix import load_config
+
+    for tier in ("first", "second"):
+        (tmp_path / tier / "agents").mkdir(parents=True)
+        (tmp_path / tier / "agents" / "reviewer.md").write_text("---\nname: reviewer\n---\nHi.\n")
+        (tmp_path / tier / "matrix.yaml").write_text(
+            "matrix:\n  definitions: [agents]\n  runtimes: {m: {type: mock}}\n"
+            "  agents: {reviewer: {runtime: m}}\n"
+        )
+    loaded = load_config(sources=[tmp_path / "first/matrix.yaml", tmp_path / "second/matrix.yaml"])
+    with pytest.raises(ConfigError) as e:
+        compose(loaded)
+    (found,) = e.value.problems
+    assert (found.path, found.kind, found.got) == ("matrix.definitions", "name_taken", "reviewer")
+    assert "read together" in found.message and "--only" in found.fix
+    assert e.value.complete is False  # the agent that uses it was not checked
 
 
 def test_top_level_models_reach_model_runtimes() -> None:
@@ -169,7 +252,7 @@ def test_extension_runtime_registers_by_entry_point(monkeypatch: pytest.MonkeyPa
 
             return register
 
-    monkeypatch.setattr("matrix.domain.registry.entry_points", lambda group: [_EP()])
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: [_EP()])
     container = compose(_config(runtimes={"s": {"type": "acme.v1.runtime.strands"}}))
     assert isinstance(container.runtime("s"), MockRuntime)
     entry = container.registry.entry("runtime", "acme.v1.runtime.strands")
@@ -186,7 +269,68 @@ def test_every_builtin_runtime_satisfies_the_port() -> None:
     assert isinstance(MockRuntime(), AgentRuntime)
 
 
+def test_bind_puts_a_held_definition_on_a_configured_runtime_with_the_observers(
+    tmp_path: Path,
+) -> None:
+    """Container.bind is public and nothing inside matrix calls it: held here to what the
+    API reference says it does."""
+    events = tmp_path / "events.jsonl"
+    container = compose(
+        _config(
+            runtimes={"offline": {"type": "mock", "default": "ok"}},
+            observers=[{"type": "jsonl", "path": str(events)}],
+        )
+    )
+    agent = container.bind(AgentDefinition(name="held", system_prompt="p"), "offline")
+    assert agent.runtime is container.runtime("offline")
+    assert asyncio.run(agent.run("t")).content == "ok"
+    assert '"matrix.agent.end"' in events.read_text()  # the container's observers saw it
+    with pytest.raises(NotFoundError):
+        container.bind(AgentDefinition(name="held", system_prompt="p"), "nope")
+
+
 def test_bound_agent_keeps_definition_immutable() -> None:
     d = AgentDefinition(name="a", system_prompt="p")
     agent = BoundAgent(d, MockRuntime())
     assert agent.definition is d and agent.name == "a"
+
+
+@pytest.mark.parametrize(
+    ("module", "config", "extra"),
+    [
+        ("claude_agent_sdk", {"runtimes": {"r": {"type": "claude-sdk"}}}, "claude"),
+        ("hardline", {"runtimes": {"r": {"type": "model"}}}, "models"),
+    ],
+)
+def test_selecting_what_a_missing_extra_provides_is_a_config_error_naming_the_extra(
+    monkeypatch: pytest.MonkeyPatch, module: str, config: dict[str, object], extra: str
+) -> None:
+    """Regression: a missing extra raised a bare ImportError, with no kind and no fix."""
+    monkeypatch.setitem(sys.modules, module, None)
+    with pytest.raises(ConfigError) as raised:
+        compose(_config(**config))
+    error = raised.value.payload()["error"]
+    assert error["kind"] == "config"
+    (found,) = error["problems"]
+    assert (found["kind"], found["got"]) == ("extra_missing", module)
+    tag = f"matrix-v{version('matrix')}"  # the release the installed matrix is
+    requirement = f'"matrix[{extra}] @ git+https://github.com/mox-labs/gnx@{tag}#subdirectory='
+    assert f"uv add {requirement}" in error["fix"]  # never `pip install matrix`, which is
+    assert f"uv tool install --with {requirement}" in error["fix"]  # another package
+    assert "pip install" not in error["fix"] and found["fix"] == error["fix"]
+
+
+def test_matrix_imports_and_composes_with_no_extra_installed() -> None:
+    script = (
+        "import sys\n"
+        "for name in ('claude_agent_sdk', 'hardline', 'opentelemetry'):\n"
+        "    sys.modules[name] = None\n"
+        "import matrix\n"
+        "container = matrix.compose(matrix.MatrixConfig.model_validate(\n"
+        "    {'runtimes': {'r': {'type': 'mock'}}}))\n"
+        "assert container.runtime('r') is not None\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr

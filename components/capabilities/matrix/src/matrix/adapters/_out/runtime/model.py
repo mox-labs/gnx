@@ -1,11 +1,16 @@
-"""ModelAgentRuntime — an AgentDefinition run as one model call through hardline.
+"""ModelAgentRuntime: an AgentDefinition run as one model call through hardline.
 
-For agents that are a prompt and a model and nothing else: triage, extraction, a judge.
-Any model family hardline has a registry row for — a local MLX model, Gemini, Claude.
+For agents that are a prompt and a model and nothing else: triage, extraction, a judge, in
+any model family hardline has a registry row for.
 
 No tool loop. A definition that declares tools is refused rather than run without them:
 the agent defined and the agent measured would differ, and nothing downstream would know.
 ``max_turns`` is an upper bound, which one call satisfies.
+
+An agent's ``model`` here is a name in the hardline registry (``matrix.models``, or
+hardline's own tiers), not an SDK alias; unset, ``default_model``, then the registry's
+default. hardline reports tokens, not dollars, so a run's spend ceiling counts nothing for
+these sessions; bound them with ``max_tokens``.
 
 Type URL: ``matrix.v1.runtime.model``. Requires the ``models`` extra (hardline).
 """
@@ -17,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from matrix.domain.agent import AgentResponse
-from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason
+from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason, missing_extra
 
 if TYPE_CHECKING:
     from hardline import ModelRuntime
@@ -26,6 +31,11 @@ if TYPE_CHECKING:
 
 
 class ModelAgentRuntimeConfig(BaseModel):
+    """One model call through hardline. An agent's `model` on this runtime is a model name in
+    the hardline registry (`models`, `matrix.models`, or hardline's own tiers); unset,
+    `default_model`, then the registry's default. Sessions report tokens, not cost, so
+    `matrix.limits.spend_usd` cannot count them: bound them with `max_tokens`."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     #: A hardline registry section. Composition fills this from the top-level ``matrix.models``
@@ -49,9 +59,7 @@ class ModelAgentRuntime:
         try:
             from hardline import build_runtime
         except ImportError as e:
-            raise ImportError(
-                "the model runtime requires 'hardline'. Install with: uv add 'matrix[models]'"
-            ) from e
+            raise missing_extra("models", needed_by="the model runtime", module="hardline") from e
         runtime = (
             build_runtime(config=config.models, label="matrix.models")
             if config.models is not None
@@ -86,7 +94,10 @@ class ModelAgentRuntime:
             )
         except HardlineError as e:
             raise AgentRuntimeError(
-                f"agent {definition.name!r}: {e}", reason=_reason(e), agent=definition.name
+                f"agent {definition.name!r}: {e}",
+                reason=_reason(e),
+                retry_after_s=getattr(e, "retry_after", None),
+                agent=definition.name,
             ) from e
         except Exception as e:  # the port promises a response or a classified error
             raise AgentRuntimeError(
@@ -101,10 +112,15 @@ class ModelAgentRuntime:
             duration_ms=completion.latency_ms,
             num_turns=1,
             family=completion.family,
+            provider=_PROVIDERS.get(completion.backend),
             model=completion.name,
             stop="completed",
         )
 
+
+#: hardline backends that speak to one provider, by the GenAI conventions' provider name. An
+#: OpenAI-compatible backend may front any provider, so it names none.
+_PROVIDERS: dict[str, str] = {"anthropic": "anthropic"}
 
 _BACKEND_REASONS: dict[str, RuntimeReason] = {
     "rate_limit": "rate_limited",

@@ -1,0 +1,9 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.timing
+summary: Latency and throughput, read from what a load probe recorded.
+needs: [load]
+metrics:
+  - {name: latency, unit: ms, direction: lower, shape: histogram, description: time from request sent to response complete}
+  - {name: ttfb, unit: ms, direction: lower, shape: histogram, description: time from request sent to first byte}
+  - {name: throughput, unit: req/s, direction: higher, shape: scalar, description: successfully answered requests per second}
+  - {name: error_rate, unit: ratio, direction: lower, shape: count, description: requests that failed out of requests sent}

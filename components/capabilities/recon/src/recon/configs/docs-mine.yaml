@@ -22,7 +22,6 @@ catalog:
     type: web
     url: https://docs.python.org/3
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.9.0 (https://github.com/mox-labs/gnx)"
     timeout: 30
 
 collectors:

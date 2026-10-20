@@ -5,7 +5,7 @@ An MCP tool call in Claude Code returns its result into the conversation, and th
 Three parts do the work:
 
 1. A Claude Code **`PostToolUse` hook** fires after each MCP tool call and pipes the call's payload to `recon capture`.
-2. **`recon capture <mission>`** appends the payload to the mission's capture log, `.recon/<mission>/captures/captures.jsonl`, as an `external` capture (format: [capture-format.md](../reference/capture-format.md)).
+2. **`recon capture <mission>`** appends the payload to the mission's capture log, `.recon/<mission>/captures/captures.jsonl`, as an `external` capture (format: [the capture log format](../reference/capture-format.md)).
 3. A **`capture` collector** in the mission's config reads that log on `recon survey`, normalizes the bodies, and writes JSONL that `recon query` reads.
 
 ## 1. Create the mission
@@ -30,7 +30,7 @@ collectors:
       text: text
 ```
 
-`_capture` is the capture line itself (see [capture-format.md](../reference/capture-format.md)), so the table records which tool ran, with what input, and when.
+`_capture` is the capture line itself (its fields: [the capture log format](../reference/capture-format.md)), so the table records which tool ran, with what input, and when.
 
 ## 2. Wire the hook
 

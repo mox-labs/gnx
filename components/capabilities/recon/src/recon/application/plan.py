@@ -1,8 +1,11 @@
-"""Planning — validate a mission config and resolve every run it would make, with no effects.
+"""Planning: validate a mission config and resolve every run it would make, with no effects.
 
 ``build_plan`` is what ``survey --dry-run`` prints and what ``survey`` checks before it
-creates an archive. It reports *every* problem it can find, each located by a path into
-the config (``collectors[2].normalize.title``), rather than stopping at the first.
+creates an archive. It reports every problem it can find, each located by a path dotted
+from the config's root (``collectors.2.normalize.title``) and carrying a kind and a fix,
+rather than stopping at the first. An unknown key does not stop the checks of the entry it
+is in: the entry is checked again without it. Only an entry that does not parse even then
+is left unchecked, and the plan says so (``complete`` is false).
 
 Pure: no network, no subprocess, no filesystem. Collector types contribute through their
 ``CollectorType.check`` and ``describe`` hooks, which are pure by contract.
@@ -10,38 +13,39 @@ Pure: no network, no subprocess, no filesystem. Collector types contribute throu
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, get_args
 
 from pydantic import BaseModel, ValidationError
 
-from recon.application.transforms import spec_problems
+from recon.domain.archives import EVENT_LOG_NAME
 from recon.domain.capture import CAPTURE_LOG_NAME
-from recon.domain.exceptions import Problem
+from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.domain.normalize import path_problem, spec_problems
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from recon.domain.collector import CollectorType, Transform
+    from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
 
-_TOP_LEVEL_KEYS = frozenset(ReconConfig.model_fields)
+_TOP_LEVEL_KEYS = tuple(sorted(ReconConfig.model_fields))
+
+#: A top-level key beginning with this is the config author's own: a note, or the holder of
+#: a YAML anchor that collectors alias. recon ignores it. Every other unknown key is an error.
+IGNORED_KEY_PREFIX = "_"
 
 #: Output names that would overwrite a file recon itself writes into an archive.
-RESERVED_OUTPUT_NAMES = frozenset({CAPTURE_LOG_NAME.removesuffix(".jsonl")})
+RESERVED_OUTPUT_NAMES = frozenset(
+    name.removesuffix(".jsonl") for name in (CAPTURE_LOG_NAME, EVENT_LOG_NAME)
+)
 
-
-@dataclass(frozen=True)
-class BrokenPlugin:
-    """An entry point that could not be loaded. Reported, never fatal to other plugins."""
-
-    group: str
-    name: str
-    value: str
-    error: str
-
-    def describe(self) -> str:
-        return f"{self.group}:{self.name} ({self.value}) failed to load: {self.error}"
+#: pydantic's error types, as problem kinds; a type error not listed is ``wrong_shape`` when
+#: its name says the value had the wrong type, else ``invalid_value``.
+_PYDANTIC_KINDS = {"extra_forbidden": "unknown_key", "missing": "missing_key"}
+_QUOTED = re.compile(r"'([^']*)'")
 
 
 @dataclass(frozen=True)
@@ -56,7 +60,7 @@ class PlannedRun:
     effects: list[str] | None  # None: the type did not declare its effects (unknown)
     detail: dict[str, Any]
 
-    def as_dict(self) -> dict[str, Any]:
+    def document(self) -> dict[str, Any]:
         return {
             "output": self.output,
             "file": f"{self.output}.jsonl",
@@ -71,10 +75,14 @@ class PlannedRun:
 
 @dataclass(frozen=True)
 class Plan:
+    """``complete`` is false when part of the config could not be checked, so more problems
+    may follow a fix."""
+
     config: ReconConfig | None
     runs: list[PlannedRun] = field(default_factory=list)
     problems: list[Problem] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[Problem] = field(default_factory=list)
+    complete: bool = True
 
     @property
     def valid(self) -> bool:
@@ -82,10 +90,10 @@ class Plan:
 
     def effects(self) -> list[str]:
         """The union of declared effects; ``unknown`` when any run's type did not declare."""
-        out: set[str] = set()
+        found: set[str] = set()
         for run in self.runs:
-            out.update(run.effects if run.effects is not None else ["unknown"])
-        return sorted(out)
+            found.update(run.effects if run.effects is not None else ["unknown"])
+        return sorted(found)
 
 
 def fan_out(
@@ -106,158 +114,433 @@ def fan_out(
     return [(None, entry.name)]
 
 
-def _loc_path(prefix: str, loc: tuple[int | str, ...]) -> str:
-    path = prefix
-    for part in loc:
-        path += f"[{part}]" if isinstance(part, int) else (f".{part}" if path else str(part))
-    return path
-
-
-def _validate_items(
-    raw: Any, key: str, model: type[BaseModel], problems: list[Problem]
-) -> list[tuple[int, Any]]:
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        problems.append(Problem(key, f"must be a list, got {type(raw).__name__}"))
-        return []
-    parsed: list[tuple[int, Any]] = []
-    for i, item in enumerate(raw):
-        try:
-            parsed.append((i, model.model_validate(item)))
-        except ValidationError as exc:
-            for err in exc.errors():
-                problems.append(Problem(_loc_path(f"{key}[{i}]", err["loc"]), err["msg"]))
-    return parsed
-
-
 def build_plan(
-    raw: Any,
-    *,
-    collector_types: Mapping[str, CollectorType],
-    transforms: Mapping[str, Transform],
-    broken: list[BrokenPlugin] | None = None,
-    env: Mapping[str, str] | None = None,
+    raw: Any, plugins: Plugins, env: Mapping[str, str], *, base: Path | None = None
 ) -> Plan:
-    """Validate ``raw`` (the YAML-loaded config) and resolve its runs.
+    """Validate ``raw`` (the parsed config) and resolve its runs.
 
     Each catalog and collector entry is validated on its own, so one malformed entry does
-    not hide the problems in the others.
+    not hide the problems in the others. A ``local`` source's relative ``url`` is resolved
+    against ``base`` (the project root), so a mission means the same directories wherever
+    it is run from. ``env`` is read only to warn about a credential variable a used source
+    names and the environment does not set.
     """
-    broken = broken or []
-    env = env if env is not None else {}
-    problems: list[Problem] = []
-    warnings = [f"plugin {b.describe()}" for b in broken]
-
+    warnings = [plugin_warning(b) for b in plugins.broken]
     if not isinstance(raw, dict):
         got = "an empty file" if raw is None else type(raw).__name__
-        problems.append(Problem("", f"a config must be a mapping with collectors:, got {got}"))
-        return Plan(config=None, problems=problems, warnings=warnings)
+        problem = Problem(
+            "",
+            f"a config must be a mapping with collectors:, got {got}",
+            kind="wrong_shape",
+            fix="write a mapping with at least `collectors:`",
+        )
+        return Plan(config=None, problems=[problem], warnings=warnings, complete=False)
 
-    for key in raw:
-        if key not in _TOP_LEVEL_KEYS:
-            allowed = ", ".join(sorted(_TOP_LEVEL_KEYS))
-            problems.append(Problem(str(key), f"unknown key; a config has: {allowed}"))
-    if "collectors" not in raw:
-        problems.append(Problem("collectors", "required: list at least one collector"))
-    elif isinstance(raw["collectors"], list) and not raw["collectors"]:
-        problems.append(Problem("collectors", "empty: list at least one collector"))
-    preserve_raw = raw.get("preserve_raw", False)
-    if not isinstance(preserve_raw, bool):
-        problems.append(Problem("preserve_raw", "must be true or false"))
-
-    sources: list[tuple[int, SourceEntry]] = _validate_items(
-        raw.get("catalog"), "catalog", SourceEntry, problems
-    )
-    entries: list[tuple[int, CollectorEntry]] = _validate_items(
+    raw = {k: v for k, v in raw.items() if not _ignored(k)}
+    problems = _top_level_problems(raw)
+    sources, sources_whole = _validate_items(raw.get("catalog"), "catalog", SourceEntry, problems)
+    entries, entries_whole = _validate_items(
         raw.get("collectors"), "collectors", CollectorEntry, problems
     )
+    sources = [(i, _anchored(src, base)) for i, src in sources]
+    catalog = _catalog(sources, problems)
+    unchecked = _unparsed_names(raw.get("catalog"), catalog) if not sources_whole else set()
 
-    catalog: dict[str, SourceEntry] = {}
-    for i, src in sources:
-        if src.name in catalog:
-            problems.append(Problem(f"catalog[{i}].name", f"duplicate source name {src.name!r}"))
-        catalog[src.name] = src
-
-    broken_types = {b.name: b for b in broken if b.group == "recon.collectors"}
-    installed = ", ".join(sorted(collector_types)) or "(none)"
     runs: list[PlannedRun] = []
     produced_by: dict[str, int] = {}
     used_sources: set[str] = set()
-
     for i, entry in entries:
-        at = f"collectors[{i}]"
-        ctype = collector_types.get(entry.type)
-        if ctype is None:
-            if entry.type in broken_types:
-                msg = f"collector type {entry.type!r} is installed but failed to load: "
-                msg += broken_types[entry.type].error
-            else:
-                msg = f"unknown collector type {entry.type!r}; installed: {installed}"
-            problems.append(Problem(f"{at}.type", msg))
-
-        if entry.source and entry.source not in catalog:
-            known = ", ".join(sorted(catalog)) or "(empty catalog)"
-            problems.append(
-                Problem(f"{at}.source", f"source {entry.source!r} not in catalog; have: {known}")
-            )
-        elif ctype is not None and ctype.requires_source and not entry.source and not catalog:
-            problems.append(
-                Problem(
-                    f"{at}.source",
-                    f"a {entry.type} collector needs a source: add one under catalog: "
-                    "and name it here (or omit source: to fan out over the catalog)",
-                )
-            )
-
-        if ctype is not None:
-            problems.extend(
-                Problem(f"{at}.{p.path}" if p.path else at, p.message) for p in ctype.check(entry)
-            )
-        if entry.normalize:
-            for column, message in spec_problems(entry.normalize, transforms).items():
-                problems.append(Problem(f"{at}.normalize.{column}", message))
-
+        ctype = plugins.collector_types.get(entry.type)
+        problems.extend(_entry_problems(i, entry, catalog, plugins, unchecked))
         for source, output in fan_out(entry, catalog):
-            if output in RESERVED_OUTPUT_NAMES:
-                problems.append(
-                    Problem(f"{at}.name", f"output {output!r} is reserved for the capture log")
-                )
-            if output in produced_by:
-                j = produced_by[output]
-                problems.append(
-                    Problem(
-                        f"{at}.name",
-                        f"output {output}.jsonl is also produced by collectors[{j}]: "
-                        "rename one so each output is unique",
-                    )
-                )
+            problems.extend(_output_problems(i, output, produced_by))
             produced_by.setdefault(output, i)
             if source is not None:
                 used_sources.add(source.name)
-            if ctype is None:
-                continue
-            target = entry if output == entry.name else entry.model_copy(update={"name": output})
-            runs.append(
-                PlannedRun(
-                    output=output,
-                    collector=entry.name,
-                    type=entry.type,
-                    source=source.name if source else None,
-                    type_url=entry.type_url,
-                    effects=sorted(ctype.effects) if ctype.effects is not None else None,
-                    detail=ctype.describe(target, source),
+            if ctype is not None:
+                runs.append(_planned_run(entry, output, source, ctype))
+
+    warnings += _credential_warnings(sources, used_sources, env)
+    warnings += _mixed_fan_out_warnings(entries, catalog)
+    config = None
+    if not problems:
+        config = ReconConfig(
+            catalog=[src for _, src in sources],
+            collectors=[entry for _, entry in entries],
+            preserve_raw=raw.get("preserve_raw", False),
+        )
+    return Plan(
+        config=config,
+        runs=runs,
+        problems=problems,
+        warnings=warnings,
+        complete=sources_whole and entries_whole,
+    )
+
+
+def _anchored(source: SourceEntry, base: Path | None) -> SourceEntry:
+    if source.type != "local" or base is None or Path(source.url).is_absolute():
+        return source
+    return source.model_copy(update={"url": str(base / source.url)})
+
+
+def _planned_run(
+    entry: CollectorEntry, output: str, source: SourceEntry | None, ctype: CollectorType
+) -> PlannedRun:
+    target = entry if output == entry.name else entry.model_copy(update={"name": output})
+    return PlannedRun(
+        output=output,
+        collector=entry.name,
+        type=entry.type,
+        source=source.name if source else None,
+        type_url=entry.type_url,
+        effects=sorted(ctype.effects) if ctype.effects is not None else None,
+        detail=ctype.describe(target, source),
+    )
+
+
+def _ignored(key: Any) -> bool:
+    return isinstance(key, str) and key.startswith(IGNORED_KEY_PREFIX)
+
+
+def _top_level_problems(raw: dict[Any, Any]) -> list[Problem]:
+    problems = []
+    for key in raw:
+        if key not in _TOP_LEVEL_KEYS:
+            problems.append(
+                Problem(
+                    str(key),
+                    f"unknown key; a config has: {', '.join(_TOP_LEVEL_KEYS)} "
+                    f"(a top-level key beginning with {IGNORED_KEY_PREFIX} is ignored)",
+                    kind="unknown_key",
+                    fix=f"remove {key!r}, correct its spelling, or prefix it with "
+                    f"{IGNORED_KEY_PREFIX} to keep it as a note",
+                    got=str(key),
+                    allowed=_TOP_LEVEL_KEYS,
                 )
             )
-
-    for i, src in sources:
-        if src.name in used_sources and src.auth.env and not env.get(src.auth.env):
-            warnings.append(
-                f"catalog[{i}].auth.env: {src.auth.env} is not set; "
-                f"requests to {src.name!r} will be sent without credentials"
+    if "collectors" not in raw:
+        problems.append(
+            Problem(
+                "collectors",
+                "required: list at least one collector",
+                kind="missing_key",
+                fix="add `collectors:` with at least one entry",
             )
+        )
+    elif isinstance(raw["collectors"], list) and not raw["collectors"]:
+        problems.append(
+            Problem(
+                "collectors",
+                "empty: list at least one collector",
+                kind="missing_key",
+                fix="add at least one entry under `collectors:`",
+            )
+        )
+    if not isinstance(raw.get("preserve_raw", False), bool):
+        problems.append(
+            Problem(
+                "preserve_raw",
+                "must be true or false",
+                kind="wrong_shape",
+                fix="preserve_raw: true",
+                got=_scalar(raw["preserve_raw"]),
+                allowed=("true", "false"),
+            )
+        )
+    return problems
 
-    config: ReconConfig | None = None
-    if not problems:
-        config = ReconConfig.model_validate(raw)
-    return Plan(config=config, runs=runs, problems=problems, warnings=warnings)
+
+def _validate_items[M: BaseModel](
+    raw: Any, key: str, model: type[M], problems: list[Problem]
+) -> tuple[list[tuple[int, M]], bool]:
+    """The entries under ``key`` that parse, and whether every entry did. An entry whose
+    only fault is unknown keys is parsed again without them, so its other checks still run."""
+    if raw is None:
+        return [], True
+    if not isinstance(raw, list):
+        problems.append(
+            Problem(
+                key,
+                f"must be a list, got {type(raw).__name__}",
+                kind="wrong_shape",
+                fix=f"make {key}: a list",
+            )
+        )
+        return [], False
+    parsed: list[tuple[int, M]] = []
+    whole = True
+    for i, item in enumerate(raw):
+        try:
+            parsed.append((i, model.model_validate(item)))
+            continue
+        except ValidationError as exc:
+            problems.extend(_from_pydantic(f"{key}.{i}", model, exc))
+            known = _without_unknown_keys(item, exc)
+        try:
+            parsed.append((i, model.model_validate(known)))
+        except ValidationError:
+            whole = False
+    return parsed, whole
+
+
+def _without_unknown_keys(item: Any, exc: ValidationError) -> Any:
+    """``item`` with every key pydantic refused as unknown taken out."""
+    if not isinstance(item, dict):
+        return item
+    pruned = {**item}
+    for err in exc.errors():
+        if err["type"] != "extra_forbidden":
+            continue
+        *parents, last = err["loc"]
+        holder: Any = pruned
+        for part in parents:
+            child = holder.get(part) if isinstance(holder, dict) else None
+            if isinstance(child, dict):
+                child = holder[part] = {**child}
+            holder = child
+        if isinstance(holder, dict):
+            holder.pop(last, None)
+    return pruned
+
+
+def _from_pydantic(prefix: str, model: type[BaseModel], exc: ValidationError) -> list[Problem]:
+    problems = []
+    for err in exc.errors():
+        path = ".".join([prefix, *(str(part) for part in err["loc"])])
+        kind = _problem_kind(err)
+        fix = {
+            "unknown_key": f"remove {path} or correct its spelling",
+            "missing_key": f"set {path}",
+        }.get(kind, f"correct {path}")
+        problems.append(
+            Problem(
+                path,
+                err["msg"],
+                kind=kind,
+                fix=fix,
+                got=None if kind == "missing_key" else _scalar(err.get("input")),
+                allowed=_allowed(model, err),
+            )
+        )
+    return problems
+
+
+def _problem_kind(err: Mapping[str, Any]) -> str:
+    error_type = str(err["type"])
+    if error_type in _PYDANTIC_KINDS:
+        return _PYDANTIC_KINDS[error_type]
+    return "wrong_shape" if error_type.endswith(("_type", "_parsing")) else "invalid_value"
+
+
+def _allowed(model: type[BaseModel], err: Mapping[str, Any]) -> tuple[str, ...]:
+    """The legal values where pydantic's error implies a closed set: the keys a mapping takes,
+    or a literal's values."""
+    if err["type"] == "extra_forbidden":
+        return _keys_at(model, err["loc"][:-1])
+    if err["type"] == "literal_error":
+        return tuple(_QUOTED.findall(str((err.get("ctx") or {}).get("expected", ""))))
+    return ()
+
+
+def _keys_at(model: type[BaseModel], loc: tuple[int | str, ...]) -> tuple[str, ...]:
+    current = model
+    for part in loc:
+        info = current.model_fields.get(part) if isinstance(part, str) else None
+        nested = _model_in(info.annotation) if info is not None else None
+        if nested is None:
+            return ()
+        current = nested
+    return tuple(sorted(current.model_fields))
+
+
+def _model_in(annotation: Any) -> type[BaseModel] | None:
+    """The model an annotation names, alone or in an optional."""
+    for candidate in (annotation, *get_args(annotation)):
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
+    return None
+
+
+def _scalar(value: Any) -> str | int | float | bool | None:
+    return value if isinstance(value, str | int | float | bool) else None
+
+
+def _catalog(
+    sources: list[tuple[int, SourceEntry]], problems: list[Problem]
+) -> dict[str, SourceEntry]:
+    catalog: dict[str, SourceEntry] = {}
+    for i, src in sources:
+        if src.name in catalog:
+            problems.append(
+                Problem(
+                    f"catalog.{i}.name",
+                    f"duplicate source name {src.name!r}",
+                    kind="name_taken",
+                    fix="give each catalog source its own name",
+                    got=src.name,
+                )
+            )
+        catalog[src.name] = src
+    return catalog
+
+
+def _unparsed_names(raw: Any, catalog: Mapping[str, SourceEntry]) -> set[str]:
+    """The names of the catalog sources that did not parse: a collector that names one is
+    not told it is missing, since the source's own problems are already reported."""
+    items = raw if isinstance(raw, list) else []
+    names = {item.get("name") for item in items if isinstance(item, dict)}
+    return {name for name in names if isinstance(name, str) and name not in catalog}
+
+
+def _entry_problems(
+    i: int,
+    entry: CollectorEntry,
+    catalog: Mapping[str, SourceEntry],
+    plugins: Plugins,
+    unchecked: set[str],
+) -> list[Problem]:
+    at = f"collectors.{i}"
+    problems = []
+    ctype = plugins.collector_types.get(entry.type)
+    if ctype is None:
+        problems.append(_unknown_type(at, entry.type, plugins))
+    if entry.source and entry.source not in catalog:
+        if entry.source not in unchecked:
+            known = ", ".join(sorted(catalog)) or "(empty catalog)"
+            problems.append(
+                Problem(
+                    f"{at}.source",
+                    f"source {entry.source!r} not in catalog; have: {known}",
+                    kind="name_unknown",
+                    fix="name a catalog source, add this one under catalog:, or omit source: "
+                    "to fan out over the catalog",
+                    got=entry.source,
+                    allowed=tuple(sorted(catalog)),
+                )
+            )
+    elif ctype is not None and ctype.requires_source and not entry.source and not catalog:
+        problems.append(
+            Problem(
+                f"{at}.source",
+                f"a {entry.type} collector needs a source",
+                kind="missing_key",
+                fix="add a source under catalog: and name it here (or omit source: to fan out "
+                "over the catalog)",
+            )
+        )
+    if ctype is not None:
+        for p in ctype.check(entry):
+            path = f"{at}.{p.path}" if p.path else at
+            problems.append(Problem(path, p.message, p.kind, p.fix, p.got, p.allowed, p.source))
+    if entry.extract and (problem := path_problem(entry.extract)) is not None:
+        problems.append(
+            Problem(
+                f"{at}.extract", problem, fix="use at most one * in the path", got=entry.extract
+            )
+        )
+    transforms = tuple(sorted(f"${name}" for name in plugins.transforms))
+    for column, message in spec_problems(entry.normalize or {}, plugins.transforms).items():
+        unknown = message.startswith("unknown transform")
+        problems.append(
+            Problem(
+                f"{at}.normalize.{column}",
+                message,
+                kind="name_unknown" if unknown else "invalid_value",
+                fix="use an installed transform (recon status --json lists them) and at most "
+                "one * per path",
+                got=_scalar((entry.normalize or {}).get(column)),
+                allowed=transforms if unknown else (),
+            )
+        )
+    return problems
+
+
+def _unknown_type(at: str, name: str, plugins: Plugins) -> Problem:
+    broken = {b.name: b for b in plugins.broken if b.group == "recon.collectors"}
+    installed = tuple(sorted(plugins.collector_types))
+    if name in broken:
+        message = f"collector type {name!r} is installed but failed to load: {broken[name].error}"
+        fix = "fix or reinstall the package that registers it (recon status --json shows why)"
+    else:
+        message = f"unknown collector type {name!r}; installed: {', '.join(installed) or '(none)'}"
+        fix = f"use one of: {', '.join(installed) or '(none)'}"
+    return Problem(f"{at}.type", message, kind="name_unknown", fix=fix, got=name, allowed=installed)
+
+
+def _output_problems(i: int, output: str, produced_by: Mapping[str, int]) -> list[Problem]:
+    at = f"collectors.{i}.name"
+    problems = []
+    if output in RESERVED_OUTPUT_NAMES:
+        problems.append(
+            Problem(
+                at,
+                f"output {output!r} is reserved for a file recon writes into every archive",
+                kind="name_taken",
+                fix="rename the collector",
+                got=output,
+            )
+        )
+    if output in produced_by:
+        problems.append(
+            Problem(
+                at,
+                f"output {output}.jsonl is also produced by collectors.{produced_by[output]}",
+                kind="name_taken",
+                fix="rename one of the two collectors so each output is unique",
+                got=output,
+            )
+        )
+    return problems
+
+
+def plugin_warning(broken: BrokenPlugin) -> Problem:
+    """The warning for a plugin that failed to load or to build."""
+    return Problem(
+        "",
+        f"plugin {broken.describe()}",
+        kind="plugin_broken",
+        fix="fix or reinstall the package that registers it (recon status --json shows why)",
+        got=f"{broken.group}:{broken.name}",
+    )
+
+
+def _mixed_fan_out_warnings(
+    entries: list[tuple[int, CollectorEntry]], catalog: Mapping[str, SourceEntry]
+) -> list[Problem]:
+    """A collector with no ``source:`` runs against every catalog source. When those are of
+    different types, adding a source to the mission has most likely fanned it out over one
+    it was not written for: a command run in a web source, a URL asked of a directory."""
+    types = sorted({src.type for src in catalog.values()})
+    if len(types) < 2:
+        return []
+    names = ", ".join(f"{src.name} ({src.type})" for src in catalog.values())
+    return [
+        Problem(
+            f"collectors.{i}.source",
+            f"no source: pinned, so this {entry.type} collector runs against every catalog "
+            f"source, and they are of different types: {names}",
+            kind="fan_out_mixed",
+            fix=f"pin it with source: <name> (one of: {', '.join(catalog)}), or keep it "
+            "unpinned if it is meant for every one",
+            allowed=tuple(catalog),
+        )
+        for i, entry in entries
+        if not entry.source
+    ]
+
+
+def _credential_warnings(
+    sources: list[tuple[int, SourceEntry]], used: set[str], env: Mapping[str, str]
+) -> list[Problem]:
+    return [
+        Problem(
+            f"catalog.{i}.auth.env",
+            f"{src.auth.env} is not set; requests to {src.name!r} will be sent without credentials",
+            kind="env_unset",
+            fix=f"set {src.auth.env}, or leave it unset to send the requests without it",
+            got=src.auth.env,
+        )
+        for i, src in sources
+        if src.name in used and src.auth.env and not env.get(src.auth.env)
+    ]

@@ -1,632 +1,719 @@
-"""Composition root: the only module that joins ix's domain to concrete adapters.
+"""Composition root: the only module that joins the use cases to concrete adapters.
 
-**Configuration** follows matrix's convention, so ix shares runtimes, models and agents with
-every other tool. From lowest to highest priority:
+Every adapter (subject, probe, sensor, environment) is resolved through matrix's registry by
+the type URL the experiment names, so an installed extension adds one without an edit here;
+so is every agent runtime a session or a judge runs on. A run's observers are the ones
+matrix's config names for ix, resolved through the same registry. Genre and kind
+declarations are data, not components: they are files, found through the ``ix.genre`` and
+``ix.kind`` entry points and a lab's own folders, and read, like the experiment and its
+probes, through matrix's loader.
 
-1. ix's schema defaults (``trials: 5``, ``repeats: 1``, ``engine: native``);
-2. the ``ix:`` section of ``~/.matrix/config.yaml``, ``~/.ix/config.yaml``, ``./matrix.yaml``,
-   ``./ix.yaml``, ``$MATRIX_CONFIG``, ``$IX_CONFIG`` (see :class:`IxConfig`);
-3. the experiment's own ``experiment.yaml``;
-4. command-line flags.
+ix's settings (:class:`~ix.composition.settings.IxSettings`) are the ``ix:`` section of
+matrix's config tiers, read once per root when first needed.
 
-The ``matrix:`` section of the same files supplies runtimes, models and agents. A subject
-may name one of those agents (``agent: reviewer``) or define itself inline (prompt, model,
-tools, ``runtime: {type: ...}``).
-
-**Extensions.** Sensors and engines are entries at matrix registry points ``sensor`` and
-``engine`` (see :mod:`ix.composition.builtins`); config names a built-in by its short name
-and anyone else's by type URL. Nothing here lists the built-ins.
-
-**Probe truths.** Each sensor declares the probe keys it reads. A probe key that no configured
-sensor reads is refused when the experiment loads (a typo like ``expectaton`` must not pass
-silently), unless it is one of ix's own keys or starts with ``x-``.
+A source is an experiment file (or a directory holding ``experiment.yaml``), whose relative
+paths resolve against its directory and whose registration is the file beside it; or an
+:class:`~ix.domain.experiment.Experiment` built in memory, given a ``base`` and, to be
+registered, a ``registration`` path. A run is kept in matrix's store under
+``<experiment directory>/.ix/runs/<run id>/``, or under the settings' ``runs``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
+import secrets
+import time
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _installed_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import matrix
 from matrix import (
-    AgentDefinition,
-    BoundAgent,
     Config,
     MatrixConfig,
     MatrixError,
-    compose,
+    Registry,
+    check_type_url,
     default_registry,
     load_config,
     runtime_type_url,
 )
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from ix.adapters._out.filesystem_store import FilesystemStore
-from ix.adapters._out.simulated_runtime import SimulatedRuntime
-from ix.composition.builtins import register as register_builtins
-from ix.config.settings import find_lab
-from ix.domain import type_urls
-from ix.domain.errors import ConfigError, IxError, from_matrix
-from ix.eval.activation import expected_skill_of, should_activate
-from ix.eval.experiment import Experiment
-from ix.eval.sensors import CompositeSensor
+from ix.adapters._in.matrix_components import COMPOSITION, NEED
+from ix.adapters._out.matrix_agents import Sessions
+from ix.adapters._out.matrix_documents import (
+    STDIN_SOURCE,
+    GenreFiles,
+    KindFiles,
+    read_experiment,
+    read_probes,
+)
+from ix.adapters._out.matrix_errors import carried_over, converted
+from ix.adapters._out.matrix_process import MatrixLauncher
+from ix.adapters._out.matrix_runs import Runs as RunRecords
+from ix.adapters._out.matrix_runs import execute
+from ix.adapters._out.otel_tracing import OtelTracer
+from ix.adapters._out.registration_file import RegistrationFile
+from ix.application import experiments as use_cases
+from ix.application import running
+from ix.application import skill as skill_document
+from ix.application.experiments import Examined, FolderProbes, Vocabulary
+from ix.application.running import Kit
+from ix.composition.extension import LAUNCHER, POINTS, RUNTIMES, SESSIONS
+from ix.composition.settings import IxSettings
+from ix.domain import schema
+from ix.domain.errors import ConfigError, IxError, NotFoundError, UsageError
+from ix.domain.experiment import Experiment
+from ix.domain.genre import Genres, genres
+from ix.domain.kind import KIND_FAMILIES, Kinds, kinds
+from ix.domain.problem import InvalidExperimentError
+from ix.domain.report import Report, Runs
+from ix.domain.report import report as build_report
+from ix.domain.report import summary as summarize
 
 if TYPE_CHECKING:
-    from matrix import Agent, AgentRuntime, Container, Registry
+    from collections.abc import Callable, Collection, Iterator, Mapping
 
-    from ix.domain.models import ExperimentConfig
-    from ix.domain.ports import AgentFactory, Engine, Sensor
-    from ix.domain.types import Probe, Subject
+    from matrix import Entry
 
-SIMULATED = "simulated"
-#: Runtimes that call no model and spend nothing: ix's simulator and matrix's mock. Every
-#: other runtime is *live*: it may spend money and, on claude-sdk, run tools.
-OFFLINE_RUNTIMES = frozenset({SIMULATED, "mock"})
-#: The suffix a simulated run of a non-simulated subject is saved under.
-SIMULATED_SUFFIX = "@simulated"
-#: Probe keys ix itself reads, whatever the sensors: the simulator's canned reply, and notes.
-RESERVED_PROBE_KEYS = frozenset({"mock_response", "tags", "notes", "title", "description"})
-#: How many trials a subject's session may take by default: one turn, as a routing eval needs.
-DEFAULT_SUBJECT_TURNS = 1
+    from ix.api import PathLike, Source
+    from ix.domain.design import Design
+    from ix.domain.plan import Plan
+    from ix.domain.problem import Problem, Validation
+    from ix.domain.registration import Deviations, Registered, Registration
+    from ix.domain.run import Reading, RunRecord
 
-
-# --- Configuration ---------------------------------------------------------------------
+try:
+    VERSION = _installed_version("ix")
+except PackageNotFoundError:  # running from a source tree that was never installed
+    VERSION = "0+unknown"
 
 
-class IxConfig(BaseModel):
-    """The ``ix:`` section: your defaults for every experiment. Each field may be absent."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    #: A lab directory, relative to where ix runs, used when --lab is not given.
-    lab: str | None = None
-    trials: int | None = Field(default=None, ge=1)
-    repeats: int | None = Field(default=None, ge=1)
-    #: ``native`` or ``inspect`` (or an extension's type URL), or ``{type, <options>}``.
-    engine: str | dict[str, Any] | None = None
+#: Where an experiment's runs are kept, relative to the experiment's directory, unless the
+#: settings say where every run is kept.
+RUNS_DIRECTORY = ".ix/runs"
 
 
-def load_ix_config(sources: list[Path] | None = None) -> Config[IxConfig]:
-    """ix's settings and the shared ``matrix:`` section, through matrix's config tiers."""
+def type_url_problem(name: str) -> str | None:
+    """Why ``name`` is not a type URL under the registry's grammar; None when it is one.
+    The one grammar ix holds genre and kind names to."""
     try:
-        return load_config(IxConfig, "ix", sources)
-    except MatrixError as e:
-        raise from_matrix(e) from None
-
-
-def effective(experiment: ExperimentConfig, ix: IxConfig) -> ExperimentConfig:
-    """The experiment with your ``ix:`` defaults filled in where its file is silent."""
-    update: dict[str, Any] = {}
-    explicit = experiment.model_fields_set
-    if ix.trials is not None and "trials" not in explicit:
-        update["trials"] = ix.trials
-    if ix.repeats is not None and "repeats" not in explicit:
-        update["repeats"] = ix.repeats
-    if ix.engine is not None and "engine" not in explicit:
-        update["engine"] = {"type": ix.engine} if isinstance(ix.engine, str) else dict(ix.engine)
-    return experiment.model_copy(update=update) if update else experiment
-
-
-# --- Registry --------------------------------------------------------------------------
-
-
-def build_registry(*, discover: bool = True) -> Registry:
-    """matrix's registry with ix's points and built-ins, plus every installed extension."""
-    registry = default_registry(discover=discover)
-    if "sensor" not in registry.points:  # ix not installed with metadata (a source tree)
-        register_builtins(registry)
-    return registry
-
-
-def _entry_names(registry: Registry, point: str) -> list[str]:
-    return sorted(type_urls.short(e.type_url) for e in registry.entries(point))
-
-
-# --- Subjects --------------------------------------------------------------------------
-
-
-class SubjectSpec(BaseModel):
-    """A subject's config: a configured agent by name, or a definition plus its runtime.
-
-    With ``agent``, the definition and runtime come from ``matrix.agents.<name>``, and any
-    definition field given here overrides that agent's. Without it, the subject is defined
-    inline and ``runtime: {type: ..., <options>}`` says what plays it.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    agent: str | None = None
-    system_prompt: str | None = None
-    model: str | None = None
-    tools: tuple[str, ...] | None = None
-    max_turns: int | None = Field(default=None, ge=1)
-    runtime: dict[str, Any] = {}
-
-    @field_validator("tools", mode="before")
-    @classmethod
-    def _comma_string(cls, value: Any) -> Any:
-        if isinstance(value, str):
-            return tuple(t.strip() for t in value.split(",") if t.strip())
-        return value
-
-
-def subject_spec(subject: Subject) -> SubjectSpec:
-    try:
-        spec = SubjectSpec.model_validate(subject.config)
-    except ValidationError as e:
-        issues = "; ".join(f"{'.'.join(map(str, i['loc']))}: {i['msg']}" for i in e.errors())
-        raise ConfigError(
-            f"subject {subject.name!r}: {issues}. A subject names a configured agent "
-            "(agent: <name>) or defines one inline: system_prompt, model, tools, max_turns, "
-            "runtime: {type: ..., <options>}"
-        ) from None
-    if spec.agent and spec.runtime:
-        raise ConfigError(
-            f"subject {subject.name!r} names agent {spec.agent!r} and also a runtime; the "
-            "agent brings its own runtime. Drop one."
-        )
-    return spec
-
-
-def runtime_type(
-    subject: Subject | None, *, simulate: bool = False, matrix: MatrixConfig | None = None
-) -> str:
-    """The runtime that will play ``subject``: ``simulated`` under ``--simulate``, the named
-    agent's runtime type, its own ``runtime.type``, or ``unset``. Nothing is built."""
-    if simulate:
-        return SIMULATED
-    if subject is None:
-        return "unset"
-    config = subject.config
-    agent = config.get("agent")
-    if agent and matrix is not None:
-        spec = matrix.agents.get(agent)
-        if spec is not None and spec.runtime in matrix.runtimes:
-            return matrix.runtimes[spec.runtime].type
-    runtime = config.get("runtime") or {}
-    return str(runtime.get("type") or "unset") if isinstance(runtime, dict) else "unset"
-
-
-def is_live(runtime: str, registry: Registry | None = None) -> bool:
-    """Whether a runtime may call a real model or the network: what a plan warns about.
-
-    Read from the runtime's registered effects when a registry is given, so a third party's
-    offline runtime is offline without ix knowing its name; unknown effects count as live.
-    Without a registry (or for an unregistered name, ``unset`` included), only ix's
-    simulator and matrix's mock are offline: assume the cost.
-    """
-    if runtime == SIMULATED:
-        return False
-    if registry is not None and ("runtime", runtime_type_url(runtime)) in registry:
-        effects = registry.entry("runtime", runtime_type_url(runtime)).effects
-        return effects is None or bool(effects & {"model", "network"})
-    return runtime not in OFFLINE_RUNTIMES
-
-
-def results_name(subject: Subject | None, *, simulate: bool) -> str:
-    """The name a run's results are saved under.
-
-    A simulated run of a subject whose own runtime is not the simulator is saved as
-    ``<name>@simulated``, so a harness check never replaces that subject's measured results.
-    """
-    name = subject.name if subject else "default"
-    if simulate and runtime_type(subject) != SIMULATED and not name.endswith(SIMULATED_SUFFIX):
-        return name + SIMULATED_SUFFIX
-    return name
-
-
-def _definition_name(name: str) -> str:
-    cleaned = "".join(c if c.isalnum() or c in "._-" else "-" for c in name).strip("-._")
-    return cleaned or "subject"
-
-
-def subject_definition(
-    subject: Subject, spec: SubjectSpec | None = None, base: AgentDefinition | None = None
-) -> AgentDefinition:
-    """The definition a subject runs: its agent's (when it names one), overridden by its own
-    fields. An inline subject gets one turn unless it says otherwise."""
-    s = spec or subject_spec(subject)
-    fields: dict[str, Any] = base.model_dump() if base is not None else {}
-    fields.update(name=_definition_name(subject.name), description=subject.description)
-    for key in ("system_prompt", "model", "tools", "max_turns"):
-        value = getattr(s, key)
-        if value is not None:
-            fields[key] = value
-    if base is None:
-        fields.setdefault("max_turns", DEFAULT_SUBJECT_TURNS)
-    return AgentDefinition.model_validate(fields)
-
-
-def compose_matrix(
-    experiment: ExperimentConfig, matrix: MatrixConfig, *, cwd: str | None, registry: Registry
-) -> Container:
-    """matrix's runtimes, models and agents for this experiment; its ``models`` win."""
-    if experiment.models is not None:
-        matrix = matrix.model_copy(update={"models": experiment.models})
-    try:
-        return compose(matrix, registry=registry, context={"cwd": cwd}, source="matrix")
-    except MatrixError as e:
-        raise from_matrix(e) from None
-
-
-def make_agent_factory(
-    container: Container,
-    experiment: ExperimentConfig | None = None,
-    *,
-    simulate: bool = False,
-    seed: int | None = None,
-) -> AgentFactory:
-    """Subject + trial → a bound agent.
-
-    ``simulate`` puts every subject on ix's simulator (the ``--simulate`` flag), seeded per
-    repeat and trial so repeats differ. Any other runtime is built once per subject and
-    reused across its trials.
-    """
-    cache: dict[str, AgentRuntime] = {}
-    registry = container.registry
-
-    def build(subject: Subject, trial_index: int, run_index: int = 0) -> Agent:
-        spec = subject_spec(subject)
-        base = None
-        if spec.agent:
-            try:
-                configured = container.agent(spec.agent)
-            except MatrixError as e:
-                raise from_matrix(e, f"subject {subject.name!r}") from None
-            base = configured.definition
-        definition = subject_definition(subject, spec, base)
-        options = dict(spec.runtime)
-        kind = str(options.pop("type", "") or "")
-        if simulate or kind == SIMULATED:
-            runtime: AgentRuntime = _simulator(experiment, seed, trial_index, run_index)
-        elif spec.agent:
-            runtime = container.agent(spec.agent).runtime
-        elif not kind:
-            raise ConfigError(
-                f"subject {subject.name!r} has no runtime.type and names no agent. Runtimes: "
-                f"{', '.join(registered_runtimes(registry))}. For a dry run use --simulate."
-            )
-        else:
-            runtime = cache.get(subject.name) or _runtime(subject, kind, options)
-            cache[subject.name] = runtime
-        try:
-            return BoundAgent(definition, runtime, observers=container.observers)
-        except MatrixError as e:
-            raise from_matrix(e, f"subject {subject.name!r}") from None
-
-    def _runtime(subject: Subject, kind: str, options: dict[str, Any]) -> AgentRuntime:
-        url = runtime_type_url(kind)
-        if ("runtime", url) not in registry:
-            raise ConfigError(
-                f"subject {subject.name!r}: runtime.type {kind!r} is not registered. "
-                f"Registered: {', '.join(registered_runtimes(registry))}"
-            )
-        try:
-            built: AgentRuntime = registry.create(
-                "runtime", url, options, needs=container.needs(), where=f"subject {subject.name}"
-            )
-        except MatrixError as e:
-            raise from_matrix(e) from None
-        return built
-
-    return build
-
-
-def _simulator(
-    experiment: ExperimentConfig | None, seed: int | None, trial_index: int, run_index: int
-) -> SimulatedRuntime:
-    # Distinct per (repeat, trial): repeats of a seeded run must differ, or the noise floor
-    # across them is 0 by construction rather than by measurement.
-    trial_seed = seed * 1_000_000 + run_index * 1000 + trial_index if seed is not None else None
-    return SimulatedRuntime(
-        expected_skill=default_skill(experiment) if experiment else None,
-        seed=trial_seed,
-        expectations=_expectations(experiment) if experiment else {},
-        skill_map=_skill_map(experiment) if experiment else {},
-        responses=_mock_responses(experiment) if experiment else {},
-    )
-
-
-def registered_runtimes(registry: Registry) -> list[str]:
-    names = {e.type_url.removeprefix("matrix.v1.runtime.") for e in registry.entries("runtime")}
-    return sorted(names | {SIMULATED})
-
-
-# --- Sensors and engines ---------------------------------------------------------------
-
-
-def judge_factory(container: Container) -> Any:
-    """``judge(name)``: the configured agent of that name, else that model on the model runtime."""
-
-    def judge(name: str) -> Agent:
-        if name in container.agents:
-            return container.agent(name)
-        runtime = container.registry.create(
-            "runtime",
-            runtime_type_url("model"),
-            {"default_model": name},
-            needs=container.needs(),
-            where=f"judge {name}",
-        )
-        return BoundAgent(
-            AgentDefinition(name="ix-judge", tools=()), runtime, observers=container.observers
-        )
-
-    return judge
-
-
-def create_sensor(
-    experiment: ExperimentConfig,
-    container: Container,
-    experiment_cwd: str | None = None,
-) -> Sensor:
-    """Build the experiment's sensor(s). Several are wrapped in a CompositeSensor."""
-    sensors = [
-        _build_one_sensor(sc, experiment.probes, container, experiment_cwd)
-        for sc in experiment.sensors
-    ]
-    return sensors[0] if len(sensors) == 1 else CompositeSensor(sensors)
-
-
-def _build_one_sensor(
-    sensor_config: dict[str, Any],
-    probes: tuple[Probe, ...],
-    container: Container,
-    experiment_cwd: str | None,
-) -> Sensor:
-    config = dict(sensor_config)
-    kind = str(config.pop("type", "activation"))
-    url = type_urls.sensor(kind)
-    registry = container.registry
-    if ("sensor", url) not in registry:
-        raise ConfigError(
-            f"unknown sensor type {kind!r}. Sensors: {', '.join(_entry_names(registry, 'sensor'))}"
-        )
-    if "graders_module" in config and experiment_cwd:
-        config["graders_module"] = str((Path(experiment_cwd) / config["graders_module"]).resolve())
-    try:
-        sensor: Sensor = registry.create(
-            "sensor",
-            url,
-            config,
-            needs={"probes": probes, "judge": judge_factory(container)},
-            where=f"sensor {kind}",
-        )
-    except MatrixError as e:
-        raise from_matrix(e) from None
-    return sensor
-
-
-def probe_problems(experiment: ExperimentConfig, registry: Registry) -> list[str]:
-    """Probe keys no configured sensor reads (typos), one problem per probe and key."""
-    readable: set[str] = set(RESERVED_PROBE_KEYS)
-    for sensor_config in experiment.sensors:
-        url = type_urls.sensor(str(sensor_config.get("type", "activation")))
-        if ("sensor", url) not in registry:
-            return []  # the unknown sensor is reported on its own
-        keys = getattr(registry.entry("sensor", url).build, "truth_keys", None)
-        if keys is None:
-            return []  # a sensor that does not say what it reads may read anything
-        readable |= set(keys)
-    problems = []
-    for probe in experiment.probes:
-        for key in sorted(probe.metadata):
-            if key not in readable and not key.startswith("x-"):
-                problems.append(
-                    f"probe {probe.id!r}: key {key!r} is read by none of this experiment's "
-                    f"sensors (they read: {', '.join(sorted(readable))}); fix the name, or "
-                    f"prefix it x- if it is a note"
-                )
-    return problems
-
-
-def create_engine(
-    experiment: ExperimentConfig,
-    container: Container,
-    *,
-    override: str | None = None,
-    results_dir: Path | None = None,
-) -> Engine:
-    options = dict(experiment.engine)
-    kind = str(override or options.pop("type", "native"))
-    if override:
-        options.pop("type", None)
-        if override != experiment.engine.get("type"):
-            options = {}  # another engine's options do not transfer
-    url = type_urls.engine(kind)
-    registry = container.registry
-    if ("engine", url) not in registry:
-        raise ConfigError(
-            f"unknown engine {kind!r}. Engines: {', '.join(_entry_names(registry, 'engine'))}"
-        )
-    try:
-        engine: Engine = registry.create(
-            "engine",
-            url,
-            options,
-            needs={"observers": container.observers, "results_dir": results_dir},
-            where=f"{experiment.name}: engine",
-        )
-    except MatrixError as e:
-        raise from_matrix(e) from None
-    return engine
-
-
-# --- Service ---------------------------------------------------------------------------
-
-
-def create_service(
-    experiment: ExperimentConfig,
-    *,
-    simulate: bool = False,
-    lab: Path | None = None,
-    seed: int | None = None,
-    experiment_cwd: str | None = None,
-    engine: str | None = None,
-    matrix: MatrixConfig | None = None,
-    registry: Registry | None = None,
-) -> Experiment:
-    """Wire an Experiment from config: sensors, engine, agent factory, store."""
-    reg = registry or build_registry()
-    problems = probe_problems(experiment, reg)
-    if problems:
-        raise ConfigError("probe keys no sensor reads:\n  " + "\n  ".join(problems))
-    container = compose_matrix(
-        experiment, matrix or MatrixConfig(), cwd=experiment_cwd, registry=reg
-    )
-    sensor = create_sensor(experiment, container, experiment_cwd)
-    workspace = lab or find_lab()
-    chosen = create_engine(
-        experiment,
-        container,
-        override=engine,
-        results_dir=workspace / experiment.name / "results",
-    )
-    agents = make_agent_factory(container, experiment, simulate=simulate, seed=seed)
-    return Experiment(
-        sensor=sensor,
-        store=FilesystemStore(workspace),
-        engine=chosen,
-        agents=agents,
-        seed=seed,
-        simulated=simulate,
-    )
-
-
-def validate_experiment(
-    experiment: ExperimentConfig,
-    *,
-    experiment_cwd: str | None = None,
-    engine: str | None = None,
-    matrix: MatrixConfig | None = None,
-    registry: Registry | None = None,
-) -> list[str]:
-    """Compose everything a run would (sensors, engine, every subject's agent) and run nothing.
-
-    Returns every problem found, not just the first. Building a runtime constructs its
-    adapter (an SDK client, a model registry) but makes no call.
-    """
-    problems: list[str] = []
-    if not experiment.probes:
-        problems.append("no probes: add tasks/*.md")
-    reg = registry or build_registry()
-    problems.extend(probe_problems(experiment, reg))
-    try:
-        container = compose_matrix(
-            experiment, matrix or MatrixConfig(), cwd=experiment_cwd, registry=reg
-        )
-    except IxError as e:
-        return [*problems, f"matrix: {e}"]
-    try:
-        create_sensor(experiment, container, experiment_cwd)
-    except (IxError, MatrixError, ImportError) as e:
-        problems.append(f"sensors: {e}")
-    try:
-        create_engine(experiment, container, override=engine)
-    except (IxError, MatrixError, ImportError) as e:
-        problems.append(f"engine: {e}")
-    factory = make_agent_factory(container, experiment)
-    for subject in experiment.subjects:
-        try:
-            factory(subject, 0)
-        except (IxError, MatrixError, ImportError) as e:
-            problems.append(f"subject {subject.name!r}: {e}")
-        problems.extend(_missing_plugins(subject, experiment_cwd))
-    return problems
-
-
-def _missing_plugins(subject: Subject, experiment_cwd: str | None) -> list[str]:
-    """Local plugin paths (``runtime.plugins: [{type: local, path}]``) that do not exist.
-
-    Resolved the way the claude-sdk runtime resolves them: against ``runtime.cwd``, which
-    defaults to the experiment directory. The runtime itself never checks, so a dangling
-    path would otherwise surface only inside a live session.
-    """
-    runtime = subject.config.get("runtime")
-    if not isinstance(runtime, dict) or not isinstance(runtime.get("plugins"), list):
-        return []
-    base = Path(str(runtime.get("cwd") or experiment_cwd or "."))
-    problems = []
-    for i, plugin in enumerate(runtime["plugins"]):
-        if not isinstance(plugin, dict) or plugin.get("type", "local") != "local":
-            continue
-        path = plugin.get("path")
-        if not isinstance(path, str):
-            continue
-        resolved = (base / path).resolve()
-        if not resolved.exists():
-            problems.append(
-                f"subject {subject.name!r}: runtime.plugins[{i}].path {path!r} does not exist "
-                f"(resolved against {base}: {resolved})"
-            )
-    return problems
-
-
-def create_store(lab: Path | None = None) -> FilesystemStore:
-    """Direct store access for CLI commands that only need persistence."""
-    return FilesystemStore(lab or find_lab())
-
-
-# --- Simulator inputs ------------------------------------------------------------------
-
-
-def default_skill(experiment: ExperimentConfig) -> str | None:
-    """The skill an activation sensor in this experiment expects, if one names it."""
-    for sensor in experiment.sensors:
-        if sensor.get("type", "activation") == "activation" and sensor.get("expected_skill"):
-            return str(sensor["expected_skill"])
+        check_type_url(name)
+    except MatrixError as error:
+        return error.message
     return None
 
 
-def _expectations(experiment: ExperimentConfig) -> dict[str, bool]:
-    """Probe prompt → should it activate, read the way the sensor reads it (one module)."""
-    return {
-        probe.prompt: expected
-        for probe in experiment.probes
-        if (expected := should_activate(probe)) is not None
-    }
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def _skill_map(experiment: ExperimentConfig) -> dict[str, str]:
-    default = default_skill(experiment)
-    return {
-        probe.prompt: skill
-        for probe in experiment.probes
-        if (skill := expected_skill_of(probe, default)) is not None
-    }
+def _run_id(experiment: str) -> str:
+    """``<experiment>-<UTC time>-<4 hex digits>``: sorts by time, and two runs started in the
+    same second do not collide."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"{experiment}-{stamp}-{secrets.token_hex(2)}"
 
 
-def _mock_responses(experiment: ExperimentConfig) -> dict[str, str]:
-    return {
-        probe.prompt: str(probe.metadata["mock_response"])
-        for probe in experiment.probes
-        if "mock_response" in probe.metadata
-    }
+def load_settings() -> Config[IxSettings]:
+    """The ``matrix:`` and ``ix:`` sections of matrix's config tiers, merged and validated.
+    Raises :class:`ConfigError` with every problem, each naming its key and file."""
+    try:
+        config: Config[IxSettings] = load_config(client_type=IxSettings, client_key="ix")
+    except MatrixError as error:
+        raise carried_over(
+            "matrix's config for ix cannot be read",
+            error,
+            fix="fix each problem listed; `matrix config --tool ix --sources` shows which file "
+            "set a value",
+        ) from error
+    return config
 
 
-__all__ = [
-    "OFFLINE_RUNTIMES",
-    "RESERVED_PROBE_KEYS",
-    "SIMULATED",
-    "SIMULATED_SUFFIX",
-    "IxConfig",
-    "SubjectSpec",
-    "build_registry",
-    "compose_matrix",
-    "create_engine",
-    "create_sensor",
-    "create_service",
-    "create_store",
-    "default_skill",
-    "effective",
-    "is_live",
-    "judge_factory",
-    "load_ix_config",
-    "make_agent_factory",
-    "probe_problems",
-    "registered_runtimes",
-    "results_name",
-    "runtime_type",
-    "subject_definition",
-    "subject_spec",
-    "validate_experiment",
-]
+def _unsaid(record: logging.LogRecord) -> bool:
+    """A filter that lets no record through."""
+    return False
+
+
+class _Runtimes:
+    """matrix's agent runtimes, built from the registry by name: what a session and a judge
+    run on. A ``model`` runtime is handed the ``models`` of matrix's config.
+
+    ix says a runtime's ``warnings`` itself, once, in the plan and the report: while
+    :meth:`listening`, those of each runtime built are kept. What a runtime logs on
+    ``matrix.RUNTIME_LOGGER`` while ix builds it is therefore not let through, so a run of
+    twenty sessions does not log the same warning twenty times, and ``--json`` keeps stderr
+    to the error envelope."""
+
+    def __init__(self, registry: Registry, models: Callable[[], dict[str, Any] | None]) -> None:
+        self._registry = registry
+        self._models = models
+        self._heard: list[matrix.Problem] | None = None
+
+    @contextmanager
+    def listening(self) -> Iterator[list[matrix.Problem]]:
+        """The warnings of the runtimes built inside the block, each once."""
+        heard: list[matrix.Problem] = []
+        self._heard = heard
+        try:
+            yield heard
+        finally:
+            self._heard = None
+
+    def _entry(self, name: str) -> Entry:
+        try:
+            return self._registry.entry("runtime", runtime_type_url(name))
+        except MatrixError as error:
+            raise carried_over(f"no agent runtime {name!r}", error) from error
+
+    def build(self, name: str, config: Mapping[str, Any], *, cwd: str | None) -> Any:
+        url = self._entry(name).type_url
+        quiet = logging.getLogger(matrix.RUNTIME_LOGGER)
+        quiet.addFilter(_unsaid)
+        try:
+            runtime = self._registry.create(
+                "runtime", url, config, needs={"cwd": cwd, "models": self._models()}
+            )
+        finally:
+            quiet.removeFilter(_unsaid)
+        if self._heard is not None:
+            for found in getattr(runtime, "warnings", ()) or ():
+                if found not in self._heard:
+                    self._heard.append(found)
+        return runtime
+
+    def simulated(self, name: str) -> bool:
+        effects = self._entry(name).effects
+        return effects is not None and "model" not in effects
+
+
+@dataclass(frozen=True)
+class Telemetry:
+    """What :meth:`Root.configure_telemetry` installed: the warnings a command's documents
+    carry, and how to flush and stop it."""
+
+    warnings: tuple[Problem, ...]
+    _handle: matrix.Telemetry | None = None
+
+    def shutdown(self) -> None:
+        if self._handle is not None:
+            self._handle.shutdown()
+
+
+@dataclass(frozen=True)
+class _Opened:
+    """A source, examined, with the vocabulary it was judged against and its registration
+    file (None for an experiment object given no ``registration``)."""
+
+    examined: Examined
+    vocabulary: Vocabulary
+    registration: RegistrationFile | None
+    #: The directory the experiment's relative paths resolve against, and its runs live in.
+    base: str
+
+
+class Root:
+    """The wired experiment model. Build one over another registry to bind other adapters;
+    :func:`root` is the default, over every installed ``matrix.extensions`` entry point.
+    ``settings`` replaces what matrix's config tiers hold."""
+
+    def __init__(
+        self,
+        genre_files: GenreFiles | None = None,
+        kind_files: KindFiles | None = None,
+        *,
+        registry: Registry | None = None,
+        settings: Config[IxSettings] | None = None,
+        version: str = VERSION,
+        clock: Callable[[], str] = _now,
+        run_id: Callable[[str], str] = _run_id,
+    ) -> None:
+        self._genre_files = genre_files or GenreFiles()
+        self._kind_files = kind_files or KindFiles()
+        self._registry = default_registry() if registry is None else registry
+        self._config = settings
+        self._version = version
+        self._clock = clock
+        self._run_id = run_id
+        self._tracer = OtelTracer(version)
+        self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix.models)
+        self._supplies = {
+            LAUNCHER: MatrixLauncher(),
+            SESSIONS: Sessions(),
+            RUNTIMES: self._runtimes,
+        }
+
+    def _settings(self) -> Config[IxSettings]:
+        if self._config is None:
+            self._config = load_settings()
+        return self._config
+
+    # --- the adapters ---
+
+    def _adapter(self, entry: Entry) -> Any:
+        try:
+            return self._registry.create(entry.point, entry.type_url, needs=self._supplies)
+        except MatrixError as error:
+            raise ConfigError(
+                f"the adapter for {entry.type_url} ({entry.origin}) cannot be built: "
+                f"{error.message}",
+                fix=f"an adapter may need {', '.join(sorted(self._supplies))} and nothing "
+                "else; fix or uninstall the extension that registered it",
+                details={**error.details, "value": entry.type_url},
+            ) from error
+
+    def _built(self, kind: str) -> Any:
+        """The adapter registered for ``kind`` (a type URL), or None when there is none or
+        it cannot be built: running the experiment says why."""
+        point = POINTS.get(schema.family_of(kind) or "")
+        entries = self._registry.entries(point) if point else []
+        entry = next((entry for entry in entries if entry.type_url == kind), None)
+        if entry is None:
+            return None
+        try:
+            return self._adapter(entry)
+        except ConfigError:
+            return None
+
+    @property
+    def _runnable(self) -> frozenset[str]:
+        """Every kind (type URL) an adapter is registered for."""
+        return frozenset(
+            entry.type_url
+            for family in KIND_FAMILIES
+            for entry in self._registry.entries(POINTS[family])
+        )
+
+    def _kit(self, kinds: Collection[str], declared: Kinds | None = None) -> Kit:
+        """The adapters a run of ``kinds`` (type URLs) uses, each built from the registry,
+        with the declarations of those kinds."""
+
+        def built(family: str) -> dict[str, Any]:
+            return {
+                entry.type_url: self._adapter(entry)
+                for entry in self._registry.entries(POINTS[family])
+                if entry.type_url in kinds
+            }
+
+        found = declared if declared is not None else self.kinds()
+        return Kit(
+            subjects=built("subject"),
+            probes=built("probe"),
+            sensors=built("sensor"),
+            environments=built("environment"),
+            clock_ns=time.time_ns,
+            kinds={name: kind for name, kind in found.kinds.items() if name in kinds},
+            tracer=self._tracer,
+        )
+
+    # --- what an experiment may name ---
+
+    def genres(self, lab: PathLike | None = None) -> Genres:
+        """The installed genres, plus those in ``<lab>/genres``."""
+        files = self._genre_files.files(None if lab is None else os.fspath(lab))
+        return genres(files, grammar=type_url_problem)
+
+    def kinds(self, lab: PathLike | None = None) -> Kinds:
+        """The installed kinds, plus those in ``<lab>/kinds``."""
+        files = self._kind_files.files(None if lab is None else os.fspath(lab))
+        found = kinds(files, grammar=type_url_problem)
+        quarantined = tuple(
+            f"{failure.extension} ({failure.origin}): {failure.error}"
+            for failure in self._registry.failures
+        )
+        return found.model_copy(
+            update={
+                "runnable": tuple(sorted(self._runnable & set(found.kinds))),
+                "quarantined": quarantined,
+            }
+        )
+
+    def vocabulary(self, lab: PathLike | None = None) -> Vocabulary:
+        return Vocabulary(
+            genres=self.genres(lab),
+            kinds=self.kinds(lab),
+            adapters=self._runnable,
+            spend_cap=self._settings().client.spend_cap,
+        )
+
+    def skill(self, reference: str | None = None) -> str:
+        return skill_document.render(
+            self.genres(), self.kinds(), version=self._version, reference=reference
+        )
+
+    def configure_telemetry(self) -> Telemetry:
+        """Install the OpenTelemetry SDK from the standard ``OTEL_*`` variables, through
+        matrix, for an application's entry point (the ``ix`` command): a library never
+        installs one. Its warnings (export asked for without matrix's ``otel`` extra) are
+        what every document the command prints carries."""
+        handle = matrix.configure_telemetry()
+        return Telemetry(warnings=converted(handle.warnings), _handle=handle)
+
+    # --- opening a source ---
+
+    def _folder(self, experiment: Experiment, base: str) -> FolderProbes | None:
+        """What the probes folder beside an experiment holds, when it writes no probes
+        inline."""
+        if experiment.probes:
+            return None
+        read = read_probes(base)
+        probes = None if read.probes is None else tuple(probe.config() for probe in read.probes)
+        return FolderProbes(location=read.location, probes=probes, problems=read.problems)
+
+    def _open(
+        self,
+        source: Source,
+        *,
+        base: PathLike | None = None,
+        registration: PathLike | None = None,
+    ) -> _Opened:
+        record = None if registration is None else RegistrationFile(os.fspath(registration))
+        if isinstance(source, Experiment):
+            vocabulary = self.vocabulary(base)
+            directory = os.fspath(base) if base is not None else os.getcwd()
+            examined = self._examine(source, vocabulary, base=directory)
+            return _Opened(examined, vocabulary, record, directory)
+        read = read_experiment(os.fspath(source))
+        vocabulary = self.vocabulary(read.base)
+        if read.experiment is None:
+            examined = use_cases.unreadable(read.source, list(read.problems))
+        else:
+            examined = self._examine(
+                read.experiment, vocabulary, base=read.base, source=read.source
+            )
+        beside = None if read.source == STDIN_SOURCE else RegistrationFile.beside(read.source)
+        return _Opened(examined, vocabulary, record or beside, read.base)
+
+    def _examine(
+        self, experiment: Experiment, vocabulary: Vocabulary, *, base: str, source: str = ""
+    ) -> Examined:
+        """The experiment judged against the vocabulary, and by the adapters it would run
+        on: what only an adapter can tell is wrong is a problem too."""
+        examined = use_cases.examine(
+            experiment,
+            vocabulary,
+            base=base,
+            source=source,
+            folder=self._folder(experiment, base),
+        )
+        absolute = str(Path(base).resolve())
+        return use_cases.reviewed(examined, vocabulary, self._built, base=absolute)
+
+    def _stored(self, opened: _Opened) -> Registration | None:
+        if opened.registration is None:
+            return None
+        return use_cases.stored_registration(
+            opened.registration.read(), opened.registration.location
+        )
+
+    # --- the use cases ---
+
+    def load(self, path: PathLike) -> Experiment:
+        examined = self._open(path).examined
+        if examined.experiment is None:
+            raise InvalidExperimentError(
+                f"{examined.source} is not an experiment file "
+                f"({len(examined.problems)} problem(s))",
+                examined.problems,
+                fix=f"ix validate {examined.source}",
+                complete=examined.complete,
+            )
+        return examined.experiment
+
+    def validate(self, source: Source, *, base: PathLike | None = None) -> Validation:
+        return use_cases.validate(self._open(source, base=base).examined)
+
+    def design(self, source: Source, *, base: PathLike | None = None) -> Design:
+        return use_cases.design(self._open(source, base=base).examined)
+
+    def plan(
+        self,
+        source: Source,
+        *,
+        base: PathLike | None = None,
+        registration: PathLike | None = None,
+    ) -> Plan:
+        with self._tracer.trace("ix.plan") as span:
+            opened = self._open(source, base=base, registration=registration)
+            # Check the experiment before the record: an invalid experiment is the first
+            # thing to say, whatever state its registration is in.
+            experiment = use_cases.valid(opened.examined, "planned").experiment
+            unstartable, cautions = self._preflight(experiment, str(Path(opened.base).resolve()))
+            made = use_cases.make_plan(
+                opened.examined,
+                opened.vocabulary,
+                self._stored(opened),
+                location=opened.registration.location if opened.registration else "",
+                unstartable=unstartable,
+                earlier=self._earlier(opened.base, experiment.name),
+            )
+            made = made.model_copy(update={"warnings": (*made.warnings, *cautions)})
+            span.set(
+                **{
+                    "ix.experiment": made.experiment,
+                    "ix.plan.digest": made.digest,
+                    "ix.plan.trials": made.trials.total,
+                    "ix.plan.runnable": made.runnable,
+                }
+            )
+            return made
+
+    def _earlier(self, base: str, experiment: str) -> Iterator[RunRecord]:
+        """The runs of ``experiment`` kept beside it, latest first, each read when asked."""
+        records = self._records(str(Path(base).resolve()))
+        for summary in reversed(records.summaries()):
+            if summary.experiment == experiment and summary.status == "completed":
+                yield records.record(summary.run)
+
+    def register(
+        self,
+        source: Source,
+        *,
+        base: PathLike | None = None,
+        registration: PathLike | None = None,
+        amend: str | None = None,
+    ) -> Registered:
+        opened = self._open(source, base=base, registration=registration)
+        if opened.registration is None:
+            raise ConfigError(
+                "an experiment built in memory or read from standard input has no file to "
+                "register beside",
+                fix="register the experiment's file; from the library, pass "
+                "registration=<path of the registration file>",
+            )
+        if amend is not None and not amend.strip():
+            raise ConfigError(
+                "amending a registration needs a reason",
+                fix='ix register <path> --amend --reason "<why the design changed>"',
+                details={"path": "--reason", "value": amend},
+            )
+        use_cases.require_valid(opened.examined, "registered")
+        outcome = use_cases.register(
+            opened.examined,
+            opened.vocabulary,
+            self._stored(opened),
+            location=opened.registration.location,
+            now=self._clock(),
+            version=self._version,
+            amend_reason=amend,
+        )
+        if outcome.outcome != "unchanged":
+            opened.registration.write(outcome.registration.document())
+        return outcome
+
+    def deviations(
+        self,
+        source: Source,
+        *,
+        base: PathLike | None = None,
+        registration: PathLike | None = None,
+    ) -> Deviations:
+        opened = self._open(source, base=base, registration=registration)
+        use_cases.require_valid(opened.examined, "compared with its registration")
+        return use_cases.find_deviations(
+            opened.examined,
+            opened.vocabulary,
+            self._stored(opened),
+            location=opened.registration.location if opened.registration else "",
+        )
+
+    # --- running ---
+
+    def _preflight(
+        self, experiment: Experiment, base: str
+    ) -> tuple[tuple[str, ...], tuple[Problem, ...]]:
+        """What the subjects' adapters can tell before anything starts: why a subject cannot
+        start here (``subjects.<name>: <why>``), and what the runtimes they would build warn
+        of (a permissive ``permission_mode``), each at ``subjects.<name>.<option>``."""
+        kinds = {schema.url("subject", subject.kind) for subject in experiment.subjects.values()}
+        subjects = self._kit(kinds).subjects
+        reasons: list[str] = []
+        cautions: list[Problem] = []
+        for name, subject in experiment.subjects.items():
+            alone = experiment.model_copy(update={"subjects": {name: subject}})
+            with self._runtimes.listening() as heard:
+                reasons += running.unstartable(alone, subjects, base)
+            cautions += [
+                found.model_copy(update={"path": f"subjects.{name}.{found.path}"})
+                for found in converted(heard)
+            ]
+        return tuple(reasons), tuple(cautions)
+
+    def _records(self, base: str) -> RunRecords:
+        """The runs of the experiment in the directory ``base``: under the settings' ``runs``,
+        or ``.ix/runs`` beside it."""
+        kept = self._settings().client.runs
+        return RunRecords(kept if kept else str(Path(base).resolve() / RUNS_DIRECTORY))
+
+    def run(
+        self,
+        source: Source,
+        *,
+        exploratory: bool = False,
+        dry_run: bool = False,
+        repeats: int | None = None,
+        base: PathLike | None = None,
+        registration: PathLike | None = None,
+        on_event: Callable[[str, Mapping[str, Any]], None] | None = None,
+    ) -> Report:
+        """Run the experiment and report what it found.
+
+        Refuses before anything starts when the experiment is invalid, names a kind with no
+        adapter, or is unregistered and the run is neither ``exploratory`` nor a
+        ``dry_run``; and ``repeats`` on a run that is neither, since a gated run is held to
+        the design its registration froze. Once it has started, whatever happens is in the
+        record: a run that was stopped or that failed still returns its report, which says
+        so.
+        """
+        if repeats is not None and not (exploratory or dry_run):
+            raise UsageError(
+                f"--repeats {repeats} changes the design, and a run that gives a verdict is "
+                "held to the design its registration froze",
+                fix="pilot with --exploratory --repeats N (or --dry-run --repeats N); to "
+                "change the repeats a verdict rests on, edit the file and "
+                '`ix register <path> --amend --reason "<why>"`',
+                details={"path": "--repeats", "value": repeats},
+            )
+        opened = self._open(source, base=base, registration=registration)
+        use_cases.require_valid(opened.examined, "run")
+        directory = str(Path(opened.base).resolve())
+        records = self._records(directory)
+        examined, stored, notes = opened.examined, self._stored(opened), None
+        overridden: tuple[str, ...] = ()
+        if repeats is not None:
+            checked = use_cases.valid(examined, "run")
+            written = checked.design.repeats
+            examined = self._examine(
+                checked.experiment.model_copy(update={"repeats": repeats}),
+                opened.vocabulary,
+                base=opened.base,
+                source=examined.source,
+            )
+            use_cases.require_valid(examined, f"run with --repeats {repeats}")
+            overridden = (f"repeats: {repeats} in place of {written} (--repeats: a pilot)",)
+        if dry_run:
+            checked = use_cases.valid(examined, "dry run")
+            stood, notes = running.stand_in(checked.experiment, checked.probes, self._built)
+            examined = self._examine(
+                stood, opened.vocabulary, base=opened.base, source=examined.source
+            )
+            use_cases.require_valid(examined, "dry run on its stand-ins")
+        prepared = running.prepare(
+            examined,
+            opened.vocabulary,
+            stored,
+            run=self._run_id(examined.name),
+            base=directory,
+            now=self._clock(),
+            version=self._version,
+            exploratory=exploratory,
+            dry_run=notes,
+            overridden=overridden,
+        )
+        kit = self._kit(prepared.kinds)
+        running.check_startable(prepared.experiment, kit, directory)
+        _, cautions = self._preflight(prepared.experiment, directory)
+        manifest = prepared.manifest.model_copy(update={"warnings": cautions})
+        # A stop request (Ctrl-C, SIGTERM) arrives here as the cancellation it is, after
+        # matrix stopped the trial in flight, released what was started and finished the
+        # record. The report then says how far the run got.
+        with suppress(KeyboardInterrupt, asyncio.CancelledError):
+            asyncio.run(
+                execute(
+                    root=records.root,
+                    registry=self._registry,
+                    config=MatrixConfig.model_validate(
+                        {**COMPOSITION, "observers": self._settings().matrix.observers}
+                    ),
+                    needs={NEED: kit},
+                    manifest=manifest,
+                    trials=prepared.trials,
+                    on_event=on_event,
+                    tracer=self._tracer,
+                )
+            )
+        return self._report(records, manifest.run)
+
+    def _report(self, records: RunRecords, run: str) -> Report:
+        record = records.record(run)
+        return build_report(record, readings=self._derived_readings(record))
+
+    def _derived_readings(self, record: RunRecord) -> list[Reading] | None:
+        """The readings of a run that ended before its sensors read its interactions, taken
+        now from the stored tables and never written back. None when there are none to take,
+        or a sensor the run used has no adapter here."""
+        if not record.interactions or record.readings or record.status == "running":
+            return None
+        setup = running.setup_of(record.manifest)
+        sensors = {selected.kind for selected in setup.design.sensors}
+        if not sensors <= self._runnable:
+            return None
+        derived = asyncio.run(
+            running.sense(
+                setup,
+                self._kit(sensors),
+                trials=record.trials,
+                interactions=record.interactions,
+            )
+        )
+        return derived or None
+
+    def _locate(self, target: PathLike) -> tuple[RunRecords, str | None, str]:
+        """(records, run id or None, experiment name) for a run directory or an experiment."""
+        path = Path(os.fspath(target))
+        found = RunRecords.at(str(path)) if path.is_dir() else None
+        if found is not None:
+            records, run = found
+            return records, run, ""
+        opened = self._open(target)
+        return self._records(opened.base), None, opened.examined.name
+
+    def report(self, target: PathLike) -> Report:
+        """The report of a run: ``target`` is a run's directory, or an experiment (its file
+        or directory), meaning its latest run."""
+        records, run, experiment = self._locate(target)
+        if run is None:
+            found = [s for s in records.summaries() if not experiment or s.experiment == experiment]
+            if not found:
+                raise NotFoundError(
+                    f"{os.fspath(target)} has no runs in {records.root}",
+                    fix=f"ix run {os.fspath(target)}",
+                    details={"path": os.fspath(target)},
+                )
+            run = found[-1].run
+        return self._report(records, run)
+
+    def runs(self, target: PathLike | None = None) -> Runs:
+        """The runs kept beside an experiment, oldest first. ``target`` is the experiment
+        (its file or directory); with none, the current directory's runs of any experiment."""
+        if target is None:
+            records, experiment = self._records(os.getcwd()), ""
+        else:
+            records, _, experiment = self._locate(target)
+        found = []
+        for listed in records.summaries():
+            if experiment and listed.experiment != experiment:
+                continue
+            try:
+                found.append(summarize(build_report(records.record(listed.run))))
+            except IxError:
+                found.append(listed)  # written by another ix: its id, state and counts only
+        return Runs(location=records.root, runs=tuple(found))
+
+
+_DEFAULT: Root | None = None
+
+
+def root() -> Root:
+    """The default wiring: the installed genres and kinds, every adapter in
+    matrix's registry, and the registration file beside the experiment."""
+    global _DEFAULT  # noqa: PLW0603
+    if _DEFAULT is None:
+        _DEFAULT = Root()
+    return _DEFAULT

@@ -1,0 +1,56 @@
+# A service comparison: two builds of one proxy, across artifact size and request rate.
+#
+#   ix validate examples/proxy-streaming
+#   ix plan examples/proxy-streaming
+#
+# The first subject is the control. The variant differs from it in one option (the config
+# file), so a difference in the result has one explanation. Repeats, order, the A/A
+# calibration and the estimator are the genre's; the plan shows them.
+name: proxy-streaming
+question: Does streaming download bodies keep time to first byte and throughput, and not cost memory?
+rationale: >-
+  Streaming avoids holding a whole body in memory, so peak memory should fall; the risk is
+  a slower first byte under high request rates.
+genre: compare
+
+subjects:
+  buffered:
+    kind: process
+    command: ["./proxy", "--config", "env/buffered.yaml"]
+    url: "http://127.0.0.1:8080"
+    ready: "http://127.0.0.1:8080/healthz"
+  streaming:
+    kind: process
+    command: ["./proxy", "--config", "env/streaming.yaml"]
+    url: "http://127.0.0.1:8080"
+    ready: "http://127.0.0.1:8080/healthz"
+
+environment:
+  kind: process
+  services:
+    upstream:
+      command: ["./tools/blobserve", "--sizes", "1MiB,64MiB,1GiB"]
+      ready: "http://127.0.0.1:9000/healthz"
+  effects: ["binds 127.0.0.1:9000"]
+
+# Every combination is a cell: 3 sizes x 3 rates = 9.
+factors:
+  size: [1MiB, 64MiB, 1GiB]
+  rate: [10/s, 80/s, 640/s]
+
+probes:
+  - id: download
+    kind: http-load
+    target: "{url}/blobs/{size}"
+    load_model: open        # open vs closed changes what latency means
+    rate: "{rate}"
+    duration: 60s
+    warmup: 15s
+    verify_body: sha256     # the faster subject may not win by truncating
+
+primary: {metric: ttfb, statistic: p99}
+comparison: non-inferiority
+margin: 5%
+guardrails:
+  - {metric: throughput, margin: 5%}
+  - {metric: memory_peak, margin: 5%}
