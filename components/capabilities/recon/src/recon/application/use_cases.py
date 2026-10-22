@@ -337,19 +337,23 @@ class Recon:
 
     def query(self, name: str, sql: str, *, archive_id: str | None = None) -> QueryRows:
         """Run ``sql`` against the latest archive, or the one named. ``state`` says whether
-        the archive is incomplete, so its rows may be partial."""
+        the archive is incomplete, so its rows may be partial. A row is an object keyed by
+        column, so a name the SQL gives twice is made unique, in ``columns`` and every row,
+        with the suffix DuckDB gives it in a subquery (``a``, ``a_1``, then ``a_1_1`` on a
+        further clash)."""
         archive = self._archive(name, archive_id)
         telemetry = self._telemetry(None)
         with telemetry.span(QUERY, {"recon.mission": name, "recon.archive": archive.name}) as span:
             result = self._query.execute(archive, sql)
             span.set("recon.rows", len(result.rows))
-        rows = [dict(zip(result.columns, row, strict=True)) for row in result.rows]
+        columns = _unique(result.columns)
+        rows = [dict(zip(columns, row, strict=True)) for row in result.rows]
         return QueryRows(
             mission=name,
             archive=str(archive),
             archive_id=archive.name,
             state="incomplete" if self._archives.is_incomplete(archive) else "ok",
-            columns=result.columns,
+            columns=columns,
             rows=rows,
             count=len(rows),
             warnings=[w.document() for w in result.warnings + _dropped(telemetry)],
@@ -391,6 +395,18 @@ class Recon:
             return record_hook_payload(self._missions.capture_log(name), payload)
         except ConfigError as exc:
             raise ConfigError(str(exc), fix="run recon capture from a PostToolUse hook") from exc
+
+
+def _unique(columns: list[str]) -> list[str]:
+    """``columns``, each name already taken given ``_1`` until it is not."""
+    taken: set[str] = set()
+    unique = []
+    for column in columns:
+        while column in taken:
+            column = f"{column}_1"
+        taken.add(column)
+        unique.append(column)
+    return unique
 
 
 def _text(value: Any) -> str | None:

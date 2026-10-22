@@ -443,6 +443,22 @@ class TestQuery:
         assert doc["rows"] == [{"a": 1}, {"a": 2}]
         assert doc["count"] == 2
 
+    def test_columns_that_share_a_name_are_all_kept(self, project):
+        """Regression: ``SELECT h.a, g.a`` printed ``columns: ["a", "a"]`` but each row held
+        one ``a``: a row is an object, and the second value overwrote the first. Repeated
+        names are made unique as DuckDB makes them in a subquery (``a_1``, then ``a_1_1``
+        on a further clash), in ``columns`` and in every row alike."""
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        sql = "SELECT h.a, g.a, 0 AS a_1 FROM hello h, hello g WHERE h.a = 1 AND g.a = 2"
+
+        doc = _doc(_invoke("query", "m", sql, "--json"))
+
+        assert doc["columns"] == ["a", "a_1", "a_1_1"]
+        assert doc["rows"] == [{"a": 1, "a_1": 2, "a_1_1": 0}]
+        human = unstyle(_invoke("query", "m", sql).stdout)
+        assert "a_1_1" in human and "2" in human
+
     def test_zero_rows_is_still_a_document(self, project):
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
