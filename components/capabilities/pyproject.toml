@@ -29,6 +29,9 @@ hardline = { workspace = true }
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    # Bounds every test (the suite default is below), so a test that waits on an event that
+    # never comes fails with a traceback instead of holding the run until CI's job limit.
+    "pytest-timeout>=2.3",
     "ruff>=0.8",
     "mypy>=1.8",
     "types-PyYAML",  # gnx + harness parse YAML; strict mypy needs the stubs
@@ -48,6 +51,9 @@ dev = [
 # applies to every package's tests.
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Seconds any one test may take, setup and teardown included; a test that needs longer says
+# so with its own `@pytest.mark.timeout`.
+timeout = 60
 
 [tool.ruff]
 line-length = 100
