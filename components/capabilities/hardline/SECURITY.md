@@ -52,6 +52,15 @@ the prompt off-machine. **A registry file decides where your prompts go.** Revie
 - A call's record holds digests, never content: `turns_digest` of the turns sent, and the row's
   digest, which covers the row's `api_key` *reference*, not the key.
 
+## Telemetry
+
+hardline records OpenTelemetry spans and metrics through the API, which sends nothing until the
+host application installs an SDK and an exporter. What it records carries no content: no
+prompt, system prompt, reply, refusal or error message is an attribute, a span event or a
+span status, and a failed call's exception is not recorded on its span
+(`test_no_content_leaves_in_a_span`). What it does record says where calls went: the model id,
+the row name, the provider's host and port, token counts, reasons and durations.
+
 ## Model output
 
 Structured output is parsed with `json` and validated with pydantic — never `eval`ed or

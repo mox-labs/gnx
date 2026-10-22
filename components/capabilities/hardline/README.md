@@ -172,7 +172,7 @@ What a call does between being asked and answering (each attempt that failed, ea
 is told to an observer, as it happens:
 
 ```python
-from hardline import AttemptFailed, CallEvent, FellBack, build_runtime
+from hardline import CallEvent, FellBack, build_runtime
 
 
 class Fallbacks:
@@ -188,7 +188,27 @@ The events are `AttemptFailed` (the row asked, why it failed, and `retry_in_s`, 
 it is asked again, or `None`), `FellBack` (`name` → `to`, and the reason) and `Answered` (the
 `Completion`). An observer ignores a kind it does not know, is called on the call's own task
 and must not block; one that raises is logged and ignored. With none, nothing is told: the
-`Completion` still carries `fallback_from` and the `attempt_log`.
+`Completion` still carries `fallback_from` and the `attempt_log`. `build_runtime` passes one
+that counts retries and fallbacks in OpenTelemetry, below, unless it is handed another.
+
+### Telemetry
+
+`build_runtime` records OpenTelemetry on the GenAI semantic conventions (as read at
+`open-telemetry/semantic-conventions-genai` `9ffc7e0`, status Development), through the API
+only: nothing is recorded until the application installs an SDK, and hardline installs none.
+A host hands its own providers as `build_runtime(tracer_provider=..., meter_provider=...)`.
+
+| signal | what | attributes |
+|---|---|---|
+| span `chat {model}`, kind CLIENT | one per backend call, under the caller's current span: a retry or a fallback is a sibling | `gen_ai.operation.name`, `gen_ai.provider.name` (the backend's name), `gen_ai.request.model`, `.max_tokens`, `.temperature`, `gen_ai.output.type` (`json` in a structured mode), `server.address`, `server.port`, `hardline.row`; on an answer `gen_ai.response.model`, `.id`, `.finish_reasons` (the provider's own) and `gen_ai.usage.*`; on a failure `error.type` (the `BackendError` reason) and status `ERROR` |
+| `gen_ai.client.inference.duration` (s) | every backend call, failed ones included | operation, provider, request and response model, server, `error.type` |
+| `gen_ai.client.inference.usage.input_tokens`, `.output_tokens`, `.cache_read.input_tokens`, `.cache_write.input_tokens` | each strictly positive count a reply reports | the same, with `gen_ai.token.modality: text` |
+| `hardline.retries`, `hardline.fallbacks` | each retry, and each move down a fallback chain | `hardline.row`, `hardline.fallback`, `error.type` |
+
+hardline counts the inference tokens of the calls it makes; a host counts its own sessions,
+not the model calls inside them. **No content is recorded**: no prompt, system prompt, reply,
+refusal or error message, as an attribute, an event or a span status. There is no option to
+record it.
 
 Another composition root wires hardline from a section of its own config:
 

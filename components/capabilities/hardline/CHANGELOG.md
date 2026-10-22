@@ -23,6 +23,8 @@
 
 - **A call's failed attempts, fallbacks and answer are told to an observer.** `build_runtime(observer=...)` takes a `CallObserver`, whose `observe(event)` hears `AttemptFailed`, `FellBack` and `Answered` as each happens. It replaces the `hardline` logger's `WARNING` on a fallback and `INFO` on a retry, which no handler of hardline's reached. New exports: `CallObserver`, `CallEvent`, `AttemptFailed`, `FellBack`, `Answered`.
 
+- **OpenTelemetry, on the GenAI semantic conventions.** `build_runtime` wraps every backend so that each backend call is one `chat {model}` span (CLIENT, under the caller's span, so a retry or a fallback is a sibling) and records `gen_ai.client.inference.duration` and the `gen_ai.client.inference.usage.*` token counters; its default observer counts `hardline.retries` and `hardline.fallbacks`. hardline owns the inference counters for the calls it makes. No content is recorded, and there is no option to record it. The API only: nothing is recorded until the application installs an SDK. `build_runtime` takes `tracer_provider` and `meter_provider`. hardline now depends on `opentelemetry-api`.
+
 ### Changed (breaking)
 
 - **No provider SDK.** Both wire protocols are spoken directly over httpx2: `openai-compat` (chat completions) and `anthropic` (the Messages API). hardline depends on pydantic, pyyaml and httpx2 only; the `openai` and `anthropic` packages are no longer installed with it.
