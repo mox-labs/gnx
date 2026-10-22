@@ -23,10 +23,11 @@ the ``BackendError`` reason, or the exception's class name. Row names, model ids
 counts and reasons are not content.
 
 Values hardline chooses where the conventions leave the choice: ``gen_ai.provider.name`` is the
-backend's entry-point name (``openai-compat``, ``anthropic``), since an OpenAI-compatible
-backend cannot know which provider serves its ``base_url``; ``gen_ai.token.modality`` is
-``text``, since hardline sends text turns and reads text replies only; ``hardline.row`` names
-the registry row, which two rows of one model tell apart.
+row's ``provider`` (``ollama``, ``openai``), which its author knows, and the backend's
+entry-point name (``openai-compat``, ``anthropic``) for a row that names none, since an
+OpenAI-compatible backend cannot know which provider serves its ``base_url``;
+``gen_ai.token.modality`` is ``text``, since hardline sends text turns and reads text replies
+only; ``hardline.row`` names the registry row, which two rows of one model tell apart.
 
 Everything goes through the OpenTelemetry API, which does nothing until an application installs
 an SDK; hardline never installs one. A caller may hand its own providers to ``build_runtime``.
@@ -154,7 +155,7 @@ class TracedBackend:
     ) -> RawCompletion:
         common = {
             "gen_ai.operation.name": "chat",
-            "gen_ai.provider.name": self._name,
+            "gen_ai.provider.name": spec.provider or self._name,
             "gen_ai.request.model": spec.model,
             **_server(spec.base_url),
         }
