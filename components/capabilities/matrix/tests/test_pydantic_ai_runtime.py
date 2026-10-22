@@ -299,6 +299,8 @@ def test_tools_named_in_config_are_imported_when_the_runtime_is_built() -> None:
     with pytest.raises(ConfigError) as raised:
         compose(MatrixConfig.model_validate(config), registry=default_registry(discover=False))
     assert "tools.gone" in str(raised.value)
+    # a problem the runtime raises is placed under the runtime's key, as a config one is
+    assert [p.path for p in raised.value.problems] == ["matrix.agent_runtimes.p.tools.gone"]
     del config["agent_runtimes"]["p"]["tools"]["gone"]
     box = compose(MatrixConfig.model_validate(config), registry=default_registry(discover=False))
     runtime = box.agent_runtime("p")

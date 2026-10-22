@@ -277,6 +277,13 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Fixed
 
+- **A malformed model registry is a config problem, exit 3.** hardline's own `ConfigError`
+  escaped the `hardline` model runtime and the `pydantic-ai` agent runtime, so a typo in
+  `matrix.models` exited 1 as kind `unknown`, telling the reader to report a bug in matrix.
+  Each problem is now reported at the key that was written (`matrix.models.models.m.family`,
+  or under the runtime's own `models`), once however many runtimes read it, with the file
+  that set it. Every problem a runtime's builder raises (a `tools.<name>` that does not
+  import) is placed under the runtime's key the same way.
 - **A model call names who served it.** `ModelCall.provider`, and the session row's, were set
   for hardline's `anthropic` backend alone, so a row served by ollama or any other
   OpenAI-compatible server said nobody served it. The `hardline` model runtime and the

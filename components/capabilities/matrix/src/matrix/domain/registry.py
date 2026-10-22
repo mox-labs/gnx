@@ -43,7 +43,7 @@ from matrix.domain.observer import Observer
 from matrix.domain.ports._out.agent_runtime import AgentRuntime
 from matrix.domain.ports._out.construct_store import ConstructStore
 from matrix.domain.ports._out.model_runtime import ModelRuntime
-from matrix.domain.problems import from_validation_error, problem
+from matrix.domain.problems import from_validation_error, problem, summary
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -85,6 +85,26 @@ def _breaks(found: Any, port: type) -> list[str]:
         ):
             lacking.append(f"{name} is not async")
     return lacking
+
+
+def _placed(where: str, build: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """``build(*args, **kwargs)``, with the problems of a ConfigError it raises placed under
+    ``where``: a builder states them relative to its own config. One with a ``source`` is in
+    that source, and kept as it is."""
+    try:
+        return build(*args, **kwargs)
+    except ConfigError as e:
+        if not (where and e.problems):
+            raise
+        placed = [p if p.source else p.at(where) for p in e.problems]
+        head = e.message.splitlines()[0]
+        raise type(e)(
+            f"{where}: {head}\n{summary(placed)}",
+            fix=e.fix,
+            problems=placed,
+            complete=e.complete,
+            **e.details,
+        ) from e
 
 
 def _port_fix(port: type) -> str:
@@ -332,9 +352,11 @@ class Registry:
         """Validate ``config`` and build the entry, handing it the needs it declared.
 
         ``where`` is the key path of the config in its document (``matrix.agent_runtimes.fast``):
-        every problem's path starts with it. Raises NotFoundError for a type URL nothing
-        registered, and ConfigError listing every problem with the config, or when what was
-        built does not keep its point's port.
+        every problem's path starts with it. A builder that raises ConfigError states each
+        problem relative to its config, and ``where`` is put before it; a problem with a
+        ``source`` is in that source (a file the entry read) and is kept as it is. Raises
+        NotFoundError for a type URL nothing registered, and ConfigError listing every problem
+        with the config, or when what was built does not keep its point's port.
         """
         entry = self.entry(point, type_url)
         available = dict(needs or {})
@@ -360,7 +382,7 @@ class Registry:
                         for key in sorted(config)
                     ],
                 )
-            return self._kept(entry, entry.build(**given), where)
+            return self._kept(entry, _placed(where, entry.build, **given), where)
         try:
             validated = entry.config.model_validate(dict(config or {}))
         except ValidationError as e:
@@ -369,7 +391,7 @@ class Registry:
                 from_validation_error(e, prefix=where),
                 fix=f"see `matrix describe {type_url}` for its config schema",
             ) from None
-        return self._kept(entry, entry.build(validated, **given), where)
+        return self._kept(entry, _placed(where, entry.build, validated, **given), where)
 
     def _kept(self, entry: Entry, built: Any, where: str) -> Any:
         """``built``, when it keeps the port of ``entry``'s point; ConfigError when not."""

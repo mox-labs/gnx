@@ -71,6 +71,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from matrix.adapters._out.runtime._hardline import build, served_by
 from matrix.domain.agent import AgentCapabilities, AgentResponse
 from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason
 from matrix.domain.problems import problem
@@ -154,14 +155,7 @@ class PydanticAiRuntime:
 
     @classmethod
     def from_config(cls, config: PydanticAiRuntimeConfig) -> PydanticAiRuntime:
-        from hardline import build_runtime
-
-        models = (
-            build_runtime(config=config.models, label="matrix.models")
-            if config.models is not None
-            else build_runtime()
-        )
-        return cls(models, config)
+        return cls(build(config.models, needed_by="the pydantic-ai agent runtime"), config)
 
     @property
     def config(self) -> PydanticAiRuntimeConfig:
@@ -314,13 +308,6 @@ def hardline_model(
     what it sent. Its ``aclose()`` closes the connections its calls opened in the running event
     loop. Raises hardline's ``UnknownModelError`` for a row it cannot resolve."""
     return _model_class()(models, row, _Session(record=record), dict(settings or {}) or None)
-
-
-def served_by(models: Hardline, completion: Completion) -> str:
-    """Who served ``completion``, as the GenAI conventions name providers: its registry row's
-    ``provider``, or else its backend's name, as hardline's own ``gen_ai.provider.name`` is. An
-    OpenAI-compatible backend cannot tell which server answered; the row's author can."""
-    return models.registry.get(completion.name).provider or completion.backend
 
 
 def _imported(name: str, reference: str) -> Callable[..., Any]:

@@ -39,8 +39,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
-from matrix.adapters._out.runtime.pydantic_ai import served_by
-from matrix.domain.errors import ConfigError, ModelRuntimeError, RuntimeReason, missing_dependency
+from matrix.adapters._out.runtime._hardline import build, served_by
+from matrix.domain.errors import ConfigError, ModelRuntimeError, RuntimeReason
 from matrix.domain.model_call import (
     CallAttempt,
     ModelCall,
@@ -99,17 +99,7 @@ class HardlineModelRuntime:
         runtime_url: str | None = None,
         drives: tuple[str, ...] = (),
     ) -> HardlineModelRuntime:
-        try:
-            from hardline import build_runtime
-        except ImportError as e:
-            raise missing_dependency(
-                needed_by="the hardline model runtime", module="hardline"
-            ) from e
-        runtime = (
-            build_runtime(config=config.models, label="matrix.models")
-            if config.models is not None
-            else build_runtime()
-        )
+        runtime = build(config.models, needed_by="the hardline model runtime")
         return cls(runtime, config, runtime_url=runtime_url, drives=drives)
 
     @property

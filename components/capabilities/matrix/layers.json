@@ -63,15 +63,18 @@
     },
     {
       "name": "adapter_hardline",
-      "files": ["src/matrix/adapters/_out/runtime/model.py",
+      "files": ["src/matrix/adapters/_out/runtime/_hardline.py",
+                "src/matrix/adapters/_out/runtime/model.py",
                 "src/matrix/adapters/_out/runtime/pydantic_ai.py"],
-      "allow": ["*", "matrix.domain", "matrix.adapters._out.runtime.pydantic_ai"],
+      "allow": ["*", "matrix.domain", "matrix.adapters._out.runtime._hardline",
+                "matrix.adapters._out.runtime.pydantic_ai"],
       "forbid": ["opentelemetry"],
       "why": {
         "*": "hardline, and in pydantic_ai.py pydantic-ai, the agent framework whose model calls hardline makes (confined to that file by single_importer)",
         "matrix.domain": "the port each implements and the domain types it speaks in",
-        "matrix.adapters._out.runtime.pydantic_ai": "the hardline model runtime hands out the hardline-backed pydantic-ai Model that file defines (pydantic_ai_model, W11.2b), imported inside the method; pydantic_ai itself stays confined to that file",
-        "two files": "hardline is the technology of two runtimes, one per port: the model runtime (one call) and the pydantic-ai agent runtime (a session whose calls hardline makes). Like OpenTelemetry's two files, it is confined by 'forbid' in every other layer rather than by a single_importer rule, which names one file",
+        "matrix.adapters._out.runtime._hardline": "what the two runtimes share of hardline: building its runtime from a registry section (a registry it refuses is a matrix ConfigError) and naming who served a call. It is neither runtime, so neither reaches the other for it",
+        "matrix.adapters._out.runtime.pydantic_ai": "the hardline model runtime hands out the hardline-backed pydantic-ai Model that file defines (pydantic_ai_model, W11.2b), imported inside the method; pydantic_ai itself stays confined to that file, so the Model cannot move to _hardline.py",
+        "three files": "hardline is the technology of two runtimes, one per port, and the module they share: the model runtime (one call) and the pydantic-ai agent runtime (a session whose calls hardline makes). Like OpenTelemetry's two files, it is confined by 'forbid' in every other layer rather than by a single_importer rule, which names one file",
         "forbid opentelemetry": "hardline traces its own calls; the runtimes name no telemetry"
       }
     },
