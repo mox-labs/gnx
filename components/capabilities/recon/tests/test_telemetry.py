@@ -172,7 +172,7 @@ def test_the_event_log_is_not_a_table(project: Path) -> None:
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        code = 503 if self.path.startswith("/busy") else 200
+        code = 503 if self.path.startswith("/busy") else 404 if "missing" in self.path else 200
         body = b'{"ok": true}'
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -409,6 +409,64 @@ def test_setting_the_standard_variables_is_enough_to_export(project: Path) -> No
     assert b"recon.survey" in traces and b"recon.collect" in traces
     metrics = b"".join(body for path, body in _Collector.received if path == "/v1/metrics")
     assert b"recon.collect.records" in metrics
+
+
+def test_a_failure_exports_no_command_and_no_credential_in_a_url(
+    project: Path, server: Any
+) -> None:
+    """Regression: a failed span's status was the first line of its error, so a failed
+    ``cli`` command's whole text, and a source URL's user information, went to the OTLP
+    endpoint. A failed span says what kind of failure it was and quotes nothing from it.
+
+    In a process of its own, exporting to a receiver started by the test."""
+    collector = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
+    threading.Thread(target=collector.serve_forever, daemon=True).start()
+    _Collector.received.clear()
+    keyed = f"http://user:PASSWORD-TOKEN@127.0.0.1:{server.server_address[1]}"
+    config = project / ".recon" / "m" / "config.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "catalog": [
+                    {"name": "keyed", "url": keyed},
+                    {"name": "small", "url": keyed, "max_bytes": 5},
+                ],
+                "collectors": [
+                    {"name": "cmd", "type": "cli", "run": "echo COMMAND-TOKEN >&2; exit 3"},
+                    {"name": "gone", "type": "api", "source": "keyed", "endpoint": "/missing"},
+                    {"name": "big", "type": "api", "source": "small", "endpoint": "/ok"},
+                ],
+            }
+        )
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OTEL_")}
+    env["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://127.0.0.1:{collector.server_address[1]}"
+    try:
+        result = subprocess.run(
+            [str(Path(sys.executable).with_name("recon")), "survey", "m", "--json"],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    finally:
+        collector.shutdown()
+    survey = json.loads(result.stdout)
+    tables = survey["tables"]
+    assert {t["name"] for t in tables} >= {"gone", "big"} and len(tables) > 2
+    assert {t["status"] for t in tables} == {"error"}
+    traces = b"".join(body for path, body in _Collector.received if path == "/v1/traces")
+    events = (Path(survey["archive"]) / "telemetry.jsonl").read_text()
+    assert b"recon.collect" in traces
+    for exported in (traces, events.encode()):
+        assert b"COMMAND-TOKEN" not in exported and b"echo" not in exported
+        assert b"PASSWORD-TOKEN" not in exported and b"user:" not in exported
+    assert b"meta.yaml" in traces, "a failed table's span says where its error is"
+    meta = (Path(survey["archive"]) / "meta.yaml").read_text()
+    assert "PASSWORD-TOKEN" not in meta and "REDACTED:REDACTED@127.0.0.1" in meta
+    assert "COMMAND-TOKEN" in meta, "the archive keeps the error, for whoever reads it"
 
 
 def test_an_unsupported_exporter_is_a_warning(monkeypatch: pytest.MonkeyPatch) -> None:

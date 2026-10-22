@@ -223,7 +223,9 @@ class Survey:
         seconds: float,
         fix: str | None = None,
     ) -> TableOutcome:
-        span.fail(kind, message)
+        # The message stays in meta.yaml: it can quote a command or a URL, and a span goes
+        # wherever telemetry is sent.
+        span.fail(kind, f"the table failed ({kind}); its error is in the archive's meta.yaml")
         self._emit(
             {
                 "kind": "error",

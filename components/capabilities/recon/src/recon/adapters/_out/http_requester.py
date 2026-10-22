@@ -15,7 +15,9 @@ is one, ``http.response.status_code``; ``http.request.resend_count`` on a retry;
 ``error.type`` on a failure: the status code, the httpx exception class
 (``httpx.ConnectError``), or ``body_too_large``. ``url.full`` carries no credentials: user
 information, the source's ``auth.param`` and the convention's signature parameters are
-``REDACTED``. A redirect httpx follows stays inside its attempt's span.
+``REDACTED``, as they are in an error's message; a failed attempt's span message is the
+status, the exception class or the size refusal, never the URL. A redirect httpx follows
+stays inside its attempt's span.
 
 A source's credential goes only to the origin its request was built for. httpx drops an
 ``Authorization`` header when a redirect leaves the origin; recon drops the source's own
@@ -151,7 +153,8 @@ def _send(
             snippet = _decode(resp, _read(resp, _ERROR_SNIPPET_BYTES))
             asked = _seconds_asked(resp.headers.get("retry-after", "").strip(), clock.now())
             raise _StatusError(resp, snippet, asked)
-        body = _read_bounded(resp, source, str(request.url).split("?", 1)[0])
+        url = reported_url(str(request.url).split("?", 1)[0], source.auth.param)
+        body = _read_bounded(resp, source, url)
         return _to_domain(resp, body)
     finally:
         resp.close()
@@ -315,11 +318,12 @@ class HttpxRequester:
             kind = classify_http_failure(exc)
             fix = _HTTP_FIX[kind]
             wait = _retry_after(exc)
+            shown = reported_url(url, source.auth.param)
             if wait is not None and wait > _MAX_RETRY_AFTER_S:
-                msg = f"HTTP request refused: {url}{status}; the server asks for {wait:g}s"
+                msg = f"HTTP request refused: {shown}{status}; the server asks for {wait:g}s"
                 fix = f"retry the survey after {wait:g}s; lower the source's rate_limit"
             else:
-                msg = f"HTTP request failed after retries: {url}{status}"
+                msg = f"HTTP request failed after retries: {shown}{status}"
             raise CollectionError(msg + snippet, kind=kind, fix=fix) from exc
 
     def _attempt(
@@ -336,10 +340,10 @@ class HttpxRequester:
                 span.fail(str(code), f"HTTP {code}")
                 raise
             except httpx.TransportError as exc:
-                span.fail(f"httpx.{type(exc).__name__}", str(exc) or type(exc).__name__)
+                span.fail(f"httpx.{type(exc).__name__}", type(exc).__name__)
                 raise
-            except _TooLargeError as exc:
-                span.fail("body_too_large", str(exc))
+            except _TooLargeError:
+                span.fail("body_too_large", "the response body is larger than max_bytes")
                 raise
             span.set("http.response.status_code", response.status_code)
             return response

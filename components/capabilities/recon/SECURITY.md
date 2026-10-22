@@ -134,13 +134,15 @@ attributes are chosen so that neither destination receives a secret or a body: n
 request body or response body is an attribute, and `url.full` has its user information,
 the source's `auth.param` value and the signature parameters of the HTTP conventions
 (`X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `sig`, `X-Goog-Signature`)
-replaced by `REDACTED`. A span that failed carries only the first line of its error: the
-URL a collector asked for, to which `auth.param` is added later, and never the quoted
-response body that follows (R-8).
+replaced by `REDACTED`. A span that failed carries its error's kind and a message in recon's
+own words, never the error's text, which can quote a command, a URL or SQL (R-11). A failed
+table's error, its command or URL included, stays in the archive's `meta.yaml`, and a URL
+in an error message has its user information and `auth.param` value `REDACTED` there too.
 
 What this does **not** do: a secret a mission puts anywhere else in a URL (in a path, or in
 a query parameter that is not its source's `auth.param`) is recorded as written, as it is
-in the dry-run plan and `meta.yaml`. A `cli` collector's commands are not attributes. The
+in the dry-run plan and `meta.yaml`. A `cli` collector's commands are neither attributes
+nor span messages. The
 endpoint the variables name receives the mission's URLs, table and collector names, and
 record counts: point it at a collector you trust with them.
 
@@ -273,6 +275,20 @@ runs.
 
 Regression: `TestOnlyReads` in `recon/tests/test_query.py`, and
 `test_no_query_the_skill_teaches_is_refused_as_a_write` in `recon/tests/test_skill.py`.
+
+### R-11 — a failed span exported a command and a URL's credentials (fixed)
+
+R-8 kept a failed span's message to the first line of its error, and that line could be
+the whole problem: a failed `cli` command's error begins with the command, and a failed
+request's with its URL, user information included. Both reached the OTLP endpoint as the
+span's status, and the event log, so a secret inlined in `run:` (R-3) left the machine
+when its command failed. Fixed: a failed span's message describes the failure in recon's
+own words (the table failed, and its kind; the status code; the exception class) and
+quotes nothing; the error's text stays in `meta.yaml`. A URL in an error message is
+reported as `url.full` is, with user information and `auth.param` `REDACTED`.
+
+Regression: `test_a_failure_exports_no_command_and_no_credential_in_a_url` in
+`recon/tests/test_telemetry.py`, which runs `recon survey` with an OTLP receiver.
 
 ## Not covered
 

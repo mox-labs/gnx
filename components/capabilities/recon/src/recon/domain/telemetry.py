@@ -12,7 +12,9 @@ log replays into the numbers an exporter saw.
 sink that raises is dropped for the rest of the operation and named in ``failed``, which
 the operation reports as a warning. Span ids count up from 1 and every time comes from the
 clock port, so a survey against a fixed clock emits the same events twice. Attributes
-carry no secret and no request or response body.
+carry no secret and no request or response body, and a failed span's message quotes
+nothing from its error: an error's text can hold a command, a URL with its credentials or
+the SQL, and an event goes wherever a sink sends it.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ AttributeValue = str | bool | int | float
 @dataclass(frozen=True)
 class Event:
     """One event. ``status``, ``message`` and ``duration_ms`` are set on an end event only;
-    ``message`` is the first line of the error, when the span failed."""
+    ``message`` describes the failure, when the span failed, without quoting it."""
 
     name: str
     span: str
@@ -94,7 +96,9 @@ class Span:
 
     def fail(self, error_type: str, message: str) -> None:
         """End the span as failed: ``error_type`` is low-cardinality (an error kind, a status
-        code, an exception class); ``message`` is shortened to its first line."""
+        code, an exception class); ``message`` describes the failure in recon's own words and
+        quotes nothing from the error (no command, URL or SQL). It is shortened to its first
+        line."""
         self.error = (error_type, message.split("\n", 1)[0])
 
 
@@ -132,7 +136,7 @@ class Telemetry:
             yield span
         except BaseException as exc:
             if span.error is None:
-                span.fail(error_type(exc), str(exc) or type(exc).__name__)
+                span.fail(error_type(exc), type(exc).__name__)
             raise
         finally:
             self._open.pop()
