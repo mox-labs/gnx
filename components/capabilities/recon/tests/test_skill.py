@@ -331,3 +331,31 @@ def test_the_count_over_a_list_runs(surveyed: Path) -> None:
     [sql] = re.findall(r"`(SELECT author, count\(\*\) AS n FROM \(SELECT unnest[^`]+)`", SKILL)
     rows = json.loads(_invoke("query", "m", sql, "--json").stdout)["rows"]
     assert rows == [{"author": "a", "n": 2}, {"author": "b", "n": 1}]
+
+
+def _taught_sql() -> list[str]:
+    """Every query the skill and its references show: each ```sql block, each `recon query`
+    argument, and each inline `SELECT ...`."""
+    found = []
+    for text in [SKILL, *REFERENCES.values()]:
+        found += re.findall(r"```sql\n(.*?)```", text, re.DOTALL)
+        found += re.findall(r'recon query \S+ "([^"]+)"', text)
+        found += re.findall(r"`(SELECT [^`]+)`", text)
+    return found
+
+
+def test_no_query_the_skill_teaches_is_refused_as_a_write(tmp_path: Path) -> None:
+    """recon query runs SELECT statements only; nothing the skill teaches may be refused for
+    that. A taught query may name a table this archive lacks, which is a different error."""
+    from recon.adapters._out.duckdb_query import DuckdbQuery
+
+    archive = tmp_path / "m" / "archive" / "2026-01-01-000000-000000"
+    archive.mkdir(parents=True)
+    (archive / "papers.jsonl").write_text('{"title": "q", "authors": ["a"]}\n')
+    taught = _taught_sql()
+    assert len(taught) > 10, taught
+    for sql in taught:
+        try:
+            DuckdbQuery().execute(archive, sql)
+        except recon.QueryError as error:
+            assert "statements" not in error.details, sql

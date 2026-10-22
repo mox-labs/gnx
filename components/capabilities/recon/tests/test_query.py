@@ -94,6 +94,65 @@ class TestConfinement:
         self._refused(archive, "SELECT * FROM read_json_auto('https://127.0.0.1:9/x.json')")
 
 
+class TestOnlyReads:
+    """Regression: the confinement let SQL write wherever it may read, so ``COPY ... TO`` and
+    ``ATTACH`` wrote files into the mission's archives, ``meta.yaml`` included, and a planted
+    file became a table of the next query. A query runs SELECT statements and nothing else."""
+
+    @pytest.fixture
+    def archive(self, tmp_path):
+        archive = _archive(tmp_path, {"t": [{"a": 1}]})
+        (archive / "meta.yaml").write_text("status: ok\n")
+        return archive
+
+    @pytest.mark.parametrize(
+        ("sql", "statement"),
+        [
+            ("COPY (SELECT 99 AS a) TO '{archive}/planted.jsonl'", "COPY"),
+            ("COPY (SELECT 1 AS status) TO '{archive}/meta.yaml' (FORMAT csv)", "COPY"),
+            ("ATTACH '{archive}/x.duckdb' AS x", "ATTACH"),
+            ("CREATE TABLE planted AS SELECT 1 AS a", "CREATE"),
+            ("CREATE VIEW t2 AS SELECT * FROM t", "CREATE"),
+            ("EXPORT DATABASE '{archive}/dump'", "EXPORT"),
+            ("SELECT a FROM t; COPY t TO '{archive}/planted.jsonl'", "COPY"),
+        ],
+    )
+    def test_a_statement_that_is_not_a_select_is_refused_and_writes_nothing(
+        self, archive, sql, statement
+    ):
+        before = sorted(p.name for p in archive.iterdir())
+        with pytest.raises(QueryError) as excinfo:
+            execute(archive, sql.format(archive=archive))
+        error = excinfo.value
+        assert error.kind == "query"
+        assert error.details == {"statements": [statement]}
+        assert statement in str(error) and "SELECT" in error.fix
+        assert sorted(p.name for p in archive.iterdir()) == before
+        assert (archive / "meta.yaml").read_text() == "status: ok\n"
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT a FROM t",
+            "WITH x AS (SELECT a FROM t) SELECT a FROM x",
+            "FROM t",
+            "SELECT a FROM t UNION ALL SELECT a FROM t",
+            "SELECT a FROM t EXCEPT SELECT 2",
+            "DESCRIBE t",
+            "SUMMARIZE t",
+            "SELECT 1; SELECT a FROM t",
+        ],
+    )
+    def test_a_select_in_any_of_its_forms_runs(self, archive, sql):
+        assert execute(archive, sql)[1]
+
+    def test_sql_that_does_not_parse_is_still_told_what_duckdb_said(self, archive):
+        with pytest.raises(QueryError) as excinfo:
+            execute(archive, "SELEC 1")
+        assert 'syntax error at or near "SELEC"' in excinfo.value.fix
+        assert "statements" not in excinfo.value.details
+
+
 class TestEmptyTable:
     """An empty table's file holds one sentinel line so DuckDB can read it. The sentinel is
     not a row: `count(*)` on an empty table is 0."""

@@ -117,12 +117,13 @@ The connection is confined before any SQL runs: `allowed_directories` is the mis
 `archive/` directory, extension auto-install and auto-load are off, external access is
 off (DuckDB does not allow turning it back on), and the configuration is locked. A query
 reads its own and earlier archives of the same mission and nothing else; `INSTALL`, `LOAD`
-and URLs are refused (R-7).
+and URLs are refused (R-7). DuckDB lets SQL write wherever it may read, so a query runs only
+statements DuckDB's parser types as SELECT; `COPY ... TO`, `ATTACH`, `CREATE`, `EXPORT` and
+every other statement are refused before any of the SQL runs (R-10).
 
-What this does **not** do: it does not make a query read-only inside that directory. SQL
-can still write a file under the mission's `archive/` (`COPY ... TO`, `ATTACH`), and can
-use DuckDB's spill directory (`.tmp/` under the working directory). And it does nothing
-about the text itself: a `content` column from the web is untrusted wherever it is read.
+What this does **not** do: a large sort or join can still use DuckDB's spill directory
+(`.tmp/` under the working directory). And it does nothing about the text itself: a
+`content` column from the web is untrusted wherever it is read.
 
 ### 7. Telemetry → the archive's event log, and an OTLP endpoint
 
@@ -262,13 +263,23 @@ Regression: `test_a_redirect_to_another_origin_does_not_carry_the_sources_creden
 `test_a_redirect_within_the_origin_keeps_the_credential` in
 `recon/tests/test_http_requester.py`.
 
+### R-10 — a query could write into the mission's archives (fixed)
+
+The confinement of R-7 lets SQL write wherever it may read, so `COPY (...) TO`, `ATTACH`
+and `EXPORT` wrote files under `archive/`: over an archive's `meta.yaml`, or a planted
+`.jsonl` that the next query read as a table. Fixed by running only statements DuckDB's
+parser types as SELECT; any other is a `query` error that names it, and nothing in the SQL
+runs.
+
+Regression: `TestOnlyReads` in `recon/tests/test_query.py`, and
+`test_no_query_the_skill_teaches_is_refused_as_a_write` in `recon/tests/test_skill.py`.
+
 ## Not covered
 
 - No sandboxing of collector commands. See boundary 1.
 - No egress allowlist. A source may point anywhere.
 - No TLS pinning; recon uses the platform trust store.
 - Declared collector effects are not enforced.
-- A query can write files under the mission's `archive/` directory. See boundary 6.
 
 ## Reporting
 

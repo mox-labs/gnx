@@ -20,7 +20,10 @@ error from a glob that spans archives says the archives' columns can differ.
 The SQL is not trusted. Whoever writes it has usually just read the tables, and the tables
 are collected text, so the connection is confined before any SQL runs: it reads files only
 under the mission's ``archive/`` directory (every archive of the mission, which keeps
-cross-archive diffs working), installs and loads no extension, and reaches no network.
+cross-archive diffs working), installs and loads no extension, and reaches no network. DuckDB
+lets SQL write wherever it may read, so a query runs only SELECT statements (``WITH``,
+``FROM``, ``DESCRIBE`` and ``SUMMARIZE`` are SELECTs to DuckDB): a ``COPY``, ``ATTACH``,
+``CREATE`` or any other statement is refused before anything runs.
 """
 
 from __future__ import annotations
@@ -55,6 +58,25 @@ def _confine(conn: Any, readable: Path) -> None:
     conn.execute("SET lock_configuration=true")
 
 
+def _reads_only(conn: Any, sql: str) -> None:
+    """Refuse ``sql`` unless every statement in it is a SELECT, as DuckDB's parser types it."""
+    import duckdb
+
+    refused = [
+        statement.type.name
+        for statement in conn.extract_statements(sql)
+        if statement.type != duckdb.StatementType.SELECT
+    ]
+    if refused:
+        raise QueryError(
+            f"recon query runs only SELECT statements; this SQL has {', '.join(refused)}",
+            fix="ask with a SELECT (WITH, FROM, DESCRIBE and SUMMARIZE are SELECTs too): a "
+            "query reads the archive and writes nothing, so COPY, ATTACH, CREATE, INSERT, SET "
+            "and every other statement are refused",
+            details={"statements": refused},
+        )
+
+
 class DuckdbQuery:
     def tables(self, archive: Path) -> list[str]:
         return [table_name(f.stem) for f in table_files(archive)]
@@ -72,6 +94,7 @@ class DuckdbQuery:
             unreadable = _views(conn, files)
             readable = [name for name in self.tables(archive) if name not in unreadable]
             try:
+                _reads_only(conn, sql)
                 result = conn.execute(sql)
             except duckdb.Error as exc:
                 for name, (file, why) in unreadable.items():
