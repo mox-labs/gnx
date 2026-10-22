@@ -1399,6 +1399,34 @@ class TestAPromptReachesTheAgentAsWritten:
         assert {system for system, _ in heard} == {"Hello {{user}}; {size} is small."}
         assert "Review {{user}}'s diff; {size} is small.\n" in {task for _, task in heard}
 
+    def test_code_whose_braces_nothing_fills_is_sent_as_written(self, tmp_path: Path) -> None:
+        """Regression: ``{user}`` in a prompt, where nothing fills ``user``, was refused as
+        ``unbound_placeholder``, and ``{{user}}`` was sent doubled, so a prompt could not
+        hold a Python f-string or a JS template literal at all. In prompt text a name nothing
+        fills is sent as written, and validate warns of it rather than refusing."""
+        code = 'Fix this: print(f"{user}") prints {user!r} and `${user}`.'
+        lab = _routing(
+            tmp_path,
+            subjects={
+                "catalog": {"kind": "agent-session", "runtime": SCRIPTED,
+                            "system_prompt": f"Read code as code: {code}"},
+            },
+        )  # fmt: skip
+        (lab / "probes" / "review.md").write_text(
+            f"---\nexpectation: must_trigger\nexpected_skill: review\n---\n{code}\n"
+        )
+        heard: list[tuple[str | None, str]] = []
+        root = Root(registry=_listening(heard), settings=_settings())
+        found = root.validate(lab)
+        assert found.valid, found.problems
+        assert {(p.path, p.kind, p.got) for p in found.warnings} == {
+            ("subjects.catalog.system_prompt", "unbound_placeholder", "user"),
+            ("probes.review.prompt", "unbound_placeholder", "user"),
+        }
+        root.run(lab, exploratory=True)
+        assert {system for system, _ in heard} == {f"Read code as code: {code}"}
+        assert f"{code}\n" in {task for _, task in heard}
+
     def test_a_loops_doubled_placeholder_is_its_text_in_the_next_round(
         self, tmp_path: Path
     ) -> None:

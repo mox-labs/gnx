@@ -602,22 +602,56 @@ class TestPlaceholders:
         # Changed requirement (Q11): a facet every subject's kind offers binds too.
         assert found.allowed == ("command", "pid")
 
-    def test_a_probe_files_placeholder_must_be_bound_and_doubled_braces_are_text(
+    def test_a_probe_files_placeholder_is_filled_and_an_unbound_one_is_text(
         self, evaluate_data: dict[str, Any], write_experiment: Write
     ) -> None:
         """Changed requirement (Q11): a probe file's options were not scanned, so ``{x}`` in
-        one ran as the text ``{x}`` whatever was meant. It is a placeholder like an inline
-        probe's; ``{{x}}``, which nothing fills, is no placeholder and is sent as written."""
+        one ran as the text ``{x}`` whatever was meant. They are filled like an inline
+        probe's. Changed again: a prompt is text, so ``{x}`` that nothing fills is sent as
+        written, and validate warns rather than refuses; ``{{x}}`` is sent as written too."""
         file = write_experiment({k: v for k, v in evaluate_data.items() if k != "probes"})
         (file.parent / "probes").mkdir()
         probe = file.parent / "probes" / "a.md"
         probe.write_text("---\nexpectation: must_trigger\n---\nReturn {x}.\n")
-        (found,) = ix.validate(file).problems
-        assert (found.path, found.kind, found.got) == (
+        found = ix.validate(file)
+        assert found.valid
+        (warned,) = found.warnings
+        assert (warned.path, warned.kind, warned.got) == (
             "probes.a.prompt", "unbound_placeholder", "x",
         )  # fmt: skip
+        assert "sent as written" in warned.message
         probe.write_text("---\nexpectation: must_trigger\n---\nReturn {{x}}.\n")
-        assert ix.validate(file).valid
+        found = ix.validate(file)
+        assert found.valid and not found.warnings
+
+    def test_a_typo_in_prompt_text_warns_and_names_the_likely_placeholder(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Prompt text may hold braces of its own (code), so a name nothing fills there is
+        sent as written; a typo for a factor (``{sise}``) is still said, with the name it
+        is likely to be."""
+        evaluate_data["factors"] = {"size": ["small", "large"]}
+        evaluate_data["probes"][0]["prompt"] = "Review the {size} change; {sise} is wrong."
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = examined.warnings
+        assert (warned.path, warned.kind, warned.got) == (
+            "probes.0.prompt", "unbound_placeholder", "sise",
+        )  # fmt: skip
+        assert "{size}" in warned.message and "{size}" in warned.fix
+
+    def test_a_name_only_some_subjects_fill_is_refused_in_prompt_text(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """A prompt's ``{model}`` is filled for a subject that sets ``model`` and sent as
+        written to one that does not: the subjects would be put different prompts, so it is
+        refused, as it is in any other option."""
+        agent = evaluate_data["subjects"]["catalog"]
+        evaluate_data.update(genre="compare", comparison="superiority")
+        evaluate_data["subjects"] = {"plain": dict(agent), "tuned": {**agent, "model": "m-2"}}
+        evaluate_data["probes"][0]["prompt"] = "Review this change as {model}."
+        problems = [p for p in _problems(evaluate_data, vocabulary) if p.got == "model"]
+        assert [(p.path, p.kind) for p in problems] == [("probes.0.prompt", "unbound_placeholder")]
 
     def test_a_subject_options_placeholder_must_be_a_factor(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
@@ -633,6 +667,8 @@ class TestPlaceholders:
             "subjects.streaming.command", "unbound_placeholder", "sise",
         )  # fmt: skip
         assert found.allowed == ("size",)
+        # A command is no prompt: the typo is still refused, and the fix names the factor.
+        assert "{size}" in found.fix
         compare_data["subjects"]["streaming"]["command"] = ["./proxy", "--size", "{size}"]
         assert _found(compare_data, vocabulary) == set()
 
@@ -648,13 +684,18 @@ class TestPlaceholders:
         self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:
         """A loop's ``prompt`` is filled by the loop each round (``{prompt}``,
-        ``{response}``); the kind declares them, so they are not unbound."""
+        ``{response}``); the kind declares them, so they are not unbound. A loop is prompt
+        text, so ``{oops}``, which nothing fills, is a warning and sent as written."""
         evaluate_data["subjects"]["catalog"]["loop"] = {
             "strategy": "self-review", "rounds": 2, "prompt": "{prompt} / {response} / {oops}",
         }  # fmt: skip
-        (found,) = _problems(evaluate_data, vocabulary)
-        assert (found.path, found.got) == ("subjects.catalog.loop", "oops")
-        assert set(found.allowed) >= {"prompt", "response", "failures", "until"}
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = examined.warnings
+        assert (warned.path, warned.kind, warned.got) == (
+            "subjects.catalog.loop", "unbound_placeholder", "oops",
+        )  # fmt: skip
+        assert set(warned.allowed) >= {"prompt", "response", "failures", "until"}
 
     def test_a_subject_is_reviewed_in_every_cell(
         self, evaluate_data: dict[str, Any], write_experiment: Write

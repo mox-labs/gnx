@@ -14,8 +14,8 @@
                 "src/ix/domain/registration.py", "src/ix/domain/report.py",
                 "src/ix/domain/run.py", "src/ix/domain/schema.py",
                 "src/ix/domain/summaries.py", "src/ix/domain/validation.py"],
-      "allow": ["__future__", "collections", "contextlib", "dataclasses", "hashlib", "itertools",
-                "json", "math", "re", "statistics", "string", "typing",
+      "allow": ["__future__", "collections", "contextlib", "dataclasses", "difflib", "hashlib",
+                "itertools", "json", "math", "re", "statistics", "string", "typing",
                 "pydantic", "pydantic_core", "ix.domain"],
       "forbid": ["matrix", "opentelemetry", "open"],
       "why": {
@@ -39,8 +39,8 @@
     {
       "name": "application",
       "files": ["src/ix/application/*.py"],
-      "allow": ["__future__", "asyncio", "collections", "contextlib", "dataclasses", "hashlib",
-                "itertools", "json", "math", "re", "statistics", "string", "typing",
+      "allow": ["__future__", "asyncio", "collections", "contextlib", "dataclasses", "difflib",
+                "hashlib", "itertools", "json", "math", "re", "statistics", "string", "typing",
                 "pydantic", "pydantic_core", "ix.domain", "ix.application"],
       "forbid": ["matrix", "opentelemetry", "open"],
       "why": {

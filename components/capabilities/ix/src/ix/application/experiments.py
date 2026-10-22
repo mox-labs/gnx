@@ -194,7 +194,9 @@ def reviewed(
             continue
         # Each cell's options, as its trials will have them: a factor on one option hides
         # nothing the adapter can tell about the others.
-        for options in per_cell(subject.options, experiment.factors):
+        declared = vocabulary.kinds.get("subject", subject.kind)
+        text = declared.text_options if declared else ()
+        for options in per_cell(subject.options, experiment.factors, text=text):
             found += [
                 said
                 for said in built.review(options, around(f"subjects.{name}"))

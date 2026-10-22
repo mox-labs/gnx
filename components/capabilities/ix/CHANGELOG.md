@@ -247,8 +247,11 @@
   preflighted as its trials will have them; a placeholder in a subject's options or a probe
   file is checked, `unbound_placeholder` unless a factor, a binding, an option every subject
   sets, or a facet every subject's kind offers binds it; a kind option declares the
-  placeholders its adapter fills itself (`binds`: a loop's `{prompt}` and `{response}`); a
-  loop's `rounds` may be 1. `{{name}}`, where `name` is filled in that option (a factor, a
+  placeholders its adapter fills itself (`binds`: a loop's `{prompt}` and `{response}`), and
+  that it is prompt text (`text: true`: a probe's `prompt`, a `system_prompt`, a `loop`, a
+  judge's `rubric`), where a name nothing fills is sent as written and is a warning that
+  names the placeholder a typo is likely to be (`{sise}` for the factor `size`); a loop's
+  `rounds` may be 1. `{{name}}`, where `name` is filled in that option (a factor, a
   binding, an option every subject sets, a facet, or a name the adapter binds), is the text
   `{name}`; every other brace is sent as written, so a prompt holding JSON or a template
   (`{{ user.name }}`, or `{{user}}` where nothing fills `user`) reaches the agent unchanged.
@@ -275,11 +278,14 @@
   probe's options was un-doubled, so nested JSON and Handlebars or Mustache templates
   (`{{user}}`) were sent altered, while the registration digested the text as written. Only
   `{{name}}` where `name` would be filled there is an escape now. A loop's prompt, filled
-  twice, un-doubles each escape once, by the filling that knows its name.
+  twice, un-doubles each escape once, by the filling that knows its name. In prompt text a
+  `{name}` nothing fills is sent as written as well, so a prompt can hold code
+  (`print(f"{user}")`, a template literal), where it was refused as `unbound_placeholder`.
 - **A literal brace leaves the preflight on**, and a subject with a mapping option
   (`runtime_options`, a `loop`) is preflighted. The plan treated any `{` in an option as a
   placeholder a trial fills, and checked nothing: it said runnable and the run started
-  without the fixture the session names.
+  without the fixture the session names. Prompt text is text to the preflight, so a
+  `{name}` in it that nothing fills, or a loop's `{response}`, leaves it on too.
 - **One extension whose adapter raises while it is built no longer breaks every command.**
   Only a `MatrixError` was read as "cannot be built", so a third party's constructor that
   raised anything else made `validate`, `plan`, `register`, `run` and `kinds` raise for

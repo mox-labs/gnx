@@ -12,9 +12,10 @@ still be measured and reported.
 
 from __future__ import annotations
 
+import difflib
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -543,22 +544,54 @@ def _decision(
     return problems
 
 
-def _unbound(path: str, value: Any, bound: Sequence[str], fix: str) -> list[Problem]:
-    """A problem for each ``{name}`` in ``value`` that is not ``bound``."""
-    return [
-        problem(
-            path,
-            kind="unbound_placeholder",
-            message=f"{{{name}}} is bound to nothing",
-            fix=fix.format(name=name) + ", or write the value out",
-            allowed=tuple(bound),
-            got=name,
+def _unbound(
+    path: str,
+    value: Any,
+    bound: Sequence[str],
+    fix: str,
+    *,
+    text: bool = False,
+    filled_somewhere: Collection[str] = (),
+) -> tuple[list[Problem], list[Problem]]:
+    """The problems and the warnings for each ``{name}`` in ``value`` that is not ``bound``.
+    In prompt text (``text``), a name nothing fills anywhere (not in ``filled_somewhere``)
+    is sent as written, so it is a warning: a prompt may hold code (``f"{user}"``). Every
+    other is a problem. Each names the bound name it is likely a typo for, if one is near."""
+    problems: list[Problem] = []
+    warnings: list[Problem] = []
+    for name in sorted(set(placeholders(value)) - set(bound)):
+        near = difflib.get_close_matches(name, bound, n=1)
+        likely = f"; did you mean {{{near[0]}}}?" if near else ""
+        rewrite = f"write {{{near[0]}}}, or " if near else ""
+        if text and name not in filled_somewhere:
+            warnings.append(
+                problem(
+                    path,
+                    kind="unbound_placeholder",
+                    message=f"{{{name}}} is bound to nothing, so it is sent as written{likely}",
+                    fix=f"leave it if it is text; if it is a placeholder, {rewrite}"
+                    + fix.format(name=name),
+                    allowed=tuple(bound),
+                    got=name,
+                )
+            )
+            continue
+        problems.append(
+            problem(
+                path,
+                kind="unbound_placeholder",
+                message=f"{{{name}}} is bound to nothing{likely}",
+                fix=rewrite + fix.format(name=name) + ", or write the value out",
+                allowed=tuple(bound),
+                got=name,
+            )
         )
-        for name in sorted(set(placeholders(value)) - set(bound))
-    ]
+    return problems, warnings
 
 
-def _placeholders(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> list[Problem]:
+def _placeholders(
+    experiment: Experiment, kinds: Kinds, probes: ProbeSet | None
+) -> tuple[list[Problem], list[Problem]]:
     """Each ``{name}`` must be bound to what a trial fills it with. A subject's options are
     filled with the cell's levels: a factor, or a placeholder the option's kind says the
     adapter fills itself (``binds``). A probe's options, inline or from a file, are filled
@@ -566,7 +599,12 @@ def _placeholders(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None)
     subject offers: a factor, an option every subject sets, or a facet every subject's kind
     offers. A facet that is also an option of the kind (a process's ``url``) is offered only
     when the option is set, so it binds only as that option. Both are also filled with what
-    the environment binds each service with (``{db.url}``)."""
+    the environment binds each service with (``{db.url}``).
+
+    The problems, and the warnings: in an option its kind declares prompt text (``text``),
+    a name nothing fills is sent as written, and is a warning. A name a probe's option
+    takes from some subjects and not others is a problem there too: the subjects would be
+    put different prompts."""
     factors = sorted(experiment.factors)
     environment = experiment.environment
     declared = kinds.get("environment", environment.kind)
@@ -586,6 +624,7 @@ def _placeholders(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None)
         return sorted(found)
 
     problems: list[Problem] = []
+    warnings: list[Problem] = []
     shared: list[set[str]] = []
     for name, subject in experiment.subjects.items():
         kind = kinds.get("subject", subject.kind)
@@ -596,25 +635,35 @@ def _placeholders(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None)
                 continue
             option = kind.options.get(key) if kind else None
             binds = served(sorted({*factors, *(option.binds if option else ())}), value)
-            problems += _unbound(
+            found, cautions = _unbound(
                 f"subjects.{name}.{key}",
                 value,
                 binds,
                 "declare factors: {{{name}: [...]}}, or name a service the environment binds "
                 "({{<service>.url}})",
+                text=option is not None and option.text,
             )
+            problems += found
+            warnings += cautions
     bound = sorted(set(factors) | (set.intersection(*shared) if shared else set()))
+    somewhere = set(factors) | (set.union(*shared) if shared else set())
     inline = bool(experiment.probes)
     for index, probe in enumerate(probes.probes if probes else ()):
+        kind = kinds.get("probe", probe.kind)
         for key, value in probe.options.items():
-            problems += _unbound(
+            option = kind.options.get(key) if kind else None
+            found, cautions = _unbound(
                 f"probes.{index if inline else probe.id}.{key}",
                 value,
                 served(bound, value),
                 "declare factors: {{{name}: [...]}}, set {name!r} on every subject, or name a "
                 "service the environment binds ({{<service>.url}})",
+                text=option is not None and option.text,
+                filled_somewhere=somewhere,
             )
-    return problems
+            problems += found
+            warnings += cautions
+    return problems, warnings
 
 
 def _probes(
@@ -844,7 +893,8 @@ def check(
     instruments = select_sensors(experiment, kinds, probes)
     problems += instruments.problems
     problems += _decision(experiment, genre, instruments, probes)
-    problems += _placeholders(experiment, kinds, probes)
+    unbound, unfilled = _placeholders(experiment, kinds, probes)
+    problems += unbound
     problems += _probes(experiment, probes, kinds, instruments)
 
     design = (
@@ -856,6 +906,7 @@ def check(
     # Said of a valid experiment only: an invalid one cannot run for reasons already given.
     if not problems and design is not None and probes is not None and adapters is not None:
         warnings += _unrunnable(experiment, design, probes, adapters, kinds)
+    warnings += unfilled
     warnings += _refused(experiment, genres, kinds)
     return Checked(
         problems=tuple(problems),
