@@ -284,7 +284,11 @@ is registered but cannot be built here (a need nothing supplies) is treated the 
 and `ix kinds` says why under `unbuildable`. An adapter whose review of its options raises
 makes the experiment invalid (`adapter_failed`, naming the adapter and its error), and one
 whose preflight raises is a requirement that does not hold, so `ix plan` prints
-`Runnable: no` and `ix run` refuses it.
+`Runnable: no` and `ix run` refuses it. A review and a preflight are asked each cell's
+options as its trials will have them, with one difference: every escape is kept doubled
+(`${{HOME}}` in a `setup` command, which a trial is given as `${HOME}`), so that a `{name}`
+the adapter reads is always one a trial still fills (an environment's `{db.url}`), and an
+adapter that skips its check on a placeholder still checks the rest.
 
 An adapter plugs in through matrix's registry, as every extension does. A package declares
 its kind as data at the `ix.kind` entry point, and registers the adapter from its
@@ -334,8 +338,18 @@ def register(registry):
   subjects would be put different prompts. In prompt text `{{name}}`, where `name` is
   filled there, is the text `{name}`, and every other brace is sent as written, so a
   prompt holding JSON (`{"a": {"b": 1}}`) or a template (`{{ user.name }}`, or `{{user}}`
-  where nothing fills `user`) reaches the agent unchanged. In any other option `{{name}}`
-  is always the text `{name}`: `setup: [sh, -c, 'echo ${{HOME}}']` runs `echo ${HOME}`;
+  where nothing fills `user`) reaches the agent unchanged. So a template's own `{{model}}`,
+  `{{runtime}}` or `{{workdir}}` is the text `{model}` wherever something fills that name
+  there, an option every subject sets or a facet as much as a factor; write it with spaces,
+  `{{ model }}`, which is never a placeholder, to send it as written whatever fills the
+  name. A doubled name nothing fills that is near one that is filled (`{{sise}}` for the
+  factor `size`) is warned of as a likely typo. In a subject's or a probe's other options
+  `{{name}}` is always the text `{name}`: `setup: [sh, -c, 'echo ${{HOME}}']` runs `echo
+  ${HOME}`. Nothing fills an environment's options or a sensor's, nor un-doubles an escape
+  in them: `{name}` and `{{name}}` are sent as written, so a shell there takes its own
+  `${HOME}`. Validate warns of a `{name}` there that a trial fills elsewhere (a
+  `text-match`'s `contains: '{size}'` is compared as the text `{size}`, whatever the cell's
+  level) and of every `{{name}}`;
 - **a model-judged metric never decides.** Whether a metric is judged is the sensor's
   declaration, not the author's. A judged metric is refused as `primary` and as a guardrail
   in every genre with a verdict (`judged_gate`); it can be reported under `metrics:`.

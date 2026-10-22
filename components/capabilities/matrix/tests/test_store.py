@@ -669,7 +669,7 @@ def test_a_killed_run_once_read_says_interrupted_on_disk_and_reads_without_matri
     tmp_path: Path,
 ) -> None:
     """A torn last line broke jq and DuckDB, and ``interrupted`` lived only in what
-    ``describe`` computed (mx-src F15's sibling, area 5). The first matrix reader that finds
+    ``describe`` computed. The first matrix reader that finds
     the writer gone finishes the record: ``run.json`` says ``interrupted``, and each torn
     tail is moved aside to ``<file>.torn``, so every file reads without matrix (W5.1)."""
     runs = _killed_mid_write(tmp_path)
@@ -783,8 +783,8 @@ def test_a_write_cut_short_leaves_no_torn_line_behind(
 def test_a_damaged_run_record_is_skipped_when_runs_are_listed(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """One unreadable ``run.json`` made ``runs()`` fail, and with it ``matrix runs`` (mx-src
-    F15): it is skipped, and said."""
+    """One unreadable ``run.json`` made ``runs()`` fail, and with it ``matrix runs``: it
+    is skipped, and said."""
     store = JsonlConstructStore(tmp_path)
     store.open(Run(run_id="good", construct=Construct([TRIAL]))).finish(
         Run(run_id="good", construct=Construct([TRIAL]))
@@ -801,7 +801,7 @@ def test_with_fsync_the_run_directory_is_flushed_too(
 ) -> None:
     """``fsync=True`` promises a record that survives the machine going down, which a new
     file's or a renamed ``run.json``'s directory entry does not without the directory's own
-    flush (mx-src F28)."""
+    flush."""
     import stat
 
     flushed: list[bool] = []
@@ -824,7 +824,8 @@ def test_with_fsync_the_run_directory_is_flushed_too(
 
 
 def test_a_store_root_that_is_a_file_is_not_called_an_existing_run(tmp_path: Path) -> None:
-    """Any ``FileExistsError`` read as "run already exists" (mx-src F29)."""
+    """Regression: any ``FileExistsError`` was read as "run already exists", so a store root
+    that is a file was reported as an existing run."""
     root = tmp_path / "runs"
     root.write_text("not a directory")
     with pytest.raises(StoreError) as e:
@@ -858,7 +859,7 @@ def test_the_documented_readers_skip_a_line_cut_short_in_a_run_not_yet_finished(
         assert [json.loads(line)["seq"] for line in read.stdout.splitlines()] == [0, 1, 2]
 
 
-# --- the record's observable behaviours, each pinned (W5.3; mx-tests 11) ------------------
+# --- the record's observable behaviours, each pinned (W5.3) ------------------------------
 
 
 def test_every_table_file_exists_from_the_start_even_with_no_rows(tmp_path: Path) -> None:

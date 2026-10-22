@@ -203,7 +203,7 @@ def test_security_names_every_tier_read_from_where_a_command_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The working directory's config files are an ambient route to a capability grant, and
-    SECURITY.md says which (mx-src F31): every file read from the directory a command runs
+    SECURITY.md says which: every file read from the directory a command runs
     in, and every variable that adds one, is named there."""
     from pathlib import Path
 

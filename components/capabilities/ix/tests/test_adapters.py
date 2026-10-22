@@ -167,7 +167,7 @@ class TestProcessSubject:
 
     @pytest.mark.timeout(5)
     async def test_a_trial_that_fails_before_it_is_reached_ends_the_wait(self) -> None:
-        """Regression (ix-tests F4): a trial that failed before ``reached.set()`` left the test
+        """Regression: a trial that failed before ``reached.set()`` left the test
         above waiting on ``reached`` forever, and the whole suite with it."""
 
         async def trial() -> None:

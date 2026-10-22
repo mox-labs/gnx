@@ -157,7 +157,7 @@ class _UsesLibraries:
 
 async def test_a_library_span_nests_under_the_matrix_span_whose_work_opened_it() -> None:
     """A span a library opens through the OpenTelemetry API, in a component's work, is in the
-    run's trace under the span of the work it was opened in (mx-tests 2): the component's,
+    run's trace under the span of the work it was opened in: the component's,
     a ``ctx.span``'s, an agent session's."""
     from matrix import AgentDefinition, BoundAgent
 

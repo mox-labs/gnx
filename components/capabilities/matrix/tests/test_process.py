@@ -178,8 +178,8 @@ async def test_spawn_takes_anything_that_can_defer() -> None:
 async def test_a_child_being_started_when_the_caller_is_cancelled_does_not_survive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The test said only that the caller saw the cancellation (mx-tests 8): it now finds the
-    child that was being started, and sees it gone."""
+    """The caller sees the cancellation, and the child that was being started is found and
+    seen gone."""
     made: list[asyncio.subprocess.Process] = []
     create = asyncio.create_subprocess_exec
 

@@ -779,10 +779,19 @@ whether it came from the experiment, the genre or ix.
   prompts. In prompt text `{{{{name}}}}`, where `name` is filled there, is the text
   `{{name}}`; every other brace is sent as written, so JSON (`{{"a": {{"b": 1}}}}`) or a
   template (`{{{{ user.name }}}}`, or `{{{{user}}}}` where nothing fills `user`) in a prompt
-  reaches the agent unchanged. In any other option `{{{{name}}}}` is always the text
-  `{{name}}`: `setup: [sh, -c, 'echo ${{{{HOME}}}}']` runs `echo ${{HOME}}`. Nothing fills a
-  sensor's options, so each `{{name}}` in a judge's `rubric` is sent as written, and is a
-  warning.
+  reaches the agent unchanged. So a template's own `{{{{model}}}}`, `{{{{runtime}}}}` or
+  `{{{{workdir}}}}` is the text `{{model}}` wherever something fills that name there (an
+  option every subject sets, or a facet, as much as a factor): write it with spaces,
+  `{{{{ model }}}}`, to send it as written whatever fills the name. A doubled name nothing
+  fills that is near one that is filled (`{{{{sise}}}}` for `size`) is warned of. In a
+  subject's or a probe's other options `{{{{name}}}}` is always the text `{{name}}`:
+  `setup: [sh, -c, 'echo ${{{{HOME}}}}']` runs `echo ${{HOME}}`. Nothing fills an
+  environment's options or a sensor's, nor un-doubles an escape in them: `{{name}}` and
+  `{{{{name}}}}` are sent as written, so an `environment.process` command takes the shell's
+  own `${{HOME}}`, and a `text-match`'s `contains: '{{size}}'` is compared as that text.
+  Validate warns of a `{{name}}` there that a trial fills elsewhere, of every
+  `{{{{name}}}}` there, and of each `{{name}}` in a judge's `rubric`, which is sent as
+  written.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the
   experiment, one file per probe (`.md`, `.yaml`): a markdown file's text is the prompt,
   and its frontmatter keys other than `id` (default: the file's name), `kind` (default

@@ -564,6 +564,21 @@ def _unbound(
     if text:
         for name in sorted(set(escapes(value)) & set(filled_somewhere) - set(bound)):
             problems.append(_filled_by_some(path, f"{{{{{name}}}}}", name, bound))
+        for name in sorted(set(escapes(value)) - set(filled_somewhere) - set(bound)):
+            near = difflib.get_close_matches(name, bound, n=1)
+            if near:  # a template's own name near none is no typo of ours
+                warnings.append(
+                    problem(
+                        path,
+                        kind="unbound_placeholder",
+                        message=f"{{{{{name}}}}} is bound to nothing, so it is sent as written, "
+                        f"doubled; did you mean {{{{{near[0]}}}}}?",
+                        fix=f"leave it if it is a template's; write {{{{{near[0]}}}}} for the "
+                        f"text {{{near[0]}}}",
+                        allowed=tuple(bound),
+                        got=name,
+                    )
+                )
     for name in sorted(set(placeholders(value)) - set(bound)):
         if name in filled_somewhere:
             problems.append(_filled_by_some(path, f"{{{name}}}", name, bound))
@@ -611,6 +626,35 @@ def _filled_by_some(path: str, written: str, name: str, bound: Sequence[str]) ->
     )
 
 
+def _unfilled(path: str, value: Any, filled: Collection[str], whose: str) -> list[Problem]:
+    """The warnings for ``value``, an option nothing fills or un-doubles (``whose``: an
+    environment's, a sensor's): each ``{name}`` a trial fills elsewhere (``filled``), which
+    here is its text, and each ``{{name}}``, which is sent doubled. A ``{name}`` nothing
+    fills is a shell's or a tool's own (``${HOME}``), and is not said."""
+    warnings = [
+        problem(
+            path,
+            kind="unbound_placeholder",
+            message=f"{{{name}}} is sent as written: nothing fills {whose} options",
+            fix="write the value out; a trial's levels and bindings do not reach this option",
+            got=name,
+        )
+        for name in sorted(set(placeholders(value)) & set(filled))
+    ]
+    warnings += [
+        problem(
+            path,
+            kind="unbound_placeholder",
+            message=f"{{{{{name}}}}} is sent as written, doubled: nothing fills {whose} "
+            "options, nor un-doubles an escape in them",
+            fix=f"write {{{name}}} for the text {{{name}}}",
+            got=name,
+        )
+        for name in sorted(set(escapes(value)))
+    ]
+    return warnings
+
+
 def _placeholders(
     experiment: Experiment, kinds: Kinds, probes: ProbeSet | None
 ) -> tuple[list[Problem], list[Problem]]:
@@ -628,7 +672,9 @@ def _placeholders(
     takes from some subjects and not others is a problem there too, doubled or not: the
     subjects would be put different prompts. Nothing fills a sensor's options, so each
     ``{name}`` in a sensor's prompt text (a judge's ``rubric``) is sent as written, and is
-    a warning."""
+    a warning. Nothing fills an environment's options either, nor a sensor's other options,
+    nor un-doubles an escape in them: a ``{name}`` there that a trial fills elsewhere, and
+    every ``{{name}}``, is sent as written, and is a warning."""
     factors = sorted(experiment.factors)
     environment = experiment.environment
     declared = kinds.get("environment", environment.kind)
@@ -687,11 +733,17 @@ def _placeholders(
             )
             problems += found
             warnings += cautions
+    filled = {*somewhere, *(services or ())}
+    for key, value in environment.options.items():
+        if not key.startswith(NOTE_PREFIX):
+            warnings += _unfilled(f"environment.{key}", value, filled, "an environment's")
     for index, sensor in enumerate(experiment.sensors):
         kind = kinds.get("sensor", sensor.kind)
         for key, value in sensor.options.items():
             option = kind.options.get(key) if kind else None
             if option is None or not option.text:
+                if not key.startswith(NOTE_PREFIX):
+                    warnings += _unfilled(f"sensors.{index}.{key}", value, filled, "a sensor's")
                 continue
             _, cautions = _unbound(
                 f"sensors.{index}.{key}",

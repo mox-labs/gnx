@@ -10,7 +10,9 @@ Contract:
 * ``open(run)`` creates the run's record with status ``running`` and returns its writer. A
   run id that already exists is a StoreError: a record is never reopened by a writer. A
   store may finish a record whose writer is gone (the JSONL store, on the first read of a
-  killed run, marks it ``interrupted``); it changes nothing a writer recorded.
+  killed run, marks it ``interrupted``). It keeps every row whose ``append`` returned; it
+  may set the status and the counts of rows, and move a cut-short last line aside, never
+  drop it.
 * ``RunWriter.append(kind, row)`` is durable when it returns. The executor appends each
   row's ledger entry (kind ``matrix.v1.ledger``) and then the row itself; a store keeps that
   order and adds nothing of its own.

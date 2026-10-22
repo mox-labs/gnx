@@ -145,7 +145,8 @@ def fill_options(
     ``{{user}}``); one the adapter fills again itself (the option's ``binds``: a loop's
     ``{response}``) stays doubled, so that it is un-doubled once, by the adapter's filling.
     In any other option every doubled name is its text, filled there or not: ``{{HOME}}``
-    in a command is ``{HOME}``."""
+    in a command is ``{HOME}``. Only a subject's and a probe's options are filled; an
+    environment's and a sensor's are sent as written."""
     declared = kind.options if kind is not None else {}
     filled: dict[str, Any] = {}
     for key, value in options.items():

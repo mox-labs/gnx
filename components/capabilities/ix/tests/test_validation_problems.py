@@ -695,6 +695,56 @@ class TestPlaceholders:
         assert (warned.path, warned.got) == ("sensors.0.rubric", "sise")
         assert "sent as written" in warned.message
 
+    @pytest.mark.parametrize(("written", "got"), [("${{HOME}}", "HOME"), ("{size}", "size")])
+    def test_a_placeholder_in_an_environments_options_is_warned_of(
+        self, written: str, got: str, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Nothing fills an environment's options, nor un-doubles an escape in them: a
+        shell's ``${{HOME}}`` reaches the shell doubled, and a factor's ``{size}`` is the text
+        ``{size}``. Each is said, so validate does not pass what the run will break or
+        mis-measure; the shell's own ``${HOME}`` is no placeholder of ix's and is not."""
+        evaluate_data["factors"] = {"size": ["small", "large"]}
+        command = ["sh", "-c", f"echo {written}"]
+        evaluate_data["environment"] = {"kind": "process", "services": {"up": {"command": command}}}
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = [w for w in examined.warnings if w.kind == "unbound_placeholder"]
+        assert (warned.path, warned.got) == ("environment.services", got)
+        assert "sent as written" in warned.message
+        evaluate_data["environment"]["services"]["up"]["command"] = ["sh", "-c", "echo ${HOME}"]
+        examined = examine(evaluate_data, vocabulary)
+        assert [w for w in examined.warnings if w.kind == "unbound_placeholder"] == []
+
+    @pytest.mark.parametrize("written", ["{size}", "{{size}}"])
+    def test_a_factor_named_in_a_sensors_options_is_warned_of(
+        self, written: str, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Nothing fills a sensor's options: a text-match's ``contains: '{size}'`` is compared
+        as the text ``{size}``, whatever the cell's level, so its reading is silently wrong.
+        It is said."""
+        evaluate_data["factors"] = {"size": ["small", "large"]}
+        evaluate_data["sensors"] = [{"kind": "text-match", "contains": written}]
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = [w for w in examined.warnings if w.kind == "unbound_placeholder"]
+        assert (warned.path, warned.got) == ("sensors.0.contains", "size")
+        assert "sent as written" in warned.message
+
+    def test_a_typo_inside_an_escape_in_prompt_text_warns_and_names_the_likely_name(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """In prompt text ``{{size}}``, where ``size`` is filled, is the text ``{size}``, and
+        ``{{sise}}``, which nothing fills, is sent doubled. A doubled name near one that is
+        filled is likely such a typo, so it is said with the name it is likely to be; a
+        template's doubled name near none (``{{user}}``) is not."""
+        evaluate_data["factors"] = {"size": ["small", "large"]}
+        evaluate_data["probes"][0]["prompt"] = "Write {{size}} and {{sise}} for {{user}}."
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = [w for w in examined.warnings if w.kind == "unbound_placeholder"]
+        assert (warned.path, warned.got) == ("probes.0.prompt", "sise")
+        assert "{{size}}" in warned.message and "sent as written" in warned.message
+
     def test_a_subject_options_placeholder_must_be_a_factor(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:

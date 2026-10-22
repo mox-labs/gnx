@@ -417,6 +417,33 @@ async def test_a_tool_whose_module_raises_on_import_fails_the_session_as_a_confi
     assert "tools.boom" in str(raised.value) and error in str(raised.value)
 
 
+async def test_a_tool_whose_import_failed_is_not_imported_again_by_a_later_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module whose import raised is left out of ``sys.modules``, so importing it again
+    runs its top-level code again. The runtime remembers the failure: every later session
+    that offers the tool fails the same way, and the module's import runs once."""
+    ran = tmp_path / "ran"
+    (tmp_path / "counted_at_import.py").write_text(
+        f"with open({str(ran)!r}, 'a') as f:\n"
+        "    f.write('x')\n"
+        "raise RuntimeError('boom at import')\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    runtime = PydanticAiRuntime(
+        _models("never asked"),
+        PydanticAiRuntimeConfig(default_model="q", tools={"boom": "counted_at_import:define"}),
+    )
+    failures = []
+    for _ in range(2):
+        with pytest.raises(AgentRuntimeError) as raised:
+            await runtime.run(_agent(), "define ossify")
+        failures.append((raised.value.reason, raised.value.kind, str(raised.value)))
+    assert failures[0] == failures[1]
+    assert failures[0][:2] == ("incapable", "config") and "RuntimeError" in failures[0][2]
+    assert ran.read_text() == "x"
+
+
 def test_a_tool_in_a_module_of_a_module_is_found_when_built() -> None:
     """Regression: a module whose parent is loaded but is no package (``os.path``) was read
     as not found, though it imports, so ``tools: {join: "os.path:join"}`` was refused."""
@@ -617,6 +644,57 @@ async def test_a_session_names_the_provider_its_row_names() -> None:
         _models("Bone.", provider="ollama"), PydanticAiRuntimeConfig(default_model="q")
     )
     assert (await runtime.run(_agent(), "Define ossify.")).provider == "ollama"
+
+
+async def test_a_row_that_fails_over_is_answered_by_its_fallback_and_says_so() -> None:
+    """A fallback is the registry row's, not matrix's: on a row whose model is down, a
+    session is answered by the fallback and names the model that answered, and each call the
+    pydantic-ai model makes is a row naming the fallback and the row it stood in for."""
+    from pydantic_ai import Agent
+
+    from matrix import Session
+    from matrix.domain.session import CURRENT_SESSIONS
+
+    models = build_runtime(
+        {
+            "models": {
+                "down": {
+                    "backend": "mock",
+                    "model": "m-down",
+                    "family": "x",
+                    "retries": 0,
+                    "fallbacks": ["up"],
+                    "options": {"script": [{"error": "unavailable"}]},
+                },
+                "up": {
+                    "backend": "mock",
+                    "model": "m-up",
+                    "family": "y",
+                    "options": {"default": "Bone."},
+                },
+            }
+        },  # fmt: skip
+        backends={"mock": MockBackend()},
+    )
+    session = PydanticAiRuntime(models, PydanticAiRuntimeConfig(default_model="down"))
+    response = await session.run(_agent(), "Define ossify.")
+    assert (response.content, response.model, response.family) == ("Bone.", "m-up", "y")
+    rows: list[Session] = []
+
+    def record(row: Session) -> int:
+        rows.append(row)
+        return len(rows) - 1
+
+    runtime = HardlineModelRuntime(models, HardlineModelRuntimeConfig(default_model="down"))
+    agent: Agent[None, str] = Agent(runtime.pydantic_ai_model(None))
+    agent.instrument = False
+    recording = CURRENT_SESSIONS.set(record)
+    try:
+        assert (await agent.run("Define ossify.")).output == "Bone."
+    finally:
+        CURRENT_SESSIONS.reset(recording)
+    (row,) = rows
+    assert (row.name, row.model, row.fallback_from) == ("up", "m-up", "down")
 
 
 async def test_each_call_the_pydantic_ai_model_makes_is_a_session_row_as_a_steps_is() -> None:

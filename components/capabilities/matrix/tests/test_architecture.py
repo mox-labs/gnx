@@ -141,7 +141,7 @@ def test_no_type_url_is_written_or_split_by_slash() -> None:
 @pytest.mark.parametrize(
     ("rel", "line"),
     [
-        # The old check searched for the literal ".v1/" only (mx-tests 10).
+        # Ids of any version, and slashes split off by hand: not only the literal ".v1/".
         ("domain/ids.py", 'LEGACY = "matrix.v2/agent-step"'),
         ("adapters/_in/skill.py", '# see acme.v1beta2/review'),
         ("composition/builtins.py", 'namespace, _, rest = "a/b".partition("/")'),

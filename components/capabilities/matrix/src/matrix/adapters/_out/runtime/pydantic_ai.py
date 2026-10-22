@@ -101,7 +101,8 @@ class PydanticAiRuntimeConfig(BaseModel):
     own tiers); unset, `default_model`, then the registry's default. `tools` are the tools an
     agent may be given, each a Python function named `module:function`: its module is found
     when the runtime is built, without running it, and imported when a session first offers
-    the tool; an agent's `tools` choose from them (unset: all; `[]`: none). The row an
+    the tool (a module whose import fails is not imported again: every session that offers
+    the tool fails); an agent's `tools` choose from them (unset: all; `[]`: none). The row an
     agent runs on must be served by a hardline backend that can call tools when it is given
     any. `max_turns` bounds the model calls of a session. Calls report tokens, not cost."""
 
@@ -160,6 +161,9 @@ class PydanticAiRuntime:
                 fix="give each tool one name, in one place",
             )
         self._tools = sorted({*self._config.tools, *self._functions})
+        #: Tool name → why its import failed: a later session fails the same way, and the
+        #: module's top-level code does not run again.
+        self._unimportable: dict[str, ConfigError] = {}
         self._sessions: dict[asyncio.AbstractEventLoop, int] = {}
 
     @classmethod
@@ -234,19 +238,25 @@ class PydanticAiRuntime:
         """The tool ``name``, imported the first time a session offers it. A named tool whose
         module was found but does not import (whatever its import raises), or does not hold
         the function, fails the session as ``incapable``: the runtime cannot honour its
-        config."""
+        config. The failure is remembered, so every later session that offers the tool fails
+        the same way without importing its module again."""
         function = self._functions.get(name)
-        if function is None:
+        if function is not None:
+            return function
+        failed = self._unimportable.get(name)
+        if failed is None:
             try:
                 function = self._functions[name] = _imported(name, self._config.tools[name])
             except ConfigError as e:
-                raise AgentRuntimeError(
-                    f"agent {definition.name!r}: {e}",
-                    reason="incapable",
-                    fix=e.fix,
-                    agent=definition.name,
-                ) from e
-        return function
+                failed = self._unimportable[name] = e
+            else:
+                return function
+        raise AgentRuntimeError(
+            f"agent {definition.name!r}: {failed}",
+            reason="incapable",
+            fix=failed.fix,
+            agent=definition.name,
+        ) from failed
 
     async def aclose(self) -> None:
         """Close the connections hardline opened in the running event loop."""

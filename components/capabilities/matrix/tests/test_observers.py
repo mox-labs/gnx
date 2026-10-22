@@ -107,7 +107,7 @@ def test_observers_are_composed_from_config_with_their_options(tmp_path: Path) -
 
 def test_the_jsonl_observer_touches_no_file_until_an_event_arrives(tmp_path: Path) -> None:
     """``matrix check`` and ``matrix plan`` call nothing, yet composing the ``jsonl`` observer
-    created its file and folders, and nothing ever closed it (mx-src F18)."""
+    created its file and folders, and nothing ever closed it."""
     path = tmp_path / "nested" / "events.jsonl"
     config = MatrixConfig.model_validate({"observers": [{"type": "jsonl", "path": str(path)}]})
     compose(config, registry=default_registry(discover=False))

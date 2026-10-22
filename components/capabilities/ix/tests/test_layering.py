@@ -282,7 +282,7 @@ def test_only_composition_calls_the_registry() -> None:
 @pytest.mark.parametrize(
     "call",
     [
-        # ix-tests F11: the old scan counted a call only when its receiver was named registry.
+        # A call counts whatever its receiver is named, not only `registry`.
         'reg.register("component", "acme.v1.probe", build)',
         'self._r.create("ix.v1.sensor", "acme.v1.probe")',
         'extensions.add_point("acme.v1.point")',
@@ -446,7 +446,7 @@ def test_the_inner_layers_name_no_telemetry_convention() -> None:
 
 
 def test_every_type_reachable_from_a_public_result_is_exported_from_ix_domain() -> None:
-    """Audit N6: a caller holding a report reaches ``analysis.findings[].decisions[]
+    """A caller holding a report reaches ``analysis.findings[].decisions[]
     .interval``; each such type has one public name, in ``ix.domain``. The check walks the
     fields of every document ``ix`` exports and of every port."""
     import typing
@@ -503,7 +503,7 @@ def tree(tmp_path: Path) -> Path:
 
 
 def test_every_module_is_in_a_layer_and_every_dependency_points_inward() -> None:
-    """``layers.json``: no module goes unjudged (ix-tests F11), and the reach of the layers
+    """``layers.json``: no module goes unjudged, and the reach of the layers
     the tests above do not cover is held too: the driven adapters, the matrix adapters, the
     OpenTelemetry adapter, the matrix components, the built-in data packages."""
     report = check(MAP, PACKAGE)
@@ -521,7 +521,8 @@ def test_each_rule_of_the_map_bites(tree: Path, violation: Plant) -> None:
 
 
 def test_a_new_package_no_layer_claims_leaves_the_tree_unjudged(tree: Path) -> None:
-    """The first pass's case: a new top-level package passed every test above."""
+    """A new top-level package that no layer claims would pass every test above unseen: the
+    map reports it as unclaimed."""
     (tree / "src" / "ix" / "infra").mkdir()
     (tree / "src" / "ix" / "infra" / "__init__.py").write_text("import opentelemetry\n")
     report = check(MAP, tree)

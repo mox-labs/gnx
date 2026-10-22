@@ -273,7 +273,7 @@ class _SyncCall:
 def test_a_runtime_class_that_breaks_its_port_is_refused_when_registered(
     point: str, cls: type, said: str
 ) -> None:
-    """Regression (mx-tests 3): one with ``check`` but no ``run`` composed cleanly and failed
+    """Regression: one with ``check`` but no ``run`` composed cleanly and failed
     only when an agent ran on it."""
     with pytest.raises(ConfigError, match=said) as e:
         Registry().register(point, f"acme.v1.{point}.x", cls)
@@ -284,7 +284,7 @@ def test_a_runtime_class_that_breaks_its_port_is_refused_when_registered(
 def test_a_runtime_built_as_something_else_is_a_config_error_not_an_attribute_error(
     point: str,
 ) -> None:
-    """Regression (mx-tests 3): a factory that built ``object()`` made compose raise a bare
+    """Regression: a factory that built ``object()`` made compose raise a bare
     ``AttributeError`` with no kind, which the command reported as a defect (exit 1)."""
     registry = Registry().register(point, f"acme.v1.{point}.x", lambda: object())
     with pytest.raises(ConfigError, match="not a") as e:

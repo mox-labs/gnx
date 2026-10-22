@@ -52,10 +52,11 @@ uv --project components/capabilities run pytest components/capabilities/ix/tests
 No test runs a live model session, and the test process reaches no host but this machine:
 `components/capabilities/conftest.py` refuses every call where an agent session or a model call
 would spend money, every socket connection or datagram in the test process that is not to
-loopback, every lookup of a name other than `localhost`, and a `k6` started directly with a
-target that is not loopback, and fails the test that made it. It does not see a child process
-other than `k6` (`git`, `uv`, `curl`, a container), nor `k6` started through a shell; its
-docstring lists each route it does not cover, and a test that takes one is reviewed for it. Use matrix's `mock` runtime, a fake, or
+loopback, every lookup through `socket.getaddrinfo`, `gethostbyname` or `gethostbyname_ex` of a
+name other than `localhost`, and a `k6` started directly with a target that is not loopback, and
+fails the test that made it. It does not see a child process other than `k6` (`git`, `uv`,
+`curl`, a container), nor `k6` started through a shell; its docstring lists each route it does
+not cover, and a test that takes one is reviewed for it. Use matrix's `mock` runtime, a fake, or
 a server of the test's own on 127.0.0.1 instead. A test that calls third-party hosts on purpose
 is marked `network` and runs only when asked, as recon's live tests do (`just recon-live`).
 

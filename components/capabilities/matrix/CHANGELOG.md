@@ -2,6 +2,16 @@
 
 All notable changes to matrix. Versions follow semver; before 1.0 a minor may break.
 
+## Unreleased
+
+### Fixed
+
+- **A pydantic-ai tool whose import failed is not imported again.** A module whose import
+  raises is left out of `sys.modules`, so every later session that offered the tool ran its
+  top-level code again before failing. The runtime now remembers the failure: each later
+  session that offers the tool fails as `incapable` with the same message, and the module
+  runs once.
+
 ## 0.7.0 — 2026-10-22
 
 ### Removed (breaking)

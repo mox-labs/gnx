@@ -3,7 +3,7 @@
 The messages a session streams are the SDK's own dataclasses and the options it is handed
 are the SDK's own ``ClaudeAgentOptions``: only ``query`` is replaced, so it starts no CLI. A
 fake narrower than the SDK could not tell the runtime it reads a field the SDK lacks, or
-hands it an option the SDK refuses (mx-tests 5).
+hands it an option the SDK refuses.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ async def test_a_session_reaches_the_workspace_guard(
     refused_live_calls: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The workspace guard refuses the SDK's ``query``. This holds that a session calls that
-    very name, so the guard is in its path (ix-tests F12): a ``query`` bound in the runtime's
+    very name, so the guard is in its path: a ``query`` bound in the runtime's
     module at import would be the real one, beyond the guard's reach. In case one ever is, the
     test first points the CLI at a closed port, away from the user's config and keys."""
     from matrix.adapters._out.runtime import claude_sdk
@@ -473,7 +473,7 @@ def test_max_budget_usd_reaches_the_real_sdk_options() -> None:
 async def test_inline_subagents_reach_the_sdk_as_its_agent_definitions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression (mx-src F11): the ``agents`` option was forwarded as plain dicts, and the
+    """Regression: the ``agents`` option was forwarded as plain dicts, and the
     SDK converts each with ``dataclasses.asdict`` once the CLI has started, so every session
     with inline subagents failed. The fake ``query`` does what the SDK's client does."""
     import dataclasses
@@ -586,7 +586,7 @@ def test_an_option_the_installed_sdk_lacks_is_refused_at_binding(
 async def test_the_reply_is_the_session_s_result_and_its_transcript_is_kept_apart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression (mx-src F9): ``content`` glued every assistant text block of every turn
+    """Regression: ``content`` glued every assistant text block of every turn
     together and ignored the result, so a multi-turn agent whose final answer was bare JSON
     replied ``'Let me read the diff.{"score": 4}'`` and its step's ``output`` failed."""
     from matrix import AGENT_STEP, Inputs, RunContext
@@ -627,7 +627,7 @@ def _usage(model: str, output: int) -> dict[str, Any]:
 async def test_the_model_recorded_is_the_one_that_answered_not_the_one_asked_for(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression (review area 3): ``model`` was the definition's, the model *asked for*,
+    """Regression: ``model`` was the definition's, the model *asked for*,
     and None when the CLI's default answered. It is the model the SDK says answered
     (``model_usage``); when several took part, the one that wrote the final reply."""
     _install(
@@ -655,7 +655,7 @@ async def test_the_model_recorded_is_the_one_that_answered_not_the_one_asked_for
 async def test_the_session_id_why_it_stopped_and_the_cache_tokens_are_kept(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression (mx-src F10): ``tokens_input`` was ``usage["input_tokens"]`` alone, which
+    """Regression: ``tokens_input`` was ``usage["input_tokens"]`` alone, which
     for Anthropic excludes the tokens read from and written to the prompt cache: 12 against
     90,000 in the probe. It counts every input token now, and the cache's are kept beside
     it. The session id and the last reply's stop reason were dropped."""
@@ -703,7 +703,7 @@ async def test_the_sdk_s_stop_reason_is_read_in_one_vocabulary(
 async def test_the_stream_is_closed_when_reading_it_stops_early(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression (mx-src F30): the SDK's ``query()`` generator was read without
+    """Regression: the SDK's ``query()`` generator was read without
     ``aclosing``, so when reading stopped before its end, closing it (and with it the CLI)
     was left to asyncio's garbage-collection hook, some time later."""
     closed: list[bool] = []
@@ -740,7 +740,8 @@ async def test_the_stream_is_closed_when_reading_it_stops_early(
 async def test_a_missing_cli_is_incapable_and_a_timeout_is_transient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The error mapping the runtime promises (mx-tests 11): no test held it."""
+    """The error mapping the runtime promises: a CLI that is not installed is ``incapable``
+    and says how to install it; a timeout is transient and may be retried."""
 
     def failing(error: Exception) -> Callable[..., AsyncIterator[sdk.Message]]:
         async def fake_query(
