@@ -981,6 +981,48 @@ class TestABrokenExtension:
         assert not planned.runnable
         assert any("s3_client" in reason for reason in planned.unimplemented)
 
+    def test_an_adapter_whose_constructor_raises_is_unbuildable_and_breaks_nothing_else(
+        self, write_experiment: Write
+    ) -> None:
+        """Regression: only a ``MatrixError`` from building an adapter was read as
+        "unbuildable"; any other exception from a third party's constructor escaped, and
+        since listing what is runnable builds every registered adapter, ``validate``,
+        ``plan`` and ``kinds`` raised it for every experiment, whether it used the kind or
+        not. Now the kind is unbuildable with its error, and the others are untouched."""
+
+        def explodes() -> Any:
+            raise RuntimeError("the acme sensor's licence server is down")
+
+        registry = fake_registry()
+        registry.register(POINTS["sensor"], "ix.v1.sensor.memory", explodes)
+        root = Root(registry=registry)
+        found = root.kinds()
+        assert "ix.v1.sensor.memory" not in found.runnable
+        why = found.unbuildable["ix.v1.sensor.memory"]
+        assert "RuntimeError: the acme sensor's licence server is down" in why
+        unrelated = write_experiment(experiment(), "plain")
+        assert root.validate(unrelated).valid
+        assert root.plan(unrelated).runnable
+        assert root.run(unrelated, exploratory=True).status == "completed"
+        uses_it = write_experiment(experiment(metrics=["memory_peak"]), "memory")
+        assert not root.plan(uses_it).runnable
+        with pytest.raises(ix.ConfigError, match="licence server is down"):
+            root.run(uses_it, exploratory=True)
+
+    def test_listing_the_vocabulary_builds_each_adapter_once(self) -> None:
+        """Regression: ``vocabulary()`` built every registered adapter twice (once for the
+        kinds, once for what is runnable), and every command lists it."""
+        built: list[int] = []
+
+        def counted() -> Any:
+            built.append(1)
+            return FakeTiming()
+
+        registry = fake_registry()
+        registry.register(POINTS["sensor"], "ix.v1.sensor.memory", counted)
+        Root(registry=registry).vocabulary()
+        assert len(built) == 1
+
     def test_an_adapter_not_of_its_ports_shape_is_refused_when_it_is_registered(
         self, write_experiment: Write
     ) -> None:

@@ -359,16 +359,23 @@ class Root:
     # --- the adapters ---
 
     def _adapter(self, entry: Entry) -> Any:
+        """The adapter ``entry`` registers, built with what it needs. Building runs an
+        extension's own code, so any exception it raises makes the adapter unbuildable,
+        named with its error, rather than escaping into a command that only lists kinds."""
         try:
             return self._registry.create(entry.point, entry.type_url, needs=self._supplies)
         except MatrixError as error:
-            raise ConfigError(
-                f"the adapter for {entry.type_url} ({entry.origin}) cannot be built: "
-                f"{error.message}",
-                fix=f"an adapter may need {', '.join(sorted(self._supplies))} and nothing "
-                "else; fix or uninstall the extension that registered it",
-                details={**error.details, "value": entry.type_url},
-            ) from error
+            raise self._unbuildable(entry, error.message, error.details) from error
+        except Exception as error:
+            raise self._unbuildable(entry, f"{type(error).__name__}: {error}", {}) from error
+
+    def _unbuildable(self, entry: Entry, reason: str, details: dict[str, Any]) -> ConfigError:
+        return ConfigError(
+            f"the adapter for {entry.type_url} ({entry.origin}) cannot be built: {reason}",
+            fix=f"an adapter may need {', '.join(sorted(self._supplies))} and nothing "
+            "else; fix or uninstall the extension that registered it",
+            details={**details, "value": entry.type_url},
+        )
 
     def _built(self, kind: str) -> Any:
         """The adapter registered for ``kind`` (a type URL), or None when there is none or
@@ -398,11 +405,6 @@ class Root:
                 else:
                     built.add(entry.type_url)
         return frozenset(built), broken
-
-    @property
-    def _runnable(self) -> frozenset[str]:
-        """Every kind (type URL) whose adapter is registered and builds here."""
-        return self._buildable()[0]
 
     def _kit(self, kinds: Collection[str], declared: Kinds) -> Kit:
         """The adapters a run of ``kinds`` (type URLs) uses, each built from the registry,
@@ -435,13 +437,20 @@ class Root:
 
     def kinds(self, lab: PathLike | None = None) -> Kinds:
         """The installed kinds, plus those in ``<lab>/kinds``."""
+        return self._kinds(lab, self._buildable())
+
+    def _kinds(
+        self, lab: PathLike | None, buildable: tuple[frozenset[str], dict[str, str]]
+    ) -> Kinds:
+        """:meth:`kinds`, with what :meth:`_buildable` found, so that a caller that needs it
+        too builds each adapter once."""
         files = self._kind_files.files(None if lab is None else os.fspath(lab))
         found = kinds(files, grammar=type_url_problem)
         quarantined = tuple(
             f"{failure.extension} ({failure.origin}): {failure.error}"
             for failure in self._registry.failures
         )
-        built, broken = self._buildable()
+        built, broken = buildable
         return found.model_copy(
             update={
                 "runnable": tuple(sorted(built & set(found.kinds))),
@@ -451,10 +460,11 @@ class Root:
         )
 
     def vocabulary(self, lab: PathLike | None = None) -> Vocabulary:
+        buildable = self._buildable()
         return Vocabulary(
             genres=self.genres(lab),
-            kinds=self.kinds(lab),
-            adapters=self._runnable,
+            kinds=self._kinds(lab, buildable),
+            adapters=buildable[0],
         )
 
     def skill(self, reference: str | None = None) -> str:
@@ -849,7 +859,8 @@ class Root:
             f"run the experiment again for its readings: ix run {record.manifest.base}; a run "
             "reads its interactions as it finishes"
         )
-        missing = sorted(sensors - self._runnable)
+        built, broken = self._buildable()
+        missing = sorted(sensors - built)
         if missing:
             return None, f"no adapter here reads {', '.join(map(schema.short, missing))}: {again}"
         calling = sorted(kind for kind in sensors if self._calls_a_model(kind))
@@ -859,7 +870,7 @@ class Root:
         derived = asyncio.run(
             running.sense(
                 setup,
-                self._kit(sensors, self.kinds(setup.base)),
+                self._kit(sensors, self._kinds(setup.base, (built, broken))),
                 trials=record.trials,
                 interactions=record.interactions,
             )
