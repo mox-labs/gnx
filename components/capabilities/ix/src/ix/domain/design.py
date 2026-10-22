@@ -254,6 +254,21 @@ def _listed(
         sensor = kinds.get("sensor", selection.kind)
         if sensor is None:
             continue  # an unknown kind is reported where the kind is named
+        first = next((at for at, kind in listed if kind.name == sensor.name), None)
+        if first is not None:
+            # A run keeps one entry per sensor kind: a second would replace the first's options.
+            problems.append(
+                problem(
+                    f"sensors.{index}.kind",
+                    kind="name_taken",
+                    message=f"sensor {schema.short(sensor.name)} is listed at sensors.{first} "
+                    "already; a run uses one entry of each sensor kind",
+                    fix=f"keep one {schema.short(sensor.name)} entry: merge this one's options "
+                    "into it, or remove it",
+                    got=selection.kind,
+                )
+            )
+            continue
         listed.append((index, sensor))
         if not _fits(sensor, offered):
             lacking = sorted(set(sensor.needs) - (offered or set()))

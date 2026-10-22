@@ -289,6 +289,13 @@ def _probe_duplicate_id(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return _found({**e, "probes": [e["probes"][0], e["probes"][0]]}, v)
 
 
+def _sensor_listed_twice(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    """Regression: a run keeps one entry per sensor kind, so the second silently replaced
+    the first one's options."""
+    twice = [{"kind": "text-match", "contains": "a"}, {"kind": "text-match", "contains": "b"}]
+    return _found({**e, "sensors": twice, "metrics": ["text_matched"]}, v)
+
+
 def _truth_unclaimed(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     e["probes"][0]["truth"]["expected_skil"] = "review"
     return _found(e, v)
@@ -451,6 +458,7 @@ CASES: dict[str, tuple[Any, str, str]] = {
     "probe_file": (_probe_file, "", "yaml_syntax"),
     "probes_folder_missing": (_probes_folder_missing, "probes", "probes_empty"),
     "probe_duplicate_id": (_probe_duplicate_id, "probes", "name_taken"),
+    "sensor_listed_twice": (_sensor_listed_twice, "sensors.1.kind", "name_taken"),
     "truth_unclaimed": (_truth_unclaimed, "probes.0.truth.expected_skil", "truth_unclaimed"),
     "unbound_placeholder": (_unbound_placeholder, "probes.0.target", "unbound_placeholder"),
     "genre_invalid": (_genre_invalid, "", "genre_invalid"),

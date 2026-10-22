@@ -39,6 +39,9 @@ subjects need several services. Record section 22 has the reasons.
 - `environment.process` asks the process it started whether it is still up. It asked
   `os.kill(pid, 0)` of the stored pid, which read a pid the system had given to another
   process as the service still up, and raised out of the run for one another user owns.
+- A sensor kind listed twice under `sensors:` is a problem (`name_taken`, at the second
+  entry). A run keeps one entry of each sensor kind, so the second silently replaced the
+  first one's options.
 
 ### Changed (breaking): requirements in place of effects
 
