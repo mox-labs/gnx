@@ -45,12 +45,14 @@ class AuthConfig(BaseModel):
 
 
 class RateLimitConfig(BaseModel):
-    """Per-source rate limiting via token bucket."""
+    """Per-source rate limiting via token bucket: ``rps`` tokens a second, at most ``burst``
+    held. Each is positive: a bucket that never refills, or holds no token, never lets a
+    request go."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    rps: float = 10.0
-    burst: int = 3
+    rps: float = Field(default=10.0, gt=0)
+    burst: int = Field(default=3, ge=1)
 
 
 class CaptureMatch(BaseModel):
@@ -89,7 +91,7 @@ class SourceEntry(BaseModel):
     auth: AuthConfig = AuthConfig()
     rate_limit: RateLimitConfig = RateLimitConfig()
     user_agent: str | None = None
-    timeout: float = 60.0
+    timeout: float = Field(default=60.0, gt=0)
     max_bytes: int = Field(default=DEFAULT_MAX_BYTES, gt=0)
 
 

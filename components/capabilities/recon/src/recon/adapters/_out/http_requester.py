@@ -1,9 +1,10 @@
 """HttpRequester — the only adapter that imports httpx2.
 
-Rate limiting lives here, not in collectors. Every call to `request()` acquires
-a token for its source before hitting the network, so paginated collectors
-can't forget to rate-limit per-page. Adapters construct HttpResponse domain
-value objects; collectors never see httpx2.Response.
+Rate limiting lives here, not in collectors. Every send, a retry included, acquires a token
+for its source before it goes, so no caller can forget the limit and a failing source is
+not sent to faster than its limit allows. Each wait, the limit's and a retry's, is on the
+clock port. Adapters construct HttpResponse domain value objects; collectors never see
+httpx2.Response.
 
 A body is read as a stream and counted against the source's ``max_bytes``, so a response
 that is larger than the mission allowed is refused instead of buffered.
@@ -311,10 +312,9 @@ class HttpRequester:
         headers: dict[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> HttpResponse:
-        """Single HTTP request. Rate-limits against the source before firing.
-
-        Paginated callers call this in a loop; each call acquires its own
-        token, so rate limits are always honored at the page level. A body larger than
+        """Single HTTP request, sent up to three times. Every send, a retry included,
+        draws a token from the source's rate limit first, and every wait (the limit's, a
+        retry's backoff or Retry-After) is on the clock port. A body larger than
         ``source.max_bytes`` raises CollectionError (kind ``run_failed``) and is not retried.
         """
         try:
@@ -328,12 +328,12 @@ class HttpRequester:
                 fix="correct the source's url: and the collector's endpoint: so they join into "
                 "one URL",
             ) from exc
-        self._rate_limiter.acquire(source)
         resends = itertools.count()
         retrying = Retrying(
             stop=stop_after_attempt(3),
             wait=_retry_wait,
             retry=retry_if_exception(_is_retryable),
+            sleep=self._clock.sleep,
             reraise=True,
         )
         hooks = {"request": [_credential_stays_at(target, source.auth.header)]}
@@ -373,7 +373,9 @@ class HttpRequester:
     def _attempt(
         self, client: httpx2.Client, request: httpx2.Request, source: SourceEntry, resend: int
     ) -> HttpResponse:
-        """One send of ``request``, as one client span."""
+        """One send of ``request``, as one client span, once the source's rate limit lets it
+        go: a resend draws a token as the first send did."""
+        self._rate_limiter.acquire(source)
         attributes = _span_attributes(request, source, resend)
         with self._telemetry.span(HTTP_REQUEST, attributes, kind="client") as span:
             try:

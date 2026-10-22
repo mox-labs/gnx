@@ -21,6 +21,7 @@ from recon.adapters._out.system_clock import SystemClock
 from recon.domain.errors import CollectionError
 from recon.domain.models import SourceEntry
 from recon.domain.ratelimit import RateLimiter
+from tests.recon_fakes import FixedClock
 
 
 def _status_error(code: int) -> httpx2.HTTPStatusError:
@@ -344,3 +345,47 @@ def test_a_url_that_is_not_one_is_a_config_error():
         requester.request(source, "GET", "http://[::1/x")
     error = excinfo.value
     assert error.kind == "config" and "url:" in error.fix
+
+
+# --- what a retry costs ----------------------------------------------------------------
+
+
+class _CountingLimiter:
+    """The rate limiter, counting the tokens drawn and never waiting."""
+
+    def __init__(self) -> None:
+        self.drawn = 0
+
+    def acquire(self, source):
+        self.drawn += 1
+
+
+def _always_busy(request):
+    return httpx2.Response(503)
+
+
+def test_every_send_draws_a_token_resends_included():
+    """Regression: the token was drawn once per request, before its retries, so a source
+    answering 5xx took three sends for one token and its rate limit did not hold."""
+    limiter = _CountingLimiter()
+    clock = FixedClock()
+    requester = HttpRequester(limiter, clock, transport=httpx2.MockTransport(_always_busy))
+    source = SourceEntry(name="s", url="https://api.example.test")
+    with pytest.raises(CollectionError, match="after retries"):
+        requester.request(source, "GET", "https://api.example.test/x")
+    assert limiter.drawn == 3
+
+
+def test_a_retry_waits_on_the_clock_port():
+    """Regression: tenacity slept on the real clock, so a test clock could not see a retry's
+    backoff, and nothing that reads the clock port could bound it."""
+    clock = FixedClock()
+    requester = HttpRequester(
+        RateLimiter(clock), clock, transport=httpx2.MockTransport(_always_busy)
+    )
+    source = SourceEntry(name="s", url="https://api.example.test")
+    started = time.monotonic()
+    with pytest.raises(CollectionError, match="after retries"):
+        requester.request(source, "GET", "https://api.example.test/x")
+    assert clock.slept == [1.0, 2.0], "the backoff before the second and third sends"
+    assert time.monotonic() - started < 1, "no real time was slept"

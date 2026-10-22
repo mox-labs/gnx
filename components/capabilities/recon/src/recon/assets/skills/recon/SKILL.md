@@ -123,8 +123,8 @@ catalog:                       # where to look; optional
     type: api                  # api | web | local
     url: <base URL, or a directory for local>   # required
     auth: {env: <VAR>, header: <Header-Name>, param: <query param>, prefix: "Bearer "}
-    rate_limit: {rps: 10.0, burst: 3}
-    timeout: 60                # seconds per request
+    rate_limit: {rps: 10.0, burst: 3}   # tokens a second (> 0), most held (>= 1)
+    timeout: 60                # seconds per request (> 0)
     max_bytes: 50000000        # largest response body; a larger one fails the table
     user_agent: <string>       # default: recon/<version> (+https://github.com/mox-labs/gnx)
 collectors:                    # what to ask; required, at least one
@@ -152,7 +152,7 @@ These are all the keys there are: an unknown key at the top level, in a source, 
 
 | Type | Does | Each record is |
 |---|---|---|
-| `api` | one HTTP request per source to `url` + `endpoint`; retries 429, 5xx and network errors twice, waiting out a `Retry-After` of up to 60 s (a longer one fails the table at once, `transient`, naming the wait) | each object at `extract` in the JSON or XML body |
+| `api` | one HTTP request per source to `url` + `endpoint`; retries 429, 5xx and network errors twice, waiting out a `Retry-After` of up to 60 s (a longer one fails the table at once, `transient`, naming the wait); every send, a retry included, draws from the source's `rate_limit` | each object at `extract` in the JSON or XML body |
 | `cli` | runs `run` in a shell, in its `local` source's directory (a relative `url` is relative to the project root; a directory that does not exist is a plan problem), else, with no source or a source of another type, in the working directory; the plan shows it as each run's `cwd` (null: the working directory); exit 0 succeeds, and so does exit 1 with nothing on stderr (grep's and rg's no match) | each stdout line: a JSON object as is, other text as `{line_number, line}` |
 | `web` | one HTTP GET, converted to markdown by content type (HTML, PDF, DOCX, ...) | one `{url, title, content, status_code, content_type}`; `content` stops at 100,000 characters |
 | `capture` | reads capture logs (default `captures/captures.jsonl` in the mission; a glob works); fetches nothing; fanned out over a catalog, each run keeps the captures whose `source` is that source's name; a run that read captures and kept none is warned (`captures_unmatched`) | each object in each matching body, parsed by its content type: JSON, XML, or text lines as `cli` parses them |
