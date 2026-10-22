@@ -17,7 +17,7 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx2
 import pytest
@@ -29,6 +29,11 @@ from recon.adapters._out.mcp_collector import McpCollector
 from recon.composition import load_plugins, root
 from tests.mcp_server import FIXTURE
 from tests.recon_fakes import FixedClock, run_survey
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from recon.domain.collector import Collector, CollectorContext
 
 SERVER = str(Path(__file__).parent / "mcp_server.py")
 
@@ -122,7 +127,7 @@ def test_a_collector_that_does_not_name_one_call_plainly_is_a_plan_problem(
 
 
 def test_each_variable_a_source_names_is_declared_and_warned_when_unset() -> None:
-    sources = [
+    sources: list[dict[str, Any]] = [
         {**STDIO, "name": "s", "env": {"GH": "env:GITHUB_TOKEN", "LEVEL": "debug"}},
         {"name": "r", "type": "mcp", "url": "https://x.test/mcp", "token": "env:REMOTE"},
     ]
@@ -175,7 +180,7 @@ def test_result_text_reads_the_text_of_a_tool_that_wraps_it_in_its_schema(tmp_pa
 
 
 def test_a_resource_and_a_templated_resource_give_the_json_in_their_text(tmp_path: Path) -> None:
-    collectors = [
+    collectors: list[dict[str, Any]] = [
         {"name": "all", "type": "mcp", "source": "fixture", "resource": "fixture://papers",
          "extract": "items"},
         {"name": "one", "type": "mcp", "source": "fixture", "resource": "fixture://papers/{id}",
@@ -385,11 +390,17 @@ def test_a_dry_run_whose_server_cannot_start_says_so_and_stays_valid(tmp_path: P
 def test_a_dry_run_builds_no_collector_whose_type_has_no_preflight(tmp_path: Path) -> None:
     built: list[str] = []
     plugins = load_plugins()
+
+    def building(name: str) -> Callable[[CollectorContext], Collector]:
+        def create(ctx: CollectorContext) -> Collector:
+            built.append(name)
+            raise AssertionError(f"a dry run built the collector {name!r}")
+
+        return create
+
     for name, ct in list(plugins.collector_types.items()):
         if name != "mcp":
-            plugins.collector_types[name] = replace(
-                ct, create=lambda ctx, name=name: built.append(name)
-            )
+            plugins.collector_types[name] = replace(ct, create=building(name))
     plan = _plan(
         tmp_path,
         [_call("good", "whoami"), {"name": "c", "type": "cli", "run": "true"}],

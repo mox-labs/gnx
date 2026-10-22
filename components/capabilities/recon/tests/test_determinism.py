@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from recon.domain.models import SourceEntry
+from recon.domain.models import RateLimitConfig, SourceEntry
 from recon.domain.ratelimit import RateLimiter
 from tests.recon_fakes import FixedClock, ScriptedRequester, ScriptedShell, run_survey
 
@@ -117,7 +117,7 @@ def test_with_preserve_raw_only_each_capture_s_id_differs(tmp_path: Path) -> Non
 def test_a_rate_limit_waits_on_the_clock_port() -> None:
     clock = FixedClock()
     limiter = RateLimiter(clock)
-    source = SourceEntry(name="s", url="https://x.test", rate_limit={"rps": 2, "burst": 1})
+    source = SourceEntry(name="s", url="https://x.test", rate_limit=RateLimitConfig(rps=2, burst=1))
 
     limiter.acquire(source)
     limiter.acquire(source)

@@ -17,16 +17,17 @@ import yaml
 from recon.composition import load_plugins, root
 from recon.domain.collector import CollectorType, Plugins
 from recon.domain.http import HttpResponse
+from recon.domain.models import CollectorEntry, ReconConfig
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Mapping
 
     from recon.composition import RequesterFactory
     from recon.domain.clock import Clock
-    from recon.domain.collector import Collector
+    from recon.domain.collector import Collector, CollectorContext
     from recon.domain.converters import DocumentConverter
     from recon.domain.documents import TableOutcome
-    from recon.domain.models import ReconConfig, SourceEntry
+    from recon.domain.models import SourceEntry
     from recon.domain.shell import ShellRunner
 
 
@@ -117,15 +118,26 @@ class ScriptedShell:
         return 0
 
 
+def collector_entry(**fields: Any) -> CollectorEntry:
+    """A ``CollectorEntry`` with the settings of its type (``run=``, ``endpoint=``, ...), which
+    the model keeps as extra fields: they are arbitrary keys, so they are not typed."""
+    return CollectorEntry(**fields)
+
+
 def plugins_with(**collectors: Collector) -> Plugins:
     """The installed plugins, and a collector type for each of ``collectors`` by name that
     builds that collector, declaring nothing else (no settings, no check)."""
     plugins = load_plugins()
     for name, collector in collectors.items():
-        plugins.collector_types[name] = CollectorType(
-            create=lambda ctx, collector=collector: collector, effects=None
-        )
+        plugins.collector_types[name] = CollectorType(create=_creating(collector), effects=None)
     return plugins
+
+
+def _creating(collector: Collector) -> Callable[[CollectorContext], Collector]:
+    def create(ctx: CollectorContext) -> Collector:
+        return collector
+
+    return create
 
 
 def run_survey(
@@ -144,7 +156,11 @@ def run_survey(
     """Survey ``config`` as the mission ``name`` of ``project`` through recon's own root,
     with a fake for each port given and the real adapter for the rest (no environment
     unless ``env`` is given). Returns the archive and its tables."""
-    raw = config if isinstance(config, dict) else config.model_dump(mode="json", exclude_unset=True)
+    raw = (
+        config.model_dump(mode="json", exclude_unset=True)
+        if isinstance(config, ReconConfig)
+        else config
+    )
     mission = project / ".recon" / name
     mission.mkdir(parents=True, exist_ok=True)
     (mission / "config.yaml").write_text(yaml.safe_dump(dict(raw), sort_keys=False))

@@ -25,7 +25,7 @@ from recon.adapters._out import otel_telemetry
 from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
 from recon.domain.errors import CollectionError
-from recon.domain.models import SourceEntry
+from recon.domain.models import AuthConfig, SourceEntry
 from recon.domain.ratelimit import RateLimiter
 from recon.domain.telemetry import Telemetry
 from tests.recon_fakes import FixedClock
@@ -201,7 +201,7 @@ def _requester(sink: Recorded) -> HttpRequester:
 def test_a_request_is_a_client_span_with_the_required_attributes(server: Any) -> None:
     sink = Recorded()
     port = server.server_address[1]
-    source = SourceEntry(name="s", url=f"http://127.0.0.1:{port}", auth={"param": "api_key"})
+    source = SourceEntry(name="s", url=f"http://127.0.0.1:{port}", auth=AuthConfig(param="api_key"))
     _requester(sink).request(source, "GET", f"{source.url}/ok", params={"api_key": "s3cret"})
 
     [start] = [e for e in sink.events if e.name == "recon.http.request.start"]
@@ -245,7 +245,7 @@ def test_a_transport_failure_names_its_exception_and_credentials_in_the_url_are_
 
 def test_events_become_otel_spans_and_metrics() -> None:
     from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader, NumberDataPoint
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -271,12 +271,16 @@ def test_events_become_otel_spans_and_metrics() -> None:
                 else:
                     collect.set("recon.records", 5)
 
-    spans = {s.name + "/" + str(s.attributes.get("recon.table", "")): s
+    spans = {s.name + "/" + str((s.attributes or {}).get("recon.table", "")): s
              for s in exporter.get_finished_spans()}  # fmt: skip
     survey = spans["recon.survey/"]
-    assert survey.instrumentation_scope.name == "recon"
-    assert survey.instrumentation_scope.schema_url == "https://opentelemetry.io/schemas/1.44.0"
-    assert spans["recon.collect/ok"].parent.span_id == survey.context.span_id
+    scope = survey.instrumentation_scope
+    assert scope is not None
+    assert scope.name == "recon"
+    assert scope.schema_url == "https://opentelemetry.io/schemas/1.44.0"
+    parent, context = spans["recon.collect/ok"].parent, survey.context
+    assert parent is not None and context is not None
+    assert parent.span_id == context.span_id
     assert spans["recon.collect/bad"].status.status_code == StatusCode.ERROR
     posts = [s for s in exporter.get_finished_spans() if s.name == "POST"]
     assert len(posts) == 2 and all(s.kind == SpanKind.CLIENT for s in posts)
@@ -284,7 +288,11 @@ def test_events_become_otel_spans_and_metrics() -> None:
     data = reader.get_metrics_data()
     assert data is not None
     points = {
-        metric.name: [(dict(p.attributes), p.value) for p in metric.data.data_points]
+        metric.name: [
+            (dict(p.attributes or {}), p.value)
+            for p in metric.data.data_points
+            if isinstance(p, NumberDataPoint)
+        ]
         for resource in data.resource_metrics
         for scope in resource.scope_metrics
         for metric in scope.metrics
@@ -644,7 +652,9 @@ def test_the_sdk_and_the_exporters_are_installed_with_recon() -> None:
     assert any(r.startswith("opentelemetry-exporter-otlp") for r in plain)
 
 
-def _installs(monkeypatch: pytest.MonkeyPatch, *, tracer: Any = None, meter: Any = None) -> list:
+def _installs(
+    monkeypatch: pytest.MonkeyPatch, *, tracer: Any = None, meter: Any = None
+) -> list[str]:
     """Spy on the providers ``export_from_env`` sets, by signal, and set none. ``tracer`` and
     ``meter`` are the ones the program installed already; None is none, the API's default."""
     from opentelemetry import metrics, trace

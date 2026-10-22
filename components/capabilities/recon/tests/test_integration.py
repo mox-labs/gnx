@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,11 +17,13 @@ from recon.adapters._out.cli_collector import CliCollector
 from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.system_clock import SystemClock
+from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.adapters._out.web_collector import WebCollector
-from recon.composition import DEFAULT_USER_AGENT
+from recon.domain.collector import Collector
 from recon.domain.errors import CollectionError
-from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+from recon.domain.models import CollectorEntry, RateLimitConfig, ReconConfig, SourceEntry
 from recon.domain.ratelimit import RateLimiter
+from tests.recon_fakes import collector_entry
 from tests.recon_fakes import run_survey as run
 
 live = pytest.mark.skipif(
@@ -28,12 +31,12 @@ live = pytest.mark.skipif(
 )
 
 
-def _requester():
+def _requester() -> HttpRequester:
     clock = SystemClock()
     return HttpRequester(RateLimiter(clock), clock)
 
 
-def _collectors():
+def _collectors() -> dict[str, Collector]:
     req = _requester()
     conv = MarkitdownConverter()
     return {
@@ -43,7 +46,7 @@ def _collectors():
     }
 
 
-def _api_records(entry, source):
+def _api_records(entry: CollectorEntry, source: SourceEntry | None) -> list[dict[str, Any]]:
     """Helper — materializes the streaming iterator for test assertions."""
     return list(ApiCollector(_requester(), {}, DEFAULT_USER_AGENT).collect(entry, source))
 
@@ -53,13 +56,13 @@ def _api_records(entry, source):
 
 @live
 class TestOpenAlexLive:
-    def test_search(self):
+    def test_search(self) -> None:
         source = SourceEntry(
             name="openalex",
             url="https://api.openalex.org",
             user_agent="recon-tests (mailto:test@example.com)",
         )
-        entry = CollectorEntry(
+        entry = collector_entry(
             name="test",
             type="api",
             source="openalex",
@@ -81,14 +84,14 @@ class TestOpenAlexLive:
         assert all(r["title"] is not None for r in records)
         assert all(isinstance(r["year"], int) for r in records)
 
-    def test_inverted_index_transform(self):
+    def test_inverted_index_transform(self) -> None:
         """OpenAlex abstract_inverted_index → $inverted_index → text."""
         source = SourceEntry(
             name="openalex",
             url="https://api.openalex.org",
             user_agent="recon-tests (mailto:test@example.com)",
         )
-        entry = CollectorEntry(
+        entry = collector_entry(
             name="test",
             type="api",
             source="openalex",
@@ -113,7 +116,7 @@ class TestOpenAlexLive:
         assert isinstance(abstracts[0], str)
         assert len(abstracts[0]) > 20
 
-    def test_full_survey_to_jsonl(self):
+    def test_full_survey_to_jsonl(self) -> None:
         config = ReconConfig.model_validate(
             {
                 "catalog": [
@@ -154,14 +157,14 @@ class TestOpenAlexLive:
 
 @live
 class TestS2Live:
-    def test_search_or_rate_limited(self):
+    def test_search_or_rate_limited(self) -> None:
         """S2 works if under rate limit, raises CollectionError if 429."""
         source = SourceEntry(
             name="s2",
             url="https://api.semanticscholar.org/graph/v1",
-            rate_limit={"rps": 0.33, "burst": 1},
+            rate_limit=RateLimitConfig(rps=0.33, burst=1),
         )
-        entry = CollectorEntry(
+        entry = collector_entry(
             name="test",
             type="api",
             source="s2",
@@ -187,10 +190,10 @@ class TestS2Live:
 
 @live
 class TestArxivLive:
-    def test_xml_search(self):
+    def test_xml_search(self) -> None:
         """arXiv returns XML, parsed via xmltodict. Skips on timeout."""
         source = SourceEntry(name="arxiv", url="https://export.arxiv.org/api")
-        entry = CollectorEntry(
+        entry = collector_entry(
             name="test",
             type="api",
             source="arxiv",
@@ -219,15 +222,15 @@ class TestArxivLive:
 
 @live
 class TestZenodoLive:
-    def test_html2text_transform(self):
+    def test_html2text_transform(self) -> None:
         """Zenodo descriptions are HTML, $html2text strips tags."""
         source = SourceEntry(
             name="zenodo",
             url="https://zenodo.org/api",
-            rate_limit={"rps": 1, "burst": 2},
+            rate_limit=RateLimitConfig(rps=1, burst=2),
             user_agent=DEFAULT_USER_AGENT,
         )
-        entry = CollectorEntry(
+        entry = collector_entry(
             name="test",
             type="api",
             source="zenodo",
@@ -254,7 +257,7 @@ class TestZenodoLive:
 
 
 class TestFanOutLive:
-    def test_cli_fan_out_with_cwd(self, tmp_path):
+    def test_cli_fan_out_with_cwd(self, tmp_path: Path) -> None:
         """Two local sources, one collector, fan-out verifies cwd."""
         repo_a = tmp_path / "repo-a"
         repo_b = tmp_path / "repo-b"
@@ -283,7 +286,7 @@ class TestFanOutLive:
         assert "from repo a" in a_records[0]["line"]
         assert "from repo b" in b_records[0]["line"]
 
-    def test_mixed_survey_with_errors(self, tmp_path):
+    def test_mixed_survey_with_errors(self, tmp_path: Path) -> None:
         """One source succeeds, another uses a command that hard-fails."""
         good = tmp_path / "good"
         good.mkdir()
