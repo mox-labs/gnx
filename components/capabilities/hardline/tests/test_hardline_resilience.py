@@ -204,7 +204,8 @@ async def test_an_exhausted_chain_carries_its_log_and_what_it_cost() -> None:
     with pytest.raises(BackendError) as e:
         await rt.extract("a", "?", Verdict)
     assert [(t.name, t.reason) for t in e.value.attempt_log] == [("a", None), ("a", "rate_limit")]
-    assert e.value.usage == e.value.attempt_log[0].usage and e.value.usage.output_tokens == 2
+    assert e.value.usage is not None and e.value.usage == e.value.attempt_log[0].usage
+    assert e.value.usage.output_tokens == 2
 
 
 async def test_a_fault_raised_at_once_carries_its_log() -> None:
@@ -222,7 +223,7 @@ async def test_a_schema_failure_carries_what_it_cost() -> None:
     with pytest.raises(SchemaError) as e:
         await rt.extract("a", "?", Verdict)
     assert [t.reason for t in e.value.attempt_log] == [None, None]
-    assert e.value.usage.output_tokens == 1 + 2
+    assert e.value.usage is not None and e.value.usage.output_tokens == 1 + 2
 
 
 async def test_a_schema_repair_goes_on_from_the_row_that_answered() -> None:
