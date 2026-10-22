@@ -103,7 +103,7 @@ class EnvironmentComponent:
         self._kit = kit
 
     async def run(self, inputs: Inputs, ctx: RunContext) -> Mapping[str, Any]:
-        bindings = await running.bring_up(_setup(inputs), self._kit, ctx)
+        bindings = await running.bring_up(_setup(inputs), self._kit, _scope(ctx, self._kit))
         return {schema.BINDINGS: BindingsRow(services=bindings)}
 
 

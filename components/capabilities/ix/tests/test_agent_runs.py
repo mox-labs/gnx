@@ -536,6 +536,36 @@ class TestAVerdictIsTiedToWhatItJudged:
         mock = next(r for r in provenance.runtimes if r.type_url == "matrix.v1.agent-runtime.mock")
         assert (mock.distribution, mock.version) == ("matrix", importlib.metadata.version("matrix"))
 
+    def test_a_runtime_is_recorded_with_the_version_of_what_it_drives(self, tmp_path: Path) -> None:
+        """A runtime declares the distributions it drives (matrix's ``Entry.drives``): the
+        manifest records each with its installed version (claude-sdk's SDK, beside the
+        matrix that registered it), and each session row on it names them."""
+        registry = _registry(_fires())
+        driving = "acme.v1.agent-runtime.over-pydantic"
+
+        def build() -> Scripted:
+            runtime = Scripted()
+            runtime.answer = _fires()
+            return runtime
+
+        registry.register("agent-runtime", driving, build, drives=("pydantic", "acme-gone"))
+        lab = _routing(
+            tmp_path, subjects={"catalog": {"kind": "agent-session", "runtime": driving}}
+        )
+        report = Root(registry=registry, settings=_settings()).run(lab, exploratory=True)
+        sessions = _session_rows(report)
+        assert sessions and all(row["drives"] == ["pydantic", "acme-gone"] for row in sessions)
+        provenance = report.provenance
+        assert provenance is not None
+        by_url = {runtime.type_url: runtime for runtime in provenance.runtimes}
+        assert by_url[driving].drives == {
+            "pydantic": importlib.metadata.version("pydantic"),
+            "acme-gone": "not installed",
+        }
+        sdk = by_url["matrix.v1.agent-runtime.claude-sdk"]
+        assert set(sdk.drives) == {"claude-agent-sdk"}
+        assert by_url[SCRIPTED].drives == {}
+
     def test_report_and_runs_show_the_subjects_digests_and_commit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1065,6 +1095,150 @@ class TestAVerdictTracesToTheModelThatAnswered:
             assert failed["usage"]["input_tokens"] == 9 and len(failed["attempt_log"]) == 2
 
 
+class _RecorderConfig(BaseModel):
+    """A stand-in runtime's config whose ``rounds`` keeps whatever type it is given."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rounds: Any = None
+    default: str | None = None
+
+
+class TestFactorsDriveAgentSettings:
+    def test_a_sweep_over_a_loops_rounds_runs_each_level_as_an_integer(
+        self, tmp_path: Path
+    ) -> None:
+        """Q11 (the rounds curve): ``characterize`` over the loop's ``rounds`` (1, 2, 3) on a
+        stand-in. Each level reaches the loop and the runtime as the integer it was written
+        as, and each trial takes that many rounds; a loop of one round is the first answer
+        alone."""
+        configs: list[Any] = []
+        asked: list[str] = []
+
+        def build(config: _RecorderConfig) -> Scripted:
+            configs.append(config.rounds)
+            runtime = Scripted()
+
+            def answer(task: str) -> matrix.AgentResponse:
+                asked.append(task)
+                return matrix.AgentResponse(content=config.default or "a draft", num_turns=1)
+
+            runtime.answer = answer
+            return runtime
+
+        registry = _registry(_fires())
+        recorder = "acme.v1.agent-runtime.recorder"
+        registry.register("agent-runtime", recorder, build, config=_RecorderConfig, stand_in=True)
+        data = {
+            "name": "rounds",
+            "question": "How do the rounds an agent takes bend with the loop's limit?",
+            "genre": "characterize",
+            "factors": {"rounds": [1, 2, 3]},
+            "subjects": {
+                "agent": {
+                    "kind": "agent-session",
+                    "runtime": recorder,
+                    "loop": {"strategy": "self-review", "rounds": "{rounds}"},
+                    "runtime_options": {"rounds": "{rounds}"},
+                }
+            },
+            "probes": [{"id": "ask", "kind": "prompt", "prompt": "Write it.",
+                        "mock_response": "a draft"}],
+            "primary": {"metric": "rounds"},
+            "repeats": 3,
+        }  # fmt: skip
+        lab = tmp_path / "rounds"
+        lab.mkdir()
+        (lab / "experiment.yaml").write_text(yaml.safe_dump(data))
+        root = Root(registry=registry, settings=_settings())
+        assert ix.validate(lab).valid  # validated through the default root: no adapter needed
+        report = root.run(lab, exploratory=True)
+        assert report.status == "completed" and report.simulated == "all"
+        built = {type(level) for level in configs}
+        assert built == {int} and set(configs) == {1, 2, 3}
+        by_cell = {}
+        for interaction in _rows(report, "ix.v1.interaction"):
+            usage = interaction["observations"]["usage"]
+            by_cell.setdefault(usage["rounds"], 0)
+            by_cell[usage["rounds"]] += 1
+        assert by_cell == {1: 3, 2: 3, 3: 3}
+        assert len(asked) == 3 * (1 + 2 + 3)
+
+
+class _GoesDown:
+    """An environment that is lost after its second trial: the run fails before it senses."""
+
+    def __init__(self) -> None:
+        self.asked = 0
+
+    async def up(self, environment: Any, *, base: str, scope: Any) -> dict[str, Any]:
+        return {}
+
+    async def lost(self, bindings: Any) -> str | None:
+        self.asked += 1
+        return "the service went away" if self.asked >= 2 else None
+
+
+class TestAReportCallsNoModel:
+    def test_a_run_that_ended_before_its_judge_read_is_reported_without_asking_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: ``ix report`` of a run that ended before sensing derived its readings
+        then, so every report asked the judge again: paid calls from a read command, and a
+        stochastic judge's readings differing between two reports of one run."""
+        judged: list[str] = []
+
+        def answer(task: str) -> matrix.AgentResponse:
+            if "Rubric:" in task:
+                judged.append(task)
+                return matrix.AgentResponse(content='{"score": 0.9, "reason": "fine"}')
+            return _fires()(task)
+
+        registry = _registry(answer)
+        environment = "acme.v1.environment.goes-down"
+        registry.register("ix.environment", environment, _GoesDown)
+        lab = _routing(
+            tmp_path,
+            metrics=["judged_score"],
+            sensors=[{"kind": "judge", "rubric": "Helpful.", "agent_runtime": SCRIPTED}],
+            environment={"kind": environment},
+        )
+        (lab / "kinds").mkdir()
+        (lab / "kinds" / "goes-down.yaml").write_text(
+            yaml.safe_dump(
+                {"schema": "ix.v1.kind", "name": environment, "summary": "Lost after a trial."}
+            )
+        )
+        root = Root(registry=registry, settings=_settings())
+        ran = root.run(lab, exploratory=True)
+        assert ran.status == "failed" and ran.trials.carried_out == 2
+        assert judged == []  # the run ended before its sensors read anything
+
+        for _ in range(2):
+            report = root.report(ran.location)
+            assert report.readings == "none" and report.trials.carried_out == 2
+            assert "judge" in report.unread and "ix run" in report.unread
+        assert judged == []  # two reports, no call
+
+    def test_a_run_whose_sensors_call_no_model_is_still_read_at_report_time(
+        self, tmp_path: Path
+    ) -> None:
+        registry = _registry(_fires())
+        environment = "acme.v1.environment.goes-down"
+        registry.register("ix.environment", environment, _GoesDown)
+        lab = _routing(tmp_path, environment={"kind": environment})
+        (lab / "kinds").mkdir()
+        (lab / "kinds" / "goes-down.yaml").write_text(
+            yaml.safe_dump(
+                {"schema": "ix.v1.kind", "name": environment, "summary": "Lost after a trial."}
+            )
+        )
+        root = Root(registry=registry, settings=_settings())
+        ran = root.run(lab, exploratory=True)
+        report = root.report(ran.location)
+        assert report.readings == "derived" and report.unread == ""
+
+
 class TestAJudgesFlags:
     def test_a_judge_of_the_subjects_family_is_flagged_and_what_it_cost_kept(
         self, tmp_path: Path
@@ -1108,6 +1282,11 @@ class TestTelemetry:
         run = next(span for span in spans if span.name == "ix.run")
         trial = next(span for span in spans if span.name == "ix.trial")
         assert trial.parent is not None and trial.parent.span_id == run.context.span_id
+        # Bringing the environment up is ix's work too: one span, under the run.
+        (environment,) = [span for span in spans if span.name == "ix.environment"]
+        assert environment.parent is not None
+        assert environment.parent.span_id == run.context.span_id
+        assert (environment.attributes or {})["ix.environment.kind"] == "none"
         # Spend is removed: no span carries a cost of ix's own.
         assert not any("cost_usd" in key for span in spans for key in span.attributes or {})
         events = [e for span in spans if span.name == "ix.sensor" for e in span.events]
@@ -1124,6 +1303,30 @@ class TestTelemetry:
         }
         trials = {f"{span.context.span_id:016x}" for span in spans if span.name == "ix.trial"}
         assert {row["span_id"] for row in sessions} <= trials
+
+    def test_the_tracer_speaks_the_conventions_the_run_path_does_not(self) -> None:
+        """A failure is ``error.type``; a metric read is a ``gen_ai.evaluation.result``
+        event, scored by value or label, or carrying why it could not be read."""
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        with OtelTracer("test", tracer_provider=provider).trace("ix.sensor") as span:
+            span.failed("timeout")
+            span.evaluated("latency", score=0.5)
+            span.evaluated("fired", label="pass")
+            span.evaluated("judged", failure="shape")
+            span.evaluated("missing")
+        (finished,) = exporter.get_finished_spans()
+        assert (finished.attributes or {})["error.type"] == "timeout"
+        assert [(e.name, dict(e.attributes or {})) for e in finished.events] == [
+            ("gen_ai.evaluation.result",
+             {"gen_ai.evaluation.name": "latency", "gen_ai.evaluation.score.value": 0.5}),
+            ("gen_ai.evaluation.result",
+             {"gen_ai.evaluation.name": "fired", "gen_ai.evaluation.score.label": "pass"}),
+            ("gen_ai.evaluation.result",
+             {"gen_ai.evaluation.name": "judged", "error.type": "shape"}),
+            ("gen_ai.evaluation.result", {"gen_ai.evaluation.name": "missing"}),
+        ]  # fmt: skip
 
     def test_a_telemetry_warning_travels_in_every_json_document(
         self, compare_data: dict[str, Any], write_experiment: Any

@@ -9,6 +9,9 @@ judges what it holds.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +19,12 @@ from ix.domain.errors import ConfigError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+
+def _umask() -> int:
+    current = os.umask(0)
+    os.umask(current)
+    return current
 
 
 class RegistrationFile:
@@ -53,4 +62,23 @@ class RegistrationFile:
         return data
 
     def write(self, document: Mapping[str, Any]) -> None:
-        Path(self.location).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        """Write ``document`` whole or not at all: to a file beside the record, flushed to
+        disk, then moved over it, so a write cut short leaves the old record as it was."""
+        file = Path(self.location)
+        text = json.dumps(document, indent=2) + "\n"
+        handle, temporary = tempfile.mkstemp(
+            dir=file.parent, prefix=f".{file.name}.", suffix=".tmp"
+        )
+        try:
+            # mkstemp makes the file for its owner alone; a registration is committed and
+            # shared, so it gets the mode a plain write would have given it.
+            os.chmod(temporary, 0o666 & ~_umask())
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, file)
+        except BaseException:
+            with suppress(OSError):
+                os.unlink(temporary)
+            raise

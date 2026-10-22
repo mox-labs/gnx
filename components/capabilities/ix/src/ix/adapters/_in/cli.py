@@ -733,7 +733,11 @@ def _render_warrant(report: ix.Report) -> None:
             "derived from the record when this report was made."
         )
     elif report.readings == "none":
-        lines.append("No readings: none were recorded, and none could be derived here.")
+        lines.append(
+            f"No readings: none were recorded, and none were derived here: {report.unread}."
+            if report.unread
+            else "No readings were recorded."
+        )
     _field("Warrant", *lines, *analysis.notes)
 
 
@@ -914,8 +918,11 @@ def run(path: str, exploratory: bool, dry_run: bool, repeats: int | None, as_jso
         if bar is not None:
             bar.stop()
         _fail(error, as_json=as_json)
-    if bar is not None:
-        bar.stop()
+    finally:
+        # However the run ended: a defect or a stop outside the run must not print over a
+        # live display.
+        if bar is not None:
+            bar.stop()
     _finish(report, as_json, path)
 
 
@@ -937,10 +944,11 @@ def runs(path: str | None, as_json: bool) -> None:
     """List the runs kept beside an experiment, oldest first.
 
     PATH is the experiment file or its directory; without it, every experiment's runs under
-    the current directory. Each line is a run: its id, when it started, whether it was held
-    to a registration (gated), exploratory or a dry run, how it ended, its verdict (or the
-    indication of a run that gives none), its trials and the commit it ran from. Each run is
-    a directory: pass it to `ix report`.
+    the current directory (each .ix/runs below it), or under the settings' runs. Each line
+    is a run: its id, when it started, whether it was held to a registration (gated),
+    exploratory or a dry run, how it ended, its verdict (or the indication of a run that
+    gives none), its trials and the commit it ran from. Each run is a directory: pass it to
+    `ix report`.
     """
     try:
         found = ix.runs(path)

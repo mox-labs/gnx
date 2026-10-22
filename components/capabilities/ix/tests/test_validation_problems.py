@@ -591,15 +591,91 @@ class TestPlaceholders:
         assert (found.path, found.kind, found.got) == (
             "probes.0.target", "unbound_placeholder", "url",
         )  # fmt: skip
-        assert found.allowed == ("command",)
+        # Changed requirement (Q11): a facet every subject's kind offers binds too.
+        assert found.allowed == ("command", "pid")
 
-    def test_probe_files_are_content_and_are_not_scanned(
+    def test_a_probe_files_placeholder_must_be_bound_and_doubled_braces_are_text(
         self, evaluate_data: dict[str, Any], write_experiment: Write
     ) -> None:
+        """Changed requirement (Q11): a probe file's options were not scanned, so ``{x}`` in
+        one ran as the text ``{x}`` whatever was meant. It is a placeholder like an inline
+        probe's; ``{{x}}`` is the text ``{x}``."""
         file = write_experiment({k: v for k, v in evaluate_data.items() if k != "probes"})
         (file.parent / "probes").mkdir()
-        (file.parent / "probes" / "a.md").write_text("---\nexpectation: must_trigger\n---\n{x}\n")
+        probe = file.parent / "probes" / "a.md"
+        probe.write_text("---\nexpectation: must_trigger\n---\nReturn {x}.\n")
+        (found,) = ix.validate(file).problems
+        assert (found.path, found.kind, found.got) == (
+            "probes.a.prompt", "unbound_placeholder", "x",
+        )  # fmt: skip
+        probe.write_text("---\nexpectation: must_trigger\n---\nReturn {{x}}.\n")
         assert ix.validate(file).valid
+
+    def test_a_subject_options_placeholder_must_be_a_factor(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: a subject's options were not scanned, so a typo such as ``{sise}``
+        passed validate and ran as the text ``{sise}``. Only a factor fills a subject's
+        options."""
+        compare_data["factors"] = {"size": ["1MiB", "1GiB"]}
+        compare_data["probes"][0]["target"] = "{url}/blobs/{size}"
+        compare_data["subjects"]["streaming"]["command"] = ["./proxy", "--size", "{sise}"]
+        (found,) = _problems(compare_data, vocabulary)
+        assert (found.path, found.kind, found.got) == (
+            "subjects.streaming.command", "unbound_placeholder", "sise",
+        )  # fmt: skip
+        assert found.allowed == ("size",)
+        compare_data["subjects"]["streaming"]["command"] = ["./proxy", "--size", "{size}"]
+        assert _found(compare_data, vocabulary) == set()
+
+    def test_a_facet_every_subject_offers_binds_a_probe(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """A run fills a probe's options with the subject's facets too: ``{pid}`` is a
+        process subject's, though no subject writes it."""
+        compare_data["probes"][0]["target"] = "{url}/proc/{pid}"
+        assert _found(compare_data, vocabulary) == set()
+
+    def test_an_option_that_fills_its_own_placeholders_binds_them(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """A loop's ``prompt`` is filled by the loop each round (``{prompt}``,
+        ``{response}``); the kind declares them, so they are not unbound."""
+        evaluate_data["subjects"]["catalog"]["loop"] = {
+            "strategy": "self-review", "rounds": 2, "prompt": "{prompt} / {response} / {oops}",
+        }  # fmt: skip
+        (found,) = _problems(evaluate_data, vocabulary)
+        assert (found.path, found.got) == ("subjects.catalog.loop", "oops")
+        assert set(found.allowed) >= {"prompt", "response", "failures", "until"}
+
+    def test_a_subject_is_reviewed_in_every_cell(
+        self, evaluate_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        """Regression: a subject with any placeholder was not reviewed at all, so a factor
+        on one option hid every other problem the runtime would refuse. Each cell's options
+        are reviewed as a trial would have them."""
+        sweep = {k: v for k, v in evaluate_data.items() if k != "threshold"}
+        sweep.update(genre="characterize", factors={"turns": [1, 2]})
+        sweep["subjects"]["catalog"].update(max_turns="{turns}", runtime_options={"bogus": 1})
+        assert _validated(write_experiment, sweep) == {
+            ("subjects.catalog.runtime_options.bogus", "option_unknown")
+        }
+
+
+class TestAddresses:
+    @pytest.mark.parametrize("option", ["url", "ready"])
+    def test_a_port_out_of_range_is_refused_at_validate(
+        self, option: str, compare_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        """Regression: ``urlsplit(url).port`` raised out of the readiness check, so every
+        trial became a harness ``error`` instead of the experiment being refused."""
+        compare_data["subjects"]["buffered"][option] = "http://127.0.0.1:99999/healthz"
+        compare_data["subjects"]["streaming"]["url"] = "http://127.0.0.1:8080"
+        if option == "url":
+            compare_data["probes"][0]["target"] = "http://127.0.0.1:8080/x"
+        assert _validated(write_experiment, compare_data) == {
+            (f"subjects.buffered.{option}", "option_invalid")
+        }
 
 
 # --- the genre's requirements, across genres -------------------------------------------

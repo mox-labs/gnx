@@ -18,6 +18,13 @@ Audience: anyone running ix against an experiment, a genre or a kind they did no
 | `run` | the same as `plan`, the environment, and the git work tree the experiment sits in | `<experiment directory>/.ix/runs/<run id>/` (or under `runs:` in ix's settings); temporary directories it removes; whatever the programs and sessions it starts write |
 | `report`, `runs` | the experiment file; the runs under `.ix/runs` | nothing |
 
+`report` and `runs` call no model. A report of a run that ended before its sensors read
+its interactions reads them then, but only with sensors whose adapters are not handed
+matrix's runtimes; a run that used one (a `judge`) is reported without readings (the test
+suite holds this with a judge that counts its calls over two reports). A third-party sensor
+that reaches a model provider by its own means, not through the runtimes ix hands it, is
+outside what ix can tell.
+
 `run` also **starts**: `git -c core.fsmonitor=false -C <experiment directory>` three times
 (`rev-parse --is-inside-work-tree`, `rev-parse --verify HEAD`, `status --porcelain
 --untracked-files=no`) to record the commit, with the repository's file-system monitor
@@ -42,8 +49,10 @@ and spans to an OpenTelemetry endpoint when the `OTEL_*` variables name one.
 
 The experiment file, genre files, kind files, probe files and ix's settings are parsed with
 `yaml.safe_load`, through matrix's loader. A YAML tag that would construct a Python object
-is a parse error and the file is refused; the test suite holds this for genre files with a
-tag that would create a file if it ran. The registration is JSON.
+is a parse error and the file is refused. The test suite holds this for a genre file, a kind
+file and the experiment file, with a tag that creates a file under an unsafe loader (the test
+checks that it does). Probe files and the settings go through the same loader and are not
+tested separately. The registration is JSON.
 
 ### 2. An installed genre or kind package is imported
 
@@ -60,8 +69,9 @@ YAML only and imports nothing.
 Probes not written inline are read from the `probes/` folder beside the experiment.
 `fixtures`, `skills`, `plugins`, `definition`, `graders` and `rubric_file` are read from
 where they point, relative to the experiment or absolute, as the user running ix, and so is
-any other option a kind declares a `path` or `paths`. `plan`, `register`, `deviations` and
-`run` read each of them, every file under a folder with links followed, to digest it. A
+any other option a kind declares a `path` or `paths`, and each item of a `command` (a
+`process` subject's `command`, an agent session's `setup`) that names a file. `plan`,
+`register`, `deviations` and `run` read each of them, every file under a folder with links followed, to digest it. A
 probe file's content goes into the probe set's digest; the plan prints probe ids and the
 digest, not the content. Of the files the subjects and sensors name, the registration and
 the run's record keep the path as written and the digest, never what the file holds. The registration is written beside the experiment file, under a name

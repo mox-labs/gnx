@@ -247,6 +247,102 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   could shape its scores. It now runs in a fresh temporary directory, removed after, with
   `setting_sources: []` unless its `runtime_options` name some.
 
+### Fixed: reading a run, its root, its placeholders
+
+- **The "files are data" test can fail.** It used a YAML tag that an unsafe loader cannot
+  construct either, so it would have passed over one. It now uses a tag that creates a file
+  under an unsafe loader (and checks that it does), for a genre file, a kind file and the
+  experiment file. SECURITY.md cites only these.
+- **The telemetry conventions are named in the tracer only.** The run path wrote the GenAI
+  conventions' `gen_ai.evaluation.*` names and `error.type` itself; it now says
+  `Span.evaluated` and `Span.failed`, and `otel_tracing.py` names them. The spans are
+  unchanged. A third-party `Traced` scope's spans implement the two methods in place of
+  `event`.
+- **Bringing the environment up is traced.** The environment component ran with matrix's
+  plain context, so bring-up had no span of ix's. It is now `ix.environment`, under
+  `ix.run`, with the environment's kind and the services it bound.
+- **The run store is the composition root's choice.** The adapter that runs an experiment
+  built matrix's `JsonlConstructStore` itself. The root now builds the store at matrix's
+  `store` point (`Root(run_store=...)`, `jsonl` by default, whose config takes the `root`
+  directory) and hands it in, for running, reporting and listing alike.
+- **A report never calls a model.** `ix report` of a run that ended before its sensors read
+  its interactions derived the readings then, so each report of a run with a `judge` asked
+  the judge again: paid calls from a read command, and a stochastic judge's readings
+  differing between two reports of one run. `ix run`'s own report of a failed run did the
+  same. Readings are still derived at report time with sensors that call no model; a run
+  that used one is reported with `readings: none` and `unread` naming the sensor and the
+  fix (run the experiment again).
+- **A lab's own kinds reach the run.** The run built its adapters with the installed kinds'
+  declarations only, so a kind declared in `<lab>/kinds/` validated against its declaration
+  and then ran without it: a sensor's `path` option reached its adapter as written, not
+  resolved against the experiment's directory. The run, the preflight and a report now use
+  the kinds the experiment was validated against.
+- **The SDK a runtime drives is recorded with its version.** Each runtime in the manifest's
+  `provenance.runtimes` now holds `drives`: each distribution its registration says it
+  drives, with its installed version (`claude-agent-sdk` for `claude-sdk`, `hardline` for
+  `hardline`). ix asks through its `Runtimes` port (`drives`), so a third party's runtime
+  records its SDK the same way. Each session row of an agent session, a model call or a
+  judge names the same distributions (`drives`).
+- **A run records where each setting came from.** The manifest's `provenance.settings`
+  holds each setting the run read (`ix.runs`, `matrix.observers`, `matrix.models`) with the
+  config file that set it, `default`, or `given in code`; never the value. Before, only
+  `matrix config --tool ix --sources` could say, and only for the config as it is now.
+- **A process subject's program is part of what was tested.** Its `command` named the
+  program and script by path, and nothing digested them, so a registered run of an edited
+  server was still gated. A new option type, `command` (a non-empty list of text, with
+  `within` naming the option its relative paths are relative to), digests each item that
+  names a file: `process`'s `command` (relative to `cwd`) and `agent-session`'s `setup`
+  (relative to the experiment) are now `command`s. An edit is a deviation (`file server.py
+  changed after registration`). A program found on PATH and an argument that names no file
+  are not digested, and `command: []` is refused at validate (it used to fail at preflight).
+- **Factors drive an agent's settings.** A `characterize` sweep over a subject's settings
+  (the loop's `rounds`, `max_turns`, a runtime option) ran wrongly or not at all:
+  - a level reached the option as text (`"0.5"`, `"2"`); a value that is one placeholder
+    now takes the level with its type;
+  - a subject with a placeholder was neither reviewed nor preflighted; each cell's options
+    now are, as its trials will have them, so `rounds: "{rounds}"` starts and a runtime
+    option the runtime does not take is still `option_unknown`;
+  - a placeholder in a subject's options, or in a probe file, was never checked, so
+    `{sise}` ran as the text `{sise}`; both are now `unbound_placeholder` unless bound;
+  - a probe's facet placeholder (`{pid}`) was refused; a facet every subject's kind offers
+    now binds, and a kind option declares the placeholders its adapter fills itself
+    (`binds`: a loop's `{prompt}` and `{response}`);
+  - there was no way to write a literal `{name}`: `{{name}}` is that text.
+  - A loop's `rounds` may be 1: the first answer alone, so a sweep can start from no loop.
+  A probe file whose prompt holds a `{name}` meant as text is now refused until it is
+  written `{{name}}`.
+- **A registration is written whole or not at all.** It was written in place, so a crash
+  mid-write left a file the next read refused as not JSON. It is now written beside the
+  record and moved over it.
+- **A reworded note leaves the plan alone.** An `x-` note beside a subject's or a probe's
+  options was inside the plan's digest, so rewording one moved the plan and made a
+  registered experiment deviate. Notes are now outside the plan and the probe set digests,
+  as the question and descriptions are; they stay in the experiment's own digest.
+- **A margin or threshold removed or added is named.** Design values were compared only on
+  paths both records held, so a margin that became none (`margin.value` against
+  `margin`) was no deviation, and only the digests said the plan changed. It is now
+  `design.margin changed after registration`, with both values.
+- **An address whose port is not one is refused at validate.** A `process` subject's `url`
+  or `ready` with a port out of range raised out of the readiness check, so every trial
+  became a harness `error`. The subject now reviews them (`option_invalid`).
+- **A failure inside a session is told by its source.** Every `ValueError` in a session's
+  rounds, or a model call, read "the runtime could not be built", including a runtime's
+  own check of its reply. Only building and binding the runtime is that (`runtime`); any
+  other error is the harness's `error`, named by its type.
+- **`ix run`'s progress bar stops however the run ends.** Only an ix error stopped it, so a
+  defect or a Ctrl-C outside the run printed over a live display.
+- **`ix runs` with no path lists what its help says.** It read only `./.ix/runs`, so at a
+  repository's root after `ix run lab/static` it said there were no runs. It now lists every
+  experiment's runs under the current directory (each `.ix/runs` below it; hidden folders
+  and `node_modules` are not entered), or those under the settings' `runs`.
+- **Each run is read once.** Listing runs read every record in full to summarize it and
+  then again to report it, and `ix plan` and `ix report <experiment>` did the same to find
+  an experiment's runs. Each record is now read once, latest first where only the latest
+  is wanted.
+- **What a caller may rely on is listed.** README names the run layout and table names,
+  the events and their fields, the span names and the exit kinds as contract, each pinned
+  by a test, and span attributes, the conventions' names and the human text as not.
+
 ## 0.5.0 — 2026-10-19
 
 ix runs agent evaluations as well as service comparisons, and the statistics behind a

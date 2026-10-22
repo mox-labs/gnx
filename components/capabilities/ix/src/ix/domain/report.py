@@ -134,8 +134,12 @@ class Report(Record):
     trials: TrialCounts
     #: ``recorded``: by the run. ``derived``: the run ended before its sensors read the
     #: interactions, so the report read them. ``none``: no readings, because none were
-    #: recorded and none could be derived here (a sensor the run used may have no adapter).
+    #: recorded and none were derived here (:attr:`unread` says why).
     readings: Literal["recorded", "derived", "none"] = "recorded"
+    #: Why the interactions of a run that ended before its sensors read them were not read
+    #: when this report was made, and how to get readings: a sensor the run used has no
+    #: adapter here, or calls a model, which a report never does. Empty otherwise.
+    unread: str = ""
     analysis: Analysis
     #: ``all`` when a stand-in (a mock runtime) answered every trial, ``some`` when it
     #: answered some: such a run measured the harness and gives no verdict; ``none`` else.
@@ -209,11 +213,13 @@ def report(
     record: RunRecord,
     *,
     readings: Sequence[Reading] | None = None,
+    unread: str = "",
 ) -> Report:
     """The report of ``record``.
 
     ``readings`` replaces the record's own when the run ended before its sensors read the
     interactions and the caller read them afterwards; the report then says ``derived``.
+    ``unread`` is why the caller did not read them, when it did not.
     """
     design = design_of(record)
     manifest = record.manifest
@@ -290,6 +296,7 @@ def report(
         provenance=manifest.provenance,
         trials=counts,
         readings=source,
+        unread=unread if source == "none" else "",
         analysis=analysis,
         simulated=simulated,
         flags=flags(design, used),

@@ -59,7 +59,8 @@ verdict. A run exits 0 when the verdict holds, 10 when it fails and 11 when it i
 inconclusive.
 
 The other commands: `ix deviations <path>` (what changed since registration; exit 14 when
-anything did), `ix runs <path>` (each run kept beside the experiment: when it started,
+anything did), `ix runs [path]` (each run kept beside the experiment, or with no path every
+experiment's runs under the current directory: when it started,
 whether it was gated, exploratory or a dry run, the commit it ran from, its verdict or
 indication, its trials),
 `ix genres` and
@@ -305,6 +306,16 @@ def register(registry):
   sensor under `sensors:` settles an ambiguity or gives it options;
 - a probe's truth key that no sensor in use reads is refused (`truth_unclaimed`), so a typo
   does not pass silently;
+- a `{name}` placeholder must be bound to what a trial fills it with
+  (`unbound_placeholder`). A subject's options are filled with the cell's levels, so a
+  factor binds them: `characterize` over `factors: {rounds: [1, 2, 3]}` with `loop:
+  {strategy: self-review, rounds: "{rounds}"}` runs each level. A value that is one
+  placeholder takes the level with its type (`3`, not `"3"`), and each cell's options are
+  reviewed as its trials will have them. A probe's options, inline or from a file, are
+  filled with the levels, the subject's options and its facets: a factor, an option every
+  subject sets, or a facet every subject's kind offers (`{pid}`). A loop's `prompt` fills
+  `{prompt}`, `{response}`, `{until}` and `{failures}` itself. `{{name}}` is the text
+  `{name}`;
 - **a model-judged metric never decides.** Whether a metric is judged is the sensor's
   declaration, not the author's. A judged metric is refused as `primary` and as a guardrail
   in every genre with a verdict (`judged_gate`); it can be reported under `metrics:`.
@@ -345,7 +356,10 @@ threshold, guardrails, control, repeats, seed, order, calibration, estimators, t
 and its parameters, the sensors), with the digests of the probe set, the experiment and the
 plan, and the digest of each file and folder the subjects and sensors name: the skills,
 plugins (each folder a `*` matches), fixtures and agent `definition`, a sensor's `graders`
-or `rubric_file`, and any option a kind declares a `path` or `paths`.
+or `rubric_file`, and any option a kind declares a `path` or `paths`. A `command` (a
+`process` subject's, relative to its `cwd`; an agent session's `setup`) adds each item that
+names a file: `[python3, server.py]` digests `server.py`, and `["./proxy", --config,
+env/a.yaml]` the program and its config. A program found on PATH is not the experiment's.
 
 - What a skill, plugin or definition holds is what the verdict is about. An edit to one
   after registration is a deviation named by what changed (`skill review changed after
@@ -431,7 +445,9 @@ nothing under `--json`); the report goes to stdout.
 
 ### The record
 
-A run is one matrix run, and matrix's record is the only store:
+A run is one matrix run, and matrix's record is the only store. The composition root
+builds it at matrix's `store` point: `jsonl`, a directory of tables per run (a program
+that builds its own `Root` may name another store whose config takes `root`):
 
 ```
 <experiment directory>/.ix/runs/<experiment>-<UTC time>-<4 hex>/
@@ -454,7 +470,10 @@ each file and folder the subjects and sensors name (`contents`, paths and digest
 the files hold); the git commit the experiment sits at and whether a tracked file differed
 from it (`dirty`), or `not a repository`; the installed versions of ix, matrix and hardline;
 and every agent and model runtime installed, by type URL, with the distribution that
-registered it and its version. `ix report` prints the digests (`Contents`), the commit
+registered it and its version, and each distribution it drives with that one's version (the
+Claude Agent SDK, for `claude-sdk`); and where each setting it read came from
+(`provenance.settings`: `ix.runs`, `matrix.observers` and `matrix.models`, each with the file
+that set it or `default`, never the value). `ix report` prints the digests (`Contents`), the commit
 (`Ran from`) and the versions, `ix runs` the commit, and `--json` carries all of it.
 
 An agent trial's interaction keeps the prompt, the reply, every tool call, each round's
@@ -494,7 +513,9 @@ Each file is one JSON document per line, readable with `jq` or DuckDB. An intera
 disk when its trial finishes, so a run that is killed outright keeps every trial it
 finished. `ix report <run directory>` reads a run in any state. When a run ended before its
 sensors read the interactions (it was stopped or killed), the report reads them from the
-stored interactions and says `readings: derived`; nothing is written back. Keep `.ix/` out
+stored interactions and says `readings: derived`; nothing is written back. A report never
+calls a model: when a sensor the run used does (a `judge`), it reads none and says so
+(`unread`), and the readings come from running the experiment again. Keep `.ix/` out
 of version control.
 
 The work is three components that matrix wires by the kinds they exchange: `environment`
@@ -605,8 +626,8 @@ An unknown key is refused, by its path and file. The same read gives the `matrix
 the observers of a run, and the models a `hardline` model runtime is handed.
 
 ix makes spans through the OpenTelemetry API, under the instrumentation scope `ix`:
-`ix.plan`, `ix.run`, `ix.trial` and `ix.sensor`, with each reading as a
-`gen_ai.evaluation.result` event. The agent sessions inside a trial are matrix's spans. The
+`ix.plan`, `ix.run`, `ix.environment`, `ix.trial` and `ix.sensor`, with each reading as a
+`gen_ai.evaluation.result` event and a failure's reason as `error.type`. The agent sessions inside a trial are matrix's spans. The
 `ix` command installs the SDK from the standard `OTEL_*` variables when the `otel` extra is
 installed; set without it, every `--json` document carries a warning. A program that
 imports ix configures OpenTelemetry itself, or calls `ix.configure_telemetry()`.
@@ -654,6 +675,22 @@ call it from synchronous code; `on_event=` receives progress events, which are t
 
 Importing `ix` loads no host runtime: matrix is imported when a function is first called.
 Only ix's composition root and its `matrix_*` adapters name matrix.
+
+### What a caller may rely on
+
+Before 1.0 a minor release may change anything, said in the changelog. Beyond the declared
+API above, these are behaviours a caller may rely on, each pinned by a test, and what is
+not:
+
+| behaviour | contract | pinned by |
+|---|---|---|
+| a run is a directory `<experiment directory>/.ix/runs/<run id>/` (or under the settings' `runs`), its id `<experiment>-<UTC time>-<4 hex>` | yes | `test_run_path.py::TestWhatCallersRelyOn` |
+| its tables `ix.v1.run`, `ix.v1.trial`, `ix.v1.bindings`, `ix.v1.interaction`, `ix.v1.reading`, each `<kind>.jsonl`, beside matrix's (`matrix.v1.session`, `matrix.v1.ledger`, `run.json`, whose layout is matrix's contract) | yes; a row gains fields only by addition | the same |
+| the events a run hands `on_event`: `ix.environment.up` (`kind`, `services`), `ix.trial.start` (`seq`, `total`, `subject`, `role`, `probe`, `cell`), `ix.trial.end` (`seq`, `total`, `subject`, `role`, `failure`, `duration_ms`), `ix.sense.end` (`readings`, `interactions`) | the names and these fields; an event is telemetry and may be dropped, so nothing reads a result from one | the same |
+| the span names `ix.plan`, `ix.run`, `ix.environment`, `ix.trial`, `ix.sensor` under the instrumentation scope `ix` | yes | `test_agent_runs.py::TestTelemetry` |
+| span attributes, and the GenAI conventions' event and attribute names (`gen_ai.evaluation.result`, `error.type`) | no: the conventions are Development status, and ix follows them as they move | |
+| the exit kinds and codes in the table under Output | yes; the shared ones are every gnx capability's | `test_ix_cli.py::test_the_agreed_kinds_keep_their_agreed_codes`, `test_the_exit_codes_of_a_run_are_in_the_one_table` |
+| the human text of `ix` commands | no: read `--json` | |
 
 ## Output
 

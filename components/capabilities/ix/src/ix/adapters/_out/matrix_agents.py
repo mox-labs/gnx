@@ -55,7 +55,7 @@ import asyncio
 import shutil
 import tempfile
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from glob import glob
 from pathlib import Path
@@ -66,13 +66,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ix.adapters._out.python_checks import code_in, run_cases
 from ix.domain.errors import IxError
-from ix.domain.kind import fill, placeholders, seconds
+from ix.domain.kind import fill, seconds
 from ix.domain.ports import StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, SubjectError, Target
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 
     from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import SubjectConfig
@@ -162,6 +162,13 @@ class Runtimes(Protocol):
         config, None for a name nothing registered there."""
         ...
 
+    def drives(self, point: Point, name: str) -> dict[str, str]:
+        """Each distribution the runtime drives (``claude-agent-sdk`` for ``claude-sdk``), as
+        its registration declares, with its installed version (``not installed`` for one
+        that is not); none for a runtime that declares none. Raises as :meth:`build` does
+        for an unknown name."""
+        ...
+
 
 class Respondent(Protocol):
     """What a ``prompt`` probe puts its prompt to, by the handle a subject opened it under:
@@ -184,8 +191,9 @@ class Loop(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     strategy: Literal["self-review", "test-feedback"]
-    #: Every round, the first included.
-    rounds: int = Field(default=3, ge=2)
+    #: Every round, the first included: 1 is the first answer alone, so a sweep over the
+    #: rounds can start from no loop at all.
+    rounds: int = Field(default=3, ge=1)
     #: The next round's task: ``{prompt}``, ``{response}`` and, for test-feedback,
     #: ``{failures}`` are filled in.
     prompt: str | None = None
@@ -298,9 +306,13 @@ class Session:
 
     async def _round(self, task: str, canned: str | None) -> matrix.AgentResponse:
         config = _runtime_config(self.options, self.base, canned=canned if self.simulated else None)
-        runtime = self.runtimes.build(AGENT_RUNTIME, self.runtime, config, cwd=str(self.workdir))
-        url = matrix.agent_runtime_type_url(self.runtime)
-        bound = matrix.BoundAgent(self.definition, runtime, runtime_url=url)
+        with built():
+            runtime = self.runtimes.build(
+                AGENT_RUNTIME, self.runtime, config, cwd=str(self.workdir)
+            )
+            url = matrix.agent_runtime_type_url(self.runtime)
+            drives = tuple(self.runtimes.drives(AGENT_RUNTIME, self.runtime))
+            bound = matrix.BoundAgent(self.definition, runtime, runtime_url=url, drives=drives)
         response: matrix.AgentResponse = await bound.run(task)
         return response
 
@@ -604,10 +616,8 @@ class AgentSessionSubject:
 
     def review(self, options: Mapping[str, Any], around: Surroundings) -> list[Problem]:
         """A runtime option the runtime does not declare, and a session that leaves its
-        sensors nothing to observe; nothing for options of the wrong shape, or filled in per
-        cell."""
-        if any(placeholders(value) for value in options.values()):
-            return []
+        sensors nothing to observe; nothing for options of the wrong shape. ``validate``
+        asks it once for each cell's options."""
         try:
             parsed = SessionOptions.model_validate(options)
         except ValidationError:
@@ -637,8 +647,6 @@ class AgentSessionSubject:
             first = error.errors()[0]
             where = ".".join(str(part) for part in first["loc"])
             return f"{where}: {first['msg']}"
-        if any(placeholders(value) for value in subject.options.values()):
-            return None  # filled per cell: told when the trial starts
         named = [*options.fixtures, *options.skills, *filter(None, [options.definition])]
         named += [p if isinstance(p, str) else str(p.get("path", "")) for p in options.plugins]
         for path in named:
@@ -776,17 +784,29 @@ def _limit(options: Mapping[str, Any]) -> float:
     return seconds(options.get("timeout")) or SESSION_TIMEOUT_S
 
 
+@contextmanager
+def built() -> Iterator[None]:
+    """Where a session's or a call's runtime is built and bound: what fails here is the
+    harness's ``runtime`` failure (an option the runtime refuses, a name nothing
+    registered), told apart from what fails while the session or the call runs."""
+    try:
+        yield
+    except (matrix.AgentRuntimeError, matrix.ModelRuntimeError):
+        raise
+    except (matrix.MatrixError, IxError, ValueError) as error:
+        raise HarnessError("runtime", f"the runtime could not be built: {error}") from error
+
+
 def _owned(error: BaseException) -> Exception:
     """The trial failure ``error`` is: the harness's for an infrastructure reason or an
     apparatus fault, the subject's for a session or call that ran and broke or was
-    refused."""
+    refused. Anything else is the harness's, named by its type: a runtime that could not be
+    built has already said so (:func:`built`)."""
     if isinstance(error, HarnessError | SubjectError):
         failure: HarnessError | SubjectError = error
     elif isinstance(error, matrix.AgentRuntimeError | matrix.ModelRuntimeError):
         whose = HarnessError if error.reason in HARNESS_REASONS else SubjectError
         failure = whose(error.reason, str(error))
-    elif isinstance(error, matrix.MatrixError | IxError | ValueError):
-        failure = HarnessError("runtime", f"the runtime could not be built: {error}")
     else:
         failure = HarnessError("error", f"{type(error).__name__}: {error}")
     return failure
