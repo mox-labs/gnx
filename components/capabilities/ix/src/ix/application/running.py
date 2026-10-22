@@ -612,7 +612,7 @@ def _counted(measured: object) -> dict[str, float] | None:
     if not isinstance(measured, Mapping) or set(measured) != {"events", "units"}:
         return None
     events, units = measured["events"], measured["units"]
-    if not all(_number(value) and float(value).is_integer() for value in (events, units)):
+    if not all(_number(value) and _as_float(value).is_integer() for value in (events, units)):
         return None
     if not 0 <= events <= units or units < 1:
         return None
@@ -687,12 +687,21 @@ def _reading(
 async def _measure(
     sensor: Sensor, interaction: Interaction, truth: Mapping[str, Any], options: Mapping[str, Any]
 ) -> Sensed | Failure:
-    """What a sensor gives for one interaction, or the failure it raised."""
+    """What a sensor gives for one interaction, or the failure it raised. Anything but a
+    mapping of metric names to values (and, in :class:`Sensed`, a mapping of detail) fails
+    each of its readings."""
     try:
         given = await sensor.sense(interaction, truth=truth, options=options)
     except Exception as error:
         return Failure(owner="sensor", reason="error", message=f"{type(error).__name__}: {error}")
-    return given if isinstance(given, Sensed) else Sensed(values=given)
+    sensed = given if isinstance(given, Sensed) else Sensed(values=given)
+    if not isinstance(sensed.values, Mapping) or not isinstance(sensed.detail, Mapping):
+        return Failure(
+            owner="sensor",
+            reason="shape",
+            message=f"the sensor gave a {type(given).__name__}, not a mapping of metrics to values",
+        )
+    return sensed
 
 
 def _evaluated(span: Span, metric: str, measured: Measured | Failure | None) -> None:

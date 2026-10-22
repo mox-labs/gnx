@@ -73,6 +73,10 @@
 - **`text-match` refuses an empty list.** `contains: []` or `excludes: []` passed validate
   and then checked for the literal text `[]`. It is now `option_invalid` at validate, and a
   sensor failure if it reaches a trial.
+- **A sensor that gives the wrong shape fails its readings, not the run's sensing.** A
+  sensor that returned something other than a mapping of metrics to values, or a count
+  with a number too large for a float, raised out of the sense step, so no reading of the
+  run was written. Each is now a `sensor` failure (`shape`) of that sensor's readings.
 
 ## 0.5.0 — 2026-10-19
 
