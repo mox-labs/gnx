@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 from ix_fakes import LOG, FakeLoad, FakeSubject, FakeTiming, experiment, fake_registry
-from matrix import Extension, MatrixConfig, default_registry
+from matrix import Extension, MatrixConfig, MatrixError, default_registry
 
 import ix
 from ix.adapters._in.matrix_components import (
@@ -754,6 +754,53 @@ class TestABrokenExtension:
         with pytest.raises(ix.ConfigError) as refused:
             root.run(write_experiment(data, "memory"), exploratory=True)
         assert "s3_client" in str(refused.value)
+
+    def test_an_adapter_that_cannot_be_built_is_not_runnable_and_validate_says_why(
+        self, write_experiment: Write
+    ) -> None:
+        """Regression (ix-tests F2): an adapter whose ``needs`` nothing supplies was listed as
+        runnable, ``validate`` said nothing and ``plan`` said runnable; only ``run`` refused."""
+
+        def needs_a_client(*, s3_client: Any) -> Any:
+            return s3_client
+
+        registry = fake_registry()
+        registry.register(
+            POINTS["sensor"], "ix.v1.sensor.memory", needs_a_client, needs={"s3_client"}
+        )
+        root = Root(registry=registry)
+        found = root.kinds()
+        assert "ix.v1.sensor.memory" not in found.runnable
+        assert "s3_client" in found.unbuildable["ix.v1.sensor.memory"]
+        file = write_experiment(experiment(metrics=["memory_peak"]))
+        checked = root.validate(file)
+        assert checked.valid  # the experiment is sound; this host's adapter is not
+        (warning,) = [w for w in checked.warnings if w.kind == "kind_unimplemented"]
+        assert "cannot be built" in warning.message and "s3_client" in warning.message
+        planned = root.plan(file)
+        assert not planned.runnable
+        assert any("s3_client" in reason for reason in planned.unimplemented)
+
+    def test_an_adapter_not_of_its_ports_shape_is_refused_when_it_is_registered(
+        self, write_experiment: Write
+    ) -> None:
+        """Regression (ix-tests F1): a class with none of the Subject port's members was
+        registered, validated as runnable, and its run "completed" with every trial a harness
+        failure (``AttributeError: ... no attribute 'reach'``)."""
+
+        class NotASubject:
+            pass
+
+        with pytest.raises(MatrixError) as refused:
+            fake_registry(subject=NotASubject)
+        assert "reach" in str(refused.value)
+
+        def register(registry: Any) -> None:
+            registry.register(POINTS["subject"], "acme.v1.subject.odd", NotASubject)
+
+        loaded = fake_registry().load([Extension(name="acme", origin="acme", register=register)])
+        assert "reach" in loaded.failures[0].error
+        assert "acme.v1.subject.odd" not in {entry.type_url for entry in loaded.entries()}
 
     def test_a_kind_without_an_adapter_names_a_quarantined_extension(
         self, evaluate_data: dict[str, Any], write_experiment: Write

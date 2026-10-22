@@ -671,32 +671,47 @@ def _parity(experiment: Experiment, control: str | None) -> list[Problem]:
     return warnings
 
 
+def _unimplemented(where: str, kind: str, kinds: Kinds) -> Problem:
+    """The warning for a kind in use that has no adapter here, or one that cannot be built."""
+    named = f"{schema.family_of(kind) or 'kind'} kind {schema.short(kind)}"
+    unable = "the experiment can be checked, planned and registered, and `ix run` would refuse it"
+    broken = kinds.unbuildable.get(kind)
+    if broken is not None:
+        return problem(
+            where,
+            kind="kind_unimplemented",
+            message=f"the adapter for {named} cannot be built here ({broken}): {unable}",
+            fix="fix or uninstall the extension that registered it; `ix kinds` lists every "
+            "adapter that cannot be built, with why",
+            got=schema.short(kind),
+        )
+    elsewhere = (
+        f"; an extension failed to load and may be the one that registers it "
+        f"({'; '.join(kinds.quarantined)}): `matrix catalog` shows why"
+        if kinds.quarantined
+        else ""
+    )
+    return problem(
+        where,
+        kind="kind_unimplemented",
+        message=f"this ix has no adapter for {named}: {unable}",
+        fix="use a kind `ix kinds` marks runnable, or run it where an adapter for "
+        f"{schema.short(kind)} is installed{elsewhere}",
+        got=schema.short(kind),
+    )
+
+
 def _unrunnable(
     experiment: Experiment,
     design: Design,
     probes: ProbeSet,
     adapters: frozenset[str],
-    quarantined: tuple[str, ...],
+    kinds: Kinds,
 ) -> list[Problem]:
-    """A warning for each kind in use with no adapter here, and for an analysis this ix
-    does not have."""
-    elsewhere = (
-        f"; an extension failed to load and may be the one that registers it "
-        f"({'; '.join(quarantined)}): `matrix catalog` shows why"
-        if quarantined
-        else ""
-    )
+    """A warning for each kind in use with no adapter here, or one that cannot be built, and
+    for an analysis this ix does not have."""
     warnings = [
-        problem(
-            where,
-            kind="kind_unimplemented",
-            message=f"this ix has no adapter for {schema.family_of(kind) or 'kind'} kind "
-            f"{schema.short(kind)}: the experiment can be checked, planned and registered, "
-            "and `ix run` would refuse it",
-            fix="use a kind `ix kinds` marks runnable, or run it where an adapter for "
-            f"{schema.short(kind)} is installed{elsewhere}",
-            got=schema.short(kind),
-        )
+        _unimplemented(where, kind, kinds)
         for where, kind in missing_adapters(experiment, design, probes, adapters)
     ]
     unsupported = analysis_unsupported(design.analysis)
@@ -782,7 +797,7 @@ def check(
     warnings = _parity(experiment, control if genre and genre.role(CONTROL) else None)
     # Said of a valid experiment only: an invalid one cannot run for reasons already given.
     if not problems and design is not None and probes is not None and adapters is not None:
-        warnings += _unrunnable(experiment, design, probes, adapters, kinds.quarantined)
+        warnings += _unrunnable(experiment, design, probes, adapters, kinds)
     warnings += _refused(experiment, genres, kinds)
     return Checked(
         problems=tuple(problems),

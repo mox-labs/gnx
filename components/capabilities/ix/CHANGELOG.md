@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Changed: an adapter is held to its port, and one that cannot be built cannot run
+
+- **The kind ports are checked at registration.** `Subject`, `Probe`, `Sensor` and
+  `Environment` are runtime-checkable, and each is the port of its family's point. A class
+  registered there that lacks a member (a subject with no `reach`) is refused when it is
+  registered, so its extension is quarantined, rather than validated and run with every trial
+  a harness failure. What a factory builds is held to the port when it is built.
+- **An adapter that cannot be built is not runnable.** `ix kinds` lists the kinds whose
+  adapter builds here as `runnable`, and the rest under `unbuildable` with why (a need
+  nothing supplies). `ix validate` warns of it (`kind_unimplemented`, with the reason), `ix
+  plan` says `Runnable: no` with it, and `ix run` refuses it naming it.
+- **Who keeps a kind or genre name does not depend on the order files are read.** An owner
+  read after two impostors was refused as a third duplicate.
+
 ### Added: a verdict traces to the model that answered
 
 `docs/design/2026-10-19-record.md` §19 has the reasons.

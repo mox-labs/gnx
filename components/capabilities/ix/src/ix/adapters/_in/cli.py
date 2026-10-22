@@ -1081,10 +1081,12 @@ def kinds(lab: str | None, as_json: bool) -> None:
         out.print(table)
     out.print(metrics)
     err.print(
-        "[dim]runs: whether this ix has an adapter for the kind. One without can be "
-        "validated, planned and registered, and `ix run` refuses it.[/dim]"
+        "[dim]runs: whether this ix has an adapter for the kind that builds here. One "
+        "without can be validated, planned and registered, and `ix run` refuses it.[/dim]"
     )
     _print_rejected(found.rejected)
+    for name, why in found.unbuildable.items():
+        err.print(f"[red]Adapter cannot be built:[/red] {escape(name)}: {escape(why)}")
     for line in found.quarantined:
         err.print(f"[red]Extension not loaded:[/red] {escape(line)} [dim](matrix catalog)[/dim]")
 

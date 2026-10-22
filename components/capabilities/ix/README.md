@@ -276,7 +276,9 @@ A declaration is not an adapter. ix can **run** these:
 
 `inspect-task` and `compose` are declared only. An experiment that uses one is still valid:
 `ix validate` warns (`kind_unimplemented`), `ix plan` prints `Runnable: no` with the kinds,
-and `ix run` refuses it before anything starts. `ix kinds` marks each kind.
+and `ix run` refuses it before anything starts. `ix kinds` marks each kind. An adapter that
+is registered but cannot be built here (a need nothing supplies) is treated the same way,
+and `ix kinds` says why under `unbuildable`.
 
 An adapter plugs in through matrix's registry, as every extension does. A package declares
 its kind as data at the `ix.kind` entry point, and registers the adapter from its
@@ -286,7 +288,9 @@ that way, its own included, so a new one needs no edit to ix. An adapter declare
 needs built: `launcher` to start processes, `runtimes` to run an agent or make a model call
 on matrix's runtimes (at its `agent-runtime` or `model-runtime` point), `sessions` to share
 an agent session or a model call between a subject and a probe, by the handle the subject
-offers as its `respondent` facet.
+offers as its `respondent` facet. Each family's point holds what is registered there to its
+port (`Subject`, `Probe`, `Sensor`, `Environment` in `ix.domain.ports`): a class that lacks
+one of its members is refused at registration.
 
 ```python
 def register(registry):

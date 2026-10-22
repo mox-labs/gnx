@@ -623,7 +623,9 @@ class TestGenresAndKindsCommands:
         result = _run("kinds", "--json")
         assert result.exit_code == 0
         document = _json(result)
-        assert list(document) == ["schema", "kinds", "rejected", "runnable", "quarantined"]
+        assert list(document) == [
+            "schema", "kinds", "rejected", "runnable", "unbuildable", "quarantined",
+        ]  # fmt: skip
         assert "ix.v1.probe.http-load" in document["runnable"]
         assert "ix.v1.subject.agent-session" in document["runnable"]
         assert "ix.v1.probe.inspect-task" not in document["runnable"]

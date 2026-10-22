@@ -196,8 +196,9 @@ class Plan(Record):
     sensitivity: Sensitivity = Sensitivity()
     #: Every design value and where it came from.
     provenance: tuple[SourcedValue, ...]
-    #: Kinds the experiment uses that this ix has no adapter for: it can be checked, planned
-    #: and registered, and ``ix run`` would refuse it.
+    #: Kinds the experiment uses that this ix has no adapter for, or whose adapter cannot be
+    #: built here (with why): it can be checked, planned and registered, and ``ix run`` would
+    #: refuse it.
     unimplemented: tuple[str, ...] = ()
     #: Subjects this host cannot start as written (``subjects.<name>: <why>``): they depend
     #: on the host, so registration is not refused, and ``ix run`` here would refuse them.
@@ -482,6 +483,11 @@ def plan(
         provenance=design.provenance,
         unimplemented=tuple(
             f"{schema.family_of(kind) or 'kind'} kind {schema.short(kind)} ({where})"
+            + (
+                f", only one that cannot be built: {kinds.unbuildable[kind]}"
+                if kind in kinds.unbuildable
+                else ""
+            )
             for where, kind in missing
         ),
         notes=(genre.design.note,),

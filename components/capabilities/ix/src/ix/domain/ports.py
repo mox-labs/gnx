@@ -10,6 +10,10 @@ adapter need not answer what it cannot tell: a subject or a sensor may also be a
 nothing to check, to stand in, to trace or to name, and the run proceeds. A kind's options,
 effects, facets and metrics are data (:mod:`ix.domain.kind`), not part of these ports.
 
+The four kind ports are runtime-checkable: each is the port of its family's extension point,
+so a class registered there that lacks one of its members is refused when it is registered,
+and whatever a factory builds is held to it when it is built.
+
 Each port is named for what it is to a run; what an experiment writes for one is its config
 (:class:`~ix.domain.experiment.SubjectConfig`, ``ProbeConfig``, ``SensorConfig``,
 ``EnvironmentConfig``): the kind, a registered type, and that kind's options.
@@ -112,6 +116,7 @@ class Traced(Protocol):
     def trace(self, name: str, /, **attributes: Any) -> AbstractContextManager[Span]: ...
 
 
+@runtime_checkable
 class Subject(Protocol):
     """Brings one subject up for one trial and takes it down again. May also be a
     :class:`Preflight`."""
@@ -182,6 +187,7 @@ class StandIn(Protocol):
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn: ...
 
 
+@runtime_checkable
 class Probe(Protocol):
     """Applies one stimulus to a target."""
 
@@ -202,6 +208,7 @@ class Probe(Protocol):
         ...
 
 
+@runtime_checkable
 class Sensor(Protocol):
     """Measures: during the probe when it must (``watch``), from the interaction after."""
 
@@ -224,6 +231,7 @@ class Sensor(Protocol):
         ...
 
 
+@runtime_checkable
 class Environment(Protocol):
     """Brings up what the subjects need around them, once per run. May also be a
     :class:`Liveness`."""

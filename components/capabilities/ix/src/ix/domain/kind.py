@@ -382,9 +382,13 @@ class Kinds(Record):
     kinds: dict[str, Kind] = {}
     #: Refused kind files, by kind name (or by origin when the file gave no name).
     rejected: dict[str, tuple[Problem, ...]] = {}
-    #: The kinds (type URLs) an adapter is registered for: a run can use these. A kind that
-    #: is declared and not listed here can be validated, planned and registered, not run.
+    #: The kinds (type URLs) whose adapter is registered and builds here: a run can use
+    #: these. A kind that is declared and not listed here can be validated, planned and
+    #: registered, not run.
     runnable: tuple[str, ...] = ()
+    #: Kinds (type URLs) whose registered adapter cannot be built here, each with why: a
+    #: need nothing supplies, or a factory that built something not of its port's shape.
+    unbuildable: dict[str, str] = {}
     #: Extensions that failed to load, one sentence each: an adapter one of them registers
     #: is missing from ``runnable``.
     quarantined: tuple[str, ...] = ()

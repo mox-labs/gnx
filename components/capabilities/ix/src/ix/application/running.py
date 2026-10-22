@@ -164,11 +164,16 @@ def prepare(
     experiment, design, probes = checked.experiment, checked.design, checked.probes
     missing = missing_adapters(experiment, design, probes, vocabulary.adapters or frozenset())
     if missing:
-        named = ", ".join(f"{kind} ({where})" for where, kind in missing)
+        broken = vocabulary.kinds.unbuildable
+        named = ", ".join(
+            f"{kind} ({where})"
+            + (f", only one that cannot be built: {broken[kind]}" if kind in broken else "")
+            for where, kind in missing
+        )
         raise ConfigError(
             f"{examined.source} cannot be run here: this ix has no adapter for {named}",
-            fix="`ix kinds` marks the kinds that can be run; the experiment is still valid "
-            "to plan and register",
+            fix="`ix kinds` marks the kinds that can be run, and says why an adapter cannot "
+            "be built; the experiment is still valid to plan and register",
         )
     unsupported = analysis_unsupported(design.analysis)
     if unsupported is not None:

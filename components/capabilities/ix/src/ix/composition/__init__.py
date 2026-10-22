@@ -306,14 +306,26 @@ class Root:
         except ConfigError:
             return None
 
+    def _buildable(self) -> tuple[frozenset[str], dict[str, str]]:
+        """Every kind (type URL) whose registered adapter builds here, and why each other
+        registered one cannot be built. Building one starts nothing: an adapter is built
+        with what it needs and holds on to it."""
+        built: set[str] = set()
+        broken: dict[str, str] = {}
+        for family in KIND_FAMILIES:
+            for entry in self._registry.entries(POINTS[family]):
+                try:
+                    self._adapter(entry)
+                except ConfigError as error:
+                    broken[entry.type_url] = str(error)
+                else:
+                    built.add(entry.type_url)
+        return frozenset(built), broken
+
     @property
     def _runnable(self) -> frozenset[str]:
-        """Every kind (type URL) an adapter is registered for."""
-        return frozenset(
-            entry.type_url
-            for family in KIND_FAMILIES
-            for entry in self._registry.entries(POINTS[family])
-        )
+        """Every kind (type URL) whose adapter is registered and builds here."""
+        return self._buildable()[0]
 
     def _kit(self, kinds: Collection[str], declared: Kinds | None = None) -> Kit:
         """The adapters a run of ``kinds`` (type URLs) uses, each built from the registry,
@@ -352,9 +364,11 @@ class Root:
             f"{failure.extension} ({failure.origin}): {failure.error}"
             for failure in self._registry.failures
         )
+        built, broken = self._buildable()
         return found.model_copy(
             update={
-                "runnable": tuple(sorted(self._runnable & set(found.kinds))),
+                "runnable": tuple(sorted(built & set(found.kinds))),
+                "unbuildable": dict(sorted(broken.items())),
                 "quarantined": quarantined,
             }
         )
