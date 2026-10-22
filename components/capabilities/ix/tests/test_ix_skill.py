@@ -365,7 +365,7 @@ class TestTheReferencesTeachFromTheRecords:
             for metric in kind.metrics:
                 assert f"metric `{metric.name}`" in text
         judged = [m for k in ix.kinds().kinds.values() for m in k.metrics if m.judged]
-        assert text.count("JUDGED by a model") == len(judged) == 4
+        assert text.count("JUDGED by a model") == len(judged) == 6  # judge 4, evaluator 2
 
     def test_what_it_says_about_unknown_keys_is_true(
         self, compare_data: dict[str, Any], write_experiment: Write
@@ -467,6 +467,7 @@ class TestTheAgentsReference:
                 assert f"`{option}`" in text, (name, option)
         for name in (
             "activation", "tool-usage", "function-test", "outcome", "text-match", "usage", "judge",
+            "evaluator",
         ):  # fmt: skip
             sensor = kinds.get("sensor", name)
             assert sensor is not None and f"(`{name}`" in text, name

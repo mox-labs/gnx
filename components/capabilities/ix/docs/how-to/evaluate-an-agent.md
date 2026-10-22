@@ -476,6 +476,69 @@ sensors:
 metrics: [judged_score]
 ```
 
+## pydantic-evals' evaluators
+
+The `evaluator` sensor runs one of pydantic-evals' evaluators over each trial. ix keeps the
+loop: it carries the trials out and hands each one to the evaluator as pydantic-evals'
+`EvaluatorContext`. The evaluator reads:
+
+- `output`, the reply's text, and `inputs`, the prompt;
+- `expected_output` and `metadata`, the probe truth keys of those names;
+- `duration`, how long the probe took;
+- the span tree, every span that ended in the trial while the probe ran.
+
+Name the evaluator with `evaluator` and give its arguments as pydantic-evals documents them:
+
+```yaml
+sensors:
+  - kind: evaluator
+    evaluator: ToolCorrectness
+    arguments: {expected_tools: [Read, Grep]}
+primary: {metric: eval_passed}
+```
+
+What it gives becomes these metrics:
+
+- `eval_passed` is true when every assertion the evaluator gave held: `Equals`, `Contains`,
+  `IsInstance`, `MaxDuration`, `ToolCorrectness`, `MaxToolCalls` and `ArgumentCorrectness`
+  give one each.
+- `eval_score` is its score, on its own scale: `TrajectoryMatch` gives an F1 from 0 to 1.
+  When an evaluator gives more than one score, `result` names the one to read.
+- Labels, and every result with its reason, are kept in the reading's detail.
+
+A run uses one entry of each sensor kind, so an experiment has one evaluator; `ix validate`
+refuses a second (`name_taken`).
+
+**The span evaluators need the trial's spans.** `ToolCorrectness`, `TrajectoryMatch`,
+`ArgumentCorrectness`, `MaxToolCalls`, `MaxModelRequests` and `HasMatchingSpan` read the
+spans matrix makes of the session: `execute_tool` for each tool call the runtime timed
+(`claude-sdk` does). The spans are captured from the OpenTelemetry SDK in ix's own process,
+so set the `OTEL_*` variables that ask for export (an `OTEL_EXPORTER_OTLP_ENDPOINT`, or
+`OTEL_TRACES_EXPORTER=console`): `ix` then installs the SDK, and matrix's `otel` observer is
+on the run. A tool call's arguments are on its span only when the observer captures content,
+which `ArgumentCorrectness` needs:
+
+```yaml
+# ./matrix.yaml
+matrix:
+  observers: [{type: otel, capture_content: true}]
+```
+
+Without the spans the reading fails, and says which of the two is missing. pydantic-evals'
+own answer then, false or 0, would read as an agent that called no tool. The spans are kept
+in each trial's interaction, so `ix report` reads them later without OpenTelemetry.
+
+**An evaluator that calls a model** (`LLMJudge`, `GEval`) is a judge: its metrics are
+`judged_eval_passed` and `judged_eval_score`, reported and never deciding, as the `judge`
+sensor's are. Its model comes from the matrix model runtime the sensor names with
+`model_runtime` (and `model`, `runtime_options`), never from its `arguments`. It never comes
+from pydantic-evals' default model either, which would find a provider from the environment.
+`ix validate` refuses a judge evaluator that names no `model_runtime`, and a `model` among
+its arguments. A dry run judges it on pydantic-ai's `TestModel`, which calls no model. A real
+model runtime needs hardline's pydantic-ai model, which this release does not have yet:
+`ix plan` lists such a judge under `Runnable: no` and says so. Until then, score with the
+`judge` sensor.
+
 ## A model call instead of a session
 
 To measure a model rather than an agent (the same prompts, one call each, no tools), make
@@ -496,7 +559,7 @@ default; `model` is a name the runtime resolves, which `ix plan` checks before a
 starts; `runtime_options` is the runtime's own config, as for a session. Each trial is one
 call: no turns, no tools, no working directory. The `prompt` probe applies as it does to a
 session, without `collect`. `function-test` (on the reply's code), `outcome`, `text-match`,
-`judge` and `usage` read the reply as they read a session's; `usage` also keeps what the
+`judge`, `evaluator` and `usage` read the reply as they read a session's; `usage` also keeps what the
 runtime reported of the call: the model that answered, the request id, retries, a fallback,
 the finish reason and the cache's tokens. `activation` and `tool-usage` read tool calls,
 which a call never makes, so `ix validate` refuses them on a `model-call` subject

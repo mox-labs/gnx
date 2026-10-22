@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added: pydantic-evals' evaluators as a sensor
+
+The `evaluator` sensor runs one of pydantic-evals' evaluators over each trial, named by
+`evaluator` with its `arguments`. ix keeps the loop: each trial is handed to the evaluator
+as pydantic-evals' `EvaluatorContext` (the prompt, the reply, the probe's truth
+`expected_output` and `metadata`, the probe's duration and its spans); `Dataset.evaluate` is
+not used. Record section 24 has the reasons.
+
+- Its assertions are `eval_passed` and its score `eval_score` (`result` names one of
+  several); an evaluator that calls a model (`LLMJudge`, `GEval`) gives
+  `judged_eval_passed` and `judged_eval_score`, which never decide. Labels and every result
+  with its reason are in the reading's detail.
+- The span evaluators (`ToolCorrectness`, `TrajectoryMatch`, `ArgumentCorrectness`,
+  `MaxToolCalls`, `MaxModelRequests`, `HasMatchingSpan`) read the spans that ended in the
+  trial, captured in process from the installed OpenTelemetry SDK and kept in the
+  interaction (`watched`). Without them (no SDK, or matrix's `otel` observer not on the
+  run) the reading fails and says why, rather than reading as no tool called.
+- A judge evaluator's model comes from the matrix model runtime `model_runtime` names,
+  through the root's new `judge_models` need, never from its arguments or pydantic-evals'
+  default model; a stand-in runtime judges on pydantic-ai's `TestModel`. The root has no
+  pydantic-ai model over a real runtime yet (hardline's), so such a judge is
+  `Runnable: no` in the plan.
+- `pydantic-evals` is a dependency, imported only inside the sensor's adapter.
+
 ### Added: `environment.compose`
 
 A docker compose project brought up once for a run and down after it, for experiments whose

@@ -31,6 +31,9 @@ dependencies = [
     "rich-click>=1.8",
     "rich>=13",
     "pydantic>=2.0",
+    # The evaluator sensor wraps pydantic-evals' evaluators; imported only inside that adapter
+    # (ix.adapters._out.evaluators), so it costs nothing until an experiment names one.
+    "pydantic-evals>=2.59,<3",
 ]
 
 [project.urls]

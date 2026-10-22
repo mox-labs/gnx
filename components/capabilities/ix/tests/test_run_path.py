@@ -1190,13 +1190,14 @@ class TestWhatCannotRun:
         assert LOG == [] and not (file.parent / RUNS_DIRECTORY).exists()
 
     def test_what_ix_can_run_is_listed_with_the_kinds(self) -> None:
-        """Changed requirement (W8.7): ``compose`` has an adapter."""
+        """Changed requirement (W8.7): ``compose`` has an adapter. (W11.2): so does
+        ``evaluator``, pydantic-evals' evaluators."""
         kinds = ix.kinds()
         runnable = {schema.short(name) for name in kinds.runnable}
         assert runnable == {
             "process", "http", "http-load", "timing", "memory", "none", "agent-session",
             "model-call", "prompt", "activation", "tool-usage", "function-test", "outcome",
-            "text-match", "usage", "judge", "compose",
+            "text-match", "usage", "judge", "compose", "evaluator",
         }  # fmt: skip
         assert set(kinds.kinds) - set(kinds.runnable) == {"ix.v1.probe.inspect-task"}
         assert set(kinds.runnable) < set(kinds.kinds)

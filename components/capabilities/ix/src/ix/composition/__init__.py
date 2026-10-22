@@ -69,7 +69,7 @@ from ix.application import running
 from ix.application import skill as skill_document
 from ix.application.experiments import Examined, FolderProbes, Vocabulary
 from ix.application.running import Kit
-from ix.composition.extension import LAUNCHER, POINTS, RUNTIMES, SESSIONS
+from ix.composition.extension import JUDGE_MODELS, LAUNCHER, POINTS, RUNTIMES, SESSIONS
 from ix.composition.settings import IxSettings
 from ix.domain import schema
 from ix.domain.design import entries_in_use
@@ -254,6 +254,30 @@ class _Runtimes:
         return {driven: installed(driven) for driven in self._entry(point, name).drives}
 
 
+class _JudgeModels:
+    """Where a pydantic-evals judge evaluator's model comes from: a pydantic-ai ``Model``
+    making its calls through the matrix model runtime the experiment names, so the judge's
+    calls go where every other model call of ix goes, under the same config, and never to
+    pydantic-evals' default model.
+
+    That ``Model`` is hardline's to give (W11.1), and this ix has none yet. Until it does,
+    asking for one checks that the model runtime builds and then says so: a judge evaluator
+    is ``Runnable: no`` in the plan, with this reason, and nothing is called. A stand-in
+    runtime (``mock``) needs none of this: the sensor judges on pydantic-ai's ``TestModel``."""
+
+    def __init__(self, runtimes: _Runtimes) -> None:
+        self._runtimes = runtimes
+
+    def model(self, runtime: str, model: str | None, config: Mapping[str, Any]) -> Any:
+        self._runtimes.build(MODEL_RUNTIME, runtime, config)
+        raise ConfigError(
+            f"a pydantic-evals judge calls its model through a pydantic-ai Model over the "
+            f"model runtime {runtime!r}, and this ix has none to give it yet",
+            fix="score the reply with the judge sensor (kind: judge, model_runtime: "
+            f"{runtime}), or dry-run this one on model_runtime: mock",
+        )
+
+
 @dataclass(frozen=True)
 class Telemetry:
     """What :meth:`Root.configure_telemetry` installed: the warnings a command's documents
@@ -312,6 +336,7 @@ class Root:
             LAUNCHER: MatrixLauncher(),
             SESSIONS: Sessions(),
             RUNTIMES: self._runtimes,
+            JUDGE_MODELS: _JudgeModels(self._runtimes),
         }
 
     def _settings(self) -> Config[IxSettings]:
