@@ -372,8 +372,10 @@ async Executor.run(
 6. Stopping a component is one sequence, whatever the cause (`deadline`, `run_failed`,
    `cancelled`): `ctx.stopping` is set; the component has `grace_s` to return, and what it
    returns is recorded; then its task is cancelled; if it is still running `cleanup_s` later
-   it is abandoned and its record says `abandoned`. A component past its deadline is `failed`
-   even when it returned within the grace.
+   it is abandoned and its record says `abandoned`. A component that returns within the grace
+   ends `stopped`, with the stop's `reason`: what it returned may be partial, and it is never
+   reused. A component past its deadline is `failed` even when it returned within the grace.
+   One that had already returned when the stop was requested is `completed`.
 7. A store that cannot keep a row, or cannot finish the run, fails the run: `RunError` with
    kind `store`, whatever `on_failure` says. No row is appended to that record after the
    failed one.
@@ -394,7 +396,7 @@ running component by the same sequence, skips the rest, calls the releases, and 
 | `status` | `"running" \| "completed" \| "failed" \| "cancelled"` | |
 | `started` / `ended` | `datetime` / `datetime \| None` | UTC |
 | `failures` | `list[ComponentFailure]` | `component`, `kind`, `message` per failed component. `component` is `$input` or `$store` when it was the record, not a component, that failed |
-| `components` | `dict[str, ComponentEnding]` | name to how it ended: `status` (`ComponentStatus`: `completed`, `failed`, `cancelled`, `skipped`, `reused`), `reason` when it was stopped (`deadline`, `run_failed`, `cancelled`), skipped (`upstream: <name>`, `policy: fast`, `cancelled`, `store failed`) or reused (`from run <id>`), `duration_ms` (`None` when it never started), `abandoned` when it ignored cancellation, and `attempts` |
+| `components` | `dict[str, ComponentEnding]` | name to how it ended: `status` (`ComponentStatus`: `completed`, `stopped`, `failed`, `cancelled`, `skipped`, `reused`), `reason` when it was stopped (`deadline`, `run_failed`, `cancelled`), skipped (`upstream: <name>`, `policy: fast`, `cancelled`, `store failed`) or reused (`from run <id>`), `duration_ms` (`None` when it never started), `abandoned` when it ignored cancellation, and `attempts` |
 | `reused_from` | `str \| None` | the run whose rows this one reused |
 | `fingerprints` | `dict[str, str]` | name to a digest of what the component was built from, when the wiring knows it |
 | `releases` | `list[ReleaseOutcome]` | `component`, `status`, `error` per deferred release, in the order called; `status` is `released`, `failed` or `abandoned` |
@@ -412,7 +414,8 @@ tolerate one it does not know.
 
 `Reuse(run_id: str, rows: dict[str, dict[str, tuple[Any, ...]]])`: rows carried over from the
 run `run_id`, by component and kind. `Container.reuse(run_id)` builds it from a record: each
-component that completed there, was built from the same fingerprint, and whose providers are
+component that completed there (`completed` or `reused`, never `stopped`; a `completed`
+ending that carries a stop's `reason` is read as `stopped`), was built from the same fingerprint, and whose providers are
 reused too. `Container.run(reuse_from=...)` and `matrix run --from` use it.
 
 ### `process`

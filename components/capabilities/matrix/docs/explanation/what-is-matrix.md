@@ -107,12 +107,13 @@ component ended, its failures, and a `Construct` holding every row. See
 
 ### Every run ends, and cleans up
 
-A run ends `completed`, `failed` or `cancelled`; each component ends `completed`, `failed`,
-`cancelled` or `skipped`. What makes that true is that there is one way to stop a component,
-whatever the reason:
+A run ends `completed`, `failed` or `cancelled`; each component ends `completed`, `stopped`,
+`failed`, `cancelled`, `skipped` or `reused`. What makes that true is that there is one way to
+stop a component, whatever the reason:
 
 1. **Stop request.** `ctx.stopping` is set. A component that returns now keeps what it
-   returns.
+   returns, and ends `stopped` (`failed`, past its deadline): its rows are recorded but may
+   be partial, so a later run never reuses them.
 2. **Grace.** The executor waits `grace_s` for that.
 3. **Cancel.** The component's task is cancelled and its own `finally` blocks run. A
    component that swallows the cancellation is abandoned after `cleanup_s` and reported as

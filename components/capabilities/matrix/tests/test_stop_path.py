@@ -106,6 +106,8 @@ async def test_releases_run_on_success_too() -> None:
 
 
 async def test_a_failure_asks_running_components_to_stop_and_keeps_what_they_return() -> None:
+    """What a component returns after a stop request is recorded, and it ends ``stopped``:
+    what it returned may be partial, so it is not ``completed``."""
     running = asyncio.Event()
 
     async def cooperative(ctx: Any) -> str:
@@ -128,7 +130,7 @@ async def test_a_failure_asks_running_components_to_stop_and_keeps_what_they_ret
         await Executor().run(wiring)
     run = e.value.run
     assert e.value.component == "bad"
-    assert run.components["sampler"].status == "completed"
+    assert run.components["sampler"].status == "stopped"
     assert run.components["sampler"].reason == "run_failed"
     assert run.rows(A) == ("partial",)
     assert run.components["after"].document() == {"status": "skipped", "reason": "policy: fast"}
@@ -248,8 +250,30 @@ async def test_a_cancelled_component_that_returns_within_the_grace_keeps_its_row
     with pytest.raises(RunCancelled) as e:
         await task
     assert e.value.run.rows(A) == ("what I had",)
-    assert e.value.run.components["m"].status == "completed"
+    assert e.value.run.components["m"].document()["status"] == "stopped"
+    assert e.value.run.components["m"].reason == "cancelled"
     assert e.value.run.status == "cancelled"
+
+
+async def test_a_component_that_returned_before_the_stop_request_is_completed() -> None:
+    """A failure handled after a sibling has already returned does not make the sibling's
+    finished result read as stopped."""
+    failing = asyncio.Event()
+
+    async def done_first(ctx: Any) -> str:
+        await failing.wait()
+        return "whole"
+
+    async def fails(ctx: Any) -> str:
+        failing.set()
+        raise RuntimeError("kaput")
+
+    wiring = wire({"done": Step(done_first, provides=A), "bad": Step(fails, provides=B)})
+    with pytest.raises(RunError) as e:
+        await Executor().run(wiring)
+    assert e.value.run.components["done"].document()["status"] == "completed"
+    assert e.value.run.components["done"].reason is None
+    assert e.value.run.rows(A) == ("whole",)
 
 
 async def test_a_component_that_swallows_cancellation_is_abandoned_and_reported() -> None:

@@ -191,7 +191,7 @@ async def test_the_stop_path_rows_and_releases_are_narrated() -> None:
     ]
     assert ("matrix.component.stopping", "good", "run_failed") in told
     assert ("matrix.component.end", "bad", "failed") in told
-    assert ("matrix.component.end", "good", "completed") in told
+    assert ("matrix.component.end", "good", "stopped") in told
     assert ("matrix.component.end", "later", "skipped") in told
     assert ("matrix.release.end", "good", "released") in told
     assert told[0][0] == "matrix.run.start" and told[-1] == ("matrix.run.end", None, "failed")

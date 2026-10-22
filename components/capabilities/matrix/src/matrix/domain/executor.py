@@ -72,9 +72,11 @@ logger = logging.getLogger("matrix.executor")
 
 RUN_SCHEMA = "matrix.v1.run"
 
-#: How a component ended: ``reused`` when its rows were carried over from an earlier run. Open:
-#: a consumer must tolerate a state it does not know.
-ComponentStatus = Literal["completed", "failed", "cancelled", "skipped", "reused"]
+#: How a component ended. ``stopped``: it returned after it was asked to stop (another
+#: component failed, or the run was cancelled), so what it returned is recorded but may be
+#: partial, and it is never reused. ``reused``: its rows were carried over from an earlier
+#: run. Open: a consumer must tolerate a state it does not know.
+ComponentStatus = Literal["completed", "stopped", "failed", "cancelled", "skipped", "reused"]
 #: Why a component was asked to stop.
 StopReason = Literal["deadline", "run_failed", "cancelled"]
 #: What a retry policy may name: any ``transient`` failure, or one of its reasons.
@@ -484,19 +486,23 @@ class _Progress:
         self.stop = asyncio.Event()
         self.reason: StopReason | None = None
         self.running = False
+        #: The component's task while it runs.
+        self._task: asyncio.Future[Any] | None = None
         #: The first store failure met while recording one of this component's rows.
         self.broke: StoreError | None = None
 
-    def begin(self) -> None:
+    def begin(self, task: asyncio.Future[Any]) -> None:
         self.running = True
+        self._task = task
 
     def end(self) -> None:
         self.running = False
 
     def request_stop(self, reason: StopReason) -> bool:
         """Set the stop flag for ``reason``; False when a stop was already requested, whose
-        reason stands."""
-        if self.reason is not None:
+        reason stands, or when the component had already returned: what it returned then
+        was not cut short."""
+        if self.reason is not None or (self._task is not None and self._task.done()):
             return False
         self.reason = reason
         self.stop.set()
@@ -921,7 +927,7 @@ class _Session:
         )
         scope = SpanScope(self.run_id, step.span, step.name, self._channel)
         task = asyncio.ensure_future(_call(step.component, inputs, step.context, scope))
-        step.progress.begin()
+        step.progress.begin(task)
         sent = await self._await_with_stop_path(step, task)
         return self._ending(step, task, sent=sent)
 
@@ -947,7 +953,8 @@ class _Session:
 
     def _ending(self, step: _Step, task: asyncio.Future[Any], *, sent: bool) -> _Outcome:
         """How a component's task ended, given whether it was cancelled. What it returned in
-        time, or within the grace of a stop request, is recorded."""
+        time, or within the grace of a stop request, is recorded; after a stop request it
+        ends ``stopped``, since it returned what it had, not necessarily all of it."""
         name = step.name
         overran = ComponentError(
             f"component {name!r} timed out after {step.deadline_s}s",
@@ -984,7 +991,9 @@ class _Session:
             failure.__cause__ = raised
             return _Outcome("failed", failure)
         self._commit(step, task.result())
-        return _Outcome("failed", overran) if on_deadline else _Outcome("completed")
+        if on_deadline:
+            return _Outcome("failed", overran)
+        return _Outcome("completed" if step.progress.reason is None else "stopped")
 
     def _commit(self, step: _Step, result: Any) -> None:
         """Record what a component returned: every row checked first, then all appended."""

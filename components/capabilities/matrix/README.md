@@ -138,10 +138,12 @@ be a row (a sample series, a capture) stays where it is and the row carries a
 ## Stopping, and cleaning up
 
 A run ends `completed`, `failed` or `cancelled`, and every component in it ends `completed`,
-`failed`, `cancelled` or `skipped` (`run.components`). However a component comes to be
-stopped (its deadline passed, another component failed, the caller cancelled, the process got
-SIGTERM or Ctrl-C), it is stopped the same way: `ctx.stopping` is set, it has `grace_s` to
-return what it has, then it is cancelled. When the run ends, everything components handed to
+`stopped`, `failed`, `cancelled`, `skipped` or `reused` (`run.components`). However a component
+comes to be stopped (its deadline passed, another component failed, the caller cancelled, the
+process got SIGTERM or Ctrl-C), it is stopped the same way: `ctx.stopping` is set, it has
+`grace_s` to return what it has, then it is cancelled. What it returns is recorded, and it
+ends `stopped` (`failed` past its deadline): the rows may be partial, so `matrix run --from`
+runs it again rather than reuse them. When the run ends, everything components handed to
 `ctx.defer` is called, last first.
 
 ```python

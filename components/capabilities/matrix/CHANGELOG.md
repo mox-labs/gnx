@@ -25,6 +25,14 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 - The agent-call counts move from the plan's `spend` record to the plan itself:
   `agent_calls_min`, `agent_calls_max`. `matrix plan` prints them as `agent calls: N to M`.
+- **A component that returns after it was asked to stop ends `stopped`**, not `completed`.
+  Another component's failure or the run's cancellation asks the running components to stop,
+  and the protocol tells them to return what they have; that may be partial. Its rows are
+  still recorded, with the stop's `reason` beside the status. `matrix run --from` (and
+  `Container.reuse`) never reuses a `stopped` component, nor a `completed` ending that
+  carries a stop's `reason`, which is how earlier records wrote one. A component that had
+  already returned when the stop was requested is `completed`, with no reason. A consumer
+  that reads component endings must tolerate the new state, as the vocabulary is open.
 
 ### Security
 

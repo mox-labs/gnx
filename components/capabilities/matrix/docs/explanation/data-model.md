@@ -99,7 +99,8 @@ each record above is there as its `document()`.
 
 Run inputs are recorded first, by `$input`, then the rows of any component reused from an
 earlier run, by that component, which ends `reused`. A component is reused only when it
-completed in that run, its fingerprint (its type and config, and for an agent step its
+completed in that run (`completed` or `reused`; a `stopped` component's rows may be partial),
+its fingerprint (its type and config, and for an agent step its
 agent's definition and runtime) is the same, and every component it depends on is reused
 too: so what it was given then is what it would be given now. Then each row is recorded when its component
 hands it over (`ctx.provide`) or, for what it returns, when it ends.
@@ -108,7 +109,8 @@ When a component fails, the executor stops or skips the others as `Limits.on_fai
 records each failure, calls the deferred releases, and raises `RunError`. `RunError.run` is
 the partial Run, with `status == "failed"`, and `RunError.construct` is its Construct. A
 cancelled run raises `RunCancelled` with the partial Run in the same way. A component that
-was stopped but returned within its grace has its rows recorded like any other.
+was asked to stop but returned within its grace has its rows recorded like any other, and
+ends `stopped`: it returned what it had, which may not be all of it.
 
 ## Keeping a run
 

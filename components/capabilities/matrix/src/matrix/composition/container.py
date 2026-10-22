@@ -289,8 +289,9 @@ class Container:
 
     def reuse(self, run_id: str, wiring: Wiring | None = None) -> Reuse:
         """What of the recorded run ``run_id`` a run of ``wiring`` (the configured one by
-        default) may reuse: each component that completed there, was built from the same
-        fingerprint, and whose providers are all reused too, with its rows as recorded.
+        default) may reuse: each component that completed there (``completed`` or
+        ``reused``, never ``stopped``), was built from the same fingerprint, and whose
+        providers are all reused too, with its rows as recorded.
 
         Rows come back as the store keeps them (JSON data), not as the objects that were
         handed over. Raises NotFoundError when there is no such run.
@@ -307,7 +308,7 @@ class Container:
             if (
                 mine is not None
                 and prints.get(name) == mine
-                and ending.get("status") in ("completed", "reused")
+                and _finished(ending)
                 and all(d in reused for d in wiring.depends[name])
             ):
                 provides = wiring.components[name].provides
@@ -355,6 +356,14 @@ class Container:
             run_id=run_id or new_run_id(),
             reuse=reuse,
         )
+
+
+def _finished(ending: Mapping[str, Any]) -> bool:
+    """Whether a recorded ending is finished work. A ``completed`` that carries a stop's
+    reason is a component that returned after a stop request, as records written before
+    ``stopped`` existed say it: partial, like ``stopped``."""
+    status = ending.get("status")
+    return status == "reused" or (status == "completed" and ending.get("reason") is None)
 
 
 def new_run_id() -> str:

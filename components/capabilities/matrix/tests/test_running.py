@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -368,6 +369,54 @@ async def test_a_failed_component_is_not_reused(tmp_path: Path) -> None:
         await compose(config, registry=registry).run({TEXT: ["a"]}, run_id="first")
     reuse = compose(config, registry=_registry()).reuse("first")
     assert set(reuse.rows) == {"upper"}
+
+
+async def test_a_component_stopped_before_it_finished_is_not_reused(tmp_path: Path) -> None:
+    """Asked to stop, a component returns what it has: its record says ``stopped``, and a run
+    from that record runs it again instead of taking its partial rows as finished work."""
+    running = asyncio.Event()
+
+    class Partial:
+        requires = (TEXT,)
+        provides = (UPPER,)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            running.set()
+            await ctx.stopping.wait()
+            return {UPPER: ["partial"]}
+
+    class Fails:
+        requires = (TEXT,)
+        provides = ("acme.v1.other",)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> None:
+            await running.wait()
+            raise RuntimeError("kaput")
+
+    registry = default_registry(discover=False)
+    registry.register("component", "acme.v1.upper", Partial, effects=set())
+    registry.register("component", "acme.v1.fails", Fails, effects=set())
+    config = MatrixConfig.model_validate(
+        {
+            "inputs": [TEXT],
+            "store": {"type": "jsonl", "root": str(tmp_path)},
+            "components": [
+                {"name": "upper", "type": "acme.v1.upper"},
+                {"name": "fails", "type": "acme.v1.fails"},
+            ],
+        }
+    )
+    container = compose(config, registry=registry)
+    with pytest.raises(RunError):
+        await container.run({TEXT: ["a"]}, run_id="first")
+    ending = container.store.describe("first")["components"]["upper"]
+    assert ending["status"] == "stopped" and ending["reason"] == "run_failed"
+    assert container.reuse("first").rows == {}
+    # A record written before ``stopped`` existed says ``completed`` with the stop's reason.
+    record = tmp_path / "first" / "run.json"
+    record.write_text(record.read_text().replace('"stopped"', '"completed"'))
+    assert container.store.describe("first")["components"]["upper"]["status"] == "completed"
+    assert container.reuse("first").rows == {}
 
 
 async def test_reuse_takes_the_prior_inputs_and_refuses_new_ones(tmp_path: Path) -> None:

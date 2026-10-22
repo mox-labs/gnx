@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 _STYLES = {
     "completed": "green",
+    "stopped": "yellow",
     "failed": "red",
     "cancelled": "yellow",
     "skipped": "dim",
