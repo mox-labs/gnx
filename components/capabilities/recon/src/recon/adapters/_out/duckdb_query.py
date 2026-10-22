@@ -96,6 +96,13 @@ class DuckdbQuery:
             try:
                 _reads_only(conn, sql)
                 result = conn.execute(sql)
+                columns = [d[0] for d in result.description or []]
+                rows = result.fetchall() if result.description else []
+            except ImportError as exc:  # a module DuckDB needs for a result, raised as itself
+                module = exc.name or "a module"
+                raise QueryError(
+                    f"DuckDB could not import {module}: {exc}", fix=_module_fix(module)
+                ) from exc
             except duckdb.Error as exc:
                 for name, (file, why) in unreadable.items():
                     if isinstance(exc, duckdb.CatalogException) and _names(sql, name):
@@ -112,10 +119,7 @@ class DuckdbQuery:
                 _unreadable(name, file, why, ", and this query did not use it")
                 for name, (file, why) in unreadable.items()
             ]
-            if not result.description:
-                return Rows(columns=[], rows=[], warnings=warnings)
-            columns = [d[0] for d in result.description]
-            return Rows(columns=columns, rows=result.fetchall(), warnings=warnings)
+            return Rows(columns=columns, rows=rows, warnings=warnings)
         finally:
             conn.close()
 
@@ -201,6 +205,7 @@ UNNEST_DOCS = "https://duckdb.org/docs/current/sql/query_syntax/unnest"
 #: A quoted string in the SQL: a path a ``read_*`` function is given.
 _LITERAL = re.compile(r"'((?:[^']|'')*)'")
 _MISSING_TABLE = re.compile(r"Table with name \S+ does not exist")
+_REQUIRED_MODULE = re.compile(r"Required module '([\w.]+)' failed to import")
 
 
 def _cross_archive_glob(sql: str) -> str | None:
@@ -213,10 +218,21 @@ def _cross_archive_glob(sql: str) -> str | None:
     return None
 
 
+def _module_fix(module: str) -> str:
+    return (
+        f"DuckDB needs the Python module {module} to return this result (pytz for a TIMESTAMP "
+        "WITH TIME ZONE): reinstall recon, which declares it, or cast the column to a type "
+        "that needs no module, as <column>::TIMESTAMP"
+    )
+
+
 def _fix(exc: Exception, archive: Path, tables: list[str], sql: str) -> str:
     import duckdb
 
     message = _first_line(exc)
+    required = _REQUIRED_MODULE.search(message)
+    if required is not None:
+        return _module_fix(required.group(1))
     if isinstance(exc, duckdb.PermissionException):
         return (
             f"a query reads only files under {archive.parent}, loads no extension and makes "

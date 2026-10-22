@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- **recon installed on its own can query a timestamp.** DuckDB imports `pytz` to return a TIMESTAMP WITH TIME ZONE (a `::TIMESTAMPTZ` cast, `now()`), and recon did not declare it, so only the workspace's dev group supplied it: installed alone, such a query failed as `unknown`, "report this as a bug". recon now depends on `pytz`, and a module DuckDB cannot import for a result is a `query` error whose fix names it and the cast that needs none. `duckdb` is bounded below 2.0, whose behaviour the skill and the tests do not describe.
 - **`recon query` runs SELECT statements only.** Its confinement let SQL write wherever it may read, so `COPY ... TO`, `ATTACH` and `EXPORT` wrote into the mission's archives, `meta.yaml` included. Any statement DuckDB does not type as SELECT is now a `query` error (exit 10) whose `details.statements` names it; `WITH`, `FROM`, `DESCRIBE` and `SUMMARIZE` still run.
 - **A source's `auth.header` no longer follows a redirect to another origin.** httpx drops only `Authorization` there, so a key in `x-api-key` went to whatever host the API redirected to. The header now goes only to the origin of the request the collector built, or its upgrade to https; the redirect is still followed, without the key.
 

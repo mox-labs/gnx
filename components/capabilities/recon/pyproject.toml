@@ -28,7 +28,11 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "xmltodict>=0.13",
-    "duckdb>=1.0",
+    # Below 2.0: the skill and the tests state DuckDB 1.x behaviour, and 2.0 changes some of
+    # it (it unnests beside an aggregate, which the skill says DuckDB does not).
+    "duckdb>=1.0,<2",
+    # DuckDB imports pytz to return a TIMESTAMP WITH TIME ZONE, and does not declare it.
+    "pytz>=2024.1",
     "tenacity>=9.0",
     "markitdown[all]>=0.1.0",
     # The API only: with no SDK installed every span and measurement is a no-op.

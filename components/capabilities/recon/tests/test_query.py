@@ -1,8 +1,13 @@
 """Querying an archive: what a table's view holds."""
 
+import datetime
 import json
+import subprocess
+import sys
+from importlib.metadata import requires
 
 import pytest
+from packaging.requirements import Requirement
 
 from recon.adapters._out.duckdb_query import SQL_DOCS, UNNEST_DOCS, DuckdbQuery
 from recon.domain.errors import QueryError
@@ -151,6 +156,85 @@ class TestOnlyReads:
             execute(archive, "SELEC 1")
         assert 'syntax error at or near "SELEC"' in excinfo.value.fix
         assert "statements" not in excinfo.value.details
+
+
+class TestTimestamps:
+    """Regression: recon never declared ``pytz``, which DuckDB needs to return a TIMESTAMP
+    WITH TIME ZONE, and only the workspace's dev group supplied it. Installed on its own,
+    recon failed every such query as ``unknown``, "report this as a bug"."""
+
+    @pytest.fixture
+    def archive(self, tmp_path):
+        # GitHub's published_at shape, as docs/how-to/first-survey.md collects it.
+        return _archive(tmp_path, {"releases": [{"published": "2026-03-15T18:42:31Z"}]})
+
+    def test_a_timestamp_table_can_be_queried(self, archive):
+        sql = "SELECT published, published::TIMESTAMPTZ AS zoned FROM releases"
+        [(published, zoned)] = execute(archive, sql)[1]
+        assert published == datetime.datetime(2026, 3, 15, 18, 42, 31)
+        assert zoned.tzinfo is not None
+
+    def test_recon_declares_what_duckdb_needs_and_the_duckdb_it_is_tested_with(self):
+        declared = {r.name: r for r in map(Requirement, requires("recon") or []) if not r.marker}
+        assert "pytz" in declared
+        assert "1.5.5" in declared["duckdb"].specifier
+        assert "2.0.0" not in declared["duckdb"].specifier
+
+    def test_without_pytz_a_zoned_timestamp_is_a_query_error_that_says_so(self, archive):
+        """In a process of its own, where ``import pytz`` fails as it does when the package
+        is missing: the error names it, and the cast that needs no time zone."""
+        script = (
+            "import sys; sys.modules['pytz'] = None\n"
+            "from pathlib import Path\n"
+            "from recon.adapters._out.duckdb_query import DuckdbQuery\n"
+            "from recon.domain.errors import QueryError\n"
+            "try:\n"
+            "    DuckdbQuery().execute(Path(sys.argv[1]), sys.argv[2])\n"
+            "except QueryError as error:\n"
+            "    print(error.kind, error.fix, sep='\\n')\n"
+        )
+        sql = "SELECT published::TIMESTAMPTZ AS zoned FROM releases"
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(archive), sql],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        kind, fix = result.stdout.split("\n", 1)
+        assert kind == "query"
+        assert "pytz" in fix and "::TIMESTAMP" in fix
+
+    def test_an_import_error_raised_as_itself_is_a_query_error_that_says_so(
+        self, archive, monkeypatch
+    ):
+        """DuckDB can also let the import error through rather than wrap it."""
+        import duckdb
+
+        class Result:
+            def __init__(self, real):
+                self.description = real.description
+
+            def fetchall(self):
+                raise ModuleNotFoundError("No module named 'pytz'", name="pytz")
+
+        class Connection:
+            def __init__(self, real):
+                self._real = real
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+            def execute(self, sql):
+                result = self._real.execute(sql)
+                return Result(result) if "zoned" in sql else result
+
+        connect = duckdb.connect
+        monkeypatch.setattr(duckdb, "connect", lambda: Connection(connect()))
+        with pytest.raises(QueryError) as excinfo:
+            execute(archive, "SELECT published AS zoned FROM releases")
+        assert excinfo.value.kind == "query"
+        assert "pytz" in excinfo.value.fix and "::TIMESTAMP" in excinfo.value.fix
 
 
 class TestEmptyTable:
