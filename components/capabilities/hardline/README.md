@@ -226,7 +226,9 @@ registry row; anything else is a usage error before a call is spent. The library
 ### Output contract
 
 Every command that prints a result takes `--json`. The keys below are stable; new keys may be
-added, none removed or renamed without a version bump.
+added, none removed or renamed without a version bump. A program that validates `complete
+--json` output, or stored `Completion` JSON, back into a `Completion` refuses a key it does not
+know, so it upgrades hardline before the program that writes the JSON does.
 
 | command | stdout JSON |
 |---|---|

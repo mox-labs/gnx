@@ -27,6 +27,8 @@
 
 - **A backend's author can check it against the installed hardline**: `backend_problems(backend)` reads the port's members (`structured_modes` a frozenset of known modes holding `prompt`, an async `complete`, and the optional `check`, `aclose` and `default_base_url` well formed), and `await answer_problems(backend, spec)` makes one call and requires a `RawCompletion` with a `finish_reason`. The requirements were a test in hardline's repository, which no wheel carries, and it checked only that the members existed. The port's docstring now states them.
 
+- **Who upgrades first is stated**: a `Completion` refuses JSON keys it does not know, and a minor release may add keys, so a reader of stored `Completion` JSON upgrades hardline before any writer does (README, `Completion`).
+
 ### Changed (breaking)
 
 - **No provider SDK.** Both wire protocols are spoken directly over httpx2: `openai-compat` (chat completions) and `anthropic` (the Messages API). hardline depends on pydantic, pyyaml and httpx2 only; the `openai` and `anthropic` packages are no longer installed with it.

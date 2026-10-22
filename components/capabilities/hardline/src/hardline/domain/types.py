@@ -246,6 +246,12 @@ class Completion(BaseModel):
     ``length``, a refusal is ``refusal`` with ``refusal`` set, a withheld one
     ``content_filter``. ``answered`` is true only for a whole answer, and is what to check
     before taking ``text`` as one.
+
+    **Who upgrades first.** A Completion's JSON validates back into a Completion, and refuses a
+    key it does not know (``extra="forbid"``). A minor release of hardline may add keys, each with
+    a default; none is removed or renamed while ``type_url`` is ``hardline.v1/completion``. So a
+    reader of stored Completion JSON upgrades first: it installs the newer hardline before any
+    writer does, or it reads the JSON as a mapping rather than through this model.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
