@@ -1144,7 +1144,9 @@ duration (`ix.v1.interaction`), and the run's events (`events.jsonl`).
 
 `function-test` and `outcome` run Python in a child process with a time limit and only
 `PATH` and the locale in its environment. It is not a sandbox: model code can still read,
-write and connect as you. A session's working directory is a fresh temporary directory,
+write and connect as you. The code does not grade itself: the child gets each case's
+input, never what is expected, and ix compares what came back, so printing passing lines
+or rewriting the cases fails. A session's working directory is a fresh temporary directory,
 removed after the trial; the agent's tools act on your machine as `permission_mode`
 allows. Telemetry: with `OTEL_EXPORTER_OTLP_ENDPOINT` set, ix exports `ix.plan`, `ix.run`,
 `ix.trial` and `ix.sensor` spans and matrix the sessions inside them (`ix[otel]`).

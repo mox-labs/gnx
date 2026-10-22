@@ -141,7 +141,9 @@ read back and kept for grading), `feedback` (the tests a test-feedback loop show
 You name metrics; each names the sensor that provides it. `tests_passed` comes from
 `function-test`, which takes the last Python block of the reply (or a file the agent wrote,
 with the sensor option `file`), and runs the truth's test cases against it in a child
-process. It gives three metrics: `tests_passed` (the weighted score reached `pass_at`, every
+process. The child gets each case's input only; ix compares what each call returned or
+raised with the truth in its own process, so code that prints passing results or rewrites
+its cases still fails. It gives three metrics: `tests_passed` (the weighted score reached `pass_at`, every
 test by default), `tests_pass_share` (cases passed out of cases run) and `tests_score` (the
 share of the weight that passed).
 

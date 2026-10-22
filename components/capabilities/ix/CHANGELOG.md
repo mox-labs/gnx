@@ -63,6 +63,13 @@
   - Latency and time to first byte now include answers that came after the window
     closed, to requests sent inside it; throughput still counts only the answers inside
     the window.
+- **`function-test`'s code no longer grades itself.** The code ran in the process that
+  compared its answers and reported on the stdout it shared, so code that printed passing
+  results and exited, rewrote the expected values, or returned a value claiming to equal
+  anything read as passing. The child now gets only the inputs and reports what each call
+  returned or raised, on a channel of its own with a per-run token; ix compares with the
+  truth. A returned value is compared as JSON carries it (an integer- or float-like value
+  as its number); one JSON cannot carry fails its case with its `repr`.
 
 ## 0.5.0 — 2026-10-19
 

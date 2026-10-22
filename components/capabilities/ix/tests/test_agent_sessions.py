@@ -646,6 +646,41 @@ class TestFunctionTest:
         with pytest.raises(ValueError, match="tiers"):
             await self._run("x", {**_MERGE, "tiers": {"basic": 1}})
 
+    @pytest.mark.parametrize(
+        "forger",
+        [
+            # Prints the lines a passing run would print, then ends before any case runs.
+            "import json, os\n"
+            "for i in range(3):\n"
+            "    for line in ({'case': i, 'returned': [4, 0, None][i]},\n"
+            "                 {'case': i, 'raised': ['TypeError', 'Exception']},\n"
+            "                 {'case': i, 'passed': True, 'message': ''}):\n"
+            "        print(json.dumps(line), flush=True)\n"
+            "os._exit(0)\n",
+            # Rewrites whatever the harness holds of the cases to expect its wrong answer.
+            "import __main__\n"
+            "for held in list(vars(__main__).values()):\n"
+            "    if isinstance(held, dict) and isinstance(held.get('cases'), list):\n"
+            "        for case in held['cases']:\n"
+            "            case.pop('raises', None)\n"
+            "            case['expected'] = 'wrong'\n"
+            "def double(x):\n    return 'wrong'\n",
+            # Returns a value that says it equals anything.
+            "class Yes(int):\n"
+            "    def __eq__(self, other):\n        return True\n"
+            "    __hash__ = int.__hash__\n"
+            "def double(x):\n    return Yes(7)\n",
+        ],
+        ids=["prints-passes-and-exits", "rewrites-the-cases", "equals-anything"],
+    )
+    async def test_code_that_games_its_grader_still_fails(self, forger: str) -> None:
+        """Regression: the code under test ran in the process that compared its answers and
+        printed the results on the stdout it shared, so it could print passing results and
+        exit, or rewrite the expected values, and read as passing every case."""
+        found = await self._run(f"```python\n{forger}```", timeout="5s")
+        assert found.values["tests_pass_share"] == {"events": 0, "units": 3}, found.detail
+        assert found.values["tests_passed"] is False
+
     async def test_the_code_sees_no_credential_of_ix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
         leak = (

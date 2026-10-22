@@ -122,6 +122,18 @@ Model-written code is untrusted; run code from a subject you would run yourself,
 in a container. A graders module is trusted as far as the experiment's author is. Neither
 is imported by `validate` or `plan`.
 
+**Code under test may try to game its grader.** Code that knows it is being tested can
+print what a passing run would report and exit, rewrite the expectations it can reach, or
+return a value that claims to equal anything. So `function-test` gives the child only each
+case's input, never what is expected of it; the child reports what each call returned (as
+plain data) or raised, and ix compares that with the truth in its own process. Those
+reports go back on a copy of the child's stdout made before the code is loaded, each line
+carrying a token drawn for the run, while the code's own stdout goes nowhere. Code that
+searches its own process can still find that copy and the token and report a value it did
+not return, but it cannot learn the expected values from the harness, since they never
+enter its process. It can read them from disk if it finds the experiment's files, because
+the child is not a sandbox: run ix in a container when that matters.
+
 ### 9. Nothing in ix bounds what a run costs
 
 A session on `claude-sdk` or `model`, and a judge on either, calls a paid model, and ix
