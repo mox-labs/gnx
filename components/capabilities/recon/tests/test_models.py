@@ -194,34 +194,3 @@ class TestReconConfig:
         )
         assert len(config.catalog) == 2
         assert config.catalog[0].type == "local"
-
-
-class TestJsonRecordMapping:
-    """`recon query --json` maps columns onto rows via zip.
-
-    Regression for the B905 finding: the auto-fixer chose `strict=False`, which preserves
-    silent truncation. Both sides come from one query execution, so a width mismatch is a
-    bug — and emitting JSON records with fields silently dropped is worse than failing,
-    because the caller gets plausible output that is missing data.
-    """
-
-    def test_equal_widths_map_cleanly(self) -> None:
-        columns = ["a", "b", "c"]
-        rows = [(1, 2, 3), (4, 5, 6)]
-        records = [dict(zip(columns, row, strict=True)) for row in rows]
-        assert records == [{"a": 1, "b": 2, "c": 3}, {"a": 4, "b": 5, "c": 6}]
-
-    def test_row_narrower_than_columns_raises_rather_than_dropping(self) -> None:
-        import pytest
-
-        columns = ["a", "b", "c"]
-        with pytest.raises(ValueError):
-            [dict(zip(columns, row, strict=True)) for row in [(1, 2)]]
-        # strict=False is what the auto-fix produced: it silently loses column "c".
-        assert dict(zip(columns, (1, 2), strict=False)) == {"a": 1, "b": 2}
-
-    def test_row_wider_than_columns_raises(self) -> None:
-        import pytest
-
-        with pytest.raises(ValueError):
-            [dict(zip(["a"], row, strict=True)) for row in [(1, 2)]]

@@ -1,5 +1,6 @@
 """Tests for CliCollector — subprocess → streaming records."""
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -160,19 +161,34 @@ class TestCliCollector:
         rest = list(gen)
         assert [r["i"] for r in rest] == [2, 3]
 
-    def test_generator_cleanup_on_abandonment(self) -> None:
-        """Abandoning the iterator kills the subprocess (no leak)."""
+    def test_generator_cleanup_on_abandonment(self, tmp_path: Path) -> None:
+        """Abandoning the iterator kills the command and what it started (no leak): the
+        shell and its background ``sleep`` are both gone once the generator is closed."""
+        pids = tmp_path / "pids"
         entry = collector_entry(
             name="longlived",
             type="cli",
-            run="printf '{\"a\": 1}\\n' && sleep 10 && printf '{\"a\": 2}\\n'",
+            run=f"sleep 10 & echo $$ $! > {pids}; printf '{{\"a\": 1}}\\n'; wait",
         )
         gen = CliCollector().collect(entry, None)
         assert isinstance(gen, Generator)
-        next(gen)  # read first record
-        gen.close()  # abandon — should kill subprocess
-        # If the subprocess were still alive, this test would hang on teardown.
-        # The actual assertion is implicit: test completes quickly.
+        assert next(gen) == {"a": 1}
+        shell, sleeper = map(int, pids.read_text().split())
+        started = time.monotonic()
+        gen.close()
+        assert time.monotonic() - started < 3, "closing did not wait out the command"
+        deadline = time.monotonic() + 5
+        while any(_alive(pid) for pid in (shell, sleeper)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _alive(shell) and not _alive(sleeper)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def _run_in_thread(cmd: str, timeout: float, limit: float) -> dict[str, Any]:

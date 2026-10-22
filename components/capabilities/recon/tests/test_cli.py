@@ -530,7 +530,7 @@ class TestQuery:
         assert error["kind"] == "query"
         assert str(project / ".recon" / "m" / "archive") in error["fix"]
 
-    def test_bad_sql_exits_3_naming_the_tables(self, project: Path) -> None:
+    def test_bad_sql_exits_10_naming_the_tables(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
         result = _invoke("query", "m", "SELECT * FROM nope", "--json")

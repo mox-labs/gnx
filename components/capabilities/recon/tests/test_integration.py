@@ -179,10 +179,12 @@ class TestS2Live:
         )
         try:
             records = _api_records(entry, source)
-            assert len(records) == 2
-            assert all(r["title"] is not None for r in records)
-        except CollectionError:
-            pass  # 429 rate limit expected without API key
+        except CollectionError as exc:
+            # Without a key, Semantic Scholar may refuse with 429: that, and nothing else.
+            assert exc.kind == "transient" and "HTTP 429" in str(exc), exc
+            return
+        assert len(records) == 2
+        assert all(r["title"] is not None for r in records)
 
 
 # --- arXiv (XML, can be slow) ---
@@ -256,7 +258,7 @@ class TestZenodoLive:
 # --- Fan-out with real local directories ---
 
 
-class TestFanOutLive:
+class TestFanOutOverLocalDirectories:
     def test_cli_fan_out_with_cwd(self, tmp_path: Path) -> None:
         """Two local sources, one collector, fan-out verifies cwd."""
         repo_a = tmp_path / "repo-a"

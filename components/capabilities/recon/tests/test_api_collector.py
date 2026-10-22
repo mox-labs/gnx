@@ -74,7 +74,7 @@ def _ok_response(body_text: str, content_type: str = "application/json") -> Http
     )
 
 
-class TestExtract:
+class TestResolvePath:
     def test_dotted_path(self) -> None:
         data = {"feed": {"entry": [{"title": "test"}]}}
         assert resolve_path(data, "feed.entry") == [{"title": "test"}]
@@ -89,7 +89,7 @@ class TestExtract:
         assert resolve_path({"a": {"b": 1}}, "a.c") is None
 
 
-class TestEnsureList:
+class TestToRecords:
     def test_list_of_dicts(self) -> None:
         assert to_records([{"a": 1}, {"b": 2}], None) == [{"a": 1}, {"b": 2}]
 
