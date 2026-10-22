@@ -247,6 +247,13 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   could shape its scores. It now runs in a fresh temporary directory, removed after, with
   `setting_sources: []` unless its `runtime_options` name some.
 
+### Fixed: reading a run, its root, its placeholders
+
+- **The "files are data" test can fail.** It used a YAML tag that an unsafe loader cannot
+  construct either, so it would have passed over one. It now uses a tag that creates a file
+  under an unsafe loader (and checks that it does), for a genre file, a kind file and the
+  experiment file. SECURITY.md cites only these.
+
 ## 0.5.0 — 2026-10-19
 
 ix runs agent evaluations as well as service comparisons, and the statistics behind a

@@ -42,8 +42,10 @@ and spans to an OpenTelemetry endpoint when the `OTEL_*` variables name one.
 
 The experiment file, genre files, kind files, probe files and ix's settings are parsed with
 `yaml.safe_load`, through matrix's loader. A YAML tag that would construct a Python object
-is a parse error and the file is refused; the test suite holds this for genre files with a
-tag that would create a file if it ran. The registration is JSON.
+is a parse error and the file is refused. The test suite holds this for a genre file, a kind
+file and the experiment file, with a tag that creates a file under an unsafe loader (the test
+checks that it does). Probe files and the settings go through the same loader and are not
+tested separately. The registration is JSON.
 
 ### 2. An installed genre or kind package is imported
 
