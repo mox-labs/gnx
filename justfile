@@ -55,25 +55,34 @@ capabilities-lint:
 # matrix for the OTLP exporters — neither ships py.typed).
 # puma's gate does `cd puma && mypy src/xuma` for exactly this reason.
 #
-# All six are clean under --strict as of 2026-09-24 (hardline joined). Adding a package here is how it
-# stays that way: the list is the gate, not a wish.
+# Every package's source is checked under --strict, and so are the tests of each package in
+# the second list: a test's stand-in that drifts from the port it stands for is then a type
+# error, not a test that passes against a shape the code no longer has. matrix's and recon's
+# tests are not annotated yet. Each list is the gate, not a wish: adding a package to it is
+# how it stays clean.
 #
-# Typecheck every capability package under mypy --strict.
+# Typecheck every capability package under mypy --strict, and the tests that are typed.
 capabilities-typecheck:
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
     for p in hardline matrix ix recon dao gnx; do
+      paths=(src/$p)
+      case " hardline ix dao " in *" $p "*) paths+=(tests) ;; esac
       ( cd components/capabilities/$p && \
-        ../.venv/bin/mypy --strict src/$p ) || fail=1
+        ../.venv/bin/mypy --strict "${paths[@]}" ) || fail=1
     done
     exit $fail
 
-# The capability packages' tests: hardline, matrix, ix, recon, dao (the gnx CLI has none).
-# No test reaches a live model: components/capabilities/conftest.py refuses it.
+# Every package's but the gnx CLI's, which has none. A skip components/capabilities/conftest.py
+# does not expect fails the run, and every test is bounded in time (pytest-timeout). No test
+# reaches a live model: conftest.py refuses it.
+#
+# The capability packages' tests, each skip listed with its reason.
 capabilities-test:
     uv --directory components/capabilities run --group dev \
-        python -m pytest hardline/tests matrix/tests ix/tests recon/tests dao/tests -q
+        python -m pytest hardline/tests matrix/tests ix/tests recon/tests dao/tests \
+        -q -rs --strict-skips
 
 # The docsite: svelte-kit sync + svelte-check + tsc --noEmit.
 docs-check:

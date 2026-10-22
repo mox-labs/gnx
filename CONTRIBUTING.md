@@ -52,6 +52,10 @@ No test reaches a live model: `components/capabilities/conftest.py` refuses ever
 where an agent session or a model call would spend money, and fails the test that made it.
 Use matrix's `mock` runtime, or a fake, instead.
 
+`just capabilities-test` lists every skip with its reason, and fails on a skip that
+conftest.py's `EXPECTED_SKIPS` does not name: a test that cannot run here is either made to
+run or named there with why.
+
 ## One-time setup: wire the hooks
 
 Git does not use `.githooks/` unless you point it there. Run this once after
