@@ -201,6 +201,13 @@ P1.2's rule (R-9) asks of an HTTP source (R-13). TLS is verified against the ope
 system's trust store. A server that signs in with OAuth through a browser is not a source:
 reach it through the hook route (boundary 5).
 
+**A server's schema is checked, never followed.** A tool's input schema is the server's
+text. recon checks it is valid JSON Schema before checking arguments against it, and
+resolves its `$ref`s within the schema alone: a `$ref` to another host is never fetched
+(jsonschema's default would fetch it itself, outside the requester). A schema that is not
+valid, or refers to what it does not hold, is a requirement that does not hold: the dry
+run lists it and the survey fails that table as `config`.
+
 **What a server returns may be private.** A tool reads what its server can reach (a
 repository, a mailbox, a drive), and its answer becomes the table, and with `preserve_raw`
 the capture: an archive of an `mcp` mission deserves the care its server's data does. In a

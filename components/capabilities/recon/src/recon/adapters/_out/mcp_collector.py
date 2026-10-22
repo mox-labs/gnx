@@ -68,7 +68,7 @@ from recon.domain.substitution import find_unresolved, substitute
 from recon.domain.telemetry import MCP_CALL
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Iterator
+    from collections.abc import Callable, Coroutine, Iterable, Iterator
 
     from recon.domain.capture import CaptureLog
     from recon.domain.collector import CollectorContext
@@ -517,7 +517,20 @@ class McpCollector:
                 )
             ]
         schema = server.tools[tool].input_schema
-        found = _argument_problems(schema, substitute(settings.arguments, settings.vars))
+        valid = f"the input schema of {tool!r} (source {source.name!r}) is valid JSON Schema"
+        try:
+            found = _argument_problems(schema, substitute(settings.arguments, settings.vars))
+        except _InvalidSchemaError as exc:
+            return [
+                Requirement(need, holds=True),
+                Requirement(
+                    valid,
+                    holds=False,
+                    why=str(exc),
+                    fix="the server declares a schema no client can check arguments against; "
+                    "report it to the server's maintainers, or use another tool",
+                ),
+            ]
         return [
             Requirement(need, holds=True),
             Requirement(
@@ -557,17 +570,44 @@ def _ignore_log(message: Any) -> None:
     """A server's log notifications are the server's: recon prints none of them."""
 
 
-def _argument_problems(schema: dict[str, Any], arguments: dict[str, Any]) -> list[str]:
-    """What ``schema`` refuses in ``arguments``, each at its path (``arguments.limit``)."""
-    from jsonschema.validators import validator_for
+class _InvalidSchemaError(Exception):
+    """A tool's input schema that is not valid JSON Schema, or refers to what it does not hold."""
 
-    validator = validator_for(schema)(schema)
-    errors = sorted(validator.iter_errors(arguments), key=lambda e: list(map(str, e.path)))
+
+def _argument_problems(schema: dict[str, Any], arguments: dict[str, Any]) -> list[str]:
+    """What ``schema`` refuses in ``arguments``, each at its path (``arguments.limit``).
+
+    The schema is the server's, so it is checked before it is used, and its ``$ref``s
+    resolve within it alone: the registry retrieves nothing, where jsonschema's default
+    would fetch a ``$ref`` to another host itself, outside the requester. A schema that is
+    not valid, or refers to what it does not hold, raises ``_InvalidSchemaError``.
+    """
+    from jsonschema.exceptions import SchemaError, UnknownType
+    from jsonschema.validators import validator_for
+    from referencing import Registry
+    from referencing.exceptions import Unresolvable
+
+    cls = validator_for(schema)
+    try:
+        cls.check_schema(schema)
+        validator = cls(schema, registry=Registry())
+        errors = sorted(validator.iter_errors(arguments), key=lambda e: list(map(str, e.path)))
+    except SchemaError as exc:
+        raise _InvalidSchemaError(f"at {_schema_path(exc.path)}: {exc.message}") from exc
+    except UnknownType as exc:
+        raise _InvalidSchemaError(f"it names a type no validator knows: {exc.type!r}") from exc
+    except Unresolvable as exc:
+        raise _InvalidSchemaError(f"it refers to {exc.ref!r}, which it does not hold") from exc
     found = [
         "arguments" + "".join(f".{part}" for part in error.path) + f": {error.message}"
         for error in errors
     ]
     return found[:_MAX_ARGUMENT_PROBLEMS]
+
+
+def _schema_path(path: Iterable[Any]) -> str:
+    """Where in a schema a problem is, as the dotted path the arguments' problems use."""
+    return "".join(f".{part}" for part in path).lstrip(".") or "its root"
 
 
 def _matches(template: str, uri: str) -> bool:

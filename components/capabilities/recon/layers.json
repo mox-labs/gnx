@@ -135,7 +135,8 @@
     {"name": "fastmcp", "only": "src/recon/adapters/_out/mcp_collector.py"},
     {"name": "mcp", "only": "src/recon/adapters/_out/mcp_collector.py"},
     {"name": "mcp_types", "only": "src/recon/adapters/_out/mcp_collector.py"},
-    {"name": "jsonschema", "only": "src/recon/adapters/_out/mcp_collector.py"}
+    {"name": "jsonschema", "only": "src/recon/adapters/_out/mcp_collector.py"},
+    {"name": "referencing", "only": "src/recon/adapters/_out/mcp_collector.py"}
   ],
   "single_importer_why": "one file per technology, each behind one port; the MCP client is the mcp collector's alone, and it reaches httpx2 only through the SDK's own client. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule"
 }

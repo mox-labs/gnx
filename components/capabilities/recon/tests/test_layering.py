@@ -327,7 +327,7 @@ def test_importing_recon_loads_no_adapter_and_wires_nothing() -> None:
     code = (
         "import sys, recon\n"
         "heavy = {'httpx2', 'duckdb', 'markitdown', 'yaml', 'fastmcp', 'mcp', 'mcp_types',\n"
-        "         'jsonschema'}\n"
+        "         'jsonschema', 'referencing'}\n"
         "print(sorted(m for m in sys.modules if m.split('.')[0] in heavy "
         "or m == 'recon.composition'))\n"
         "from recon.composition import root\n"
@@ -340,7 +340,7 @@ def test_importing_recon_loads_no_adapter_and_wires_nothing() -> None:
 
 
 #: The MCP client and what only it imports.
-MCP_CLIENT = frozenset({"fastmcp", "mcp", "mcp_types", "jsonschema"})
+MCP_CLIENT = frozenset({"fastmcp", "mcp", "mcp_types", "jsonschema", "referencing"})
 
 _PROBE = (
     "import atexit, sys\n"

@@ -373,6 +373,54 @@ def test_the_dry_run_starts_the_server_and_checks_each_call_against_its_listing(
     assert ("the server of source 'fixture' offers the resource 'fixture://other'", False) in found
 
 
+@pytest.mark.parametrize(
+    ("input_schema", "why"),
+    [
+        ({"type": "object", "properties": {"q": {"type": "strng"}}}, "'strng' is not valid"),
+        (
+            {"type": "object", "properties": {"q": {"$ref": "https://example.invalid/s.json"}}},
+            "https://example.invalid/s.json",
+        ),
+        ({"type": "object", "properties": {"q": {"$ref": "#/nope"}}}, "/nope"),
+    ],
+)
+def test_a_tool_whose_input_schema_is_not_valid_json_schema_is_a_requirement_not_a_crash(
+    tmp_path: Path, input_schema: dict[str, Any], why: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the arguments were checked against a server's schema without checking the
+    schema, so a schema with an unknown type or an unresolvable ``$ref`` crashed the dry run
+    (exit 1, ``unknown``, "report this as a bug") and failed the survey's table as
+    ``run_failed`` with jsonschema's raw text. It is the server's defect, and the dry run says
+    so. And jsonschema fetched a ``$ref`` to another host itself, a request outside the
+    requester to wherever a server pointed it: a ``$ref`` is never fetched."""
+    looked_up: list[str] = []
+    lookup = socket.getaddrinfo
+
+    def recorded(host: Any, *args: Any, **kwargs: Any) -> Any:
+        looked_up.append(str(host))
+        return lookup(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", recorded)
+    recording = tmp_path / "recording.json"
+    result = {"content": [{"type": "text", "text": '[{"a": 1}]'}]}
+    recording.write_text(
+        json.dumps({"tool": "search", "input_schema": input_schema, "result": result})
+    )
+    source = {**STDIO, "args": [SERVER, "--replay", str(recording)]}
+    collectors = [_call("t", "search", arguments={"q": "x"})]
+
+    plan = _plan(tmp_path, collectors, source=source)
+    assert plan.valid and not plan.runnable
+    [refused] = [r for r in plan.requirements if not r.holds]
+    assert refused.need == "the input schema of 'search' (source 'fixture') is valid JSON Schema"
+    assert why in refused.why and refused.fix and refused.needed_by == ["t"]
+
+    _, [table] = _survey(tmp_path, collectors, source=source)
+    assert table.error is not None and table.error.kind == "config"
+    assert refused.need in table.error.message
+    assert "example.invalid" not in looked_up
+
+
 def test_a_dry_run_whose_server_cannot_start_says_so_and_stays_valid(tmp_path: Path) -> None:
     source = {**STDIO, "command": str(tmp_path / "no-such-server")}
     plan = _plan(tmp_path, [_call("a", "whoami")], source=source)
