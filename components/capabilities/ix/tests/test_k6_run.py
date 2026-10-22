@@ -22,7 +22,6 @@ from typing import Any
 import pytest
 import yaml
 
-import ix
 from ix.adapters._out.k6_load import K6Load
 from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.adapters._out.processes import answers
@@ -33,7 +32,7 @@ pytestmark = [
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals"),
 ]
 
-SERVER = Path(ix.__file__).parents[2] / "examples" / "delay-server" / "server.py"
+SERVER = Path(__file__).resolve().parents[1] / "examples" / "delay-server" / "server.py"
 HANG_SERVER = Path(__file__).parent / "data" / "hang_server.py"
 
 

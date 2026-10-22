@@ -114,16 +114,16 @@ class TestTheSkillIsASkill:
             f"git+https://github.com/mox-labs/gnx@ix-v{ix.__version__}"
             "#subdirectory=components/capabilities/ix"
         )
-        package = Path(ix.__file__).resolve().parents[2]
+        package = Path(__file__).resolve().parents[1]
         texts = {"skill": _skill()}
         for file in (
             package / "README.md",
             package / "docs" / "how-to" / "evaluate-an-agent.md",
             package.parents[2] / "README.md",
         ):
-            if file.is_file():  # run from the repository
+            if file.is_file():  # the repository's README, when run from the repository
                 texts[str(file)] = file.read_text(encoding="utf-8")
-        assert len(texts) in (1, 4), list(texts)
+        assert len(texts) in (3, 4), list(texts)
         for name, text in texts.items():
             lines = [
                 line

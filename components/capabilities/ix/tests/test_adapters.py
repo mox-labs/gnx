@@ -16,7 +16,6 @@ from typing import Any
 
 import pytest
 
-import ix
 from ix.adapters._out import k6_load
 from ix.adapters._out.environments import NoEnvironment, ProcessEnvironment
 from ix.adapters._out.matrix_process import MatrixLauncher
@@ -29,7 +28,7 @@ from ix.domain.run import HarnessError, Interaction, SubjectError, Target
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 
-SERVER = Path(ix.__file__).parents[2] / "examples" / "delay-server" / "server.py"
+SERVER = Path(__file__).resolve().parents[1] / "examples" / "delay-server" / "server.py"
 
 
 def _free_port() -> int:

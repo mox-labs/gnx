@@ -1408,7 +1408,7 @@ def test_the_example_experiments_are_what_the_fakes_can_stand_in_for(
     30 trials (the genre's 10 repeats of control, candidate and the control again), and
     names only kinds this ix can run."""
     for name in ("identical", "slower"):
-        file = Path(ix.__file__).parents[2] / "examples" / "delay-server" / f"{name}.yaml"
+        file = Path(__file__).resolve().parents[1] / "examples" / "delay-server" / f"{name}.yaml"
         assert ix.validate(file).valid
         plan = ix.plan(file)
         assert plan.trials.total == 30 and plan.unimplemented == ()

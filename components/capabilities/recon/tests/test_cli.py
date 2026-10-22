@@ -1048,13 +1048,21 @@ def test_a_factory_failure_reaches_the_tables_not_a_traceback(project):
 # --- the shared exit codes, usage errors, Ctrl-C ------------------------------------------
 
 
-CONTRACTS = Path(recon.__file__).parents[3]
+CONTRACTS = Path(__file__).resolve().parents[2]
+
+
+def _contract(name):
+    """One of the workspace's shared contracts, beside the packages in the repository."""
+    path = CONTRACTS / name
+    if not path.is_file():
+        pytest.skip(f"not run from the repository: no {path}")
+    return json.loads(path.read_text())
 
 
 def test_the_agreed_kinds_keep_their_agreed_codes():
     """``components/capabilities/exit-codes.json`` holds the codes every tool agrees on; a
     tool's own kinds take codes from 10 up, one kind per code."""
-    agreed = json.loads((CONTRACTS / "exit-codes.json").read_text())["kinds"]
+    agreed = _contract("exit-codes.json")["kinds"]
     shared = set(agreed) & set(recon.EXIT_CODES)
     assert shared == set(agreed) - {"store"}, "recon writes no separate store"
     assert {kind: recon.EXIT_CODES[kind] for kind in shared} == {k: agreed[k] for k in shared}
@@ -1069,7 +1077,7 @@ def test_the_agreed_kinds_keep_their_agreed_codes():
 def test_the_shared_problem_kinds_are_the_agreed_ones():
     """``components/capabilities/error-envelope.json`` names the problem kinds every tool
     shares; recon uses those names for those mistakes, and adds its own."""
-    contract = json.loads((CONTRACTS / "error-envelope.json").read_text())
+    contract = _contract("error-envelope.json")
     shared = set(contract["problem_kinds"])
     assert shared - {"schema_unsupported"} <= set(recon.PROBLEM_KINDS)
     assert {"missing", "invalid", "unknown_name", "duplicate"}.isdisjoint(recon.PROBLEM_KINDS)

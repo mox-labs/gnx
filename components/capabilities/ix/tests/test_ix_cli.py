@@ -693,11 +693,16 @@ class TestGenresAndKindsCommands:
 # --- the checked-in examples and the lab -----------------------------------------------
 
 
-def _lab() -> Path:
+def _repository() -> Path:
+    """The repository around this package: the lab and the plugins an example mounts."""
     for parent in PACKAGE.parents:
         if (parent / "lab").is_dir() and (parent / "justfile").is_file():
-            return parent / "lab"
-    raise AssertionError("the repository's lab directory was not found above the ix package")
+            return parent
+    pytest.skip(f"not run from the repository: no lab above {PACKAGE}")
+
+
+def _lab() -> Path:
+    return _repository() / "lab"
 
 
 class TestExamplesAndLab:
@@ -731,6 +736,7 @@ class TestExamplesAndLab:
         assert any("environment" in by for by in needs.values())
 
     def test_the_agent_evaluation(self) -> None:
+        _repository()  # the example mounts the repository's plugins
         plan = ix.plan(EXAMPLES_DIR / "catalog-routing")
         assert plan.genre == "evaluate" and plan.control is None
         assert plan.probes.ids == ("decoy-clear-ask", "does-it-follow", "vague-ask")
@@ -903,7 +909,10 @@ def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     tool's own kinds take codes from 10 up, one kind to a code. Changed requirement: the
     table now shares ``conflict`` (7) and ``run_failed`` (8), so ix's ``unregistered`` moved
     from 7 to 15 and ``deviations`` from 9 (now ``store``) to 14."""
-    agreed = json.loads((Path(ix.__file__).parents[3] / "exit-codes.json").read_text())["kinds"]
+    contract = PACKAGE.parent / "exit-codes.json"
+    if not contract.is_file():
+        pytest.skip(f"not run from the repository: no {contract}")
+    agreed = json.loads(contract.read_text())["kinds"]
     shared = set(agreed) & set(EXIT_CODES)
     assert shared == {
         "ok", "unknown", "usage", "config", "not_found", "conflict", "run_failed", "interrupted",

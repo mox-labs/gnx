@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args
+from typing import Any, get_args
+
+import pytest
 
 from hardline import ConfigError, Problem
 from hardline.adapters._in import cli
@@ -22,17 +24,23 @@ from hardline.adapters._in.cli import (
     main,
 )
 
-if TYPE_CHECKING:
-    import pytest
-
 CONTRACTS = Path(__file__).resolve().parents[2]
+
+
+def _contract(name: str) -> dict[str, Any]:
+    """One of the workspace's shared contracts, beside the packages in the repository."""
+    path = CONTRACTS / name
+    if not path.is_file():
+        pytest.skip(f"not run from the repository: no {path}")
+    loaded: dict[str, Any] = json.loads(path.read_text())
+    return loaded
 
 
 def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     """A kind the tools share exits with the agreed code; a kind of hardline's own takes a code
     from 10 up; one kind to a code (W10.4). Before: rate_limit, timeout and unavailable all on
     5, and bad_request on 3, beside config."""
-    agreed = json.loads((CONTRACTS / "exit-codes.json").read_text())["kinds"]
+    agreed = _contract("exit-codes.json")["kinds"]
     shared = set(agreed) & set(EXIT_CODES)
     assert {kind: EXIT_CODES[kind] for kind in shared} == {kind: agreed[kind] for kind in shared}
     own = {kind: code for kind, code in EXIT_CODES.items() if kind not in agreed}
@@ -43,7 +51,7 @@ def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
 
 
 def test_the_envelope_is_the_agreed_shape() -> None:
-    contract = json.loads((CONTRACTS / "error-envelope.json").read_text())
+    contract = _contract("error-envelope.json")
     problem = Problem(path="models.q.famly", kind="unknown_key", message="m", source="cwd x")
     payload, code = error_payload(ConfigError("bad", problems=[problem]))
     assert code == 3 and list(payload) == list(contract["envelope"]) == ["schema", "error"]

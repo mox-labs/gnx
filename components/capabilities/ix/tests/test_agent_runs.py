@@ -36,7 +36,8 @@ from ix.composition.settings import IxSettings
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-EXAMPLE = Path(ix.__file__).resolve().parents[2] / "examples" / "harness-integrity"
+PACKAGE = Path(__file__).resolve().parents[1]
+EXAMPLE = PACKAGE / "examples" / "harness-integrity"
 
 
 def _settings(**fields: Any) -> matrix.Config[IxSettings]:
@@ -1070,7 +1071,7 @@ class TestAVerdictTracesToTheModelThatAnswered:
 
     def test_the_readmes_join_reads_a_readings_model_without_ix(self, tmp_path: Path) -> None:
         duckdb = pytest.importorskip("duckdb")
-        readme = (Path(ix.__file__).resolve().parents[2] / "README.md").read_text()
+        readme = (PACKAGE / "README.md").read_text()
         found = re.search(r"<!-- reading-to-session -->\s*```sql\n(.*?)```", readme, re.S)
         assert found, "the README shows the join from a reading to its session"
         report = _judged_calls(tmp_path)
