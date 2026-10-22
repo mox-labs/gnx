@@ -5,8 +5,9 @@ agent: a model call has no loop, no tools and no turns. What it requires and pro
 from its config:
 
 * it **requires** the kinds its ``inputs`` name, and renders their rows into the prompt;
-* it **provides** the call's record, a :class:`ModelCall` carrying the prompt as sent, under
-  the kind ``response`` names; and, when ``output`` names a kind, the reply as one row of that
+* it **provides** the call's reply, a :class:`ModelCall` carrying the prompt as sent and
+  pointing at the call's row in ``matrix.v1.session``, which it records, under the kind
+  ``response`` names; and, when ``output`` names a kind, the reply as one row of that
   kind. When a package registered a schema for that kind, the runtime is asked for that
   structure and validates the reply against it (hardline repairs a reply that does not fit);
   otherwise the reply must be one JSON document. The executor validates the row against the
@@ -45,6 +46,7 @@ from pydantic import BaseModel, ConfigDict
 from matrix.domain.errors import ConfigError, ContractError, ModelRuntimeError, NotFoundError
 from matrix.domain.ids import check_type_url
 from matrix.domain.model_call import ModelRequest
+from matrix.domain.session import call_session, digest, record_session
 from matrix.domain.template import check_template, json_document, render
 
 if TYPE_CHECKING:
@@ -92,6 +94,8 @@ class ModelStep:
         *,
         model_runtimes: Mapping[str, ModelRuntime],
         schemas: Mapping[str, type[BaseModel]] | None = None,
+        runtime_url: str | None = None,
+        drives: tuple[str, ...] = (),
     ) -> None:
         for placeholder, kind in config.inputs.items():
             check_type_url(kind, where=f"model-step inputs.{placeholder}")
@@ -118,6 +122,8 @@ class ModelStep:
         runtime.check(config.model)  # an unknown model is refused now, not mid-run
         self._config = config
         self._runtime = runtime
+        self._runtime_url = runtime_url
+        self._drives = tuple(drives)
         self._output = (schemas or {}).get(config.output) if config.output is not None else None
         self.requires: frozenset[str] = frozenset(config.inputs.values())
         self.provides: frozenset[str] = frozenset(
@@ -138,14 +144,30 @@ class ModelStep:
             prompt=prompt, model=self._config.model, system=self._config.system, output=self._output
         )
         call = await self._runtime.call(request)
-        call = call.model_copy(update={"prompt": prompt})
+        call = call.model_copy(update={"prompt": prompt, "session": self._record(request, call)})
         self._whole(call)
-        rows: dict[str, Any] = {self._config.response: call}
+        rows: dict[str, Any] = {self._config.response: call.as_reply()}
         if self._config.output is not None:
             # One row, whatever its shape: a JSON array the model returned is not several.
             reply = call.value if self._output is not None else self._json(call.text)
             rows[self._config.output] = (reply,)
         return rows
+
+    def _record(self, request: ModelRequest, call: ModelCall) -> int | None:
+        """Record the call in the run's session table, whether or not its reply is whole;
+        its row, or None outside a run."""
+        output = request.output
+        sent = digest(
+            {
+                "prompt": request.prompt,
+                "system": request.system,
+                "model": request.model,
+                "output": None if output is None else output.model_json_schema(),
+            }
+        )
+        return record_session(
+            call_session(call, sent=sent, runtime=self._runtime_url, drives=self._drives)
+        )
 
     def _whole(self, call: ModelCall) -> None:
         """Raise unless ``call``'s reply is a whole answer (see the module docstring)."""

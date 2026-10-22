@@ -66,9 +66,12 @@ if TYPE_CHECKING:
 
 FUNCTION_TEST = "ix.v1.sensor.function-test"
 
-#: What a call carries of how it was made (what was sent, each attempt, the registry row)
-#: that no sensor reads: the usage facet keeps the facts sensors measure and report.
-_RECORD = frozenset({"native_finish_reason", "params", "attempt_log", "turns_digest", "row"})
+#: What a call carries of how it was made (what was sent, each attempt, the registry row,
+#: its session row) that no sensor reads: the usage facet keeps the facts sensors measure and
+#: report.
+_RECORD = frozenset(
+    {"native_finish_reason", "params", "attempt_log", "turns_digest", "row", "session"}
+)
 
 #: The sensors a model call leaves nothing to read for, and what each would read.
 NO_TOOLS = {ACTIVATION: "whether a skill fires", TOOL_USAGE: "whether a tool is called"}

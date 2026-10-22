@@ -203,13 +203,26 @@ class Container:
     def bind(self, definition: AgentDefinition, runtime: str) -> BoundAgent:
         """Bind a definition to a configured agent runtime, with this container's
         observers."""
-        return BoundAgent(definition, self.agent_runtime(runtime), observers=self._observers)
+        built = self.agent_runtime(runtime)
+        url = agent_runtime_type_url(self._config.matrix.agent_runtimes[runtime].type)
+        return BoundAgent(
+            definition,
+            built,
+            observers=self._observers,
+            runtime_url=url,
+            drives=_drives(self._registry, AGENT_RUNTIME, url),
+        )
 
     def needs(self) -> dict[str, Any]:
         """The shared things extensions may declare they need."""
         return {
             "agents": dict(self._agents),
             "model_runtimes": dict(self._model_runtimes),
+            "model_runtime_entries": {
+                name: self._registry.entry(MODEL_RUNTIME, model_runtime_type_url(spec.type))
+                for name, spec in self._config.matrix.model_runtimes.items()
+                if (MODEL_RUNTIME, model_runtime_type_url(spec.type)) in self._registry
+            },
             "schemas": self._registry.payload_schemas(),
             "models": self._config.matrix.models,
             "cwd": self._context.get("cwd"),
@@ -385,8 +398,13 @@ class Container:
 
     def executor(self, observers: Sequence[Observer] = ()) -> Executor:
         """An executor over the composed observers (and ``observers``) that turns SIGTERM and
-        SIGINT into the run's cancellation."""
-        return Executor([*self._observers, *observers], interrupts=cancel_on_signals)
+        SIGINT into the run's cancellation, and records in each session row the
+        OpenTelemetry trace and span the session ended in."""
+        return Executor(
+            [*self._observers, *observers],
+            interrupts=cancel_on_signals,
+            trace=telemetry.current_trace,
+        )
 
     def location(self, run_id: str) -> str:
         """Where the store keeps (or would keep) the run ``run_id``."""
@@ -747,11 +765,13 @@ def bind_agents(
     source: str = "matrix",
     problems: _Problems | None = None,
     unread: bool = False,
+    registry: Registry | None = None,
 ) -> dict[str, BoundAgent]:
-    """Each configured agent, bound to its agent runtime. An agent whose runtime is
-    configured but could not be built is skipped, and the check it would have had is reported
-    as not made; so is one whose definition is missing when ``unread`` says the definitions
-    could not all be read."""
+    """Each configured agent, bound to its agent runtime, with the runtime's type URL and, from
+    ``registry``, the distributions it drives, for the sessions it records. An agent whose
+    runtime is configured but could not be built is skipped, and the check it would have had
+    is reported as not made; so is one whose definition is missing when ``unread`` says the
+    definitions could not all be read."""
     found = problems or _Problems()
     agents: dict[str, BoundAgent] = {}
     for name, spec in matrix.agents.items():
@@ -802,7 +822,14 @@ def bind_agents(
         fields = {**(base.model_dump() if base is not None else {}), **overrides, "name": name}
         try:
             definition = AgentDefinition.model_validate(fields)
-            agents[name] = BoundAgent(definition, runtime, observers=observers)
+            url = agent_runtime_type_url(matrix.agent_runtimes[spec.runtime].type)
+            agents[name] = BoundAgent(
+                definition,
+                runtime,
+                observers=observers,
+                runtime_url=url,
+                drives=_drives(registry, AGENT_RUNTIME, url),
+            )
         except MatrixError as e:
             found.add(e, where)
         except ValueError as e:  # pydantic's ValidationError
@@ -882,7 +909,14 @@ def compose(
             )
         loaded[definition.name] = definition
     agents = bind_agents(
-        matrix, agent_runtimes, loaded, observers, source=source, problems=problems, unread=unread
+        matrix,
+        agent_runtimes,
+        loaded,
+        observers,
+        source=source,
+        problems=problems,
+        unread=unread,
+        registry=reg,
     )
     if problems.found:
         raise invalid(
@@ -912,3 +946,10 @@ def compose(
         store=store,
         warnings=warnings,
     )
+
+
+def _drives(registry: Registry | None, point: str, url: str) -> tuple[str, ...]:
+    """The distributions the runtime registered at ``url`` drives; none when unknown."""
+    if registry is None or (point, url) not in registry:
+        return ()
+    return registry.entry(point, url).drives

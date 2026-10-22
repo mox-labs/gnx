@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from matrix.adapters._out.runtime.model import HardlineModelRuntime
     from matrix.domain.ports._out.agent_runtime import Agent
     from matrix.domain.ports._out.model_runtime import ModelRuntime
-    from matrix.domain.registry import Registry
+    from matrix.domain.registry import Entry, Registry
 
 #: The registry point of each kind of runtime.
 AGENT_RUNTIME = "agent-runtime"
@@ -138,8 +138,16 @@ def _model_step(
     *,
     model_runtimes: Mapping[str, ModelRuntime],
     schemas: Mapping[str, type[BaseModel]],
+    model_runtime_entries: Mapping[str, Entry],
 ) -> ModelStep:
-    return ModelStep(config, model_runtimes=model_runtimes, schemas=schemas)
+    entry = model_runtime_entries.get(config.runtime)
+    return ModelStep(
+        config,
+        model_runtimes=model_runtimes,
+        schemas=schemas,
+        runtime_url=None if entry is None else entry.type_url,
+        drives=() if entry is None else entry.drives,
+    )
 
 
 def register(registry: Registry) -> None:
@@ -196,7 +204,7 @@ def register(registry: Registry) -> None:
         MODEL_STEP,
         _model_step,
         config=ModelStepConfig,
-        needs={"model_runtimes", "schemas"},
+        needs={"model_runtimes", "schemas", "model_runtime_entries"},
         summary="One model call as a component: the rows it requires rendered into its prompt",
     )
     registry.register_payload(AGENT_RESPONSE, AgentResponse)

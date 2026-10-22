@@ -5,7 +5,9 @@ else orders the work. Two rules the code cannot show at a glance:
 
 **The executor is the Construct's only writer.** A row a component hands over
 (``ctx.provide``) or returns is checked against its declared kinds and the kind's schema,
-recorded, and durable in the run's store before the call that handed it over returns.
+recorded, and durable in the run's store before the call that handed it over returns. So is
+each agent session or model call the component runs (``matrix.v1.session``); the ledger
+entries of the rows it hands over next name those sessions.
 
 **One stop path.** Whatever stops a component (its deadline, another's failure, the run's
 cancellation), it is asked to stop (``ctx.stopping``), given ``grace_s`` to return, then
@@ -30,7 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from matrix.domain.component import Component, Inputs, Release, RunContext, Wiring
-from matrix.domain.construct import INPUT, Construct
+from matrix.domain.construct import INPUT, Construct, LedgerEntry
 from matrix.domain.errors import (
     ComponentError,
     ConfigError,
@@ -64,6 +66,7 @@ from matrix.domain.observer import (
 )
 from matrix.domain.ports._out.construct_store import events_of
 from matrix.domain.problems import problem
+from matrix.domain.session import CURRENT_SESSIONS, SESSION, Session
 
 if TYPE_CHECKING:
     from matrix.domain.ports._out.construct_store import ConstructStore, RunWriter
@@ -307,7 +310,10 @@ class Executor:
     ``events`` bounds the telemetry a run may hold for its observers. ``interrupts`` is
     entered around each run, in the task awaiting it: the host's way of turning a signal into
     the cancellation of that task (``matrix.cancel_on_signals`` does this for SIGTERM and
-    SIGINT). Without one, the host's signals are left alone.
+    SIGINT). Without one, the host's signals are left alone. ``trace`` returns the trace and
+    span ids (hex) of the tracing context current in the task that calls it, or None; each
+    session row records what it returned when the session ended (composition passes one that
+    reads OpenTelemetry's). Without one, session rows carry no trace ids.
     """
 
     def __init__(
@@ -316,10 +322,12 @@ class Executor:
         *,
         events: EventPolicy | None = None,
         interrupts: Callable[[], AbstractContextManager[None]] = nullcontext,
+        trace: Callable[[], tuple[str, str] | None] | None = None,
     ) -> None:
         self._observers = tuple(observers)
         self._events = events or EventPolicy()
         self._interrupts = interrupts
+        self._trace = trace
 
     async def run(
         self,
@@ -362,7 +370,7 @@ class Executor:
         sink = events_of(writer) if writer is not None else None
         observers = self._observers if sink is None else (*self._observers, sink)
         channel = Channel(observers, self._events, run.run_id)
-        session = _Session(wiring, run, limits, channel, writer)
+        session = _Session(wiring, run, limits, channel, writer, self._trace)
         # The run lives in its own task, shielded from the caller's cancellation: cancelling
         # the caller asks the run to stop, and the run answers once it has cleaned up.
         main = asyncio.ensure_future(session.execute(supplied, reuse))
@@ -582,6 +590,13 @@ class _Hooks:
         if not self._late("provide"):
             self._session.provide(self._name, kind, row)
 
+    def session(self, row: Session) -> int | None:
+        """Record an agent session or model call the component ran; its row, or None after
+        the component ended."""
+        if self._late("session"):
+            return None
+        return self._session.record_session(self._name, row)
+
     def defer(self, release: Release) -> None:
         if not callable(release):
             raise TypeError(f"defer() takes a callable, got {type(release).__name__}")
@@ -658,8 +673,12 @@ class _Session:
         limits: Limits,
         channel: Channel,
         writer: RunWriter | None,
+        trace: Callable[[], tuple[str, str] | None] | None = None,
     ) -> None:
         self._wiring = wiring
+        self._trace = trace
+        #: The session rows each component ran since its previous hand-over.
+        self._sessions: dict[str, list[int]] = {}
         self._run = run
         self._limits = limits
         self._channel = channel
@@ -937,7 +956,9 @@ class _Session:
         return self._halted is None
 
     def _restart(self, step: _Step) -> _Step:
-        """A fresh context for the next attempt of ``step``: the same component and span."""
+        """A fresh context for the next attempt of ``step``: the same component and span. The
+        sessions the failed attempt ran produced none of the next attempt's rows."""
+        self._sessions.pop(step.name, None)
         hooks = _Hooks(self, step.name, step.cleanup_s)
         deadline = None if step.deadline_s is None else time.monotonic() + step.deadline_s
         fresh = replace(
@@ -968,7 +989,9 @@ class _Session:
             }
         )
         scope = SpanScope(self.run_id, step.span, step.name, self._channel)
-        task = asyncio.ensure_future(_call(step.component, inputs, step.context, scope))
+        task = asyncio.ensure_future(
+            _call(step.component, inputs, step.context, scope, step.hooks.session)
+        )
         step.progress.begin(task)
         sent = await self._await_with_stop_path(step, task)
         return self._ending(step, task, sent=sent)
@@ -1070,8 +1093,10 @@ class _Session:
             for kind, value in result.items()
             for row in _rows(value)
         ]
+        behind = tuple(self._sessions.get(name, ()))
         for kind, row in returned:
-            self._record(name, kind, row, checked=True)
+            self._record(name, kind, row, checked=True, sessions=behind)
+        self._sessions.pop(name, None)
 
     def provide(self, name: str, kind: str, row: Any) -> None:
         """One row handed over mid-run: checked, recorded and durable before this returns."""
@@ -1084,21 +1109,52 @@ class _Session:
                 declared=sorted(step.provides),
             )
         try:
-            self._record(name, kind, row)
+            self._record(name, kind, row, sessions=tuple(self._sessions.get(name, ())))
         except StoreError as e:
             step.progress.record_store_failure(e)
             self._halt("store failed", "run_failed")
             raise
+        self._sessions.pop(name, None)
 
-    def _record(self, name: str, kind: str, row: Any, *, checked: bool = False) -> None:
-        """Record ``row``; ``checked`` when it is already as :func:`_validate` returns it."""
+    def record_session(self, name: str, row: Session) -> int:
+        """Record a session component ``name`` ran, with the trace it ended in; durable when
+        this returns. Its position is named by the next rows the component hands over."""
+        ids = self._trace() if self._trace is not None else None
+        if ids is not None and row.trace_id is None:
+            row = row.model_copy(update={"trace_id": ids[0], "span_id": ids[1]})
+        try:
+            entry = self._append(name, SESSION, _private(row, SESSION))
+        except StoreError as e:
+            self._steps[name].progress.record_store_failure(e)
+            self._halt("store failed", "run_failed")
+            raise
+        self._sessions.setdefault(name, []).append(entry.row)
+        return entry.row
+
+    def _record(
+        self,
+        name: str,
+        kind: str,
+        row: Any,
+        *,
+        checked: bool = False,
+        sessions: tuple[int, ...] = (),
+    ) -> None:
+        """Record ``row``; ``checked`` when it is already as :func:`_validate` returns it.
+        ``sessions`` are the session rows behind it."""
         if not checked:
             row = _validate(self._wiring, kind, row, where=f"component {name!r} kind {kind!r}")
         # The record keeps its own copy: a component that goes on to change the object it
         # handed over cannot change what was recorded.
-        kept = _private(row, kind)
+        self._append(name, kind, _private(row, kind), sessions)
+        self._recorded[name] = self._recorded.get(name, 0) + 1
+
+    def _append(
+        self, name: str, kind: str, kept: Any, sessions: tuple[int, ...] = ()
+    ) -> LedgerEntry:
+        """Write ``kept`` through to the record and report it."""
         try:
-            entry = self._run.construct.append(kind, kept, component=name)
+            entry = self._run.construct.append(kind, kept, component=name, sessions=sessions)
         except MatrixError:
             raise
         except Exception as e:
@@ -1106,12 +1162,12 @@ class _Session:
                 f"the store could not append a row of {kind!r}: {type(e).__name__}: {e}",
                 table=kind,
             ) from e
-        self._recorded[name] = self._recorded.get(name, 0) + 1
         self.tell(
             ROW_APPEND,
             {"kind": kind, "row": entry.row, "seq": entry.seq},
             component=None if name == INPUT else name,
         )
+        return entry
 
     def _request_stop(self, step: _Step, reason: StopReason) -> None:
         if step.progress.request_stop(reason):
@@ -1194,8 +1250,15 @@ class _Session:
         )
 
 
-async def _call(component: Component, inputs: Inputs, ctx: RunContext, scope: SpanScope) -> Any:
+async def _call(
+    component: Component,
+    inputs: Inputs,
+    ctx: RunContext,
+    scope: SpanScope,
+    sessions: Callable[[Session], int | None],
+) -> Any:
     CURRENT_SPAN.set(scope)  # this task's own context: an agent it calls reports as its child
+    CURRENT_SESSIONS.set(sessions)  # and the sessions it runs are recorded as its own
     return await component.run(inputs, ctx)
 
 

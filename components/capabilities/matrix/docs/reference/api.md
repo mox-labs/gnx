@@ -34,6 +34,12 @@ from matrix import (
     Construct,
     LedgerEntry,
     LEDGER,
+    Session,
+    SESSION,
+    digest,
+    agent_session,
+    call_session,
+    record_session,
     Ref,
     REF,
     ConstructStore,
@@ -340,8 +346,12 @@ field is `errors`, not `on`: YAML reads a bare `on` key as `true`.
 ### `Executor`
 
 `Executor(observers: Sequence[Observer] = (), *, events: EventPolicy | None = None,
-interrupts: Callable[[], AbstractContextManager[None]] = nullcontext)`. Stateless between
-runs; safe to share. `events` bounds the event queue (see [Observers](#observers)).
+interrupts: Callable[[], AbstractContextManager[None]] = nullcontext, trace: Callable[[],
+tuple[str, str] | None] | None = None)`. Stateless between runs; safe to share. `trace`
+returns the trace and span ids (hex) of the tracing context current in the calling task, or
+`None`; each session row records what it returned when the session ended.
+`Container.executor()` passes one that reads OpenTelemetry's; without one, session rows carry
+no trace ids. `events` bounds the event queue (see [Observers](#observers)).
 `interrupts` is entered around each run in the task awaiting it. With
 `interrupts=matrix.cancel_on_signals`, while a run is in flight a SIGTERM or SIGINT that
 nothing else handles cancels the run, so a signalled run still releases; a host that
@@ -484,21 +494,41 @@ One run's record: a table per kind, plus the ledger. See
 | `rows(kind)` | `tuple[Any, ...]`: the rows of `kind`, in order; `()` if none. `rows("matrix.v1.ledger")` is the ledger |
 | `last(kind)` | the most recent row; `NotFoundError` listing the kinds that have rows |
 | `provenance(kind)` | `tuple[LedgerEntry, ...]`: the entries for that kind's rows, in row order |
-| `kinds()` | `tuple[str, ...]`: every table, the ledger's last |
+| `kinds()` | `tuple[str, ...]`: every table, `matrix.v1.session` among them (every run has one), the ledger's last |
 | `ledger` | `tuple[LedgerEntry, ...]`: every row's entry, in the order rows were appended |
 | `torn` | `tuple[LedgerEntry, ...]`: entries whose row never landed; always `()` for a live run |
 | `kind in construct` | `True` if the kind has at least one row |
 | `len(construct)` | number of rows |
 | `Construct.restore(tables)` | a Construct from stored tables (`{kind: rows}`, the ledger's among them); `StoreError` if the record contradicts itself |
 
-`append(kind, row, *, component)` and `write_through(sink)` are the executor's.
+`append(kind, row, *, component, sessions=())` and `write_through(sink)` are the executor's.
 
 ### `LedgerEntry` and `LEDGER`
 
 `LEDGER = "matrix.v1.ledger"`. `LedgerEntry` is a frozen pydantic model, registered as that
 kind's payload: `seq: int` (the row's place in the run's order), `kind: str`, `row: int` (its
 0-based position in the kind's table), `component: str` (who handed it over, or `$input`),
-`time: datetime`. An entry is written before the row it points at.
+`time: datetime`, `sessions: tuple[int, ...]` (the rows of `matrix.v1.session` behind it: the
+sessions its component ran since its previous hand-over; `()` by default). An entry is written
+before the row it points at.
+
+### `Session`, `SESSION` and `digest`
+
+`SESSION = "matrix.v1.session"`: every run's table of agent sessions and model calls, one
+`Session` row each, matrix's own like the ledger (no component may provide or require it).
+`Session` is a frozen pydantic model; its fields, and how a reader joins a board row to its
+sessions without matrix, are in [the data model](../explanation/data-model.md#the-session-table).
+A fact the runtime did not report is `None`.
+
+| Name | Signature | Does |
+|------|-----------|------|
+| `digest` | `(value) -> str` | `sha256:<hex>` over canonical JSON (keys sorted, no whitespace, UTF-8): the session row's `sent` |
+| `agent_session` | `(response, *, agent, sent, runtime=None, drives=()) -> Session` | the session row of an agent session, from its `AgentResponse` |
+| `call_session` | `(call, *, sent, runtime=None, drives=()) -> Session` | the session row of a model call, from its `ModelCall` |
+| `record_session` | `(session) -> int \| None` | records it in the run of the component running in this task, durably and in ledger order; its row, or `None` outside a run. The rows that component hands over next name it |
+
+A `BoundAgent` and a model step record their sessions themselves. A component that calls a
+`ModelRuntime` itself records its calls with `record_session(call_session(...))`.
 
 ### `Ref` and `REF`
 
@@ -554,26 +584,32 @@ What an agent is. Frozen pydantic model, unknown fields rejected.
 
 ### `AgentResponse`
 
-The runtime-neutral record of one session. Frozen.
+The runtime-neutral record of one session: what a runtime returns. Frozen. A fact the
+runtime did not report is `None`.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `content` | `str` | `""` | the session's reply: its final result, not every turn's text |
 | `transcript` | `tuple[str, ...]` | `()` | each text block the agent wrote, in order |
 | `tool_calls` | `tuple[dict, ...]` | `()` | `{name, input}` per call; a runtime that sees calls happen adds `id`, `started`, `ended` (ISO times) and `error`, and each becomes an `execute_tool` span |
-| `tokens_input`, `tokens_output` | `int` | `0` | `tokens_input` counts every input token, those read from and written to the prompt cache included |
-| `cache_read_tokens`, `cache_write_tokens` | `int \| None` | `None` | how many of `tokens_input` the cache served, and wrote |
-| `duration_ms` | `int` | `0` | |
-| `cost_usd` | `float \| None` | `None` | the cost the backend reported, when it reports one: a fact of the session, which matrix neither limits nor estimates |
-| `num_turns` | `int` | `0` | |
-| `family` | `str \| None` | `None` | model family that answered (`claude`, `qwen`, ...), stamped by the runtime |
-| `provider` | `str \| None` | `None` | who served it, by the GenAI conventions' provider names (`anthropic`), when known |
-| `model` | `str \| None` | `None` | the model id or registry name that answered, when known: not the one the definition asked for |
 | `stop` | `str \| None` | `None` | `completed`, or the limit reached (`max_turns`, `max_budget_usd`, ...). A limit is not a failure |
 | `finish_reason` | `FinishReason \| None` | `None` | why the session's last reply ended, in the model call's vocabulary; `None` when the runtime does not say |
+| `family` | `str \| None` | `None` | model family that answered (`claude`, `qwen`, ...), stamped by the runtime |
+| `task` | `str \| None` | `None` | the task as sent; an `agent-step` records it, after substituting its inputs |
+| `session` | `int \| None` | `None` | the position of the session's row in the run's `matrix.v1.session`, when a run recorded it (for a reused row, the run `reused_from` names); `None` outside a run |
+| `tokens_input`, `tokens_output` | `int \| None` | `None` | `tokens_input` counts every input token, those read from and written to the prompt cache included |
+| `cache_read_tokens`, `cache_write_tokens` | `int \| None` | `None` | how many of `tokens_input` the cache served, and wrote |
+| `duration_ms` | `int \| None` | `None` | |
+| `cost_usd` | `float \| None` | `None` | the cost the backend reported, when it reports one: a fact of the session, which matrix neither limits nor estimates |
+| `num_turns` | `int \| None` | `None` | |
+| `provider` | `str \| None` | `None` | who served it, by the GenAI conventions' provider names (`anthropic`), when known |
+| `model` | `str \| None` | `None` | the model id or registry name that answered, when known: not the one the definition asked for |
 | `native_finish_reason` | `str \| None` | `None` | the provider's own value, verbatim |
 | `session_id` | `str \| None` | `None` | the runtime's id for the session |
-| `task` | `str \| None` | `None` | the task as sent; an `agent-step` records it, after substituting its inputs |
+
+`as_reply()` is the response as an agent step provides it: with `session` set, every field
+from `tokens_input` down is `None`, since the session row holds it; the reply keeps the rest.
+Without `session` nothing else holds them, and they stay.
 
 ### `AgentRuntime` (Protocol)
 
@@ -596,11 +632,13 @@ logger: the `matrix` command does, and so does ix.
 
 `Agent` is what callers use: `name` and `async run(task: str) -> AgentResponse`.
 
-`BoundAgent(definition, runtime, *, observers=())` satisfies it. Construction calls
-`runtime.check(definition)`, so a refusal happens at binding. Properties `name`,
-`definition`, `runtime`. `run(task)` emits `matrix.agent.start` (with the `task` as sent)
-and `matrix.agent.end`, and a `matrix.tool.start` / `matrix.tool.end` pair, at the runtime's
-own times, for each tool call it timed.
+`BoundAgent(definition, runtime, *, observers=(), runtime_url=None, drives=())` satisfies it.
+Construction calls `runtime.check(definition)`, so a refusal happens at binding. Properties
+`name`, `definition`, `runtime`. `run(task)` emits `matrix.agent.start` (with the `task` as
+sent) and `matrix.agent.end`, and a `matrix.tool.start` / `matrix.tool.end` pair, at the
+runtime's own times, for each tool call it timed. Inside a run it records the session in
+`matrix.v1.session` (with `runtime_url` and `drives`, which composition passes) and returns the
+response pointing at that row (`session`); outside one it records nothing.
 
 ### Built-in agent runtimes
 
@@ -711,6 +749,12 @@ never a constant.
 | `turns_digest` | `str \| None` | `None` | `sha256:<hex>` of the turns the answering call was sent, schema instruction and repair turns included |
 | `row` | `RegistryRow \| None` | `None` | the registry row that answered: `digest` (`sha256:<hex>` of its whole spec) and `rungs` (for each field a configuration set, the tier that set it) |
 | `prompt` | `str \| None` | `None` | the prompt as sent; a `model-step` records it, after filling its inputs |
+| `session` | `int \| None` | `None` | the position of the call's row in the run's `matrix.v1.session`, when a run recorded it (for a reused row, the run `reused_from` names); `None` outside a run |
+
+`as_reply()` is the call as a model step provides it: with `session` set, every field the
+session row holds (`native_finish_reason`, `name` through `latency_ms`, `params`,
+`attempt_log`, `turns_digest`, `row`) is `None`; the reply keeps `text`, `value`,
+`finish_reason`, `refusal`, `family`, `prompt` and `session`.
 
 ### `ModelRuntime` (Protocol)
 
@@ -744,7 +788,8 @@ Classes: `matrix.adapters._out.runtime.model.HardlineModelRuntime`,
 
 A registered `component` that makes one call on a configured model runtime. Constants:
 `MODEL_STEP = "matrix.v1.model-step"`, `MODEL_CALL = "matrix.v1.model-call"`,
-`PROMPT = "matrix.v1.prompt"`. Needs `model_runtimes` and `schemas`.
+`PROMPT = "matrix.v1.prompt"`. Needs `model_runtimes`, `schemas` and `model_runtime_entries`
+(its runtime's type URL and what it drives, for the session row).
 
 `ModelStepConfig` (unknown keys rejected):
 
@@ -758,8 +803,9 @@ A registered `component` that makes one call on a configured model runtime. Cons
 | `response` | `str` | `matrix.v1.model-call` | the kind the `ModelCall` is provided as; one step per kind in a run |
 | `output` | `str \| None` | `None` | a kind; the reply, provided as one row of it |
 
-It provides `response`, and `output` when set. The `ModelCall` carries the prompt as sent
-(`prompt`). With `output`, when the registry holds a schema for the kind, the request names it
+It provides `response`, and `output` when set. It records the call in `matrix.v1.session`,
+whether or not its reply is whole, and the `ModelCall` it provides is the reply row
+(`as_reply()`): the prompt as sent (`prompt`), the reply, and `session`, the call's row. With `output`, when the registry holds a schema for the kind, the request names it
 as `output` and the row is the validated `value`; without one, the reply must be one JSON
 document, as an agent step's, and a reply with none is a `ContractError` quoting it. Rows are
 rendered as an agent step renders them. A model step emits no agent events: its call is in
@@ -790,7 +836,7 @@ declare their own with `add_point`, named under their own root (ix declares `ix.
 | `type_url` | `str` | |
 | `build` | `Callable` | called as `build(validated_config, **needs)`, or `build(**needs)` when `config` is `None`. For `payload-type`, the model itself |
 | `config` | `type[BaseModel] \| None` | the model its settings validate against |
-| `needs` | `frozenset[str]` | shared things composition must hand it: `agents`, `model_runtimes`, `schemas` (kind to its registered model), `models`, `cwd`, keys of `compose(context=...)`, and for a component `name`, its name in the run |
+| `needs` | `frozenset[str]` | shared things composition must hand it: `agents`, `model_runtimes`, `model_runtime_entries` (each composed model runtime's registry entry, by name), `schemas` (kind to its registered model), `models`, `cwd`, keys of `compose(context=...)`, and for a component `name`, its name in the run |
 | `effects` | `frozenset[str] \| None` | what it may touch: `network`, `subprocess`, `filesystem`, `model`. `None` is unknown, not none |
 | `summary` | `str` | |
 | `stability` | `"stable" \| "beta" \| "experimental"` | default `beta` |
@@ -859,7 +905,7 @@ Matrix's own entries:
 | `model-runtime` | `matrix.v1.model-runtime.hardline` | `models` | `model`, `network` |
 | `model-runtime` | `matrix.v1.model-runtime.mock` (stand-in) | | none |
 | `component` | `matrix.v1.agent-step` | `agents` | unknown |
-| `component` | `matrix.v1.model-step` | `model_runtimes`, `schemas` | unknown |
+| `component` | `matrix.v1.model-step` | `model_runtimes`, `schemas`, `model_runtime_entries` | unknown |
 | `payload-type` | `matrix.v1.agent-response` | | |
 | `payload-type` | `matrix.v1.model-call` | | |
 | `payload-type` | `matrix.v1.task` | | |
@@ -1333,9 +1379,9 @@ the config names one.
 | `agent_runtime(name)` | `AgentRuntime`; `NotFoundError` listing configured agent runtimes |
 | `model_runtime(name)` | `ModelRuntime`; `NotFoundError` listing configured model runtimes |
 | `bind(definition, runtime)` | a `BoundAgent` on the configured agent runtime named `runtime`, with the container's observers |
-| `needs()` | the shared needs: `agents`, `model_runtimes`, `schemas`, `models`, `cwd`, plus `context` keys |
+| `needs()` | the shared needs: `agents`, `model_runtimes`, `model_runtime_entries`, `schemas`, `models`, `cwd`, plus `context` keys |
 | `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas, each component's declared `effects` (an `agent-step` has its agent's runtime's, a `model-step` its model runtime's) and its `fingerprint`: a digest of its type, its config and each need it is handed (an `agent-step`'s own agent, a `model-step`'s own model runtime, every agent or model runtime for another component that needs them, `models`, and `cwd`, the process's when none was given), where an agent counts by its definition, its runtime's config and needs, and the runtime's optional `resolved`, and a model runtime by its config, needs and `resolved` (the `hardline` runtime's registry, from `matrix.models` or hardline's own tiers). A need a host adds through `context` is not in it, nor are `schemas` or the code. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
-| `executor(observers=())` | an `Executor` with the container's observers (and these), given `cancel_on_signals` |
+| `executor(observers=())` | an `Executor` with the container's observers (and these), given `cancel_on_signals`, and a `trace` that reads OpenTelemetry's current span for each session row |
 | `async run(inputs=None, *, run_id=None, reuse_from=None, observers=())` | runs the configured components in the configured store within the configured limits; `run_id` defaults to `<UTC time>-<4 hex digits>`. `reuse_from` takes that run's inputs and reuses what it can |
 | `reuse(run_id, wiring=None)` | the `Reuse` a run of `wiring` may take from the recorded run |
 | `inputs_of(run_id, wiring=None)` | the run inputs that run recorded |

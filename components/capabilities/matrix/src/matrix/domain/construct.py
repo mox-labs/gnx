@@ -3,7 +3,9 @@
 A **kind** is the type URL of some data, and it is the schema of its table: the rows of
 ``acme.v1.review`` are reviews, the records themselves, with nothing wrapped around them.
 Provenance is one more table, the **ledger** (``matrix.v1.ledger``): every row in every other
-table has exactly one :class:`LedgerEntry`.
+table has exactly one :class:`LedgerEntry`. Every run also has a **session table**
+(``matrix.v1.session``): one row per agent session or model call, which the ledger entries of
+the rows a session produced name (:mod:`matrix.domain.session`).
 
 **The write order** is ledger entry first, then the row; both are written through to the
 run's store before :meth:`Construct.append` returns. So a process killed between the two
@@ -25,6 +27,7 @@ from pydantic import BaseModel, ConfigDict
 
 from matrix.domain.component import LEDGER
 from matrix.domain.errors import ContractError, NotFoundError, StoreError
+from matrix.domain.session import SESSION
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -51,6 +54,10 @@ class LedgerEntry(BaseModel):
     #: The name of the component that handed it over, or ``$input`` for a run input.
     component: str
     time: datetime
+    #: The rows of ``matrix.v1.session`` behind this row: the sessions its component ran
+    #: since its previous hand-over. Empty for a run input, a reused row, a session row, and
+    #: a row no session produced.
+    sessions: tuple[int, ...] = ()
 
 
 class Construct:
@@ -58,6 +65,7 @@ class Construct:
 
     def __init__(self, kinds: Iterable[str] = ()) -> None:
         self._rows: dict[str, list[Any]] = {kind: [] for kind in kinds}
+        self._rows.setdefault(SESSION, [])  # every run has one, as it has a ledger
         self._ledger: list[LedgerEntry] = []
         self._sink: Callable[[str, Any], None] | None = None
         #: What the sink raised, once it has: every later append is refused with it.
@@ -76,8 +84,11 @@ class Construct:
         """
         self._sink = sink
 
-    def append(self, kind: str, row: Any, *, component: str) -> LedgerEntry:
-        """Add ``row`` to ``kind``'s table: ledger entry first, then the row.
+    def append(
+        self, kind: str, row: Any, *, component: str, sessions: tuple[int, ...] = ()
+    ) -> LedgerEntry:
+        """Add ``row`` to ``kind``'s table: ledger entry first, then the row. ``sessions``
+        are the rows of ``matrix.v1.session`` behind it.
 
         Only the executor calls this. Returns the entry, once both are written through.
         """
@@ -96,6 +107,7 @@ class Construct:
             row=len(table),
             component=component,
             time=datetime.now(UTC),
+            sessions=sessions,
         )
         if self._sink is not None:
             try:
@@ -169,7 +181,7 @@ class Construct:
         return tuple(e for e in self._ledger if e.kind == kind)
 
     def kinds(self) -> tuple[str, ...]:
-        """Every table the run has, the ledger's last."""
+        """Every table the run has, the session table among them, the ledger's last."""
         return (*self._rows, LEDGER)
 
     @property

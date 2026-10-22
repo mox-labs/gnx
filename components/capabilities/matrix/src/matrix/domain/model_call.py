@@ -98,7 +98,14 @@ class ModelRequest(BaseModel):
 
 
 class ModelCall(BaseModel):
-    """The runtime-neutral record of one model call."""
+    """The runtime-neutral record of one model call: what a runtime returns.
+
+    On a reply row a model step provides, the facts the session row holds are moved there:
+    the row keeps the reply and what a consumer acts on (``text``, ``value``,
+    ``finish_reason``, ``refusal``, ``family``, ``prompt``) and ``session``, the position of
+    its row in ``matrix.v1.session``; every field the session row holds is None
+    (:meth:`as_reply`).
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -146,3 +153,33 @@ class ModelCall(BaseModel):
     row: RegistryRow | None = None
     #: The prompt as sent: a ``model-step`` records it here, after filling its inputs.
     prompt: str | None = None
+    #: The position of this call's row in the run's ``matrix.v1.session`` table, when a run
+    #: recorded it (for a reused row, the run ``reused_from`` names). None outside a run.
+    session: int | None = None
+
+    def as_reply(self) -> ModelCall:
+        """This call as a reply row: with ``session`` set, the facts its session row holds
+        are moved off. Without it nothing else holds them, and they stay."""
+        if self.session is None:
+            return self
+        return self.model_copy(update=dict.fromkeys(_SESSION_FACTS))
+
+
+#: The facts of a model call its session row holds, and a reply row does not repeat.
+_SESSION_FACTS = (
+    "native_finish_reason",
+    "name",
+    "model",
+    "backend",
+    "provider",
+    "usage",
+    "request_id",
+    "attempts",
+    "retries",
+    "fallback_from",
+    "latency_ms",
+    "params",
+    "attempt_log",
+    "turns_digest",
+    "row",
+)

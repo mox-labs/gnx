@@ -100,6 +100,8 @@ CONFIG_KEYS: dict[str, str] = {
 NEEDS: dict[str, str] = {
     "agents": "the composed agents, by name",
     "model_runtimes": "the composed model runtimes, by name",
+    "model_runtime_entries": "the registry entry of each composed model runtime, by name (its "
+    "type URL and what it drives, for the sessions a component records)",
     "schemas": "the registered payload schemas, by kind",
     "models": "the config's `models` section",
     "cwd": "the working directory a caller supplies",
@@ -575,15 +577,20 @@ With the default store a run is a directory under `.matrix/runs/<run_id>/`:
 - `<kind>.jsonl`: one per kind, each line one row as recorded; an agent step's `response`
   rows are `AgentResponse`s, the task as sent in `task`, the reply in `content`; a model
   step's are `ModelCall`s, the prompt as sent in `prompt`, the reply in `text`, why it
-  ended (`finish_reason`), and the model that answered, its usage, request id, attempts and
-  latency;
-- `matrix.v1.ledger.jsonl`: which component handed each row over, and when;
+  ended (`finish_reason`); each points at its session row (`session`);
+- `matrix.v1.session.jsonl`: one line per agent session or model call: `runtime`, the model
+  that answered, `stop`, `finish_reason`, `usage`, `cost_usd`, `session_id`, `request_id`,
+  `trace_id` and `span_id`, `fallback_from`, `attempts`, and `sent` (a digest of what was
+  sent). The line's position (from 0) is the row a reply's `session` names;
+- `matrix.v1.ledger.jsonl`: which component handed each row over, when, and the session
+  rows behind it (`sessions`);
 - `events.jsonl`: the run's events; `matrix.agent.start` carries each task as sent, so a
   step that failed before recording its reply still shows what it was asked.
 
 ```bash
 jq . .matrix/runs/RUN_ID/run.json
-jq -c '{task, content}' .matrix/runs/RUN_ID/acme.v1.claim-reply.jsonl
+jq -c '{task, content, session}' .matrix/runs/RUN_ID/acme.v1.claim-reply.jsonl
+jq -c '{runtime, model, stop, usage}' .matrix/runs/RUN_ID/matrix.v1.session.jsonl
 jq -c 'select(.name == "matrix.agent.start") | .fields' .matrix/runs/RUN_ID/events.jsonl
 ```
 
@@ -641,10 +648,10 @@ def _reference_agents() -> str:
   Each placeholder must name an input and each input must have a placeholder: the step is
   refused when it is built (`config`), not when a run reaches it.
 - It provides an `AgentResponse` under `response`: `content` (the session's final result),
-  `transcript` (every text block, in order), `task` (as sent), `tool_calls`, `tokens_input`
-  (cache included), `tokens_output`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`,
-  `num_turns`, `model` (the one that answered), `stop` (`completed`, `max_turns`,
-  `max_budget_usd`), `finish_reason`, `native_finish_reason`, `session_id`. A kind has one
+  `transcript` (every text block, in order), `task` (as sent), `tool_calls`, `stop`
+  (`completed`, `max_turns`, `max_budget_usd`), `finish_reason`, `family`, and `session`,
+  the row of `matrix.v1.session` that holds the rest: the model that answered, tokens (input
+  counts the cache's), cost, turns, duration and the session id. A kind has one
   provider: two steps on the default clash, and the problem's path is the second step's
   `config.response`.
 - With `output`, the reply must be one JSON document, alone or in a ```` ```json ```` block;
@@ -671,15 +678,17 @@ def _reference_agents() -> str:
   step is built, so an unknown one is a `config` problem at `matrix check`.
 - It provides a `ModelCall` under `response`: `text`, `value` (the structured reply),
   `prompt` (as sent), `finish_reason` (`stop`, `length`, `content_filter`, `refusal`,
-  `tool_call`, `other`; null when the runtime does not say), `native_finish_reason`,
-  `refusal`, `name` and `model` (the registry name and the provider's id of the model that
-  answered), `family`, `backend`, `provider`, `usage` (`input_tokens`, `output_tokens`,
-  `cache_read_tokens`, `cache_write_tokens`), `request_id`, `attempts`, `retries`,
-  `fallback_from` (the model asked for, when a fallback answered), `latency_ms`, `params`,
-  `attempt_log`, `turns_digest` and `row` (the registry row that answered).
+  `tool_call`, `other`; null when the runtime does not say), `refusal`, `family`, and
+  `session`, the row of `matrix.v1.session` that holds the rest: `name` and `model` (the
+  registry name and the provider's id of the model that answered), `backend`, `provider`,
+  `usage` (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`),
+  `request_id`, `attempts`, `retries`, `fallback_from` (the model asked for, when a fallback
+  answered), latency, `params`, `attempt_log`, `turns_digest` and `row` (the registry row
+  that answered).
 - A reply that is not a whole answer (refused, cut at `max_tokens`, withheld, empty) is not
   provided: the step fails with reason `refused` or `failed`, naming the `finish_reason`, and
-  the fix says what to change (`max_tokens` for a cut reply).
+  the fix says what to change (`max_tokens` for a cut reply). The call is still a row of
+  `matrix.v1.session`, under the step's name.
 - With `output`, when a package registered a schema for the kind, the runtime is asked for
   that structure and validates the reply (hardline repairs a reply that does not fit, within
   its bound); the row is the validated value. Without a schema, the reply must be one JSON

@@ -72,6 +72,19 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   `refused` (a refusal, `content_filter`) or `failed`, kind `component`, naming the
   `finish_reason` with a fix for it. A runtime that does not say why its reply ended
   (`finish_reason: null`) is not taken to have cut it.
+- **A reply row keeps the reply; its session's facts move to the session table.** The
+  `AgentResponse` an agent step provides and the `ModelCall` a model step provides keep the
+  reply and what a consumer acts on (`content` or `text`, `transcript`, `tool_calls`, `stop`,
+  `finish_reason`, `refusal`, `family`, the task or prompt as sent) and point at their row of
+  `matrix.v1.session` (`session`); every fact that row holds is `null` on the reply row
+  (`as_reply()`). What a runtime returns, and so what `BoundAgent.run` and a direct
+  `ModelRuntime.call` give a caller, still carries every fact.
+- `AgentResponse.tokens_input`, `tokens_output`, `duration_ms` and `num_turns` default to
+  `None`, where they defaulted to 0: a constant is not a fact.
+- Every run has a `matrix.v1.session` table, as it has a ledger: `Construct.kinds()`, the
+  stores' `tables` and a run directory list it, with no rows when no session ran.
+- The model step needs `model_runtime_entries` (each composed model runtime's registry entry),
+  for its session rows.
 - **The `claude-sdk` runtime's reply is the session's result.** `content` joined every text
   block of every turn and ignored the SDK's `ResultMessage.result`, so an agent that thought
   aloud and then answered in JSON broke its step's `output`. `content` is the result now (empty
@@ -107,6 +120,18 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   `attempt_log` (every backend call, with why each failed), `turns_digest` and `row` (the
   registry row that answered: its digest and the tier that set each field). New names:
   `FinishReason`, `RequestParams`, `CallAttempt`, `RegistryRow`.
+- **The session table, `matrix.v1.session`**: one row per agent session or model call a
+  component runs inside a run, written through the Construct like any row, durably and in
+  ledger order. A row holds the runtime's type URL and what it drives, the model that
+  answered, how it stopped and why its reply ended, usage, the reported cost, the runtime's
+  ids and the OpenTelemetry trace and span the session ended in (`Container.executor()` reads
+  them; matrix mints none), fallback and attempts, and `sent`, a digest of what was sent. A
+  `BoundAgent` and a model step record their own; a component that calls a model runtime
+  itself records with `record_session(call_session(...))`. `LedgerEntry.sessions` names the
+  session rows behind each row: those its component ran since its previous hand-over.
+  `data-model.md` joins a board row to its sessions in DuckDB, and the tests run that query.
+  New names: `Session`, `SESSION`, `digest`, `agent_session`, `call_session`,
+  `record_session`; `BoundAgent(runtime_url=, drives=)`, `Executor(trace=)`.
 - `AgentResponse` gains `transcript`, `cache_read_tokens`, `cache_write_tokens`,
   `finish_reason` and `native_finish_reason` (the SDK's `stop_reason`, read in the model
   call's vocabulary) and `session_id`, which the `claude-sdk` runtime fills.

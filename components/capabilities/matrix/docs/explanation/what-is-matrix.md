@@ -60,7 +60,7 @@ It raises one `CompilationError` listing every problem it found, so a broken set
 components is fixed in one pass rather than one error at a time:
 
 1. every kind is a versioned type URL (`<namespace>.v<N>.<resource>`), and none is
-   `matrix.v1.ledger`, the run's own provenance table;
+   `matrix.v1.ledger` or `matrix.v1.session`, the run's own tables;
 2. every required kind is provided by some component or is a run input;
 3. no kind has two providers, and a run input has none;
 4. no component requires a kind it provides;
@@ -215,6 +215,15 @@ runtime for that structure, which hardline validates and repairs; the row is the
 reply. A reply cut at `max_tokens`, refused, withheld or empty is not provided at all: the step
 fails, saying which. A component downstream takes whatever row it is given as an answer, and
 nothing in the wiring could tell it otherwise.
+
+A reply is a sample, so the record keeps where each one came from. Every agent session and
+model call a component runs inside a run is a row of `matrix.v1.session`: the runtime, the
+model that answered (not the one asked for), why it stopped, its usage, the runtime's ids and
+the OpenTelemetry trace and span it ended in, any fallback and attempt, and a digest of what
+was sent. A step's reply row keeps what a consumer acts on (the reply, how it ended, the
+family) and points at that row; the ledger entry of each row a component hands over names the
+sessions behind it. So a reply is no longer a mix of an answer and its provenance, and a new
+fact about sessions is a field of the session row, not a change to every reply.
 
 ## One registry for every extension
 

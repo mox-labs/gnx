@@ -134,7 +134,13 @@ themselves (readable with `jq` or DuckDB without matrix), and the `writer.lock` 
 holds while it lives. Provenance is one more table,
 the ledger (`matrix.v1.ledger`): which component handed each row over, when, and in what
 order. A ledger entry is written before its row, so a kill can leave an entry with no row but
-never a row nothing accounts for; a reader reports such an entry as torn.
+never a row nothing accounts for; a reader reports such an entry as torn. Every agent session
+and model call a component runs is a row of one more table, `matrix.v1.session`: the
+runtime, the model that answered, why it stopped, usage, ids (the runtime's, and the
+OpenTelemetry trace and span it ended in), fallback and attempts, and a digest of what was
+sent. A step's reply row points at it (`session`), and the ledger entry of every row a
+component hands over names the sessions behind it. `docs/explanation/data-model.md` joins the
+three in DuckDB.
 
 A store that cannot keep the record fails the run (error kind `store`). A value too large to
 be a row (a sample series, a capture) stays where it is and the row carries a
@@ -374,8 +380,9 @@ file that set it, and how many agent sessions and model calls a run makes
 (`agent_calls_min`, `agent_calls_max`, `model_calls_min`, `model_calls_max`). matrix states no cost and keeps no spending ceiling: a run's cost is not
 something it can measure, so it does not pretend to. `run` prints the run id, where the record is, and its
 files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as
-sent, a model step's the prompt), `matrix.v1.ledger.jsonl` and `events.jsonl`. Each reply row keeps its tokens, and the cost
-the runtime reported when it reported one (`cost_usd`), as facts of that session. From
+sent, a model step's the prompt), `matrix.v1.session.jsonl`, `matrix.v1.ledger.jsonl` and
+`events.jsonl`. Each session row keeps its tokens, and the cost the runtime reported when it
+reported one (`cost_usd`), as facts of that session. From
 Python it is `compose(load_config()).run(inputs)`, and
 `plan_config(tool="matrix", config=None, *, only=False)` the plan: the first argument is the
 tool, a path goes in `config`.
@@ -452,7 +459,8 @@ changes only by addition, with a changelog entry, is:
 Every other exported name is public but may still change in a minor release, said in the
 changelog: the extension-author surface (`Entry`, `Extension`, `Failure`, `Loader`,
 `DocumentSource`, `Document`, `BesideFile`, `Accumulate`, `ConstructStore`, `RunWriter`,
-the stores, `Reuse`, the observers' types), the command's document records (`Catalog`,
+the stores, `Reuse`, the observers' types), the session table (`Session`, `SESSION`,
+`digest`, `agent_session`, `call_session`, `record_session`), the command's document records (`Catalog`,
 `Plan`, ...) and telemetry (`configure_telemetry`, `Telemetry`). Names under
 `matrix.domain`, `matrix.adapters` and `matrix.composition` are internal.
 

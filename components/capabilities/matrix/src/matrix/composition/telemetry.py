@@ -165,6 +165,18 @@ class Telemetry:
         self._providers.clear()
 
 
+def current_trace() -> tuple[str, str] | None:
+    """The trace and span ids, as hex, of the OpenTelemetry span current in the calling task,
+    or None when there is none (or no SDK made one): what a session row records. matrix mints
+    no ids; with the API alone every span is invalid, and this is None."""
+    from opentelemetry import trace
+
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return None
+    return trace.format_trace_id(context.trace_id), trace.format_span_id(context.span_id)
+
+
 def configure_telemetry(
     *,
     service_name: str | None = None,
