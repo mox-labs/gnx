@@ -774,7 +774,9 @@ The GenAI semantic conventions as read on 2026-10-19 (repository
   it; each ends with its work, whatever events were dropped. `ctx.emit` opens no span;
 - metrics: `gen_ai.invoke_workflow.duration`, `gen_ai.invoke_agent.duration`,
   `gen_ai.invoke_agent.tool_calls`, `gen_ai.execute_tool.duration`,
-  `gen_ai.client.inference.usage.input_tokens` / `output_tokens`; matrix's own where the
+  `gen_ai.client.inference.usage.input_tokens` / `output_tokens` (agent sessions only: a
+  model call's tokens are counted by the model runtime, hardline, per attempt, and are on the
+  call's session row; nothing is counted twice); matrix's own where the
   conventions have none: `matrix.component.duration`, `matrix.component.count`,
   `matrix.component.retries`, `matrix.agent.cost_usd` (as a runtime reported it),
   `matrix.events.dropped`; and each

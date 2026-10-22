@@ -31,16 +31,17 @@ from matrix import (  # noqa: E402
 from matrix.adapters._out.observers.otel import OtelObserver  # noqa: E402
 
 # Providers of the tests' own, handed to each observer: nothing here installs a global one, so
-# no test depends on which suite ran first in the process.
+# no test depends on which suite ran first in the process. A test that reads metrics gives its
+# observer a reader of its own, so it reads exactly what its run recorded.
 _EXPORTER = InMemorySpanExporter()
 _PROVIDER = TracerProvider()
 _PROVIDER.add_span_processor(SimpleSpanProcessor(_EXPORTER))
-_READER = InMemoryMetricReader()
-_METERS = MeterProvider(metric_readers=[_READER])
+_METERS = MeterProvider(metric_readers=[InMemoryMetricReader()])
 
 
-def _observer() -> OtelObserver:
-    return OtelObserver(tracer_provider=_PROVIDER, meter_provider=_METERS)
+def _observer(reader: InMemoryMetricReader | None = None) -> OtelObserver:
+    meters = _METERS if reader is None else MeterProvider(metric_readers=[reader])
+    return OtelObserver(tracer_provider=_PROVIDER, meter_provider=meters)
 
 
 class Emit:
@@ -63,8 +64,8 @@ class Probe:
         return {"acme.v1.text": "x"}
 
 
-def _points() -> dict[str, list[Any]]:
-    data = _READER.get_metrics_data()
+def _points(reader: InMemoryMetricReader) -> dict[str, list[Any]]:
+    data = reader.get_metrics_data()
     found: dict[str, list[Any]] = {}
     for resource in data.resource_metrics if data else ():
         for scope in resource.scope_metrics:
@@ -194,6 +195,40 @@ async def test_a_model_call_is_a_span_of_its_own_under_its_component() -> None:
         assert called.attributes[key] == value, key
 
 
+class _Counted:
+    """A model runtime that reports usage, as hardline does for each call."""
+
+    def check(self, model: str | None) -> None:
+        return None
+
+    async def call(self, request: Any) -> Any:
+        from matrix import ModelCall, TokenUsage
+
+        usage = TokenUsage(input_tokens=500, output_tokens=20)
+        return ModelCall(text="ok", finish_reason="stop", name="m", usage=usage)
+
+
+async def test_matrix_counts_no_inference_usage_for_a_model_call() -> None:
+    """A model call's tokens are counted once, by the model runtime that made it (hardline
+    counts each attempt): matrix's inference counters and its ``matrix.model`` span carry
+    none of them, so nothing is counted twice (W4.5). The session row still holds them."""
+    from matrix import PROMPT, ModelStep, ModelStepConfig
+
+    reader = InMemoryMetricReader()
+    step = ModelStep(ModelStepConfig(runtime="r"), model_runtimes={"r": _Counted()})
+    _EXPORTER.clear()
+    run = await Executor([_observer(reader)]).run(
+        wire({"ask": step}, inputs=[PROMPT]), {PROMPT: "hi"}
+    )
+    (row,) = run.rows("matrix.v1.session")
+    assert row.usage is not None and row.usage.input_tokens == 500
+    points = _points(reader)
+    assert "gen_ai.client.inference.usage.input_tokens" not in points
+    assert "gen_ai.client.inference.usage.output_tokens" not in points
+    called = {s.name: s for s in _EXPORTER.get_finished_spans()}["matrix.model"]
+    assert not [key for key in called.attributes if key.startswith("gen_ai.usage.")]
+
+
 class _Tracked(SpanProcessor):
     """Remembers every span started and every span ended."""
 
@@ -316,8 +351,9 @@ async def test_a_session_row_names_the_span_of_its_session() -> None:
 
 
 async def test_metrics_come_from_the_events() -> None:
-    await Executor([_observer()]).run(wire({"p": Probe()}))
-    points = _points()
+    reader = InMemoryMetricReader()
+    await Executor([_observer(reader)]).run(wire({"p": Probe()}))
+    points = _points(reader)
 
     def about(name: str, **attributes: Any) -> list[Any]:
         return [
@@ -329,15 +365,17 @@ async def test_metrics_come_from_the_events() -> None:
     (ended,) = about(
         "matrix.component.count", **{"matrix.component": "p", "matrix.status": "completed"}
     )
-    assert ended.value >= 1
-    assert about("matrix.component.duration", **{"matrix.component": "p"})
-    assert about("gen_ai.invoke_workflow.duration", **{"matrix.status": "completed"})
+    assert ended.value == 1
+    (took,) = about("matrix.component.duration", **{"matrix.component": "p"})
+    assert took.count == 1
+    (ran,) = about("gen_ai.invoke_workflow.duration", **{"matrix.status": "completed"})
+    assert ran.count == 1
     (gauge,) = about("acme.rss", host="a")
     assert gauge.value == 7.0 and gauge.attributes["matrix.component"] == "p"
     (counter,) = about("acme.requests")
-    assert counter.value >= 3
+    assert counter.value == 3
     (histogram,) = about("acme.latency")
-    assert histogram.sum >= 0.25
+    assert (histogram.count, histogram.sum) == (1, 0.25)
 
 
 class _Session:
@@ -394,7 +432,8 @@ class _Asks:
 async def test_an_agent_session_is_invoke_agent_and_its_tools_execute_tool() -> None:
     from matrix import AgentDefinition, BoundAgent
 
-    observer = _observer()
+    reader = InMemoryMetricReader()
+    observer = _observer(reader)
     agent = BoundAgent(
         AgentDefinition(name="rev", system_prompt="p", model="claude-x"),
         _Session(),
@@ -422,14 +461,15 @@ async def test_an_agent_session_is_invoke_agent_and_its_tools_execute_tool() -> 
     assert tool.attributes["gen_ai.tool.call.id"] == "toolu_1"
     assert (tool.end_time - tool.start_time) == 2_000_000_000  # timed as the runtime saw it
 
-    points = _points()
-    assert any(
-        p.attributes.get("gen_ai.agent.name") == "rev"
-        for p in points["gen_ai.invoke_agent.duration"]
-    )
-    tokens = points["gen_ai.client.inference.usage.input_tokens"]
-    assert any(p.attributes.get("gen_ai.provider.name") == "anthropic" for p in tokens)
-    assert points["gen_ai.execute_tool.duration"]
+    points = _points(reader)
+    (took,) = points["gen_ai.invoke_agent.duration"]
+    assert (took.count, took.attributes["gen_ai.agent.name"]) == (1, "rev")
+    (tokens_in,) = points["gen_ai.client.inference.usage.input_tokens"]
+    (tokens_out,) = points["gen_ai.client.inference.usage.output_tokens"]
+    assert (tokens_in.value, tokens_out.value) == (40, 9)
+    assert tokens_in.attributes["gen_ai.provider.name"] == "anthropic"
+    (tool_took,) = points["gen_ai.execute_tool.duration"]
+    assert tool_took.count == 1 and tool_took.sum == 2.0
 
 
 class _Cached:
@@ -451,12 +491,12 @@ async def test_input_tokens_are_counted_once_with_the_cache_inside_them() -> Non
     do; the counter adds it as it stands and never adds the cache counts again."""
     from matrix import AgentDefinition, BoundAgent
 
-    observer = _observer()
+    reader = InMemoryMetricReader()
+    observer = _observer(reader)
     agent = BoundAgent(AgentDefinition(name="cached"), _Cached(), observers=[observer])
     _EXPORTER.clear()
     await Executor([observer]).run(wire({"ask": _Asks(agent)}))
-    tokens = _points()["gen_ai.client.inference.usage.input_tokens"]
-    (counted,) = [p for p in tokens if p.attributes.get("gen_ai.agent.name") == "cached"]
+    (counted,) = _points(reader)["gen_ai.client.inference.usage.input_tokens"]
     assert counted.value == 100
     invoked = {s.name: s for s in _EXPORTER.get_finished_spans()}["invoke_agent cached"]
     assert invoked.attributes["gen_ai.usage.input_tokens"] == 100

@@ -1148,13 +1148,21 @@ saw. The conventions' names where they define one:
 | `gen_ai.invoke_agent.duration` | histogram, s | `gen_ai.agent.name`, `gen_ai.provider.name`, `gen_ai.response.model`, `error.type` |
 | `gen_ai.invoke_agent.tool_calls` | histogram, `{tool_call}` | `gen_ai.agent.name`, ... |
 | `gen_ai.execute_tool.duration` | histogram, s | `gen_ai.tool.name`, `gen_ai.agent.name`, `error.type` |
-| `gen_ai.client.inference.usage.input_tokens`, `..._output_tokens` | counter, `{token}` | `gen_ai.agent.name`, `gen_ai.provider.name`, `gen_ai.response.model`, `gen_ai.token.modality=unknown` (a session's total mixes whatever it exchanged) |
+| `gen_ai.client.inference.usage.input_tokens`, `..._output_tokens` | counter, `{token}` | `gen_ai.agent.name`, `gen_ai.provider.name`, `gen_ai.response.model`, `gen_ai.token.modality=unknown` (a session's total mixes whatever it exchanged). Agent sessions only: see below |
 
 and matrix's own where they define none: `matrix.component.duration` (histogram, s),
 `matrix.component.count`, `matrix.component.retries`, `matrix.agent.cost_usd` (USD, as runtimes reported it),
 `matrix.events.dropped`, each by `matrix.component` and `matrix.status` where they apply;
 and the name given to each `ctx.measure`, of the measure's kind, with its scalar `attrs` and
 `matrix.component`.
+
+**One owner per token.** matrix's inference counters count agent sessions only, whose tokens
+no model runtime's call carries. A model call's tokens are counted by the model runtime that
+made it (hardline counts each attempt, on the same instruments), never by matrix: the call's
+session row holds them, and the `matrix.model` span carries no usage. So nothing is counted
+twice. The case this does not cover is an agent runtime whose model calls go through hardline
+itself: none does yet, and one that does must leave its session's tokens off the response it
+reports, or be counted twice.
 
 ### `configure_telemetry` and the `OTEL_*` variables
 

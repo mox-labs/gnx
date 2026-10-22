@@ -23,6 +23,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Changed (breaking)
 
+- **One owner per token.** matrix's `gen_ai.client.inference.usage.*` counters count agent
+  sessions only. A model call's tokens are counted by the model runtime that made it
+  (hardline counts each attempt) and kept on the call's session row; the `matrix.model` span
+  carries no usage. A dashboard that summed matrix's counters for model steps reads them
+  from hardline's now.
 - **Agent runtimes and model runtimes are two ports.** An agent session (a loop, tools,
   turns) and one model call had shared one port, one registry point and one reply, and the
   model runtime filled `num_turns=1` and `stop: completed` with constants. Now:

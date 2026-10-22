@@ -45,6 +45,14 @@ exporter saw. The conventions' names where they define one: ``gen_ai.invoke_work
 ``gen_ai.execute_tool.duration`` (histograms, s and ``{tool_call}``), and
 ``gen_ai.client.inference.usage.input_tokens`` / ``output_tokens`` (counters, ``{token}``,
 ``gen_ai.token.modality: unknown``, since a session's total mixes whatever it exchanged).
+
+**One owner per token.** These counters count agent sessions only, whose tokens no model
+runtime's call carries. A model call's tokens are counted by the model runtime that made it
+(hardline counts each attempt, on the same instruments), never here: matrix keeps them on the
+call's session row, and its ``matrix.model`` span carries no usage. So nothing is counted
+twice. The case this does not cover is an agent runtime whose model calls go through hardline
+itself: none does yet, and one that does must leave its session's tokens off the response it
+reports, or be counted twice.
 matrix's own where they define none: ``matrix.component.duration``,
 ``matrix.component.count``, ``matrix.component.retries``, ``matrix.agent.cost_usd`` and
 ``matrix.events.dropped``; and every ``ctx.measure`` as an instrument of its own name.
