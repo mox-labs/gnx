@@ -6,7 +6,11 @@
 
 - **HTTP goes through httpx2**, Pydantic's maintained continuation of httpx, in place of httpx. Redirects, timeouts and the credential rule for a redirect behave as they did. TLS is verified against the operating system's trust store (httpx2's default, through `truststore`) rather than certifi's bundle. A request span's `error.type` for a client exception is `httpx2.<class>` (`httpx2.ConnectError`).
 
+- **The OpenTelemetry SDK and its OTLP exporters are installed with recon**; the `otel` extra is gone. The `OTEL_*` variables are enough to export, with nothing else to install. The library still installs no provider: a program that imports recon configures OpenTelemetry itself, or calls `recon.configure_telemetry()`.
+
 ### Fixed
+
+- **Telemetry is exported signal by signal.** Any export variable installed both providers, so a traces endpoint alone also sent metrics to the default endpoint, which logged failures; and only the tracer provider was checked, so a program that installed its own tracer provider got no metrics from recon, and one with its own meter provider had recon try to replace it. A signal is now exported when the shared endpoint, its own endpoint or its exporter asks for it, and only when the program has installed no provider for it.
 
 - **A rate limit or timeout that cannot be kept is a plan problem.** `rate_limit: {rps: 0}` divided by zero on the fourth request and failed the table as `unknown`; `burst: 0` waited forever for a token; a timeout of 0 or less was accepted. `rps` and `timeout` must be above 0 and `burst` at least 1.
 - **A retry draws a rate-limit token, and its wait is on recon's clock.** The token was drawn once per request, before its retries, so a source answering 5xx was sent to three times for one token; the backoff slept on the real clock, out of reach of a test clock and of any bound recon sets.

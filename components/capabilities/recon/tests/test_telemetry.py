@@ -304,10 +304,10 @@ def test_without_the_variables_nothing_is_installed_and_nothing_is_warned() -> N
 def test_the_variables_without_the_sdk_are_a_warning_in_the_json_document(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def missing(env: Any, version: str) -> Any:
+    def missing(env: Any, version: str, signals: Any) -> Any:
         raise ImportError("No module named 'opentelemetry.sdk'", name="opentelemetry.sdk")
 
-    monkeypatch.setattr(otel_telemetry, "_provider_installed", lambda: False)
+    _installs(monkeypatch)
     monkeypatch.setattr(otel_telemetry, "_install", missing)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
     config = project / ".recon" / "m" / "config.yaml"
@@ -320,7 +320,7 @@ def test_the_variables_without_the_sdk_are_a_warning_in_the_json_document(
         [warning] = json.loads(result.stdout)["warnings"]
         assert warning["kind"] == "otel_unavailable"
         assert warning["got"] == "OTEL_EXPORTER_OTLP_ENDPOINT"
-        assert "recon[otel]" in warning["fix"]
+        assert "reinstall recon" in warning["fix"]
     query = json.loads(_invoke("query", "m", "SELECT 1 AS one", "--json").stdout)
     assert [w["kind"] for w in query["warnings"]] == ["otel_unavailable"]
 
@@ -328,9 +328,9 @@ def test_the_variables_without_the_sdk_are_a_warning_in_the_json_document(
 def _spy_on_install(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Record every SDK install ``export_from_env`` would make, and make none."""
     installed: list[str] = []
-    monkeypatch.setattr(otel_telemetry, "_provider_installed", lambda: False)
+    _installs(monkeypatch)
 
-    def install(env: Any, version: str) -> list[Any]:
+    def install(env: Any, version: str, signals: Any) -> list[Any]:
         installed.extend(name for name in otel_telemetry.EXPORT_VARIABLES if env.get(name))
         return []
 
@@ -470,12 +470,7 @@ def test_a_failure_exports_no_command_and_no_credential_in_a_url(
 
 
 def test_an_unsupported_exporter_is_a_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    installed: list[str] = []
-    from opentelemetry import metrics, trace
-
-    monkeypatch.setattr(otel_telemetry, "_provider_installed", lambda: False)
-    monkeypatch.setattr(trace, "set_tracer_provider", lambda p: installed.append("traces"))
-    monkeypatch.setattr(metrics, "set_meter_provider", lambda p: installed.append("metrics"))
+    installed = _installs(monkeypatch)
     env = {"OTEL_TRACES_EXPORTER": "zipkin", "OTEL_METRICS_EXPORTER": "none"}
     [warning] = export_from_env(env, "9.9")
     assert warning.kind == "otel_unavailable" and warning.got == "zipkin"
@@ -483,10 +478,58 @@ def test_an_unsupported_exporter_is_a_warning(monkeypatch: pytest.MonkeyPatch) -
     assert installed == ["traces"]
 
 
-def test_the_otel_extra_is_declared() -> None:
-    """``pip install 'recon[otel]'`` is what the warning tells a person to run."""
+def test_the_sdk_and_the_exporters_are_installed_with_recon() -> None:
+    """The command line is an application, and an application carries the SDK and OTLP: the
+    ``OTEL_*`` variables are enough, with no extra to install first (owner's rulings Q4,
+    Q13). The library still writes through the API alone."""
     from importlib.metadata import requires
 
-    extras = [r for r in requires("recon") or [] if "extra == 'otel'" in r]
-    assert any(r.startswith("opentelemetry-sdk") for r in extras)
-    assert any(r.startswith("opentelemetry-exporter-otlp") for r in extras)
+    plain = [r for r in requires("recon") or [] if "extra ==" not in r]
+    assert any(r.startswith("opentelemetry-api") for r in plain)
+    assert any(r.startswith("opentelemetry-sdk") for r in plain)
+    assert any(r.startswith("opentelemetry-exporter-otlp") for r in plain)
+
+
+def _installs(monkeypatch: pytest.MonkeyPatch, *, tracer: Any = None, meter: Any = None) -> list:
+    """Spy on the providers ``export_from_env`` sets, by signal, and set none. ``tracer`` and
+    ``meter`` are the ones the program installed already; None is none, the API's default."""
+    from opentelemetry import metrics, trace
+    from opentelemetry.metrics._internal import _ProxyMeterProvider
+
+    installed: list[str] = []
+    default_tracer, default_meter = trace.ProxyTracerProvider(), _ProxyMeterProvider()
+    monkeypatch.setattr(trace, "get_tracer_provider", lambda: tracer or default_tracer)
+    monkeypatch.setattr(metrics, "get_meter_provider", lambda: meter or default_meter)
+    monkeypatch.setattr(trace, "set_tracer_provider", lambda p: installed.append("traces"))
+    monkeypatch.setattr(metrics, "set_meter_provider", lambda p: installed.append("metrics"))
+    return installed
+
+
+def test_a_signal_with_its_own_endpoint_alone_exports_that_signal_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: any export variable installed both providers, so a traces endpoint alone
+    also sent metrics to the default endpoint, which nothing listened on."""
+    installed = _installs(monkeypatch)
+    env = {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:4318"}
+    assert export_from_env(env, "9.9") == []
+    assert installed == ["traces"]
+
+
+def test_a_provider_the_program_installed_is_kept_signal_by_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: only the tracer provider was looked at, so a program that installed its
+    own tracer provider got no metrics from recon, and one that installed its own meter
+    provider had recon try to replace it."""
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.trace import TracerProvider
+
+    env = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318"}
+    installed = _installs(monkeypatch, tracer=TracerProvider())
+    assert export_from_env(env, "9.9") == []
+    assert installed == ["metrics"]
+
+    installed = _installs(monkeypatch, meter=MeterProvider())
+    assert export_from_env(env, "9.9") == []
+    assert installed == ["traces"]

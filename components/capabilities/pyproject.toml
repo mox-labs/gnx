@@ -37,7 +37,7 @@ dev = [
     # member brings the SDK in.
     "matrix[claude]",
     "ix",
-    "recon[otel]",
+    "recon",
     "gnx",
     "dao",
     "hardline",

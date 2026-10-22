@@ -36,15 +36,17 @@ dependencies = [
     "pytz>=2024.1",
     "tenacity>=9.0",
     "markitdown[all]>=0.1.0",
-    # The API only: with no SDK installed every span and measurement is a no-op.
+    # The library writes through the API alone, a no-op until an application installs an
+    # SDK. The `recon` command is such an application: it carries the SDK and the OTLP
+    # exporters (http/protobuf and grpc), so the OTEL_* variables are enough to export.
+    # They are imported only when a variable asks for an export.
     "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp>=1.27",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-# The SDK and the OTLP exporters (http/protobuf and grpc), so that the OTEL_* variables are
-# enough to export recon's spans and metrics.
-otel = ["opentelemetry-sdk>=1.27", "opentelemetry-exporter-otlp>=1.27"]
 
 [project.urls]
 Repository = "https://github.com/mox-labs/gnx"

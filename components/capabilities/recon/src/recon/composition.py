@@ -286,6 +286,6 @@ def root(env: Mapping[str, str] | None = None, *, project: Path | None = None) -
 
 def configure_telemetry(env: Mapping[str, str] | None = None) -> list[Problem]:
     """For an application: install OpenTelemetry's SDK from the ``OTEL_*`` variables in
-    ``env`` (default: the process environment) when they ask to export and nothing is
-    installed yet; return warnings for what they ask and cannot get."""
+    ``env`` (default: the process environment), for each signal they ask for whose provider
+    is not installed yet; return warnings for what they ask and cannot get."""
     return export_from_env(os.environ if env is None else env, __version__)
