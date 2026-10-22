@@ -195,6 +195,7 @@ def prepare(
             design=design.document(),
             probes=[probe.document() for probe in probes.probes],
             probes_digest=probes.digest,
+            contents=frozen.contents,
             registration=None if stored is None else stored.document(),
             deviations=changed,
             gated=stored is not None and not exploratory and not changed,

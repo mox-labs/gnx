@@ -62,6 +62,7 @@ from ix.domain.ports import (
     Surroundings,
     Traced,
 )
+from ix.domain.provenance import Content, Provenance, RuntimeOrigin
 from ix.domain.registration import Amendment, Deviation, Registration
 from ix.domain.report import RunSummary, TrialCounts
 from ix.domain.run import (
@@ -84,6 +85,7 @@ __all__ = [
     "CalibrationCheck",
     "Confusion",
     "ConfusionTable",
+    "Content",
     "Decision",
     "Deviation",
     "Duration",
@@ -117,6 +119,7 @@ __all__ = [
     "ProbeConfig",
     "ProbeFile",
     "ProbeScreen",
+    "Provenance",
     "Reading",
     "Registration",
     "RegistrationStatus",
@@ -125,6 +128,7 @@ __all__ = [
     "Role",
     "RoleAssignment",
     "RunSummary",
+    "RuntimeOrigin",
     "Scope",
     "SelectedSensor",
     "Sensed",

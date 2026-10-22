@@ -22,6 +22,7 @@ from pydantic import Field, model_validator
 from ix.domain import schema
 from ix.domain.experiment import Experiment, Level, ProbeSet, Shape, cells
 from ix.domain.problem import Problem
+from ix.domain.provenance import Content, Provenance
 from ix.domain.registration import Deviation
 from ix.domain.schema import Stored
 
@@ -209,6 +210,12 @@ class RunManifest(Stored):
     #: The probes as resolved when the run started.
     probes: list[dict[str, Any]] = []
     probes_digest: str = ""
+    #: The digest of each file and folder the subjects and sensors name, as the run found
+    #: them when it started: what was tested. Paths and digests, never what the files hold.
+    contents: tuple[Content, ...] = ()
+    #: Where the run ran from: the commit, and the versions of what ran it. None in a
+    #: manifest an earlier ix wrote.
+    provenance: Provenance | None = None
     #: The registration the run is held to, as it stood when the run started; None for an
     #: exploratory run of an unregistered experiment.
     registration: dict[str, Any] | None = None

@@ -593,6 +593,15 @@ def _print_outcome(report: ix.Report) -> None:
             "Deviations",
             *(deviation.text() for deviation in report.deviations),
         )
+    if report.contents:
+        _field(
+            "Contents",
+            *(f"{c.label}  {c.digest[:12] or 'nothing there'}" for c in report.contents),
+        )
+    if report.provenance is not None:
+        _field("Ran from", report.provenance.checkout())
+        versions = report.provenance.versions
+        _field("Versions", ", ".join(f"{name} {found}" for name, found in versions.items()))
     out.print()
 
 
@@ -930,8 +939,8 @@ def runs(path: str | None, as_json: bool) -> None:
     PATH is the experiment file or its directory; without it, every experiment's runs under
     the current directory. Each line is a run: its id, when it started, whether it was held
     to a registration (gated), exploratory or a dry run, how it ended, its verdict (or the
-    indication of a run that gives none), its trials and what it spent. Each run is a
-    directory: pass it to `ix report`.
+    indication of a run that gives none), its trials and the commit it ran from. Each run is
+    a directory: pass it to `ix report`.
     """
     try:
         found = ix.runs(path)
@@ -952,9 +961,14 @@ def runs(path: str | None, as_json: bool) -> None:
             outcome = f"indication {item.indication}"
         else:
             outcome = "the harness, not the agent" if item.mode == "dry" else "no verdict"
+        checkout = (
+            f"commit {item.commit[:12]}{' (dirty)' if item.dirty else ''}"
+            if item.commit
+            else "no commit"
+        )
         out.print(
-            f"  {escape(item.run)}  {escape(item.started_at)}  {item.mode}  {item.status}  "
-            f"{outcome}  {item.carried_out}/{item.planned} trials",
+            f"  {escape(item.run)}  {escape(item.started_at)}  {checkout}  {item.mode}  "
+            f"{item.status}  {outcome}  {item.carried_out}/{item.planned} trials",
             soft_wrap=True,
             highlight=False,
         )

@@ -8,8 +8,11 @@ registered as a third party would register one: nothing here calls a model.
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import json
+import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -334,6 +337,225 @@ class TestTheHarnessCannotHideTheAgent:
         }
         (problem,) = found.problems
         assert "default" in problem.allowed and "permission_mode" not in problem.allowed
+
+
+DEFINITION = """---
+name: reviewer
+tools: [Read, Skill]
+---
+You review diffs before they are merged.
+"""
+
+MOUNTING = "acme.v1.agent-runtime.mounting"
+
+
+class MountingConfig(BaseModel):
+    """A third party's agent runtime that mounts plugins, as claude-sdk does."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    plugins: tuple[dict[str, Any], ...] = ()
+
+
+def _mounting() -> matrix.Registry:
+    registry = _registry(_fires())
+
+    def build(config: MountingConfig) -> Scripted:
+        runtime = Scripted()
+        runtime.answer = _fires()
+        return runtime
+
+    registry.register("agent-runtime", MOUNTING, build, config=MountingConfig)
+    return registry
+
+
+def _subject_lab(tmp_path: Path) -> Path:
+    """The skill lab with everything a subject can be made of: a skill, a plugin found by a
+    ``*``, a fixture and an agent definition, each a file beside the experiment."""
+    lab = _skill_lab(
+        tmp_path,
+        runtime=MOUNTING,
+        plugins=["plugins/*"],
+        fixtures=["fixtures/diff.patch"],
+        definition="agents/reviewer.md",
+    )
+    (lab / "plugins" / "lint").mkdir(parents=True)
+    (lab / "plugins" / "lint" / "plugin.json").write_text('{"name": "lint"}\n')
+    (lab / "fixtures").mkdir()
+    (lab / "fixtures" / "diff.patch").write_text("- total = a\n+ total = a + b\n")
+    (lab / "agents").mkdir()
+    (lab / "agents" / "reviewer.md").write_text(DEFINITION)
+    return lab
+
+
+def _git(lab: Path, *arguments: str) -> str:
+    done = subprocess.run(
+        ["git", "-C", str(lab), *arguments], capture_output=True, text=True, check=True
+    )
+    return done.stdout.strip()
+
+
+def _committed(lab: Path) -> str:
+    """``lab`` as a git repository with everything in it but its runs committed: the
+    commit."""
+    (lab / ".gitignore").write_text(".ix/\n")
+    _git(lab, "init", "--quiet")
+    _git(lab, "add", ".")
+    _git(lab, "-c", "user.name=ix", "-c", "user.email=ix@example.invalid",
+         "commit", "--quiet", "-m", "the lab")  # fmt: skip
+    return _git(lab, "rev-parse", "HEAD")
+
+
+class TestAVerdictIsTiedToWhatItJudged:
+    """Regression (W3.6): the experiment's digest covered its document, which names the
+    skills, plugins, fixtures and agent definition by path. Nothing hashed what was at
+    those paths, so a registered run whose skill had been edited since was still gated, and
+    no record said which skill, commit or versions a verdict was about."""
+
+    @pytest.mark.parametrize(
+        ("edited", "field", "message"),
+        [
+            ("skills/review/SKILL.md", "subjects.agent.skills[skills/review]",
+             "skill review changed after registration"),
+            ("plugins/lint/plugin.json", "subjects.agent.plugins[plugins/lint]",
+             "plugin lint changed after registration"),
+            ("fixtures/diff.patch", "subjects.agent.fixtures[fixtures/diff.patch]",
+             "fixture diff.patch changed after registration"),
+            ("agents/reviewer.md", "subjects.agent.definition[agents/reviewer.md]",
+             "definition reviewer.md changed after registration"),
+        ],
+    )  # fmt: skip
+    def test_a_subject_edited_after_registration_is_a_deviation_and_its_run_is_not_gated(
+        self, tmp_path: Path, edited: str, field: str, message: str
+    ) -> None:
+        root = Root(registry=_mounting(), settings=_settings())
+        lab = _subject_lab(tmp_path)
+        root.register(lab)
+        with (lab / edited).open("a") as file:
+            file.write("\nOne more line.\n")
+        (deviation,) = root.deviations(lab).deviations
+        assert (deviation.field, deviation.message) == (field, message)
+        assert deviation.registered and deviation.current
+        assert deviation.registered != deviation.current
+        report = root.run(lab)
+        assert report.status == "completed" and report.gated is False
+        assert report.verdict is None and report.indication is not None
+        assert [(d.field, d.message) for d in report.deviations] == [(field, message)]
+        assert report.exit_code == ix.EXIT_CODES["deviations"]
+
+    def test_an_unchanged_subject_runs_gated_and_its_digests_are_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        root = Root(registry=_mounting(), settings=_settings())
+        lab = _subject_lab(tmp_path)
+        frozen = root.register(lab).registration
+        report = root.run(lab)
+        assert report.gated is True and report.deviations == ()
+        assert [(c.field, c.label) for c in report.contents] == [
+            ("subjects.agent.definition[agents/reviewer.md]", "definition reviewer.md"),
+            ("subjects.agent.plugins[plugins/lint]", "plugin lint"),
+            ("subjects.agent.skills[skills/review]", "skill review"),
+            ("subjects.agent.fixtures[fixtures/diff.patch]", "fixture diff.patch"),
+        ]
+        assert [c.digest for c in report.contents] == [c.digest for c in frozen.contents]
+        assert all(len(c.digest) == 64 for c in report.contents)
+        (manifest,) = _rows(report, "ix.v1.run")
+        assert [c["digest"] for c in manifest["contents"]] == [c.digest for c in frozen.contents]
+        # Paths and digests are recorded; what the files hold is not.
+        registration = (lab / "experiment.registration.json").read_text()
+        for written in (registration, json.dumps(manifest)):
+            assert "Read the diff and say what is wrong" not in written
+            assert "You review diffs" not in written and "total = a + b" not in written
+
+    def test_a_folder_is_its_files_and_their_paths_not_their_times(self, tmp_path: Path) -> None:
+        root = Root(registry=_mounting(), settings=_settings())
+        lab = _subject_lab(tmp_path)
+        root.register(lab)
+        skill = lab / "skills" / "review"
+        os.utime(skill / "SKILL.md", (0, 0))
+        (skill / "__pycache__").mkdir()
+        (skill / "__pycache__" / "x.pyc").write_bytes(b"\0")
+        assert root.deviations(lab).deviations == ()
+        (skill / "SKILL.md").rename(skill / "README.md")
+        (deviation,) = root.deviations(lab).deviations
+        assert deviation.message == "skill review changed after registration"
+        shutil.rmtree(skill)
+        (deviation,) = root.deviations(lab).deviations
+        assert (deviation.message, deviation.current) == (
+            "skill review was deleted after registration", None,
+        )  # fmt: skip
+
+    def test_a_plugin_that_a_star_newly_matches_is_a_deviation(self, tmp_path: Path) -> None:
+        root = Root(registry=_mounting(), settings=_settings())
+        lab = _subject_lab(tmp_path)
+        root.register(lab)
+        (lab / "plugins" / "format").mkdir()
+        (deviation,) = root.deviations(lab).deviations
+        assert (deviation.field, deviation.message) == (
+            "subjects.agent.plugins[plugins/format]",
+            "plugin format was added to the experiment after registration",
+        )
+
+    def test_a_sensors_file_edited_after_registration_is_a_deviation(self, tmp_path: Path) -> None:
+        lab = tmp_path / "harness-integrity"
+        shutil.copytree(EXAMPLE, lab)
+        root = Root(settings=_settings())
+        root.register(lab)
+        with (lab / "graders.py").open("a") as file:
+            file.write("\n# graded more kindly\n")
+        (deviation,) = root.deviations(lab).deviations
+        assert (deviation.field, deviation.message) == (
+            "sensors.0.graders[graders.py]", "graders graders.py changed after registration",
+        )  # fmt: skip
+
+    def test_the_run_records_its_commit_and_the_versions_that_ran_it(self, tmp_path: Path) -> None:
+        root = Root(registry=_mounting(), settings=_settings())
+        lab = _subject_lab(tmp_path)
+        outside = root.run(lab, exploratory=True).provenance
+        assert outside is not None
+        assert (outside.commit, outside.no_commit) == ("", "not a repository")
+        commit = _committed(lab)
+        clean = root.run(lab, exploratory=True).provenance
+        assert clean is not None and (clean.commit, clean.dirty) == (commit, False)
+        (lab / "fixtures" / "diff.patch").write_text("changed\n")
+        dirty = root.run(lab, exploratory=True).provenance
+        assert dirty is not None and (dirty.commit, dirty.dirty) == (commit, True)
+        assert dirty.checkout() == f"commit {commit[:12]} (dirty)"
+        assert set(dirty.versions) == {"ix", "matrix", "hardline"}
+        assert dirty.versions["matrix"] == importlib.metadata.version("matrix")
+        assert MOUNTING in {runtime.type_url for runtime in dirty.runtimes}
+
+    def test_a_runtime_is_recorded_with_the_distribution_that_registered_it(
+        self, tmp_path: Path
+    ) -> None:
+        lab = tmp_path / "harness-integrity"
+        shutil.copytree(EXAMPLE, lab)
+        provenance = Root(settings=_settings()).run(lab, exploratory=True).provenance
+        assert provenance is not None
+        mock = next(r for r in provenance.runtimes if r.type_url == "matrix.v1.agent-runtime.mock")
+        assert (mock.distribution, mock.version) == ("matrix", importlib.metadata.version("matrix"))
+
+    def test_report_and_runs_show_the_subjects_digests_and_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import ix.composition
+
+        root = Root(registry=_mounting(), settings=_settings())
+        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        lab = _subject_lab(tmp_path)
+        commit = _committed(lab)
+        report = root.run(lab, exploratory=True)
+        runner = CliRunner(env={"COLUMNS": "200"})
+        text = runner.invoke(main, ["report", str(lab)]).stdout
+        assert f"commit {commit[:12]}" in text
+        for content in report.contents:
+            assert f"{content.label}  {content.digest[:12]}" in text
+        document = json.loads(runner.invoke(main, ["report", str(lab), "--json"]).stdout)
+        assert document["provenance"]["commit"] == commit
+        assert [c["digest"] for c in document["contents"]] == [c.digest for c in report.contents]
+        assert f"commit {commit[:12]}" in runner.invoke(main, ["runs", str(lab)]).stdout
+        (listed,) = json.loads(runner.invoke(main, ["runs", str(lab), "--json"]).stdout)["runs"]
+        assert (listed["commit"], listed["dirty"]) == (commit, False)
 
 
 class Oneshot:

@@ -1,8 +1,9 @@
 """The use cases of the experiment model: examine, validate, plan, register, deviations.
 
 Each takes data: an experiment (or the data it should be), the probes read from its folder
-when it writes none inline, the genres and kinds it may name, and what a stored registration
-held. Reading and writing files is the composition root's work. Nothing starts a subject,
+when it writes none inline, the digests of the files its subjects and sensors name, the
+genres and kinds it may name, and what a stored registration held. Reading and writing files
+is the composition root's work. Nothing starts a subject,
 applies a probe or calls a model.
 """
 
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from ix.domain.design import Design
     from ix.domain.genre import Genre, Genres
     from ix.domain.kind import Kinds
+    from ix.domain.provenance import Content
     from ix.domain.run import RunRecord
 
 
@@ -76,6 +78,9 @@ class Examined:
     warnings: tuple[Problem, ...] = ()
     #: False when the file did not load, so the later checks never ran.
     complete: bool = True
+    #: What each file and folder its subjects and sensors name held, when the caller read
+    #: them (:func:`~ix.domain.provenance.named_files` lists them): frozen at registration.
+    contents: tuple[Content, ...] = ()
 
     @property
     def name(self) -> str:
@@ -279,6 +284,7 @@ def standing(
         checked.design,
         checked.probes,
         plan_digest=made.digest,
+        contents=examined.contents,
         registered_at=now,
         ix_version=version,
     )
