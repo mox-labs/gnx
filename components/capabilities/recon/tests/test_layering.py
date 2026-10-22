@@ -71,8 +71,13 @@ PURE_STDLIB = frozenset(
 )
 
 #: What a layer may import beyond that. The application hashes the config it ran and encodes
-#: a hook payload as JSON; the domain does neither.
-LAYER_STDLIB = {"domain": frozenset(), "application": frozenset({"hashlib", "json"})}
+#: a hook payload as JSON; the domain does neither. The domain reads ``threading.TIMEOUT_MAX``,
+#: the longest wait the platform's timers take, to hold a source's ``timeout`` and rate to it
+#: (``domain/clock.py``); it starts no thread.
+LAYER_STDLIB = {
+    "domain": frozenset({"threading"}),
+    "application": frozenset({"hashlib", "json"}),
+}
 
 #: Third-party packages an inner layer may import.
 THIRD_PARTY = frozenset({"pydantic"})

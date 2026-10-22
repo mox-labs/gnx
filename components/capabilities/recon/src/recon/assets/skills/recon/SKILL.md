@@ -96,7 +96,7 @@ Act on the exit code, then on the error's `fix`:
 | 2 | `usage` | a bad command, flag or argument | correct the command; `recon <command> --help` lists its arguments |
 | 3 | `config` | the mission config or another input is invalid | fix each problem at its `path` as its `fix` says, then plan again; when `complete` is false, more problems may follow the fix |
 | 4 | `not_found` | no such mission, archive or template | run the command the error's `fix` names |
-| 5 | `transient` | every failed table failed transiently (HTTP 429, 5xx, network, a deadline); the archive is kept, marked incomplete | raise a `deadline:` a table's error names (a retry fails the same way); else survey again later |
+| 5 | `transient` | every failed table failed transiently (HTTP 429, 5xx, network, a deadline); the archive is kept, marked incomplete | if a table's error names a `deadline:` or `timeout:`, raise it (a retry fails too); else survey again later |
 | 6 | `auth` | a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete | set the variable the failing source's auth.env names to a valid key, then survey again |
 | 7 | `conflict` | init, or survey -c, would overwrite a different mission config | add --replace to overwrite it, or choose another mission name |
 | 8 | `run_failed` | a table failed, and not only on credentials or transiently, or the archive could not be finished; the archive is kept, marked incomplete | read each failed table's error, or the archive_unfinished warning, and fix its cause, then plan and survey again |

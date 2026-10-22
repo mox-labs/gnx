@@ -38,7 +38,7 @@ is one ``recon.mcp.call`` client span that names the method, the tool and the so
 nothing the call carried. FastMCP's own spans are suppressed, since a failed one carries the
 tool's error text; the SDK's, which carry the method and a request id, nest under recon's.
 With ``preserve_raw``, each result is captured whole (kind ``mcp``), every credential value
-the source resolved replaced.
+the source resolved replaced in it and in its request (:func:`redact_credentials`).
 
 Why a thread: the client is async and recon is not. One event loop runs on a thread of its
 own while the collector lives; each call is handed to it, in the caller's context (so spans
@@ -225,12 +225,12 @@ class McpCollector:
                 collector=entry.name,
                 source=source.name,
                 kind="mcp",
-                request={"server": server.named, **request},
+                request=redact_credentials({"server": server.named, **request}, server.secrets),
                 status=None,
                 content_type="application/json",
                 headers={},
-                body=redact_credentials(
-                    json.dumps(raw, ensure_ascii=False), server.secrets
+                body=json.dumps(
+                    redact_credentials(raw, server.secrets), ensure_ascii=False
                 ).encode(),
             )
         if settings.tool is not None:

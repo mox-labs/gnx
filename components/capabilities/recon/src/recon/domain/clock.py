@@ -8,10 +8,16 @@ twice.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+import threading
+from typing import TYPE_CHECKING, Final, Protocol
 
 if TYPE_CHECKING:
     from datetime import datetime
+
+#: The longest wait, in seconds, this platform's timers take: a socket's timeout, a sleep and
+#: a thread's wait each refuse a longer one (``OverflowError``). A source's ``timeout`` and
+#: its rate limit's longest wait for a token are held to it when the mission is planned.
+LONGEST_WAIT: Final = threading.TIMEOUT_MAX
 
 
 class Clock(Protocol):

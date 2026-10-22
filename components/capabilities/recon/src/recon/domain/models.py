@@ -17,6 +17,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from recon.domain.clock import LONGEST_WAIT
+from recon.domain.ratelimit import wait_for_token
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL, type_url_problem
 
 #: The largest response body a source may return unless its entry says otherwise. Large
@@ -51,12 +53,24 @@ class AuthConfig(BaseModel):
 class RateLimitConfig(BaseModel):
     """Per-source rate limiting via token bucket: ``rps`` tokens a second, at most ``burst``
     held. Each is positive: a bucket that never refills, or holds no token, never lets a
-    request go. ``rps`` is finite: no rate is written ``.inf``."""
+    request go. ``rps`` is finite (no rate is written ``.inf``), and an empty bucket's wait
+    for a token, ``1 / rps``, is one the clock can sleep (:data:`LONGEST_WAIT`)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     rps: float = Field(default=10.0, gt=0, allow_inf_nan=False)
     burst: int = Field(default=3, ge=1)
+
+    @field_validator("rps")
+    @classmethod
+    def _a_wait_the_clock_can_sleep(cls, value: float) -> float:
+        wait = wait_for_token(0.0, value)
+        if wait > LONGEST_WAIT:
+            raise ValueError(
+                f"a wait for a token of 1/rps = {wait:g}s is longer than this platform's "
+                f"timers take ({LONGEST_WAIT:g}s): raise rps"
+            )
+        return value
 
 
 # --- Source Entry ---
@@ -82,7 +96,8 @@ class SourceEntry(BaseModel):
     content-encoding is undone. A larger body fails the table instead of being buffered.
     ``timeout`` bounds, in seconds of wall time, one send of a request (from connecting to
     its body's last byte, every redirect it follows included) and a ``cli`` command; it is
-    finite, as no send is unbounded.
+    finite, as no send is unbounded, and no longer than the platform's timers take
+    (:data:`LONGEST_WAIT`).
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
@@ -100,6 +115,15 @@ class SourceEntry(BaseModel):
     def settings(self) -> dict[str, Any]:
         """The keys that are the source kind's own settings, as written."""
         return dict(self.model_extra or {})
+
+    @field_validator("timeout")
+    @classmethod
+    def _a_timeout_the_platform_can_time(cls, value: float) -> float:
+        if value > LONGEST_WAIT:
+            raise ValueError(
+                f"{value:g}s is longer than this platform's timers take ({LONGEST_WAIT:g}s)"
+            )
+        return value
 
 
 # --- Collector Entry ---

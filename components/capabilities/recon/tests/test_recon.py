@@ -894,11 +894,15 @@ class TestDeadlines:
         for the work fails the same way on every retry. Then it led with "raise the
         deadline" for every transient exit, where for a 429 or a 5xx a later retry is what
         helps. It says which step goes with which error: the deadline a table's error names,
-        else a later retry."""
+        else a later retry. Then it read as a garden path ("raise a `deadline:` a table's
+        error names"), and a source's ``timeout:`` that is too short, which also fails on
+        every retry, was sent to the later retry: it is raised too."""
         from recon.domain.errors import EXIT_NEXT
 
         said = EXIT_NEXT["transient"]
-        assert said.startswith("raise a `deadline:` a table's error names")
+        assert said.startswith(
+            "if a table's error names a `deadline:` or `timeout:`, raise it (a retry fails too)"
+        )
         assert said.endswith("; else survey again later")
 
     @pytest.mark.parametrize("value", [0, -1, math.nan, math.inf])
@@ -937,6 +941,28 @@ class TestDeadlines:
         key, inner = next(iter(setting.items()))
         written = value if inner is None else {next(iter(inner)): value}
         source = {"name": "s", "url": "https://api.example.test", key: written}
+        collector = {"name": "q", "type": "api", "source": "s", "endpoint": "/q"}
+        config = {"catalog": [source], "collectors": [collector]}
+        with pytest.raises(recon.ConfigError) as excinfo:
+            run(config, tmp_path)
+        assert [p.path for p in excinfo.value.problems] == [path]
+
+    @pytest.mark.parametrize(
+        ("setting", "path"),
+        [
+            ({"timeout": 1e12}, "catalog.0.timeout"),
+            ({"rate_limit": {"rps": 1e-300}}, "catalog.0.rate_limit.rps"),
+        ],
+    )
+    def test_a_source_s_timeout_and_rate_must_be_waits_the_platform_can_time(
+        self, tmp_path: Path, setting: dict[str, Any], path: str
+    ) -> None:
+        """Regression: ``timeout: 1e12`` and ``rps: 1e-300`` are finite and planned valid,
+        and with no deadline every request then failed (``OverflowError: timestamp out of
+        range for platform time_t``, the table ``run_failed`` with no fix): a socket's
+        timeout of 1e12 s, and the rate limit's wait for a token, ``1 / rps``, are longer
+        than the platform's timers take. Each is a plan problem at the key written."""
+        source = {"name": "s", "url": "https://api.example.test", **setting}
         collector = {"name": "q", "type": "api", "source": "s", "endpoint": "/q"}
         config = {"catalog": [source], "collectors": [collector]}
         with pytest.raises(recon.ConfigError) as excinfo:

@@ -92,7 +92,7 @@ The codes up to 9 are the ones every gnx capability CLI agrees on; recon's own k
 | 2 | `usage`: a bad flag, argument or mission name |
 | 3 | `config`: every problem listed, with its path, kind and fix |
 | 4 | `not_found`: a mission, archive or template |
-| 5 | `transient`: retry later |
+| 5 | `transient`: a 429, a 5xx or a network error; retry later. A table cut by its `deadline:` or `timeout:` fails the same way on every retry: raise the one its error names |
 | 6 | `auth`: a credential was refused |
 | 7 | `conflict`: `init` or `survey -c` would overwrite a different mission config; `--replace` overwrites it |
 | 8 | `run_failed`: a table failed, not only on credentials or transiently, or the archive could not be finished; the archive is kept (a table's own unclassified error carries the same kind) |

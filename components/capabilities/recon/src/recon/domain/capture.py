@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote_plus, unquote_plus, urlencode, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -65,9 +65,9 @@ _SCHEMED = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\s+(\S+)")
 
 
 def credential_values(headers: Mapping[str, str]) -> list[str]:
-    """The credentials among request ``headers`` recon sends, to redact where they stand
-    whole (:func:`redact_credentials`): the value of each header whose name says it carries
-    one; for a value that is an auth scheme and a credential (``Bearer t0k``), the credential
+    """The credentials among request ``headers`` recon sends, to redact in what it captures
+    (:func:`redact_credentials`): the value of each header whose name says it carries one;
+    for a value that is an auth scheme and a credential (``Bearer t0k``), the credential
     alone too; and for a cookie header, each cookie's value. A header whose name does not
     (``X-Org``, ``Accept``) is not one, so its value stays in what is captured."""
     found: list[str] = []
@@ -82,14 +82,64 @@ def credential_values(headers: Mapping[str, str]) -> list[str]:
     return [value for value in found if value]
 
 
-def redact_credentials(text: str, credentials: Iterable[str]) -> str:
-    """``text`` with each of ``credentials`` replaced where it stands whole: not run into a
-    letter, digit, ``_`` or ``-`` on either side. A credential's value is redacted as a JSON
-    string, a header's value or a query parameter's, never as a piece of other text (a
-    credential ``2`` leaves ``2026`` and ``v2`` as they are)."""
-    for secret in sorted(set(credentials), key=len, reverse=True):
-        text = re.sub(rf"(?<![\w-]){re.escape(secret)}(?![\w-])", REDACTED, text)
-    return text
+#: A credential this many characters long or longer is redacted wherever it appears, inside
+#: other text too: a server that echoes one puts it where it likes (after a newline, in a URL,
+#: run into other letters), and text that holds a real token, which is long, holds the token.
+#: A shorter one is as likely to be a word or a number of its own (a cookie's ``consent=true``,
+#: a stdio server's ``DEBUG=1``, ``X-Api-Key-Version: 2``), so it is redacted only where it
+#: is a whole value.
+LONG_CREDENTIAL: Final = 8
+
+
+def redact_credentials(value: Any, credentials: Iterable[str]) -> Any:
+    """``value``, decoded JSON (a captured result, or the request that got it), with each of
+    ``credentials`` replaced by :data:`REDACTED`. A credential of :data:`LONG_CREDENTIAL`
+    characters or more is replaced wherever it appears in a string or a key. A shorter one is
+    replaced only where it is a whole value: a whole string (a header's value, in a mapping
+    of headers), or a whole query parameter's value in a string that is a URL; never inside
+    longer text. A number, a boolean or null is never touched, so what is redacted is still
+    JSON of the same shape (a credential ``2`` leaves ``2``, ``2026`` and ``v2`` as they
+    are)."""
+    given = {credential for credential in credentials if credential}
+    long = sorted((c for c in given if len(c) >= LONG_CREDENTIAL), key=len, reverse=True)
+    return _redacted(value, long, given.difference(long))
+
+
+def _redacted(value: Any, long: list[str], short: set[str]) -> Any:
+    if isinstance(value, str):
+        return _redacted_text(value, long, short)
+    if isinstance(value, list):
+        return [_redacted(item, long, short) for item in value]
+    if isinstance(value, dict):
+        return {
+            _redacted_text(key, long, set()): _redacted(item, long, short)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _redacted_text(text: str, long: list[str], short: set[str]) -> str:
+    for secret in long:
+        text = text.replace(secret, REDACTED)
+    if text in short:
+        return REDACTED
+    return _redacted_query_values(text, short) if short else text
+
+
+def _redacted_query_values(text: str, short: set[str]) -> str:
+    """``text`` with each query parameter whose whole value, decoded, is one of ``short``
+    replaced, when ``text`` is a URL (it has a ``?`` and no whitespace); any other text as it
+    is. The rest of the URL is kept as written."""
+    base, mark, rest = text.partition("?")
+    if not mark or any(char.isspace() for char in text):
+        return text
+    query, hash_mark, fragment = rest.partition("#")
+    pairs = []
+    for pair in query.split("&"):
+        name, equals, written = pair.partition("=")
+        whole = bool(equals) and unquote_plus(written) in short
+        pairs.append(f"{name}={quote_plus(REDACTED)}" if whole else pair)
+    return f"{base}?{'&'.join(pairs)}{hash_mark}{fragment}"
 
 
 def redact_query_params(url: str, names: Iterable[str], replacement: str = REDACTED) -> str:

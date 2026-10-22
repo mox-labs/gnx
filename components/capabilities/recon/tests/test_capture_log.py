@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 import pytest
 
@@ -72,17 +73,47 @@ def test_ordinary_headers_pass_through_untouched() -> None:
 # --- a credential recon sends, in a captured result ---
 
 
-def test_a_credential_is_redacted_where_it_stands_whole_and_nowhere_else() -> None:
-    """Regression: a credential was redacted as a substring wherever it occurred, so a
-    credential-named header with a short value (``X-Api-Key-Version: 2``) blanked every ``2``
-    in the capture, ``2026`` and ``v2`` included. It is replaced where it stands whole: as
-    the whole value, or as a token not run into other letters, digits, ``_`` or ``-``."""
-    credentials = credential_values({"Authorization": "Bearer t0k", "X-Api-Key-Version": "2"})
-    text = '{"auth": "Bearer t0k", "url": "/q?key=t0k&n=1", "year": 2026, "api": "v2", "n": 2}'
-    assert redact_credentials(text, credentials) == (
-        f'{{"auth": "{REDACTED}", "url": "/q?key={REDACTED}&n=1", "year": 2026, "api": "v2", '
-        f'"n": {REDACTED}}}'
+def test_a_long_credential_is_redacted_wherever_it_appears() -> None:
+    """Regression (gate B1): whether a credential stood whole was judged on the capture's
+    JSON text, where a newline or a tab is written ``\\n`` or ``\\t``, so a token at the
+    start of a line, after a tab, or after ``_``, ``-`` or a CJK letter was kept. One of eight
+    characters or more is replaced wherever it appears, in a key too."""
+    token = "t0kSecretValue"
+    result = {
+        "text": f"Your token is:\n{token}\nkeep it",
+        "tsv": f"NAME\tVALUE\nGITHUB_TOKEN\t{token}",
+        "crlf": f"a\r\n{token}",
+        "joined": [f"prefix_{token}", f"key-{token}", f"トークン{token}", f"/t/{token}/x"],
+        token: 1,
+    }
+    redacted = redact_credentials(result, [token])
+    assert token not in json.dumps(redacted, ensure_ascii=False)
+    assert redacted["tsv"] == f"NAME\tVALUE\nGITHUB_TOKEN\t{REDACTED}"
+    assert redacted["joined"][2] == f"トークン{REDACTED}"
+    assert redacted[REDACTED] == 1
+
+
+def test_a_short_credential_is_redacted_only_where_it_is_a_whole_value() -> None:
+    """Regression (gate B1-b): a short credential was redacted wherever it stood whole in the
+    capture's JSON text, so ``X-Api-Key-Version: 2`` blanked the number ``2`` and a cookie's
+    ``consent=true`` every ``true``, and the capture was no longer JSON. Under eight
+    characters, a credential is replaced only as a whole string, or a whole query parameter's
+    value in a URL; never in a number, a boolean or longer text."""
+    credentials = credential_values(
+        {"Authorization": "Bearer t0k", "X-Api-Key-Version": "2", "Cookie": "s=x; consent=true"}
     )
+    result = {"auth": "Bearer t0k", "token": "t0k", "url": "/q?key=t0k&n=1#t0k",
+              "near": "/q?key=t0k2", "prose": "the t0k is t0k", "year": 2026, "api": "v2",
+              "n": 2, "two": "2", "ok": True, "flags": [True, "true", "truer"]}  # fmt: skip
+    marker = quote_plus(REDACTED)
+    assert redact_credentials(result, credentials) == {
+        **result,
+        "auth": REDACTED,
+        "token": REDACTED,
+        "url": f"/q?key={marker}&n=1#t0k",
+        "two": REDACTED,
+        "flags": [True, REDACTED, "truer"],
+    }
 
 
 def test_each_cookie_s_value_is_a_credential_and_the_rest_of_the_header_is_not() -> None:
