@@ -559,8 +559,12 @@ The runtime-neutral record of one session. Frozen.
 | `check` | `(definition) -> None` | **Required.** Raises `ConfigError` for a definition the runtime cannot honour. A runtime that accepts everything implements it as a no-op |
 | `run` | `async (definition, task: str) -> AgentResponse` | Returns a response whose `stop` says why the session ended, or raises `AgentRuntimeError` with a `reason`. Never an empty normal response for a failed session |
 
-One member is optional, read with `getattr`: `warnings` (problems a reader of its config
-should see).
+Two members are optional, read with `getattr`: `warnings` (problems a reader of its config
+should see), and `resolved`, JSON data for what the runtime settled when it was built, beyond
+its own config, that decides how it answers. Composition digests `resolved` into the reuse
+fingerprint of every component that runs an agent on the runtime; the `model` runtime's is
+its registry (`default` and each model's row, without `api_key`), read from `matrix.models`
+or hardline's own tiers.
 
 A runtime that also logs what its `warnings` say logs it at WARNING on the logger named
 `RUNTIME_LOGGER` (`matrix.runtime`), once per process, so a caller that builds a runtime per
