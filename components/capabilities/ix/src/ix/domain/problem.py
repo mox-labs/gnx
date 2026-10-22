@@ -54,6 +54,7 @@ PROBLEM_KINDS: frozenset[str] = frozenset(
         "option_invalid",
         "option_inapplicable",
         "unobservable",
+        "adapter_failed",
         # metrics and the decision
         "metric_unprovided",
         "metric_ambiguous",

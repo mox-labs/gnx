@@ -79,7 +79,7 @@ from ix.domain.experiment import Experiment
 from ix.domain.genre import Genres, genres
 from ix.domain.kind import KIND_FAMILIES, Kinds, kinds, per_cell
 from ix.domain.plan import required
-from ix.domain.ports import Preflight, SpanReader, Traced
+from ix.domain.ports import Preflight, Requirement, SpanReader, Traced
 from ix.domain.problem import InvalidExperimentError
 from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
 from ix.domain.report import Report, Runs
@@ -95,7 +95,6 @@ if TYPE_CHECKING:
     from ix.domain.design import Design
     from ix.domain.experiment import ProbeSet
     from ix.domain.plan import Plan, Required
-    from ix.domain.ports import Requirement
     from ix.domain.problem import Problem, Validation
     from ix.domain.registration import Deviations, Registered, Registration
     from ix.domain.report import RunSummary
@@ -665,7 +664,7 @@ class Root:
         )
         if outcome.outcome != "unchanged":
             opened.registration.write(outcome.registration.document())
-        return outcome
+        return outcome.model_copy(update={"warnings": opened.examined.warnings})
 
     def deviations(
         self,
@@ -709,9 +708,7 @@ class Root:
             text = entry.text_options if entry else ()
             for options in per_cell(written, experiment.factors, text=text):
                 with self._runtimes.listening() as heard:
-                    found += [
-                        (where, needed) for needed in adapter.requirements(options, base=base)
-                    ]
+                    found += [(where, needed) for needed in _required(adapter, kind, options, base)]
                 for caution in converted(heard):
                     moved = caution.model_copy(
                         update={"path": f"{where}.runtime_options.{caution.path}"}
@@ -821,8 +818,9 @@ class Root:
             opened.vocabulary.kinds,
         )
         running.check_startable(requirements)
+        warned = (*examined.warnings, *(c for c in cautions if c not in examined.warnings))
         manifest = prepared.manifest.model_copy(
-            update={"warnings": cautions, "provenance": self._provenance(directory)}
+            update={"warnings": warned, "provenance": self._provenance(directory)}
         )
         # A stop request (Ctrl-C, SIGTERM) arrives here as the cancellation it is, after
         # matrix stopped the trial in flight, released what was started and finished the
@@ -949,6 +947,26 @@ class Root:
                 yield summarize(build_report(record))
             except IxError:
                 yield RunRecords.summary(record)  # another ix's: its id, state and counts
+
+
+def _required(
+    adapter: Preflight, kind: str, options: Mapping[str, Any], base: str
+) -> Sequence[Requirement]:
+    """What ``adapter``, the adapter of ``kind`` (a type URL), needs of this host. A
+    preflight runs an extension's own code, so one that raises is a requirement that does not
+    hold, naming the adapter and its error: the plan says not runnable, and the run refuses
+    to start, rather than either raising it."""
+    try:
+        return adapter.requirements(options, base=base)
+    except Exception as error:
+        return [
+            Requirement(
+                need=f"the adapter for {kind} checks what it needs of this host",
+                holds=False,
+                why=f"the adapter for {kind} raised {type(error).__name__}: {error}",
+                fix="fix or uninstall the extension that registered it",
+            )
+        ]
 
 
 def _reads_spans(design: Design, kit: Kit) -> bool:

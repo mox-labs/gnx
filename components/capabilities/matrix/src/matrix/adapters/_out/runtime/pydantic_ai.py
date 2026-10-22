@@ -232,8 +232,9 @@ class PydanticAiRuntime:
 
     def _function(self, name: str, definition: AgentDefinition) -> Callable[..., Any]:
         """The tool ``name``, imported the first time a session offers it. A named tool whose
-        module was found but does not import, or does not hold the function, fails the
-        session as ``incapable``: the runtime cannot honour its config."""
+        module was found but does not import (whatever its import raises), or does not hold
+        the function, fails the session as ``incapable``: the runtime cannot honour its
+        config."""
         function = self._functions.get(name)
         if function is None:
             try:
@@ -358,6 +359,8 @@ def _unfound(name: str, reference: str) -> Problem | None:
 def _findable(module: str) -> bool:
     """Whether ``module`` can be found on the import path, without running it or the packages
     it is in: each package is searched by the locations its spec names, not by importing it."""
+    if sys.modules.get(module) is not None:  # already run, whatever holds it (``os.path``)
+        return True
     path: Sequence[str] | None = None
     parts = module.split(".")
     for end in range(1, len(parts) + 1):
@@ -385,7 +388,8 @@ def _findable(module: str) -> bool:
 
 def _imported(name: str, reference: str) -> Callable[..., Any]:
     """The function ``module:function`` names: a ConfigError at ``tools.<name>`` when it does
-    not import or is not callable."""
+    not import (whatever its import raises: a module is the tool author's code) or is not
+    callable."""
     module, _, attribute = reference.partition(":")
     found: Any = None
     why = "is not `module:function`"
@@ -394,7 +398,7 @@ def _imported(name: str, reference: str) -> Callable[..., Any]:
             found = importlib.import_module(module)
             for part in attribute.split("."):
                 found = getattr(found, part)
-        except (ImportError, AttributeError) as e:
+        except Exception as e:
             found, why = None, f"cannot be imported: {type(e).__name__}: {e}"
         else:
             why = "is not a function"

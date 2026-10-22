@@ -429,6 +429,9 @@ def register(path: str, amend: bool, reason: str | None, as_json: bool) -> None:
     out.print(f"  [dim]plan {record.plan_digest[:12]}, probes {record.probes_digest[:12]}[/dim]")
     if registered.outcome == "amended":
         out.print(f"  [dim]reason: {escape(record.amendments[-1].reason)}[/dim]")
+    if registered.warnings:
+        err.print(f"{len(registered.warnings)} warning(s)")
+        _print_problems(registered.warnings, err, mark="yellow")
 
 
 @main.command(epilog=EXIT_CODES)

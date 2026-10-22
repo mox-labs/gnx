@@ -21,6 +21,7 @@ from pydantic import Field, field_validator
 
 from ix.domain import schema
 from ix.domain.errors import EXIT_CODES, ConfigError
+from ix.domain.problem import Problem
 from ix.domain.provenance import Content
 from ix.domain.schema import Record, Stored
 
@@ -102,6 +103,9 @@ class Registered(Record):
     outcome: Literal["created", "unchanged", "amended"]
     location: str
     registration: Registration
+    #: What ``validate`` warns of in the experiment registered (a typo in prompt text):
+    #: problems that do not stop it.
+    warnings: tuple[Problem, ...] = ()
 
 
 class Deviations(Record):

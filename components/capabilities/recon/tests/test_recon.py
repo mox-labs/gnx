@@ -889,12 +889,17 @@ class TestDeadlines:
         assert "slow's deadline" in tables[0].error.message
         assert (tables[0].error.fix or "").startswith("raise deadline:")
 
-    def test_the_next_step_after_a_transient_exit_names_the_deadline_first(self) -> None:
+    def test_the_next_step_after_a_transient_exit_tells_a_deadline_from_a_retry(self) -> None:
         """Regression: exit 5's next step was "survey again later", but a deadline too short
-        for the work fails the same way on every retry: raising it comes first."""
+        for the work fails the same way on every retry. Then it led with "raise the
+        deadline" for every transient exit, where for a 429 or a 5xx a later retry is what
+        helps. It says which step goes with which error: the deadline a table's error names,
+        else a later retry."""
         from recon.domain.errors import EXIT_NEXT
 
-        assert EXIT_NEXT["transient"].startswith("raise the deadline:")
+        said = EXIT_NEXT["transient"]
+        assert said.startswith("raise a `deadline:` a table's error names")
+        assert said.endswith("; else survey again later")
 
     @pytest.mark.parametrize("value", [0, -1, math.nan, math.inf])
     def test_a_deadline_must_be_a_positive_number_of_seconds(
@@ -914,6 +919,29 @@ class TestDeadlines:
         with pytest.raises(recon.ConfigError) as excinfo:
             run({"collectors": [collector]}, tmp_path)
         assert [p.path for p in excinfo.value.problems] == ["collectors.0.deadline"]
+
+    @pytest.mark.parametrize("value", [math.nan, math.inf])
+    @pytest.mark.parametrize(
+        ("setting", "path"),
+        [
+            ({"timeout": None}, "catalog.0.timeout"),
+            ({"rate_limit": {"rps": None}}, "catalog.0.rate_limit.rps"),
+        ],
+    )
+    def test_a_source_s_timeout_and_rate_must_be_finite(
+        self, tmp_path: Path, value: float, setting: dict[str, Any], path: str
+    ) -> None:
+        """Regression: ``timeout: .inf`` planned valid and every request then failed
+        (``OverflowError``, the table ``run_failed`` with no fix); ``rps: .inf`` planned valid
+        too. Each is a plan problem at the key written."""
+        key, inner = next(iter(setting.items()))
+        written = value if inner is None else {next(iter(inner)): value}
+        source = {"name": "s", "url": "https://api.example.test", key: written}
+        collector = {"name": "q", "type": "api", "source": "s", "endpoint": "/q"}
+        config = {"catalog": [source], "collectors": [collector]}
+        with pytest.raises(recon.ConfigError) as excinfo:
+            run(config, tmp_path)
+        assert [p.path for p in excinfo.value.problems] == [path]
 
 
 class TestWhatASurveyResolved:

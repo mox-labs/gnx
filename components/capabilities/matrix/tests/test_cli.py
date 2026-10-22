@@ -221,10 +221,10 @@ def test_a_bad_config_exits_3_with_the_key_path(
 def test_a_malformed_model_registry_is_a_config_problem_where_it_was_written(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """hardline's ConfigError escaped both runtimes built on it, so a typo in
-    ``matrix.models`` exited 1 as kind ``unknown``, "report this as a bug in matrix"
-    (final review N2). It is a config problem (exit 3) at the key that was written, said
-    once however many runtimes read it."""
+    """Regression: hardline's ConfigError escaped both runtimes built on it, so a typo in
+    ``matrix.models`` exited 1 as kind ``unknown``, "report this as a bug in matrix". It is
+    a config problem (exit 3) at the key that was written, said once however many runtimes
+    read it."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     (tmp_path / "matrix.yaml").write_text(

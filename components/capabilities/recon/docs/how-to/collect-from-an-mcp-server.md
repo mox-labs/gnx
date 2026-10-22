@@ -110,7 +110,7 @@ Then write `normalize:` from what you saw, plan again, and survey. What a table 
 | JSON with nothing at `extract:` | is kept empty, with an `extract_unresolved` warning |
 | an empty list | is empty: the server had nothing |
 
-With `preserve_raw: true`, each answer is kept whole in the archive's capture log as an `mcp` capture, every credential the source resolved replaced by `«redacted by recon»`: its token, the variables a stdio server is given by reference, and each header a `headers_helper` prints whose name says it carries a credential (`Authorization`, `X-Api-Key`, a name holding `key`, `token`, `auth`, `secret`, `cookie`, `session`, `signature`, `password` or `credential`). Name a custom credential header so; any other header's value is kept, since it is evidence.
+With `preserve_raw: true`, each answer is kept whole in the archive's capture log as an `mcp` capture, every credential the source resolved replaced by `«redacted by recon»`: its token, the variables a stdio server is given by reference, and each header a `headers_helper` prints whose name says it carries a credential (`Authorization`, `X-Api-Key`, a name holding `key`, `token`, `auth`, `secret`, `cookie`, `session`, `signature`, `password` or `credential`). A cookie header's credentials are each cookie's value too. A credential is replaced where it stands whole (a JSON string, a header's value, a query parameter's), never as a piece of other text: a header `X-Api-Key-Version: 2` blanks a lone `2`, not the `2` of `2026`. Name a custom credential header so; any other header's value is kept, since it is evidence.
 
 ## Before you run someone else's mission
 

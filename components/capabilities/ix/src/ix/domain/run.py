@@ -243,7 +243,8 @@ class RunManifest(Stored):
     #: What the run was told to change from the experiment as written, each in words: the
     #: repeats of a pilot (``ix run --repeats``). Never in a gated run.
     overridden: tuple[str, ...] = ()
-    #: What the run warned of before it started: a runtime that lets the agent use tools
+    #: What the run warned of before it started: what ``validate`` warns of in the
+    #: experiment run (a typo in prompt text), and a runtime that lets the agent use tools
     #: without asking. Said once per run, however many sessions were built.
     warnings: tuple[Problem, ...] = ()
     started_at: str = ""

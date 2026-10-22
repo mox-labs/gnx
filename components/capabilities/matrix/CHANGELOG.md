@@ -117,6 +117,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Changed
 
+- **`Wiring.order()` is the plan's stages one after another**, and `Wiring.stages()` is new:
+  the components in stages, each those whose dependencies are all in earlier stages, as
+  `matrix plan` prints them. Both are views, not the schedule. `order()` is still one valid
+  order of work, but may differ from the one before: for `a`, `b` after `a`, and `c`, it was
+  `(a, b, c)` and is `(a, c, b)`.
 - **Console span export is batched**, as every other span exporter is. With
   `OTEL_TRACES_EXPORTER=console` (or `configure_telemetry(console=True)`), spans went through
   a `SimpleSpanProcessor`, which writes to stderr as each span ends; now that spans end on the
@@ -213,7 +218,8 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
     `matrix plan` and `matrix agents`) only finds each tool's module on the import path,
     without running it; a session imports a tool when it first offers it. A module that cannot
     be found is a config problem when the runtime is built, every one listed at once; a
-    function the module does not hold fails the session that offers it as `incapable`.
+    module whose import raises, whatever it raises, or a function the module does not hold,
+    fails the session that offers it as `incapable`.
 - **A model runtime may give pydantic-ai a `Model`: `pydantic_ai_model(model)`**, an optional
   member of the port. The `hardline` runtime gives one on a row it resolves, each request a
   hardline call with the runtime's `max_tokens` and `temperature` as defaults, and an

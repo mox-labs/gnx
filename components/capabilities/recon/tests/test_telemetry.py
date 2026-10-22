@@ -495,6 +495,9 @@ def test_the_variables_without_the_sdk_are_a_warning_in_the_json_document(
         assert warning["kind"] == "otel_unavailable"
         assert warning["got"] == "OTEL_EXPORTER_OTLP_ENDPOINT"
         assert "reinstall recon" in warning["fix"]
+        # Regression: the fix installed from main, not from the release that warned.
+        tag = f"gnx@recon-v{recon.__version__}#subdirectory=components/capabilities/recon"
+        assert tag in warning["fix"]
     query = json.loads(_invoke("query", "m", "SELECT 1 AS one", "--json").stdout)
     assert [w["kind"] for w in query["warnings"]] == ["otel_unavailable"]
 

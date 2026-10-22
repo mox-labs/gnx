@@ -417,8 +417,8 @@ async def test_a_failed_session_s_http_status_is_its_reason(
 async def test_usage_the_result_does_not_report_is_none_not_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A result without usage was recorded as 0 input and 0 output tokens, a constant
-    standing in for a fact (final review N7): what the result does not report is None."""
+    """Regression: a result without usage was recorded as 0 input and 0 output tokens, a
+    constant standing in for a fact. What the result does not report is None."""
     _install(monkeypatch, _result(usage=None, result="done"))
     response = await _runtime().run(_defn(), "hi")
     assert (response.tokens_input, response.tokens_output) == (None, None)

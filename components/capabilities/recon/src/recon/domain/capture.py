@@ -60,19 +60,36 @@ _CREDENTIAL_NAME = re.compile(
 )
 
 
+#: An auth scheme and the credential after it (``Bearer t0k``, ``Basic dXNl...``).
+_SCHEMED = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\s+(\S+)")
+
+
 def credential_values(headers: Mapping[str, str]) -> list[str]:
-    """The credentials among request ``headers`` recon sends, to redact wherever they appear:
-    the value of each header whose name says it carries one, and for a value with an auth
-    scheme in front (``Bearer t0k``), the credential alone too. A header whose name does not
+    """The credentials among request ``headers`` recon sends, to redact where they stand
+    whole (:func:`redact_credentials`): the value of each header whose name says it carries
+    one; for a value that is an auth scheme and a credential (``Bearer t0k``), the credential
+    alone too; and for a cookie header, each cookie's value. A header whose name does not
     (``X-Org``, ``Accept``) is not one, so its value stays in what is captured."""
     found: list[str] = []
     for name, value in headers.items():
-        if name.lower() in SENSITIVE_RESPONSE_HEADERS or _CREDENTIAL_NAME.search(name):
-            found.append(value)
-            _scheme, _space, credential = value.strip().partition(" ")
-            if credential.strip():
-                found.append(credential.strip())
-    return found
+        if not (name.lower() in SENSITIVE_RESPONSE_HEADERS or _CREDENTIAL_NAME.search(name)):
+            continue
+        found.append(value)
+        if "cookie" in name.lower():
+            found += [v.strip() for _, _, v in (c.partition("=") for c in value.split(";"))]
+        elif schemed := _SCHEMED.fullmatch(value.strip()):
+            found.append(schemed.group(1))
+    return [value for value in found if value]
+
+
+def redact_credentials(text: str, credentials: Iterable[str]) -> str:
+    """``text`` with each of ``credentials`` replaced where it stands whole: not run into a
+    letter, digit, ``_`` or ``-`` on either side. A credential's value is redacted as a JSON
+    string, a header's value or a query parameter's, never as a piece of other text (a
+    credential ``2`` leaves ``2026`` and ``v2`` as they are)."""
+    for secret in sorted(set(credentials), key=len, reverse=True):
+        text = re.sub(rf"(?<![\w-]){re.escape(secret)}(?![\w-])", REDACTED, text)
+    return text
 
 
 def redact_query_params(url: str, names: Iterable[str], replacement: str = REDACTED) -> str:

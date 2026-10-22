@@ -526,12 +526,30 @@ class TestRegisterAndDeviationsCommands:
         result = _run("register", str(file), "--json")
         assert result.exit_code == 0
         document = _json(result)
-        assert list(document) == ["schema", "outcome", "location", "registration"]
+        # Changed requirement: what validate warns of, register carries too.
+        assert list(document) == ["schema", "outcome", "location", "registration", "warnings"]
         assert (document["schema"], document["outcome"]) == ("ix.v1.registered", "created")
         record = file.parent / "experiment.registration.json"
         assert document["location"] == str(record)
         assert json.loads(record.read_text()) == document["registration"]
         assert _json(_run("register", str(file), "--json"))["outcome"] == "unchanged"
+
+    def test_register_and_run_say_what_validate_warns_of(
+        self, evaluate_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        """Regression: a typo in prompt text (``{sise}`` for the factor ``size``) was warned of
+        by validate and plan only; register and run printed nothing, and ``run --json`` had
+        no warnings. Each says it, on stderr for a person and in the document for ``--json``."""
+        evaluate_data["factors"] = {"size": ["small"]}
+        evaluate_data["probes"][0]["prompt"] = "Review the {size} change; {sise} is a typo."
+        evaluate_data["repeats"] = 5
+        path = str(write_experiment(evaluate_data))
+        for command in (("register",), ("run", "--exploratory")):
+            for_a_person = _run(*command, path)
+            assert for_a_person.exit_code == 0, for_a_person.output
+            assert "{sise}" in for_a_person.stderr and "did you mean {size}" in for_a_person.stderr
+            document = _json(_run(*command, path, "--json"))
+            assert [w["got"] for w in document["warnings"]] == ["sise"]
 
     def test_deviations_is_its_own_command_and_exits_14_when_it_finds_any(
         self, compare_data: dict[str, Any], write_experiment: Write

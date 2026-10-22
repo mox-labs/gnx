@@ -54,11 +54,12 @@ OptionType = Literal[
 ]
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_.-]*"
-#: A placeholder (group 2), or one doubled (group 1). A doubled one whose name is filled
-#: there is its own text: ``{{name}}`` is ``{name}``. Every other brace, doubled or not, is
-#: text as written, so a prompt holding JSON (``{"a": {"b": 1}}``) or a template
-#: (``{{ user.name }}``, ``{{user}}`` where nothing fills ``user``) is sent as it was written;
-#: so is a ``{name}`` nothing fills, which validation refuses outside prompt text.
+#: A placeholder (group 2), or one doubled (group 1). A doubled one is its own text,
+#: ``{{name}}`` is ``{name}``: always, in an option that is not prompt text; in prompt text,
+#: where its name is filled there. Every other brace, doubled or not, is text as written, so
+#: a prompt holding JSON (``{"a": {"b": 1}}``) or a template (``{{ user.name }}``,
+#: ``{{user}}`` where nothing fills ``user``) is sent as it was written; so is a ``{name}``
+#: nothing fills, which validation refuses outside prompt text.
 _PLACEHOLDER = re.compile(rf"\{{\{{({_NAME})\}}\}}|\{{({_NAME})\}}")
 #: A value that is one placeholder and nothing else: filled, it becomes the level itself.
 _WHOLE = re.compile(rf"\{{({_NAME})\}}")
@@ -83,20 +84,34 @@ def placeholders(value: Any) -> list[str]:
     return []
 
 
+def escapes(value: Any) -> list[str]:
+    """The name of every doubled placeholder (``{{name}}``) in the strings of ``value``, in
+    order of appearance."""
+    if isinstance(value, str):
+        return [name for name, _ in _PLACEHOLDER.findall(value) if name]
+    if isinstance(value, Mapping):
+        return [name for item in value.values() for name in escapes(item)]
+    if isinstance(value, list | tuple):
+        return [name for item in value for name in escapes(item)]
+    return []
+
+
 def fill(
     value: Any,
     bound: Mapping[str, Any],
     *,
     escaped: bool = False,
     later: Collection[str] = (),
+    literal: bool = False,
 ) -> Any:
     """``value`` with each ``{name}`` that ``bound`` knows replaced by its level, in every
     string at any depth of mappings and lists. A string that is one placeholder and nothing
     else becomes the level itself, with its type (``"{t}"`` filled with 0.5 is 0.5); one
     inside more text is written into it. A doubled placeholder (``{{name}}``) whose name
-    ``bound`` knows becomes its text (``{name}``); one a later filling fills (``later``, or
-    every one when ``escaped``) stays doubled for it. An unknown name, doubled or not, and
-    every other brace, stays as written."""
+    ``bound`` knows, or any when ``literal`` (an option that is not prompt text), becomes
+    its text (``{name}``); one a later filling fills (``later``, or every one when
+    ``escaped``) stays doubled for it. An unknown name, and every other brace, stays as
+    written."""
     if isinstance(value, str):
         whole = _WHOLE.fullmatch(value)
         if whole is not None and whole.group(1) in bound:
@@ -105,16 +120,41 @@ def fill(
         def replaced(match: re.Match[str]) -> str:
             text, name = match.group(1), match.group(2)
             if text is not None:
-                undoubled = text in bound and not escaped and text not in later
+                kept = escaped or text in later
+                undoubled = not kept and (literal or text in bound)
                 return f"{{{text}}}" if undoubled else match.group(0)
             return str(bound[name]) if name in bound else match.group(0)
 
         return _PLACEHOLDER.sub(replaced, value)
     if isinstance(value, Mapping):
-        return {key: fill(item, bound, escaped=escaped, later=later) for key, item in value.items()}
+        return {
+            key: fill(item, bound, escaped=escaped, later=later, literal=literal)
+            for key, item in value.items()
+        }
     if isinstance(value, list | tuple):
-        return [fill(item, bound, escaped=escaped, later=later) for item in value]
+        return [fill(item, bound, escaped=escaped, later=later, literal=literal) for item in value]
     return value
+
+
+def fill_options(
+    options: Mapping[str, Any], bound: Mapping[str, Any], kind: Kind | None
+) -> dict[str, Any]:
+    """The ``options`` of an entry of ``kind`` filled with ``bound``, as a trial has them. In
+    prompt text (an option the kind declares ``text``), a doubled name is its text where
+    ``bound`` fills it and is sent as written where nothing does (a template's
+    ``{{user}}``); one the adapter fills again itself (the option's ``binds``: a loop's
+    ``{response}``) stays doubled, so that it is un-doubled once, by the adapter's filling.
+    In any other option every doubled name is its text, filled there or not: ``{{HOME}}``
+    in a command is ``{HOME}``."""
+    declared = kind.options if kind is not None else {}
+    filled: dict[str, Any] = {}
+    for key, value in options.items():
+        option = declared.get(key)
+        if option is not None and option.text:
+            filled[key] = fill(value, bound, later=option.binds)
+        else:
+            filled[key] = fill(value, bound, literal=True)
+    return filled
 
 
 def per_cell(

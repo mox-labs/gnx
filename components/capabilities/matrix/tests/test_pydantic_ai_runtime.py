@@ -321,9 +321,9 @@ def _tooled(package: str, **tools: str) -> dict[str, Any]:
 async def test_a_tool_named_in_config_is_located_when_built_and_run_only_by_a_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every configured tool was imported when the runtime was built, so ``matrix check``
-    and ``plan`` ran its module, and its package's, while saying nothing was called (final
-    review N3). Building only locates the module; a session imports what it offers."""
+    """Regression: every configured tool was imported when the runtime was built, so
+    ``matrix check`` and ``plan`` ran its module, and its package's, while saying nothing was
+    called. Building only locates the module; a session imports what it offers."""
     package = _tool_package(tmp_path, monkeypatch)
     box = compose(
         MatrixConfig.model_validate(_tooled(package)), registry=default_registry(discover=False)
@@ -347,7 +347,7 @@ def test_check_and_plan_call_nothing_a_tool_s_module_included(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """``matrix check`` and ``matrix plan`` say nothing was called: a tool's module is not run
-    either, so a checkout's config cannot run code by being checked (final review N3)."""
+    either, so a checkout's config cannot run code by being checked."""
     package = _tool_package(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
@@ -392,6 +392,52 @@ async def test_a_tool_that_is_not_in_the_module_it_names_fails_the_session_as_a_
         await runtime.run(_agent(), "define ossify")
     assert (raised.value.reason, raised.value.kind) == ("incapable", "config")
     assert "tools.absent" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [("raise RuntimeError('boom at import')\n", "RuntimeError"), ("def (\n", "SyntaxError")],
+)
+async def test_a_tool_whose_module_raises_on_import_fails_the_session_as_a_config_fault(
+    body: str, error: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: only an ImportError or AttributeError from importing a tool's module was
+    read as the module not importing; one that raised anything else (a RuntimeError, a
+    SyntaxError) failed the session as a component fault with no reason. Any error its
+    import raises fails the session as ``incapable``, naming the tool and the error."""
+    (tmp_path / "boom_at_import.py").write_text(body)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    runtime = PydanticAiRuntime(
+        _models("never asked"),
+        PydanticAiRuntimeConfig(default_model="q", tools={"boom": "boom_at_import:define"}),
+    )
+    with pytest.raises(AgentRuntimeError) as raised:
+        await runtime.run(_agent(), "define ossify")
+    assert (raised.value.reason, raised.value.kind) == ("incapable", "config")
+    assert "tools.boom" in str(raised.value) and error in str(raised.value)
+
+
+def test_a_tool_in_a_module_of_a_module_is_found_when_built() -> None:
+    """Regression: a module whose parent is loaded but is no package (``os.path``) was read
+    as not found, though it imports, so ``tools: {join: "os.path:join"}`` was refused."""
+    config = _tooled("os", define="os.path:join")
+    config["agent_runtimes"]["p"]["tools"] = {"join": "os.path:join"}
+    box = compose(MatrixConfig.model_validate(config), registry=default_registry(discover=False))
+    runtime = box.agent_runtime("p")
+    assert isinstance(runtime, PydanticAiRuntime)
+    assert runtime.resolved["tools"] == {"join": "os.path:join"}
+
+
+def test_a_tool_in_a_module_whose_import_is_blocked_is_refused_when_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A module set to None in ``sys.modules`` cannot be imported, so it is not found."""
+    monkeypatch.setitem(sys.modules, "blocked_tools", None)
+    config = _tooled("os")
+    config["agent_runtimes"]["p"]["tools"] = {"t": "blocked_tools:t"}
+    with pytest.raises(ConfigError) as raised:
+        compose(MatrixConfig.model_validate(config), registry=default_registry(discover=False))
+    assert [p.path for p in raised.value.problems] == ["matrix.agent_runtimes.p.tools.t"]
 
 
 async def test_its_session_row_names_the_model_that_answered_its_usage_and_ids() -> None:

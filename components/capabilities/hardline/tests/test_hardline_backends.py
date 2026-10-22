@@ -22,6 +22,7 @@ from hardline import (
     ModelSpec,
     RawCompletion,
     Request,
+    ToolCall,
     build_runtime,
 )
 from hardline.adapters._in.cli import error_payload
@@ -350,6 +351,30 @@ async def test_anthropic_leaves_out_an_assistant_turn_that_says_nothing() -> Non
         {"role": "user", "content": "again"},
         {"role": "user", "content": "and again"},
     ]
+
+
+async def test_anthropic_sends_no_blank_text_beside_a_tool_call() -> None:
+    # Regression: a whitespace-only text beside a tool call (a model that writes "\n\n" before
+    # it asks for a tool, replayed by pydantic-ai through matrix) was sent as a text block, and
+    # the API refuses a text block with no text. The call alone is the turn.
+    wire = _messages_api(_message())
+    call = ToolCall(id="t1", name="define", arguments='{"word": "ossify"}')
+    request = Request(
+        messages=(
+            Message(role="user", content="define ossify"),
+            Message(role="assistant", content="\n\n", tool_calls=(call,)),
+            Message(role="tool", content="to turn into bone", tool_call_id="t1"),
+        ),
+        max_tokens=8,
+    )
+    await AnthropicBackend(wire.transport).complete(_spec(backend="anthropic"), request, "k")
+    assistant = wire.body["messages"][1]
+    assert assistant == {
+        "role": "assistant",
+        "content": [
+            {"type": "tool_use", "id": "t1", "name": "define", "input": {"word": "ossify"}}
+        ],
+    }
 
 
 # --- locations come from the row, never the environment -----------------------

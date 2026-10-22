@@ -1457,6 +1457,111 @@ class TestAPromptReachesTheAgentAsWritten:
         until = "{{response}} {{done}} {}"
         assert Loop(strategy="self-review", until=until).until == "{response} {{done}} {}"
 
+    def test_a_factor_named_as_a_round_fills_leaves_the_rounds_escape_to_the_round(
+        self, tmp_path: Path
+    ) -> None:
+        """A factor may share a name with what a round fills (``until``, swept as the stop
+        word). ``{{until}}`` in the loop's prompt is then the text ``{until}``: the trial's
+        filling leaves it doubled for the round's, which un-doubles it once. Un-doubled by
+        the trial, the round would fill it with the stop word."""
+        lab = _routing(
+            tmp_path,
+            factors={"until": ["DONE"]},
+            subjects={
+                "catalog": {
+                    "kind": "agent-session",
+                    "runtime": SCRIPTED,
+                    "loop": {
+                        "strategy": "self-review",
+                        "rounds": 2,
+                        "until": "{until}",
+                        "prompt": "Write {{until}} literally, then {until} when done.",
+                    },
+                }
+            },
+        )
+        heard: list[tuple[str | None, str]] = []
+        Root(registry=_listening(heard), settings=_settings()).run(lab, exploratory=True)
+        rounds = {task for _, task in heard[1::2]}
+        assert rounds == {"Write {until} literally, then DONE when done."}
+
+    def test_two_arms_are_never_put_different_prompts(self, tmp_path: Path) -> None:
+        """Regression: ``{{model}}`` in a probe was the text ``{model}`` for the arm that sets
+        ``model`` and sent doubled to the arm that does not, so a compare's two arms were put
+        different prompts, and validate and the run said nothing. A name only some subjects
+        fill is refused, doubled or not, before any session starts."""
+        data = {
+            "name": "arms",
+            "question": "Does each arm get the same prompt?",
+            "genre": "compare",
+            "comparison": "superiority",
+            "subjects": {
+                "plain": {"kind": "agent-session", "runtime": SCRIPTED},
+                "tuned": {"kind": "agent-session", "runtime": SCRIPTED, "model": "m-2"},
+            },
+            "primary": {"metric": "activated_correctly"},
+            "repeats": 5,
+        }
+        lab = tmp_path / "arms"
+        (lab / "probes").mkdir(parents=True)
+        (lab / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+        (lab / "probes" / "ask.md").write_text(
+            "---\ntruth: {expectation: must_trigger, expected_skill: review}\n---\n"
+            'Write a Python line that prints print(f"{{model}}") and a Handlebars {{model}} tag.\n'
+        )
+        heard: list[tuple[str | None, str]] = []
+        root = Root(registry=_listening(heard), settings=_settings())
+        found = root.validate(lab)
+        assert [(p.path, p.kind, p.got) for p in found.problems] == [
+            ("probes.ask.prompt", "unbound_placeholder", "model")
+        ]
+        with pytest.raises(ix.ConfigError):
+            root.run(lab, exploratory=True)
+        assert heard == []
+
+    def test_an_escape_in_an_option_that_is_not_prompt_text_is_its_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: ``{{HOME}}`` in a ``setup`` command reached the shell doubled, and every
+        trial failed (``${{HOME}}: bad substitution``), though validate said valid. Outside
+        prompt text a doubled name is the classic escape: ``{{name}}`` is the text
+        ``{name}``, filled there or not."""
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        where = tmp_path / "where.txt"
+        lab = _routing(
+            tmp_path,
+            subjects={
+                "catalog": {"kind": "agent-session", "runtime": SCRIPTED,
+                            "setup": ["sh", "-c", f"echo ${{{{HOME}}}} > {where}"]},
+            },
+        )  # fmt: skip
+        heard: list[tuple[str | None, str]] = []
+        root = Root(registry=_listening(heard), settings=_settings())
+        assert root.validate(lab).valid
+        report = root.run(lab, exploratory=True)
+        assert report.status == "completed" and heard
+        assert where.read_text() == f"{tmp_path / 'home'}\n"
+
+    def test_a_warning_of_prompt_text_is_said_by_the_run_and_kept_in_its_record(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: a typo in prompt text (``{sise}``) was warned of by validate and plan
+        only; register and run said nothing, and the run's record kept no trace. The run's
+        report and manifest carry it, and so does what register returns."""
+        lab = _routing(tmp_path, factors={"size": ["small"]})
+        (lab / "probes" / "review.md").write_text(
+            "---\nexpectation: must_trigger\nexpected_skill: review\n---\n"
+            "Review the {size} diff; {sise} is a typo.\n"
+        )
+        root = Root(registry=_listening([]), settings=_settings())
+        typo = ("probes.review.prompt", "unbound_placeholder", "sise")
+        registered = root.register(lab)
+        assert typo in {(w.path, w.kind, w.got) for w in registered.warnings}
+        report = root.run(lab, exploratory=True)
+        # The report is read back from the run's record: its warnings are the manifest's.
+        assert typo in {(w.path, w.kind, w.got) for w in report.warnings}
+        assert typo in {(w.path, w.kind, w.got) for w in root.report(report.location).warnings}
+
 
 class TestTheLiveGuardIsOnIxsPath:
     """ix-tests F12: the workspace guard replaces the calls where a session or a model call

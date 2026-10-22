@@ -133,6 +133,21 @@
   rate. Like a boolean, it now resolves to `rate` (`source: ix`), from the one default the
   design, validation and the analysis share. A registration made before this release with a
   count it names no estimator for differs from its plan: amend it.
+- **A prompt reaches the agent as it was written.** Every `{{` and `}}` in a subject's or a
+  probe's options was un-doubled, so nested JSON and Handlebars or Mustache templates
+  (`{{user}}`) were sent altered, while the registration digested the text as written.
+  - In prompt text, only `{{name}}` where `name` is filled there is an escape (the text
+    `{name}`). Every other brace is sent as written: `{{user}}`, where nothing fills
+    `user`, now reaches the agent doubled, where it was `{user}`.
+  - A `{name}` nothing fills in prompt text is sent as written too, and warned of, so a
+    prompt can hold code (`print(f"{user}")`, a template literal), where it was refused as
+    `unbound_placeholder`.
+  - A name a probe takes from some subjects and not others is refused, written `{name}` or
+    `{{name}}`: the subjects would be put different prompts.
+  - In any other option `{{name}}` is the text `{name}`, as before: `setup: [sh, -c,
+    'echo ${{HOME}}']` runs `echo ${HOME}`.
+  - A loop's prompt, filled twice, un-doubles each escape once, by the filling that knows
+    its name.
 
 ### Added
 
@@ -251,10 +266,10 @@
   that it is prompt text (`text: true`: a probe's `prompt`, a `system_prompt`, a `loop`, a
   judge's `rubric`), where a name nothing fills is sent as written and is a warning that
   names the placeholder a typo is likely to be (`{sise}` for the factor `size`); a loop's
-  `rounds` may be 1. `{{name}}`, where `name` is filled in that option (a factor, a
-  binding, an option every subject sets, a facet, or a name the adapter binds), is the text
-  `{name}`; every other brace is sent as written, so a prompt holding JSON or a template
-  (`{{ user.name }}`, or `{{user}}` where nothing fills `user`) reaches the agent unchanged.
+  `rounds` may be 1. Nothing fills a sensor's options, so every `{name}` in a rubric is
+  such a warning. `validate`, `plan`, `register` and `run` each print these warnings: the
+  run keeps them in its manifest (`RunManifest.warnings`, `Report.warnings`), and
+  `Registered.warnings` (`ix register --json`) carries them.
 - **The run store is the composition root's choice**, built at matrix's `store` point
   (`Root(run_store=...)`, `jsonl` by default, whose config takes the `root` directory) and
   handed in, for running, reporting and listing alike.
@@ -274,13 +289,6 @@
   never seen to be. A subject's and a service's readiness checks now go through httpx2, with
   `trust_env` off, and ix depends on `httpx2` in place of `httpx`, so an install carries one
   HTTP stack.
-- **A prompt reaches the agent as it was written.** Every `{{` and `}}` in a subject's or a
-  probe's options was un-doubled, so nested JSON and Handlebars or Mustache templates
-  (`{{user}}`) were sent altered, while the registration digested the text as written. Only
-  `{{name}}` where `name` would be filled there is an escape now. A loop's prompt, filled
-  twice, un-doubles each escape once, by the filling that knows its name. In prompt text a
-  `{name}` nothing fills is sent as written as well, so a prompt can hold code
-  (`print(f"{user}")`, a template literal), where it was refused as `unbound_placeholder`.
 - **A literal brace leaves the preflight on**, and a subject with a mapping option
   (`runtime_options`, a `loop`) is preflighted. The plan treated any `{` in an option as a
   placeholder a trial fills, and checked nothing: it said runnable and the run started
@@ -290,6 +298,11 @@
   Only a `MatrixError` was read as "cannot be built", so a third party's constructor that
   raised anything else made `validate`, `plan`, `register`, `run` and `kinds` raise for
   every experiment. Listing the kinds builds each adapter once, where it built each twice.
+- **An adapter that raises while it checks an entry is named, not a crash.** An adapter
+  whose `review()` raised made `validate`, `plan` and `run` of an experiment that used it
+  raise the error as it stood. It is now a problem at the entry (`adapter_failed`), naming
+  the adapter and its error. One whose `requirements()` raises is a requirement that does
+  not hold, so the plan says `Runnable: no` and the run refuses to start.
 - **A report never calls a model and never starts a process.** `ix report` of a run that
   ended before its sensors read its interactions derived the readings then: each report of a
   run with a `judge` asked the judge again, and one with `function-test` or `outcome` ran
