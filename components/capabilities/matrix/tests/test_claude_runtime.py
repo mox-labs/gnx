@@ -1,7 +1,10 @@
-"""Tests for ClaudeSdkRuntime — the Claude Agent SDK as an AgentRuntime."""
+"""Tests for ClaudeSdkRuntime — the Claude Agent SDK as an AgentRuntime.
 
-import sys
-import types
+The messages a session streams are the SDK's own dataclasses and the options it is handed
+are the SDK's own ``ClaudeAgentOptions``: only ``query`` is replaced, so it starts no CLI. A
+fake narrower than the SDK could not tell the runtime it reads a field the SDK lacks, or
+hands it an option the SDK refuses (mx-tests 5).
+"""
 
 import pytest
 
@@ -9,99 +12,65 @@ import matrix
 from matrix import AgentDefinition
 from matrix.domain.agent import AgentResponse
 
-# --- SDK integration tests (mocked) ---
+sdk = pytest.importorskip("claude_agent_sdk")
 
 
-class _FakeTextBlock:
-    def __init__(self, text: str):
-        self.text = text
+def _assistant(*blocks):
+    return sdk.AssistantMessage(content=list(blocks), model="claude-x")
 
 
-class _FakeToolUseBlock:
-    def __init__(self, name: str, input: dict):
-        self.name = name
-        self.input = input
+def _result(**fields):
+    """A result message: a one-turn session that succeeded, with ``fields`` in place."""
+    defaults = {
+        "subtype": "success",
+        "duration_ms": 100,
+        "duration_api_ms": 90,
+        "is_error": False,
+        "num_turns": 1,
+        "session_id": "session-1",
+        "total_cost_usd": 0.01,
+        "usage": {"input_tokens": 50, "output_tokens": 30},
+    }
+    return sdk.ResultMessage(**{**defaults, **fields})
 
 
-class _FakeAssistantMessage:
-    def __init__(self, content: list):
-        self.content = content
+def _install(monkeypatch, *messages, echo=False):
+    """Replace the SDK's ``query`` with one that streams ``messages`` (with ``echo``, the
+    prompt back and a success); returns what it was called with, each ``{prompt, options}``."""
+    captured: dict = {"calls": []}
 
+    async def fake_query(*, prompt, options=None, transport=None):
+        captured["calls"].append({"prompt": prompt, "options": options})
+        echoed = [_assistant(sdk.TextBlock(f"echo: {prompt}")), _result()] if echo else []
+        for message in echoed or messages:
+            yield message
 
-class _FakeResultMessage:
-    def __init__(
-        self,
-        duration_ms: int = 100,
-        total_cost_usd: float = 0.01,
-        usage: dict | None = None,
-        num_turns: int = 1,
-        subtype: str = "success",
-        is_error: bool = False,
-        errors: list[str] | None = None,
-        api_error_status: int | None = None,
-    ):
-        self.duration_ms = duration_ms
-        self.total_cost_usd = total_cost_usd
-        self.usage = usage or {"input_tokens": 50, "output_tokens": 30}
-        self.num_turns = num_turns
-        self.subtype = subtype
-        self.is_error = is_error
-        self.errors = errors
-        self.api_error_status = api_error_status
+    monkeypatch.setattr(sdk, "query", fake_query)
+    return captured
 
 
 @pytest.fixture
 def fake_sdk(monkeypatch):
-    """Install a fake claude_agent_sdk module into sys.modules."""
-    captured: dict = {"calls": []}
-
-    async def fake_query(prompt, options=None):
-        captured["calls"].append({"prompt": prompt, "options": options})
-        yield _FakeAssistantMessage([_FakeTextBlock(f"echo: {prompt}")])
-        yield _FakeResultMessage()
-
-    sdk = types.ModuleType("claude_agent_sdk")
-    sdk.query = fake_query  # type: ignore[attr-defined]
-    sdk.ClaudeAgentOptions = lambda **kw: kw  # type: ignore[attr-defined]
-    sdk.AssistantMessage = _FakeAssistantMessage  # type: ignore[attr-defined]
-    sdk.TextBlock = _FakeTextBlock  # type: ignore[attr-defined]
-    sdk.ToolUseBlock = _FakeToolUseBlock  # type: ignore[attr-defined]
-    sdk.ResultMessage = _FakeResultMessage  # type: ignore[attr-defined]
-
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
-    return captured
+    """A session that echoes its prompt and succeeds."""
+    return _install(monkeypatch, echo=True)
 
 
 @pytest.fixture
 def fake_sdk_with_tools(monkeypatch):
-    """SDK mock that returns tool use blocks."""
-    captured: dict = {"calls": []}
-
-    async def fake_query(prompt, options=None):
-        captured["calls"].append({"prompt": prompt, "options": options})
-        yield _FakeAssistantMessage(
-            [
-                _FakeTextBlock("Let me help with that."),
-                _FakeToolUseBlock("Skill", {"skill": "build-eval"}),
-            ]
-        )
-        yield _FakeResultMessage(
+    """A session that calls a tool."""
+    return _install(
+        monkeypatch,
+        _assistant(
+            sdk.TextBlock("Let me help with that."),
+            sdk.ToolUseBlock(id="toolu_0", name="Skill", input={"skill": "build-eval"}),
+        ),
+        _result(
             duration_ms=250,
             total_cost_usd=0.05,
             usage={"input_tokens": 100, "output_tokens": 80},
             num_turns=2,
-        )
-
-    sdk = types.ModuleType("claude_agent_sdk")
-    sdk.query = fake_query  # type: ignore[attr-defined]
-    sdk.ClaudeAgentOptions = lambda **kw: kw  # type: ignore[attr-defined]
-    sdk.AssistantMessage = _FakeAssistantMessage  # type: ignore[attr-defined]
-    sdk.TextBlock = _FakeTextBlock  # type: ignore[attr-defined]
-    sdk.ToolUseBlock = _FakeToolUseBlock  # type: ignore[attr-defined]
-    sdk.ResultMessage = _FakeResultMessage  # type: ignore[attr-defined]
-
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
-    return captured
+        ),
+    )
 
 
 def _runtime(**config):
@@ -131,23 +100,29 @@ class TestClaudeSdkRuntime:
         response = await _runtime().run(_defn(system_prompt="test"), "write evals")
 
         assert response.content == "Let me help with that."
-        assert response.tool_calls == ({"name": "Skill", "input": {"skill": "build-eval"}},)
+        (call,) = response.tool_calls
+        assert (call["name"], call["input"], call["id"]) == (
+            "Skill",
+            {"skill": "build-eval"},
+            "toolu_0",
+        )
         assert (response.duration_ms, response.cost_usd) == (250, 0.05)
         assert (response.tokens_input, response.tokens_output, response.num_turns) == (100, 80, 2)
 
     @pytest.mark.anyio
     async def test_definition_and_deployment_reach_the_sdk(self, fake_sdk):
-        runtime = _runtime(plugins=[{"name": "test"}], setting_sources=[])
+        runtime = _runtime(plugins=[{"type": "local", "path": "/p"}], setting_sources=[])
         await runtime.run(
             _defn(system_prompt="Be concise.", max_turns=3, tools=("Read",), model="sonnet"), "hi"
         )
         opts = fake_sdk["calls"][0]["options"]
-        assert opts["system_prompt"] == "Be concise."
-        assert opts["max_turns"] == 3
-        assert opts["tools"] == ["Read"]
-        assert opts["model"] == "sonnet"
-        assert opts["plugins"] == [{"name": "test"}]
-        assert opts["setting_sources"] == []
+        assert isinstance(opts, sdk.ClaudeAgentOptions)
+        assert opts.system_prompt == "Be concise."
+        assert opts.max_turns == 3
+        assert opts.tools == ["Read"]
+        assert opts.model == "sonnet"
+        assert opts.plugins == [{"type": "local", "path": "/p"}]
+        assert opts.setting_sources == []
 
     @pytest.mark.anyio
     async def test_empty_prompt(self, fake_sdk):
@@ -266,21 +241,6 @@ class TestPermissionMode:
 # --- how a session ended ------------------------------------------------------------------
 
 
-def _install(monkeypatch, *messages):
-    async def fake_query(prompt, options=None):
-        for m in messages:
-            yield m
-
-    sdk = types.ModuleType("claude_agent_sdk")
-    sdk.query = fake_query  # type: ignore[attr-defined]
-    sdk.ClaudeAgentOptions = lambda **kw: kw  # type: ignore[attr-defined]
-    sdk.AssistantMessage = _FakeAssistantMessage  # type: ignore[attr-defined]
-    sdk.TextBlock = _FakeTextBlock  # type: ignore[attr-defined]
-    sdk.ToolUseBlock = _FakeToolUseBlock  # type: ignore[attr-defined]
-    sdk.ResultMessage = _FakeResultMessage  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
-
-
 class TestSessionEnding:
     async def test_a_completed_session_says_so(self, fake_sdk):
         assert (await _runtime().run(_defn(), "hi")).stop == "completed"
@@ -289,8 +249,8 @@ class TestSessionEnding:
         """A one-turn routing eval ends at max_turns by design; the Skill call is the result."""
         _install(
             monkeypatch,
-            _FakeAssistantMessage([_FakeToolUseBlock("Skill", {"skill": "aces"})]),
-            _FakeResultMessage(subtype="error_max_turns", is_error=True),
+            _assistant(sdk.ToolUseBlock(id="toolu_1", name="Skill", input={"skill": "aces"})),
+            _result(subtype="error_max_turns", is_error=True),
         )
         response = await _runtime().run(_defn(), "hi")
         assert response.stop == "max_turns"
@@ -301,10 +261,8 @@ class TestSessionEnding:
 
         _install(
             monkeypatch,
-            _FakeAssistantMessage([_FakeTextBlock("partial")]),
-            _FakeResultMessage(
-                subtype="error_during_execution", is_error=True, errors=["tool crashed"]
-            ),
+            _assistant(sdk.TextBlock("partial")),
+            _result(subtype="error_during_execution", is_error=True, errors=["tool crashed"]),
         )
         with pytest.raises(AgentRuntimeError, match="error_during_execution.*tool crashed"):
             await _runtime().run(_defn(), "hi")
@@ -314,8 +272,8 @@ class TestSessionEnding:
         session ended and counts nothing against it."""
         _install(
             monkeypatch,
-            _FakeAssistantMessage([_FakeTextBlock("partial")]),
-            _FakeResultMessage(subtype="error_max_budget_usd", is_error=True, total_cost_usd=0.5),
+            _assistant(sdk.TextBlock("partial")),
+            _result(subtype="error_max_budget_usd", is_error=True, total_cost_usd=0.5),
         )
         response = await _runtime(max_budget_usd=0.5).run(_defn(), "hi")
         assert (response.stop, response.cost_usd, response.content) == (
@@ -327,46 +285,28 @@ class TestSessionEnding:
     async def test_an_api_error_names_the_status(self, monkeypatch):
         from matrix import AgentRuntimeError
 
-        _install(monkeypatch, _FakeResultMessage(is_error=True, api_error_status=529))
+        _install(monkeypatch, _result(subtype="success", is_error=True, api_error_status=529))
         with pytest.raises(AgentRuntimeError, match="HTTP 529"):
             await _runtime().run(_defn(), "hi")
 
     async def test_a_stream_with_no_result_raises(self, monkeypatch):
         from matrix import AgentRuntimeError
 
-        _install(monkeypatch, _FakeAssistantMessage([_FakeTextBlock("cut off")]))
+        _install(monkeypatch, _assistant(sdk.TextBlock("cut off")))
         with pytest.raises(AgentRuntimeError, match="without a result"):
             await _runtime().run(_defn(), "hi")
 
 
-class _FakeIdToolUseBlock:
-    def __init__(self, id: str, name: str, input: dict):
-        self.id, self.name, self.input = id, name, input
-
-
-class _FakeToolResultBlock:
-    def __init__(self, tool_use_id: str, is_error: bool = False):
-        self.tool_use_id, self.is_error = tool_use_id, is_error
-
-
-class _FakeUserMessage:
-    def __init__(self, content):
-        self.content = content
-
-
 @pytest.mark.anyio
-async def test_a_tool_call_is_timed_from_its_request_to_its_result(fake_sdk) -> None:
+async def test_a_tool_call_is_timed_from_its_request_to_its_result(monkeypatch) -> None:
     """What lets matrix report each call as an ``execute_tool`` span."""
-    import claude_agent_sdk
-
-    async def fake_query(prompt, options=None):
-        yield _FakeAssistantMessage([_FakeIdToolUseBlock("toolu_1", "Read", {"path": "x"})])
-        yield _FakeUserMessage([_FakeToolResultBlock("toolu_1", is_error=True)])
-        yield _FakeUserMessage("plain text is no tool result")
-        yield _FakeResultMessage()
-
-    claude_agent_sdk.query = fake_query  # type: ignore[attr-defined]
-    claude_agent_sdk.ToolUseBlock = _FakeIdToolUseBlock  # type: ignore[attr-defined]
+    _install(
+        monkeypatch,
+        _assistant(sdk.ToolUseBlock(id="toolu_1", name="Read", input={"path": "x"})),
+        sdk.UserMessage(content=[sdk.ToolResultBlock(tool_use_id="toolu_1", is_error=True)]),
+        sdk.UserMessage(content="plain text is no tool result"),
+        _result(),
+    )
     response = await _runtime().run(_defn(), "go")
     (call,) = response.tool_calls
     assert (call["name"], call["id"], call["error"]) == ("Read", "toolu_1", True)
@@ -385,9 +325,8 @@ def test_a_permissive_mode_is_a_warning_composition_carries(fake_sdk) -> None:
 
 
 def test_max_budget_usd_reaches_the_real_sdk_options() -> None:
-    """Moved from the spend tests when spend was removed: the SDK's own options carry
-    ``max_budget_usd``, checked against the installed SDK, and it is left out when unset."""
-    sdk = pytest.importorskip("claude_agent_sdk")
+    """The SDK's own options carry ``max_budget_usd``, checked against the installed SDK, and
+    it is left out when unset."""
     from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime, ClaudeSdkRuntimeConfig
 
     runtime = ClaudeSdkRuntime(ClaudeSdkRuntimeConfig(max_budget_usd=0.5))
