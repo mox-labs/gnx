@@ -561,7 +561,7 @@ large or external value. matrix records it and does nothing else with it.
 | `writer.finish(run) -> str` | records the final state atomically; returns where the record is |
 | `store.load(run_id) -> Construct` | the record of a run in any state; `torn` reports entries with no row |
 | `store.describe(run_id) -> dict` | the `matrix.v1.run` document with each table's size. A run that never finished reads `running`, or `interrupted` when the store can tell its writer is gone |
-| `store.runs() -> list[str]` | run ids, oldest first |
+| `store.runs() -> list[str]` | run ids, oldest first. The JSONL store skips, and logs on `matrix.store`, a directory whose `run.json` cannot be read |
 | `writer.events() -> Observer \| None` | optional: a sink for the run's events kept with its record; the executor closes it after the run |
 | `store.location(run_id) -> str` | optional: where the run's record is, or would be |
 
@@ -572,7 +572,12 @@ and is located by the run id.
 
 `JsonlConstructStore(root, *, fsync=False)` keeps a directory per run: `run.json`, one
 `<kind>.jsonl` per table whose lines are the rows, and `events.jsonl`. `fsync=True` flushes
-each row to the disk. Each row is written as pydantic's `to_jsonable_python` makes it (nested
+each row to the disk, and the run's directory when its files are made and when `run.json` is
+renamed in. A write the disk cuts short is taken back before the `StoreError`. A run whose
+writer, on this host, is gone is finished by the first `describe` or `load` that finds it so:
+each file's cut-short last line moved aside to `<file>.torn`, and `run.json` replaced with
+`status: interrupted`, the row counts and `torn`, so `interrupted` is on disk and every file
+reads whole without matrix (`data-model.md`, "Keeping a run"). Each row is written as pydantic's `to_jsonable_python` makes it (nested
 models, dataclasses, sets, tuples, datetimes); a row holding anything else is refused with a
 `ContractError` naming where in the row, before anything is written for it, so the record
 goes on. `MemoryConstructStore()` keeps runs in a dict, rows as given. Both are

@@ -13,9 +13,11 @@ reads a table without matrix.
 
 **While a run is going** ``run.json`` says ``running`` and every table file exists. Each row
 is one ``write`` of one whole line to a file opened for appending, made before ``append``
-returns: a process killed at any moment leaves every row it had appended. (Pass
-``fsync=True`` to also survive the machine going down, at the cost of a disk flush per row.)
-A line that was cut short is the last line of its file and has no newline; readers ignore it.
+returns: a process killed at any moment leaves every row it had appended. A write the disk
+cuts short is taken back before the error is raised. (Pass ``fsync=True`` to also survive the
+machine going down, at the cost of a disk flush per row; the run's directory is flushed too
+once its files are made, and once ``run.json`` is renamed into place.) A line that was cut
+short is the last line of its file and has no newline; matrix's readers ignore it.
 
 **A row is JSON data.** Models, dataclasses, sets, tuples and datetimes inside it are written
 as pydantic writes them (``to_jsonable_python``). A row holding anything else is refused with a
@@ -23,10 +25,16 @@ ContractError naming where in the row it is, before anything is written for it: 
 entry waits for the row, and the two are written together.
 
 **When a run ends** ``run.json`` is replaced in one rename with the final document. A run
-that never got that far still reads ``running``; ``describe`` says ``interrupted`` instead
-when the process that was writing it, on this host, is gone. "Gone" is read from
-``writer.lock``, which the writer holds an ``flock`` on from ``open`` until ``finish`` or its
-death, so a pid reused by another process cannot make a dead run read as running.
+that never got that far still reads ``running``, until a matrix reader (``describe`` or
+``load``) finds that the process that was writing it, on this host, is gone. That reader
+**finishes the record as interrupted**: each file's cut-short last line, if it has one, is
+moved aside to ``<file>.torn``, and ``run.json`` is replaced with ``status: interrupted``,
+each table's row count and ``torn``. From then on every file reads whole with ``jq`` or
+DuckDB, and ``interrupted`` is on disk. "Gone" is read from ``writer.lock``, which the writer
+holds an ``flock`` on from ``open`` until ``finish`` or its death, so a pid reused by another
+process cannot make a dead run read as running; the reader holds the same lock while it
+finishes the record, so two readers finish it once. A dead run on another host stays
+``running``: matrix does not guess.
 
 **Events** are telemetry kept beside the record: lossy under load, flushed line by line, and
 never read back as data. Results are read from the tables.
@@ -39,6 +47,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import re
 import socket
@@ -58,6 +67,10 @@ if TYPE_CHECKING:
 
 #: The file a run's events are kept in, beside its tables.
 EVENTS = "events.jsonl"
+#: Beside a file, what was cut from it when an interrupted run's record was finished.
+TORN = ".torn"
+
+logger = logging.getLogger("matrix.store")
 
 
 class JsonlStoreConfig(BaseModel):
@@ -121,6 +134,29 @@ def _hold(path: Path) -> int:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     return descriptor
+
+
+def _flush_directory(directory: Path) -> None:
+    """Make the entries of ``directory`` (files made, a file renamed in) durable: a file's own
+    flush does not cover its name."""
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _cut_torn_tail(path: Path) -> int:
+    """Move a cut-short last line of ``path`` aside to ``<path>.torn``; return the complete
+    lines it holds."""
+    if not path.exists():
+        return 0
+    data = path.read_bytes()
+    whole = data.rfind(b"\n") + 1
+    if whole < len(data):
+        path.with_name(path.name + TORN).write_bytes(data[whole:])
+        os.truncate(path, whole)
+    return data[:whole].count(b"\n")
 
 
 def _writer_alive(path: Path) -> bool:
@@ -189,18 +225,26 @@ class _JsonlRunWriter:
 
     def _write(self, kind: str, line: bytes) -> None:
         name = self._tables[kind]
+        descriptor: int | None = None
+        size = 0
         try:
             descriptor = self._open.get(kind)
             if descriptor is None:
                 descriptor = self._open[kind] = os.open(
                     self._directory / name, os.O_WRONLY | os.O_APPEND
                 )
+            size = os.fstat(descriptor).st_size
             written = os.write(descriptor, line)
             if written != len(line):
                 raise OSError(f"wrote {written} of {len(line)} bytes")
             if self._fsync:
                 os.fsync(descriptor)
         except OSError as e:
+            if descriptor is not None:  # take back what part of the line was written
+                try:
+                    os.ftruncate(descriptor, size)
+                except OSError:
+                    logger.exception("a cut-short line in %s could not be taken back", name)
             raise StoreError(
                 f"could not append a row of {kind!r} to {self._directory / name}: "
                 f"{type(e).__name__}: {e}",
@@ -226,6 +270,8 @@ class _JsonlRunWriter:
                 }
             }
             _replace(self._directory / "run.json", document, self._fsync)
+            if self._fsync:
+                _flush_directory(self._directory)
             os.close(self._lock)
         except OSError as e:
             raise StoreError(
@@ -267,7 +313,32 @@ class JsonlConstructStore:
         lock: int | None = None
         try:
             self._root.mkdir(parents=True, exist_ok=True)
+        except (FileExistsError, NotADirectoryError) as e:
+            raise StoreError(
+                f"the store's root {self._root} is not a directory: {type(e).__name__}: {e}",
+                fix="point the store's `root` at a directory, or remove the file in its way",
+                run_id=run.run_id,
+            ) from e
+        except OSError as e:
+            raise StoreError(
+                f"could not make the store's root {self._root}: {type(e).__name__}: {e}",
+                run_id=run.run_id,
+            ) from e
+        try:
             directory.mkdir()
+        except FileExistsError:
+            raise StoreError(
+                f"run {run.run_id!r} already exists at {directory}; a run's record is never "
+                "reopened or rewritten",
+                fix="run under a new run id",
+                run_id=run.run_id,
+            ) from None
+        except OSError as e:
+            raise StoreError(
+                f"could not open run {run.run_id!r} at {directory}: {type(e).__name__}: {e}",
+                run_id=run.run_id,
+            ) from e
+        try:
             for name in tables.values():
                 (directory / name).touch()
             lock = _hold(directory / _LOCK)
@@ -276,13 +347,9 @@ class JsonlConstructStore:
                 "tables": {kind: {"file": name} for kind, name in tables.items()},
             }
             _replace(directory / "run.json", document, self._fsync)
-        except FileExistsError:
-            raise StoreError(
-                f"run {run.run_id!r} already exists at {directory}; a run's record is never "
-                "reopened or rewritten",
-                fix="run under a new run id",
-                run_id=run.run_id,
-            ) from None
+            if self._fsync:
+                _flush_directory(directory)
+                _flush_directory(self._root)
         except OSError as e:
             if lock is not None:
                 os.close(lock)
@@ -306,22 +373,62 @@ class JsonlConstructStore:
         return record
 
     def describe(self, run_id: str) -> dict[str, Any]:
-        record = self._record(run_id)
+        record = self._finished(run_id)
         if record.get("status") != "running":
             return record
-        # Never finished: say what is on disk now, and whether anyone is still writing it.
+        # Still running, here or on another host: say what is on disk now.
         directory = self._dir(run_id)
         for info in record["tables"].values():
             info["rows"] = len(_lines(directory / info["file"]))
-        landed = sum(i["rows"] for kind, i in record["tables"].items() if kind != LEDGER)
-        record["torn"] = max(0, record["tables"][LEDGER]["rows"] - landed)
+        _count_torn(record)
+        return record
+
+    def _finished(self, run_id: str) -> dict[str, Any]:
+        """The run's record, once it is finished: a run whose writer, on this host, is gone
+        is finished here as ``interrupted`` (see the module docstring)."""
+        record = self._record(run_id)
         writer = record.get("writer") or {}
-        if writer.get("host") == socket.gethostname() and not _writer_alive(directory / _LOCK):
+        directory = self._dir(run_id)
+        if (
+            record.get("status") != "running"
+            or writer.get("host") != socket.gethostname()
+            or _writer_alive(directory / _LOCK)
+        ):
+            return record
+        try:  # made again if someone removed it: a dead run is finished all the same
+            descriptor = os.open(directory / _LOCK, os.O_RDONLY | os.O_CREAT, 0o644)
+        except OSError as e:
+            raise StoreError(
+                f"could not lock the interrupted run {run_id!r} at {directory} to finish it: "
+                f"{type(e).__name__}: {e}",
+                run_id=run_id,
+            ) from e
+        try:
+            # Only another reader finishing it can hold the lock now, and only briefly.
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            record = self._record(run_id)
+            if record.get("status") != "running":
+                return record  # another reader finished it first
+            for info in record["tables"].values():
+                info["rows"] = _cut_torn_tail(directory / info["file"])
+            _cut_torn_tail(directory / EVENTS)
+            _count_torn(record)
             record["status"] = "interrupted"
+            _replace(directory / "run.json", record, self._fsync)
+            if self._fsync:
+                _flush_directory(directory)
+        except OSError as e:
+            raise StoreError(
+                f"could not finish the interrupted run {run_id!r} at {directory}: "
+                f"{type(e).__name__}: {e}",
+                run_id=run_id,
+            ) from e
+        finally:
+            os.close(descriptor)  # closing releases the lock
         return record
 
     def load(self, run_id: str) -> Construct:
-        record = self._record(run_id)
+        record = self._finished(run_id)
         directory = self._dir(run_id)
         try:
             tables = {
@@ -336,13 +443,26 @@ class JsonlConstructStore:
         return Construct.restore(tables)
 
     def runs(self) -> list[str]:
+        """The runs under the root, oldest first. A directory whose ``run.json`` cannot be
+        read, or whose name is not a run id, is skipped, and logged on ``matrix.store``."""
         if not self._root.is_dir():
             return []
         started: dict[str, str] = {}
         for path in self._root.iterdir():
-            if (path / "run.json").exists():
+            if not (path / "run.json").exists():
+                continue
+            try:
                 started[path.name] = str(self._record(path.name).get("started", ""))
+            except (StoreError, ConfigError) as e:
+                logger.warning("skipped %s, whose record is damaged: %s", path, e)
         return sorted(started, key=lambda name: (started[name], name))
+
+
+def _count_torn(record: dict[str, Any]) -> None:
+    """``torn``: the ledger entries whose row never landed, from the tables' row counts."""
+    tables = record["tables"]
+    landed = sum(info["rows"] for kind, info in tables.items() if kind != LEDGER)
+    record["torn"] = max(0, tables[LEDGER]["rows"] - landed)
 
 
 class _MemoryRunWriter:

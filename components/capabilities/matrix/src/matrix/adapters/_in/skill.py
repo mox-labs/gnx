@@ -597,7 +597,10 @@ jq -c '{status, reason, runtime, model, stop, usage}' .matrix/runs/RUN_ID/matrix
 jq -c 'select(.name == "matrix.agent.start") | .fields' .matrix/runs/RUN_ID/events.jsonl
 ```
 
-A run killed mid-way keeps every row it had recorded and reads `interrupted`.
+A run killed mid-way keeps every row it had recorded. The first matrix command that reads
+it (`matrix runs` will) writes `interrupted` into its `run.json` and moves any cut-short last
+line aside to `<file>.torn`, so `jq` reads every file whole. Reading a run that is still
+going, skip a line cut short mid-write: `jq -cR 'fromjson? // empty' FILE`.
 
 ## Starting from a recorded run
 

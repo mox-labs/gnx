@@ -195,6 +195,20 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **A killed run reads without matrix.** A cut-short last line broke `jq` (exit 5) and
+  DuckDB (`Malformed JSON`), though matrix's own reader skipped it, and `interrupted` was
+  only what `describe` computed: `run.json` said `running` for ever. Now the first matrix
+  reader that finds a run's writer gone (on this host) finishes its record: each file's
+  cut-short last line is moved aside to `<file>.torn`, and `run.json` is replaced with
+  `status: interrupted`, the row counts and `torn`. `data-model.md` gives the `jq` and DuckDB
+  recipes for a run still going, and the tests run them.
+- **A write the disk cuts short is taken back** before the `StoreError`, so a live run's
+  table never holds half a line.
+- **`runs()` skips a damaged record**, logging it on `matrix.store`. One unreadable
+  `run.json` made `runs()`, `matrix runs` and `list_runs` fail.
+- **`fsync=True` flushes the run's directory too**, once its files are made and once
+  `run.json` is renamed in: a file's own flush does not make its name durable.
+- **A store root that is a file is said to be one**, not reported as "run already exists".
 - **No OpenTelemetry span is left open.** The `otel` observer opened a span on each delivered
   `*.start` event and closed it on the matching `*.end`, so an end event the bounded queue
   dropped, or a queue the run left before it drained, left the span open for the life of the
