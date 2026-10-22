@@ -121,6 +121,12 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "table_unreadable",
     # the survey could not write meta.yaml or mark its archive complete
     "archive_unfinished",
+    # a table kept empty because recon could not find or keep its records: an extract: that
+    # resolves to nothing in a response that is not empty, items that are not objects,
+    # captures no filter kept
+    "extract_unresolved",
+    "records_not_objects",
+    "captures_unmatched",
 )
 
 
@@ -243,3 +249,20 @@ class CollectionError(ReconError):
     helps; any other failure is ``run_failed``, or ``config`` when the mission must change."""
 
     kind: ErrorKind = "run_failed"
+
+
+class NoRecordsError(CollectionError):
+    """A collector found nothing to keep, for a reason worth saying: an ``extract:`` that
+    resolves to nothing in a response that is not empty, items that are not objects,
+    captures no filter kept. A source that had nothing says nothing; this is the other case.
+
+    Raised before any record is yielded. The survey then keeps the table, empty, and warns
+    with the message and ``fix`` as a ``problem_kind`` problem at ``collectors.<i>.<field>``;
+    raised after a record, it fails the table as ``run_failed``, since keeping an empty
+    table would drop what came first. A collector type of any package may raise it.
+    """
+
+    def __init__(self, message: str, *, problem_kind: str, field: str, fix: str) -> None:
+        super().__init__(message, fix=fix)
+        self.problem_kind = problem_kind
+        self.field = field

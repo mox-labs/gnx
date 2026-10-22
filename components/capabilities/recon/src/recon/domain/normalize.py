@@ -22,7 +22,7 @@ from __future__ import annotations
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any
 
-from recon.domain.errors import ConfigError
+from recon.domain.errors import ConfigError, NoRecordsError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -145,14 +145,57 @@ def apply_normalize(
 def to_records(data: Any, extract: str | None) -> list[dict[str, Any]]:
     """The records in a parsed body: the value at ``extract`` (or the body), as a list of
     objects. A single object is one record; anything in a list that is not an object is
-    dropped."""
+    dropped. An empty body, or an empty list at ``extract``, has no records.
+
+    Raises NoRecordsError when a body that is not empty gives none: ``extract`` resolves to
+    nothing (absent, or null) in it, or what it names holds no object (a list of ids, a
+    string), so an empty table is never mistaken for a source that had nothing.
+    """
+    where = f"extract: {extract}" if extract else "the response"
     if extract and isinstance(data, dict | list):
-        data = resolve_path(data, extract)
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
+        found = resolve_path(data, extract)
+        if found is None and data:
+            raise NoRecordsError(
+                f"extract: {extract} resolved to nothing in a response that is not empty; "
+                f"its top level holds {_shape(data)}",
+                problem_kind="extract_unresolved",
+                field="extract",
+                fix="set extract: to the path of the records (survey once without it to see "
+                "the response whole), or read the response for an error the source sent with "
+                "a success status; a source that leaves the key out when it has no results "
+                "gives this too",
+            )
+        data = found
     if isinstance(data, dict):
         return [data]
-    return []
+    if isinstance(data, list):
+        records = [item for item in data if isinstance(item, dict)]
+        if data and not records:
+            raise _not_objects(f"the {len(data)} items at {where} are {_types(data)}, not objects")
+        return records
+    if data is None or data == "":
+        return []
+    raise _not_objects(f"{where} is a {type(data).__name__}, not an object or a list of them")
+
+
+def _not_objects(message: str) -> NoRecordsError:
+    return NoRecordsError(
+        f"{message}: a record is an object",
+        problem_kind="records_not_objects",
+        field="extract",
+        fix="point extract: at a list of objects (or at one object), not at its ids or names",
+    )
+
+
+def _shape(data: dict[str, Any] | list[Any]) -> str:
+    if isinstance(data, list):
+        return f"a list of {len(data)}"
+    keys = sorted(map(str, data))
+    return ", ".join(keys[:8]) + (f" and {len(keys) - 8} more" if len(keys) > 8 else "")
+
+
+def _types(items: list[Any]) -> str:
+    return " and ".join(sorted({type(item).__name__ for item in items}))
 
 
 def nested_records(record: dict[str, Any], *, depth: int = 4) -> tuple[str, int] | None:

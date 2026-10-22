@@ -19,7 +19,7 @@ from recon.application.survey import Survey
 from recon.composition import DEFAULT_USER_AGENT
 from recon.domain.converters import ConversionResult
 from recon.domain.documents import TableError, TableOutcome, failure_kind
-from recon.domain.errors import CollectionError
+from recon.domain.errors import CollectionError, NoRecordsError
 from recon.domain.models import ReconConfig
 from recon.domain.ratelimit import RateLimiter
 from recon.domain.substitution import substitute
@@ -711,11 +711,70 @@ class TestOneRecordHoldingTheRecords:
     ):
         """Regression (changed requirement): a correct extract and a one-record probe were
         told to set ``extract: feed.entry.author`` (arXiv) or ``results.concepts`` (OpenAlex),
-        a fix that would have made a table of authors. A collector with an extract is never
-        warned."""
+        a fix that would have made a table of authors. A collector with an extract is not
+        warned about the lists inside its one record."""
         tables, warnings = self._survey(tmp_path, {"extract": extract}, body)
         assert tables[0].records == 1 and warnings == []
 
     def test_the_right_extract_is_not_warned(self, tmp_path):
         tables, warnings = self._survey(tmp_path, {"extract": "feed.entry"})
         assert tables[0].records == 2 and warnings == []
+
+
+class TestNoPlausibleEmptyTable:
+    """Regression: a response whose records recon could not find or keep wrote an empty
+    table and "ok", which reads as a source that had nothing: a 200 carrying an error object
+    under ``extract: data``, or a list of ids. The table is kept, empty, and warned."""
+
+    def _survey(self, tmp_path, body, **entry):
+        config = ReconConfig.model_validate({
+            "catalog": [{"name": "s", "url": "https://api.example.test"}],
+            "collectors": [{"name": "hits", "type": "api", "source": "s", "endpoint": "/q",
+                            **entry}],
+        })  # fmt: skip
+        requester = ScriptedRequester({"https://api.example.test/q": json.dumps(body)})
+        events: list[dict] = []
+        clock = FixedClock()
+        archives = ArchiveFiles(clock)
+        archive = archives.create(tmp_path, "a")
+        survey = Survey(archives, clock, "0", Telemetry([], clock), events.append)
+        collectors = {"api": ApiCollector(requester, {}, DEFAULT_USER_AGENT)}
+        tables = survey.run(config, collectors, archive, started=clock.now())
+        return tables, survey.warnings, events, archive
+
+    @pytest.mark.parametrize(
+        ("body", "entry", "kind"),
+        [
+            ({"error": {"message": "quota exceeded"}}, {"extract": "data"}, "extract_unresolved"),
+            ({"ids": ["W1", "W2"]}, {"extract": "ids"}, "records_not_objects"),
+            (["W1", "W2"], {}, "records_not_objects"),
+        ],
+        ids=["error-object", "ids-at-extract", "ids-as-body"],
+    )
+    def test_a_table_recon_could_not_fill_is_kept_empty_and_warned(
+        self, tmp_path, body, entry, kind
+    ):
+        tables, [warning], events, archive = self._survey(tmp_path, body, **entry)
+        assert (tables[0].status, tables[0].records) == ("ok", 0)
+        assert (archive / "hits.jsonl").read_text() == '{"_empty": true}\n'
+        assert warning.kind == kind and warning.path == "collectors.0.extract"
+        assert warning.kind in recon.PROBLEM_KINDS
+        assert warning.message.startswith("hits: ") and warning.fix
+        assert ("table_warning", "hits") in [(e["kind"], e.get("name")) for e in events]
+
+    def test_a_source_that_had_nothing_is_not_warned(self, tmp_path):
+        tables, warnings, _, _ = self._survey(tmp_path, {"data": []}, extract="data")
+        assert tables[0].records == 0 and warnings == []
+
+    def test_a_signal_after_records_fails_the_table_rather_than_emptying_it(self, tmp_path):
+        """A collector type that says ``NoRecordsError`` after yielding records has not found
+        nothing: keeping an empty table would drop what it gave."""
+
+        class Late:
+            def collect(self, entry, source, *, captures=None):
+                yield {"a": 1}
+                raise NoRecordsError("too late", problem_kind="x", field="extract", fix="f")
+
+        config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "late"}]})
+        _archive, [table] = run(config, {"late": Late()}, tmp_path)
+        assert table.status == "error"

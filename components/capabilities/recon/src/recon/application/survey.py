@@ -22,7 +22,13 @@ A table of a type that reads ``extract:`` (``CollectorType.extracts``) that gets
 record holding a list of objects, with neither ``extract:`` nor ``normalize:`` shaping it,
 is most likely the whole response read as one record (arXiv's feed without ``extract:
 feed.entry``): the survey keeps the table and warns, naming the list's path. A table with an
-``extract:`` is never warned: its one record is a record, and its lists are its own.
+``extract:`` is not warned about its lists: its one record is a record, and they are its own.
+
+A collector that finds nothing to keep for a reason it can name raises ``NoRecordsError``
+before its first record (an ``extract:`` that resolves to nothing in a response that is not
+empty, items that are not objects, captures no filter kept): the survey keeps the table,
+empty, and warns with the reason, so an empty table never reads as a source that had
+nothing.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 from recon.application.plan import fan_out
 from recon.domain.archives import META_FORMAT_VERSION
 from recon.domain.documents import TableError, TableOutcome
-from recon.domain.errors import CollectionError, ErrorKind, Problem, ReconError
+from recon.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem, ReconError
 from recon.domain.normalize import nested_records
 from recon.domain.telemetry import COLLECT
 
@@ -189,9 +195,16 @@ class Survey:
         target = entry if output == entry.name else entry.model_copy(update={"name": output})
         start = self._clock.monotonic()
         first: list[dict[str, Any]] = []
+        nothing: NoRecordsError | None = None
         try:
             records = _keeping_first(_tagged(collector, target, source, captures), first)
-            count = self._archives.write_table(archive, output, records)
+            try:
+                count = self._archives.write_table(archive, output, records)
+            except NoRecordsError as said:
+                if first:  # records came before it: an empty table would drop them
+                    raise
+                nothing = said
+                count = self._archives.write_table(archive, output, _no_records())
         except Exception as exc:
             kind: ErrorKind = exc.kind if isinstance(exc, ReconError) else "unknown"
             fix = exc.fix if isinstance(exc, ReconError) else None
@@ -200,6 +213,16 @@ class Survey:
         seconds = round(self._clock.monotonic() - start, 2)
         span.set("recon.records", count)
         self._emit({"kind": "ok", "name": output, "records": count})
+        if nothing is not None:
+            self._warn(
+                output,
+                Problem(
+                    f"collectors.{index}.{nothing.field}",
+                    f"{output}: {nothing.message}",
+                    kind=nothing.problem_kind,
+                    fix=nothing.fix or "",
+                ),
+            )
         if count == 1:
             self._check_extract(index, entry, output, first[0])
         return table.model_copy(update={"records": count, "seconds": seconds})
@@ -223,6 +246,9 @@ class Survey:
             kind="extract_missing",
             fix=f"set extract: {path} on collector {entry.name!r}, then survey again",
         )
+        self._warn(output, warning)
+
+    def _warn(self, output: str, warning: Problem) -> None:
         self.warnings.append(warning)
         self._emit({"kind": "table_warning", "name": output, "reason": str(warning),
                     "fix": warning.fix})  # fmt: skip
@@ -271,10 +297,14 @@ def _tagged(
     as a CollectorError naming the entry and source."""
     try:
         yield from collector.collect(entry, source, captures=captures)
-    except CollectorError:
+    except (CollectorError, NoRecordsError):
         raise
     except Exception as exc:
         raise CollectorError(entry.name, source.name if source else None, exc) from exc
+
+
+def _no_records() -> Generator[dict[str, Any], None, None]:
+    yield from ()
 
 
 def _keeping_first(

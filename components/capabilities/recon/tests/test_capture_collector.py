@@ -6,12 +6,13 @@ from pathlib import Path
 
 import pytest
 
+import recon
 from recon.adapters._out.capture_collector import CaptureCollector, body_format
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.cli_collector import CliCollector
 from recon.adapters._out.system_clock import SystemClock
 from recon.application.captures import record_hook_payload
-from recon.domain.errors import CollectionError, ConfigError
+from recon.domain.errors import CollectionError, ConfigError, NoRecordsError
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from tests.recon_fakes import run_survey as run
 
@@ -53,7 +54,18 @@ def test_match_filters_by_glob(tmp_path):
     titles = [r["title"] for r in _collect(tmp_path, match={"collector": "mcp__exa__*"})]
     assert titles == ["exa", "exa-crawl"]
     assert [r["title"] for r in _collect(tmp_path, match={"source": "github"})] == ["gh"]
-    assert _collect(tmp_path, match={"kind": "http"}) == []
+
+
+def test_a_filter_that_keeps_no_capture_says_so(tmp_path):
+    """Changed requirement: a match that kept none of the captures read gave an empty table
+    and "ok", as a log with nothing in it would."""
+    _external(_log(tmp_path), "mcp__exa__search", {"title": "exa"})
+    with pytest.raises(NoRecordsError) as excinfo:
+        _collect(tmp_path, match={"kind": "http"})
+    found = excinfo.value
+    assert (found.problem_kind, found.field) == ("captures_unmatched", "match")
+    assert found.problem_kind in recon.PROBLEM_KINDS
+    assert "1 capture" in str(found) and "kind" in str(found)
 
 
 def test_text_bodies_parse_as_lines(tmp_path):
@@ -152,6 +164,35 @@ def test_fan_out_keeps_each_sources_captures(tmp_path):
     entry = CollectorEntry(name="c", type="capture")
     source = SourceEntry(name="github", type="local", url=str(tmp_path))
     assert [r["title"] for r in collector.collect(entry, source)] == ["gh"]
+
+
+def test_an_unpinned_collector_whose_source_no_capture_has_says_so(tmp_path):
+    """Regression: fanned out over a catalog, a capture collector keeps only the captures
+    whose ``source`` is that catalog source's name; MCP captures carry the server's name, so
+    a catalog of other names gave tables of 0 rows and "ok"."""
+    _external(_log(tmp_path), "mcp__exa__search", {"title": "exa"})
+    entry = CollectorEntry(name="c", type="capture")
+    source = SourceEntry(name="papers", type="local", url=str(tmp_path))
+    with pytest.raises(NoRecordsError) as excinfo:
+        list(CaptureCollector(tmp_path).collect(entry, source))
+    found = excinfo.value
+    assert found.problem_kind == "captures_unmatched"
+    assert "'papers'" in str(found) and "match" in found.fix and '"*"' in found.fix
+
+
+def test_an_extract_no_kept_capture_has_says_so(tmp_path):
+    _external(_log(tmp_path), "t", {"error": "rate limited"})
+    with pytest.raises(NoRecordsError) as excinfo:
+        _collect(tmp_path, extract="results")
+    assert excinfo.value.problem_kind == "extract_unresolved"
+
+
+def test_a_capture_without_the_extract_is_skipped_when_others_have_it(tmp_path):
+    """A log holds many tools' results: the extract fits some bodies and not others."""
+    log = _log(tmp_path)
+    _external(log, "t", {"error": "rate limited"})
+    _external(log, "t", {"results": [{"title": "A"}]})
+    assert _collect(tmp_path, extract="results") == [{"title": "A"}]
 
 
 def test_glob_over_archive_logs(tmp_path):
