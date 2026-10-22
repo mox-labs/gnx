@@ -341,6 +341,17 @@ class TestEveryProblemWithAPath:
         )
         assert plan.valid, plan.problems
 
+    def test_url_in_a_command_with_no_source_to_fill_it_is_a_plan_problem(
+        self, registry: Plugins
+    ) -> None:
+        """Regression: ``{url}`` in a ``cli`` run with no source planned valid and failed only
+        when surveyed, though the plan knows the run has no source. A type checks each run
+        against its source (``CollectorType.check_run``)."""
+        plan = _plan({"collectors": [{"name": "c", "type": "cli", "run": "echo {url}"}]}, registry)
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.0.run", "unresolved")
+        assert "source:" in (problem.fix or "")
+
     def test_braces_a_command_owns_are_passed_as_written(self, registry: Plugins) -> None:
         """In ``run:`` recon fills ``{url}`` and ``{pattern}``; any other ``{...}`` is the
         command's own (cargo's ``--format '{p} {f}'``, a jq object) and is not checked."""

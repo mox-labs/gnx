@@ -184,14 +184,11 @@ class CliCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        run = _settings(entry).run
-        assert run is not None  # _check requires it, and the plan holds it
-        if source is None and "{url}" in run:
+        for problem in _check_run(entry, source):  # the plan's check, for a direct caller
             raise CollectionError(
-                f"collector {entry.name!r}: run: uses {{url}}, the source's url, and this run "
-                "has no source; nothing was run",
+                f"collector {entry.name!r}: {problem.message}; nothing was run",
                 kind="config",
-                fix="pin a catalog source with source:, or take {url} out of run:",
+                fix=problem.fix,
             )
 
         cwd = _cwd(source)
@@ -300,6 +297,22 @@ def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[s
 # --- Registration ---
 
 
+def _check_run(entry: CollectorEntry, source: SourceEntry | None) -> list[Problem]:
+    """``{url}`` is the source's url, so a run with no source cannot fill it."""
+    run = _settings(entry).run
+    if source is not None or not run or "{url}" not in run:
+        return []
+    return [
+        Problem(
+            "run",
+            "run: uses {url}, the source's url, and this run has no source",
+            kind="unresolved",
+            fix="pin a catalog source with source:, or take {url} out of run:",
+            got=run,
+        )
+    ]
+
+
 def _check(entry: CollectorEntry) -> list[Problem]:
     settings = _settings(entry)
     if not settings.run:
@@ -344,5 +357,6 @@ collector_type = CollectorType(
     accepts_kinds=frozenset({"local"}),
     normalizes=True,
     check=_check,
+    check_run=_check_run,
     describe=_describe,
 )

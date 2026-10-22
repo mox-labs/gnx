@@ -129,6 +129,10 @@ def _no_problems(entry: CollectorEntry) -> list[Problem]:
     return []
 
 
+def _no_run_problems(entry: CollectorEntry, source: SourceEntry | None) -> list[Problem]:
+    return []
+
+
 def _no_description(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
     return {}
 
@@ -182,6 +186,10 @@ class CollectorType:
     - ``check`` returns problems in an entry, with paths relative to it (``run``,
       ``endpoint``); the planner prefixes ``collectors.<i>.``. It is called only for an
       entry whose settings ``settings`` accepts. Pure: no I/O.
+    - ``check_run`` returns problems in one run of an entry against the source it runs
+      against (``None`` for a run with no source), for what ``check`` cannot see without
+      the catalog (a ``cli`` run's ``{url}`` with no source to fill it); paths are relative
+      to the entry, as ``check``'s are. Pure: no I/O.
     - ``describe`` returns what a planned run would do (the URL, the command) for a
       reviewer. Pure: no I/O, no network.
     - ``preflight`` says, in words, what a dry run does to check a run of the type (``starts
@@ -201,6 +209,9 @@ class CollectorType:
     normalizes: bool = False
     extracts: bool = False
     check: Callable[[CollectorEntry], list[Problem]] = field(default=_no_problems)
+    check_run: Callable[[CollectorEntry, SourceEntry | None], list[Problem]] = field(
+        default=_no_run_problems
+    )
     describe: Callable[[CollectorEntry, SourceEntry | None], dict[str, Any]] = field(
         default=_no_description
     )

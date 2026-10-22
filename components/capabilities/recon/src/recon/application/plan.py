@@ -187,6 +187,7 @@ def build_plan(
             # A type's describe sees only a source whose own settings were accepted.
             judged = source is None or source.name not in refused
             if ctype is not None and checked is not None and judged:
+                problems.extend(_run_problems(i, checked, source, ctype))
                 runs.append(_planned_run(checked, output, source, ctype))
 
     if is_directory is not None:
@@ -521,6 +522,19 @@ def _entry_problems(
             )
         )
     return problems, checked
+
+
+def _run_problems(
+    i: int, entry: CollectorEntry, source: SourceEntry | None, ctype: CollectorType
+) -> list[Problem]:
+    """The problems the entry's type finds in one of its runs, at paths under the entry."""
+    at = f"collectors.{i}"
+    return [
+        Problem(
+            f"{at}.{p.path}" if p.path else at, p.message, p.kind, p.fix, p.got, p.allowed, p.source
+        )  # fmt: skip
+        for p in ctype.check_run(entry, source)
+    ]
 
 
 def _kind_problem(
