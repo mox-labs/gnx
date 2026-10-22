@@ -220,8 +220,12 @@ run lists it and the survey fails that table as `config`.
 repository, a mailbox, a drive), and its answer becomes the table, and with `preserve_raw`
 the capture: an archive of an `mcp` mission deserves the care its server's data does. In a
 capture, every credential value the source resolved (its token, its helper's headers, the
-variables given to a stdio server) is replaced by the redaction marker wherever it appears
-in the result; a credential the tool returns of its own is in the table as returned.
+variables given to a stdio server, each cookie's value) is replaced by the redaction marker
+wherever it stands whole in the result: as a whole JSON string, a header's value or a query
+parameter's, or any run of characters not joined to a letter, digit, `_` or `-` on either
+side. A piece of other text that happens to equal a short credential (the `2` of `2026`, for
+a header `X-Api-Key-Version: 2`) is kept. A credential the tool returns of its own is in the
+table as returned.
 
 **Telemetry.** Each call is a `recon.mcp.call` span with the method, the tool's name and
 the source, never its arguments or its result. FastMCP's own spans are not made for recon's

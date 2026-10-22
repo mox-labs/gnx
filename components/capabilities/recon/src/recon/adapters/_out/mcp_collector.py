@@ -59,7 +59,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict
 
-from recon.domain.capture import REDACTED, credential_values
+from recon.domain.capture import credential_values, redact_credentials
 from recon.domain.collector import CollectorType, Requirement
 from recon.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem
 from recon.domain.http import REDACTED as REPORTED_REDACTED
@@ -229,7 +229,9 @@ class McpCollector:
                 status=None,
                 content_type="application/json",
                 headers={},
-                body=_redacted(json.dumps(raw, ensure_ascii=False), server.secrets).encode(),
+                body=redact_credentials(
+                    json.dumps(raw, ensure_ascii=False), server.secrets
+                ).encode(),
             )
         if settings.tool is not None:
             body = _tool_body(result, server.tools or {}, settings, source.name)
@@ -626,12 +628,6 @@ def _matches(template: str, uri: str) -> bool:
         if part
     )
     return re.fullmatch(pattern, uri) is not None
-
-
-def _redacted(text: str, secrets: list[str]) -> str:
-    for secret in sorted({s for s in secrets if s}, key=len, reverse=True):
-        text = text.replace(secret, REDACTED)
-    return text
 
 
 def _empty(where: str, key: str) -> NoRecordsError:

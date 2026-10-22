@@ -15,7 +15,7 @@ import pytest
 from recon.adapters._out.capture_files import FilesystemCaptureLog, read_captures
 from recon.adapters._out.system_clock import SystemClock
 from recon.application.captures import record_hook_payload
-from recon.domain.capture import REDACTED, redact_headers
+from recon.domain.capture import REDACTED, credential_values, redact_credentials, redact_headers
 from recon.domain.errors import CollectionError, ConfigError
 
 
@@ -67,6 +67,35 @@ def test_ordinary_headers_pass_through_untouched() -> None:
     headers = {"Content-Type": "text/html", "ETag": 'W/"abc"', "Server": "nginx"}
 
     assert redact_headers(headers) == headers
+
+
+# --- a credential recon sends, in a captured result ---
+
+
+def test_a_credential_is_redacted_where_it_stands_whole_and_nowhere_else() -> None:
+    """Regression: a credential was redacted as a substring wherever it occurred, so a
+    credential-named header with a short value (``X-Api-Key-Version: 2``) blanked every ``2``
+    in the capture, ``2026`` and ``v2`` included. It is replaced where it stands whole: as
+    the whole value, or as a token not run into other letters, digits, ``_`` or ``-``."""
+    credentials = credential_values({"Authorization": "Bearer t0k", "X-Api-Key-Version": "2"})
+    text = '{"auth": "Bearer t0k", "url": "/q?key=t0k&n=1", "year": 2026, "api": "v2", "n": 2}'
+    assert redact_credentials(text, credentials) == (
+        f'{{"auth": "{REDACTED}", "url": "/q?key={REDACTED}&n=1", "year": 2026, "api": "v2", '
+        f'"n": {REDACTED}}}'
+    )
+
+
+def test_each_cookie_s_value_is_a_credential_and_the_rest_of_the_header_is_not() -> None:
+    """Regression: a value's first word was read as an auth scheme, so for ``Cookie: sid=abc;
+    theme=dark`` everything after the first space (``theme=dark``) was taken for the
+    credential. A cookie header's credentials are its whole value and each cookie's value."""
+    found = credential_values({"Cookie": "sid=s3ss10n; theme=dark"})
+    assert found == ["sid=s3ss10n; theme=dark", "s3ss10n", "dark"]
+    assert credential_values({"Authorization": "Basic dXNlcjpwYXNz"}) == [
+        "Basic dXNlcjpwYXNz",
+        "dXNlcjpwYXNz",
+    ]
+    assert credential_values({"X-Org": "acme"}) == []
 
 
 # --- the line format ---
