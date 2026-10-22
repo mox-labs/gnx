@@ -27,7 +27,9 @@ from ix.domain.kind import (
     Kinds,
     arrivals,
     check_options,
+    fill,
     kinds,
+    placeholders,
     seconds,
 )
 from ix.domain.schema import DeclarationFile
@@ -275,6 +277,23 @@ class TestOptions:
             "duration": "{length}",
         }
         assert check_options(load, options, "probes.0") == []
+
+    def test_a_whole_value_placeholder_keeps_its_levels_type(self) -> None:
+        """Regression: ``fill`` wrote every level as text, so ``{temperature: "{t}"}`` reached
+        a runtime as ``"0.5"`` and ``{rounds: "{r}"}`` as ``"2"``. A value that is one
+        placeholder becomes the level itself; one inside more text is written into it."""
+        bound = {"t": 0.5, "r": 2, "on": True, "size": "1MiB"}
+        assert fill({"temperature": "{t}", "loop": {"rounds": "{r}"}}, bound) == {
+            "temperature": 0.5, "loop": {"rounds": 2},
+        }  # fmt: skip
+        assert fill(["{on}", "--size={size}", "x{r}"], bound) == [True, "--size=1MiB", "x2"]
+        assert fill("{unknown}", bound) == "{unknown}"
+
+    def test_doubled_braces_are_a_literal_brace(self) -> None:
+        """``{{name}}`` is the text ``{name}``: no placeholder, and filled to one brace each."""
+        assert placeholders("{{x}} and {y} and {{ z }}") == ["y"]
+        assert fill("f = {{a: {y}}}", {"y": 1, "a": 2}) == "f = {a: 1}"
+        assert fill("{{y}}", {"y": 1}) == "{y}"
 
     def test_a_kind_cannot_make_an_option_depend_on_one_it_does_not_take(self) -> None:
         declared = {

@@ -632,7 +632,8 @@ class TestGenresAndKindsCommands:
         assert load["schema"] == "ix.v1.kind"
         assert load["options"]["duration"] == {
             "type": "duration", "required": True, "allowed": [], "required_when": {},
-            "choices": {}, "within": "", "description": "how long the measured load lasts",
+            "choices": {}, "within": "", "binds": [],
+            "description": "how long the measured load lasts",
         }  # fmt: skip
         command = document["kinds"]["ix.v1.subject.process"]["options"]["command"]
         assert (command["type"], command["within"]) == ("command", "cwd")

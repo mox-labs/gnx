@@ -33,7 +33,7 @@ from ix.domain.analysis import ANALYSES, analysis_unsupported
 from ix.domain.design import Design, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError
 from ix.domain.experiment import Experiment, ProbeConfig
-from ix.domain.kind import fill, placed
+from ix.domain.kind import fill, per_cell, placed
 from ix.domain.ports import Liveness, Preflight, Recorded, Sensed, StandIn, Traced
 from ix.domain.registration import deviations
 from ix.domain.run import (
@@ -296,17 +296,20 @@ def unstartable(
     experiment: Experiment, subjects: Mapping[str, Subject], base: str
 ) -> tuple[str, ...]:
     """``subjects.<name>: <why>`` for each subject its adapter can already tell will not start
-    on this host (a command that is not there, an unset credential). A subject whose adapter
-    is not a :class:`Preflight` has nothing to tell; one whose kind has no adapter in
-    ``subjects`` is skipped, as that is told as a kind with no adapter."""
+    on this host (a command that is not there, an unset credential), in any cell: each
+    cell's options are asked as its trials will have them. A subject whose adapter is not a
+    :class:`Preflight` has nothing to tell; one whose kind has no adapter in ``subjects`` is
+    skipped, as that is told as a kind with no adapter."""
     reasons: list[str] = []
     for name, subject in experiment.subjects.items():
         adapter = subjects.get(schema.url("subject", subject.kind))
         if not isinstance(adapter, Preflight):
             continue
-        reason = adapter.unstartable(subject, base=base)
-        if reason is not None:
-            reasons.append(f"subjects.{name}: {reason}")
+        for options in per_cell(subject.options, experiment.factors):
+            filled = subject.model_copy(update={"options": options})
+            reason = adapter.unstartable(filled, base=base)
+            if reason is not None and f"subjects.{name}: {reason}" not in reasons:
+                reasons.append(f"subjects.{name}: {reason}")
     return tuple(reasons)
 
 

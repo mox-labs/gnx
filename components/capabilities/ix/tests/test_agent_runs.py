@@ -1095,6 +1095,76 @@ class TestAVerdictTracesToTheModelThatAnswered:
             assert failed["usage"]["input_tokens"] == 9 and len(failed["attempt_log"]) == 2
 
 
+class _RecorderConfig(BaseModel):
+    """A stand-in runtime's config whose ``rounds`` keeps whatever type it is given."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rounds: Any = None
+    default: str | None = None
+
+
+class TestFactorsDriveAgentSettings:
+    def test_a_sweep_over_a_loops_rounds_runs_each_level_as_an_integer(
+        self, tmp_path: Path
+    ) -> None:
+        """Q11 (the rounds curve): ``characterize`` over the loop's ``rounds`` (1, 2, 3) on a
+        stand-in. Each level reaches the loop and the runtime as the integer it was written
+        as, and each trial takes that many rounds; a loop of one round is the first answer
+        alone."""
+        configs: list[Any] = []
+        asked: list[str] = []
+
+        def build(config: _RecorderConfig) -> Scripted:
+            configs.append(config.rounds)
+            runtime = Scripted()
+
+            def answer(task: str) -> matrix.AgentResponse:
+                asked.append(task)
+                return matrix.AgentResponse(content=config.default or "a draft", num_turns=1)
+
+            runtime.answer = answer
+            return runtime
+
+        registry = _registry(_fires())
+        recorder = "acme.v1.agent-runtime.recorder"
+        registry.register("agent-runtime", recorder, build, config=_RecorderConfig, stand_in=True)
+        data = {
+            "name": "rounds",
+            "question": "How do the rounds an agent takes bend with the loop's limit?",
+            "genre": "characterize",
+            "factors": {"rounds": [1, 2, 3]},
+            "subjects": {
+                "agent": {
+                    "kind": "agent-session",
+                    "runtime": recorder,
+                    "loop": {"strategy": "self-review", "rounds": "{rounds}"},
+                    "runtime_options": {"rounds": "{rounds}"},
+                }
+            },
+            "probes": [{"id": "ask", "kind": "prompt", "prompt": "Write it.",
+                        "mock_response": "a draft"}],
+            "primary": {"metric": "rounds"},
+            "repeats": 3,
+        }  # fmt: skip
+        lab = tmp_path / "rounds"
+        lab.mkdir()
+        (lab / "experiment.yaml").write_text(yaml.safe_dump(data))
+        root = Root(registry=registry, settings=_settings())
+        assert ix.validate(lab).valid  # validated through the default root: no adapter needed
+        report = root.run(lab, exploratory=True)
+        assert report.status == "completed" and report.simulated == "all"
+        built = {type(level) for level in configs}
+        assert built == {int} and set(configs) == {1, 2, 3}
+        by_cell = {}
+        for interaction in _rows(report, "ix.v1.interaction"):
+            usage = interaction["observations"]["usage"]
+            by_cell.setdefault(usage["rounds"], 0)
+            by_cell[usage["rounds"]] += 1
+        assert by_cell == {1: 3, 2: 3, 3: 3}
+        assert len(asked) == 3 * (1 + 2 + 3)
+
+
 class _GoesDown:
     """An environment that is lost after its second trial: the run fails before it senses."""
 

@@ -305,6 +305,16 @@ def register(registry):
   sensor under `sensors:` settles an ambiguity or gives it options;
 - a probe's truth key that no sensor in use reads is refused (`truth_unclaimed`), so a typo
   does not pass silently;
+- a `{name}` placeholder must be bound to what a trial fills it with
+  (`unbound_placeholder`). A subject's options are filled with the cell's levels, so a
+  factor binds them: `characterize` over `factors: {rounds: [1, 2, 3]}` with `loop:
+  {strategy: self-review, rounds: "{rounds}"}` runs each level. A value that is one
+  placeholder takes the level with its type (`3`, not `"3"`), and each cell's options are
+  reviewed as its trials will have them. A probe's options, inline or from a file, are
+  filled with the levels, the subject's options and its facets: a factor, an option every
+  subject sets, or a facet every subject's kind offers (`{pid}`). A loop's `prompt` fills
+  `{prompt}`, `{response}`, `{until}` and `{failures}` itself. `{{name}}` is the text
+  `{name}`;
 - **a model-judged metric never decides.** Whether a metric is judged is the sensor's
   declaration, not the author's. A judged metric is refused as `primary` and as a guardrail
   in every genre with a verdict (`judged_gate`); it can be reported under `metrics:`.

@@ -101,7 +101,7 @@ class TestTheFilesACommandNames:
     ) -> None:
         """The program and each argument are candidates, relative to ``cwd`` for a process
         and to the experiment for a session's ``setup``; only those that name a file are
-        digested, never expanded, and a placeholder left unfilled is not a path."""
+        digested, never expanded; a level that is a number (``{port}``) is no path."""
         experiment = Experiment.model_validate(
             {
                 "name": "commands",
@@ -124,8 +124,6 @@ class TestTheFilesACommandNames:
             ("subjects.server", "command", "app/serve", "program", True),
             ("subjects.server", "command", "app/conf/*.yaml", "file", True),
             ("subjects.server", "command", "app/--port", "file", True),
-            ("subjects.server", "command", "app/1", "file", True),
-            ("subjects.server", "command", "app/2", "file", True),
             ("subjects.agent", "setup", "python3", "program", True),
             ("subjects.agent", "setup", "seed.py", "file", True),
         ]

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -536,26 +536,55 @@ def _decision(
     return problems
 
 
-def _placeholders(experiment: Experiment) -> list[Problem]:
-    """An inline probe's ``{name}`` must be a factor, or an option every subject sets."""
-    shared = [set(subject.options) for subject in experiment.subjects.values()]
-    bound = sorted(set(experiment.factors) | (set.intersection(*shared) if shared else set()))
+def _unbound(path: str, value: Any, bound: Sequence[str], fix: str) -> list[Problem]:
+    """A problem for each ``{name}`` in ``value`` that is not ``bound``."""
+    return [
+        problem(
+            path,
+            kind="unbound_placeholder",
+            message=f"{{{name}}} is bound to nothing",
+            fix=fix.format(name=name)
+            + f", or write the value out; {{{{{name}}}}} is the text {{{name}}}",
+            allowed=tuple(bound),
+            got=name,
+        )
+        for name in sorted(set(placeholders(value)) - set(bound))
+    ]
+
+
+def _placeholders(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> list[Problem]:
+    """Each ``{name}`` must be bound to what a trial fills it with. A subject's options are
+    filled with the cell's levels: a factor, or a placeholder the option's kind says the
+    adapter fills itself (``binds``). A probe's options, inline or from a file, are filled
+    with the cell's levels, the options of the subject it is applied to and the facets that
+    subject offers: a factor, an option every subject sets, or a facet every subject's kind
+    offers. A facet that is also an option of the kind (a process's ``url``) is offered only
+    when the option is set, so it binds only as that option."""
+    factors = sorted(experiment.factors)
     problems: list[Problem] = []
-    for index, probe in enumerate(experiment.probes):
+    shared: list[set[str]] = []
+    for name, subject in experiment.subjects.items():
+        kind = kinds.get("subject", subject.kind)
+        facets = set(kind.offers) - set(kind.options) if kind else set()
+        shared.append(set(subject.options) | facets)
+        for key, value in subject.options.items():
+            if key.startswith(NOTE_PREFIX):
+                continue
+            option = kind.options.get(key) if kind else None
+            binds = sorted({*factors, *(option.binds if option else ())})
+            problems += _unbound(
+                f"subjects.{name}.{key}", value, binds, "declare factors: {{{name}: [...]}}"
+            )
+    bound = sorted(set(factors) | (set.intersection(*shared) if shared else set()))
+    inline = bool(experiment.probes)
+    for index, probe in enumerate(probes.probes if probes else ()):
         for key, value in probe.options.items():
-            for name in sorted(set(placeholders(value))):
-                if name not in bound:
-                    problems.append(
-                        problem(
-                            f"probes.{index}.{key}",
-                            kind="unbound_placeholder",
-                            message=f"{{{name}}} is bound to nothing",
-                            fix=f"declare factors: {{{name}: [...]}}, set {name!r} on every "
-                            "subject, or write the value out",
-                            allowed=bound,
-                            got=name,
-                        )
-                    )
+            problems += _unbound(
+                f"probes.{index if inline else probe.id}.{key}",
+                value,
+                bound,
+                "declare factors: {{{name}: [...]}}, or set {name!r} on every subject",
+            )
     return problems
 
 
@@ -771,7 +800,7 @@ def check(
     instruments = select_sensors(experiment, kinds, probes)
     problems += instruments.problems
     problems += _decision(experiment, genre, instruments, probes)
-    problems += _placeholders(experiment)
+    problems += _placeholders(experiment, kinds, probes)
     problems += _probes(experiment, probes, kinds, instruments)
 
     design = (

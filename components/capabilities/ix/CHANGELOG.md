@@ -295,6 +295,22 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   (relative to the experiment) are now `command`s. An edit is a deviation (`file server.py
   changed after registration`). A program found on PATH and an argument that names no file
   are not digested, and `command: []` is refused at validate (it used to fail at preflight).
+- **Factors drive an agent's settings.** A `characterize` sweep over a subject's settings
+  (the loop's `rounds`, `max_turns`, a runtime option) ran wrongly or not at all:
+  - a level reached the option as text (`"0.5"`, `"2"`); a value that is one placeholder
+    now takes the level with its type;
+  - a subject with a placeholder was neither reviewed nor preflighted; each cell's options
+    now are, as its trials will have them, so `rounds: "{rounds}"` starts and a runtime
+    option the runtime does not take is still `option_unknown`;
+  - a placeholder in a subject's options, or in a probe file, was never checked, so
+    `{sise}` ran as the text `{sise}`; both are now `unbound_placeholder` unless bound;
+  - a probe's facet placeholder (`{pid}`) was refused; a facet every subject's kind offers
+    now binds, and a kind option declares the placeholders its adapter fills itself
+    (`binds`: a loop's `{prompt}` and `{response}`);
+  - there was no way to write a literal `{name}`: `{{name}}` is that text.
+  - A loop's `rounds` may be 1: the first answer alone, so a sweep can start from no loop.
+  A probe file whose prompt holds a `{name}` meant as text is now refused until it is
+  written `{{name}}`.
 
 ## 0.5.0 — 2026-10-19
 

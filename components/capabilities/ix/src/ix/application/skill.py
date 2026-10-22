@@ -740,8 +740,12 @@ whether it came from the experiment, the genre or ix.
   (`10pp`) or a share (`0.05`), never in percent (`unit_mismatch`), and below the whole range
   (`1`, `100pp`). A rate's threshold is a share strictly between 0 and 1 (`0.9`, not `90%`
   or `90`): one at 0 or 1 or beyond is passed by every rate or by none (`invalid_value`).
-- **Placeholders.** In an inline probe, `{{name}}` is a factor, or an option every subject
-  sets; anything else is `unbound_placeholder`.
+- **Placeholders.** `{{name}}` in a subject's option is a factor's level, filled per cell;
+  a value that is one placeholder takes the level with its type (`max_turns: "{{turns}}"`
+  is the integer). In a probe, inline or from a file, it is a factor, an option every
+  subject sets, or a facet every subject's kind offers (`{{pid}}`). A loop's `prompt` fills
+  `{{prompt}}`, `{{response}}`, `{{until}}` and `{{failures}}` itself. Anything else is
+  `unbound_placeholder`. `{{{{name}}}}` is the text `{{name}}`, for code in a prompt.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the
   experiment, one file per probe (`.md`, `.yaml`): a markdown file's text is the prompt,
   and its frontmatter keys other than `id` (default: the file's name), `kind` (default

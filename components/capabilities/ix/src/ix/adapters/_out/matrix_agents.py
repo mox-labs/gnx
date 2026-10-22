@@ -66,7 +66,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ix.adapters._out.python_checks import code_in, run_cases
 from ix.domain.errors import IxError
-from ix.domain.kind import fill, placeholders, seconds
+from ix.domain.kind import fill, seconds
 from ix.domain.ports import StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, SubjectError, Target
@@ -191,8 +191,9 @@ class Loop(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     strategy: Literal["self-review", "test-feedback"]
-    #: Every round, the first included.
-    rounds: int = Field(default=3, ge=2)
+    #: Every round, the first included: 1 is the first answer alone, so a sweep over the
+    #: rounds can start from no loop at all.
+    rounds: int = Field(default=3, ge=1)
     #: The next round's task: ``{prompt}``, ``{response}`` and, for test-feedback,
     #: ``{failures}`` are filled in.
     prompt: str | None = None
@@ -612,10 +613,8 @@ class AgentSessionSubject:
 
     def review(self, options: Mapping[str, Any], around: Surroundings) -> list[Problem]:
         """A runtime option the runtime does not declare, and a session that leaves its
-        sensors nothing to observe; nothing for options of the wrong shape, or filled in per
-        cell."""
-        if any(placeholders(value) for value in options.values()):
-            return []
+        sensors nothing to observe; nothing for options of the wrong shape. ``validate``
+        asks it once for each cell's options."""
         try:
             parsed = SessionOptions.model_validate(options)
         except ValidationError:
@@ -645,8 +644,6 @@ class AgentSessionSubject:
             first = error.errors()[0]
             where = ".".join(str(part) for part in first["loc"])
             return f"{where}: {first['msg']}"
-        if any(placeholders(value) for value in subject.options.values()):
-            return None  # filled per cell: told when the trial starts
         named = [*options.fixtures, *options.skills, *filter(None, [options.definition])]
         named += [p if isinstance(p, str) else str(p.get("path", "")) for p in options.plugins]
         for path in named:

@@ -56,7 +56,6 @@ from ix.adapters._out.matrix_agents import (
     Sessions,
 )
 from ix.domain.errors import IxError
-from ix.domain.kind import placeholders
 from ix.domain.ports import StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, Target
@@ -221,11 +220,9 @@ class ModelCallSubject:
 
     def review(self, options: Mapping[str, Any], around: Surroundings) -> list[Problem]:
         """A runtime option the runtime does not declare, and a sensor or probe that would
-        read what a call never leaves; nothing for options of the wrong shape, or filled in
-        per cell."""
+        read what a call never leaves; nothing for options of the wrong shape. ``validate``
+        asks it once for each cell's options."""
         found = _unobservable(around)
-        if any(placeholders(value) for value in options.values()):
-            return found
         try:
             parsed = CallOptions.model_validate(options)
         except ValidationError:
@@ -273,8 +270,6 @@ class ModelCallSubject:
             first = error.errors()[0]
             where = ".".join(str(part) for part in first["loc"])
             return f"{where}: {first['msg']}"
-        if any(placeholders(value) for value in subject.options.values()):
-            return None  # filled per cell: told when the trial starts
         try:
             runtime = self._runtimes.build(MODEL_RUNTIME, options.runtime, options.runtime_options)
             runtime.check(options.model)
