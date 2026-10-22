@@ -59,11 +59,15 @@ EXPORT_VARIABLES = (
     "OTEL_METRICS_EXPORTER",
 )
 
+#: The tag of this release, which the install fix names: recon is installed from the
+#: repository at its tag, never from a branch whose head may be another release.
+RELEASE_TAG = "recon-v0.12.0"
+
 _INSTALL_FIX = (
     "reinstall recon, which depends on the OpenTelemetry SDK and its OTLP exporters: uv tool "
     'install --reinstall "recon @ '
-    'git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/recon"; or '
-    "unset the OTEL_* variables"
+    f'git+https://github.com/mox-labs/gnx@{RELEASE_TAG}#subdirectory=components/capabilities/recon"'
+    "; or unset the OTEL_* variables"
 )
 
 

@@ -51,11 +51,11 @@ class AuthConfig(BaseModel):
 class RateLimitConfig(BaseModel):
     """Per-source rate limiting via token bucket: ``rps`` tokens a second, at most ``burst``
     held. Each is positive: a bucket that never refills, or holds no token, never lets a
-    request go."""
+    request go. ``rps`` is finite: no rate is written ``.inf``."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    rps: float = Field(default=10.0, gt=0)
+    rps: float = Field(default=10.0, gt=0, allow_inf_nan=False)
     burst: int = Field(default=3, ge=1)
 
 
@@ -81,7 +81,8 @@ class SourceEntry(BaseModel):
     ``max_bytes`` bounds one HTTP response body from this source, counted after any
     content-encoding is undone. A larger body fails the table instead of being buffered.
     ``timeout`` bounds, in seconds of wall time, one send of a request (from connecting to
-    its body's last byte, every redirect it follows included) and a ``cli`` command.
+    its body's last byte, every redirect it follows included) and a ``cli`` command; it is
+    finite, as no send is unbounded.
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
@@ -92,7 +93,7 @@ class SourceEntry(BaseModel):
     auth: AuthConfig = AuthConfig()
     rate_limit: RateLimitConfig = RateLimitConfig()
     user_agent: str | None = None
-    timeout: float = Field(default=60.0, gt=0)
+    timeout: float = Field(default=60.0, gt=0, allow_inf_nan=False)
     max_bytes: int = Field(default=DEFAULT_MAX_BYTES, gt=0)
 
     @property

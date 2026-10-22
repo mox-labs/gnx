@@ -84,8 +84,8 @@ EXIT_NEXT: dict[str, str] = {
     "config": "fix each problem at its `path` as its `fix` says, then plan again; when "
     "`complete` is false, more problems may follow the fix",
     "not_found": "run the command the error's `fix` names",
-    "transient": "raise the deadline: a table's error names, since a retry fails the same "
-    "way; else survey again later",
+    "transient": "raise a `deadline:` a table's error names (a retry fails the same way); "
+    "else survey again later",
     "auth": "set the variable the failing source's auth.env names to a valid key, then "
     "survey again",
     "conflict": "add --replace to overwrite it, or choose another mission name",

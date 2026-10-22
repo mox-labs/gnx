@@ -7,8 +7,10 @@ libraries (pdfminer, python-docx, python-pptx, openpyxl, ...).
 Lazy-imports markitdown so plain `import recon` stays fast, and builds it once per converter.
 A document is converted by the content type its server gave, not by a guess from its bytes,
 and from its bytes alone. recon builds markitdown with only the converters in
-``_CONVERTERS``, none of which reaches the network or starts a process. Left out, as audited
-for markitdown 0.1.5:
+``_CONVERTERS``, none of which reaches the network or starts a process. (Importing markitdown
+starts two local ones, once per process: ``uname -p`` and ``file -b <python>``, from Python's
+``platform`` module, which ``azure.identity`` reads when markitdown's Document Intelligence
+module imports it. Neither reaches the network.) Left out, as audited for markitdown 0.1.5:
 
 * the audio converter, which uploads the whole recording to Google's speech API;
 * the YouTube converter, which asks YouTube for a watch page's transcript and prints its

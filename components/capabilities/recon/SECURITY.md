@@ -110,7 +110,10 @@ Document Intelligence converter, which uploads the document; markitdown's plugin
 exiftool, which markitdown would run on images and audio. The image and PPTX converters
 call a model only when given a client, and recon gives none. A converter a later markitdown
 adds is not registered until it has been read and listed. Audio is therefore not converted:
-it fails the table, naming the document.
+it fails the table, naming the document. Importing markitdown itself starts two local
+processes once per recon process, `uname -p` and `file -b <python>`: its Document
+Intelligence module imports `azure.identity`, which reads the platform through Python's
+`platform` module. Neither reaches the network.
 
 ### 4. Capture logs → the capture collector
 
