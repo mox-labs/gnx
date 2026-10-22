@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import nullcontext
 from typing import Any
 
 import pytest
@@ -15,15 +16,19 @@ from matrix import (
     PROMPT,
     CompilationError,
     ConfigError,
+    Event,
     Inputs,
     MatrixConfig,
     ModelCall,
+    ModelRequest,
     ModelRuntimeError,
     ModelStep,
     ModelStepConfig,
     NotFoundError,
+    RecordingObserver,
     RunContext,
     RunError,
+    call_model,
     compose,
     default_registry,
 )
@@ -279,3 +284,46 @@ async def test_a_whole_answer_or_one_whose_runtime_does_not_say_is_the_reply() -
         step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": runtime})
         out = await step.run(Inputs({PROMPT: ("rate it",)}), RunContext("r", "rate"))
         assert (out[MODEL_CALL].text, out[MODEL_CALL].finish_reason) == ("4", finish)
+
+
+class _Around(RecordingObserver):
+    """Records events, and which spans of work it was let into, while the runtime worked."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered: list[str] = []
+
+    def around(self, event: Event) -> Any:
+        self.entered.append(event.name)
+        return nullcontext(None)
+
+
+async def test_a_call_made_outside_a_step_takes_the_step_s_own_path() -> None:
+    """W7.12: a caller that calls a model runtime itself (ix's ``model-call`` trial, its judge)
+    could record the call's session row, and nothing else: no ``matrix.model`` events, so no
+    span for the runtime's own spans to nest under. ``call_model`` is the model step's path,
+    public: the start and end events, each observer's ``around`` entered while the runtime
+    works, and the session row whether the call replied or failed (none outside a run)."""
+    observer = _Around()
+    runtime = MockModelRuntime(MockModelRuntimeConfig(default="4"))
+    request = ModelRequest(prompt="2 + 2?", model="small")
+    call = await call_model(runtime, request, name="m", observers=[observer])
+    assert call.text == "4" and call.session is None  # outside a run, no row
+    start, end = observer.events
+    assert (start.name, end.name) == ("matrix.model.start", "matrix.model.end")
+    assert start.span == end.span and start.fields == {"runtime": "m", "model": "small"}
+    assert end.fields["status"] == "completed" and end.fields["runtime"] == "m"
+    assert observer.entered == ["matrix.model.start"]
+
+    class Refusing:
+        def check(self, model: str | None) -> None:
+            return None
+
+        async def call(self, request: ModelRequest) -> ModelCall:
+            raise ModelRuntimeError("slow down", reason="rate_limited")
+
+    failed = _Around()
+    with pytest.raises(ModelRuntimeError, match="slow down"):
+        await call_model(Refusing(), request, name="m", observers=[failed])
+    ended = failed.events[-1]
+    assert (ended.fields["status"], ended.fields["reason"]) == ("failed", "rate_limited")

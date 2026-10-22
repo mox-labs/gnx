@@ -110,7 +110,14 @@ from .domain.model_call import (
     RequestParams,
     TokenUsage,
 )
-from .domain.model_step import MODEL_CALL, MODEL_STEP, PROMPT, ModelStep, ModelStepConfig
+from .domain.model_step import (
+    MODEL_CALL,
+    MODEL_STEP,
+    PROMPT,
+    ModelStep,
+    ModelStepConfig,
+    call_model,
+)
 from .domain.observer import Event, EventPolicy, Observer, RecordingObserver
 from .domain.ports._out.agent_runtime import RUNTIME_LOGGER, Agent, AgentRuntime
 from .domain.ports._out.construct_store import ConstructStore, RunWriter
@@ -246,6 +253,7 @@ __all__ = [
     "__version__",
     "agent_session",
     "agent_runtime_type_url",
+    "call_model",
     "call_sent",
     "call_session",
     "cancel_on_signals",

@@ -70,6 +70,7 @@ from matrix import (
     RegistryRow,
     ModelStep,
     ModelStepConfig,
+    call_model,
     MODEL_STEP,
     MODEL_CALL,
     PROMPT,
@@ -533,20 +534,19 @@ A fact the runtime did not report is `None`.
 | `record_session` | `(session) -> int \| None` | records it in the run of the component running in this task, durably and in ledger order; its row, or `None` outside a run. The rows that component hands over next name it |
 
 A `BoundAgent` and a model step record their sessions themselves, the failed ones included. A
-component that calls a `ModelRuntime` itself records its calls, failed or not:
+component that calls a `ModelRuntime` itself makes the call through `call_model` (see
+[`matrix.v1.model-step`](#matrixv1model-step)), which records it as a model step does, and makes
+it the same span of work:
 
 ```python
-from matrix import ModelRequest, ModelRuntimeError, call_sent, call_session, record_session
+from matrix import ModelRequest, call_model
 
 request = ModelRequest(prompt="Rate this.", model="haiku")
-sent = call_sent(request)
-try:
-    call = await runtime.call(request)
-except ModelRuntimeError as e:
-    record_session(call_session(e.call, sent=sent, error=e))
-    raise
-row = record_session(call_session(call, sent=sent))  # the row a reply can name
+call = await call_model(runtime, request, name="judge")  # call.session: the row it names
 ```
+
+`call_sent`, `call_session` and `record_session` are the parts `call_model` is made of, for a
+caller that records a call made some other way.
 
 ### `Ref` and `REF`
 
@@ -838,6 +838,12 @@ document, as an agent step's, and a reply with none is a `ContractError` quoting
 rendered as an agent step renders them. A model step emits no agent events: its call is a
 `matrix.model.start` / `matrix.model.end` pair, and the `otel` observer's `matrix.model`
 span, current while the runtime works.
+
+The step's call path is public, for a caller that calls a model runtime itself:
+
+| Name | Signature | Does |
+|------|-----------|------|
+| `call_model` | `async (runtime, request, *, name, runtime_url=None, drives=(), observers=()) -> ModelCall` | one call on `runtime`, as a model step makes its own: `matrix.model.start` and `.end` (`name` is the runtime's name, as the caller knows it), each observer's `around` entered in the calling task while the runtime works, and the call's row of `matrix.v1.session`, under `runtime_url` with what it `drives`, whether it replied, failed or was cancelled. Inside a run the run's observers see it, and `observers` besides; outside one, `observers` only, and no row is recorded. Returns the call pointing at its row (`session`); raises the runtime's error as it stands. It does not judge whether the reply is whole: that is the step's own |
 
 A reply that is not a whole answer is never provided: one with a `refusal`, a `finish_reason`
 other than `stop` and `None`, or empty `text`. The step raises `ModelRuntimeError`, reason

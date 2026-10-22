@@ -120,6 +120,14 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Added
 
+- **A model step's call path is public: `call_model(runtime, request, *, name, ...)`.** A
+  caller that calls a model runtime itself (ix's `model-call` trial and its judge) could record
+  the call's session row and nothing else, so its call was no `matrix.model` span and a model
+  runtime's own spans (hardline's `chat`) had no call span to nest under (W7.12). `call_model`
+  is the step's own path: the `matrix.model.start`/`.end` events, each observer's `around`
+  entered while the runtime works, and the session row whether the call replied, failed or was
+  cancelled. The model step now makes its call through it.
+
 - **A tool call's arguments, as content.** `matrix.tool.start` carries the call's input as
   JSON (`arguments`), and the `otel` observer exports it as `gen_ai.tool.call.arguments` on
   the `execute_tool` span only with `capture_content`, as the conventions make it opt-in.
