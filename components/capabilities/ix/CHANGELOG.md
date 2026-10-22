@@ -33,7 +33,9 @@ had no pydantic-ai model to give it (W11.2b). It now judges on the pydantic-ai m
 named matrix model runtime gives (matrix's `pydantic_ai_model`): on `hardline`, the registry
 row `model` names, each request a hardline call, from `matrix.models` or the sensor's
 `runtime_options` and from nowhere else. A model runtime that gives none is still
-`Runnable: no`, saying so. The judge's connections close when its reading ends.
+`Runnable: no`, saying so. The judge's connections close when its reading ends. Each of its
+calls is a row of the run's session table, and the reading names it (`sessions`), as a judge
+sensor's reading does.
 
 ### Added: span evaluators read spans with nothing exported
 

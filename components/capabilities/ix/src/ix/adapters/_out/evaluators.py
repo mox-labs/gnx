@@ -43,6 +43,8 @@ which gives the pydantic-ai ``Model`` that runtime offers (``hardline``'s makes 
 hardline call). The connections its calls opened are closed when the reading ends, in the
 loop that opened them. Its calls are hardline's ``chat`` spans and counters, made while the
 sensor reads, after the trial's spans were kept: they never join the tree an evaluator reads.
+Each is also a row of the run's session table, which the runtime's ``Model`` records, so the
+reading names the calls behind it (``sessions``), as a judge sensor's does.
 
 pydantic-evals is imported here and nowhere else, and only when a reading, a review or a
 watch needs it, so ix starts as fast without it.

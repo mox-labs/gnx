@@ -101,7 +101,14 @@ def _hardline(
 
     if config.models is None and models is not None:
         config = config.model_copy(update={"models": models})
-    return HardlineModelRuntime.from_config(config)
+    # The calls its pydantic-ai Model makes are session rows under its own registration.
+    return HardlineModelRuntime.from_config(
+        config, runtime_url=model_runtime_type_url("hardline"), drives=_HARDLINE_DRIVES
+    )
+
+
+#: What the ``hardline`` model runtime drives: its registration's, and its calls' rows'.
+_HARDLINE_DRIVES = ("hardline",)
 
 
 def store_type_url(name: str) -> str:
@@ -200,7 +207,7 @@ def register(registry: Registry) -> None:
         config=HardlineModelRuntimeConfig,
         needs={"models"},
         summary="One model call through hardline, in any model family it has a row for",
-        drives=("hardline",),
+        drives=_HARDLINE_DRIVES,
     )
     registry.register(
         MODEL_RUNTIME,

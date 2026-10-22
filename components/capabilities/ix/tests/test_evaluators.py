@@ -524,55 +524,90 @@ class TestValidate:
         assert wrong.got == "judged_eval_passed" and "eval_passed" in wrong.fix
 
 
+def _judged_by_a_hardline_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Root, Path]:
+    """An experiment whose LLMJudge judges each reply on a hardline row, ``grader``, configured
+    as every model is (``matrix.models``): the row is hardline's mock, which grades through
+    pydantic-ai's output tool call, and pydantic-evals' own default model fails the test if
+    asked."""
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("pydantic-evals' default judge model was used")
+
+    monkeypatch.setattr(llm_as_a_judge, "_default_model", FunctionModel(refuse))
+    grade = {"reason": "It says it fixed main.", "pass": True, "score": 1.0}
+    row = {
+        "backend": "mock", "model": "grader-1", "family": "mockjudge", "provider": "acme",
+        "options": {"script": [{"tool_calls": [
+            {"name": "final_result", "arguments": json.dumps(grade)}
+        ]}]},
+    }  # fmt: skip
+    settings = matrix.Config[IxSettings](
+        client=IxSettings(),
+        matrix=matrix.MatrixConfig(models={"models": {"grader": row}}),
+    )
+    lab = _experiment(
+        tmp_path,
+        primary={"metric": "text_matched"},
+        metrics=["judged_eval_passed"],
+        sensors=[{"kind": "evaluator", "evaluator": "LLMJudge",
+                  "arguments": {"rubric": "Says it fixed main."},
+                  "model_runtime": "hardline", "model": "grader"},
+                 {"kind": "text-match", "contains": "Fixed"}],
+    )  # fmt: skip
+    return Root(registry=_registry(), settings=settings), lab
+
+
 class TestPlanAndRun:
     def test_a_judge_judges_on_a_hardline_row_end_to_end(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """W11.2b. Before, the root had no pydantic-ai Model over a model runtime to give, so a
         judge evaluator on a real runtime was ``Runnable: no``. Now it judges on the matrix
-        model runtime it names, here ``hardline`` with a mock row, configured as every model
-        is (``matrix.models``): the plan says it can run, and each reading is the row's grade,
-        given as pydantic-ai's output tool call, through hardline. Offline: the row is
-        hardline's mock, and pydantic-evals' own default model fails the test if asked."""
-
-        def refuse(*args: Any, **kwargs: Any) -> Any:
-            pytest.fail("pydantic-evals' default judge model was used")
-
-        monkeypatch.setattr(llm_as_a_judge, "_default_model", FunctionModel(refuse))
-        grade = {"reason": "It says it fixed main.", "pass": True, "score": 1.0}
-        row = {
-            "backend": "mock", "model": "grader-1", "family": "mockjudge",
-            "options": {"script": [{"tool_calls": [
-                {"name": "final_result", "arguments": json.dumps(grade)}
-            ]}]},
-        }  # fmt: skip
-        settings = matrix.Config[IxSettings](
-            client=IxSettings(),
-            matrix=matrix.MatrixConfig(models={"models": {"grader": row}}),
-        )
-        lab = _experiment(
-            tmp_path,
-            primary={"metric": "text_matched"},
-            metrics=["judged_eval_passed"],
-            sensors=[{"kind": "evaluator", "evaluator": "LLMJudge",
-                      "arguments": {"rubric": "Says it fixed main."},
-                      "model_runtime": "hardline", "model": "grader"},
-                     {"kind": "text-match", "contains": "Fixed"}],
-        )  # fmt: skip
-        root = Root(registry=_registry(), settings=settings)
+        model runtime it names, here ``hardline`` with a mock row: the plan says it can run,
+        and each reading is the row's grade, given as pydantic-ai's output tool call, through
+        hardline. Offline."""
+        root, lab = _judged_by_a_hardline_row(tmp_path, monkeypatch)
         plan = root.plan(lab)
         (judge,) = [r for r in plan.requirements if "LLMJudge" in r.need]
         assert judge.holds, judge.why
         report = root.run(lab, exploratory=True)
-        judged = [
-            json.loads(line)
-            for line in Path(report.tables["ix.v1.reading"]).read_text().splitlines()
-            if '"judged_eval_passed"' in line
-        ]
+        judged = [r for r in _readings(report) if r["metric"] == "judged_eval_passed"]
         assert len(judged) == 5
         assert all(r["failure"] is None and r["value"] is True for r in judged)
         (result,) = judged[0]["detail"]["results"].values()
         assert result["reason"] == "It says it fixed main."
+
+    def test_a_judged_reading_names_its_judges_session_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: a judge evaluator's model calls left no session row. pydantic-ai makes
+        them through the Model matrix's runtime hands ix, never through ``call_model``, so a
+        judged reading named no session and the record could not say which model judged. Each
+        call is now a row of the run's session table, with the fields a model step's call
+        has, and the reading it was made for names it, as a judge sensor's reading does
+        (W3.7); the trial names only the subject's session."""
+        root, lab = _judged_by_a_hardline_row(tmp_path, monkeypatch)
+        report = root.run(lab, exploratory=True)
+        sessions = _rows(report, matrix.SESSION)
+        interactions = {row["seq"]: row for row in _rows(report, "ix.v1.interaction")}
+        readings = _readings(report)
+        judged = [r for r in readings if r["metric"] == "judged_eval_passed"]
+        assert len(judged) == 5
+        hardline = matrix.model_runtime_type_url("hardline")
+        for reading in judged:
+            (by,) = reading["sessions"]  # the judge's one call: the reading's own session
+            judge = sessions[by]
+            assert (judge["port"], judge["runtime"], judge["drives"], judge["status"]) == (
+                "model-runtime", hardline, ["hardline"], "completed",
+            )  # fmt: skip
+            assert (judge["name"], judge["model"], judge["family"], judge["provider"]) == (
+                "grader", "grader-1", "mockjudge", "acme",
+            )  # fmt: skip
+            assert judge["usage"] is not None and judge["sent"].startswith("sha256:")
+            (subject,) = interactions[reading["seq"]]["sessions"]  # the agent, behind the trial
+            assert sessions[subject]["port"] == "agent-runtime" and subject != by
+        assert all(r["sessions"] == [] for r in readings if r["metric"] == "text_matched")
+        assert len(sessions) == 2 * len(interactions)  # a session and a judgement each
 
     def test_a_model_runtime_that_gives_no_pydantic_ai_model_cannot_judge(
         self, tmp_path: Path

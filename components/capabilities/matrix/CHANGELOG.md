@@ -134,7 +134,11 @@ the `model` effect or none at all. Record section 17 has the reasons.
   hardline call with the runtime's `max_tokens` and `temperature` as defaults, and an `aclose()`
   for its connections. It is how ix's evaluator judge gets its model from the model runtime the
   experiment names, from config and nowhere else (W11.2b). The `Model` is the one the
-  `pydantic-ai` agent runtime already used; it now takes default settings.
+  `pydantic-ai` agent runtime already used; it now takes default settings. Inside a run each
+  call it makes is a row of the session table, with the fields a model step's call has, failed
+  and cancelled ones too, under the runtime's type URL and `drives`
+  (`HardlineModelRuntime(..., runtime_url=, drives=)`, which composition passes); its `sent`
+  digests the call's row, turns and tools.
 
 - **A model step's call path is public: `call_model(runtime, request, *, name, ...)`.** A
   caller that calls a model runtime itself (ix's `model-call` trial and its judge) could record

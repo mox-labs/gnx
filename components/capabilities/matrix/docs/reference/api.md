@@ -820,7 +820,9 @@ pydantic-ai's `Model` on a model name the runtime resolves (raising `ConfigError
 does), its requests made as the runtime makes its own calls, for a caller that runs pydantic-ai
 itself, such as an evaluator's judge; the `Model` has an async `aclose()` for the connections its
 calls opened. The `hardline` runtime has it: the row's requests go through hardline with the
-runtime's `max_tokens` and `temperature` as defaults.
+runtime's `max_tokens` and `temperature` as defaults, and inside a run each is a row of the
+session table with the fields a model step's call has (its `sent` the digest of the call's row,
+turns and tools), failed and cancelled ones too.
 
 ### Built-in model runtimes
 

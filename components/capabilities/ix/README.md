@@ -496,7 +496,8 @@ matrix's config names for ix: `observers:` under `matrix:` in any tier
 **From a verdict to the model that answered.** Each interaction names the rows of
 `matrix.v1.session` behind its trial (`sessions`): every agent session (each round of a loop)
 or model call the subject made, failed ones included. Each reading names the rows its sensor
-made (`sessions`: a judge's calls), and joins its interaction on `seq`. A session row holds
+made (`sessions`: a judge's calls, a judge evaluator's included), and joins its interaction on
+`seq`. A session row holds
 the runtime, the model that answered and its family, the usage, the ids (the runtime's, and
 the OpenTelemetry trace and span the session ran in), the attempts, and whether it failed and
 why. A row's position in its file, from 0, is the number the others name. In DuckDB, with

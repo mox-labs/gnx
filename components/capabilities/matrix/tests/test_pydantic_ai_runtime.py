@@ -483,3 +483,77 @@ async def test_a_session_names_the_provider_its_row_names() -> None:
         _models("Bone.", provider="ollama"), PydanticAiRuntimeConfig(default_model="q")
     )
     assert (await runtime.run(_agent(), "Define ossify.")).provider == "ollama"
+
+
+async def test_each_call_the_pydantic_ai_model_makes_is_a_session_row_as_a_steps_is() -> None:
+    """Regression: a judge evaluator's model calls left no session row. pydantic-ai makes them
+    through the Model a model runtime hands out (``pydantic_ai_model``), never through
+    ``call_model``, so nothing recorded them. Each is now a row of the run's session table, with
+    the fields a model step's call has, under the runtime's type URL; a call that failed is a
+    row too, saying why. Outside a run nothing is recorded, as for any call."""
+    from hardline import BackendError
+    from pydantic_ai import Agent
+
+    from matrix import ModelRequest, Session, call_model
+    from matrix.domain.session import CURRENT_SESSIONS
+
+    models = build_runtime(
+        {
+            "models": {
+                "q": {
+                    "backend": "mock",
+                    "model": "m-1",
+                    "family": "x",
+                    "provider": "ollama",
+                    "options": {"default": "four"},
+                },
+                "down": {
+                    "backend": "mock",
+                    "model": "m-2",
+                    "family": "x",
+                    "retries": 0,
+                    "options": {"script": [{"error": "unavailable"}]},
+                },
+            }
+        },  # fmt: skip
+        backends={"mock": MockBackend()},
+    )
+    url, drives = "matrix.v1.model-runtime.hardline", ("hardline",)
+    runtime = HardlineModelRuntime(
+        models, HardlineModelRuntimeConfig(default_model="q"), runtime_url=url, drives=drives
+    )
+    rows: list[Session] = []
+
+    def record(row: Session) -> int:
+        rows.append(row)
+        return len(rows) - 1
+
+    def ask(model: Any) -> Agent[None, str]:
+        agent: Agent[None, str] = Agent(model)
+        agent.instrument = False
+        return agent
+
+    await ask(runtime.pydantic_ai_model("q")).run("What is 2 + 2?")  # outside a run
+    assert rows == []
+    recording = CURRENT_SESSIONS.set(record)
+    try:
+        request = ModelRequest(prompt="What is 2 + 2?")
+        await call_model(runtime, request, name="hardline", runtime_url=url, drives=drives)
+        assert (await ask(runtime.pydantic_ai_model("q")).run("What is 2 + 2?")).output == "four"
+        with pytest.raises(BackendError, match="unavailable"):
+            await ask(runtime.pydantic_ai_model("down")).run("What is 2 + 2?")
+    finally:
+        CURRENT_SESSIONS.reset(recording)
+    stepped, judged, failed = rows
+    shared = (
+        "port", "runtime", "drives", "status", "name", "model", "family", "provider", "backend",
+        "finish_reason", "native_finish_reason", "attempts", "retries", "row",
+    )  # fmt: skip
+    assert {k: getattr(judged, k) for k in shared} == {k: getattr(stepped, k) for k in shared}
+    assert (judged.runtime, judged.drives, judged.provider) == (url, drives, "ollama")
+    assert judged.usage is not None and judged.request_id and judged.attempt_log
+    assert judged.sent.startswith("sha256:") and judged.sent != stepped.sent
+    assert (failed.status, failed.reason, failed.name, failed.runtime) == (
+        "failed", "unavailable", None, url,
+    )  # fmt: skip
+    assert [(a.name, a.reason) for a in failed.attempt_log or ()] == [("down", "unavailable")]

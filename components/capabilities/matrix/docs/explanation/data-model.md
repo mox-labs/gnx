@@ -85,7 +85,8 @@ components run side by side. Order within one kind is its provider's.
 
 A reply is a sample, so the record says which model gave it and how. Every run has a table of
 kind `matrix.v1.session` with one row, a `Session`, per agent session or model call that a
-component ran: whatever ran it inside the run (a `BoundAgent`, a model step) records it, through
+component ran: whatever ran it inside the run (a `BoundAgent`, a model step, a call through the
+pydantic-ai `Model` a model runtime hands out) records it, through
 the Construct like any row, durable and in ledger order, under its component's name. Like the
 ledger it is matrix's own: no component provides or requires it. Outside a run nothing records
 a session.
