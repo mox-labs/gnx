@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from recon.adapters._out.parsing import parse_line
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
-from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
+from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, bound
 from recon.domain.substitution import substitute
 
 if TYPE_CHECKING:
@@ -183,10 +183,13 @@ class CliCollector:
         capture_path = captures.stream_path(entry.name) if captures is not None else None
         exit_codes: list[int] = []
 
+        # A path a command prints is relative to where it ran: a transform that reads one
+        # resolves it there.
+        transforms = bound(self._transforms, base=cwd) if cwd is not None else self._transforms
         try:
             for pattern, cmd in commands:
                 lines = self._runner.run_lines(cmd, cwd, timeout, capture_path=capture_path)
-                exit_codes.append((yield from self._records(lines, entry, pattern)))
+                exit_codes.append((yield from self._records(lines, entry, pattern, transforms)))
         finally:
             if captures is not None:
                 # Finalize even on mid-iteration abandonment: preserves partial captures
@@ -205,7 +208,11 @@ class CliCollector:
                 )
 
     def _records(
-        self, lines: Generator[str, None, int], entry: CollectorEntry, pattern: str | None
+        self,
+        lines: Generator[str, None, int],
+        entry: CollectorEntry,
+        pattern: str | None,
+        transforms: Mapping[str, Transform],
     ) -> Generator[dict[str, Any], None, int]:
         """The records of one command's lines; returns the command's exit code."""
         with contextlib.closing(lines):
@@ -223,7 +230,7 @@ class CliCollector:
                 if pattern is not None:
                     record["_pattern"] = pattern
                 if entry.normalize:
-                    record = apply_normalize(record, entry.normalize, self._transforms)
+                    record = apply_normalize(record, entry.normalize, transforms)
                 yield record
 
 

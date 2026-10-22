@@ -309,6 +309,21 @@ def test_markitdown_converts_a_file_under_a_declared_local_source(tmp_path):
     assert "Alice" in rows[0]["text"]
 
 
+def test_markitdown_reads_a_path_relative_to_the_directory_its_command_ran_in(tmp_path):
+    """Regression: a relative path a ``cli`` command printed was resolved against recon's
+    working directory, not the ``local`` source the command ran in, so it named another file
+    or none, and was refused."""
+    here = tmp_path / "here"
+    here.mkdir()
+    (here / "data.csv").write_text("name,city\nAlice,Paris\n")
+    catalog = [{"name": "here", "type": "local", "url": str(here)}]
+
+    table, rows = _markitdown_table(tmp_path, "data.csv", catalog)
+
+    assert table.status == "ok", table
+    assert "Alice" in rows[0]["text"]
+
+
 def test_markitdown_does_not_read_a_file_the_mission_did_not_declare(tmp_path):
     """A record names the path, and records are whatever a source returned: before this
     was confined, a collected `/etc/...` or `~/.ssh/...` was read into the table."""

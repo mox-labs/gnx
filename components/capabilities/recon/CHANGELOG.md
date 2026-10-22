@@ -16,6 +16,9 @@
 
 ### Fixed
 
+- **`$markitdown` reads a relative path where the command that printed it ran.** A path a `cli` command printed (`rg --files`, `find .`) is relative to its `local` source's directory, but was resolved against recon's working directory, so it named another file or none and was refused. A transform may take a keyword-only `base`, which a `cli` collector binds to the directory its command ran in.
+- **A fetched document is converted by the content type its server gave.** The converter ignored it and let markitdown guess from the bytes, so a `text/plain` reply that looked like CSV became a table. It also builds markitdown once per survey rather than once per document.
+
 - **The query engine reads the tables the archive store lists.** `DuckdbQuery` imported the archive adapter's file helpers and read its sentinel lines itself, so how an archive is stored was known to two adapters; it now asks `ArchiveStore.tables()`, which describes each table (its output name, its file, whether it is empty and the columns it keeps).
 
 - **recon's spans are current while its work runs, and requests carry their trace context.** recon built its OpenTelemetry spans from events and never made one current, so a span another library opened during a table (an instrumented HTTP client, a plugin's own) landed under the caller's span or in a trace of its own; and no request carried `traceparent`, so a server's spans could not join. A sink may now have an optional `around(event)`, entered for the work of each span (the OpenTelemetry sink makes its span current there), and `trace_headers(span)`, which the requester sends with each attempt.

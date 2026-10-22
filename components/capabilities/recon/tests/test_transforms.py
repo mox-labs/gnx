@@ -380,9 +380,37 @@ class TestMarkitdown:
         error = self._refused(uri, [dirs[0]])
         assert "web" in error.fix
 
+    def test_a_relative_path_is_relative_to_the_directory_given_as_base(self, dirs, tmp_path):
+        """A path a command printed (``rg --files``, ``find .``) is relative to where the
+        command ran, which a ``cli`` collector binds as ``base``; without one it is the
+        working directory's."""
+        from recon.adapters._out.markitdown_converter import markitdown_path
+
+        declared, _outside = dirs
+        assert "Alice" in markitdown_path("data.csv", roots=[declared], base=declared)
+        self._refused("../outside/secret.csv", [declared])
+
     def test_a_file_uri_is_refused_even_inside_a_declared_directory(self, dirs):
         declared, _outside = dirs
         self._refused((declared / "data.csv").as_uri(), [declared])
+
+
+class TestAConvertedDocument:
+    """The ``web`` collector's converter: bytes, the content type and the URL the server
+    gave, in; markdown out."""
+
+    def test_the_content_type_the_server_gave_is_honoured(self):
+        """Regression: the converter ignored ``content_type`` and let markitdown guess from
+        the bytes, so a server's ``text/plain`` reply that looked like CSV came back as a
+        table."""
+        from recon.adapters._out.markitdown_converter import MarkitdownConverter
+
+        body = b"name,city\nAlice,Paris\n"
+        converter = MarkitdownConverter()
+        as_text = converter.convert(body, "text/plain", "https://x.test/data")
+        as_csv = converter.convert(body, "text/csv", "https://x.test/data")
+        assert as_text.text.strip() == "name,city\nAlice,Paris"
+        assert "| name | city |" in as_csv.text
 
 
 class TestNestedRecords:

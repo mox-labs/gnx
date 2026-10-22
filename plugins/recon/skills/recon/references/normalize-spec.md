@@ -126,7 +126,7 @@ Converts the local file a field names to markdown via markitdown. A value that i
 full_text: "pdf_path|$markitdown"
 ```
 
-The path comes from collected data, so it is confined to what the mission declares: the file must be under the mission directory (`.recon/<mission>/`) or under a catalog source with `type: local`. A relative path is resolved against the directory `recon` runs in. A path outside those directories fails the table with a `config` error whose `fix` says to add the directory as a `local` source.
+The path comes from collected data, so it is confined to what the mission declares: the file must be under the mission directory (`.recon/<mission>/`) or under a catalog source with `type: local`. A relative path is resolved against the directory its record came from: for a `cli` collector, the directory its command ran in (its `local` source's, so a path `rg --files` or `find .` printed names the file it found); otherwise the directory `recon` runs in. A path outside those directories fails the table with a `config` error whose `fix` says to add the directory as a `local` source.
 
 `$markitdown` never fetches. A value that is a URL (`http:`, `https:`, `file:`, `data:`) fails the table the same way. To fetch and convert a remote document, use a `web` collector instead: it converts by content type, through the rate limiter and the capture log.
 
