@@ -16,6 +16,11 @@ is one, ``http.response.status_code``; ``http.request.resend_count`` on a retry;
 (``httpx.ConnectError``), or ``body_too_large``. ``url.full`` carries no credentials: user
 information, the source's ``auth.param`` and the convention's signature parameters are
 ``REDACTED``. A redirect httpx follows stays inside its attempt's span.
+
+A source's credential goes only to the origin its request was built for. httpx drops an
+``Authorization`` header when a redirect leaves the origin; recon drops the source's own
+``auth.header`` (``x-api-key``) by the same rule, so a redirect to another host, port or
+scheme (other than http to https on the same host) is followed without the key.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from recon.domain.http import HttpResponse, reported_url
 from recon.domain.telemetry import HTTP_REQUEST, Telemetry
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import datetime
 
     from recon.domain.clock import Clock
@@ -151,6 +157,31 @@ def _send(
         resp.close()
 
 
+def _port(url: httpx.URL) -> int | None:
+    return url.port or _DEFAULT_PORTS.get(url.scheme)
+
+
+def _same_origin(url: httpx.URL, origin: httpx.URL) -> bool:
+    """Whether ``url`` is at ``origin``, or is its upgrade from http to https on the same
+    host: where httpx itself keeps an ``Authorization`` header across a redirect."""
+    if url.host != origin.host:
+        return False
+    if (url.scheme, _port(url)) == (origin.scheme, _port(origin)):
+        return True
+    return (origin.scheme, _port(origin), url.scheme, _port(url)) == ("http", 80, "https", 443)
+
+
+def _credential_stays_at(origin: httpx.URL, header: str) -> Callable[[httpx.Request], None]:
+    """A request hook that removes ``header`` from any request, a redirect included, sent
+    anywhere but ``origin``."""
+
+    def hook(request: httpx.Request) -> None:
+        if header and not _same_origin(request.url, origin):
+            request.headers.pop(header, None)
+
+    return hook
+
+
 def _span_attributes(
     request: httpx.Request, source: SourceEntry, resend: int
 ) -> dict[str, str | int | None]:
@@ -158,7 +189,7 @@ def _span_attributes(
     return {
         "http.request.method": request.method,
         "server.address": url.host,
-        "server.port": url.port or _DEFAULT_PORTS.get(url.scheme),
+        "server.port": _port(url),
         "url.full": reported_url(str(url), source.auth.param),
         "http.request.resend_count": resend or None,
     }
@@ -261,11 +292,14 @@ class HttpxRequester:
             retry=retry_if_exception(_is_retryable),
             reraise=True,
         )
+        # Merged, not passed as params=, which would replace a query the URL has.
+        target = httpx.URL(url).copy_merge_params(params or {})
+        hooks = {"request": [_credential_stays_at(target, source.auth.header)]}
         try:
             # Sync on purpose: a survey runs its requests one at a time, so async buys nothing.
-            with httpx.Client(timeout=source.timeout, follow_redirects=True) as client:
-                # Merged, not passed as params=, which would replace a query the URL has.
-                target = httpx.URL(url).copy_merge_params(params or {})
+            with httpx.Client(
+                timeout=source.timeout, follow_redirects=True, event_hooks=hooks
+            ) as client:
                 request = client.build_request(
                     method, target, headers=headers or {}, json=json_body
                 )

@@ -55,6 +55,11 @@ a query parameter (`auth.param`), or both. Two consequences:
 - The secret is attached to requests to **whatever URL that source declares**. A config
   that points a credentialed source at an attacker's host exfiltrates the credential. The
   URL and the credential are chosen by the same file. The dry-run plan shows each URL.
+- The secret goes only to the origin of the request a collector built. A redirect to
+  another host, port or scheme is followed without the source's `auth.header`, as httpx
+  follows one without `Authorization`; an upgrade from http to https on the same host keeps
+  it (R-9). A key sent as `auth.param` is part of the URL: a redirect carries it on only
+  when the server writes it into the new location.
 - Secrets are never written to the JSONL output and never logged. Request headers are
   never persisted. In captures, response headers are persisted with credential-bearing
   values redacted (R-2), and an `auth.param` value is redacted from the captured URL (R-4).
@@ -242,6 +247,20 @@ error.
 Regression: `test_a_request_is_a_client_span_with_the_required_attributes` and
 `test_a_transport_failure_names_its_exception_and_credentials_in_the_url_are_redacted` in
 `recon/tests/test_telemetry.py`.
+
+### R-9 — a source's own auth header followed a redirect to another host (fixed)
+
+httpx drops `Authorization` when a redirect leaves the origin, and nothing else. A source
+whose key goes in its own header (`x-api-key`, as Exa, Serper and Semantic Scholar take
+it) sent that key to whatever host its API redirected to. Fixed by dropping the source's
+`auth.header` from every request sent outside the origin of the one the collector built,
+by the rule httpx applies to `Authorization`. The redirect is still followed rather than
+refused: an API that sends a download to a storage or CDN host with a signed URL needs no
+key there, and refusing would fail that table for no gain.
+
+Regression: `test_a_redirect_to_another_origin_does_not_carry_the_sources_credential` and
+`test_a_redirect_within_the_origin_keeps_the_credential` in
+`recon/tests/test_http_requester.py`.
 
 ## Not covered
 

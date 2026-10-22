@@ -242,3 +242,63 @@ def test_a_retry_after_that_is_not_a_wait_falls_back_to_backoff(base_url, asked)
         _get(base_url, f"/odd-wait/{asked}")
     assert _Handler.hits[f"/odd-wait/{asked}"] == 3
     assert excinfo.value.kind == "transient"
+
+
+# --- redirects ------------------------------------------------------------------------
+
+
+def _redirecting(monkeypatch, location, origin="https://api.example.test"):
+    """Requests sent through a MockTransport on which ``<origin>/start`` answers 302 to
+    ``location`` and any other URL answers 200: each sent request's URL and headers."""
+    sent = []
+
+    def answer(request):
+        sent.append((str(request.url), dict(request.headers)))
+        if request.url.path == "/start":
+            return httpx.Response(302, headers={"Location": location})
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(answer), **kw)
+    )
+    source = SourceEntry(name="keyed", url=origin, auth={"header": "x-api-key"})
+    clock = SystemClock()
+    requester = HttpxRequester(RateLimiter(clock), clock)
+    requester.request(source, "GET", f"{source.url}/start", headers={"x-api-key": "SECRET1"})
+    return sent
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://evil.example.net/landing",  # another host
+        "http://api.example.test/landing",  # the same host, down to plain http
+        "https://api.example.test:8443/landing",  # the same host, another port
+    ],
+)
+def test_a_redirect_to_another_origin_does_not_carry_the_sources_credential(monkeypatch, location):
+    """Regression: httpx strips only Authorization on a cross-origin redirect, so a key in
+    the source's own ``auth.header`` (``x-api-key``, as Exa and Serper take it) went to
+    whatever host the first one redirected to."""
+    sent = _redirecting(monkeypatch, location)
+    assert [url for url, _ in sent] == ["https://api.example.test/start", location]
+    assert sent[0][1]["x-api-key"] == "SECRET1"
+    assert "x-api-key" not in sent[1][1]
+
+
+@pytest.mark.parametrize(
+    ("origin", "location"),
+    [
+        ("https://api.example.test", "https://api.example.test/landing"),  # the same origin
+        ("https://api.example.test", "/landing"),  # a relative redirect
+        ("http://api.example.test", "https://api.example.test/landing"),  # up to https
+    ],
+)
+def test_a_redirect_within_the_origin_keeps_the_credential(monkeypatch, origin, location):
+    """The credential goes where the source's URL sends it, and only there: a redirect
+    inside that origin, or its upgrade to https, still authenticates, as httpx keeps
+    ``Authorization`` there."""
+    sent = _redirecting(monkeypatch, location, origin)
+    assert sent[1][0] == "https://api.example.test/landing"
+    assert sent[1][1]["x-api-key"] == "SECRET1"
