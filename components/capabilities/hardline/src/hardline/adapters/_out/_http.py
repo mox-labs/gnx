@@ -45,6 +45,10 @@ if TYPE_CHECKING:
 
     from hardline.domain.types import ModelSpec
 
+#: What carries a request: the network, or a test's ``httpx2.MockTransport``. A backend names it
+#: by this name, so httpx2 is named in this file alone.
+Transport = httpx2.AsyncBaseTransport
+
 #: The most of a provider's error body quoted in a BackendError.
 _DETAIL_CHARS = 500
 

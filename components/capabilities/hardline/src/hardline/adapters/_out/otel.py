@@ -40,7 +40,8 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from opentelemetry import metrics, trace
-from opentelemetry.trace import SpanKind, Status, StatusCode
+from opentelemetry.metrics import MeterProvider
+from opentelemetry.trace import SpanKind, Status, StatusCode, TracerProvider
 
 from hardline.domain.errors import BackendError
 from hardline.domain.types import AttemptFailed, FellBack, RawCompletion
@@ -51,6 +52,10 @@ if TYPE_CHECKING:
     from hardline.domain.types import CallEvent, ModelSpec, Request
 
 SCOPE = "hardline"
+
+#: The providers a host may hand ``build_runtime``, by these names, so OpenTelemetry is named in
+#: this file alone.
+__all__ = ["MeterProvider", "OtelCallObserver", "Telemetry", "TracedBackend", "TracerProvider"]
 
 #: The conventions' advised buckets for ``gen_ai.client.inference.duration``, in seconds.
 _DURATION_BUCKETS = (
@@ -87,8 +92,8 @@ class Telemetry:
 
     def __init__(
         self,
-        tracer_provider: trace.TracerProvider | None = None,
-        meter_provider: metrics.MeterProvider | None = None,
+        tracer_provider: TracerProvider | None = None,
+        meter_provider: MeterProvider | None = None,
     ) -> None:
         self.tracer = trace.get_tracer(SCOPE, _version(), tracer_provider=tracer_provider)
         meter = metrics.get_meter(SCOPE, _version(), meter_provider=meter_provider)

@@ -24,8 +24,7 @@ from hardline.domain.errors import BackendError, ConfigError
 from hardline.domain.types import ModelSpec, RawCompletion, Request, Usage
 
 if TYPE_CHECKING:
-    import httpx2
-
+    from hardline.adapters._out._http import Transport
     from hardline.domain.types import FinishReason
 
 #: The API's stop reasons, in hardline's vocabulary. Anything else is ``other``.
@@ -80,7 +79,7 @@ class AnthropicBackend:
     structured_modes = frozenset({"prompt"})
     default_base_url = "https://api.anthropic.com"
 
-    def __init__(self, transport: httpx2.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, transport: Transport | None = None) -> None:
         self._http = Http(transport)
 
     def check(self, spec: ModelSpec) -> list[str]:

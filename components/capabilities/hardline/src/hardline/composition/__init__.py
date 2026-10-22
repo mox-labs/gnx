@@ -40,9 +40,7 @@ if TYPE_CHECKING:
     import random
     from importlib.metadata import EntryPoint
 
-    from opentelemetry.metrics import MeterProvider
-    from opentelemetry.trace import TracerProvider
-
+    from hardline.adapters._out.otel import MeterProvider, TracerProvider
     from hardline.domain.ports._out.config_source import ConfigSource
     from hardline.domain.ports._out.observer import CallObserver
     from hardline.domain.ports._out.secrets import SecretResolver
