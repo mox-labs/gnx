@@ -4,6 +4,10 @@ Two members. ``structured_modes`` lets composition reject a registry row that as
 backend for a structured mode it cannot honour, before any call is made. ``complete``
 runs one attempt; retries, schema validation and provenance belong to the runtime.
 
+A backend that holds connections also defines ``aclose()`` (``ClosableBackend``), and the
+runtime's own ``aclose()`` calls it. It is optional: a backend without connections, such as
+the mock, has none to close.
+
 Structural typing: an adapter satisfies this without importing hardline's classes, the
 same way a matrix Component does.
 """
@@ -24,3 +28,10 @@ class ModelBackend(Protocol):
     async def complete(
         self, spec: ModelSpec, request: Request, api_key: str | None
     ) -> RawCompletion: ...
+
+
+@runtime_checkable
+class ClosableBackend(Protocol):
+    async def aclose(self) -> None:
+        """Close the connections opened in the running event loop. Callable more than once."""
+        ...

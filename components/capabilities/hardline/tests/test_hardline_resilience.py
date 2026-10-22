@@ -227,7 +227,8 @@ def test_retry_after_header_is_read() -> None:
     assert classify(error) == ("rate_limit", 7.0)
 
 
-def test_provider_sdks_do_not_retry_behind_the_runtime() -> None:
+async def test_provider_sdks_do_not_retry_behind_the_runtime() -> None:
+    # A client is made in, and for, the running event loop, so this runs in one.
     spec = ModelSpec(name="a", backend="openai-compat", model="m", family="x", base_url="http://x")
     assert OpenAICompatBackend()._client(spec, None).max_retries == 0
     anthropic_spec = spec.model_copy(update={"backend": "anthropic"})

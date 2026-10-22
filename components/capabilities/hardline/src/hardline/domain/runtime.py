@@ -11,6 +11,10 @@ Retry and fallback are separate mechanisms, as in most model libraries: a retry 
 same model again after a transient failure; a fallback asks a different model once retries
 are spent. A non-transient failure (bad key, malformed request) is neither retried nor
 fallen back from — it is raised, because both would hide a fault someone has to fix.
+
+Connections belong to the event loop that opened them. A runtime may be called from more than
+one loop (each ``asyncio.run``); ``aclose()``, or leaving ``async with runtime``, closes the
+running loop's connections before that loop ends, and the runtime stays usable.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ import random
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Self, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -32,6 +36,7 @@ from hardline.domain.errors import (
     SchemaError,
     SecretError,
 )
+from hardline.domain.ports._out.backend import ClosableBackend
 from hardline.domain.structured import extract_json, retry_instruction, schema_instruction
 from hardline.domain.types import (
     Completion,
@@ -44,6 +49,8 @@ from hardline.domain.types import (
 )
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from hardline.domain.ports._out.backend import ModelBackend
     from hardline.domain.ports._out.secrets import SecretResolver
     from hardline.domain.registry import ModelRegistry
@@ -130,6 +137,27 @@ class ModelRuntime:
     @property
     def registry(self) -> ModelRegistry:
         return self._registry
+
+    async def aclose(self) -> None:
+        """Close the connections the backends opened in the running event loop.
+
+        Call it, or leave ``async with runtime``, before that loop ends: a connection can be
+        closed only in its own loop. The runtime stays usable; a later call opens new ones.
+        """
+        for backend in self._backends.values():
+            if isinstance(backend, ClosableBackend):
+                await backend.aclose()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.aclose()
 
     def secret_problems(self) -> dict[str, str]:
         """Rows whose ``api_key`` reference does not resolve now, as name -> message.
