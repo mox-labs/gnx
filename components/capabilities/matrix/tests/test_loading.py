@@ -278,18 +278,36 @@ def test_an_invalid_agent_field_is_a_problem_at_its_key(tmp_path: Path) -> None:
     assert [(p.path, p.kind) for p in raised.value.problems] == [("max_turns", "invalid_value")]
 
 
+def _agent_files(root: Path) -> list[Path]:
+    """The agent files gnx holds under ``root``. Outside the repository there are none to read,
+    and that is a skip; inside it, a glob that matches nothing is a failure."""
+    if not (root / ".claude-plugin" / "marketplace.json").is_file():
+        pytest.skip(f"not run from the gnx repository: no marketplace at {root}")
+    agents = sorted(root.glob("incubator/agents/*/agent.md"))
+    if not agents:
+        pytest.fail(f"incubator/agents/*/agent.md matches nothing under {root}")
+    return agents
+
+
 def test_reads_every_real_agent_file_in_the_repo() -> None:
     """Every agent file gnx holds loads as a definition: written by hand for Claude Code, in
     the wild (block-scalar descriptions, comma and list tool forms, extra keys like color)."""
-    root = Path(__file__).resolve().parents[4]
-    agents = sorted(root.glob("incubator/agents/*/agent.md")) + sorted(
-        root.glob("plugins/*/agents/*.md")
-    )
-    if not agents:
-        pytest.skip("no agent files in this checkout")
-    for path in agents:
+    for path in _agent_files(Path(__file__).resolve().parents[4]):
         d = load_each(AgentDefinition, path, name_from_file=True)[0]
         assert d.system_prompt and d.name, path
+
+
+def test_a_repository_whose_agent_glob_matches_nothing_fails(tmp_path: Path) -> None:
+    """Regression (matrix-tests 12): the test above skipped when its glob matched nothing, so
+    moving the agent files would have turned it off without a word."""
+    _write(tmp_path, ".claude-plugin/marketplace.json", "{}")
+    with pytest.raises(pytest.fail.Exception, match="matches nothing"):
+        _agent_files(tmp_path)
+
+
+def test_outside_the_repository_the_agent_files_are_skipped_with_why(tmp_path: Path) -> None:
+    with pytest.raises(pytest.skip.Exception, match="not run from the gnx repository"):
+        _agent_files(tmp_path)
 
 
 # --- merged tiers -----------------------------------------------------------------------
