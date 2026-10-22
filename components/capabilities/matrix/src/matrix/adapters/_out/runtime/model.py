@@ -71,6 +71,19 @@ class ModelAgentRuntime:
     def models(self) -> ModelRuntime:
         return self._runtime
 
+    @property
+    def resolved(self) -> dict[str, Any]:
+        """The registry this runtime resolved, from ``models`` or hardline's own tiers: what
+        decides which model answers a name. Keys (``api_key``) are left out."""
+        registry = self._runtime.registry
+        return {
+            "default": registry.default,
+            "models": {
+                name: registry.get(name).model_dump(mode="json", exclude={"api_key"})
+                for name in registry.names()
+            },
+        }
+
     def check(self, definition: AgentDefinition) -> None:
         """Refuse, at binding, a definition this runtime would run as a different agent."""
         if definition.tools:

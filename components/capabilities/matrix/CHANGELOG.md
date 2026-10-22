@@ -47,6 +47,15 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   all read the wrong value. Rows are now written with pydantic's `to_jsonable_python`; a row
   holding anything it cannot write is refused with a `ContractError` naming where in the row
   it is, before its ledger entry or anything else is written, and the record goes on.
+- **The reuse fingerprint covers every need a component is handed.** It held a component's
+  type and config, and an agent step's definition and runtime config, so a run from a record
+  reused old answers after `matrix.models` (or hardline's own tiers) pointed a name at another
+  model or endpoint, after the working directory changed, or after the agents changed under a
+  component that needs `agents`. It now digests each need: an agent step's agent and every
+  agent for another component that needs them, each by definition, runtime config and needs,
+  and what its runtime resolved (the `model` runtime's registry); `models`; `cwd` (the
+  process's when none was given). Fingerprints change shape, so a record written before this
+  release is not reused. Runtimes gain an optional `resolved` member for this.
 - **A run's record no longer says `completed` when the executor raised.** A schema validator
   that raised something pydantic does not wrap (a `TypeError`) escaped the executor raw: the
   other components were left running, releases ran under them, and `run.json` said

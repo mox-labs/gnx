@@ -425,8 +425,9 @@ tolerate one it does not know.
 `Reuse(run_id: str, rows: dict[str, dict[str, tuple[Any, ...]]])`: rows carried over from the
 run `run_id`, by component and kind. `Container.reuse(run_id)` builds it from a record: each
 component that completed there (`completed` or `reused`, never `stopped`; a `completed`
-ending that carries a stop's `reason` is read as `stopped`), was built from the same fingerprint, and whose providers are
-reused too. `Container.run(reuse_from=...)` and `matrix run --from` use it.
+ending that carries a stop's `reason` is read as `stopped`), was built from the same
+fingerprint, and whose providers are reused too. The fingerprint is a digest of the
+component's type, config and each need it is handed (`Container.wire` above). `Container.run(reuse_from=...)` and `matrix run --from` use it.
 
 ### `process`
 
@@ -1181,7 +1182,7 @@ the config names one.
 | `runtime(name)` | `AgentRuntime`; `NotFoundError` listing configured runtimes |
 | `bind(definition, runtime)` | a `BoundAgent` on the configured runtime named `runtime`, with the container's observers |
 | `needs()` | the shared needs: `agents`, `models`, `cwd`, plus `context` keys |
-| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas, each component's declared `effects` (an `agent-step` has its agent's runtime's) and its `fingerprint`. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
+| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas, each component's declared `effects` (an `agent-step` has its agent's runtime's) and its `fingerprint`: a digest of its type, its config and each need it is handed (an `agent-step`'s own agent, every agent for another component that needs `agents`, `models`, and `cwd`, the process's when none was given), where an agent counts by its definition, its runtime's config and needs, and the runtime's optional `resolved` (the `model` runtime's registry, from `matrix.models` or hardline's own tiers). A need a host adds through `context` is not in it, nor is the code. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
 | `executor(observers=())` | an `Executor` with the container's observers (and these), given `cancel_on_signals` |
 | `async run(inputs=None, *, run_id=None, reuse_from=None, observers=())` | runs the configured components in the configured store within the configured limits; `run_id` defaults to `<UTC time>-<4 hex digits>`. `reuse_from` takes that run's inputs and reuses what it can |
 | `reuse(run_id, wiring=None)` | the `Reuse` a run of `wiring` may take from the recorded run |

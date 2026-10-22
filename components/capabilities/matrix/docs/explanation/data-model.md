@@ -103,9 +103,14 @@ each record above is there as its `document()`.
 Run inputs are recorded first, by `$input`, then the rows of any component reused from an
 earlier run, by that component, which ends `reused`. A component is reused only when it
 completed in that run (`completed` or `reused`; a `stopped` component's rows may be partial),
-its fingerprint (its type and config, and for an agent step its
-agent's definition and runtime) is the same, and every component it depends on is reused
-too: so what it was given then is what it would be given now. A reused component whose
+its fingerprint is the same, and every component it depends on is reused too: so what it
+was given then is what it would be given now. The fingerprint digests the component's type
+and config and each need it is handed: for an agent step its agent, for another component
+that needs `agents` every agent, and `models` and `cwd` (the process's working directory
+when none was given). An agent counts by its definition, its runtime's config and needs, and
+what the runtime resolved when it was built (the model runtime's registry, whether from
+`matrix.models` or the tiers hardline discovered). Not in it: the code that runs, and a need a
+host adds through `compose(context=)`. A reused component whose
 rows its kind's schema now refuses ends `failed` and is not run again; what depends on it is
 skipped. Then each row is recorded when its component
 hands it over (`ctx.provide`) or, for what it returns, when it ends.
