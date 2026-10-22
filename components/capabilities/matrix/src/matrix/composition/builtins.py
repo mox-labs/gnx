@@ -22,6 +22,7 @@ from matrix.adapters._out.runtime.mock import (
     MockModelRuntimeConfig,
 )
 from matrix.adapters._out.runtime.model import HardlineModelRuntimeConfig
+from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntimeConfig
 from matrix.adapters._out.stores.jsonl import (
     JsonlConstructStore,
     JsonlStoreConfig,
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from matrix.adapters._out.observers.otel import OtelObserver
     from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime
     from matrix.adapters._out.runtime.model import HardlineModelRuntime
+    from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntime
     from matrix.domain.ports._out.agent_runtime import Agent
     from matrix.domain.ports._out.model_runtime import ModelRuntime
     from matrix.domain.registry import Entry, Registry
@@ -80,6 +82,16 @@ def _claude_sdk(config: ClaudeSdkRuntimeConfig, *, cwd: str | None = None) -> Cl
     if config.cwd is None and cwd is not None:
         config = config.model_copy(update={"cwd": cwd})
     return ClaudeSdkRuntime(config, trace_environment=telemetry.trace_environment)
+
+
+def _pydantic_ai(
+    config: PydanticAiRuntimeConfig, *, models: dict[str, Any] | None = None
+) -> PydanticAiRuntime:
+    from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntime
+
+    if config.models is None and models is not None:
+        config = config.model_copy(update={"models": models})
+    return PydanticAiRuntime.from_config(config)
 
 
 def _hardline(
@@ -161,6 +173,16 @@ def register(registry: Registry) -> None:
         needs={"cwd"},
         summary="Claude Agent SDK sessions: tools, multiple turns, plugins, skills, subagents",
         drives=("claude-agent-sdk",),
+    )
+    registry.register(
+        AGENT_RUNTIME,
+        agent_runtime_type_url("pydantic-ai"),
+        _pydantic_ai,
+        config=PydanticAiRuntimeConfig,
+        needs={"models"},
+        summary="pydantic-ai agent sessions whose model calls go through hardline: tools, "
+        "multiple turns, any model family hardline has a row for",
+        drives=("pydantic-ai-slim", "hardline"),
     )
     registry.register(
         AGENT_RUNTIME,

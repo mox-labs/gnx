@@ -177,7 +177,15 @@ def _record(completion: Completion, value: Any) -> ModelCall:
         retries=completion.retries,
         fallback_from=completion.fallback_from,
         latency_ms=completion.latency_ms,
-        params=None if params is None else RequestParams(**params.model_dump()),
+        # Field by field, as the design record says: a field hardline adds (the tools a call
+        # offered, which a model call never does) is not one matrix's record refuses.
+        params=None
+        if params is None
+        else RequestParams(
+            max_tokens=params.max_tokens,
+            temperature=params.temperature,
+            structured=params.structured,
+        ),
         attempt_log=tuple(_attempt(attempt) for attempt in completion.attempt_log),
         turns_digest=completion.turns_digest,
         row=None if row is None else RegistryRow(digest=row.digest, rungs=dict(row.rungs)),

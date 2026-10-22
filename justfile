@@ -135,6 +135,8 @@ lab:
 # declare, and HOME is a fresh directory, so no user config reaches a command.
 #
 # Every capability installed alone from its wheel, then driven through a smoke test.
+# matrix depends on hardline and ix on matrix: PyPI has unrelated packages of both names, so
+# each is installed with this repository's wheels of what it depends on.
 capabilities-standalone:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -185,7 +187,8 @@ capabilities-standalone:
     for p in "${packages[@]}"; do
       work="$tmp/$p"; mkdir -p "$work/home"
       wheels=("$tmp/dist/$p"-*.whl)
-      if [ "$p" = ix ]; then wheels+=("$tmp/dist"/matrix-*.whl); fi
+      if [ "$p" = matrix ]; then wheels+=("$tmp/dist"/hardline-*.whl); fi
+      if [ "$p" = ix ]; then wheels+=("$tmp/dist"/matrix-*.whl "$tmp/dist"/hardline-*.whl); fi
       # Not under `if`: there bash ignores the subshell's `set -e`, and a failed step goes on.
       ( set -euo pipefail
         uv venv --quiet --python 3.12 "$work/venv"

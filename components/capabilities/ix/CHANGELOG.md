@@ -26,6 +26,15 @@ not used. Record section 24 has the reasons.
   `Runnable: no` in the plan.
 - `pydantic-evals` is a dependency, imported only inside the sensor's adapter.
 
+### Added: an agent session on matrix's `pydantic-ai` runtime
+
+An `agent-session` subject names matrix's second agent runtime, `runtime: pydantic-ai`, as it
+names `claude-sdk`: its `runtime_options` are that runtime's config (`models`,
+`default_model`, `tools`, ...), reviewed against what it declares, and each trial's session
+row names the model that answered and what the runtime drives (`pydantic-ai-slim`,
+`hardline`). Nothing in ix changed to allow it; the skill's prerequisites and the README name
+it.
+
 ### Added: `environment.compose`
 
 A docker compose project brought up once for a run and down after it, for experiments whose

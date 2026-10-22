@@ -54,6 +54,7 @@ from hardline.domain.types import (
     Request,
     RequestParams,
     Structured,
+    ToolSpec,
     Usage,
 )
 
@@ -153,6 +154,12 @@ def _shared_fate(registry: ModelRegistry) -> list[Problem]:
                     )
                 )
     return found
+
+
+def _uses_tools(turns: Sequence[Message], tools: Sequence[ToolSpec]) -> bool:
+    """Whether a call offers tools or sends a turn that only a backend that can call tools can
+    send: an assistant turn with tool calls, or a tool's result."""
+    return bool(tools) or any(turn.role == "tool" or turn.tool_calls for turn in turns)
 
 
 def _check_overrides(max_tokens: int | None, temperature: float | None) -> None:
@@ -313,6 +320,30 @@ class ModelRuntime:
                     problems[spec.name] = str(e)
         return problems
 
+    def check_tools(self, model: str | None) -> None:
+        """Raise ``ConfigError`` unless the row ``model`` names, and each of its fallbacks, is
+        served by a backend that can call tools (``supports_tools``): one that offers a model
+        tools, reads the calls it asks for, and sends tool turns. ``model=None`` is the
+        registry default."""
+        spec = self._registry.get(model)
+        for row in (spec, *(self._registry.get(name) for name in spec.fallbacks)):
+            if getattr(self._backends[row.backend], "supports_tools", False) is not True:
+                raise ConfigError(
+                    f"model {row.name!r}: backend {row.backend!r} cannot call tools, so it "
+                    "cannot be offered tools or sent tool turns"
+                    + (f" (it is a fallback of {spec.name!r})" if row is not spec else ""),
+                    fix="ask a row whose backend can (openai-compat, anthropic, mock), or offer "
+                    "no tools",
+                    problems=[
+                        Problem(
+                            path=f"models.{row.name}.backend",
+                            kind="invalid_value",
+                            message=f"{row.backend!r} cannot call tools",
+                            got=row.backend,
+                        )
+                    ],
+                )
+
     async def complete(
         self,
         model: str | None,
@@ -321,6 +352,7 @@ class ModelRuntime:
         system: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        tools: Sequence[ToolSpec] = (),
     ) -> Completion:
         """One call, text out. ``model=None`` uses the registry default.
 
@@ -328,15 +360,24 @@ class ModelRuntime:
         ``max_tokens``, refused, withheld or empty is a Completion whose ``answered`` is false,
         with ``finish_reason`` and ``refusal`` saying why. It is never raised, and never looks
         like a whole answer.
+
+        With ``tools``, the model may ask to call them: the calls come back as
+        ``tool_calls``, for the caller to run and answer with ``tool`` turns in its next
+        call. hardline runs none. Such a reply is a whole answer. Every row the call may reach
+        must be served by a backend that can call tools (:meth:`check_tools`), or the call is
+        refused before anything is sent.
         """
         _check_overrides(max_tokens, temperature)
         spec = self._registry.get(model)
         turns = _as_messages(messages, system)
+        offered = tuple(tools)
+        if _uses_tools(turns, offered):
+            self.check_tools(spec.name)
         started = self._clock()
         log: list[Attempt] = []
         answer = await self._call(
             spec,
-            lambda s: self._request(s, turns, None, max_tokens, temperature),
+            lambda s: self._request(s, turns, None, max_tokens, temperature, offered),
             log,
             started=started,
         )
@@ -367,6 +408,8 @@ class ModelRuntime:
         spec = self._registry.get(model)
         schema = output.model_json_schema()
         turns = list(_as_messages(messages, system))
+        if _uses_tools(turns, ()):
+            self.check_tools(spec.name)
         turns.append(Message(role="user", content=schema_instruction(schema)))
 
         started = self._clock()
@@ -435,12 +478,14 @@ class ModelRuntime:
         schema: dict[str, object] | None,
         max_tokens: int | None,
         temperature: float | None,
+        tools: tuple[ToolSpec, ...] = (),
     ) -> Request:
         return Request(
             messages=turns,
             json_schema=schema,
             max_tokens=max_tokens if max_tokens is not None else spec.max_tokens,
             temperature=temperature if temperature is not None else spec.temperature,
+            tools=tools,
         )
 
     async def _call(
@@ -644,10 +689,12 @@ class ModelRuntime:
             finish_reason=raw.finish_reason,
             native_finish_reason=raw.native_finish_reason,
             refusal=raw.refusal,
+            tool_calls=raw.tool_calls,
             params=RequestParams(
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
                 structured=spec.structured if request.json_schema is not None else None,
+                tools=tuple(tool.name for tool in request.tools),
             ),
             attempt_log=tuple(log),
             turns_digest=turns_digest(request.messages),

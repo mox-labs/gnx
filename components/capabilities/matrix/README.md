@@ -12,7 +12,8 @@ and runs what a config declares from the command line: `matrix plan`, then `matr
   running, and the row is on disk before that call returns. A run that is killed leaves
   everything it had recorded, readable, with a status.
 - An **agent** is a definition (prompt, tools, model) bound to an agent runtime: a session
-  with a loop and tools (the Claude Agent SDK, or a mock). The binding is checked when it is
+  with a loop and tools (the Claude Agent SDK; pydantic-ai, whose model calls hardline makes;
+  or a mock). The binding is checked when it is
   made, and `matrix.v1.agent-step` runs an agent as an ordinary component.
 - A **model call** is one request to one model, with no loop and no tools, on a model runtime
   (hardline, or a mock). `matrix.v1.model-step` makes one an ordinary component, and records
@@ -31,8 +32,9 @@ uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.6.0#subdirectory=
 ```
 
 matrix is installed from its repository at the release's tag; it is not on a package index,
-and `pip install matrix` installs an unrelated project. The extras are `claude` (the Claude
-Agent SDK agent runtime), `models` (the hardline model runtime) and `otel` (the
+and `pip install matrix` installs an unrelated project. hardline and pydantic-ai come with it,
+imported only when a runtime built on them is. The extras are `claude` (the Claude Agent SDK
+agent runtime), `models` (hardline, which is now installed with matrix anyway) and `otel` (the
 OpenTelemetry SDK and OTLP exporters). Add one the same way,
 `uv add "matrix[otel] @ git+https://github.com/mox-labs/gnx@matrix-v0.6.0#subdirectory=components/capabilities/matrix"`,
 or to an installed tool with `uv tool install --with "matrix[otel] @ git+..." <tool>`.
@@ -293,6 +295,8 @@ matrix:
                  model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
   agent_runtimes:                        # sessions, with a loop and tools
     sdk:     {type: claude-sdk, permission_mode: default, setting_sources: []}
+    loop:    {type: pydantic-ai, default_model: qwen3-8b,   # its calls go through hardline
+              tools: {lookup: acme.tools:lookup}}           # module:function, imported
     offline: {type: mock}
   model_runtimes:                        # one model call each
     local:   {type: hardline}
@@ -320,8 +324,8 @@ default (`matrix.v1.agent-response`, `matrix.v1.model-call`) serves one step. An
 with `output` needs the reply to be one JSON document, so say so in the agent's prompt or the
 task; a model step asks its runtime for the kind's registered schema when there is one. An
 agent's `model` is its runtime's to read: on `claude-sdk` an alias (`haiku`, `sonnet`,
-`opus`) or a full model id, and the reply records the model that answered, which may not be
-the one asked for. An agent's reply is its session's final result; what it wrote along the
+`opus`) or a full model id, on `pydantic-ai` a hardline registry name, and the reply records
+the model that answered, which may not be the one asked for. An agent's reply is its session's final result; what it wrote along the
 way is the reply's `transcript`. A model step's `model` is a hardline registry name, checked when
 the step is built. A model step never provides a reply that is not a whole answer: one cut at
 `max_tokens`, refused, withheld or empty fails the step, naming its `finish_reason`. The `mock` runtimes are stand-ins (`stand_in` in the catalog and the
@@ -332,7 +336,23 @@ Each runtime refuses what it cannot play before anything runs (`matrix check` an
 plan` say so), with the fix: an agent bound
 to a model runtime (a call has no loop and no tools), a model name hardline cannot resolve, a
 `claude-sdk` agent whose tools leave out `Skill` when the runtime gives it skills, an option
-the installed SDK lacks. Nothing is quietly downgraded.
+the installed SDK lacks, a `pydantic-ai` agent that names a tool its runtime does not have or
+is given tools on a hardline row whose backend cannot call them. Nothing is quietly
+downgraded.
+
+### The `pydantic-ai` agent runtime
+
+A session is pydantic-ai's agent loop, and every model call in it is a hardline call: the
+session runs on hardline's registry rows, with their retries, fallbacks, call limits, record
+and telemetry, in any model family hardline has a row for. The runtime's `tools` are Python
+functions named `module:function`, imported when the runtime is built; a function's typed
+parameters and docstring are what the model is told of it. An agent's `tools` choose from them
+(unset: all of them; `[]`: none), and `max_turns` bounds its model calls: a session that
+reaches it ends with `stop: max_turns`. Its reply is the run's output; its session row names
+the model that answered last, its finish reason, the usage summed over every call and
+pydantic-ai's run id. Its tokens are counted once, by hardline, which counts every call it
+makes. pydantic-ai's own instrumentation is switched off on every agent, so it records no
+prompt or reply (`docs/design/2026-10-19-record.md` §18).
 
 ## Extending
 

@@ -132,6 +132,10 @@ class TracedBackend:
         return modes
 
     @property
+    def supports_tools(self) -> bool:
+        return getattr(self._inner, "supports_tools", False) is True
+
+    @property
     def default_base_url(self) -> str | None:
         url = getattr(self._inner, "default_base_url", None)
         return url if isinstance(url, str) else None

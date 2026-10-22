@@ -43,7 +43,7 @@ token, the cache's included; `cache_read_tokens` and `cache_write_tokens` are pa
 added to it.
 
 **Is it an answer?** Only when `finish_reason` is `"stop"`, `refusal` is `null` and `text` is not
-empty. `"length"` means the reply was cut at `max_tokens` (raise `--max-tokens` and ask again);
+empty. The command offers no tools, so a `"tool_call"` reply is not one either. `"length"` means the reply was cut at `max_tokens` (raise `--max-tokens` and ask again);
 `refusal` set means the model refused; `null` means the provider did not say. Do not use such a
 reply as the model's answer. Without `--json`, the CLI writes a `hardline:` note on stderr
 beside it; the exit is still 0.

@@ -53,6 +53,8 @@ from hardline.domain.types import (
     RequestParams,
     RowRecord,
     Structured,
+    ToolCall,
+    ToolSpec,
     Usage,
 )
 from hardline.skill import get_skill
@@ -95,6 +97,8 @@ __all__ = [
     "SecretError",
     "SecretResolver",
     "Structured",
+    "ToolCall",
+    "ToolSpec",
     "UnknownModelError",
     "Usage",
     "__version__",

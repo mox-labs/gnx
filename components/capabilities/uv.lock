@@ -1255,8 +1255,10 @@ name = "matrix"
 version = "0.6.0"
 source = { editable = "matrix" }
 dependencies = [
+    { name = "hardline" },
     { name = "opentelemetry-api" },
     { name = "pydantic" },
+    { name = "pydantic-ai-slim" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "rich-click" },
@@ -1282,12 +1284,14 @@ otel = [
 [package.metadata]
 requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.1.51" },
+    { name = "hardline", editable = "hardline" },
     { name = "hardline", marker = "extra == 'models'", editable = "hardline" },
     { name = "opentelemetry-api", specifier = ">=1.23" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.23" },
     { name = "opentelemetry-sdk", marker = "extra == 'dev'", specifier = ">=1.23" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.23" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic-ai-slim", specifier = ">=2.59,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pyyaml", specifier = ">=6.0" },

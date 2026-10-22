@@ -600,7 +600,7 @@ What an agent is. Frozen pydantic model, unknown fields rejected.
 | `name` | `str` | required | `^[A-Za-z0-9][A-Za-z0-9._-]*$` |
 | `description` | `str` | `""` | |
 | `system_prompt` | `str` | `""` | |
-| `model` | `str \| None` | `None` | Interpreted by the runtime: an SDK alias or model id for `claude-sdk`. `None` is the runtime's default |
+| `model` | `str \| None` | `None` | Interpreted by the runtime: an SDK alias or model id for `claude-sdk`, a hardline registry name for `pydantic-ai`. `None` is the runtime's default |
 | `tools` | `tuple[str, ...] \| None` | `None` | `None` is the runtime's default toolset; `()` is **no tools**, never collapsed into the default |
 | `max_turns` | `int \| None` | `None` | `>= 1`; `None` is the runtime's default |
 | `metadata` | `dict[str, Any]` | `{}` | Keys a source carried that no runtime interprets; kept, never read for behaviour |
@@ -641,10 +641,13 @@ Without `session` nothing else holds them, and they stay.
 | `check` | `(definition) -> None` | **Required.** Raises `ConfigError` for a definition the runtime cannot play. A runtime that plays everything implements it as a no-op |
 | `run` | `async (definition, task: str) -> AgentResponse` | Returns a response whose `stop` says why the session ended, or raises `AgentRuntimeError` with a `reason`. Never an empty normal response for a failed session |
 
-Two members are optional, read with `getattr`: `warnings` (problems a reader of its config
-should see), and `resolved`, JSON data for what the runtime settled when it was built, beyond
-its own config, that decides how it answers. Composition digests `resolved` into the reuse
-fingerprint of every component that runs an agent on the runtime.
+Three members are optional, read with `getattr`: `warnings` (problems a reader of its config
+should see); `resolved`, JSON data for what the runtime settled when it was built, beyond
+its own config, that decides how it answers, which composition digests into the reuse
+fingerprint of every component that runs an agent on the runtime; and `usage_counted_by`, the
+name of what already counts the inference tokens of the runtime's model calls (`pydantic-ai`
+declares `hardline`). `BoundAgent` puts it on `matrix.agent.end`, and the `otel` observer then
+adds the session's tokens to no counter; its span and its session row keep them.
 
 A runtime that also logs what its `warnings` say logs it at WARNING on the logger named
 `RUNTIME_LOGGER` (`matrix.runtime`), once per process, so a caller that builds a runtime per
@@ -671,6 +674,7 @@ takes the short name.
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
 | `claude-sdk` | `matrix.v1.agent-runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | Extra `[claude]`. The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call. The reply is the session's result, every text block its `transcript`. `model` is the one the SDK's `model_usage` names, or, when it names several, the one that wrote the final reply. `tokens_input` adds the cache's tokens to Anthropic's `input_tokens`, which leaves them out. Keeps the session id and the SDK's `stop_reason` (`native_finish_reason`, mapped to `finish_reason`). With OpenTelemetry active, hands the CLI the trace context current when the session starts (`TRACEPARENT`, `TRACESTATE`, through the SDK's `env`), so the CLI's spans join the run's trace under the session's `invoke_agent` |
+| `pydantic-ai` | `matrix.v1.agent-runtime.pydantic-ai` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `tools` (tool name to `module:function`, a Python function imported when the runtime is built), `temperature`, `max_tokens` | `models` | A pydantic-ai `Agent` per session, its model a hardline row: every model call goes through hardline, with the row's retries, fallbacks, limits, record and telemetry. The definition's `system_prompt` is the agent's instructions; its `tools` choose from the runtime's (`None`: all, `()`: none); `max_turns` bounds its model calls (`stop: max_turns` when reached; pydantic-ai's own default bound otherwise). An agent's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` refuses a tool the runtime does not have, a model the registry cannot resolve, and tools on a row (or a fallback) whose backend cannot call them. The reply is the run's output, every text the model wrote its `transcript`; each tool call is timed from the response that asked for it to the request that carried its result, `error` when the tool failed or its arguments were refused. `model`, `family`, `finish_reason` and `native_finish_reason` are those of the last call; usage is summed over every call; `num_turns` counts the calls; `session_id` is pydantic-ai's run id; no cost. A hardline failure is an `AgentRuntimeError` with its reason mapped, carrying what the session had spent (`response`). `usage_counted_by: "hardline"`. pydantic-ai's instrumentation is switched off on every agent. Has `aclose()`; hardline's connections in a loop close when the last session running there ends. Imports pydantic-ai and hardline only when built |
 | `mock` | `matrix.v1.agent-runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Plays every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports no cost (`cost_usd` is `None`): no provider reported one. Records `calls`, each `(agent, task)` |
 
 Classes: `matrix.adapters._out.runtime.claude_sdk.ClaudeSdkRuntime`,
@@ -865,7 +869,7 @@ declare their own with `add_point`, named under their own root (ix declares `ix.
 | `stability` | `"stable" \| "beta" \| "experimental"` | default `beta` |
 | `origin` | `str` | the distribution that registered it; `(direct)` for a direct call |
 | `stand_in` | `bool` | whether it stands in for the real thing (the mock runtimes): its answers are canned, not a model's. Declared, never inferred. Default `False` |
-| `drives` | `tuple[str, ...]` | the distributions it drives, by their installed names: `claude-sdk` drives `claude-agent-sdk`, the `hardline` model runtime `hardline`. What a record of the versions behind a run reads, rather than a table of runtime names. Default `()` |
+| `drives` | `tuple[str, ...]` | the distributions it drives, by their installed names: `claude-sdk` drives `claude-agent-sdk`, `pydantic-ai` drives `pydantic-ai-slim` and `hardline`, the `hardline` model runtime `hardline`. What a record of the versions behind a run reads, rather than a table of runtime names. Default `()` |
 
 `entry.describe()` returns all of it as a JSON-ready dict, with `config` as a JSON schema.
 
@@ -932,6 +936,7 @@ Matrix's own entries:
 | Point | Type URL | Needs |
 |-------|----------|-------|
 | `agent-runtime` | `matrix.v1.agent-runtime.claude-sdk` | `cwd` |
+| `agent-runtime` | `matrix.v1.agent-runtime.pydantic-ai` | `models` |
 | `agent-runtime` | `matrix.v1.agent-runtime.mock` (stand-in) | |
 | `model-runtime` | `matrix.v1.model-runtime.hardline` | `models` |
 | `model-runtime` | `matrix.v1.model-runtime.mock` (stand-in) | |
@@ -1030,7 +1035,7 @@ both are `None`.
 | `matrix.release.start` | new id / run id | |
 | `matrix.release.end` | same / run id | `status` (`released`, `failed`, `abandoned`), `error` |
 | `matrix.agent.start` | new id / the calling span | `agent`, `model`, `task` (the task as sent) |
-| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`; or `status="error"`, `error`, `reason`, `kind`; or, when the session was cancelled, `status="cancelled"`, `reason="cancelled"` |
+| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`, and `usage_counted_by` when the runtime declares it; or `status="error"`, `error`, `reason`, `kind`; or, when the session was cancelled, `status="cancelled"`, `reason="cancelled"` |
 | `matrix.model.start` | new id / the calling span | `runtime` (the step's model runtime), `model` (as asked; `None` for the runtime's default) |
 | `matrix.model.end` | same / the calling span | `runtime`, `duration_ms`, then `status="completed"`, `name`, `model`, `family`, `provider`, `finish_reason` (the model that answered); or `status="failed"`, `error`, `reason`, `kind`; or `status="cancelled"`, `reason="cancelled"`. No usage: the session row holds it |
 | `matrix.tool.start` | new id / the agent's span | `agent`, `tool`, `call_id`, `arguments` (the call's input as JSON, when the runtime reported one: content); timed when the runtime saw the call start |
@@ -1113,7 +1118,8 @@ attach takes the default.
 - the conventions' names in the table below;
 - matrix's own fields that carry no content, as `matrix.<field>`: `status`, `reason`,
   `kind`, `abandoned`, `attempts`, `rows`, `duration_ms`, `reused_from`, `family`,
-  `tool_calls`, `cost_usd`, a model call's `runtime`, `name` and `finish_reason`, and the ids
+  `tool_calls`, `cost_usd`, `usage_counted_by`, a model call's `runtime`, `name` and
+  `finish_reason`, and the ids
   `matrix.run.id` and `matrix.component`;
 - of the fields a component passes to `ctx.span`, the numbers and booleans, under its root
   (`acme.rows`), and the `ok`/`error` status matrix gives the span at its end
@@ -1177,10 +1183,11 @@ and the name given to each `ctx.measure`, of the measure's kind, with its scalar
 **One owner per token.** matrix's inference counters count agent sessions only, whose tokens
 no model runtime's call carries. A model call's tokens are counted by the model runtime that
 made it (hardline counts each attempt, on the same instruments), never by matrix: the call's
-session row holds them, and the `matrix.model` span carries no usage. So nothing is counted
-twice. The case this does not cover is an agent runtime whose model calls go through hardline
-itself: none does yet, and one that does must leave its session's tokens off the response it
-reports, or be counted twice.
+session row holds them, and the `matrix.model` span carries no usage. An agent runtime whose
+model calls are counted where they are made declares it (`usage_counted_by`, which
+`pydantic-ai` sets to `hardline`): its sessions' tokens stay on their `invoke_agent` span and
+session row, and are added to no counter here. So nothing is counted twice, and no runtime is
+told apart by its name.
 
 ### `configure_telemetry` and the `OTEL_*` variables
 

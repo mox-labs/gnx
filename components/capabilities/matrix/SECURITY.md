@@ -13,6 +13,15 @@ A `claude-sdk` runtime launches a Claude Agent SDK session as a subprocess. Insi
 session the agent may read and write files, run commands, and reach the network — bounded by
 the runtime's `permission_mode` and `cwd` and by the definition's `tools`.
 
+A `pydantic-ai` runtime runs an agent session in this process. Its tools are Python functions
+the runtime's config names (`tools: {name: module:function}`), imported when the runtime is
+built and called when the model asks: each runs with the whole authority of the process, and
+no permission mode stands between the model's request and the call. The model chooses the
+arguments; a function sees them validated against its own typed parameters, and nothing more.
+A definition's `tools` narrow the set (`[]` is none), never widen it. Every model call goes
+through hardline, so where the conversation goes, tool results included, is decided by the
+hardline registry, as for a model call.
+
 A `hardline` model runtime makes one model call and carries no local authority: it has no
 tools and no agent can be bound to it. Where that call's data goes is decided by the hardline
 registry; hardline's own security notes cover it.
@@ -24,7 +33,8 @@ registry; hardline's own security notes cover it.
 `compose` builds agent runtimes from `matrix.agent_runtimes.<name>` and model runtimes from
 `matrix.model_runtimes.<name>`, and binds agents from `matrix.agents.<name>`. Every authority-bearing value — `permission_mode`, `cwd`,
 `setting_sources`, `plugins`, `skills`, inline subagents (`agents`, each with its own prompt
-and tools), a definition's `tools` — arrives from config: a `matrix:`
+and tools), a `pydantic-ai` runtime's `tools` (each a module imported, and so run, when the
+runtime is built), a definition's `tools` — arrives from config: a `matrix:`
 section, an ix `experiment.yaml`, a markdown agent file.
 
 **A matrix config file, and every agent file in a `definitions` directory, is a capability
@@ -82,6 +92,11 @@ provider, token counts, tool name and call id), matrix's statuses, reasons, erro
 counts, times and ids, and the numbers and booleans a component passes to `ctx.span`. It does
 not carry an agent's task, a tool call's arguments, any error message (as an attribute or as
 the span's status description), or a component's string fields. `error.type` is always set on a failure.
+
+A `pydantic-ai` session adds no span of pydantic-ai's own. Its instrumentation records prompts,
+replies and tool arguments once anything in the process turns it on for every agent
+(`Agent.instrument_all()`), so the runtime switches it off on each agent it builds; hardline's
+`chat` spans, which carry no content, and the session's `invoke_agent` trace it instead.
 
 Content leaves only when the config asks: `observers: [{type: otel, capture_content: true}]`.
 That config is a grant to send prompts to the collector; review it like one. A `ctx.measure`'s

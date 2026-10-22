@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from hardline.domain.errors import Reason  # noqa: TC001 -- pydantic reads it at runtime
 
@@ -22,7 +22,8 @@ NAMESPACE = "hardline.v1"
 COMPLETION_TYPE_URL = f"{NAMESPACE}/completion"
 
 
-Role = Literal["system", "user", "assistant"]
+#: ``tool`` is a tool's result, sent back to the model: the caller ran the tool, not hardline.
+Role = Literal["system", "user", "assistant", "tool"]
 
 #: How structured output is requested from the provider. Validation happens in the
 #: runtime regardless — these only decide how hard the provider is asked.
@@ -37,21 +38,68 @@ StructuredMode = Literal["prompt", "json_object", "json_schema"]
 #:   length          cut off at max_tokens (or the context window)
 #:   content_filter  the provider withheld or cut the reply
 #:   refusal         the model refused; ``refusal`` holds what it said
-#:   tool_call       the model asked for a tool, which hardline does not run
+#:   tool_call       the model asked for a tool, which hardline does not run: a whole answer
+#:                   when the caller offered tools, and never otherwise (``Completion.answered``)
 #:   other           a reason the provider gave that none of these names
 FinishReason = Literal["stop", "length", "content_filter", "refusal", "tool_call", "other"]
 
 _SLUG = r"^[a-z0-9][a-z0-9._-]*$"
 _SECRET_SCHEMES = ("env:", "file:")
+#: What both protocols accept as a tool's name.
+_TOOL_NAME = r"^[A-Za-z0-9_-]{1,64}$"
+
+
+class ToolSpec(BaseModel):
+    """A tool a request offers the model. hardline offers it and runs nothing: when the model
+    asks for it, the call comes back on the completion (``tool_calls``) for the caller to run."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(pattern=_TOOL_NAME)
+    description: str = ""
+    #: A JSON Schema of the arguments, an object.
+    parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
+
+
+class ToolCall(BaseModel):
+    """A call the model asked for. The caller runs it and sends what it returned back as a
+    ``tool`` turn naming ``id``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The provider's id for the call, or ``call-<n>`` (its position) when it gave none.
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    #: The arguments, as the JSON text the model wrote. It may not parse, or not fit the
+    #: tool's schema: the caller validates it, and may tell the model what was wrong.
+    arguments: str = "{}"
 
 
 class Message(BaseModel):
-    """One turn of a conversation the caller owns."""
+    """One turn of a conversation the caller owns.
+
+    An ``assistant`` turn may carry the ``tool_calls`` its model asked for; a ``tool`` turn is
+    the result of one of them, naming it by ``tool_call_id``, with ``is_error`` when the tool
+    failed or its arguments were refused.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     role: Role
-    content: str
+    content: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str | None = None
+    is_error: bool = False
+
+    @model_validator(mode="after")
+    def _tool_parts_fit_the_role(self) -> Message:
+        if self.tool_calls and self.role != "assistant":
+            raise ValueError("only an assistant turn carries tool_calls")
+        if (self.role == "tool") != (self.tool_call_id is not None):
+            raise ValueError("a tool turn, and only a tool turn, names the tool_call_id it answers")
+        if self.is_error and self.role != "tool":
+            raise ValueError("only a tool turn is_error")
+        return self
 
 
 #: The bounds a ``CallLimits`` can set, by key.
@@ -144,6 +192,8 @@ class Request(BaseModel):
     json_schema: dict[str, Any] | None = None
     max_tokens: int = Field(gt=0)
     temperature: float | None = Field(default=None, ge=0.0)
+    #: The tools the model may ask to call; none by default.
+    tools: tuple[ToolSpec, ...] = ()
 
 
 class Usage(BaseModel):
@@ -190,6 +240,8 @@ class RawCompletion(BaseModel):
     native_finish_reason: str | None = None
     #: What the model said when it refused, when the provider marks a refusal; else None.
     refusal: str | None = None
+    #: The calls the model asked for, in order; none when no tools were offered.
+    tool_calls: tuple[ToolCall, ...] = ()
     raw: dict[str, Any] = {}
 
 
@@ -202,6 +254,8 @@ class RequestParams(BaseModel):
     temperature: float | None
     #: How structured output was asked for; None for a plain completion.
     structured: StructuredMode | None
+    #: The names of the tools offered; none for a call that offered none.
+    tools: tuple[str, ...] = ()
 
 
 class Attempt(BaseModel):
@@ -245,7 +299,8 @@ class Completion(BaseModel):
     only when the provider said the model ended its turn; a reply cut at ``max_tokens`` is
     ``length``, a refusal is ``refusal`` with ``refusal`` set, a withheld one
     ``content_filter``. ``answered`` is true only for a whole answer, and is what to check
-    before taking ``text`` as one.
+    before taking ``text`` as one. A reply that asks for tools (``tool_call``, with
+    ``tool_calls``) is a whole answer when the call offered tools, and only then.
 
     **Who upgrades first.** A Completion's JSON validates back into a Completion, and refuses a
     key it does not know (``extra="forbid"``). A minor release of hardline may add keys, each with
@@ -279,6 +334,8 @@ class Completion(BaseModel):
     native_finish_reason: str | None = None
     #: What the model said when it refused; None when it did not refuse.
     refusal: str | None = None
+    #: The calls the model asked for, in order: the caller runs them. None asked for, none here.
+    tool_calls: tuple[ToolCall, ...] = ()
     #: What was sent to the model that answered.
     params: RequestParams | None = None
     #: Every backend call made, in order, with why each failed.
@@ -292,12 +349,19 @@ class Completion(BaseModel):
 
     @property
     def answered(self) -> bool:
-        """A whole answer: the model ended its turn, did not refuse, and said something.
+        """A whole answer: the model ended its turn, did not refuse, and said something; or,
+        when the call offered tools, it asked for one or more of them.
 
-        False for a reply cut at ``max_tokens``, refused, withheld, empty, or one whose
-        provider did not say why it ended.
+        False for a reply cut at ``max_tokens``, refused, withheld, empty, one whose provider
+        did not say why it ended, and one that ended on a tool call no tool was offered for.
         """
-        return self.finish_reason == "stop" and self.refusal is None and bool(self.text)
+        if self.refusal is not None:
+            return False
+        offered = self.params is not None and bool(self.params.tools)
+        asked = offered and bool(self.tool_calls)
+        if self.finish_reason == "stop":
+            return bool(self.text) or asked
+        return self.finish_reason == "tool_call" and asked
 
 
 class Problem(BaseModel):

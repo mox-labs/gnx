@@ -102,7 +102,9 @@ async def _read(
 # --- a scripted agent run, and the spans it leaves -----------------------------------------
 
 
-def _call(name: str, second: int, arguments: dict[str, Any], *, error: bool = False) -> dict:
+def _call(
+    name: str, second: int, arguments: dict[str, Any], *, error: bool = False
+) -> dict[str, Any]:
     return {
         "name": name,
         "id": f"toolu_{second}",
@@ -156,7 +158,7 @@ async def _watched_run(
         tracer_provider=provider, meter_provider=MeterProvider(), capture_content=capture_content
     )
     agent = matrix.BoundAgent(
-        matrix.AgentDefinition(name="coder"), Scripted(), observers=[observer]
+        matrix.AgentDefinition(name="coder", system_prompt=""), Scripted(), observers=[observer]
     )
     async with _sensor().watch(Target(subject="agent"), {}) as seen:
         if run:

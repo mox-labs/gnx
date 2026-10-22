@@ -151,7 +151,8 @@ record of it; what does survive is every row handed over before the kill.
 
 An agent has two owners. What it *is* (its prompt, tools, model and turn bound) belongs to
 whoever wrote it. *Where it runs* (the Claude Agent SDK with a permission mode and a working
-directory, or a mock) belongs to whoever deploys it. matrix keeps them apart:
+directory, pydantic-ai's loop on a hardline model with its tools, or a mock) belongs to whoever
+deploys it. matrix keeps them apart:
 
 - an `AgentDefinition` is the what. It is data, the same shape as a Claude Code agent file, so
   a plugin's `agents/*.md` load as definitions without translation;
@@ -164,7 +165,9 @@ before anything has spent a token. What a runtime can be given is data: its type
 the whole of it, so `claude-sdk` takes `permission_mode`, `setting_sources`, `plugins`,
 `skills` and inline subagents and refuses any other option at its key; and its `check`
 refuses a definition whose tools leave out `Skill` when it has skills, which could then never
-run, and any option the installed SDK's own dataclasses do not have.
+run, and any option the installed SDK's own dataclasses do not have. `pydantic-ai` takes a
+hardline registry, a default model and the tools an agent may choose from, and refuses a tool
+it does not have or a model hardline cannot resolve.
 
 A runtime reports how a session ended (`AgentResponse.stop`: `completed`, or the limit it
 reached, such as `max_turns`) and raises `AgentRuntimeError` when the session failed. The
