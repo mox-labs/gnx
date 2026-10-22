@@ -49,7 +49,7 @@ from recon.domain.models import CollectorEntry, SourceEntry
 from recon.domain.normalize import BUILTIN_TRANSFORMS
 from recon.domain.ratelimit import RateLimiter
 from recon.domain.telemetry import Telemetry
-from tests.recon_fakes import FixedClock
+from tests.recon_fakes import FixedClock, NoConverter, ScriptedRequester, ScriptedShell
 
 FIXTURES = Path(__file__).parent / "fixtures" / "templates"
 REPLAY_SERVER = Path(__file__).parent / "mcp_server.py"
@@ -130,9 +130,9 @@ def _replayed(entry: CollectorEntry, recording: Path, tmp_path: Path) -> list[An
     source = SourceEntry.model_validate({"name": entry.source, "type": "mcp", **command})
     clock = SystemClock()
     ctx = CollectorContext(
-        requester=None,  # type: ignore[arg-type]
-        converter=None,  # type: ignore[arg-type]
-        shell=None,  # type: ignore[arg-type]
+        requester=ScriptedRequester({}),
+        converter=NoConverter(),
+        shell=ScriptedShell({}),
         telemetry=Telemetry([], clock),
         deadline=Deadline(clock),
         rate_limiter=RateLimiter(clock),

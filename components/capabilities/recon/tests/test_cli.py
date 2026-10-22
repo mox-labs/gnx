@@ -16,20 +16,28 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import pytest
 import yaml
 from click import unstyle
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 import recon
 from recon.adapters._in.cli import main
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import load_plugins, root
-from recon.domain.collector import BrokenPlugin, CollectorType
-from recon.domain.errors import CollectionError
+from recon.domain.collector import BrokenPlugin, CollectorContext, CollectorType
+from recon.domain.errors import CollectionError, ErrorKind
 from recon.domain.type_url import is_type_url
+from tests.recon_fakes import building
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
+    from recon.domain.capture import CaptureLog
+    from recon.domain.models import CollectorEntry, SourceEntry
 
 OK_CONFIG = {
     "collectors": [
@@ -39,13 +47,13 @@ OK_CONFIG = {
 
 
 @pytest.fixture
-def project(tmp_path, monkeypatch):
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
 
-def _mission(project: Path, name: str, config: dict | str) -> Path:
+def _mission(project: Path, name: str, config: dict[str, Any] | str) -> Path:
     mission = project / ".recon" / name
     mission.mkdir(parents=True)
     text = config if isinstance(config, str) else yaml.safe_dump(config)
@@ -53,7 +61,7 @@ def _mission(project: Path, name: str, config: dict | str) -> Path:
     return mission
 
 
-def _invoke(*args: str, stdin: str | None = None, over=None):
+def _invoke(*args: str, stdin: str | None = None, over: object | None = None) -> Result:
     """The command line, over recon's library API, or over ``over``: a root built with the
     ports a test stands in for."""
     return CliRunner().invoke(main, list(args), input=stdin, obj=over, catch_exceptions=False)
@@ -65,20 +73,20 @@ class _Raises:
     def __init__(self, error: BaseException) -> None:
         self._error = error
 
-    def __getattr__(self, name: str):
-        def raises(*args, **kwargs):
+    def __getattr__(self, name: str) -> Callable[..., NoReturn]:
+        def raises(*args: Any, **kwargs: Any) -> NoReturn:
             raise self._error
 
         return raises
 
 
-def _doc(result) -> dict:
-    doc = json.loads(result.stdout)
+def _doc(result: Result) -> dict[str, Any]:
+    doc: dict[str, Any] = json.loads(result.stdout)
     assert is_type_url(doc["schema"]), doc["schema"]
     return doc
 
 
-def _error(result) -> dict:
+def _error(result: Result) -> dict[str, Any]:
     """The one ``recon.v1.error`` envelope on stderr, as one JSON line: the shape
     ``components/capabilities/error-envelope.json`` agrees, keys in its order.
     """
@@ -96,7 +104,7 @@ def _error(result) -> dict:
 
 
 class TestSurvey:
-    def test_ok_json_document(self, project):
+    def test_ok_json_document(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         result = _invoke("survey", "m", "--json")
 
@@ -110,13 +118,15 @@ class TestSurvey:
         assert doc["tables"][0]["type_url"] == "recon.v1.records"
         assert Path(doc["archive"]).parent == project / ".recon" / "m" / "archive"
 
-    def test_human_mode_prints_the_archive_path_on_stdout(self, project):
+    def test_human_mode_prints_the_archive_path_on_stdout(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         result = _invoke("survey", "m")
         assert result.exit_code == 0
         assert Path(result.stdout.strip()).is_dir()
 
-    def test_mission_lives_under_the_git_root_not_the_cwd(self, project, monkeypatch):
+    def test_mission_lives_under_the_git_root_not_the_cwd(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         _mission(project, "m", OK_CONFIG)
         sub = project / "deep" / "er"
         sub.mkdir(parents=True)
@@ -124,7 +134,9 @@ class TestSurvey:
         assert _invoke("survey", "m", "--json").exit_code == 0
         assert not (sub / ".recon").exists()
 
-    def test_outside_a_repository_the_cwd_is_the_root(self, tmp_path, monkeypatch):
+    def test_outside_a_repository_the_cwd_is_the_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         bare = tmp_path / "no-git-here"
         bare.mkdir()
         monkeypatch.chdir(bare)
@@ -134,7 +146,9 @@ class TestSurvey:
         _mission(bare, "m", OK_CONFIG)
         assert _invoke("survey", "m").exit_code == 0
 
-    def test_partial_failure_exits_run_failed_and_still_writes_the_archive(self, project):
+    def test_partial_failure_exits_run_failed_and_still_writes_the_archive(
+        self, project: Path
+    ) -> None:
         """Changed requirement: a survey whose failed tables are neither auth nor all
         transient exits ``run_failed`` (8), so it no longer shares 1 with ``unknown``."""
         config = {
@@ -159,7 +173,7 @@ class TestSurvey:
         assert (archive / ".incomplete").exists()
         assert (archive / "good.jsonl").exists()
 
-    def test_human_partial_failure_is_non_zero_too(self, project):
+    def test_human_partial_failure_is_non_zero_too(self, project: Path) -> None:
         _mission(project, "m", {"collectors": [{"name": "bad", "type": "cli", "run": "exit 7"}]})
         result = _invoke("survey", "m")
         assert result.exit_code == 8
@@ -175,7 +189,9 @@ class TestSurvey:
             (["transient", "run_failed"], 8, "run_failed"),
         ],
     )
-    def test_exit_code_follows_the_failures_classification(self, project, kinds, code, kind):
+    def test_exit_code_follows_the_failures_classification(
+        self, project: Path, kinds: list[Any], code: int, kind: str
+    ) -> None:
         registry = load_plugins()
         for k in set(kinds):
             registry.collector_types[f"fails-{k}"] = _failing_type(k)
@@ -195,12 +211,14 @@ class TestSurvey:
         assert [tables[f"t{i}"]["error"]["kind"] for i in range(len(kinds))] == kinds
 
     @pytest.mark.parametrize("step", ["write_meta", "mark_complete"])
-    def test_an_archive_that_could_not_be_finished_is_incomplete_and_fails(self, project, step):
+    def test_an_archive_that_could_not_be_finished_is_incomplete_and_fails(
+        self, project: Path, step: str
+    ) -> None:
         """Regression: a survey whose ``meta.yaml`` or completion step failed (a full disk)
         said ``status: ok`` and exited 0, and under --json the one word of it, an event,
         went nowhere; the archive stayed incomplete and only a later query said so."""
 
-        def fails(self, archive, *args):
+        def fails(self: ArchiveFiles, archive: Path, *args: Any) -> NoReturn:
             raise OSError(28, "No space left on device")
 
         unfinished = type("Unfinished", (ArchiveFiles,), {step: fails})
@@ -226,26 +244,32 @@ class TestSurvey:
         assert "No space left on device" in human.stderr
         assert "error (run_failed):" in human.stderr
 
-    def test_no_config_is_not_found(self, project):
+    def test_no_config_is_not_found(self, project: Path) -> None:
         result = _invoke("survey", "nope", "--json")
         assert result.exit_code == 4
         error = _error(result)
         assert error["kind"] == "not_found"
         assert "recon init nope" in error["fix"]
 
-    def test_bad_mission_name_is_a_usage_error(self, project):
+    def test_bad_mission_name_is_a_usage_error(self, project: Path) -> None:
         assert _invoke("survey", "../escape").exit_code == 2
 
-    def test_invalid_yaml_is_a_config_error(self, project):
+    def test_invalid_yaml_is_a_config_error(self, project: Path) -> None:
         _mission(project, "m", "collectors: [unclosed\n")
         result = _invoke("survey", "m", "--json")
         assert result.exit_code == 3
         assert _error(result)["kind"] == "config"
 
 
-def _failing_type(kind: str) -> CollectorType:
+def _failing_type(kind: ErrorKind) -> CollectorType:
     class Failing:
-        def collect(self, entry, source, *, captures=None):
+        def collect(
+            self,
+            entry: CollectorEntry,
+            source: SourceEntry | None,
+            *,
+            captures: CaptureLog | None = None,
+        ) -> Iterator[dict[str, Any]]:
             raise CollectionError(f"simulated {kind} failure", kind=kind)
 
     return CollectorType(create=lambda ctx: Failing(), effects=frozenset({"network"}))
@@ -255,7 +279,7 @@ def _failing_type(kind: str) -> CollectorType:
 
 
 class TestSurveyConfigOverride:
-    def test_does_not_overwrite_a_different_mission_config(self, project):
+    def test_does_not_overwrite_a_different_mission_config(self, project: Path) -> None:
         mission = _mission(project, "m", OK_CONFIG)
         before = (mission / "config.yaml").read_text()
         other = project / "other.yaml"
@@ -272,7 +296,7 @@ class TestSurveyConfigOverride:
         assert (mission / "config.yaml").read_text() == before
         assert not (mission / "archive").exists()
 
-    def test_replace_overwrites_and_runs(self, project):
+    def test_replace_overwrites_and_runs(self, project: Path) -> None:
         mission = _mission(project, "m", OK_CONFIG)
         other = project / "other.yaml"
         other.write_text(
@@ -285,13 +309,13 @@ class TestSurveyConfigOverride:
         assert (mission / "config.yaml").read_text() == other.read_text()
         assert [t["name"] for t in _doc(result)["tables"]] == ["x"]
 
-    def test_identical_config_is_not_a_conflict(self, project):
+    def test_identical_config_is_not_a_conflict(self, project: Path) -> None:
         mission = _mission(project, "m", OK_CONFIG)
         same = project / "same.yaml"
         same.write_text((mission / "config.yaml").read_text())
         assert _invoke("survey", "m", "-c", str(same)).exit_code == 0
 
-    def test_new_mission_is_created_from_the_file(self, project):
+    def test_new_mission_is_created_from_the_file(self, project: Path) -> None:
         cfg = project / "c.yaml"
         cfg.write_text(yaml.safe_dump(OK_CONFIG))
         assert _invoke("survey", "fresh", "-c", str(cfg)).exit_code == 0
@@ -303,7 +327,7 @@ class TestSurveyConfigOverride:
 
 class TestDryRun:
     @pytest.mark.parametrize("flag", ["--dry-run", "-n"])
-    def test_plans_without_running_or_writing(self, project, flag):
+    def test_plans_without_running_or_writing(self, project: Path, flag: str) -> None:
         marker = project / "ran"
         config = {
             "catalog": [{"name": "api", "url": "http://192.0.2.1"}],  # TEST-NET: unroutable
@@ -314,12 +338,10 @@ class TestDryRun:
         }
         mission = _mission(project, "m", config)
 
-        built = []
+        built: list[str] = []
         registry = load_plugins()
         for name, ct in list(registry.collector_types.items()):
-            registry.collector_types[name] = replace(
-                ct, create=lambda ctx, name=name: built.append(name)
-            )
+            registry.collector_types[name] = replace(ct, create=building(built, name))
         result = _invoke("survey", "m", flag, "--json", over=root(plugins=registry))
 
         assert result.exit_code == 0, result.stderr
@@ -337,7 +359,7 @@ class TestDryRun:
         assert not marker.exists()
         assert not (mission / "archive").exists()
 
-    def test_with_c_writes_no_config(self, project):
+    def test_with_c_writes_no_config(self, project: Path) -> None:
         cfg = project / "c.yaml"
         cfg.write_text(yaml.safe_dump(OK_CONFIG))
         result = _invoke("survey", "new", "-c", str(cfg), "-n", "--json")
@@ -345,7 +367,7 @@ class TestDryRun:
         assert _doc(result)["writes"]["config"].endswith(".recon/new/config.yaml")
         assert not (project / ".recon").exists()
 
-    def test_invalid_plan_exits_3_listing_every_problem(self, project):
+    def test_invalid_plan_exits_3_listing_every_problem(self, project: Path) -> None:
         config = {
             "collectors": [
                 {"name": "a", "type": "ftp"},
@@ -364,12 +386,12 @@ class TestDryRun:
         assert "--dry-run" in error["fix"]
         assert not (mission / "archive").exists()
 
-    def test_a_real_survey_validates_first_too(self, project):
+    def test_a_real_survey_validates_first_too(self, project: Path) -> None:
         mission = _mission(project, "m", {"collectors": [{"name": "a", "type": "ftp"}]})
         assert _invoke("survey", "m").exit_code == 3
         assert not (mission / "archive").exists()
 
-    def test_human_plan_goes_to_stdout(self, project):
+    def test_human_plan_goes_to_stdout(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         result = _invoke("survey", "m", "-n")
         assert result.exit_code == 0
@@ -380,7 +402,7 @@ class TestDryRun:
 
 
 class TestStatus:
-    def test_json_lists_missions_and_plugins(self, project):
+    def test_json_lists_missions_and_plugins(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
         result = _invoke("status", "--json")
@@ -397,11 +419,11 @@ class TestStatus:
         assert {"api", "cli", "web", "capture"} <= types
         assert "$html2text" in doc["plugins"]["transforms"]
 
-    def test_empty_is_still_a_wrapped_document(self, project):
+    def test_empty_is_still_a_wrapped_document(self, project: Path) -> None:
         doc = _doc(_invoke("status", "--json"))
         assert doc["missions"] == []
 
-    def test_reports_a_broken_plugin(self, project):
+    def test_reports_a_broken_plugin(self, project: Path) -> None:
         registry = load_plugins()
         registry.broken.append(BrokenPlugin("recon.collectors", "sql", "x:y", "ImportError: z"))
         over = root(plugins=registry)
@@ -411,7 +433,7 @@ class TestStatus:
         human = _invoke("status", over=over)
         assert "sql" in human.stderr and "failed to load" in human.stderr
 
-    def test_reads_a_format_1_archive(self, project):
+    def test_reads_a_format_1_archive(self, project: Path) -> None:
         mission = _mission(project, "old", OK_CONFIG)
         archive = mission / "archive" / "2026-01-01-000000-000000"
         archive.mkdir(parents=True)
@@ -445,7 +467,7 @@ class TestStatus:
 
 
 class TestQuery:
-    def test_json_rows_are_wrapped(self, project):
+    def test_json_rows_are_wrapped(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
         result = _invoke("query", "m", "SELECT a FROM hello ORDER BY a", "--json")
@@ -457,7 +479,7 @@ class TestQuery:
         assert doc["rows"] == [{"a": 1}, {"a": 2}]
         assert doc["count"] == 2
 
-    def test_columns_that_share_a_name_are_all_kept(self, project):
+    def test_columns_that_share_a_name_are_all_kept(self, project: Path) -> None:
         """Regression: ``SELECT h.a, g.a`` printed ``columns: ["a", "a"]`` but each row held
         one ``a``: a row is an object, and the second value overwrote the first. Repeated
         names are made unique as DuckDB makes them in a subquery (``a_1``, then ``a_1_1``
@@ -473,7 +495,7 @@ class TestQuery:
         human = unstyle(_invoke("query", "m", sql).stdout)
         assert "a_1_1" in human and "2" in human
 
-    def test_an_empty_table_answers_a_query_of_its_columns(self, project):
+    def test_an_empty_table_answers_a_query_of_its_columns(self, project: Path) -> None:
         """Regression: a collector whose source had nothing wrote a table whose view had only
         ``_empty``, and ``SELECT title FROM <table>`` failed (exit 10) where the same query
         on a full archive ran."""
@@ -488,13 +510,13 @@ class TestQuery:
         assert result.exit_code == 0, result.stderr
         assert _doc(result)["rows"] == []
 
-    def test_zero_rows_is_still_a_document(self, project):
+    def test_zero_rows_is_still_a_document(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
         doc = _doc(_invoke("query", "m", "SELECT a FROM hello WHERE a > 9", "--json"))
         assert doc["rows"] == [] and doc["count"] == 0
 
-    def test_reading_outside_the_archive_is_refused_with_a_fix(self, project):
+    def test_reading_outside_the_archive_is_refused_with_a_fix(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
         (project / "private.txt").write_text("hunter2")
@@ -508,7 +530,7 @@ class TestQuery:
         assert error["kind"] == "query"
         assert str(project / ".recon" / "m" / "archive") in error["fix"]
 
-    def test_bad_sql_exits_3_naming_the_tables(self, project):
+    def test_bad_sql_exits_3_naming_the_tables(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
         result = _invoke("query", "m", "SELECT * FROM nope", "--json")
@@ -517,13 +539,13 @@ class TestQuery:
         assert error["kind"] == "query"
         assert "hello" in error["fix"]
 
-    def test_no_archive_is_not_found(self, project):
+    def test_no_archive_is_not_found(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         result = _invoke("query", "m", "SELECT 1", "--json")
         assert result.exit_code == 4
         assert _error(result)["fix"] == "recon survey m"
 
-    def test_unknown_archive_is_not_found(self, project):
+    def test_unknown_archive_is_not_found(self, project: Path) -> None:
         """Changed requirement: the flag that names an archive is ``--archive``."""
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
@@ -533,7 +555,7 @@ class TestQuery:
 
 
 class TestQueryProvenance:
-    def test_the_rows_name_the_archive_they_came_from(self, project):
+    def test_the_rows_name_the_archive_they_came_from(self, project: Path) -> None:
         """Regression: query output did not say which archive it read."""
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
@@ -544,7 +566,7 @@ class TestQueryProvenance:
         human = _invoke("query", "m", "SELECT a FROM hello")
         assert f"archive {archive.name}" in human.stderr
 
-    def test_help_says_where_archive_ids_come_from_and_how_to_read_older_or_raw_files(self):
+    def test_help_says_where_archive_ids_come_from_and_how_to_read_older_or_raw_files(self) -> None:
         text = " ".join(unstyle(_invoke("query", "--help").stdout).split())
         assert "recon status <mission>" in text and "--archive" in text
         assert "read_json_auto" in text and "read_ndjson_objects" in text
@@ -557,7 +579,7 @@ class TestAnUnreadableTable:
     made every query on every table fail as ``unknown``, "report this as a bug"."""
 
     @pytest.fixture
-    def mission(self, project):
+    def mission(self, project: Path) -> str:
         record = {"id": "W1", "abstract_inverted_index": {"the": [0], "The": [2], "cat": [1]}}
         config = {"collectors": [
             {"name": "oa-works", "type": "cli", "run": f"echo '{json.dumps(record)}'"},
@@ -567,7 +589,9 @@ class TestAnUnreadableTable:
         assert _invoke("survey", "m").exit_code == 0
         return "m"
 
-    def test_another_table_is_queried_with_a_warning_naming_the_table_and_the_fix(self, mission):
+    def test_another_table_is_queried_with_a_warning_naming_the_table_and_the_fix(
+        self, mission: str
+    ) -> None:
         result = _invoke("query", mission, "SELECT a FROM good", "--json")
 
         assert result.exit_code == 0, result.stderr
@@ -580,7 +604,7 @@ class TestAnUnreadableTable:
         assert "oa_works cannot be queried" in human.stderr
         assert "fix:" in human.stderr and "$inverted_index" in human.stderr
 
-    def test_the_survey_warns_before_any_query(self, project):
+    def test_the_survey_warns_before_any_query(self, project: Path) -> None:
         """Regression: the survey exited 0 without a word; the first sign was a failed
         query."""
         record = {"id": "W1", "abstract_inverted_index": {"the": [0], "The": [2]}}
@@ -599,7 +623,7 @@ class TestAnUnreadableTable:
         human = _invoke("survey", "m")
         assert "oa_works cannot be queried" in human.stderr and "$inverted_index" in human.stderr
 
-    def test_querying_it_is_a_query_error_with_the_fix(self, mission):
+    def test_querying_it_is_a_query_error_with_the_fix(self, mission: str) -> None:
         result = _invoke("query", mission, "SELECT * FROM oa_works", "--json")
 
         assert result.exit_code == 10
@@ -610,7 +634,9 @@ class TestAnUnreadableTable:
 
 
 class TestWhatCountsAsAnArchive:
-    def test_a_directory_not_named_as_a_survey_names_one_is_not_an_archive(self, project):
+    def test_a_directory_not_named_as_a_survey_names_one_is_not_an_archive(
+        self, project: Path
+    ) -> None:
         """Regression: any directory under ``archive/`` was an archive, so a stray
         ``notes/`` sorted after the timestamps, became the latest, and every query failed
         with "no tables"."""
@@ -625,7 +651,7 @@ class TestWhatCountsAsAnArchive:
         assert result.exit_code == 0, result.stderr
         assert _doc(result)["rows"] == [{"a": 1}, {"a": 2}]
 
-    def test_a_newer_meta_yaml_is_read_for_what_this_recon_knows(self, project):
+    def test_a_newer_meta_yaml_is_read_for_what_this_recon_knows(self, project: Path) -> None:
         """Regression: ``meta.yaml`` from a newer recon, with a field this one does not know
         in a table's error, made ``status`` fail as a defect (exit 1)."""
         mission = _mission(project, "m", OK_CONFIG)
@@ -664,7 +690,9 @@ class TestWhatCountsAsAnArchive:
 
 
 class TestArchiveHistory:
-    def test_status_of_one_mission_lists_every_archive_with_its_time_and_outcome(self, project):
+    def test_status_of_one_mission_lists_every_archive_with_its_time_and_outcome(
+        self, project: Path
+    ) -> None:
         """Regression: ``recon status`` said "Archives 3" and gave no id to query."""
         config = {"collectors": [
             {"name": "ok", "type": "cli", "run": "echo one"},
@@ -690,18 +718,18 @@ class TestArchiveHistory:
         human = _invoke("status", "m")
         assert first["id"] in human.stdout and second["id"] in human.stdout
 
-    def test_status_of_every_mission_carries_no_history(self, project):
+    def test_status_of_every_mission_carries_no_history(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         [mission] = _doc(_invoke("status", "--json"))["missions"]
         assert mission["history"] is None
 
-    def test_an_unknown_mission_is_not_found(self, project):
+    def test_an_unknown_mission_is_not_found(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         result = _invoke("status", "nope", "--json")
         assert result.exit_code == 4
         assert _error(result)["details"]["allowed"] == ["m"]
 
-    def test_an_unknown_archive_points_at_the_listing(self, project):
+    def test_an_unknown_archive_points_at_the_listing(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
         result = _invoke("query", "m", "SELECT 1", "--archive", "1999-01-01", "--json")
@@ -709,7 +737,9 @@ class TestArchiveHistory:
 
 
 class TestDryRunShowsTheRequest:
-    def test_the_url_carries_its_query_and_the_secrets_are_redacted(self, project, monkeypatch):
+    def test_the_url_carries_its_query_and_the_secrets_are_redacted(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Regression: the dry run showed ``https://api.openalex.org/works`` with no query
         string, so search, filter and per_page were invisible."""
         monkeypatch.setenv("OA_KEY", "sk-SECRET")
@@ -751,7 +781,9 @@ class TestDryRunShowsTheRequest:
 
 
 class TestMixedFanOut:
-    def test_an_unpinned_collector_over_sources_of_different_types_is_warned(self, project):
+    def test_an_unpinned_collector_over_sources_of_different_types_is_warned(
+        self, project: Path
+    ) -> None:
         """Regression: adding a source of another type to a mission silently fanned an
         unpinned collector out over it."""
         config = {
@@ -776,7 +808,7 @@ class TestMixedFanOut:
         human = _invoke("survey", "m", "-n")
         assert "collectors.0.source" in human.stderr and "fix: pin it" in human.stderr
 
-    def test_a_survey_prints_the_warning_with_its_fix(self, project):
+    def test_a_survey_prints_the_warning_with_its_fix(self, project: Path) -> None:
         config = {
             "catalog": [{"name": "repo", "type": "local", "url": "."},
                         {"name": "api", "url": "https://api.example.test"}],
@@ -787,7 +819,7 @@ class TestMixedFanOut:
         assert result.exit_code == 0, result.stderr
         assert "collectors.0.source" in result.stderr and "fix: pin it" in result.stderr
 
-    def test_sources_of_one_type_are_not_warned(self, project):
+    def test_sources_of_one_type_are_not_warned(self, project: Path) -> None:
         config = {
             "catalog": [{"name": "a", "type": "local", "url": "a"},
                         {"name": "b", "type": "local", "url": "b"}],
@@ -800,7 +832,7 @@ class TestMixedFanOut:
 
 
 class TestOneRecordHoldingTheRecords:
-    def test_a_survey_suggests_the_extract_it_is_missing(self, project):
+    def test_a_survey_suggests_the_extract_it_is_missing(self, project: Path) -> None:
         """Regression: arXiv without ``extract: feed.entry`` gave "ok, 1 record", one
         ``feed`` object holding the whole response, without a word."""
         config = {"collectors": [
@@ -827,7 +859,9 @@ class TestOneRecordHoldingTheRecords:
         fixed = _doc(_invoke("survey", "m", "--json"))
         assert fixed["tables"][0]["records"] == 3 and fixed["warnings"] == []
 
-    def test_a_shaped_record_or_a_type_that_does_not_extract_is_not_warned(self, project):
+    def test_a_shaped_record_or_a_type_that_does_not_extract_is_not_warned(
+        self, project: Path
+    ) -> None:
         nested = json.dumps({"feed": {"entry": [{"a": 1}, {"a": 2}]}})
         config = {"collectors": [
             {"name": "lines", "type": "cli", "run": f"echo '{nested}'"},
@@ -842,14 +876,14 @@ class TestOneRecordHoldingTheRecords:
 
 
 class TestTemplatesAndInit:
-    def test_templates_json(self, project):
+    def test_templates_json(self, project: Path) -> None:
         doc = _doc(_invoke("templates", "--json"))
         assert doc["schema"] == "recon.v1.templates"
         names = {t["name"] for t in doc["templates"]}
         assert {"code-forensics", "mcp-captures"} <= names
         assert all(t["description"] for t in doc["templates"])
 
-    def test_every_template_plans_clean_but_for_its_placeholders(self, project):
+    def test_every_template_plans_clean_but_for_its_placeholders(self, project: Path) -> None:
         """A scaffold must not hand out a broken config. The only problems a template may
         have are the placeholders it asks the user to fill — and those must be caught by
         the plan, not discovered as a 404 against `/repos/{owner}/...`.
@@ -872,7 +906,7 @@ class TestTemplatesAndInit:
             placeholder_templates.add(name)
         assert placeholder_templates == {"github-audit"}
 
-    def test_init_json(self, project):
+    def test_init_json(self, project: Path) -> None:
         result = _invoke("init", "m", "-t", "code-forensics", "--json")
         assert result.exit_code == 0
         doc = _doc(result)
@@ -880,7 +914,9 @@ class TestTemplatesAndInit:
         assert Path(doc["config"]) == project / ".recon" / "m" / "config.yaml"
         assert doc["outcome"] == "created" and doc["from"] == "template:code-forensics"
 
-    def test_init_again_with_the_same_config_changes_nothing_and_succeeds(self, project):
+    def test_init_again_with_the_same_config_changes_nothing_and_succeeds(
+        self, project: Path
+    ) -> None:
         """Regression (S12): a second identical init exited 3 ``conflict``, so a retry or a
         script that runs init every time failed."""
         cfg = project / "mission.yaml"
@@ -897,7 +933,7 @@ class TestTemplatesAndInit:
         assert _invoke("init", "t", "-t", "mcp-captures").exit_code == 0
         assert _doc(_invoke("init", "t", "-t", "mcp-captures", "--json"))["outcome"] == "unchanged"
 
-    def test_init_with_a_different_config_is_a_conflict_naming_replace(self, project):
+    def test_init_with_a_different_config_is_a_conflict_naming_replace(self, project: Path) -> None:
         _invoke("init", "m", "-t", "code-forensics")
         config = project / ".recon" / "m" / "config.yaml"
         before = config.read_text()
@@ -921,7 +957,7 @@ class TestTemplatesAndInit:
         assert "Replaced:" in _invoke("init", "m", "-c", str(third), "--replace").stderr
         assert "Unchanged:" in _invoke("init", "m", "-c", str(third)).stderr
 
-    def test_init_takes_a_template_or_a_config_not_both(self, project):
+    def test_init_takes_a_template_or_a_config_not_both(self, project: Path) -> None:
         cfg = project / "mission.yaml"
         cfg.write_text(yaml.safe_dump(OK_CONFIG))
         result = _invoke("init", "m", "-t", "code-forensics", "-c", str(cfg), "--json")
@@ -929,7 +965,7 @@ class TestTemplatesAndInit:
         assert not (project / ".recon").exists()
 
     @pytest.mark.parametrize("command", [["init", "m"], ["survey", "m", "-n"], ["survey", "m"]])
-    def test_a_dash_reads_the_config_from_stdin(self, project, command):
+    def test_a_dash_reads_the_config_from_stdin(self, project: Path, command: list[Any]) -> None:
         result = _invoke(*command, "-c", "-", "--json", stdin=yaml.safe_dump(OK_CONFIG))
         assert result.exit_code == 0, result.stderr
         if command[0] == "init":
@@ -937,7 +973,7 @@ class TestTemplatesAndInit:
             config = project / ".recon" / "m" / "config.yaml"
             assert yaml.safe_load(config.read_text()) == OK_CONFIG
 
-    def test_unknown_template_is_not_found(self, project):
+    def test_unknown_template_is_not_found(self, project: Path) -> None:
         result = _invoke("init", "m", "-t", "nope", "--json")
         assert result.exit_code == 4
         assert _error(result)["fix"] == "recon templates"
@@ -959,7 +995,7 @@ HOOK_PAYLOAD = {
 
 
 class TestCapture:
-    def test_hook_payload_to_survey_end_to_end(self, project):
+    def test_hook_payload_to_survey_end_to_end(self, project: Path) -> None:
         _invoke("init", "mcp", "-t", "mcp-captures")
         result = _invoke("capture", "mcp", "--json", stdin=json.dumps(HOOK_PAYLOAD))
 
@@ -975,13 +1011,15 @@ class TestCapture:
         rows = _doc(_invoke("query", "mcp", "SELECT * FROM mcp_results", "--json"))["rows"]
         assert rows[0]["tool"] == "mcp__exa__web_search_exa"
 
-    def test_unknown_mission_is_not_found(self, project):
+    def test_unknown_mission_is_not_found(self, project: Path) -> None:
         result = _invoke("capture", "nope", "--json", stdin=json.dumps(HOOK_PAYLOAD))
         assert result.exit_code == 4
         assert "mcp-captures" in _error(result)["fix"]
 
     @pytest.mark.parametrize("stdin", ["not json", "[]", '{"tool_name": "x"}'])
-    def test_bad_payload_is_a_config_error_and_writes_nothing(self, project, stdin):
+    def test_bad_payload_is_a_config_error_and_writes_nothing(
+        self, project: Path, stdin: str
+    ) -> None:
         _invoke("init", "mcp", "-t", "mcp-captures")
         result = _invoke("capture", "mcp", "--json", stdin=stdin)
         assert result.exit_code == 3
@@ -992,7 +1030,7 @@ class TestCapture:
 # --- errors that escape -----------------------------------------------------------------
 
 
-def test_an_unexpected_exception_is_classified_unknown(project):
+def test_an_unexpected_exception_is_classified_unknown(project: Path) -> None:
     _mission(project, "m", OK_CONFIG)
     result = _invoke("survey", "m", "--json", over=_Raises(RuntimeError("wiring bug")))
     assert result.exit_code == 1
@@ -1001,7 +1039,7 @@ def test_an_unexpected_exception_is_classified_unknown(project):
     assert "wiring bug" in error["message"]
 
 
-def test_an_escaping_error_keeps_its_own_fix(project):
+def test_an_escaping_error_keeps_its_own_fix(project: Path) -> None:
     refuses = CollectionError("cannot do that", kind="config", fix="do this instead")
     _mission(project, "m", OK_CONFIG)
     result = _invoke("survey", "m", "--json", over=_Raises(refuses))
@@ -1009,16 +1047,24 @@ def test_an_escaping_error_keeps_its_own_fix(project):
     assert _error(result)["fix"] == "do this instead"
 
 
-def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(project, monkeypatch):
+def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The whole path: the table fails as a config error that names the variable and says
     where to declare it; nothing is read from the process environment on the quiet."""
     monkeypatch.setenv("RECON_TEST_UNDECLARED", "a secret the mission never named")
 
     class Greedy:
-        def __init__(self, ctx):
+        def __init__(self, ctx: CollectorContext) -> None:
             self._env = ctx.env
 
-        def collect(self, entry, source, *, captures=None):
+        def collect(
+            self,
+            entry: CollectorEntry,
+            source: SourceEntry | None,
+            *,
+            captures: CaptureLog | None = None,
+        ) -> Iterator[dict[str, Any]]:
             yield {"leaked": self._env.get("RECON_TEST_UNDECLARED", "")}
 
     registry = load_plugins()
@@ -1036,10 +1082,10 @@ def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(proj
     assert not (archive / "g.jsonl").exists()
 
 
-def test_a_factory_failure_reaches_the_tables_not_a_traceback(project):
+def test_a_factory_failure_reaches_the_tables_not_a_traceback(project: Path) -> None:
     registry = load_plugins()
 
-    def explode(ctx):
+    def explode(ctx: CollectorContext) -> NoReturn:
         raise ValueError("no credentials file")
 
     registry.collector_types["fragile"] = replace(registry.collector_types["cli"], create=explode)
@@ -1058,7 +1104,7 @@ def test_a_factory_failure_reaches_the_tables_not_a_traceback(project):
 CONTRACTS = Path(__file__).resolve().parents[2]
 
 
-def _contract(name):
+def _contract(name: str) -> Any:
     """One of the workspace's shared contracts, beside the packages in the repository."""
     path = CONTRACTS / name
     if not path.is_file():
@@ -1066,7 +1112,7 @@ def _contract(name):
     return json.loads(path.read_text())
 
 
-def test_the_agreed_kinds_keep_their_agreed_codes():
+def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     """``components/capabilities/exit-codes.json`` holds the codes every tool agrees on; a
     tool's own kinds take codes from 10 up, one kind per code."""
     agreed = _contract("exit-codes.json")["kinds"]
@@ -1081,7 +1127,7 @@ def test_the_agreed_kinds_keep_their_agreed_codes():
     assert set(recon.ERROR_KINDS) <= set(recon.EXIT_CODES) == set(tables[0]) == set(tables[1])
 
 
-def test_the_shared_problem_kinds_are_the_agreed_ones():
+def test_the_shared_problem_kinds_are_the_agreed_ones() -> None:
     """``components/capabilities/error-envelope.json`` names the problem kinds every tool
     shares; recon uses those names for those mistakes, and adds its own."""
     contract = _contract("error-envelope.json")
@@ -1094,7 +1140,7 @@ def test_the_shared_problem_kinds_are_the_agreed_ones():
     )
 
 
-def test_config_and_lookup_errors_have_the_builtin_bases():
+def test_config_and_lookup_errors_have_the_builtin_bases() -> None:
     assert issubclass(recon.ConfigError, ValueError)
     assert issubclass(recon.NotFoundError, KeyError)
     assert str(recon.NotFoundError("no mission 'm'")) == "no mission 'm'", "not repr-quoted"
@@ -1111,7 +1157,9 @@ def test_config_and_lookup_errors_have_the_builtin_bases():
         ("--skill", "-r", "no-such-reference"),
     ],
 )
-def test_a_usage_error_is_one_envelope_of_kind_usage_and_exits_2(project, args):
+def test_a_usage_error_is_one_envelope_of_kind_usage_and_exits_2(
+    project: Path, args: tuple[Any, ...]
+) -> None:
     result = _invoke(*args)
     assert result.exit_code == 2 == recon.EXIT_CODES["usage"], result.stderr
     if "--json" in args:
@@ -1121,7 +1169,7 @@ def test_a_usage_error_is_one_envelope_of_kind_usage_and_exits_2(project, args):
         assert result.stderr.startswith("error (usage):")
 
 
-def test_an_unknown_skill_reference_names_the_ones_there_are(project):
+def test_an_unknown_skill_reference_names_the_ones_there_are(project: Path) -> None:
     with pytest.raises(recon.UsageError) as caught:
         recon.skill("nope")
     assert caught.value.details == {"value": "nope", "allowed": recon.skill_references()}
@@ -1129,7 +1177,7 @@ def test_an_unknown_skill_reference_names_the_ones_there_are(project):
     assert ", ".join(recon.skill_references()) in stderr
 
 
-def test_ctrl_c_is_one_envelope_of_kind_interrupted_and_exits_130(project):
+def test_ctrl_c_is_one_envelope_of_kind_interrupted_and_exits_130(project: Path) -> None:
     interrupted = _Raises(KeyboardInterrupt())
     result = _invoke("status", "--json", over=interrupted)
     assert result.exit_code == 130 == recon.EXIT_CODES["interrupted"]
@@ -1140,12 +1188,18 @@ def test_ctrl_c_is_one_envelope_of_kind_interrupted_and_exits_130(project):
     assert "error (interrupted):" in for_a_person.stderr
 
 
-def test_a_survey_cut_short_leaves_its_archive_marked_incomplete(project):
+def test_a_survey_cut_short_leaves_its_archive_marked_incomplete(project: Path) -> None:
     """Regression: Ctrl-C mid-survey left an archive with no meta.yaml and no marker, which
     status reported as ok and query read without a warning."""
 
     class Interrupts:
-        def collect(self, entry, source, *, captures=None):
+        def collect(
+            self,
+            entry: CollectorEntry,
+            source: SourceEntry | None,
+            *,
+            captures: CaptureLog | None = None,
+        ) -> Iterator[dict[str, Any]]:
             yield {"a": 1}
             raise KeyboardInterrupt
 
@@ -1162,7 +1216,7 @@ def test_a_survey_cut_short_leaves_its_archive_marked_incomplete(project):
     assert _doc(_invoke("status", "--json"))["missions"][0]["latest"]["state"] == "incomplete"
 
 
-def test_a_query_on_an_incomplete_archive_says_so_in_its_document(project):
+def test_a_query_on_an_incomplete_archive_says_so_in_its_document(project: Path) -> None:
     """Regression: only the human output warned that rows may be partial; an agent reading
     --json could not tell."""
     _mission(project, "m", {"collectors": [
@@ -1177,7 +1231,7 @@ def test_a_query_on_an_incomplete_archive_says_so_in_its_document(project):
     assert _doc(_invoke("query", "n", "SELECT a FROM hello", "--json"))["state"] == "ok"
 
 
-def test_a_plan_problem_carries_its_kind_fix_and_the_value_written(project):
+def test_a_plan_problem_carries_its_kind_fix_and_the_value_written(project: Path) -> None:
     _mission(project, "m", {"collectors": [{"name": "a", "type": "ftp"}], "colectors": []})
     problems = {p["path"]: p for p in _error(_invoke("survey", "m", "-n", "--json"))["problems"]}
     installed = sorted(
@@ -1230,7 +1284,7 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
-def test_a_terminated_survey_reads_incomplete_and_leaves_no_command_running(project):
+def test_a_terminated_survey_reads_incomplete_and_leaves_no_command_running(project: Path) -> None:
     """Regression: only Ctrl-C marked an archive incomplete. A survey stopped by SIGTERM left
     an archive that status and query called ok, and its command kept running."""
     survey, command_group = _survey_process(project, f"recon-sigterm-{uuid.uuid4().hex}")
@@ -1252,7 +1306,7 @@ def test_a_terminated_survey_reads_incomplete_and_leaves_no_command_running(proj
     assert not list(archive.glob("*.tmp")), "a half-written table was left behind"
 
 
-def test_a_killed_survey_reads_incomplete(project):
+def test_a_killed_survey_reads_incomplete(project: Path) -> None:
     """SIGKILL runs no handler, so the archive is incomplete from the moment it is made."""
     survey, command_group = _survey_process(project, f"recon-sigkill-{uuid.uuid4().hex}")
     survey.kill()
@@ -1264,7 +1318,7 @@ def test_a_killed_survey_reads_incomplete(project):
     assert latest["state"] == "incomplete" and latest["format_version"] is None
 
 
-def test_ctrl_c_under_json_prints_the_envelope_and_nothing_before_it(project):
+def test_ctrl_c_under_json_prints_the_envelope_and_nothing_before_it(project: Path) -> None:
     """Regression (N2): click answered SIGINT with a blank line on stderr, so a reader that
     took the first line of stderr got "" instead of the envelope."""
     survey, command_group = _survey_process(project, f"recon-sigint-{uuid.uuid4().hex}")
@@ -1280,7 +1334,9 @@ def test_ctrl_c_under_json_prints_the_envelope_and_nothing_before_it(project):
 # --- output for people, and stdin ------------------------------------------------------------
 
 
-def test_a_long_path_is_not_wrapped_off_a_terminal(tmp_path, monkeypatch):
+def test_a_long_path_is_not_wrapped_off_a_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Regression (N1): piped, human output was wrapped at 80 columns, splitting a path."""
     deep = tmp_path / ("a-directory-with-a-long-name-" * 3) / "project"
     (deep / ".git").mkdir(parents=True)
@@ -1298,7 +1354,7 @@ def test_a_long_path_is_not_wrapped_off_a_terminal(tmp_path, monkeypatch):
     assert f"ls {deep}" in plan.stdout, "a table cell is not wrapped either"
 
 
-def test_capture_on_a_terminal_says_what_it_wants_instead_of_waiting(project):
+def test_capture_on_a_terminal_says_what_it_wants_instead_of_waiting(project: Path) -> None:
     """Regression (N8): with nothing piped in, capture waited on the terminal in silence."""
     import pty
 
@@ -1321,7 +1377,7 @@ def test_capture_on_a_terminal_says_what_it_wants_instead_of_waiting(project):
     assert error["kind"] == "usage" and "pipe" in error["fix"]
 
 
-def test_a_config_error_says_when_checking_stopped_early(project):
+def test_a_config_error_says_when_checking_stopped_early(project: Path) -> None:
     _mission(project, "m", {"collectors": [{"name": "c", "type": "cli", "patterns": "x"}]})
     result = _invoke("survey", "m", "-n", "--json")
     assert result.exit_code == 3
@@ -1337,8 +1393,8 @@ def test_a_config_error_says_when_checking_stopped_early(project):
 
 class TestTheDirectoryACommandRunsIn:
     def test_a_local_source_whose_directory_is_missing_is_a_plan_problem(
-        self, project, monkeypatch
-    ):
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Regression: with ``url: does-not-exist`` and ``run: pwd``, run from a
         subdirectory, the dry run named the missing directory as the cwd with no problem, and
         the survey said ok with one row: the subdirectory."""
@@ -1360,7 +1416,9 @@ class TestTheDirectoryACommandRunsIn:
         assert surveyed.exit_code == 3
         assert not (project / ".recon" / "m" / "archive").exists(), "nothing ran"
 
-    def test_the_dry_run_shows_the_directory_the_command_runs_in(self, project, monkeypatch):
+    def test_the_dry_run_shows_the_directory_the_command_runs_in(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         (project / "src").mkdir()
         mission = {
             "catalog": [{"name": "repo", "type": "local", "url": "src"}],
@@ -1385,8 +1443,8 @@ class TestTheDirectoryACommandRunsIn:
         assert [Path(row["line"]).resolve() for row in lines] == [(project / "src").resolve()]
 
     def test_a_command_with_no_local_source_is_shown_running_in_the_working_directory(
-        self, project
-    ):
+        self, project: Path
+    ) -> None:
         _mission(project, "m", {"collectors": [{"name": "where", "type": "cli", "run": "pwd"}]})
         [run] = _doc(_invoke("survey", "m", "-n", "--json"))["runs"]
         assert run["cwd"] is None
@@ -1396,7 +1454,9 @@ class TestTheDirectoryACommandRunsIn:
 # --- the library, pointed at a project -------------------------------------------------------
 
 
-def test_the_library_works_on_a_project_without_changing_directory(tmp_path, monkeypatch):
+def test_the_library_works_on_a_project_without_changing_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """S13: every operation takes ``root``; a ``local`` source's relative url is relative to
     it, so the default template scans the project, not the caller's directory."""
     elsewhere = tmp_path / "elsewhere"

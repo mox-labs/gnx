@@ -8,6 +8,7 @@ to colleagues.
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,8 +19,8 @@ from recon.domain.capture import REDACTED, redact_headers
 from recon.domain.errors import CollectionError, ConfigError
 
 
-def _record(log: FilesystemCaptureLog, body: bytes = b"{}", **overrides) -> dict:
-    kwargs = {
+def _record(log: FilesystemCaptureLog, body: bytes = b"{}", **overrides: Any) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
         "collector": "src",
         "source": "s",
         "kind": "http",
@@ -138,7 +139,7 @@ def test_a_stream_is_hashed_and_moved_on_finalize(tmp_path: Path) -> None:
 # --- reading: the format is written by other tools, so the reader verifies ---
 
 
-def _write_log(tmp_path: Path, line: dict, body: bytes | None = b"x") -> Path:
+def _write_log(tmp_path: Path, line: dict[str, Any], body: bytes | None = b"x") -> Path:
     if body is not None:
         (tmp_path / "raw").mkdir(exist_ok=True)
         (tmp_path / "raw" / hashlib.sha256(body).hexdigest()).write_bytes(body)
@@ -147,7 +148,7 @@ def _write_log(tmp_path: Path, line: dict, body: bytes | None = b"x") -> Path:
     return log
 
 
-def _line(content: bytes = b"x", **overrides) -> dict:
+def _line(content: bytes = b"x", /, **overrides: Any) -> dict[str, Any]:
     sha = hashlib.sha256(content).hexdigest()
     line = {
         "schema": "recon.v1.capture",
@@ -176,14 +177,16 @@ def test_reader_ignores_unknown_fields(tmp_path: Path) -> None:
         ({"sha256": "0" * 64}, "does not match its sha256"),
     ],
 )
-def test_reader_refuses_what_it_cannot_trust(tmp_path: Path, override, message) -> None:
+def test_reader_refuses_what_it_cannot_trust(
+    tmp_path: Path, override: dict[str, Any], message: str
+) -> None:
     log = _write_log(tmp_path, _line(**override))
     with pytest.raises(CollectionError, match=message):
         list(read_captures(log))
 
 
 @pytest.mark.parametrize("field", ["id", "collector", "kind", "sha256"])
-def test_reader_refuses_a_line_without_a_field_required_to_read(tmp_path: Path, field) -> None:
+def test_reader_refuses_a_line_without_a_field_required_to_read(tmp_path: Path, field: str) -> None:
     """Regression: the format marks these required to read, and a line without
     ``sha256`` was accepted."""
     line = _line()
@@ -195,7 +198,7 @@ def test_reader_refuses_a_line_without_a_field_required_to_read(tmp_path: Path, 
 
 
 @pytest.mark.parametrize("field", ["id", "collector", "kind", "sha256"])
-def test_reader_refuses_a_required_field_that_is_not_a_string(tmp_path: Path, field) -> None:
+def test_reader_refuses_a_required_field_that_is_not_a_string(tmp_path: Path, field: str) -> None:
     log = _write_log(tmp_path, _line(**{field: 7}))
     with pytest.raises(CollectionError, match=rf"captures\.jsonl:1: .*'{field}'"):
         list(read_captures(log))
@@ -220,7 +223,7 @@ def test_reader_names_the_file_and_line_of_bad_json(tmp_path: Path) -> None:
 # --- Claude Code PostToolUse payloads ---
 
 
-def _payload(**overrides) -> dict:
+def _payload(**overrides: Any) -> dict[str, Any]:
     payload = {
         "session_id": "abc123",
         "transcript_path": "/tmp/t.jsonl",
@@ -282,7 +285,9 @@ def test_hook_string_response_is_stored_as_text(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("payload", [[], "x", {"tool_name": "t"}, {"tool_response": {}}])
-def test_hook_payload_without_required_fields_is_a_config_error(tmp_path: Path, payload) -> None:
+def test_hook_payload_without_required_fields_is_a_config_error(
+    tmp_path: Path, payload: dict[str, Any] | list[Any] | str
+) -> None:
     with pytest.raises(ConfigError):
         record_hook_payload(FilesystemCaptureLog(tmp_path, SystemClock()), payload)
     assert not (tmp_path / "captures.jsonl").exists()
