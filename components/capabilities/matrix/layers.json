@@ -1,6 +1,6 @@
 {
   "language": "python",
-  "about": "matrix's layers, checked by tests/test_architecture.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the reviewed map (scratch/review-2026-10-22/matrix-layers.json, at 1580c81) and fitted to matrix as it now is: two runtime ports (an agent session and a model call), the session table, the template. matrix keeps its application services (Executor, BoundAgent, the agent and model steps, Loader) in the domain package; there is no application package. 'why' keys are read by neither checker.",
+  "about": "matrix's layers, checked by tests/test_architecture.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the map the 2026-10-22 review proposed (at 1580c81) and fitted to matrix as it now is: two runtime ports (an agent session and a model call), the session table, the template. matrix keeps its application services (Executor, BoundAgent, the agent and model steps, Loader) in the domain package; there is no application package. 'why' keys are read by neither checker.",
   "scan": ["src/matrix/**/*.py"],
   "scan_why": "Every Python file in the package. Tests are out of scan: a test reaches adapters by design.",
   "layers": [
