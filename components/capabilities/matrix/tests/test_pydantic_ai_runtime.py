@@ -646,6 +646,57 @@ async def test_a_session_names_the_provider_its_row_names() -> None:
     assert (await runtime.run(_agent(), "Define ossify.")).provider == "ollama"
 
 
+async def test_a_row_that_fails_over_is_answered_by_its_fallback_and_says_so() -> None:
+    """A fallback is the registry row's, not matrix's: on a row whose model is down, a
+    session is answered by the fallback and names the model that answered, and each call the
+    pydantic-ai model makes is a row naming the fallback and the row it stood in for."""
+    from pydantic_ai import Agent
+
+    from matrix import Session
+    from matrix.domain.session import CURRENT_SESSIONS
+
+    models = build_runtime(
+        {
+            "models": {
+                "down": {
+                    "backend": "mock",
+                    "model": "m-down",
+                    "family": "x",
+                    "retries": 0,
+                    "fallbacks": ["up"],
+                    "options": {"script": [{"error": "unavailable"}]},
+                },
+                "up": {
+                    "backend": "mock",
+                    "model": "m-up",
+                    "family": "y",
+                    "options": {"default": "Bone."},
+                },
+            }
+        },  # fmt: skip
+        backends={"mock": MockBackend()},
+    )
+    session = PydanticAiRuntime(models, PydanticAiRuntimeConfig(default_model="down"))
+    response = await session.run(_agent(), "Define ossify.")
+    assert (response.content, response.model, response.family) == ("Bone.", "m-up", "y")
+    rows: list[Session] = []
+
+    def record(row: Session) -> int:
+        rows.append(row)
+        return len(rows) - 1
+
+    runtime = HardlineModelRuntime(models, HardlineModelRuntimeConfig(default_model="down"))
+    agent: Agent[None, str] = Agent(runtime.pydantic_ai_model(None))
+    agent.instrument = False
+    recording = CURRENT_SESSIONS.set(record)
+    try:
+        assert (await agent.run("Define ossify.")).output == "Bone."
+    finally:
+        CURRENT_SESSIONS.reset(recording)
+    (row,) = rows
+    assert (row.name, row.model, row.fallback_from) == ("up", "m-up", "down")
+
+
 async def test_each_call_the_pydantic_ai_model_makes_is_a_session_row_as_a_steps_is() -> None:
     """Regression: a judge evaluator's model calls left no session row. pydantic-ai makes them
     through the Model a model runtime hands out (``pydantic_ai_model``), never through
