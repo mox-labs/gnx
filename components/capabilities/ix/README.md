@@ -308,7 +308,9 @@ A metric decision has two reductions: `statistic` reduces one trial's reading to
 (the p99 of a latency histogram) and `estimator` combines the trials (their mean; the rate
 of a boolean or a count). Both default. A verdict rests on a mean, a median (6 blocks or
 more) or a rate; `min` and `max` are measured, never decided on (`estimator_illegal`). A
-rate's margin is in points (`10pp`) or a share, never percent (`unit_mismatch`).
+rate's margin is in points (`10pp`) or a share, never percent (`unit_mismatch`), and below
+the whole range (`1`, `100pp`); a rate's threshold is a share between 0 and 1, never 0 or 1
+themselves (`invalid_value`).
 
 ## Extending
 

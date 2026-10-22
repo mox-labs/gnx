@@ -810,3 +810,43 @@ def test_a_median_needs_six_blocks(compare_data: dict[str, Any], vocabulary: Voc
     assert _problems({**compare_data, "repeats": 6}, vocabulary) == ()
     (problem,) = _problems({**compare_data, "repeats": 5}, vocabulary)
     assert (problem.path, problem.kind, problem.got) == ("repeats", "repeats_below_min", 5)
+
+
+@pytest.mark.parametrize("margin", [5, 1, "100pp"])
+def test_a_rate_margin_beyond_the_whole_range_is_refused(
+    margin: float | str, compare_data: dict[str, Any], vocabulary: Vocabulary
+) -> None:
+    """Regression: a bare margin on a rate is a share, so ``margin: 5`` allowed a loss of
+    500 points and held for a variant that lost 80 of them."""
+    compare_data["guardrails"] = [{"metric": "error_rate", "margin": margin}]
+    (problem,) = _problems(compare_data, vocabulary)
+    assert (problem.path, problem.kind) == ("guardrails.0.margin", "invalid_value")
+    assert "0.05" in problem.fix
+    compare_data["guardrails"] = [{"metric": "error_rate", "margin": 0.05}]
+    assert _problems(compare_data, vocabulary) == ()
+
+
+@pytest.mark.parametrize("value", [5, 1, 0, -0.1])
+def test_a_rate_threshold_outside_zero_to_one_is_refused(
+    value: float, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+) -> None:
+    """Regression: a threshold on a rate is never range-checked, so ``< 5`` held at once,
+    decided at 0, for any error rate at all; at 0 or 1 a rate can never pass it, or always
+    does."""
+    evaluate_data["threshold"] = {"op": ">=", "value": value}
+    (problem,) = _problems(evaluate_data, vocabulary)
+    assert (problem.path, problem.kind) == ("threshold.value", "invalid_value")
+    assert "share" in problem.fix and problem.got == value
+    evaluate_data["threshold"] = {"op": ">=", "value": 0.9}
+    assert _problems(evaluate_data, vocabulary) == ()
+
+
+def test_a_rate_threshold_in_percent_is_told_to_be_a_share(
+    evaluate_data: dict[str, Any], vocabulary: Vocabulary
+) -> None:
+    """Regression: the fix said "state the threshold as a bare number", which led an author
+    from ``90%`` straight to ``90``."""
+    evaluate_data["threshold"] = {"op": ">=", "value": "90%"}
+    (problem,) = _problems(evaluate_data, vocabulary)
+    assert (problem.path, problem.kind) == ("threshold.value", "unit_mismatch")
+    assert problem.fix == "state the threshold as a share: 0.9"

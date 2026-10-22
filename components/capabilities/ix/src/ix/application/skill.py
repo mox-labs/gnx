@@ -730,7 +730,9 @@ whether it came from the experiment, the genre or ix.
 - **What a verdict can rest on.** A `mean`, a `median` (it needs 6 blocks, repeats x
   probes, in a cell: `repeats_below_min`) or a rate. A `min` or a `max` is measured and
   reported, never decided on (`estimator_illegal`). A rate's margin is in percentage points
-  (`10pp`) or a share (`0.05`), never in percent (`unit_mismatch`).
+  (`10pp`) or a share (`0.05`), never in percent (`unit_mismatch`), and below the whole range
+  (`1`, `100pp`). A rate's threshold is a share strictly between 0 and 1 (`0.9`, not `90%`
+  or `90`): one at 0 or 1 or beyond is passed by every rate or by none (`invalid_value`).
 - **Placeholders.** In an inline probe, `{{name}}` is a factor, or an option every subject
   sets; anything else is `unbound_placeholder`.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the

@@ -13,6 +13,7 @@ still be measured and reported.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -282,22 +283,47 @@ def _fit(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> list[
     return problems
 
 
-def _threshold_unit(path: str, threshold: Threshold | None, metric: Metric) -> list[Problem]:
-    if threshold is None or not threshold.unit or threshold.unit == metric.unit:
+def _share_fix(value: float, unit: str) -> str:
+    """How to write ``value`` as the share a rate is compared on."""
+    return f"a share: {value / 100:g}" if unit in ("%", "pp") else "a share, such as 0.05"
+
+
+def _threshold_value(path: str, threshold: Threshold | None, metric: Metric) -> list[Problem]:
+    """A threshold in another unit than its metric's; on a rate, one outside (0, 1), which a
+    rate always passes or never can."""
+    if threshold is None:
         return []
-    return [
-        problem(
-            f"{path}.value",
-            kind="unit_mismatch",
-            message=f"the threshold is in {threshold.unit!r} and {metric.name} is in "
-            f"{metric.unit or '(no unit)'!r}",
-            fix=f"state the threshold in {metric.unit}"
-            if metric.unit
-            else "state the threshold as a bare number",
-            allowed=[metric.unit] if metric.unit else [],
-            got=threshold.unit,
-        )
-    ]
+    rate = metric.shape in ("boolean", "count")
+    if threshold.unit and threshold.unit != metric.unit:
+        if rate:
+            fix = f"state the threshold as {_share_fix(threshold.value, threshold.unit)}"
+        elif metric.unit:
+            fix = f"state the threshold in {metric.unit}"
+        else:
+            fix = "state the threshold as a bare number"
+        return [
+            problem(
+                f"{path}.value",
+                kind="unit_mismatch",
+                message=f"the threshold is in {threshold.unit!r} and {metric.name} is in "
+                f"{metric.unit or '(no unit)'!r}",
+                fix=fix,
+                allowed=[metric.unit] if metric.unit else [],
+                got=threshold.unit,
+            )
+        ]
+    if rate and not 0 < threshold.value < 1:
+        return [
+            problem(
+                f"{path}.value",
+                kind="invalid_value",
+                message=f"{metric.name} is a rate, a share between 0 and 1, so a threshold of "
+                f"{threshold.value:g} is passed by every rate or by none",
+                fix="state the threshold as a share between 0 and 1, such as 0.05",
+                got=threshold.value,
+            )
+        ]
+    return []
 
 
 @dataclass(frozen=True)
@@ -385,6 +411,10 @@ def _reads(
     return problems
 
 
+#: A rate's whole range on each basis a margin is stated in: a share, or percentage points.
+_WHOLE = {"absolute": 1.0, "points": 100.0, "relative": math.inf}
+
+
 def _decidable(
     ref: MetricRef | Guardrail,
     path: str,
@@ -421,6 +451,19 @@ def _decidable(
                 f"is unstable; ix compares rates in percentage points or as a share",
                 fix=f"margin: {given.value:g}pp (percentage points) or a share such as 0.05",
                 allowed=("pp", "a bare share"),
+                got=given.text(),
+            )
+        )
+    elif rate and margin is not None and margin[1].value >= _WHOLE[margin[1].basis]:
+        where, given = margin
+        problems.append(
+            problem(
+                where,
+                kind="invalid_value",
+                message=f"{metric.name} is a rate, a share between 0 and 1, so a margin of "
+                f"{given.text()} is the whole range or more and rules no loss out",
+                fix="margin: a share below 1, such as 0.05, or percentage points below 100, "
+                "such as 5pp",
                 got=given.text(),
             )
         )
@@ -461,7 +504,7 @@ def _decision(
         )
         metric = instruments.metrics.get(experiment.primary.metric)
         if metric is not None:
-            problems += _threshold_unit("threshold", experiment.threshold, metric)
+            problems += _threshold_value("threshold", experiment.threshold, metric)
     for index, guardrail in enumerate(experiment.guardrails):
         path = f"guardrails.{index}"
         problems += _reads(
@@ -474,7 +517,7 @@ def _decision(
         )
         metric = instruments.metrics.get(guardrail.metric)
         if metric is not None:
-            problems += _threshold_unit(f"{path}.threshold", guardrail.threshold, metric)
+            problems += _threshold_value(f"{path}.threshold", guardrail.threshold, metric)
     return problems
 
 

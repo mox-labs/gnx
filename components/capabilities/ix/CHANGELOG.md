@@ -36,6 +36,13 @@
   the t test at Korn and Graubard's effective sample size. A count could then hold `< 0.2`
   while its own printed 95% interval contained 0.2. The level is now the larger of the two
   whenever the bound lies inside (0, 1), as the interval is.
+- **A rate's margin and threshold are range-checked.** On a boolean or a count a bare
+  margin is a share, so `margin: 5` allowed a loss of 500 points and held for a variant
+  that lost 80; a threshold of `5`, or of 0 or 1, was passed by every rate or by none.
+  `validate` now refuses a rate margin of the whole range or more (`1`, `100pp`) and a rate
+  threshold outside (0, 1) as `invalid_value`. A rate threshold written in percent
+  (`90%`) is still `unit_mismatch`, and its fix now says the share (`0.9`), not "a bare
+  number".
 
 ### Kept
 
