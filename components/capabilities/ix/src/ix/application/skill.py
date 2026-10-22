@@ -1103,8 +1103,10 @@ probes and a metric. What makes it one is the kinds.
   `tool_usage_score` (`tool-usage`, option `tool`: a tool called by name or a program run
   through Bash; truth `expected_command`, the whole word, and `expected_args`), `tests_passed`,
   `tests_pass_share` and `tests_score` (`function-test`: truth `function_name`,
-  `test_cases` of `{{input, expected}}` or `{{input, raises}}`, and `tiers` that weigh
-  them; option `file` tests a collected file instead of the reply), `outcome_score` and
+  `test_cases` of `{{input, expected}}` or `{{input, raises}}` (`raises` names an exception
+  class or a base of it; `any` is `Exception`, so code that exits passes only where
+  `SystemExit` is named), and `tiers` that weigh them; option `file` tests a collected
+  file instead of the reply), `outcome_score` and
   `outcome_passed` (`outcome`, option `graders`: a Python module of your own whose
   `GRADERS` maps a probe id, or the truth's `grader`, to a function of the reply returning
   0 to 1; a probe with none is graded by the share of its truth's `expected_facts` the reply

@@ -350,6 +350,9 @@ reasons, from §16 on.
   reports what each call returned or raised, on a channel of its own with a per-run token;
   ix compares with the truth. A returned value is compared as JSON carries it; one JSON
   cannot carry fails its case with its `repr`.
+- **Code that exits does not pass a must-raise case.** `raises: Exception` and `raises: any`
+  passed on any `BaseException`, so code that called `sys.exit` on every input passed every
+  must-raise case. `any` is now `Exception`, and `SystemExit` passes only where it is named.
 - **`text-match` refuses an empty list.** `contains: []` or `excludes: []` checked for the
   literal text `[]`; it is now `option_invalid` at validate.
 - **`environment.process` asks the process it started whether it is still up**, not
