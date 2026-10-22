@@ -1018,9 +1018,10 @@ probes and a metric. What makes it one is the kinds.
 ```
 - **Sensors read what the session said and did**, and are chosen by the metric you name:
   `activated_correctly` (`activation`: truth `expectation` must_trigger,
-  should_not_trigger or acceptable, and `expected_skill`), `tool_used_correctly` and
+  should_not_trigger or acceptable, and `expected_skill`, compared whole: `review` is fired
+  by `review` or `plugin:review`, never by `code-review-lite`), `tool_used_correctly` and
   `tool_usage_score` (`tool-usage`, option `tool`: a tool called by name or a program run
-  through Bash; truth `expected_command`, `expected_args`), `tests_passed`,
+  through Bash; truth `expected_command`, the whole word, and `expected_args`), `tests_passed`,
   `tests_pass_share` and `tests_score` (`function-test`: truth `function_name`,
   `test_cases` of `{{input, expected}}` or `{{input, raises}}`, and `tiers` that weigh
   them; option `file` tests a collected file instead of the reply), `outcome_score` and
@@ -1064,8 +1065,10 @@ into the session's `.claude/skills`, and ix has the session read `project` setti
 they are found, even under `setting_sources: []`, which keeps this machine's own settings,
 skills and plugins out. A skill fires through the `Skill` tool, so `tools`, when you list
 them, must include `Skill`. `expected_skill` is the skill's `name`. Skills in a plugin come
-with `plugins:` instead. A skill installed on this machine is read only when its settings
-source is listed (`setting_sources: [user]`), and then everything else there comes too.
+with `plugins:` instead; `expected_skill: review` matches the plugin's `acme:review`, and
+`expected_skill: acme:review` names that plugin's skill only. A skill installed on this
+machine is read only when its settings source is listed (`setting_sources: [user]`), and
+then everything else there comes too.
 
 {_yaml(AGENT_EXAMPLES["skill"])}
 

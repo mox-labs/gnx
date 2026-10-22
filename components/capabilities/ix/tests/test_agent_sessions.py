@@ -517,6 +517,29 @@ class TestActivation:
         expected = {"must_trigger": "aces", "should_not_trigger": "none"}.get(expectation)
         assert found.detail.get("expected") == expected
 
+    @pytest.mark.parametrize(
+        ("expected", "called", "passed", "fired"),
+        [("review", ["code-review-lite"], False, "code-review-lite"),
+         ("review", ["reviewer"], False, "reviewer"),
+         ("review", ["acme:review-lite"], False, "review-lite"),
+         ("review", ["acme:review"], True, "review"),
+         ("review", ["code-review-lite", "acme:review"], True, "review"),
+         ("acme:review", ["acme:review"], True, "acme:review"),
+         ("acme:review", ["other:review"], False, "other:review"),
+         ("acme:review", ["review"], False, "review")],
+    )  # fmt: skip
+    async def test_a_near_miss_name_is_not_the_skill(
+        self, expected: str, called: list[str], passed: bool, fired: str
+    ) -> None:
+        """Regression: the expected name was matched as a substring, so ``code-review-lite``
+        firing read as ``review`` firing, and the detail recorded ``review`` as fired."""
+        truth = {"expectation": "must_trigger", "expected_skill": expected}
+        calls = [("Skill", {"skill": skill}) for skill in called]
+        found = await _sense(ActivationSensor(), _interaction(_calls(*calls)), truth)
+        assert found.values == {"activated_correctly": passed}
+        assert found.detail["fired"] == fired
+        assert found.detail["skills_called"] == called
+
     async def test_an_expectation_it_does_not_know_is_the_sensors_failure(self) -> None:
         with pytest.raises(ValueError, match="must_triger"):
             await _sense(ActivationSensor(), _interaction(), {"expectation": "must_triger"})
@@ -537,6 +560,20 @@ class TestToolUsage:
         truth = {"expected_command": "dig", "expected_args": "auth"}
         found = await _sense(ToolUsageSensor(), _interaction(_calls(*calls)), truth, tool="memex")
         assert found.values == {"tool_usage_score": score, "tool_used_correctly": score >= 0.5}
+        assert (found.detail["expected"], found.detail["used"]) == ("dig", used)
+
+    @pytest.mark.parametrize(
+        ("calls", "used"),
+        [([("Bash", {"command": "memex digest auth"})], "digest"),
+         ([("memex", {"command": "undig", "query": "auth"})], "undig")],
+    )  # fmt: skip
+    async def test_a_near_miss_command_is_not_the_command(
+        self, calls: list[Any], used: str
+    ) -> None:
+        """Regression: ``expected_command: dig`` matched ``digest`` as a substring."""
+        truth = {"expected_command": "dig", "expected_args": "auth"}
+        found = await _sense(ToolUsageSensor(), _interaction(_calls(*calls)), truth, tool="memex")
+        assert found.values == {"tool_usage_score": 0.0, "tool_used_correctly": False}
         assert (found.detail["expected"], found.detail["used"]) == ("dig", used)
 
     async def test_a_tool_used_where_it_should_not_be_scores_nothing(self) -> None:

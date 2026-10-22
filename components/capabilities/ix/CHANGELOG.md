@@ -37,6 +37,17 @@
 - The Claude Agent SDK's own `max_budget_usd`, given in `runtime_options`, still ends a
   `claude-sdk` session (`stop: max_budget_usd`, read as `hit_limit`).
 
+### Fixed
+
+- **`activation` compares skill names whole.** The expected name was matched as a part of
+  the fired one, so `code-review-lite` firing read as `review` firing, and its detail
+  recorded `review` as fired; the confusion table, precision and recall followed. Now
+  `expected_skill: review` is fired by `review` or `plugin:review` only, and
+  `expected_skill: plugin:review` by `plugin:review` only. `fired` is the skill that did
+  fire, written as the expected name is.
+- **`tool-usage` compares `expected_command` whole**, ignoring case: `dig` no longer
+  matches `digest`.
+
 ## 0.5.0 — 2026-10-19
 
 ix runs agent evaluations as well as service comparisons, and the statistics behind a

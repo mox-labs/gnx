@@ -326,8 +326,10 @@ repeats: 20
 
 `max_turns: 1` stops each session after the turn in which a skill would be called.
 `setting_sources: []` keeps this machine's own plugins out, so what is measured is the
-plugins named. A skill named `plugin:skill` matches `expected_skill: skill`. The report
-tabulates expected against fired, with precision and recall.
+plugins named. Skill names are compared whole: `expected_skill: review` is fired by
+`review` or `acme:review`, never by `code-review-lite`, and `expected_skill: acme:review`
+only by `acme:review`. The report tabulates expected against the skill that fired, with
+precision and recall.
 
 ### A skill of your own
 
@@ -378,8 +380,8 @@ fires through the `Skill` tool: when you list `tools`, list `Skill`, or `ix vali
 refuses the experiment, since no run of it could see the skill fire.
 
 `tool-usage` asks the same of a tool: option `tool` names it (a tool's name, or a program
-the agent runs through `Bash`), and the truth gives `expected_command` and, when it matters,
-`expected_args`. The command alone scores 0.5, the command and its arguments 1.
+the agent runs through `Bash`), and the truth gives `expected_command` (compared whole,
+ignoring case: `dig` is not `digest`) and, when it matters, `expected_args`. The command alone scores 0.5, the command and its arguments 1.
 
 ## Checking the reply's text
 

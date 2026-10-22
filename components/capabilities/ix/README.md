@@ -262,8 +262,8 @@ A declaration is not an adapter. ix can **run** these:
 | probe | `prompt` | puts the prompt to the session and keeps the reply, every tool call, each round's transcript and the files named in `collect` |
 | sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests of those sent), from what the load probe recorded |
 | sensor | `memory` | `memory_peak`: the highest resident memory of the subject's process group, sampled with `ps` every `interval` while the probe runs |
-| sensor | `activation` | `activated_correctly`: the expected skill fired (a `Skill` tool call naming it), or nothing fired for a decoy |
-| sensor | `tool-usage` | `tool_used_correctly`, `tool_usage_score`: the agent used a tool with the expected command and arguments, called by name or run through `Bash` |
+| sensor | `activation` | `activated_correctly`: the expected skill fired (a `Skill` tool call naming it whole: `review` is fired by `review` or `plugin:review`, never by `code-review-lite`), or nothing fired for a decoy |
+| sensor | `tool-usage` | `tool_used_correctly`, `tool_usage_score`: the agent used a tool with the expected command (the whole word, ignoring case: `dig` is not `digest`) and arguments, called by name or run through `Bash` |
 | sensor | `function-test` | `tests_passed`, `tests_pass_share`, `tests_score`: the truth's test cases run against the code in the reply, or a file the agent wrote, in a child process |
 | sensor | `outcome` | `outcome_score`, `outcome_passed`: the experiment's own grader functions, run in a child process; without one, the share of the truth's `expected_facts` the reply holds |
 | sensor | `text-match` | `text_matched`: the reply starts or ends with, equals, contains, excludes or matches (a regular expression) what the probe's truth or the sensor's options say; no code of your own |
