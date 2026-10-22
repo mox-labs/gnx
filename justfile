@@ -64,10 +64,10 @@ capabilities-lint:
 #
 # Every package's source is checked under --strict, and so are the tests of each package in
 # the second list: a test's stand-in that drifts from the port it stands for is then a type
-# error, not a test that passes against a shape the code no longer has. matrix's tests
-# are not annotated yet. Each list is the gate, not a wish: adding a package to it is
-# how it stays clean. MYPYPATH is the workspace, where the tests' shared helpers (_testing)
-# live; the workspace's own Python (those helpers and conftest.py) is checked from there.
+# error, not a test that passes against a shape the code no longer has. Each list is the
+# gate, not a wish: adding a package to it is how it stays clean. MYPYPATH is the workspace,
+# where the tests' shared helpers (_testing) live; the workspace's own Python (those helpers
+# and conftest.py) is checked from there.
 #
 # Typecheck every capability package under mypy --strict, and the tests that are typed.
 capabilities-typecheck:
@@ -76,7 +76,7 @@ capabilities-typecheck:
     fail=0
     for p in hardline matrix ix recon dao gnx; do
       paths=(src/$p)
-      case " hardline ix recon dao " in *" $p "*) paths+=(tests) ;; esac
+      case " hardline matrix ix recon dao " in *" $p "*) paths+=(tests) ;; esac
       ( cd components/capabilities/$p && \
         MYPYPATH=.. ../.venv/bin/mypy --strict "${paths[@]}" ) || fail=1
     done
