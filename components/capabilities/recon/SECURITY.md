@@ -208,7 +208,7 @@ Bearer`, or its `headers_helper` command's headers are sent (a command, so bound
 trust again). They go to the server's `url` and nowhere else: the MCP SDK's client follows
 no redirect itself, and its transport follows one only within the server's origin (scheme,
 host and port, or http to https on the same host), so a token never leaves its origin, as
-P1.2's rule (R-9) asks of an HTTP source (R-13). TLS is verified against the operating
+the rule (R-9) asks of an HTTP source (R-13): a credentialed source follows no cross-origin redirect. TLS is verified against the operating
 system's trust store. A server that signs in with OAuth through a browser is not a source:
 reach it through the hook route (boundary 5).
 

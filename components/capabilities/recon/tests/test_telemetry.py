@@ -657,8 +657,9 @@ def test_an_unsupported_exporter_is_a_warning(monkeypatch: pytest.MonkeyPatch) -
 
 def test_the_sdk_and_the_exporters_are_installed_with_recon() -> None:
     """The command line is an application, and an application carries the SDK and OTLP: the
-    ``OTEL_*`` variables are enough, with no extra to install first (owner's rulings Q4,
-    Q13). The library still writes through the API alone."""
+    ``OTEL_*`` variables are enough, with no extra to install first (owner rulings
+    2026-10-22: the SDK and OTLP are default dependencies, and there are no extras). The library
+    still writes through the API alone."""
     from importlib.metadata import requires
 
     plain = [r for r in requires("recon") or [] if "extra ==" not in r]
