@@ -10,6 +10,15 @@ Two kinds, on two sides of one trust boundary:
   ended. That bounds a hang and keeps a crash out of the harness. It is **not a sandbox**:
   the code can still read and write files, open sockets and start programs as the user ix
   runs as. Run code from a subject you would run yourself, or run ix in a container.
+
+  Nor may the code grade itself. The child is given the cases' inputs only, never what is
+  expected of them, and reports only what each call returned or raised; ix compares that
+  with the truth in its own process. The reports go back on a copy of the child's stdout
+  made before the code is loaded, each line carrying a token drawn for the run, and the
+  code's own stdout goes nowhere: a line the code prints is not read as a result, and
+  rewriting what the child holds changes no expectation. Code that searches its own
+  process can still find that copy and the token and report answers it did not give, but
+  only answers it already knows; the expected values never enter its process.
 * **Code the experiment owns** (``outcome`` graders): trusted as far as the experiment's
   author is. It runs in a child process for the same two reasons (a hang or a crash costs
   one reading, not the run) and sees the response only as data. Validating or planning an
@@ -25,6 +34,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -53,22 +63,42 @@ def code_in(text: str) -> str:
     return text.strip()
 
 
-# The child that runs test cases. It reads {function_name, cases} on stdin and prints one
-# line per case: {"case": i, "passed": bool, "message": str}; or one {"load": message} when
-# the solution cannot be loaded or has no such function.
+# The child that runs test cases. It reads {token, function_name, cases} on stdin, each case
+# only {input, kwargs}, and writes one line per case on a copy of its stdout made before the
+# solution is loaded: {"case": i, "returned": value, "repr": str} (``returned`` left out
+# when the value is not plain data) or {"case": i, "raised": [class names], "message": str};
+# or one {"load": message} when the solution cannot be loaded or has no such function. Every
+# line carries the token. The solution's own stdin and stdout go nowhere.
 _CASES = r"""
-import importlib.util, json, sys, traceback
-
-def plain(value):
-    try:
-        return json.loads(json.dumps(value))
-    except (TypeError, ValueError):
-        return value
-
-def say(record):
-    print(json.dumps(record), flush=True)
+import importlib.util, json, operator, os, sys
 
 job = json.load(sys.stdin)
+token = job.pop("token")
+results = os.fdopen(os.dup(1), "w", encoding="utf-8")
+nowhere = os.open(os.devnull, os.O_RDWR)
+os.dup2(nowhere, 0)
+os.dup2(nowhere, 1)
+
+def coerce(value):
+    for convert in (operator.index, float):
+        try:
+            return convert(value)
+        except Exception:
+            pass
+    raise TypeError(f"{type(value).__name__} is not plain data")
+
+def say(record):
+    results.write(json.dumps({**record, "token": token}) + "\n")
+    results.flush()
+
+def returned(index, result):
+    record = {"case": index, "repr": repr(result)}
+    try:
+        record["returned"] = json.loads(json.dumps(result, default=coerce))
+    except Exception:
+        pass
+    say(record)
+
 try:
     spec = importlib.util.spec_from_file_location("solution", "solution.py")
     module = importlib.util.module_from_spec(spec)
@@ -90,20 +120,10 @@ for index, case in enumerate(job["cases"]):
         else:
             result = function(given)
     except BaseException as error:
-        raised = [kind.__name__ for kind in type(error).__mro__]
-        wanted = case.get("raises")
-        passed = wanted is not None and (wanted in ("any", "Exception") or wanted in raised)
-        say({"case": index, "passed": passed,
-             "message": "" if passed else f"raised {type(error).__name__}: {error}"})
+        say({"case": index, "raised": [kind.__name__ for kind in type(error).__mro__],
+             "message": f"{type(error).__name__}: {error}"})
         continue
-    if "raises" in case:
-        say({"case": index, "passed": False,
-             "message": f"returned {result!r} where {case['raises']} was to be raised"})
-        continue
-    expected = case.get("expected")
-    passed = result == expected or plain(result) == expected
-    say({"case": index, "passed": passed,
-         "message": "" if passed else f"got {result!r}, expected {expected!r}"})
+    returned(index, result)
 """
 
 # The child that runs one grader. It reads {module, grader, text, trial} on stdin and prints
@@ -204,6 +224,24 @@ async def _child(
     return lines, overran
 
 
+def _judged(case: Mapping[str, Any], line: Mapping[str, Any]) -> CaseResult:
+    """Whether what the code did for ``case`` (``line``, as the child reported it) is what
+    the case expects: judged here, never by the child that ran the code."""
+    if "raised" in line:
+        wanted, raised = case.get("raises"), line["raised"]
+        passed = wanted is not None and (
+            wanted in ("any", "Exception") or (isinstance(raised, list) and wanted in raised)
+        )
+        return CaseResult(passed, "" if passed else f"raised {line.get('message', '')}")
+    if "raises" in case:
+        return CaseResult(
+            False, f"returned {line.get('repr')} where {case['raises']} was to be raised"
+        )
+    expected = case.get("expected")
+    passed = "returned" in line and line["returned"] == expected
+    return CaseResult(passed, "" if passed else f"got {line.get('repr')}, expected {expected!r}")
+
+
 async def run_cases(
     launcher: Launcher,
     code: str,
@@ -214,20 +252,29 @@ async def run_cases(
 ) -> CaseRun:
     """Run ``cases`` against ``function_name`` in ``code`` (untrusted: see the module
     docstring). A case is ``{input, expected}`` or ``{input, raises}``; a list input is
-    spread as positional arguments, a mapping one as keywords when ``kwargs`` is true."""
+    spread as positional arguments, a mapping one as keywords when ``kwargs`` is true.
+    The child runs the code on the inputs alone; what each call returned is compared with
+    what was expected here, as plain data (what JSON can carry)."""
+    plain: list[dict[str, Any]] = json.loads(json.dumps([dict(case) for case in cases]))
+    token = secrets.token_hex(16)
     with tempfile.TemporaryDirectory(prefix="ix-check-") as scratch:
         Path(scratch, "solution.py").write_text(code, encoding="utf-8")
-        job = {"function_name": function_name, "cases": [dict(case) for case in cases]}
+        job = {
+            "token": token,
+            "function_name": function_name,
+            "cases": [{"input": case.get("input"), "kwargs": case.get("kwargs")} for case in plain],
+        }
         lines, overran = await _child(launcher, _CASES, job, scratch, timeout_s)
+    lines = [line for line in lines if line.get("token") == token]
     for line in lines:
         if "load" in line:
             failed = CaseResult(passed=False, message=f"the code did not load: {line['load']}")
             return CaseRun(results=tuple(failed for _ in cases), load=str(line["load"]))
-    found = {
-        int(line["case"]): CaseResult(bool(line.get("passed")), str(line.get("message", "")))
-        for line in lines
-        if isinstance(line.get("case"), int)
-    }
+    found: dict[int, CaseResult] = {}
+    for line in lines:
+        index = line.get("case")
+        if isinstance(index, int) and 0 <= index < len(plain) and index not in found:
+            found[index] = _judged(plain[index], line)
     missing = (
         f"not run: the tests overran their {timeout_s:g}s"
         if overran

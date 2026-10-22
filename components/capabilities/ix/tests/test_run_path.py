@@ -46,9 +46,9 @@ from ix.composition import RUNS_DIRECTORY, Root
 from ix.composition.extension import POINTS, register_run_path
 from ix.domain import schema
 from ix.domain.kind import Metric
-from ix.domain.ports import Liveness, Preflight
+from ix.domain.ports import Liveness, Preflight, Sensed
 from ix.domain.report import report as build_report
-from ix.domain.run import CALIBRATION, HarnessError, Interaction, Target
+from ix.domain.run import CALIBRATION, Failure, HarnessError, Interaction, Target
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -394,6 +394,38 @@ class TestAReadingOfTheWrongShape:
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "not_finite")
         assert "p99=" in reading.failure.message
         assert "too large for a float" in reading.failure.message
+
+    @pytest.mark.parametrize(
+        "given",
+        [{"events": 10**400, "units": 10**401}, {"events": 1, "units": 10**400}],
+        ids=["events", "units"],
+    )
+    def test_a_count_with_an_int_too_large_for_a_float_is_the_sensors_failure(
+        self, given: dict[str, int]
+    ) -> None:
+        """Regression: ``float()`` raised OverflowError out of the sense step, failing the
+        run's sensing where one reading was meant to fail."""
+        share = Metric(name="tests_pass_share", unit="ratio", direction="higher", shape="count")
+        reading = running._reading(self._INTERACTION, "s", share, given)
+        assert reading.failure is not None and reading.statistics == {}
+        assert (reading.failure.owner, reading.failure.reason) == ("sensor", "shape")
+
+    @pytest.mark.parametrize(
+        "given",
+        [[0.5], None, "fast", Sensed(values=[0.5]), Sensed(values={}, detail=["x"])],
+        ids=["list", "none", "text", "sensed-list", "sensed-detail-list"],
+    )
+    async def test_a_sensor_that_gives_no_mapping_fails_its_readings(self, given: Any) -> None:
+        """Regression: a sensor that returned something other than a mapping of metric names
+        to values raised out of the sense step, failing every reading of the run."""
+
+        class Odd:
+            async def sense(self, interaction: Any, *, truth: Any, options: Any) -> Any:
+                return given
+
+        measured = await running._measure(Odd(), self._INTERACTION, {}, {})
+        assert isinstance(measured, Failure)
+        assert (measured.owner, measured.reason) == ("sensor", "shape")
 
     def test_a_distribution_of_numbers_is_read(self) -> None:
         latency = Metric(name="latency", unit="ms", direction="lower", shape="histogram")

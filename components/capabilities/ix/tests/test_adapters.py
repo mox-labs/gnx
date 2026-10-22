@@ -353,6 +353,17 @@ class TestSensors:
             "error_rate": {"events": 2, "units": 200},
         }  # fmt: skip
 
+    async def test_timing_counts_a_dropped_arrival_as_an_error(self) -> None:
+        """Regression: arrivals an open model dropped, because every client was waiting on
+        the subject, were left out of the error rate."""
+        spread = dict.fromkeys(("min", "mean", "p50", "p90", "p95", "p99", "p999", "max"), 1.0)
+        load = {"latency_ms": spread, "ttfb_ms": spread, "throughput": 4.8,
+                "sent": 32, "failed": 8, "dropped": 219}  # fmt: skip
+        measured = await TimingSensor().sense(
+            self._interaction(observations={"load": load}), truth={}, options={}
+        )
+        assert measured["error_rate"] == {"events": 8 + 219, "units": 32 + 219}
+
     async def test_memory_samples_the_subjects_group_while_it_watches(self) -> None:
         port = _free_port()
         sensor = MemorySensor()
@@ -388,9 +399,21 @@ class TestTheLoadProbeWithoutItsTool:
             },
             "measured": {
                 "executor": "constant-vus", "vus": 4, "duration": "3s", "startTime": "0.5s",
-                "gracefulStop": "0s",
+                "gracefulStop": "61s",
             },
         }  # fmt: skip
+
+    def test_every_request_of_the_window_is_waited_for_up_to_its_timeout(self) -> None:
+        """Regression: a request in flight when the window closed was cut off and counted
+        nowhere, so a subject that hung on some requests read as having no errors. Now k6
+        waits past the window for as long as a request may take (option ``timeout``, k6's
+        60s when absent), so every request sent ends answered, failed or timed out."""
+        plan, _ = k6_load.scenarios({"load_model": "closed", "duration": "3s", "timeout": "2s"})
+        assert plan["measured"]["gracefulStop"] == "3s"
+        assert k6_load.request_timeout({"timeout": "2s"}) == 2.0
+        assert k6_load.request_timeout({}) == k6_load.REQUEST_TIMEOUT_S == 60.0
+        probe = k6_load.K6Load(MatrixLauncher())
+        assert probe.budget_s({"duration": "3s", "timeout": "2s"}) == 3 + 3 + k6_load.OVERHEAD_S
 
     def test_an_open_model_holds_an_arrival_rate(self) -> None:
         plan, _ = k6_load.scenarios({"load_model": "open", "rate": "80/s", "duration": "60s"})
@@ -418,13 +441,25 @@ class TestTheLoadProbeWithoutItsTool:
             k6_load.scenarios(options)
         assert failed.value.reason == "option"
 
-    def _summary(self, *, sent: int = 268, answered: int = 201) -> dict[str, Any]:
+    def _summary(
+        self,
+        *,
+        sent: int = 268,
+        answered: int = 201,
+        attempts: int | None = None,
+        late: int = 0,
+        dropped: int = 2,
+    ) -> dict[str, Any]:
         answers = {"min": 51.1, "avg": 59.5, "med": 60.3, "max": 68.4, "p(90)": 62.3,
                    "p(95)": 63.4, "p(99)": 66.2, "p(99.9)": 68.0, "count": answered}  # fmt: skip
         everything = {**{name: 0.0 for name in answers}, "count": sent}
         good = "{scenario:measured,expected_response:true}"
         return {
             "metrics": {
+                "ix_attempts{scenario:measured}": {
+                    "values": {"count": sent if attempts is None else attempts}
+                },
+                "ix_late_answers{scenario:measured}": {"values": {"count": late}},
                 f"http_req_duration{good}": {"values": answers},
                 f"http_req_waiting{good}": {"values": answers},
                 f"http_reqs{good}": {"values": {"count": answered}},
@@ -435,7 +470,7 @@ class TestTheLoadProbeWithoutItsTool:
                 "http_req_failed{scenario:measured}": {
                     "values": {"rate": (sent - answered) / max(sent, 1), "passes": sent - answered}
                 },
-                "dropped_iterations{scenario:measured}": {"values": {"count": 2}},
+                "dropped_iterations{scenario:measured}": {"values": {"count": dropped}},
                 "http_req_duration": {"values": {"med": 999.0}},
             },
             "setup_data": {"digest": "ab12"},
@@ -444,7 +479,8 @@ class TestTheLoadProbeWithoutItsTool:
     def test_the_observation_is_the_measured_part_only(self) -> None:
         seen = k6_load.observation(self._summary(), model="closed", duration_s=3.0)
         assert seen["requests"] == 201 and seen["throughput"] == pytest.approx(67.0)
-        assert seen["error_rate"] == 0.25 and seen["dropped"] == 2 and seen["tool"] == "k6"
+        assert seen["error_rate"] == (67 + 2) / (268 + 2) and seen["dropped"] == 2
+        assert seen["tool"] == "k6"
         assert seen["latency_ms"] == {
             "min": 51.1, "mean": 59.5, "p50": 60.3, "p90": 62.3, "p95": 63.4, "p99": 66.2,
             "p999": 68.0, "max": 68.4,
@@ -490,10 +526,27 @@ class TestTheLoadProbeWithoutItsTool:
         assert self._observed(differed, verify=False)["requests"] == 201
 
     def test_failed_requests_count_as_errors_and_never_as_fast_answers(self) -> None:
-        seen = k6_load.observation(self._summary(), model="closed", duration_s=3.0)
+        seen = k6_load.observation(self._summary(dropped=0), model="closed", duration_s=3.0)
         assert seen["requests"] == 201 and seen["error_rate"] == 0.25
         assert (seen["failed"], seen["sent"]) == (67, 268)
         assert seen["latency_ms"]["min"] == 51.1 and seen["ttfb_ms"]["p50"] == 60.3
+
+    def test_requests_never_answered_and_dropped_arrivals_are_errors(self) -> None:
+        """Regression, from a probe of a server that hangs on one request in four: 32
+        requests were sent, 24 answered, 8 never were, and 219 arrivals were dropped, and
+        the error rate read 0."""
+        summary = self._summary(sent=24, answered=24, attempts=32, dropped=219)
+        seen = k6_load.observation(summary, model="open", duration_s=5.0)
+        assert (seen["sent"], seen["failed"], seen["dropped"]) == (32, 8, 219)
+        assert seen["error_rate"] == (8 + 219) / (32 + 219)
+        assert seen["requests"] == 24
+
+    def test_an_answer_after_the_window_counts_for_errors_not_throughput(self) -> None:
+        seen = k6_load.observation(
+            self._summary(late=21, dropped=0), model="closed", duration_s=3.0
+        )
+        assert seen["requests"] == 180 and seen["throughput"] == pytest.approx(60.0)
+        assert (seen["failed"], seen["sent"]) == (67, 268)
 
     def test_a_load_that_sent_nothing_is_the_harnesss_failure(self) -> None:
         with pytest.raises(HarnessError) as failed:
@@ -504,6 +557,19 @@ class TestTheLoadProbeWithoutItsTool:
         with pytest.raises(SubjectError) as failed:
             k6_load.observation(self._summary(answered=0), model="closed", duration_s=3.0)
         assert failed.value.reason == "no_answer"
+
+    @pytest.mark.parametrize(("attempts", "late"), [(8, 0), (8, 8)])
+    def test_nothing_answered_inside_the_window_is_the_subjects_failure(
+        self, attempts: int, late: int
+    ) -> None:
+        """Regression: a subject that hung on every request left k6 no request to count,
+        and that was classed as the harness's failure, so the trial was dropped as
+        missing data. Requests were sent; none was answered inside the window."""
+        summary = self._summary(sent=late, answered=late, attempts=attempts, late=late)
+        with pytest.raises(SubjectError) as failed:
+            k6_load.observation(summary, model="closed", duration_s=3.0)
+        assert failed.value.reason == "no_answer"
+        assert "inside the measured window" in str(failed.value)
 
     def test_a_first_response_with_no_body_under_verify_is_the_subjects_failure(self) -> None:
         refused = self._summary()
@@ -520,4 +586,6 @@ class TestTheLoadProbeWithoutItsTool:
         with pytest.raises(HarnessError) as failed:
             await probe.apply(options, Target(subject="s"), seed=1)
         assert failed.value.reason == "tool_missing"
-        assert probe.budget_s({"duration": "3s", "warmup": "1s"}) == 4 + k6_load.OVERHEAD_S
+        assert probe.budget_s({"duration": "3s", "warmup": "1s"}) == (
+            4 + k6_load.REQUEST_TIMEOUT_S + 1 + k6_load.OVERHEAD_S
+        )

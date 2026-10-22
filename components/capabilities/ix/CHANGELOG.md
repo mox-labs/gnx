@@ -37,6 +37,52 @@
 - The Claude Agent SDK's own `max_budget_usd`, given in `runtime_options`, still ends a
   `claude-sdk` session (`stop: max_budget_usd`, read as `hit_limit`).
 
+### Fixed
+
+- **`activation` compares skill names whole.** The expected name was matched as a part of
+  the fired one, so `code-review-lite` firing read as `review` firing, and its detail
+  recorded `review` as fired; the confusion table, precision and recall followed. Now
+  `expected_skill: review` is fired by `review` or `plugin:review` only, and
+  `expected_skill: plugin:review` by `plugin:review` only. `fired` is the skill that did
+  fire, written as the expected name is.
+- **`tool-usage` compares `expected_command` whole**, ignoring case: `dig` no longer
+  matches `digest`.
+- **`http-load` counts the requests a subject never answers.** A request still waiting
+  when the measured window closed was cut off and counted nowhere, and k6's 60s request
+  timeout never fired inside a typical window, so a server that hung on one request in
+  four read `error_rate` 0. Now every request sent in the window is waited for, past it if
+  need be, until it is answered or times out, and one k6 cut off anyway still counts as
+  sent and failed. The new option `timeout` sets how long a request may go unanswered
+  (k6's 60s when absent), and a trial's time budget grows by it.
+  - `error_rate` (and the facet's `error_rate`) also counts each arrival an open model
+    dropped, because every client was waiting on the subject: `(failed + dropped) /
+    (sent + dropped)`.
+  - A subject that answered nothing inside the window failed the trial (`no_answer`).
+    It was read as the harness sending nothing (`no_requests`), so the trial was left
+    out as missing data.
+  - Latency and time to first byte now include answers that came after the window
+    closed, to requests sent inside it; throughput still counts only the answers inside
+    the window.
+- **`function-test`'s code no longer grades itself.** The code ran in the process that
+  compared its answers and reported on the stdout it shared, so code that printed passing
+  results and exited, rewrote the expected values, or returned a value claiming to equal
+  anything read as passing. The child now gets only the inputs and reports what each call
+  returned or raised, on a channel of its own with a per-run token; ix compares with the
+  truth. A returned value is compared as JSON carries it (an integer- or float-like value
+  as its number); one JSON cannot carry fails its case with its `repr`.
+- **`text-match` refuses an empty list.** `contains: []` or `excludes: []` passed validate
+  and then checked for the literal text `[]`. It is now `option_invalid` at validate, and a
+  sensor failure if it reaches a trial.
+- **A sensor that gives the wrong shape fails its readings, not the run's sensing.** A
+  sensor that returned something other than a mapping of metrics to values, or a count
+  with a number too large for a float, raised out of the sense step, so no reading of the
+  run was written. Each is now a `sensor` failure (`shape`) of that sensor's readings.
+- **The judge reads nothing from where ix runs.** On `claude-sdk` it was built with no
+  working directory and no `setting_sources`, so the Claude Code CLI ran in ix's own
+  directory with its default sources, and a CLAUDE.md, a hook or a user's settings there
+  could shape its scores. It now runs in a fresh temporary directory, removed after, with
+  `setting_sources: []` unless its `runtime_options` name some.
+
 ## 0.5.0 — 2026-10-19
 
 ix runs agent evaluations as well as service comparisons, and the statistics behind a

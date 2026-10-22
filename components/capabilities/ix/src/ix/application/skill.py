@@ -949,11 +949,13 @@ then the report (`ix.v1.report`) on stdout.
   report says `Dry run on mock replies` and gives neither a verdict nor an indication.
   `ix runs` lists each run as `gated`, `exploratory` or `dry`.
 - **Failures have an owner.** A trial the *subject* failed (it died, it was not up in
-  time) counts against the subject. A trial the *harness* failed (a tool broke, a timeout,
-  an environment that went down) is missing data; an environment that went down also ends
-  the run (exit {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be
-  taken. The report counts each. A subject too slow for an open model's rate is measured,
-  not dropped.
+  time, it answered no request inside the measured window) counts against the subject. A
+  trial the *harness* failed (a tool broke, a timeout, an environment that went down) is
+  missing data; an environment that went down also ends the run (exit
+  {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be taken. The
+  report counts each. A subject too slow for an open model's rate is measured, not
+  dropped. `error_rate` counts a request that failed, timed out (`http-load`'s
+  `timeout`, k6's 60s) or was never answered, and each arrival dropped, as an error.
 
 ## Reading a verdict
 
@@ -1018,9 +1020,10 @@ probes and a metric. What makes it one is the kinds.
 ```
 - **Sensors read what the session said and did**, and are chosen by the metric you name:
   `activated_correctly` (`activation`: truth `expectation` must_trigger,
-  should_not_trigger or acceptable, and `expected_skill`), `tool_used_correctly` and
+  should_not_trigger or acceptable, and `expected_skill`, compared whole: `review` is fired
+  by `review` or `plugin:review`, never by `code-review-lite`), `tool_used_correctly` and
   `tool_usage_score` (`tool-usage`, option `tool`: a tool called by name or a program run
-  through Bash; truth `expected_command`, `expected_args`), `tests_passed`,
+  through Bash; truth `expected_command`, the whole word, and `expected_args`), `tests_passed`,
   `tests_pass_share` and `tests_score` (`function-test`: truth `function_name`,
   `test_cases` of `{{input, expected}}` or `{{input, raises}}`, and `tiers` that weigh
   them; option `file` tests a collected file instead of the reply), `outcome_score` and
@@ -1064,8 +1067,10 @@ into the session's `.claude/skills`, and ix has the session read `project` setti
 they are found, even under `setting_sources: []`, which keeps this machine's own settings,
 skills and plugins out. A skill fires through the `Skill` tool, so `tools`, when you list
 them, must include `Skill`. `expected_skill` is the skill's `name`. Skills in a plugin come
-with `plugins:` instead. A skill installed on this machine is read only when its settings
-source is listed (`setting_sources: [user]`), and then everything else there comes too.
+with `plugins:` instead; `expected_skill: review` matches the plugin's `acme:review`, and
+`expected_skill: acme:review` names that plugin's skill only. A skill installed on this
+machine is read only when its settings source is listed (`setting_sources: [user]`), and
+then everything else there comes too.
 
 {_yaml(AGENT_EXAMPLES["skill"])}
 
@@ -1120,7 +1125,9 @@ are judged: they are reported and **never decide** a verdict. `repeats: 3` asks 
 times per reply: `judge_agreement` is how often it agreed with itself. Two flags are
 printed whenever a trial raises one: `judge_inconsistent` (its repeats split on pass or
 fail) and `judge_in_family` (the judge is of the subject's model family; judge with
-another).
+another). The judge runs in a fresh temporary directory and, on `claude-sdk`, reads no
+settings unless its `runtime_options` name `setting_sources`, so what is where ix runs
+(a CLAUDE.md, your settings, hooks) does not shape its scores.
 
 ## Reading the report
 
@@ -1139,7 +1146,9 @@ duration (`ix.v1.interaction`), and the run's events (`events.jsonl`).
 
 `function-test` and `outcome` run Python in a child process with a time limit and only
 `PATH` and the locale in its environment. It is not a sandbox: model code can still read,
-write and connect as you. A session's working directory is a fresh temporary directory,
+write and connect as you. The code does not grade itself: the child gets each case's
+input, never what is expected, and ix compares what came back, so printing passing lines
+or rewriting the cases fails. A session's working directory is a fresh temporary directory,
 removed after the trial; the agent's tools act on your machine as `permission_mode`
 allows. Telemetry: with `OTEL_EXPORTER_OTLP_ENDPOINT` set, ix exports `ix.plan`, `ix.run`,
 `ix.trial` and `ix.sensor` spans and matrix the sessions inside them (`ix[otel]`).

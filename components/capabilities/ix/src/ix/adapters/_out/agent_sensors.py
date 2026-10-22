@@ -63,12 +63,14 @@ class _Reads:
 class ActivationSensor(_Reads):
     """Whether the expected skill fired: a call of the ``Skill`` tool (option ``tool``) whose
     ``skill`` names it. ``must_trigger`` passes when it fired, ``should_not_trigger`` when no
-    skill fired at all, ``acceptable`` always. A skill named ``plugin:skill`` fires
-    ``skill``: the expected name need only be part of it.
+    skill fired at all, ``acceptable`` always. Names are compared whole, never as parts:
+    ``expected_skill: review`` is fired by ``review`` or ``plugin:review``, and
+    ``expected_skill: plugin:review`` only by ``plugin:review``.
 
     Its detail is what a confusion table needs: ``expected`` (the skill, or ``none`` for a
-    decoy) and ``fired`` (the skill that fired, without its plugin's prefix, or ``none``),
-    with every skill called as written.
+    decoy) and ``fired`` (the skill that fired, written as the expected name is: without its
+    plugin's prefix unless the expected name has one; or ``none``), with every skill called
+    as written.
     """
 
     async def sense(
@@ -83,16 +85,17 @@ class ActivationSensor(_Reads):
             for call in _response(interaction).get("tool_calls", [])
             if call.get("name") == tool
         ]
-        matching = [skill for skill in skills if expected and expected in skill]
+        qualified = expected is not None and ":" in expected
+
+        def named(skill: str) -> str:
+            """The skill as the expected name is written: with its plugin, or without."""
+            return skill if qualified else skill.rsplit(":", 1)[-1]
+
+        matching = [skill for skill in skills if named(skill) == expected]
         fired = matching[0] if matching else (skills[0] if skills else None)
-        hit = fired is not None and (expected is None or expected in fired)
+        hit = fired is not None and (expected is None or named(fired) == expected)
         passed = {MUST_TRIGGER: hit, SHOULD_NOT_TRIGGER: fired is None, ACCEPTABLE: True}
-        if fired is None:
-            label = NONE
-        elif hit and expected:
-            label = expected
-        else:
-            label = fired.rsplit(":", 1)[-1]  # the skill, without the plugin that holds it
+        label = NONE if fired is None else named(fired)
         detail: dict[str, Any] = {
             "expectation": expectation,
             "fired": label,
@@ -153,8 +156,9 @@ def _uses(tool_calls: Sequence[Mapping[str, Any]], tool: str) -> list[dict[str, 
 
 class ToolUsageSensor(_Reads):
     """Whether the agent used the tool (option ``tool``) with the command the probe expects
-    (``expected_command``) and, when given, arguments containing ``expected_args``: called
-    by name, or run as a program through ``Bash`` (``cd x && memex dig "q" | head``).
+    (``expected_command``, compared whole and ignoring case: ``dig`` is not ``digest``) and,
+    when given, arguments containing ``expected_args``: called by name, or run as a program
+    through ``Bash`` (``cd x && memex dig "q" | head``).
 
     Scores 1 for the command and the arguments, 0.5 for the command alone (a pass: the right
     tool was reached for), 0 otherwise. Under
@@ -180,7 +184,7 @@ class ToolUsageSensor(_Reads):
         else:
             if not expected:
                 raise ValueError("expectation must_trigger needs expected_command in the truth")
-            right = [use for use in uses if expected.lower() in use["command"].lower()]
+            right = [use for use in uses if use["command"].casefold() == expected.casefold()]
             argued = [use for use in right if wanted_args.lower() in use["args"].lower()]
             score = 1.0 if argued else 0.5 if right else 0.0
             used = expected if right else (uses[0]["command"] if uses else NONE)
@@ -329,12 +333,12 @@ def _texts(value: Any) -> list[str] | None:
 def _check_problem(name: str, value: Any, path: str) -> Problem | None:
     """What is wrong with one check as written; None when nothing is."""
     if name in ("contains", "excludes"):
-        if _texts(value) is None:
+        if not _texts(value):
             return problem(
                 path,
                 kind="option_invalid",
-                message=f"{name} is a text or a list of texts; got {value!r}",
-                fix=f"{name}: BANANA, or {name}: [BANANA, split]",
+                message=f"{name} is a text or a list of one or more texts; got {value!r}",
+                fix=f"{name}: BANANA, or {name}: [BANANA, split]; or leave {name} out",
             )
         return None
     if not isinstance(value, str):
@@ -423,7 +427,13 @@ class TextMatchSensor(_Reads):
 
         passed: dict[str, bool] = {}
         for name, value in checks.items():
-            texts = [fold(item) for item in _texts(value) or [str(value)]]
+            given = _texts(value)
+            if not given:
+                raise ValueError(
+                    f"text-match's {name} for probe {interaction.probe} is {value!r}, not a "
+                    "text or a list of one or more texts"
+                )
+            texts = [fold(item) for item in given]
             match name:
                 case "starts_with":
                     passed[name] = fold(text).startswith(texts[0])
