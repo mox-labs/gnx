@@ -485,20 +485,6 @@ def list_runs(
 _RUNTIME_NEEDS = frozenset({"agents", "model_runtimes"})
 
 
-def _stages(wiring: Wiring) -> list[list[str]]:
-    placed: set[str] = set()
-    stages: list[list[str]] = []
-    while len(placed) < len(wiring.components):
-        stage = [
-            name
-            for name in wiring.components
-            if name not in placed and all(d in placed for d in wiring.depends[name])
-        ]
-        stages.append(stage)
-        placed.update(stage)
-    return stages
-
-
 def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) -> Plan:
     matrix = loaded.matrix
     entries = {entry.name: entry for entry in matrix.components}
@@ -541,7 +527,7 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
         tool=tool,
         sources=list(loaded.sources),
         inputs=sorted(wiring.inputs),
-        stages=_stages(wiring),
+        stages=[list(stage) for stage in wiring.stages()],
         components=components,
         agents=[
             PlannedAgent(

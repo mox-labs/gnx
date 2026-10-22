@@ -309,7 +309,8 @@ Frozen and reusable.
 | `depends` | `Mapping[str, tuple[str, ...]]` | name to the components it waits for |
 | `schemas` | `Mapping[str, type[BaseModel]]` | kind to the model its rows validate against |
 | `kinds` | `tuple[str, ...]` | every kind a run has a table for: inputs, then provided |
-| `order()` | `-> tuple[str, ...]` | the components in one valid order of work; a view, not the schedule |
+| `stages()` | `-> tuple[tuple[str, ...], ...]` | the components in stages, each those whose dependencies are all in earlier stages, as `matrix plan` prints them; a view, not the schedule |
+| `order()` | `-> tuple[str, ...]` | the stages one after another: one valid order of work; a view, not the schedule |
 | `fingerprints` | `Mapping[str, str]` | name to a digest of what the component was built from, when the caller knows it |
 
 ---
@@ -327,7 +328,7 @@ from config.
 | `concurrency` | `None` | how many components run at once (`>= 1`); `None` leaves it to the wiring |
 | `deadline_s` | `None` | bounds each component separately, from when it starts (`> 0`); each attempt has the whole of it |
 | `grace_s` | `5.0` | how long a component has to return after a stop request before it is cancelled (`>= 0`) |
-| `cleanup_s` | `30.0` | how long a cancelled component, or one deferred release, has to finish before it is abandoned (`> 0`) |
+| `cleanup_s` | `30.0` | how long a cancelled component, or one async deferred release, has to finish before it is abandoned (`> 0`); a synchronous release is not bounded |
 | `on_failure` | `"fast"` | `fast`: the first failure stops every running component and skips the rest. `isolate`: only components that depend on the failed one are skipped |
 | `retry` | `Retry()` | the retry policy of every component; the default runs each once |
 | `components` | `{}` | name to `ComponentLimits(deadline_s, grace_s, cleanup_s, retry)`; a field left `None` inherits the run's |
@@ -1199,7 +1200,7 @@ with `ctx.emit` opens no span, whatever its name ends with.
 | `invoke_workflow` (a run) | INTERNAL | `gen_ai.operation.name=invoke_workflow`, `matrix.run.id`, `matrix.status`, `matrix.rows`, `matrix.duration_ms`, `matrix.reused_from`; `error.type` when it failed or was cancelled |
 | `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.duration_ms`, `matrix.attempts`, `matrix.abandoned`; `matrix.kind` and `error.type` (the error's kind, or the stop's reason for one cancelled) when it failed or was cancelled. The conventions have no step |
 | `matrix.release` | INTERNAL | `matrix.component`, `matrix.status`; `error.type` when it failed. With content: `matrix.error` |
-| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed, and `error.type=cancelled` when the session was cancelled. With content: `matrix.task`, `matrix.error` |
+| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`, and `matrix.usage_counted_by` when the runtime declares who counts its tokens; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed, and `error.type=cancelled` when the session was cancelled. With content: `matrix.task`, `matrix.error` |
 | `matrix.model` (a model step's call) | INTERNAL | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `matrix.component`, `matrix.runtime`, `matrix.name` (the registry row that answered), `matrix.family`, `matrix.finish_reason`, `matrix.status`, `matrix.duration_ms`; `matrix.reason`, `matrix.kind` and `error.type` when it failed or was cancelled. With content: `matrix.error`. The conventions have no operation for one logical call, which may span retries and fallbacks; it carries no usage, since each attempt's inference span is the model runtime's own and nests under it |
 | `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`, `matrix.status`, `matrix.duration_ms`; `error.type=tool_error`, and the status ERROR, when the tool reported an error. With content: `gen_ai.tool.call.arguments`, the call's arguments as a JSON object |
 | a component's `ctx.span(name)` | INTERNAL | `matrix.component`; its number and boolean fields and its status under its root (`acme.rows`, `acme.status`, `acme.duration_ms`). With content: its string fields too |

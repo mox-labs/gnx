@@ -19,15 +19,8 @@ from matrix.domain.loading import Accumulate, BesideFile
 C = TypeVar("C", bound=BaseModel)
 
 
-class RuntimeConfig(BaseModel):
-    """One named runtime, of either kind: a ``type`` plus that runtime's own options.
-
-    ``type`` is a matrix built-in's short name or the full type URL of a runtime another
-    package registered. Under ``agent_runtimes`` the built-ins are ``claude-sdk`` and
-    ``mock`` (``acme.v1.agent-runtime.strands`` names another's); under ``model_runtimes``
-    they are ``hardline`` and ``mock``. Options are validated by the runtime's own typed
-    config, so an unknown option fails naming the runtime.
-    """
+class _Typed(BaseModel):
+    """A ``type`` plus that entry's own options, which its typed config validates."""
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
@@ -37,35 +30,32 @@ class RuntimeConfig(BaseModel):
         return dict(self.model_extra or {})
 
 
-class ObserverConfig(BaseModel):
+class RuntimeConfig(_Typed):
+    """One named runtime, of either kind: a ``type`` plus that runtime's own options.
+
+    ``type`` is a matrix built-in's short name or the full type URL of a runtime another
+    package registered. Under ``agent_runtimes`` the built-ins are ``claude-sdk``,
+    ``pydantic-ai`` and ``mock`` (``acme.v1.agent-runtime.strands`` names another's); under
+    ``model_runtimes`` they are ``hardline`` and ``mock``. Options are validated by the
+    runtime's own typed config, so an unknown option fails naming the runtime.
+    """
+
+
+class ObserverConfig(_Typed):
     """One observer with options: a ``type`` plus that observer's own config.
 
     ``type`` is a built-in's short name (``console``, ``jsonl``, ``otel``) or a full type URL.
     An observer that takes no options can be named by a bare string instead.
     """
 
-    model_config = ConfigDict(frozen=True, extra="allow")
 
-    type: str = Field(min_length=1)
-
-    def options(self) -> dict[str, Any]:
-        return dict(self.model_extra or {})
-
-
-class StoreConfig(BaseModel):
+class StoreConfig(_Typed):
     """Where runs are recorded: a ``type`` plus that store's own options.
 
     ``type`` is a built-in's short name (``jsonl``, ``memory``) or the full type URL of a
     store another package registered at the ``store`` point. Options are validated by the
     store's own typed config (``matrix describe matrix.v1.store.jsonl``).
     """
-
-    model_config = ConfigDict(frozen=True, extra="allow")
-
-    type: str = Field(min_length=1)
-
-    def options(self) -> dict[str, Any]:
-        return dict(self.model_extra or {})
 
 
 class ComponentConfig(BaseModel):
@@ -126,8 +116,9 @@ class MatrixConfig(BaseModel):
     #: Bounds on a run: concurrency, deadlines, grace, cleanup, the failure policy, retries,
     #: and per-component overrides (:class:`~matrix.domain.executor.Limits`).
     limits: Limits = Limits()
-    #: A hardline registry section (``{default?, models: {...}}``) handed to every
-    #: ``type: hardline`` model runtime that does not carry its own. ``None`` = hardline
+    #: A hardline registry section (``{default?, models: {...}}``) handed to every runtime
+    #: built on hardline (``type: hardline`` model runtimes, ``type: pydantic-ai`` agent
+    #: runtimes) that does not carry its own. ``None`` = hardline
     #: discovers its own tiers (``~/.hardline/config.yaml``, ``./hardline.yaml``,
     #: ``$HARDLINE_CONFIG``).
     models: dict[str, Any] | None = None

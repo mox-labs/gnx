@@ -269,17 +269,25 @@ class Wiring:
         """Every kind a run of this wiring has a table for: inputs first, then provided."""
         return (*sorted(self.inputs), *self.providers)
 
-    def order(self) -> tuple[str, ...]:
-        """The components in one valid order of work. A view for a reader: the executor
-        starts each component as soon as what it depends on has finished."""
-        placed: list[str] = []
+    def stages(self) -> tuple[tuple[str, ...], ...]:
+        """The components in stages: each stage those whose dependencies are all in earlier
+        ones. A view for a reader (``matrix plan`` prints it): the executor starts each
+        component as soon as what it depends on has finished."""
+        placed: set[str] = set()
+        stages: list[tuple[str, ...]] = []
         while len(placed) < len(self.components):
-            placed.extend(
+            stage = tuple(
                 name
                 for name in self.components
                 if name not in placed and all(d in placed for d in self.depends[name])
             )
-        return tuple(placed)
+            stages.append(stage)
+            placed.update(stage)
+        return tuple(stages)
+
+    def order(self) -> tuple[str, ...]:
+        """The components in one valid order of work: the stages, one after another."""
+        return tuple(name for stage in self.stages() for name in stage)
 
 
 def wire(

@@ -51,6 +51,15 @@ def test_a_component_depends_on_the_provider_of_each_kind_it_requires() -> None:
     assert wiring.order() == ("first", "middle", "last")  # nobody declared an order
 
 
+def test_the_order_is_the_plan_s_stages_one_after_another() -> None:
+    """``order()`` and the plan's stages were worked out by two copies of one loop that
+    grouped differently, so ``matrix plan`` and ``order()`` disagreed on a wiring as small as
+    this (W13.7). Both read the stages."""
+    wiring = wire({"a": Part(set(), {A}), "b": Part({A}, {B}), "c": Part(set(), {C})})
+    assert wiring.stages() == (("a", "c"), ("b",))
+    assert wiring.order() == ("a", "c", "b")
+
+
 def test_a_kind_the_caller_supplies_is_a_run_input_and_needs_no_provider() -> None:
     wiring = wire({"only": Part({A}, {B})}, inputs=[A])
     assert wiring.inputs == {A} and wiring.depends == {"only": ()}
