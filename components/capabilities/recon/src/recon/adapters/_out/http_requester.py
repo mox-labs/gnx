@@ -1,9 +1,9 @@
-"""HttpxRequester — the only adapter that imports httpx.
+"""HttpRequester — the only adapter that imports httpx2.
 
 Rate limiting lives here, not in collectors. Every call to `request()` acquires
 a token for its source before hitting the network, so paginated collectors
 can't forget to rate-limit per-page. Adapters construct HttpResponse domain
-value objects; collectors never see httpx.Response.
+value objects; collectors never see httpx2.Response.
 
 A body is read as a stream and counted against the source's ``max_bytes``, so a response
 that is larger than the mission allowed is refused instead of buffered.
@@ -12,17 +12,30 @@ Every attempt to send a request is one ``recon.http.request`` span of kind clien
 attributes OpenTelemetry's HTTP client span conventions (semconv v1.44.0, stable) require:
 ``http.request.method``, ``server.address``, ``server.port``, ``url.full`` and, when there
 is one, ``http.response.status_code``; ``http.request.resend_count`` on a retry; and
-``error.type`` on a failure: the status code, the httpx exception class
-(``httpx.ConnectError``, ``httpx.TooManyRedirects``), or ``body_too_large``. ``url.full``
+``error.type`` on a failure: the status code, the httpx2 exception class
+(``httpx2.ConnectError``, ``httpx2.TooManyRedirects``), or ``body_too_large``. ``url.full``
 carries no credentials: user information, the source's ``auth.param`` and the convention's
 signature parameters are ``REDACTED``, as they are in an error's message; a failed attempt's
 span message is the status, the exception class or the size refusal, never the URL. A
-redirect httpx follows stays inside its attempt's span.
+redirect httpx2 follows stays inside its attempt's span.
 
-A source's credential goes only to the origin its request was built for. httpx drops an
+A source's credential goes only to the origin its request was built for. httpx2 drops an
 ``Authorization`` header when a redirect leaves the origin; recon drops the source's own
 ``auth.header`` (``x-api-key``) by the same rule, so a redirect to another host, port or
 scheme (other than http to https on the same host) is followed without the key.
+
+How httpx2 (2.10) is used, each choice checked against its source:
+
+* **Redirects are followed** (``follow_redirects=True``; httpx2's default is not to), up to
+  its default 20, and the request hook sees every hop, so the credential rule above holds.
+* **Timeouts are httpx2's, per phase**: ``source.timeout`` bounds connecting, each read and
+  each write, not the request as a whole.
+* **TLS** is verified against the operating system's trust store, through ``truststore``,
+  which httpx2 uses by default.
+* **The environment is trusted** (``trust_env``, the default): a proxy, ``SSL_CERT_FILE``
+  and ``.netrc`` apply.
+* **The transport** is httpx2's own unless one is given: a test hands the requester an
+  ``httpx2.MockTransport``.
 """
 
 from __future__ import annotations
@@ -33,7 +46,7 @@ from datetime import UTC
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 
-import httpx
+import httpx2
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from recon.domain.errors import CollectionError, ErrorKind
@@ -84,9 +97,9 @@ def _is_retryable(exc: BaseException) -> bool:
     wait = _retry_after(exc)
     if wait is not None and wait > _MAX_RETRY_AFTER_S:
         return False
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, httpx2.HTTPStatusError):
         return exc.response.status_code == 429 or exc.response.status_code >= 500
-    return isinstance(exc, httpx.TransportError)
+    return isinstance(exc, httpx2.TransportError)
 
 
 #: The next step after a failed request, by the kind :func:`classify_http_failure` gives.
@@ -97,11 +110,11 @@ _HTTP_FIX: dict[ErrorKind, str] = {
 }
 
 #: The next step after a request error that is not a transport error, by its class.
-_REQUEST_FIX: dict[type[httpx.HTTPError], str] = {
-    httpx.TooManyRedirects: "the source redirected more times than httpx follows, most likely "
+_REQUEST_FIX: dict[type[httpx2.HTTPError], str] = {
+    httpx2.TooManyRedirects: "the source redirected more times than httpx2 follows, most likely "
     "in a loop: request the URL the redirects should end at, as the source's url: and the "
     "endpoint:",
-    httpx.DecodingError: "the source sent a body that does not decode as its Content-Encoding "
+    httpx2.DecodingError: "the source sent a body that does not decode as its Content-Encoding "
     "says: a retry may get a sound one; if not, the fault is the source's",
 }
 
@@ -114,14 +127,14 @@ def classify_http_failure(exc: BaseException) -> ErrorKind:
     status, and a request error that is not a transport error (too many redirects, a body
     that does not decode) → ``run_failed``.
     """
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, httpx2.HTTPStatusError):
         code = exc.response.status_code
         if code in (401, 403):
             return "auth"
         if code == 429 or code >= 500:
             return "transient"
         return "run_failed"
-    if isinstance(exc, httpx.TransportError):
+    if isinstance(exc, httpx2.TransportError):
         return "transient"
     return "run_failed"
 
@@ -138,12 +151,12 @@ def _retry_wait(retry_state: Any) -> float:
 _ERROR_SNIPPET_BYTES = 2048
 
 
-class _StatusError(httpx.HTTPStatusError):
+class _StatusError(httpx2.HTTPStatusError):
     """A non-success status, with the start of its body (the stream is closed by the time
     the error is reported, so the part worth quoting is read first) and the seconds its
     Retry-After asked for, counted from when it arrived."""
 
-    def __init__(self, response: httpx.Response, snippet: str, retry_after: float | None) -> None:
+    def __init__(self, response: httpx2.Response, snippet: str, retry_after: float | None) -> None:
         super().__init__(
             f"HTTP {response.status_code}", request=response.request, response=response
         )
@@ -155,7 +168,7 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def _send(
-    client: httpx.Client, request: httpx.Request, source: SourceEntry, clock: Clock
+    client: httpx2.Client, request: httpx2.Request, source: SourceEntry, clock: Clock
 ) -> HttpResponse:
     resp = client.send(request, stream=True)
     try:
@@ -170,13 +183,13 @@ def _send(
         resp.close()
 
 
-def _port(url: httpx.URL) -> int | None:
+def _port(url: httpx2.URL) -> int | None:
     return url.port or _DEFAULT_PORTS.get(url.scheme)
 
 
-def _same_origin(url: httpx.URL, origin: httpx.URL) -> bool:
+def _same_origin(url: httpx2.URL, origin: httpx2.URL) -> bool:
     """Whether ``url`` is at ``origin``, or is its upgrade from http to https on the same
-    host: where httpx itself keeps an ``Authorization`` header across a redirect."""
+    host: where httpx2 itself keeps an ``Authorization`` header across a redirect."""
     if url.host != origin.host:
         return False
     if (url.scheme, _port(url)) == (origin.scheme, _port(origin)):
@@ -184,11 +197,11 @@ def _same_origin(url: httpx.URL, origin: httpx.URL) -> bool:
     return (origin.scheme, _port(origin), url.scheme, _port(url)) == ("http", 80, "https", 443)
 
 
-def _credential_stays_at(origin: httpx.URL, header: str) -> Callable[[httpx.Request], None]:
+def _credential_stays_at(origin: httpx2.URL, header: str) -> Callable[[httpx2.Request], None]:
     """A request hook that removes ``header`` from any request, a redirect included, sent
     anywhere but ``origin``."""
 
-    def hook(request: httpx.Request) -> None:
+    def hook(request: httpx2.Request) -> None:
         if header and not _same_origin(request.url, origin):
             request.headers.pop(header, None)
 
@@ -196,7 +209,7 @@ def _credential_stays_at(origin: httpx.URL, header: str) -> Callable[[httpx.Requ
 
 
 def _span_attributes(
-    request: httpx.Request, source: SourceEntry, resend: int
+    request: httpx2.Request, source: SourceEntry, resend: int
 ) -> dict[str, str | int | None]:
     url = request.url
     return {
@@ -208,7 +221,7 @@ def _span_attributes(
     }
 
 
-def _read(resp: httpx.Response, limit: int) -> bytes:
+def _read(resp: httpx2.Response, limit: int) -> bytes:
     """The first ``limit`` bytes of the body; the rest is left unread."""
     buffer = bytearray()
     for chunk in resp.iter_bytes():
@@ -218,7 +231,7 @@ def _read(resp: httpx.Response, limit: int) -> bytes:
     return bytes(buffer[:limit])
 
 
-def _read_bounded(resp: httpx.Response, source: SourceEntry, url: str) -> bytes:
+def _read_bounded(resp: httpx2.Response, source: SourceEntry, url: str) -> bytes:
     """The whole body, or a CollectionError once it is known to exceed ``max_bytes``.
 
     A declared Content-Length over the limit is refused before a byte is read. Otherwise
@@ -253,12 +266,12 @@ def _too_large(source: SourceEntry, url: str) -> CollectionError:
     )
 
 
-def _decode(resp: httpx.Response, body: bytes) -> str:
+def _decode(resp: httpx2.Response, body: bytes) -> str:
     return body.decode(resp.encoding or "utf-8", errors="replace")
 
 
-def _to_domain(resp: httpx.Response, body: bytes) -> HttpResponse:
-    """Convert a streamed httpx.Response and its body to the domain value object."""
+def _to_domain(resp: httpx2.Response, body: bytes) -> HttpResponse:
+    """Convert a streamed httpx2.Response and its body to the domain value object."""
     content_type = resp.headers.get("content-type", "")
     return HttpResponse(
         status_code=resp.status_code,
@@ -270,16 +283,23 @@ def _to_domain(resp: httpx.Response, body: bytes) -> HttpResponse:
     )
 
 
-class HttpxRequester:
+class HttpRequester:
     """HTTP adapter with rate limiting and retry. Returns HttpResponse VO. ``clock`` dates a
-    Retry-After given as an HTTP-date; ``telemetry`` receives a span per attempt."""
+    Retry-After given as an HTTP-date; ``telemetry`` receives a span per attempt;
+    ``transport`` replaces httpx2's network transport (a test's ``MockTransport``)."""
 
     def __init__(
-        self, rate_limiter: RateLimiter, clock: Clock, telemetry: Telemetry | None = None
+        self,
+        rate_limiter: RateLimiter,
+        clock: Clock,
+        telemetry: Telemetry | None = None,
+        *,
+        transport: httpx2.BaseTransport | None = None,
     ) -> None:
         self._rate_limiter = rate_limiter
         self._clock = clock
         self._telemetry = telemetry if telemetry is not None else Telemetry((), clock)
+        self._transport = transport
 
     def request(
         self,
@@ -299,8 +319,8 @@ class HttpxRequester:
         """
         try:
             # Merged, not passed as params=, which would replace a query the URL has.
-            target = httpx.URL(url).copy_merge_params(params or {})
-        except httpx.InvalidURL as exc:
+            target = httpx2.URL(url).copy_merge_params(params or {})
+        except httpx2.InvalidURL as exc:
             raise CollectionError(
                 f"source {source.name!r}: its url and the collector's endpoint do not make a "
                 f"URL that can be requested ({exc})",
@@ -319,23 +339,26 @@ class HttpxRequester:
         hooks = {"request": [_credential_stays_at(target, source.auth.header)]}
         try:
             # Sync on purpose: a survey runs its requests one at a time, so async buys nothing.
-            with httpx.Client(
-                timeout=source.timeout, follow_redirects=True, event_hooks=hooks
+            with httpx2.Client(
+                timeout=source.timeout,
+                follow_redirects=True,
+                event_hooks=hooks,
+                transport=self._transport,
             ) as client:
                 request = client.build_request(
                     method, target, headers=headers or {}, json=json_body
                 )
                 return retrying(lambda: self._attempt(client, request, source, next(resends)))
-        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        except (httpx2.HTTPStatusError, httpx2.RequestError) as exc:
             status = ""
             snippet = ""
-            if isinstance(exc, httpx.HTTPStatusError):
+            if isinstance(exc, httpx2.HTTPStatusError):
                 status = f" (HTTP {exc.response.status_code})"
                 text = exc.snippet if isinstance(exc, _StatusError) else ""
                 if text:
                     snippet = f"\nResponse body: {text[:200]}"
-            elif not isinstance(exc, httpx.TransportError):
-                status = f" (httpx.{type(exc).__name__}: {exc})"
+            elif not isinstance(exc, httpx2.TransportError):
+                status = f" (httpx2.{type(exc).__name__}: {exc})"
             kind = classify_http_failure(exc)
             fix = _REQUEST_FIX.get(type(exc), _HTTP_FIX[kind])
             wait = _retry_after(exc)
@@ -348,7 +371,7 @@ class HttpxRequester:
             raise CollectionError(msg + snippet, kind=kind, fix=fix) from exc
 
     def _attempt(
-        self, client: httpx.Client, request: httpx.Request, source: SourceEntry, resend: int
+        self, client: httpx2.Client, request: httpx2.Request, source: SourceEntry, resend: int
     ) -> HttpResponse:
         """One send of ``request``, as one client span."""
         attributes = _span_attributes(request, source, resend)
@@ -360,8 +383,8 @@ class HttpxRequester:
                 span.set("http.response.status_code", code)
                 span.fail(str(code), f"HTTP {code}")
                 raise
-            except httpx.RequestError as exc:
-                span.fail(f"httpx.{type(exc).__name__}", type(exc).__name__)
+            except httpx2.RequestError as exc:
+                span.fail(f"httpx2.{type(exc).__name__}", type(exc).__name__)
                 raise
             except _TooLargeError:
                 span.fail("body_too_large", "the response body is larger than max_bytes")

@@ -22,7 +22,7 @@ from click.testing import CliRunner
 import recon
 from recon.adapters._in.cli import main
 from recon.adapters._out import otel_telemetry
-from recon.adapters._out.http_requester import HttpxRequester
+from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
 from recon.domain.errors import CollectionError
 from recon.domain.models import SourceEntry
@@ -193,9 +193,9 @@ def server() -> Any:
     httpd.shutdown()
 
 
-def _requester(sink: Recorded) -> HttpxRequester:
+def _requester(sink: Recorded) -> HttpRequester:
     clock = FixedClock()
-    return HttpxRequester(RateLimiter(clock), clock, Telemetry([sink], clock))
+    return HttpRequester(RateLimiter(clock), clock, Telemetry([sink], clock))
 
 
 def test_a_request_is_a_client_span_with_the_required_attributes(server: Any) -> None:
@@ -235,7 +235,7 @@ def test_a_transport_failure_names_its_exception_and_credentials_in_the_url_are_
     with pytest.raises(CollectionError):
         _requester(sink).request(source, "GET", f"{source.url}/x?sig=abc&q=1")
     end = sink.ends("recon.http.request")[0]
-    assert end.attributes["error.type"] == "httpx.ConnectError"
+    assert end.attributes["error.type"] == "httpx2.ConnectError"
     assert end.attributes["url.full"] == ("http://REDACTED:REDACTED@127.0.0.1:9/x?sig=REDACTED&q=1")
     assert "http.response.status_code" not in end.attributes
 

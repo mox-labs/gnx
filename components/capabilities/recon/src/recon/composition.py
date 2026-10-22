@@ -12,7 +12,7 @@ A plugin that fails to import, or that registers the wrong kind of object, is re
 the same name, recon's own registration wins and the other is reported.
 
 :func:`root` binds the rest: missions as files under the project root, archives as
-directories of JSONL, DuckDB for queries, the system clock, httpx for HTTP, markitdown for
+directories of JSONL, DuckDB for queries, the system clock, httpx2 for HTTP, markitdown for
 documents, and telemetry to two sinks: the survey's event log in its archive, always, and
 OpenTelemetry's API, which exports only when the application has installed an SDK.
 
@@ -225,14 +225,14 @@ def build_collectors(
     one span per request in ``telemetry``), and the types whose factory raised.
 
     Each type's factory is handed a ``ScopedEnv`` over ``env``, holding only the variables
-    ``config`` declares for that type's sources. httpx is imported here, not at module load,
+    ``config`` declares for that type's sources. httpx2 is imported here, not at module load,
     so planning and status never import it.
     """
-    from recon.adapters._out.http_requester import HttpxRequester
+    from recon.adapters._out.http_requester import HttpRequester
 
     transforms = _bound_transforms(plugins.transforms, config, mission_dir)
     ctx = CollectorContext(
-        requester=HttpxRequester(RateLimiter(clock), clock, telemetry),
+        requester=HttpRequester(RateLimiter(clock), clock, telemetry),
         converter=MarkitdownConverter(),
         transforms=transforms,
         mission_dir=mission_dir,

@@ -12,7 +12,7 @@ import recon
 from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import CliCollector
-from recon.adapters._out.http_requester import HttpxRequester
+from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.web_collector import WebCollector
 from recon.application.survey import Survey
@@ -41,7 +41,7 @@ class _NoOpConverter:
 
 def _collectors():
     clock = SystemClock()
-    req = HttpxRequester(RateLimiter(clock), clock)
+    req = HttpRequester(RateLimiter(clock), clock)
     return {
         "cli": CliCollector(),
         "api": ApiCollector(req, {}, DEFAULT_USER_AGENT),
@@ -562,7 +562,7 @@ class TestTableErrorCarriesItsFix:
 
 class TestSinkClosesTheGenerator:
     """`write_table` must close a SUSPENDED generator when the consumer fails, so the
-    collector's cleanup runs: subprocess kill, httpx close, rate-limit release.
+    collector's cleanup runs: subprocess kill, httpx2 close, rate-limit release.
 
     Why the obvious tests do not catch a missing `contextlib.closing(records)`:
       - normal completion — the generator exhausts, so it is already closed;
@@ -600,7 +600,7 @@ class TestSinkClosesTheGenerator:
         assert closed == [True], (
             "the generator was suspended when the consumer raised; closing() must run its "
             "finally before write_table returns, or the upstream collector never releases its "
-            "subprocess / httpx client / rate-limit token"
+            "subprocess / httpx2 client / rate-limit token"
         )
         assert inspect.getgeneratorstate(gen) == inspect.GEN_CLOSED
 

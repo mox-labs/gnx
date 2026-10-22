@@ -13,20 +13,20 @@ import re
 import threading
 import time
 
-import httpx
+import httpx2
 import pytest
 
-from recon.adapters._out.http_requester import HttpxRequester, classify_http_failure
+from recon.adapters._out.http_requester import HttpRequester, classify_http_failure
 from recon.adapters._out.system_clock import SystemClock
 from recon.domain.errors import CollectionError
 from recon.domain.models import SourceEntry
 from recon.domain.ratelimit import RateLimiter
 
 
-def _status_error(code: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "https://example.test/x")
-    response = httpx.Response(code, request=request)
-    return httpx.HTTPStatusError(f"HTTP {code}", request=request, response=response)
+def _status_error(code: int) -> httpx2.HTTPStatusError:
+    request = httpx2.Request("GET", "https://example.test/x")
+    response = httpx2.Response(code, request=request)
+    return httpx2.HTTPStatusError(f"HTTP {code}", request=request, response=response)
 
 
 @pytest.mark.parametrize(
@@ -46,9 +46,9 @@ def test_status_codes(code, kind):
 
 
 def test_transport_errors_are_transient():
-    request = httpx.Request("GET", "https://example.test/x")
-    assert classify_http_failure(httpx.ConnectError("refused", request=request)) == "transient"
-    assert classify_http_failure(httpx.ReadTimeout("slow", request=request)) == "transient"
+    request = httpx2.Request("GET", "https://example.test/x")
+    assert classify_http_failure(httpx2.ConnectError("refused", request=request)) == "transient"
+    assert classify_http_failure(httpx2.ReadTimeout("slow", request=request)) == "transient"
 
 
 # --- body size ------------------------------------------------------------------------
@@ -126,7 +126,7 @@ def base_url():
 def _get(base_url, path, **source_fields):
     source = SourceEntry(name="local", url=base_url, timeout=10, **source_fields)
     clock = SystemClock()
-    return HttpxRequester(RateLimiter(clock), clock).get(source, f"{base_url}{path}")
+    return HttpRequester(RateLimiter(clock), clock).get(source, f"{base_url}{path}")
 
 
 def test_a_body_within_the_limit_is_returned_whole(base_url):
@@ -144,7 +144,7 @@ def test_a_query_in_the_url_is_kept_and_params_are_added_to_it(base_url):
     assert _get(base_url, "/echo?id=3").text == "/echo?id=3"
     source = SourceEntry(name="local", url=base_url, timeout=10)
     clock = SystemClock()
-    requester = HttpxRequester(RateLimiter(clock), clock)
+    requester = HttpRequester(RateLimiter(clock), clock)
     sent = requester.request(source, "GET", f"{base_url}/echo?id=3", params={"key": "k"})
     assert sent.text == "/echo?id=3&key=k"
 
@@ -247,7 +247,7 @@ def test_a_retry_after_that_is_not_a_wait_falls_back_to_backoff(base_url, asked)
 # --- redirects ------------------------------------------------------------------------
 
 
-def _redirecting(monkeypatch, location, origin="https://api.example.test"):
+def _redirecting(location, origin="https://api.example.test"):
     """Requests sent through a MockTransport on which ``<origin>/start`` answers 302 to
     ``location`` and any other URL answers 200: each sent request's URL and headers."""
     sent = []
@@ -255,16 +255,11 @@ def _redirecting(monkeypatch, location, origin="https://api.example.test"):
     def answer(request):
         sent.append((str(request.url), dict(request.headers)))
         if request.url.path == "/start":
-            return httpx.Response(302, headers={"Location": location})
-        return httpx.Response(200, json={"ok": True})
+            return httpx2.Response(302, headers={"Location": location})
+        return httpx2.Response(200, json={"ok": True})
 
-    client = httpx.Client
-    monkeypatch.setattr(
-        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(answer), **kw)
-    )
     source = SourceEntry(name="keyed", url=origin, auth={"header": "x-api-key"})
-    clock = SystemClock()
-    requester = HttpxRequester(RateLimiter(clock), clock)
+    requester = _answered_by(answer)
     requester.request(source, "GET", f"{source.url}/start", headers={"x-api-key": "SECRET1"})
     return sent
 
@@ -277,11 +272,11 @@ def _redirecting(monkeypatch, location, origin="https://api.example.test"):
         "https://api.example.test:8443/landing",  # the same host, another port
     ],
 )
-def test_a_redirect_to_another_origin_does_not_carry_the_sources_credential(monkeypatch, location):
-    """Regression: httpx strips only Authorization on a cross-origin redirect, so a key in
-    the source's own ``auth.header`` (``x-api-key``, as Exa and Serper take it) went to
-    whatever host the first one redirected to."""
-    sent = _redirecting(monkeypatch, location)
+def test_a_redirect_to_another_origin_does_not_carry_the_sources_credential(location):
+    """Regression: httpx2 (as httpx before it) strips only Authorization on a cross-origin
+    redirect, so a key in the source's own ``auth.header`` (``x-api-key``, as Exa and Serper
+    take it) went to whatever host the first one redirected to."""
+    sent = _redirecting(location)
     assert [url for url, _ in sent] == ["https://api.example.test/start", location]
     assert sent[0][1]["x-api-key"] == "SECRET1"
     assert "x-api-key" not in sent[1][1]
@@ -295,33 +290,28 @@ def test_a_redirect_to_another_origin_does_not_carry_the_sources_credential(monk
         ("http://api.example.test", "https://api.example.test/landing"),  # up to https
     ],
 )
-def test_a_redirect_within_the_origin_keeps_the_credential(monkeypatch, origin, location):
+def test_a_redirect_within_the_origin_keeps_the_credential(origin, location):
     """The credential goes where the source's URL sends it, and only there: a redirect
-    inside that origin, or its upgrade to https, still authenticates, as httpx keeps
+    inside that origin, or its upgrade to https, still authenticates, as httpx2 keeps
     ``Authorization`` there."""
-    sent = _redirecting(monkeypatch, location, origin)
+    sent = _redirecting(location, origin)
     assert sent[1][0] == "https://api.example.test/landing"
     assert sent[1][1]["x-api-key"] == "SECRET1"
 
 
-# --- failures httpx raises that are not transport errors --------------------------------
+# --- failures httpx2 raises that are not transport errors -------------------------------
 
 
-def _answered_by(monkeypatch, answer):
-    client = httpx.Client
-    monkeypatch.setattr(
-        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(answer), **kw)
-    )
+def _answered_by(answer):
+    """A requester whose every request is answered by ``answer``, through a MockTransport."""
     clock = SystemClock()
-    return HttpxRequester(RateLimiter(clock), clock)
+    return HttpRequester(RateLimiter(clock), clock, transport=httpx2.MockTransport(answer))
 
 
-def test_a_redirect_loop_is_a_classified_failure(monkeypatch):
+def test_a_redirect_loop_is_a_classified_failure():
     """Regression: ``TooManyRedirects`` is not a transport error, so it escaped unclassified
     and its table failed with no fix."""
-    requester = _answered_by(
-        monkeypatch, lambda request: httpx.Response(302, headers={"Location": "/again"})
-    )
+    requester = _answered_by(lambda request: httpx2.Response(302, headers={"Location": "/again"}))
     source = SourceEntry(name="s", url="https://api.example.test")
     with pytest.raises(CollectionError) as excinfo:
         requester.request(source, "GET", "https://api.example.test/start")
@@ -330,12 +320,11 @@ def test_a_redirect_loop_is_a_classified_failure(monkeypatch):
     assert "redirect" in error.fix
 
 
-def test_a_body_that_does_not_decode_is_a_classified_failure(monkeypatch):
+def test_a_body_that_does_not_decode_is_a_classified_failure():
     """Regression: a body whose Content-Encoding lies (``DecodingError``) escaped
     unclassified."""
     requester = _answered_by(
-        monkeypatch,
-        lambda request: httpx.Response(
+        lambda request: httpx2.Response(
             200, headers={"Content-Encoding": "gzip"}, content=b"not gzip at all"
         ),
     )
@@ -347,9 +336,9 @@ def test_a_body_that_does_not_decode_is_a_classified_failure(monkeypatch):
     assert "Content-Encoding" in error.fix
 
 
-def test_a_url_that_is_not_one_is_a_config_error(monkeypatch):
+def test_a_url_that_is_not_one_is_a_config_error():
     """Regression: ``InvalidURL`` escaped unclassified; the URL is the mission's to fix."""
-    requester = _answered_by(monkeypatch, lambda request: httpx.Response(200))
+    requester = _answered_by(lambda request: httpx2.Response(200))
     source = SourceEntry(name="s", url="http://[::1")
     with pytest.raises(CollectionError) as excinfo:
         requester.request(source, "GET", "http://[::1/x")

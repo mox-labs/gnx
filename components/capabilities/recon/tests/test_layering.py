@@ -141,7 +141,7 @@ def test_the_scan_catches_what_it_claims(tmp_path: Path) -> None:
     file.write_text(
         "from typing import TYPE_CHECKING\n"
         "import re\n"
-        "import yaml, duckdb, httpx, glom\n"
+        "import yaml, duckdb, httpx2, glom\n"
         "import os, time, uuid, subprocess, json, hashlib\n"
         "from datetime import datetime\n"
         "from recon.adapters._out.archive_files import ArchiveFiles\n"
@@ -156,7 +156,7 @@ def test_the_scan_catches_what_it_claims(tmp_path: Path) -> None:
         "    return path.read_text(), path.exists()\n"
     )
     assert _violations(file, "domain") == {
-        "yaml", "duckdb", "httpx", "glom", "os", "time", "uuid", "subprocess", "json",
+        "yaml", "duckdb", "httpx2", "glom", "os", "time", "uuid", "subprocess", "json",
         "hashlib", "recon.adapters._out.archive_files", "recon.composition",
         "recon.application.plan", "matrix", "open()", "datetime.now()", ".read_text()",
         ".exists()",
@@ -272,11 +272,11 @@ class TestLibrarySurface:
 
 
 def test_importing_recon_loads_no_adapter_and_wires_nothing() -> None:
-    """``import recon`` builds no root; building one imports neither httpx nor DuckDB nor
+    """``import recon`` builds no root; building one imports neither httpx2 nor DuckDB nor
     markitdown, so planning and status never load them."""
     code = (
         "import sys, recon\n"
-        "heavy = {'httpx', 'duckdb', 'markitdown', 'yaml'}\n"
+        "heavy = {'httpx2', 'duckdb', 'markitdown', 'yaml'}\n"
         "print(sorted(m for m in sys.modules if m.split('.')[0] in heavy "
         "or m == 'recon.composition'))\n"
         "from recon.composition import root\n"

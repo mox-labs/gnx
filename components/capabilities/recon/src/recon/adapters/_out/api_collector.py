@@ -1,6 +1,6 @@
 """ApiCollector — delegates HTTP to an injected Requester; yields records.
 
-No direct httpx import. No rate limiter (that's inside the Requester).
+No direct httpx2 import. No rate limiter (that's inside the Requester).
 Constructor-injected dependencies are explicit: tests pass a fake Requester
 without monkeypatching anything.
 
