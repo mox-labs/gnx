@@ -320,6 +320,12 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Security
 
+- **SECURITY.md names the working directory as an ambient route to a capability grant**
+  (mx-src F31): every command, and every tool on matrix, reads `./matrix.yaml` and
+  `./<tool>.yaml` from where it runs, so an untrusted checkout's config chooses permission
+  modes, plugins, a model `base_url` that receives every prompt, the store root and
+  observers. It says how to see the files read (`matrix config --sources`) and how to read
+  only the named ones (`--only`); a test holds the list to the tiers the code reads.
 - **No content leaves through OpenTelemetry by default.** The `otel` observer exported every
   event field as a span attribute, so each agent's task (`matrix.task`), error messages
   (`matrix.error`, and the span's status description) and every field a component passed to

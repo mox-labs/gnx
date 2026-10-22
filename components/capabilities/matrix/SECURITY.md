@@ -39,6 +39,17 @@ output, not only in the config. Relative plugin paths are resolved against the r
 
 What does not constrain it: nothing restricts `cwd`. A config naming `cwd: /` gets `/`.
 
+**The working directory is an ambient route to that grant.** Every `matrix` command, and every
+tool built on matrix, reads `./matrix.yaml` and `./<tool>.yaml` from the directory it runs in
+(tiers 3 and 4), unasked, and merges them over the user's own tiers; `$MATRIX_CONFIG` and
+`$<TOOL>_CONFIG` add files from the environment (tiers 5 and 6). So running in a checkout you
+did not write gives that checkout's config its authority: a `permission_mode`, `plugins` and
+`skills` for a session, a `models` row whose `base_url` receives every prompt a model step
+sends, a store `root` where the record is written, observers, and `definitions` directories
+whose agent files carry prompts and tools. In an untrusted directory, read
+`matrix config --sources` first: it lists every file consulted. `matrix run CONFIG --only`
+reads the named files alone, without the tiers.
+
 ### 2. Ambient environment → session behaviour
 
 The `claude-sdk` runtime does not touch `os.environ`. It used to pop `CLAUDECODE` for the
