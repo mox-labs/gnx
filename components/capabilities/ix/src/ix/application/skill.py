@@ -85,8 +85,9 @@ REFERENCES: dict[str, str] = {
 #: to a kind this ix can run, and ``http-load`` to the program its adapter starts.
 PREREQUISITES: dict[str, str] = {
     "agent-session": "runs on one of matrix's agent runtimes: `claude-sdk` needs `ix[claude]`, "
-    "the Claude Code CLI and its credentials; `mock` needs nothing and calls no model. `ix "
-    "plan` lists one that cannot start under `Runnable: no`",
+    "the Claude Code CLI and its credentials; `pydantic-ai` needs a hardline model (its "
+    "`models` or matrix's) and makes every model call through hardline; `mock` needs nothing "
+    "and calls no model. `ix plan` lists one that cannot start under `Runnable: no`",
     "model-call": "runs on one of matrix's model runtimes: `hardline` needs `ix[models]` and a "
     "hardline model; `mock` needs nothing and calls no model. `ix plan` lists a runtime that "
     "cannot start, or a model it cannot resolve, under `Runnable: no`",

@@ -749,6 +749,53 @@ class TestThirdPartyRuntimes:
         assert {j["runtime"] for j in on_a_session} == {SCRIPTED}
 
 
+def lookup(word: str) -> str:
+    """Find a word in the dictionary: the tool the pydantic-ai session below calls."""
+    return {"banana": "a long yellow fruit"}.get(word, "not found")
+
+
+PYDANTIC_AI = "matrix.v1.agent-runtime.pydantic-ai"
+
+
+class TestASecondRealAgentRuntime:
+    """matrix's ``pydantic-ai`` runtime is the second agent runtime that runs a model's loop
+    (W11.1), and ix names it in an ``agent-session`` subject as it names ``claude-sdk``: by
+    its registered name, its options declared by its config. Here its model is hardline's
+    mock backend, a stand-in row, and its tool a function in this module: no model is
+    called, and the session's loop, tool call included, runs for real."""
+
+    def test_an_agent_session_runs_on_it_with_its_tools_and_its_facts(self, tmp_path: Path) -> None:
+        registry = matrix.default_registry(discover=False)
+        register(registry)
+        root = Root(registry=registry, settings=_settings())
+        asks = {"tool_calls": [{"name": "lookup", "arguments": '{"word": "banana"}'}]}
+        row = {"backend": "mock", "model": "m-1", "family": "stand",
+               "options": {"script": [asks, "BANANA, a long yellow fruit"]}}  # fmt: skip
+        session = {
+            "kind": "agent-session",
+            "runtime": "pydantic-ai",
+            "runtime_options": {
+                "models": {"models": {"q": row}},
+                "default_model": "q",
+                "tools": {"lookup": f"{__name__}:lookup"},
+            },
+        }
+        lab = _either(tmp_path, session)
+        assert root.validate(lab).valid and root.plan(lab).runnable
+        report = root.run(lab, exploratory=True)
+        assert report.status == "completed"
+        (estimate,) = [e for e in report.analysis.estimates if e.metric == "text_matched"]
+        assert (estimate.value, estimate.n) == (pytest.approx(1.0), 10)
+        interactions = _rows(report, "ix.v1.interaction")
+        calls = [row["observations"]["response"]["tool_calls"] for row in interactions]
+        assert all([c["name"] for c in called] == ["lookup"] for called in calls)
+        usage = [row["observations"]["usage"] for row in interactions]
+        assert {(u["runtime"], u["family"]) for u in usage} == {(PYDANTIC_AI, "stand")}
+        sessions = _session_rows(report)
+        assert {(s["runtime"], s["turns"]) for s in sessions} == {(PYDANTIC_AI, 2)}
+        assert {tuple(s["drives"]) for s in sessions} == {("pydantic-ai-slim", "hardline")}
+
+
 class Hanging(Scripted):
     """A runtime whose agent never finishes a task that asks for something hard, and
     answers every other one at once."""
