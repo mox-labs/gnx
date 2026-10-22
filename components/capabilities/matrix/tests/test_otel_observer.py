@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -30,6 +30,12 @@ from matrix import (  # noqa: E402
     wire,
 )
 from matrix.adapters._out.observers.otel import OtelObserver  # noqa: E402
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from opentelemetry.sdk.trace import ReadableSpan
+    from opentelemetry.util.types import AttributeValue
 
 # Providers of the tests' own, handed to each observer: nothing here installs a global one, so
 # no test depends on which suite ran first in the process. A test that reads metrics gives its
@@ -65,6 +71,21 @@ class Probe:
         return {"acme.v1.text": "x"}
 
 
+def _attrs(span: ReadableSpan) -> Mapping[str, AttributeValue]:
+    assert span.attributes is not None, span.name
+    return span.attributes
+
+
+def _scope_name(span: ReadableSpan) -> str:
+    assert span.instrumentation_scope is not None, span.name
+    return span.instrumentation_scope.name
+
+
+def _duration_ns(span: ReadableSpan) -> int:
+    assert span.start_time is not None and span.end_time is not None, span.name
+    return span.end_time - span.start_time
+
+
 def _points(reader: InMemoryMetricReader) -> dict[str, list[Any]]:
     data = reader.get_metrics_data()
     found: dict[str, list[Any]] = {}
@@ -82,10 +103,10 @@ async def test_run_and_component_spans_nest() -> None:
     assert {"invoke_workflow", "matrix.component"} <= set(spans)
     component, run = spans["matrix.component"], spans["invoke_workflow"]
     assert component.parent is not None and component.parent.span_id == run.context.span_id
-    assert component.attributes["matrix.component"] == "e"
-    assert run.attributes["gen_ai.operation.name"] == "invoke_workflow"
-    assert run.attributes["matrix.status"] == "completed"
-    assert run.instrumentation_scope.name == "matrix"
+    assert _attrs(component)["matrix.component"] == "e"
+    assert _attrs(run)["gen_ai.operation.name"] == "invoke_workflow"
+    assert _attrs(run)["matrix.status"] == "completed"
+    assert _scope_name(run) == "matrix"
 
 
 async def test_a_span_a_component_opens_nests_under_it() -> None:
@@ -94,7 +115,7 @@ async def test_a_span_a_component_opens_nests_under_it() -> None:
     spans = {s.name: s for s in _EXPORTER.get_finished_spans()}
     probe, component = spans["acme.probe"], spans["matrix.component"]
     assert probe.parent is not None and probe.parent.span_id == component.context.span_id
-    assert probe.attributes["acme.status"] == "ok"
+    assert _attrs(probe)["acme.status"] == "ok"
 
 
 _LIBRARY = _PROVIDER.get_tracer("acme.library")
@@ -195,7 +216,7 @@ async def test_a_model_call_is_a_span_of_its_own_under_its_component() -> None:
         "matrix.finish_reason": "stop",
         "matrix.status": "completed",
     }.items():
-        assert called.attributes[key] == value, key
+        assert _attrs(called)[key] == value, key
 
 
 class _Counted:
@@ -229,7 +250,7 @@ async def test_matrix_counts_no_inference_usage_for_a_model_call() -> None:
     assert "gen_ai.client.inference.usage.input_tokens" not in points
     assert "gen_ai.client.inference.usage.output_tokens" not in points
     called = {s.name: s for s in _EXPORTER.get_finished_spans()}["matrix.model"]
-    assert not [key for key in called.attributes if key.startswith("gen_ai.usage.")]
+    assert not [key for key in _attrs(called) if key.startswith("gen_ai.usage.")]
 
 
 class _Tracked(SpanProcessor):
@@ -463,14 +484,14 @@ async def test_an_agent_session_is_invoke_agent_and_its_tools_execute_tool() -> 
         "gen_ai.usage.input_tokens": 40,
         "gen_ai.usage.output_tokens": 9,
     }.items():
-        assert invoked.attributes[key] == value, key
+        assert _attrs(invoked)[key] == value, key
     assert tool.parent is not None and tool.parent.span_id == invoked.context.span_id
-    assert tool.attributes["gen_ai.tool.name"] == "Read"
-    assert tool.attributes["gen_ai.tool.call.id"] == "toolu_1"
-    assert tool.attributes["gen_ai.operation.name"] == "execute_tool"
+    assert _attrs(tool)["gen_ai.tool.name"] == "Read"
+    assert _attrs(tool)["gen_ai.tool.call.id"] == "toolu_1"
+    assert _attrs(tool)["gen_ai.operation.name"] == "execute_tool"
     # The arguments are content: not on the span without the opt-in.
-    assert "gen_ai.tool.call.arguments" not in tool.attributes
-    assert (tool.end_time - tool.start_time) == 2_000_000_000  # timed as the runtime saw it
+    assert "gen_ai.tool.call.arguments" not in _attrs(tool)
+    assert _duration_ns(tool) == 2_000_000_000  # timed as the runtime saw it
 
     points = _points(reader)
     (took,) = points["gen_ai.invoke_agent.duration"]
@@ -512,7 +533,7 @@ async def test_input_tokens_are_counted_once_with_the_cache_inside_them() -> Non
     (counted,) = _points(reader)["gen_ai.client.inference.usage.input_tokens"]
     assert counted.value == 100
     invoked = {s.name: s for s in _EXPORTER.get_finished_spans()}["invoke_agent cached"]
-    assert invoked.attributes["gen_ai.usage.input_tokens"] == 100
+    assert _attrs(invoked)["gen_ai.usage.input_tokens"] == 100
 
 
 async def test_a_failed_session_carries_its_error_type() -> None:
@@ -527,7 +548,7 @@ async def test_a_failed_session_carries_its_error_type() -> None:
         await Executor([observer]).run(wire({"ask": _Asks(agent)}))
     spans = {s.name: s for s in _EXPORTER.get_finished_spans()}
     failed = spans["invoke_agent hurried"]
-    assert failed.attributes["error.type"] == "rate_limited"
+    assert _attrs(failed)["error.type"] == "rate_limited"
     assert failed.status.status_code == trace.StatusCode.ERROR
 
 
@@ -559,7 +580,7 @@ async def test_a_cancelled_session_ends_cancelled_and_its_span_carries_an_error_
     (end,) = [e for e in recorder.events if e.name == "matrix.agent.end"]
     assert end.fields["status"] == "cancelled"
     (span,) = [s for s in _EXPORTER.get_finished_spans() if s.name == "invoke_agent slow"]
-    assert span.attributes["error.type"] == "cancelled"
+    assert _attrs(span)["error.type"] == "cancelled"
     assert span.status.status_code == trace.StatusCode.ERROR
 
 
@@ -676,9 +697,7 @@ async def test_the_span_names_are_the_pinned_ones() -> None:
     await Executor([_observer()]).run(
         wire({"works": Works(), "rate": step}, inputs=[PROMPT]), {PROMPT: "hi"}
     )
-    matrix_spans = {
-        s.name for s in _EXPORTER.get_finished_spans() if s.instrumentation_scope.name == "matrix"
-    }
+    matrix_spans = {s.name for s in _EXPORTER.get_finished_spans() if _scope_name(s) == "matrix"}
     assert matrix_spans == {
         "invoke_workflow",
         "matrix.component",
