@@ -147,9 +147,12 @@ and URLs are refused (R-7). DuckDB lets SQL write wherever it may read, so a que
 statements DuckDB's parser types as SELECT; `COPY ... TO`, `ATTACH`, `CREATE`, `EXPORT` and
 every other statement are refused before any of the SQL runs (R-10).
 
-What this does **not** do: a large sort or join can still use DuckDB's spill directory
-(`.tmp/` under the working directory). And it does nothing about the text itself: a
-`content` column from the web is untrusted wherever it is read.
+Spilling to disk is off: DuckDB adds its spill directory (`.tmp/` under the working
+directory) to the directories SQL may read, so with it on a query could read whatever is
+there (R-15). A query that needs more memory than DuckDB has fails as a `query` error.
+
+What this does **not** do: anything about the text itself. A `content` column from the web
+is untrusted wherever it is read.
 
 ### 7. Telemetry → the archive's event log, and an OTLP endpoint
 
@@ -405,6 +408,16 @@ with every built-in; it registers a named list of converters, audited for what t
 Regression: `TestAudioIsNeverSentAnywhere` in `recon/tests/test_transforms.py`, which fakes
 the speech client and fails if it is called, and
 `test_markitdown_holds_only_the_converters_recon_audited`, which holds the list to the audit.
+
+### R-15 — a query could read DuckDB's spill directory (fixed)
+
+DuckDB adds its temp directory to `allowed_directories`, so with the default (`.tmp/`
+under the working directory) `SELECT content FROM read_text('.tmp/note.txt')` returned a
+file outside the archive, against boundary 6's "nothing else". Fixed: the connection sets
+`temp_directory` to empty before it is confined, so nothing spills and the archive is all
+a query can read.
+
+Regression: `test_duckdb_s_spill_directory_is_not_readable` in `recon/tests/test_query.py`.
 
 ## Not covered
 

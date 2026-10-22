@@ -91,6 +91,27 @@ class TestConfinement:
     ) -> None:
         self._refused(archive, f"SELECT * FROM read_text('{tmp_path / 'm' / 'config.yaml'}')")
 
+    def test_duckdb_s_spill_directory_is_not_readable(
+        self, archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: DuckDB adds its temp directory (``.tmp/`` under the working directory)
+        to ``allowed_directories``, so ``read_text('.tmp/note.txt')`` returned a file outside
+        the archive. Nothing spills now, so the archive is all a query can read."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".tmp").mkdir()
+        (tmp_path / ".tmp" / "note.txt").write_text("hunter2\n")
+        self._refused(archive, "SELECT content FROM read_text('.tmp/note.txt')")
+        sql = "SELECT current_setting('allowed_directories') AS d"
+        assert execute(archive, sql)[1] == [([f"{archive.parent}/"],)]
+
+    def test_a_query_too_large_for_memory_says_it_does_not_spill(self, tmp_path: Path) -> None:
+        import duckdb
+
+        from recon.adapters._out.duckdb_query import _fix
+
+        fix = _fix(duckdb.OutOfMemoryException("could not allocate"), tmp_path, ["t"], "")
+        assert "never spills to disk" in fix
+
     def test_dot_dot_does_not_escape(self, archive: Path) -> None:
         self._refused(archive, f"SELECT * FROM read_text('{archive}/../../../private.txt')")
 
