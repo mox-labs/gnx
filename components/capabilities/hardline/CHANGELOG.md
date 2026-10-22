@@ -33,6 +33,7 @@
 - **A keyless `anthropic` row is a config problem.** It used to pass `hardline check` and then fail its call as `auth` ("the provider rejected the key", exit 6) when no provider had been asked. It now fails composition, naming `models.<name>.api_key` (exit 3).
 - **Each discovered tier is named with how it was found**: `user <path>`, `cwd <path>`, `$HARDLINE_CONFIG <path>`, in errors, in `hardline check`, and in each row's record.
 - **`backend_type_url` is gone**, and with it `hardline.v1/backend.<name>`. The README called them registry keys, but registry rows and the composition root key on a backend's entry-point name, and nothing read them.
+- **A 501 or 505 is not retried.** Both say the server cannot serve the request at all (not implemented; HTTP version not supported), so they are `bad_request` (exit 3) rather than `unavailable`, retried and then sent to every fallback. Every other 5xx is still transient.
 - `merge_tiers` returns, per model, the tier that set each field (`{field: source}`), and `ModelRegistry.from_config` takes `origins` in that shape.
 
 ### Fixed

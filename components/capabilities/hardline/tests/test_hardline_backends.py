@@ -360,7 +360,14 @@ def test_a_backend_location_must_be_an_http_url() -> None:
         (429, "rate_limit"),
         (408, "timeout"),
         (500, "unavailable"),
+        (502, "unavailable"),
+        (503, "unavailable"),
+        (504, "unavailable"),
         (529, "unavailable"),
+        # W6.1: no retry can change these. 501 says the server does not implement the request
+        # and 505 that it refuses the HTTP version: the row points somewhere that cannot serve it.
+        (501, "bad_request"),
+        (505, "bad_request"),
         (400, "bad_request"),
         (404, "bad_request"),
     ],

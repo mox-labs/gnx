@@ -224,7 +224,11 @@ over every installed backend.
 | `mock` | none | none | `responses`, `script`, `default`, `finish_reason`, `refusal` | offline; `script` plants failures, `finish_reason` and `refusal` plant replies that are not whole answers |
 
 A row's `timeout_s` bounds each phase of a request (connecting, sending, waiting for the reply).
-A row's `retries` is the only retry policy: the HTTP transport retries nothing itself.
+A row's `retries` is the only retry policy: the HTTP transport retries nothing itself. A 429,
+a 408, a 5xx and a failure to connect or to get a reply in time are transient: retried, then
+fallen back from.
+Two 5xx are not, since no retry changes them: 501 (not implemented) and 505 (HTTP version not
+supported) mean the row points somewhere that cannot serve it, and fail as `bad_request`.
 
 ## Type URLs
 

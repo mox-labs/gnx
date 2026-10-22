@@ -3,6 +3,12 @@
 The OpenAI-compatible protocol and Anthropic's Messages API share their status semantics, so
 one rule serves every backend built on HTTP. Transport failures (no status) are classified
 where they are caught, in ``_http``: a timeout is ``timeout``, any other ``unavailable``.
+
+A 5xx is transient, and so retried and then fallen back from, except two that no retry can
+change: 501 (the server does not implement the request) and 505 (it refuses the HTTP version)
+say the row points somewhere that cannot serve it, which is ``bad_request``. A 500 stays
+transient although a given prompt may reproduce it every time: a server's fault is more often
+passing than not.
 """
 
 from __future__ import annotations
@@ -15,6 +21,10 @@ if TYPE_CHECKING:
     from hardline.domain.errors import Reason
 
 
+#: Server errors that say the request can never succeed at this location.
+_CANNOT_SERVE = frozenset({501, 505})
+
+
 def classify(status: int, headers: Mapping[str, str]) -> tuple[Reason, float | None]:
     """``(reason, retry_after_seconds)`` for a response that is not a success."""
     retry_after = _retry_after(headers)
@@ -24,6 +34,8 @@ def classify(status: int, headers: Mapping[str, str]) -> tuple[Reason, float | N
         return "rate_limit", retry_after
     if status == 408:
         return "timeout", retry_after
+    if status in _CANNOT_SERVE:
+        return "bad_request", None
     if status >= 500:  # includes Anthropic's 529 overloaded
         return "unavailable", retry_after
     if 400 <= status < 500:
