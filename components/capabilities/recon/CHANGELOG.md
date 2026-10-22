@@ -35,6 +35,8 @@
 
 ### Fixed
 
+- **A redirect chain is held to the `timeout` and the deadline, and each hop draws a rate-limit token.** Every hop was sent with the whole per-phase timeout and the budget was checked only while reading the body, so seven redirects of 0.8 s each under `timeout: 1` took 20.1 s; only a send's first hop drew a token. Each hop is now checked against what is left of its send and the deadline, and sent with only that as its timeout: the same chain fails as `transient` in 6.0 s.
+
 - **A source's `timeout` bounds each send in wall time.** It was httpx's per-phase timeout, so a server that sent its body a byte at a time within it held the table, and every table after it, for as long as it liked: a source with `timeout: 2` sending a 40-byte body one byte every 0.5 s took 19.9 s and succeeded. The body is now read against the timeout, chunk by chunk; the same request fails as `transient` in 9.2 s (three sends of 2 s and the backoff between them), and in 5.2 s under a table `deadline: 5`.
 
 - **The hook route's `tool_input` is documented as kept whole.** The capture log's docs said a credential never reaches it, which held only for what recon fetches itself: a `PostToolUse` payload's `tool_input` is stored as given, so a key an MCP tool takes as an argument is in the log. SECURITY.md (boundary 5) and the capture format now say so; recon does not guess at which arguments are keys.

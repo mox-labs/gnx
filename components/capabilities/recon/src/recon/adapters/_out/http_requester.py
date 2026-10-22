@@ -29,13 +29,18 @@ scheme (other than http to https on the same host) is followed without the key.
 How httpx2 (2.10) is used, each choice checked against its source:
 
 * **Redirects are followed** (``follow_redirects=True``; httpx2's default is not to), up to
-  its default 20, and the request hook sees every hop, so the credential rule above holds.
+  its default 20, and the request hook sees every hop, so the credential rule above holds,
+  and each hop after the first draws a rate-limit token as a send does.
 * **Timeouts.** httpx2's are per phase (connecting, each read, each write), so a body
-  trickled within one would take as long as the server liked. ``source.timeout`` is given to
-  httpx2 per phase and also bounds each send's wall time, checked chunk by chunk as the body
-  is read; past it the send fails as a read timeout (``transient``, retried). A deadline
-  the mission set (:mod:`recon.domain.deadline`) shortens both when less is left, and a wait
-  for a token, a backoff or a Retry-After that would end past it fails the request at once.
+  trickled within one, or a chain of redirects each within one, would take as long as the
+  server liked. ``source.timeout`` bounds each send's wall time, every hop of its redirects
+  included: each hop is checked against it before it goes and is given only what is left
+  as httpx2's per-phase timeout, and the body is read against it chunk by chunk. Past it the
+  send fails as a read timeout (``transient``, retried). A wait for a hop's token is the
+  limiter's, not the server's, so it does not count against ``timeout``. A deadline the
+  mission set (:mod:`recon.domain.deadline`) shortens all of these when less is left, and a
+  wait for a token, a backoff or a Retry-After that would end past it fails the request at
+  once.
 * **TLS** is verified against the operating system's trust store, through ``truststore``,
   which httpx2 uses by default.
 * **The environment is trusted** (``trust_env``, the default): a proxy, ``SSL_CERT_FILE``
@@ -63,6 +68,7 @@ from recon.domain.http import HttpResponse, reported_url
 from recon.domain.telemetry import HTTP_REQUEST, Telemetry
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import datetime
 
     from recon.domain.clock import Clock
@@ -177,28 +183,46 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 class _SendBudget:
-    """The wall time one send may take, from connecting to its body's last byte: the
-    source's ``timeout``, or what is left of the deadline when that is less. httpx2's own
-    timeouts are per phase, so the body is read against this, chunk by chunk."""
+    """The wall time one send may take, from connecting to its body's last byte, every
+    redirect hop included: the source's ``timeout``, or what is left of the deadline when
+    that is less. httpx2's own timeouts are per phase, so each hop is checked against this
+    and given what is left of it, and the body is read against it, chunk by chunk. Time
+    spent waiting for a hop's rate-limit token is not the server's, so it is not counted
+    against ``timeout``; the deadline counts all of it."""
 
     def __init__(self, clock: Clock, timeout: float, deadline: Deadline | None) -> None:
         self._clock = clock
         self._started = clock.monotonic()
         self._deadline = deadline
-        self.seconds = deadline.limit(timeout) if deadline is not None else timeout
-        self._by_deadline = self.seconds < timeout
+        self._timeout = timeout
+        self._not_the_servers = 0.0
+
+    def left(self) -> float:
+        """The seconds this send may still take, never below 0."""
+        own = max(0.0, self._timeout - self._spent())
+        return self._deadline.limit(own) if self._deadline is not None else own
 
     def check(self, request: httpx2.Request) -> None:
         """Raise once the send has run past its budget: the deadline's error when the
-        deadline set it, else a read timeout, which is retried as any timeout is."""
-        if self._clock.monotonic() - self._started <= self.seconds:
-            return
-        if self._by_deadline and self._deadline is not None:
-            raise self._deadline.exceeded()
-        raise httpx2.ReadTimeout(
-            f"the response took longer than its source's timeout ({self.seconds:g}s)",
-            request=request,
-        )
+        deadline has passed, else a read timeout, which is retried as any timeout is."""
+        if self._deadline is not None:
+            self._deadline.check()
+        if self._spent() > self._timeout:
+            raise httpx2.ReadTimeout(
+                f"the response took longer than its source's timeout ({self._timeout:g}s)",
+                request=request,
+            )
+
+    def waiting(self, wait: Callable[[], None]) -> None:
+        """Run ``wait``, a wait of recon's own, without counting it against ``timeout``."""
+        before = self._clock.monotonic()
+        try:
+            wait()
+        finally:
+            self._not_the_servers += self._clock.monotonic() - before
+
+    def _spent(self) -> float:
+        return self._clock.monotonic() - self._started - self._not_the_servers
 
 
 def _send(
@@ -341,6 +365,9 @@ class HttpRequester:
         #: The request in hand's origin and the source's credential header, which goes to
         #: that origin only (requests are sent one at a time).
         self._origin: tuple[httpx2.URL, str] | None = None
+        #: The send in hand: its first request, its source and its budget, which every hop
+        #: of its redirects is held to.
+        self._sending: tuple[httpx2.Request, SourceEntry, _SendBudget] | None = None
 
     def close(self) -> None:
         """End the session: its connections close. A later request opens a new one."""
@@ -353,7 +380,9 @@ class HttpRequester:
         if self._client is None:
             self._client = httpx2.Client(
                 follow_redirects=True,
-                event_hooks={"request": [self._credential_stays_at_its_origin]},
+                event_hooks={
+                    "request": [self._credential_stays_at_its_origin, self._hop_within_budget]
+                },
                 transport=self._transport,
             )
         return self._client
@@ -366,6 +395,19 @@ class HttpRequester:
         origin, header = self._origin
         if header and not _same_origin(request.url, origin):
             request.headers.pop(header, None)
+
+    def _hop_within_budget(self, request: httpx2.Request) -> None:
+        """A request hook: every hop of a send, its redirects included, is held to the send's
+        budget and given only what is left of it as its timeout; each hop after the first
+        draws a token from the source's rate limit, as a send does."""
+        if self._sending is None:
+            return
+        first, source, budget = self._sending
+        budget.check(request)
+        if request is not first:
+            budget.waiting(lambda: self._rate_limiter.acquire(source, self._deadline))
+        timeout = httpx2.Timeout(budget.left()).as_dict()
+        request.extensions = {**request.extensions, "timeout": timeout}
 
     def request(
         self,
@@ -413,8 +455,9 @@ class HttpRequester:
             self._rate_limiter.acquire(source, self._deadline)
             budget = _SendBudget(self._clock, source.timeout, self._deadline)
             request = client.build_request(
-                method, target, headers=headers or {}, json=json_body, timeout=budget.seconds
+                method, target, headers=headers or {}, json=json_body, timeout=budget.left()
             )
+            self._sending = (request, source, budget)
             return self._attempt(client, request, source, next(resends), budget)
 
         try:
