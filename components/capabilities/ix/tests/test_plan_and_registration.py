@@ -439,7 +439,12 @@ class TestRegister:
         try:
             set_to: list[int] = []
             real = os.umask
-            monkeypatch.setattr(os, "umask", lambda mask: set_to.append(mask) or real(mask))
+
+            def umask(mask: int) -> int:
+                set_to.append(mask)
+                return real(mask)
+
+            monkeypatch.setattr(os, "umask", umask)
             record = RegistrationFile(str(tmp_path / "experiment.registration.json"))
             record.write({"experiment": "x"})
             assert set_to == []
