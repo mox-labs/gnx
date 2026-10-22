@@ -279,6 +279,12 @@ is. `--repeats` is refused here: a verdict rests on the registered design. Addin
 chance of a false `holds`; if you decide to extend the experiment, amend the registration
 with a reason that names the earlier result (`ix register <path> --amend --reason "<why>"`).
 
+The registration also froze the digest of each skill, plugin, fixture and agent definition
+the subject names. Editing one afterwards is a deviation named by what changed (`skill
+review changed after registration`), and a run of it gives no verdict: the verdict is about
+the files as registered. The report's `Contents` and `Ran from` say which files and which
+commit it was about.
+
 Ctrl-C stops the trial in flight and exits 12, with a report that gives no verdict. The
 record is kept, and `ix report` reads it.
 

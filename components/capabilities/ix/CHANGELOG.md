@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Added: a verdict is tied to what it judged
+
+The experiment's digest covers its document, which names the subject's files by path. Now
+what is at those paths is digested too, and a run records where it ran from.
+`docs/design/2026-10-19-record.md` §18 has the reasons.
+
+- **The subject's contents are frozen at registration.** The registration and each run's
+  manifest hold the digest of every file and folder the subjects and sensors name:
+  `skills`, `plugins` (each folder a `*` matches), `fixtures`, `definition`, `graders`,
+  `rubric_file`, and any option a kind declares `path` or `paths` (`contents`: the path
+  as written and the digest, never what the file holds). A folder's digest is its files'
+  relative paths and bytes, never their times.
+- **A changed subject is a deviation.** A skill, plugin, fixture or definition edited,
+  deleted or added after registration is a deviation named by what changed (`skill review
+  changed after registration`, field `subjects.agent.skills[skills/review]`). A run of it is
+  not gated and exits 14, as one with an edited probe file does. A registration written
+  before this release holds no contents and is not compared on them; delete it and
+  register again to freeze them.
+- **Where a run ran from.** The manifest's `provenance` holds the git commit the
+  experiment sits at and `dirty` (a tracked file differs from it), or why there is none
+  (`not a repository`); the installed versions of ix, matrix and hardline; and every agent
+  and model runtime installed, by type URL, with the distribution that registered it and
+  its version. `ix report` prints `Contents`, `Ran from` and `Versions`; `ix runs` prints
+  each run's commit; `Report.contents`, `Report.provenance`, `RunSummary.commit` and
+  `RunSummary.dirty` carry them in `--json`.
+- **A kind option type `paths`**: a list of paths, each a string or a mapping with a
+  `path`. `agent-session`'s `skills`, `plugins` and `fixtures` are declared with it, so an
+  item that names no path is `option_invalid`.
+
 ### Changed (breaking): agent runtimes and model runtimes are two ports
 
 matrix now has two runtime ports, `agent-runtime` and `model-runtime`, and ix moves onto

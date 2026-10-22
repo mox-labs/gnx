@@ -62,7 +62,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ),
     ("ix run <path>", "carry it out and print the report; the exit code is the verdict"),
     ("ix report <path>", "the latest run's report again; or give a run directory"),
-    ("ix runs <path>", "each run: when, gated, exploratory or dry, verdict, trials"),
+    ("ix runs <path>", "each run: when, its commit, gated, exploratory or dry, verdict, trials"),
     ("ix genres", "the genres installed, and any genre file ix refused"),
     ("ix kinds", "the kinds installed, and which of them this ix can run"),
 )
@@ -901,11 +901,17 @@ def _running() -> str:
 `ix register <path>` writes `<file-stem>.registration.json` beside the experiment. It holds
 the design as resolved (what the file chose and what the genre supplied: comparison, margin,
 threshold, guardrails, control, repeats, seed, order, calibration, estimators, the analysis
-and its parameters, the sensors), and the digests of the probe set, the experiment and the
-plan.
+and its parameters, the sensors), the digests of the probe set, the experiment and the
+plan, and the digest of each file and folder the subjects and sensors name: `skills`,
+`plugins` (each folder a `*` matches), `fixtures`, `definition`, `graders`, `rubric_file`,
+and any option a kind declares a `path` or `paths`.
 
 Digests are over meaning: a comment, key order or a default written out is not a change. A
-reworded `question` or `rationale` changes the experiment's digest and not the plan's.
+reworded `question` or `rationale` changes the experiment's digest and not the plan's. A
+file's digest is its bytes; a folder's is its files' relative paths and their bytes, never
+their times. A skill, plugin, fixture or definition edited after registration is a
+deviation named by what changed (`skill review changed after registration`): the verdict is
+about what those files hold.
 
 `ix deviations <path>` lists what differs from the registration and exits
 {EXIT_CODES["deviations"]} when anything does. `ix register` on a changed experiment is refused
@@ -944,6 +950,13 @@ then the report (`ix.v1.report`) on stdout.
   settings): one JSONL file per table
   (`ix.v1.trial`, `ix.v1.interaction`, `ix.v1.reading`, ...), written as the run goes. A
   trial is on disk when it finishes, so a run that is killed keeps what it had.
+- **What a verdict is about** is in the manifest (`ix.v1.run`) and the report: the digest
+  of each file the subjects and sensors name (`contents`: paths and digests, never what
+  the files hold), the git commit and whether a tracked file differed from it
+  (`provenance.commit`, `provenance.dirty`; `not a repository` outside one), the versions
+  of ix, matrix and hardline, and each runtime installed with the distribution that
+  registered it. `ix report` prints them under `Contents`, `Ran from` and `Versions`; `ix
+  runs` gives each run's commit.
 - **Stopping.** Ctrl-C stops the trial in flight, stops everything the run started and
   exits {EXIT_CODES["run_interrupted"]} with the partial report. `ix report <run directory>`
   reads any run again, finished or not; a run that did not finish gives no verdict, and one

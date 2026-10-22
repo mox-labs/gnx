@@ -60,7 +60,8 @@ inconclusive.
 
 The other commands: `ix deviations <path>` (what changed since registration; exit 14 when
 anything did), `ix runs <path>` (each run kept beside the experiment: when it started,
-whether it was gated, exploratory or a dry run, its verdict or indication, its trials),
+whether it was gated, exploratory or a dry run, the commit it ran from, its verdict or
+indication, its trials),
 `ix genres` and
 `ix kinds` (what is installed), and `ix --skill` (the skill an agent reads; `-r NAME` prints
 one of its references). A path is the experiment file, a directory holding
@@ -342,7 +343,16 @@ was refused and why.
 design as resolved, what the file sets and what the genre supplies (comparison, margin,
 threshold, guardrails, control, repeats, seed, order, calibration, estimators, the analysis
 and its parameters, the sensors), with the digests of the probe set, the experiment and the
-plan.
+plan, and the digest of each file and folder the subjects and sensors name: the skills,
+plugins (each folder a `*` matches), fixtures and agent `definition`, a sensor's `graders`
+or `rubric_file`, and any option a kind declares a `path` or `paths`.
+
+- What a skill, plugin or definition holds is what the verdict is about. An edit to one
+  after registration is a deviation named by what changed (`skill review changed after
+  registration`), and a run of it gives no gate result, as an edited probe file does. A
+  file's digest is the sha256 of its bytes; a folder's is over its files' relative paths and
+  their digests, so a modification time, a permission or an empty folder is not a change,
+  and neither is anything under `.git` or `__pycache__`, or a `.DS_Store`.
 
 - `ix deviations <path>` lists each frozen value that changed, with what was registered and
   what it is now, and exits 14 when it finds any. A genre that changes after registration
@@ -354,7 +364,9 @@ plan.
 - `ix register <path> --amend --reason "<why>"` replaces the record on purpose. The
   superseded record, the reason and the deviations it accepted stay inside the new one.
 - A registration written by a newer ix still loads: fields this ix does not know are
-  ignored, and a value an older record never stored is not compared.
+  ignored, and a value an older record never stored is not compared. A registration that
+  holds no digests of the subject's files is not compared on them; delete it and register
+  again to freeze them.
 
 ## Running
 
@@ -424,7 +436,8 @@ A run is one matrix run, and matrix's record is the only store:
 ```
 <experiment directory>/.ix/runs/<experiment>-<UTC time>-<4 hex>/
   run.json                  status, times, how each component ended
-  ix.v1.run.jsonl           the manifest: experiment, design, registration, deviations
+  ix.v1.run.jsonl           the manifest: experiment, design, registration, deviations,
+                            the subject's digests, the commit, the versions
   ix.v1.trial.jsonl         the schedule: one row per planned trial
   ix.v1.bindings.jsonl      what the environment provided
   ix.v1.interaction.jsonl   what happened in each trial, with any failure and its owner
@@ -433,6 +446,14 @@ A run is one matrix run, and matrix's record is the only store:
   events.jsonl              the run's events
   writer.lock               locked by the process writing the run while it lives
 ```
+
+The manifest records what the verdict is about and where the run ran from: the digest of
+each file and folder the subjects and sensors name (`contents`, paths and digests, never what
+the files hold); the git commit the experiment sits at and whether a tracked file differed
+from it (`dirty`), or `not a repository`; the installed versions of ix, matrix and hardline;
+and every agent and model runtime installed, by type URL, with the distribution that
+registered it and its version. `ix report` prints the digests (`Contents`), the commit
+(`Ran from`) and the versions, `ix runs` the commit, and `--json` carries all of it.
 
 An agent trial's interaction keeps the prompt, the reply, every tool call, each round's
 transcript, the files collected, how the session stopped, and its turns, tokens, cost and
