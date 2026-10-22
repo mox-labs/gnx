@@ -942,7 +942,8 @@ def runs(path: str | None, as_json: bool) -> None:
     """List the runs kept beside an experiment, oldest first.
 
     PATH is the experiment file or its directory; without it, every experiment's runs under
-    the current directory (each .ix/runs below it), or under the settings' runs. Each line
+    the current directory (each .ix/runs of an experiment at most 6 directories below it),
+    or under the settings' runs. Each line
     is a run: its id, when it started, whether it was held to a registration (gated),
     exploratory or a dry run, how it ended, its verdict (or the indication of a run that
     gives none), its trials and the commit it ran from. Each run is a directory: pass it to

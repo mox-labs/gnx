@@ -325,6 +325,21 @@ class TestListingRuns:
         assert sorted(r.run for r in listed.runs) == sorted(ran)
         assert listed.location == str(one.parents[1].resolve())
 
+    def test_with_no_path_the_walk_goes_six_directories_deep_and_no_further(
+        self, write_experiment: Write, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Regression: the walk had no bound, so `ix runs` in a home directory read every
+        folder in it. An experiment up to six directories below is listed; one deeper is
+        not, and is listed by its path."""
+        root = Root(registry=fake_registry())
+        near = write_experiment(experiment(), "a/b/c/d/e/f")
+        far = write_experiment(experiment(name="far"), "a/b/c/d/e/f/g")
+        ran = root.run(near, exploratory=True).run
+        root.run(far, exploratory=True)
+        monkeypatch.chdir(tmp_path)
+        assert [r.run for r in root.runs().runs] == [ran]
+        assert len(root.runs(far).runs) == 1
+
 
 class TestWhereEachSettingCameFrom:
     def test_the_run_records_the_tier_that_set_each_setting_it_read(

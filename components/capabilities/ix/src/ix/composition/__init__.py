@@ -915,7 +915,8 @@ class Root:
     def runs(self, target: PathLike | None = None) -> Runs:
         """The runs kept beside an experiment, oldest first. ``target`` is the experiment
         (its file or directory); with none, every experiment's runs under the current
-        directory (each ``.ix/runs`` below it), or under the settings' ``runs``."""
+        directory (each ``.ix/runs`` of an experiment at most :data:`RUNS_DEPTH`
+        directories below it), or under the settings' ``runs``."""
         if target is not None:
             records, _, experiment = self._locate(target)
             return Runs(location=records.root, runs=tuple(self._listed(records, experiment)))
@@ -962,19 +963,27 @@ def _with_otel(observers: Sequence[Any]) -> tuple[Any, ...]:
     return tuple(observers) if otel in named else (*observers, "otel")
 
 
+#: How many directories below the current one ``ix runs`` looks for an experiment's runs.
+RUNS_DEPTH = 6
+
+
 def _runs_under(directory: str) -> list[str]:
-    """Every ``.ix/runs`` directory at or below ``directory``, in path order. A hidden
-    directory other than ``.ix``, and ``node_modules``, are not entered."""
+    """Every ``.ix/runs`` directory of an experiment directory at or below ``directory``, at
+    most :data:`RUNS_DEPTH` directories down, in path order. A hidden directory other than
+    ``.ix``, and ``node_modules``, are not entered."""
     found: list[str] = []
+    top = Path(directory)
     for at, folders, _ in os.walk(directory):
         if os.path.basename(at) == ".ix":
             if "runs" in folders:
                 found.append(os.path.join(at, "runs"))
             folders[:] = []
             continue
+        deepest = len(Path(at).relative_to(top).parts) >= RUNS_DEPTH
         folders[:] = sorted(
             name for name in folders
-            if name == ".ix" or not (name.startswith(".") or name == "node_modules")
+            if name == ".ix"
+            or not (deepest or name.startswith(".") or name == "node_modules")
         )  # fmt: skip
     return found
 

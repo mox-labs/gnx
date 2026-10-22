@@ -380,8 +380,8 @@ reasons, from §16 on.
   runtime is `runtime`; any other error is the harness's `error`, named by its type.
 - **`ix run`'s progress bar stops however the run ends.**
 - **`ix runs` with no path lists what its help says**: every experiment's runs under the
-  current directory (each `.ix/runs` below it; hidden folders and `node_modules` are not
-  entered), or those under the settings' `runs`.
+  current directory (each `.ix/runs` of an experiment at most 6 directories below it;
+  hidden folders and `node_modules` are not entered), or those under the settings' `runs`.
 - **Each run is read once**, latest first where only the latest is wanted.
 - **The telemetry conventions are named in the tracer only.** The run path says
   `Span.evaluated` and `Span.failed`, and `otel_tracing.py` names the GenAI conventions; the
