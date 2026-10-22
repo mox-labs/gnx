@@ -37,7 +37,8 @@ def backend_problems(backend: object) -> list[str]:
     Required: ``structured_modes``, a frozenset of known modes that includes ``prompt`` (every
     backend serves the schema stated in an instruction; the runtime validates either way), and
     an async ``complete(spec, request, api_key)``. Optional, and checked when present: a
-    callable ``check(spec)``, an async ``aclose()``, and ``default_base_url``, an http(s) URL.
+    callable ``check(spec)``, an async ``aclose()``, ``default_base_url``, an http(s) URL, and
+    ``supports_tools``, a bool.
     """
     found: list[str] = []
     modes = getattr(backend, "structured_modes", None)
@@ -61,6 +62,9 @@ def backend_problems(backend: object) -> list[str]:
     aclose = getattr(backend, "aclose", None)
     if aclose is not None and not inspect.iscoroutinefunction(aclose):
         found.append("aclose: present but not an async method")
+    tools = getattr(backend, "supports_tools", None)
+    if tools is not None and not isinstance(tools, bool):
+        found.append("supports_tools: present but not a bool")
     url = getattr(backend, "default_base_url", None)
     if url is not None and not (isinstance(url, str) and url.startswith(("http://", "https://"))):
         found.append(f"default_base_url: {url!r} is not an http:// or https:// URL")

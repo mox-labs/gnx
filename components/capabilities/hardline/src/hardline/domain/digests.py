@@ -22,5 +22,21 @@ def digest(value: Any) -> str:
 
 
 def turns_digest(turns: Sequence[Message]) -> str:
-    """The digest of ``[[role, content], ...]``, in the order the turns were sent."""
-    return digest([[turn.role, turn.content] for turn in turns])
+    """The digest of ``[[role, content], ...]``, in the order the turns were sent.
+
+    A turn with tool parts has a third element, an object holding those it has:
+    ``tool_calls`` as ``[[id, name, arguments], ...]``, ``tool_call_id``, ``is_error``. A turn
+    without them is ``[role, content]`` as before, so their digests are unchanged.
+    """
+    return digest([_turn(turn) for turn in turns])
+
+
+def _turn(turn: Message) -> list[Any]:
+    tools: dict[str, Any] = {}
+    if turn.tool_calls:
+        tools["tool_calls"] = [[call.id, call.name, call.arguments] for call in turn.tool_calls]
+    if turn.tool_call_id is not None:
+        tools["tool_call_id"] = turn.tool_call_id
+    if turn.is_error:
+        tools["is_error"] = True
+    return [turn.role, turn.content, tools] if tools else [turn.role, turn.content]

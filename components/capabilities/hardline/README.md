@@ -14,7 +14,8 @@ protocols over HTTP itself.
 
 A **model runtime**: stateless calls to a model, with a registry that makes a model a row of
 configuration rather than a class. It is **not** an agent runtime — no tool loop, no
-permissions, no trajectory. Agents live one layer up, in matrix, and reach models through
+permissions, no trajectory. A call may offer the model tools and return the calls it asks for,
+but hardline runs none of them. Agents live one layer up, in matrix, and reach models through
 this port.
 
 ## Configure
@@ -129,14 +130,16 @@ if not c.answered:  # the model ended its turn, did not refuse, and said somethi
     said = c.refusal  # what the model said when it refused
 ```
 
-`finish_reason` is one vocabulary across providers; `native_finish_reason` keeps the provider's
-own value. Beside the text, every `Completion` carries the record of the call, which only
+A reply that asks for tools is a whole answer when the call offered them, and only then (see
+[Tools](#tools)). `finish_reason` is one vocabulary across providers; `native_finish_reason`
+keeps the provider's own value. Beside the text, every `Completion` carries the record of the call, which only
 hardline knows:
 
 | field | what it holds |
 |---|---|
 | `name`, `family`, `model`, `backend`, `local` | the row that **answered**; `fallback_from` names the one asked for, when a fallback answered |
-| `params` | what that row was sent: `max_tokens`, `temperature`, the structured mode (`None` for `complete`) |
+| `params` | what that row was sent: `max_tokens`, `temperature`, the structured mode (`None` for `complete`), the names of the `tools` offered |
+| `tool_calls` | the calls the model asked for, in order: each `id`, `name` and `arguments` (the JSON text the model wrote). Empty when it asked for none |
 | `attempt_log` | every backend call, in order: the row asked, why it failed (`None` for the answer), the usage it reported, its latency |
 | `usage` | the sum of the usage in `attempt_log`; a failed call reports none, so it adds nothing. `input_tokens` is every input token, the cache's included, on every backend; `cache_read_tokens` and `cache_write_tokens` say how many of them the provider's cache served or took |
 | `turns_digest` | the digest of the turns the answering call was sent, `extract`'s schema instruction and repair turns included |
@@ -144,7 +147,9 @@ hardline knows:
 | `request_id`, `latency_ms`, `attempts`, `retries` | the provider's id for the answer; wall time; schema attempts; transient retries |
 
 A digest is `sha256:` and the hex SHA-256 of canonical JSON (UTF-8, no whitespace, keys
-sorted): of `[[role, content], ...]` for the turns, of the row's `ModelSpec` for the row. A
+sorted): of `[[role, content], ...]` for the turns, of the row's `ModelSpec` for the row. A turn
+with tool parts has a third element, an object with those it has: `tool_calls` as
+`[[id, name, arguments], ...]`, `tool_call_id`, `is_error`. A
 reader can recompute either without hardline. A `BackendError` or `SchemaError` raised by the
 runtime carries `attempt_log` and `usage` too: what the failed call cost.
 
@@ -165,6 +170,42 @@ asyncio.run(main())  # the same runtime: new connections in the new loop
 A runtime called from a new loop never reuses a connection from another loop. If that other
 loop ended without `aclose()`, its connections can no longer be closed. They stay open until
 garbage collection, and hardline logs a warning that names the fix.
+
+### Tools
+
+A call may offer the model tools. hardline sends their definitions and returns the calls the
+model asked for; the caller runs them, and sends each result back as a `tool` turn:
+
+```python
+from hardline import Message, ToolSpec
+
+lookup = ToolSpec(
+    name="lookup",
+    description="Find a word in the dictionary.",
+    parameters={"type": "object", "properties": {"word": {"type": "string"}}},
+)
+c = await rt.complete("haiku", "What does ossify mean?", tools=[lookup])
+if c.tool_calls:  # finish_reason "tool_call": a whole answer, since tools were offered
+    call = c.tool_calls[0]  # call.id, call.name, call.arguments (JSON text)
+    turns = [
+        Message(role="user", content="What does ossify mean?"),
+        Message(role="assistant", content=c.text, tool_calls=c.tool_calls),
+        Message(role="tool", tool_call_id=call.id, content="to turn into bone"),
+    ]
+    c = await rt.complete("haiku", turns, tools=[lookup])
+```
+
+`arguments` is the JSON text the model wrote: it may not parse, or not fit the schema, and the
+caller validates it. A `tool` turn with `is_error=True` tells the model the tool failed or its
+arguments were refused. Both protocols carry tools: OpenAI's `tools` and `tool_calls` with the
+`tool` role, and the Messages API's `tools`, `tool_use` and `tool_result` blocks, every result
+answering one assistant turn sent as one user turn.
+
+A plain `complete` keeps its promise: a reply that ended on a tool call is not `answered` when
+the call offered no tools. Every row a call with tools may reach, the fallbacks included, must
+be served by a backend that can call tools, or the call is a `ConfigError` before anything is
+sent; `runtime.check_tools(name)` asks the same question ahead of a call. The built-in backends
+all can. The CLI offers no tools.
 
 ### Observing a call
 
@@ -234,7 +275,7 @@ know, so it upgrades hardline before the program that writes the JSON does.
 |---|---|
 | `models --json` | `{"default": str\|null, "models": [ModelSpec without api_key, options]}`, each row's `base_url` filled |
 | `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null}], "warnings": [problem]}` |
-| `complete --json` | the `Completion` without `raw`: `type_url, name, text, family, model, backend, local, usage, request_id, latency_ms, attempts, retries, fallback_from, finish_reason, native_finish_reason, refusal, params, attempt_log, turns_digest, row` |
+| `complete --json` | the `Completion` without `raw`: `type_url, name, text, family, model, backend, local, usage, request_id, latency_ms, attempts, retries, fallback_from, finish_reason, native_finish_reason, refusal, tool_calls, params, attempt_log, turns_digest, row` |
 
 A `problem` is the record the capability CLIs share: `{"path", "kind", "message", "fix",
 "allowed", "got", "source"}`. `check` warns of a fallback that sends where its primary does
@@ -292,6 +333,10 @@ optional:
 - `aclose()`: closes the connections opened in the running loop. A runtime's `aclose()` calls it.
 - `default_base_url`: where a row that names none sends. The composition root writes it into the
   row.
+- `supports_tools = True`: the backend sends a request's `tools` and its turns' tool parts on its
+  wire, and returns the calls asked for as `RawCompletion.tool_calls`. Without it, a call that
+  offers tools or sends tool turns to its rows is refused before anything is sent, so a backend
+  written before tool calling never drops them silently.
 
 `RawCompletion`'s `finish_reason`, `native_finish_reason` and `refusal` default to `None`, so a
 backend that does not set them still satisfies the port's types; its replies are then never
@@ -317,7 +362,7 @@ async def test_answers() -> None:
 
 `backend_problems` reads the members: `structured_modes` a frozenset of known modes with
 `prompt`, `complete` async, and `check`, `aclose` and `default_base_url` well formed when
-present. `answer_problems` makes one call for a row the backend can serve, and requires its
+present (`supports_tools` a bool). `answer_problems` makes one call for a row the backend can serve, and requires its
 `check` to accept the row and `complete` to return a `RawCompletion` with a `finish_reason`.
 Each returns what is wrong, empty when nothing is.
 
