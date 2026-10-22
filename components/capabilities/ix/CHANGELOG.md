@@ -239,9 +239,10 @@ reasons, from §16 on.
   file is checked, `unbound_placeholder` unless a factor, a binding, an option every subject
   sets, or a facet every subject's kind offers binds it; a kind option declares the
   placeholders its adapter fills itself (`binds`: a loop's `{prompt}` and `{response}`); a
-  loop's `rounds` may be 1. `{{name}}`, where `name` is a placeholder's name, is the text
+  loop's `rounds` may be 1. `{{name}}`, where `name` is filled in that option (a factor, a
+  binding, an option every subject sets, a facet, or a name the adapter binds), is the text
   `{name}`; every other brace is sent as written, so a prompt holding JSON or a template
-  reaches the agent unchanged.
+  (`{{ user.name }}`, or `{{user}}` where nothing fills `user`) reaches the agent unchanged.
 - **The run store is the composition root's choice**, built at matrix's `store` point
   (`Root(run_store=...)`, `jsonl` by default, whose config takes the `root` directory) and
   handed in, for running, reporting and listing alike.
@@ -261,9 +262,10 @@ reasons, from §16 on.
   never seen to be. The probe is on httpx2, the workspace's one HTTP stack, with `trust_env`
   off; ix depends on `httpx2` in place of `httpx`.
 - **A prompt reaches the agent as it was written.** Every `{{` and `}}` in a subject's or a
-  probe's options was un-doubled, so nested JSON and templates were sent altered, while the
-  registration digested the text as written. A loop's prompt, filled twice, now un-doubles
-  its escapes once.
+  probe's options was un-doubled, so nested JSON and Handlebars or Mustache templates
+  (`{{user}}`) were sent altered, while the registration digested the text as written. Only
+  `{{name}}` where `name` would be filled there is an escape now. A loop's prompt, filled
+  twice, un-doubles each escape once, by the filling that knows its name.
 - **A literal brace leaves the preflight on**, and a subject with a mapping option
   (`runtime_options`, a `loop`) is preflighted. The plan treated `{{json}}` in an option, and
   before that any `{`, as a placeholder a trial fills, and checked nothing: it said runnable

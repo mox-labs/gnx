@@ -550,8 +550,7 @@ def _unbound(path: str, value: Any, bound: Sequence[str], fix: str) -> list[Prob
             path,
             kind="unbound_placeholder",
             message=f"{{{name}}} is bound to nothing",
-            fix=fix.format(name=name)
-            + f", or write the value out; {{{{{name}}}}} is the text {{{name}}}",
+            fix=fix.format(name=name) + ", or write the value out",
             allowed=tuple(bound),
             got=name,
         )

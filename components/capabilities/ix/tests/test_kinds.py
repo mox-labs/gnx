@@ -286,12 +286,42 @@ class TestOptions:
         assert fill("{unknown}", bound) == "{unknown}"
 
     def test_a_doubled_placeholder_is_the_text_of_the_placeholder(self) -> None:
-        """``{{name}}``, where ``name`` is a placeholder's name, is the text ``{name}``: no
+        """``{{name}}``, where ``name`` is filled there, is the text ``{name}``: no
         placeholder, and filled to that text whatever ``name`` is bound to."""
         assert placeholders("{{x}} and {y} and {{ z }}") == ["y"]
         assert fill("{{y}}", {"y": 1}) == "{y}"
         assert fill("{{y}} is {y}", {"y": 1}) == "{y} is 1"
-        assert fill(["{{db.url}}", {"k": "{{y}}"}], {"y": 1}) == ["{db.url}", {"k": "{y}"}]
+        assert fill(["{{db.url}}", {"k": "{{y}}"}], {"y": 1, "db.url": "u"}) == [
+            "{db.url}",
+            {"k": "{y}"},
+        ]
+
+    def test_a_doubled_name_nothing_fills_there_is_left_as_written(self) -> None:
+        """Regression: ``{{user}}`` became ``{user}`` whatever ``user`` was, so a Mustache or
+        Handlebars line was altered. A name that is not filled in that place is not an
+        escape."""
+        assert fill("Hello {{user}}, {{y}}", {"y": 1}) == "Hello {{user}}, {y}"
+        assert fill(["{{db.url}}", {"k": "{{user}}"}], {"y": 1}) == [
+            "{{db.url}}",
+            {"k": "{{user}}"},
+        ]
+
+    def test_a_round_un_doubles_what_the_loop_option_binds(self, builtin_kinds: Kinds) -> None:
+        """The session's loop un-doubles the names the kind says it fills: were they to
+        differ, an escape would be kept doubled by the run and never un-doubled."""
+        from ix.adapters._out.matrix_agents import ROUND
+
+        session = builtin_kinds.get("subject", "agent-session")
+        assert session is not None
+        assert set(ROUND) == set(session.options["loop"].binds)
+
+    def test_a_name_filled_later_stays_doubled_for_that_filling(self) -> None:
+        """An option its adapter fills again (a loop's ``{response}``) keeps ``{{response}}``
+        doubled, so the adapter's filling is the one that makes it text; a name filled now
+        is text now."""
+        written = "{{response}} at {{y}} for {{user}}"
+        assert fill(written, {"y": 1}, later=("response",)) == "{{response}} at {y} for {{user}}"
+        assert fill(written, {"y": 1}, escaped=True) == written
 
     @pytest.mark.parametrize(
         "written",

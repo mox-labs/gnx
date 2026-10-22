@@ -607,7 +607,7 @@ class TestPlaceholders:
     ) -> None:
         """Changed requirement (Q11): a probe file's options were not scanned, so ``{x}`` in
         one ran as the text ``{x}`` whatever was meant. It is a placeholder like an inline
-        probe's; ``{{x}}`` is the text ``{x}``."""
+        probe's; ``{{x}}``, which nothing fills, is no placeholder and is sent as written."""
         file = write_experiment({k: v for k, v in evaluate_data.items() if k != "probes"})
         (file.parent / "probes").mkdir()
         probe = file.parent / "probes" / "a.md"

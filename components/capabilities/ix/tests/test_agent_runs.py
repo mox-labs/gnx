@@ -1377,13 +1377,37 @@ class TestAPromptReachesTheAgentAsWritten:
             )
         }
 
+    def test_a_doubled_name_nothing_fills_is_sent_as_written(self, tmp_path: Path) -> None:
+        """Regression: ``{{name}}`` became ``{name}`` for any name that could be a
+        placeholder, so a Handlebars or Mustache line in a prompt (``{{user}}``) reached the
+        agent altered. Only a name that would be filled there is an escape: ``{{size}}``,
+        where ``size`` is a factor, is the text ``{size}``; ``{{user}}`` is sent as written."""
+        lab = _routing(
+            tmp_path,
+            factors={"size": ["small"]},
+            subjects={
+                "catalog": {"kind": "agent-session", "runtime": SCRIPTED,
+                            "system_prompt": "Hello {{user}}; {{size}} is {size}."},
+            },
+        )  # fmt: skip
+        (lab / "probes" / "review.md").write_text(
+            "---\nexpectation: must_trigger\nexpected_skill: review\n---\n"
+            "Review {{user}}'s diff; {{size}} is {size}.\n"
+        )
+        heard: list[tuple[str | None, str]] = []
+        Root(registry=_listening(heard), settings=_settings()).run(lab, exploratory=True)
+        assert {system for system, _ in heard} == {"Hello {{user}}; {size} is small."}
+        assert "Review {{user}}'s diff; {size} is small.\n" in {task for _, task in heard}
+
     def test_a_loops_doubled_placeholder_is_its_text_in_the_next_round(
         self, tmp_path: Path
     ) -> None:
         """A loop's prompt is filled twice, with the cell's levels and then by the session
-        with the round's ``{response}``: ``{{response}}`` is un-doubled once, by the last."""
+        with the round's ``{response}``: ``{{response}}`` is un-doubled once, by the last,
+        ``{{size}}`` by the first, and ``{{user}}``, which neither fills, not at all."""
         lab = _routing(
             tmp_path,
+            factors={"size": ["small"]},
             subjects={
                 "catalog": {
                     "kind": "agent-session",
@@ -1391,7 +1415,8 @@ class TestAPromptReachesTheAgentAsWritten:
                     "loop": {
                         "strategy": "self-review",
                         "rounds": 2,
-                        "prompt": 'You said {response}; quote {{response}} as {"k": {"v": 1}}.',
+                        "prompt": "You said {response}; quote {{response}} as "
+                        '{"k": {"v": 1}} for {{user}} at {{size}}.',
                     },
                 }
             },
@@ -1399,9 +1424,10 @@ class TestAPromptReachesTheAgentAsWritten:
         heard: list[tuple[str | None, str]] = []
         Root(registry=_listening(heard), settings=_settings()).run(lab, exploratory=True)
         assert {task for _, task in heard[1::2]} == {
-            'You said ok; quote {response} as {"k": {"v": 1}}.'
+            'You said ok; quote {response} as {"k": {"v": 1}} for {{user}} at {size}.'
         }
-        assert Loop(strategy="self-review", until="{{done}} {}").until == "{done} {}"
+        until = "{{response}} {{done}} {}"
+        assert Loop(strategy="self-review", until=until).until == "{response} {{done}} {}"
 
 
 class TestTheLiveGuardIsOnIxsPath:
