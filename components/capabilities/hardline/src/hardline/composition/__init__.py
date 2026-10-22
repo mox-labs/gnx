@@ -4,28 +4,29 @@ Two ways in, one result:
 
 * ``build_runtime()`` discovers config tiers the way every capability in this workspace
   does (user ``~/.hardline/config.yaml`` < project ``./hardline.yaml`` < ``$HARDLINE_CONFIG``)
-  and the backends installed in the environment.
+  and the backends installed in the environment. Each tier is named with how it was found
+  (``user``, ``cwd``, ``$HARDLINE_CONFIG``), since the working directory and the environment
+  decide which files are read.
 * ``build_runtime(config={...})`` takes a mapping directly. This is how another
   composition root — ix's, matrix's — wires hardline from a section of its own config
   without hardline knowing that config exists.
 
-Backends are discovered, not hardcoded: the three built-ins are registered first, then
-every ``hardline.backends`` entry point. A third-party backend is a package that declares
-one entry point; hardline is not edited.
+Backends are discovered, not hardcoded: every backend, hardline's own three included, is a
+``hardline.backends`` entry point. A third-party backend is a package that declares one entry
+point; hardline is not edited. Each entry point is loaded on its own, so a broken one fails
+only the rows that name it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hardline.adapters._out.anthropic_native import AnthropicBackend
-from hardline.adapters._out.mock import MockBackend
-from hardline.adapters._out.openai_compat import OpenAICompatBackend
 from hardline.adapters._out.secrets import EnvFileSecretResolver
 from hardline.adapters._out.yaml_source import MappingConfigSource, YamlConfigSource
 from hardline.domain.errors import ConfigError
@@ -35,59 +36,106 @@ from hardline.domain.runtime import ModelRuntime
 
 if TYPE_CHECKING:
     import random
+    from importlib.metadata import EntryPoint
 
     from hardline.domain.ports._out.config_source import ConfigSource
     from hardline.domain.ports._out.secrets import SecretResolver
+    from hardline.domain.types import ModelSpec, RawCompletion, Request
 
 TOOL = "hardline"
 BACKEND_GROUP = "hardline.backends"
 CONFIG_ENV = "HARDLINE_CONFIG"
 
-_BUILTINS: dict[str, Callable[[], ModelBackend]] = {
-    "openai-compat": OpenAICompatBackend,
-    "anthropic": AnthropicBackend,
-    "mock": MockBackend,
-}
+logger = logging.getLogger("hardline")
 
 
-def discover_backends(*, include_entry_points: bool = True) -> dict[str, ModelBackend]:
-    """Built-in backends plus every installed ``hardline.backends`` entry point.
+class _Unusable:
+    """Stands in for a backend entry point that cannot be used, and says why.
 
-    An entry point may not shadow a built-in or another entry point: a name collision is a
-    ConfigError naming both, never a silent override.
+    A row that names it fails composition with that reason (``check``); a row that does not is
+    never affected. It claims every structured mode so that the reason is the only problem a
+    row reports.
     """
-    backends: dict[str, ModelBackend] = {name: make() for name, make in _BUILTINS.items()}
-    if not include_entry_points:
-        return backends
+
+    structured_modes = frozenset({"prompt", "json_object", "json_schema"})
+
+    def __init__(self, problem: str) -> None:
+        self._problem = problem
+
+    def check(self, spec: ModelSpec) -> list[str]:
+        return [f"backend: {self._problem}"]
+
+    async def complete(
+        self, spec: ModelSpec, request: Request, api_key: str | None
+    ) -> RawCompletion:
+        raise ConfigError(f"models.{spec.name}.backend: {self._problem}")
+
+
+def discover_backends() -> dict[str, ModelBackend]:
+    """Every installed ``hardline.backends`` entry point, hardline's own included.
+
+    Each is loaded on its own. One that cannot be loaded, does not produce a ModelBackend, or
+    shares its name with another entry point is kept as a stand-in that names the fault: a row
+    naming it fails composition with that fault, and a warning is logged. No entry point may
+    shadow another; a collision is never resolved silently.
+    """
+    found: dict[str, list[EntryPoint]] = {}
     for ep in entry_points(group=BACKEND_GROUP):
-        if ep.name in backends:
-            raise ConfigError(
-                f"backend entry point {ep.name!r} ({ep.value}) collides with an "
-                "already-registered backend of the same name"
+        same_name = found.setdefault(ep.name, [])
+        if all(other.value != ep.value for other in same_name):
+            same_name.append(ep)
+    backends: dict[str, ModelBackend] = {}
+    for name, eps in sorted(found.items()):
+        if len(eps) > 1:
+            values = ", ".join(ep.value for ep in eps)
+            backends[name] = _unusable(
+                f"backend {name!r} is registered by more than one entry point ({values}); "
+                "uninstall all but one"
             )
-        factory = ep.load()
-        backend = factory()
-        if not isinstance(backend, ModelBackend):
-            raise ConfigError(
-                f"backend entry point {ep.name!r} ({ep.value}) did not produce a ModelBackend "
-                "(needs a `structured_modes` frozenset and an async `complete`)"
-            )
-        backends[ep.name] = backend
+        else:
+            backends[name] = _load(eps[0])
     return backends
 
 
+def _load(ep: EntryPoint) -> ModelBackend:
+    try:
+        backend = ep.load()()
+    except Exception as e:  # a plugin's import or factory may raise anything
+        return _unusable(
+            f"backend entry point {ep.name!r} ({ep.value}) could not be loaded: "
+            f"{type(e).__name__}: {e}"
+        )
+    if not isinstance(backend, ModelBackend):
+        return _unusable(
+            f"backend entry point {ep.name!r} ({ep.value}) did not produce a ModelBackend "
+            "(needs a `structured_modes` frozenset and an async `complete`)"
+        )
+    return backend
+
+
+def _unusable(problem: str) -> _Unusable:
+    logger.warning("%s; rows that name it will fail", problem)
+    return _Unusable(problem)
+
+
 def discover_sources(project_root: Path | None = None) -> list[ConfigSource]:
-    """Config tiers in priority order, lowest first. Missing files read as empty."""
+    """Config tiers in priority order, lowest first, each named with how it was found.
+
+    The user and project files may be absent, and read as empty. A file named by
+    ``$HARDLINE_CONFIG`` must exist and be a file.
+    """
     tiers: list[ConfigSource] = [
-        YamlConfigSource(Path.home() / f".{TOOL}" / "config.yaml"),
-        YamlConfigSource((project_root or Path.cwd()) / f"{TOOL}.yaml"),
+        YamlConfigSource(Path.home() / f".{TOOL}" / "config.yaml", rung="user"),
+        YamlConfigSource((project_root or Path.cwd()) / f"{TOOL}.yaml", rung="cwd"),
     ]
     explicit = os.environ.get(CONFIG_ENV)
     if explicit:
         path = Path(explicit).expanduser()
         if not path.exists():
             raise ConfigError(f"${CONFIG_ENV} points at {path}, which does not exist")
-        tiers.append(YamlConfigSource(path))
+        if not path.is_file():
+            raise ConfigError(f"${CONFIG_ENV} points at {path}, which is not a file")
+        tiers.append(YamlConfigSource(path, rung=f"${CONFIG_ENV}"))
     return tiers
 
 

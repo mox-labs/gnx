@@ -24,10 +24,14 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 [project.scripts]
 hardline = "hardline.adapters._in.cli:main"
 
-# Third-party backends register here and are discovered at composition time — no edit to
-# hardline needed. The entry-point name is the short name a registry row puts in `backend:`.
-# The value is a zero-argument callable returning a ModelBackend.
+# Every backend registers here, hardline's own included, and is discovered at composition
+# time: a third-party backend needs no edit to hardline. The entry-point name is the short name
+# a registry row puts in `backend:`. The value is a zero-argument callable returning a
+# ModelBackend.
 [project.entry-points."hardline.backends"]
+openai-compat = "hardline.adapters._out.openai_compat:OpenAICompatBackend"
+anthropic = "hardline.adapters._out.anthropic_native:AnthropicBackend"
+mock = "hardline.adapters._out.mock:MockBackend"
 
 [build-system]
 requires = ["hatchling"]

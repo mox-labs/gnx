@@ -21,23 +21,36 @@ config's back. Local servers ignore it; a hosted endpoint rejects it loudly.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from hardline.adapters._out._classify import classify
 from hardline.adapters._out._clients import LoopClients
+from hardline.adapters._out._options import option_problems, read_options
 from hardline.adapters._out._scrub import scrub
-from hardline.domain.errors import BackendError, ConfigError
+from hardline.domain.errors import BackendError
 from hardline.domain.types import ModelSpec, RawCompletion, Request, Usage
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
 
 _PLACEHOLDER_KEY = "hardline-no-key"
-_TOKEN_PARAMS = frozenset({"max_tokens", "max_completion_tokens"})
+
+
+class _Options(BaseModel):
+    """The ``options`` this backend reads; any other key is refused."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    token_param: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
 
 
 class OpenAICompatBackend:
     structured_modes = frozenset({"prompt", "json_object", "json_schema"})
+
+    def check(self, spec: ModelSpec) -> list[str]:
+        return option_problems(_Options, spec)
 
     def __init__(self) -> None:
         self._clients: LoopClients[AsyncOpenAI] = LoopClients(lambda client: client.close())
@@ -63,12 +76,7 @@ class OpenAICompatBackend:
     ) -> RawCompletion:
         import openai
 
-        token_param = str(spec.options.get("token_param", "max_tokens"))
-        if token_param not in _TOKEN_PARAMS:
-            raise ConfigError(
-                f"models.{spec.name}.options.token_param: {token_param!r}. "
-                f"Legal: {', '.join(sorted(_TOKEN_PARAMS))}"
-            )
+        token_param = read_options(_Options, spec).token_param
         kwargs: dict[str, Any] = {
             "model": spec.model,
             "messages": [{"role": m.role, "content": m.content} for m in request.messages],

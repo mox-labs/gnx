@@ -36,7 +36,7 @@ from hardline.domain.errors import (
     SchemaError,
     SecretError,
 )
-from hardline.domain.ports._out.backend import ClosableBackend
+from hardline.domain.ports._out.backend import CheckedBackend, ClosableBackend
 from hardline.domain.structured import json_candidates, retry_instruction, schema_instruction
 from hardline.domain.types import (
     Completion,
@@ -141,7 +141,10 @@ class ModelRuntime:
                     f"  models.{spec.name}.backend: {spec.backend!r} is not an installed "
                     f"backend. Installed: {', '.join(sorted(backends)) or '(none)'}"
                 )
-            elif spec.structured not in backend.structured_modes:
+                continue
+            if isinstance(backend, CheckedBackend):
+                problems.extend(f"  models.{spec.name}.{found}" for found in backend.check(spec))
+            if spec.structured not in backend.structured_modes:
                 problems.append(
                     f"  models.{spec.name}.structured: {spec.structured!r} is not supported "
                     f"by backend {spec.backend!r}. Supported: "

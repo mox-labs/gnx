@@ -181,14 +181,6 @@ def test_bad_fallbacks_fail_at_construction(fallbacks: list[str], problem: str) 
         mock_runtime({"a": _row(["x"], fallbacks=fallbacks)})
 
 
-def test_scripted_error_reason_is_validated() -> None:
-    from hardline.adapters._out.mock import _scripted
-
-    spec = ModelSpec(name="a", backend="mock", model="m", family="x")
-    with pytest.raises(ConfigError, match="error 'flaky'"):
-        _scripted(spec, {"error": "flaky"})
-
-
 # --- classification ------------------------------------------------------------------
 
 

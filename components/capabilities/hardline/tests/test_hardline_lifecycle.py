@@ -22,7 +22,8 @@ from hardline_helpers import DictSecrets
 from openai.resources.chat.completions import AsyncCompletions
 
 from hardline import Completion, ModelRuntime, ModelSpec, RawCompletion, Request, build_runtime
-from hardline.composition import discover_backends
+from hardline.adapters._out.anthropic_native import AnthropicBackend
+from hardline.adapters._out.openai_compat import OpenAICompatBackend
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -118,7 +119,7 @@ def _runtime(backend: str, url: str) -> ModelRuntime:
         row |= {"base_url": f"{url}/v1", "local": True}
     return build_runtime(
         {"models": {"q": row}},
-        backends=discover_backends(include_entry_points=False),
+        backends={"openai-compat": OpenAICompatBackend(), "anthropic": AnthropicBackend()},
         secrets=DictSecrets({"env:K": "loopback-key"}),
     )
 
@@ -186,7 +187,7 @@ async def test_aclose_reaches_every_backend_that_holds_connections() -> None:
     pooled = Pooled()
     rt = build_runtime(
         {"models": {"p": {"backend": "pooled", "model": "m", "family": "x"}}},
-        backends={"pooled": pooled, **discover_backends(include_entry_points=False)},
+        backends={"pooled": pooled},
     )
     async with rt:
         pass

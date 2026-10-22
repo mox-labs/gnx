@@ -13,18 +13,38 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict
+
 from hardline.adapters._out._classify import classify
 from hardline.adapters._out._clients import LoopClients
+from hardline.adapters._out._options import option_problems, read_options
 from hardline.adapters._out._scrub import scrub
-from hardline.domain.errors import BackendError
+from hardline.domain.errors import BackendError, ConfigError
 from hardline.domain.types import ModelSpec, RawCompletion, Request, Usage
 
 if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
 
 
+#: Refuse rather than read ANTHROPIC_API_KEY: the registry row is the only place a credential is
+#: allowed to come from.
+_NO_KEY = (
+    "api_key: the anthropic backend needs a key reference. "
+    "Add api_key: env:ANTHROPIC_API_KEY or api_key: file:~/.secrets/claude-api"
+)
+
+
+class _Options(BaseModel):
+    """This backend reads no ``options``; any key is refused."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
 class AnthropicBackend:
     structured_modes = frozenset({"prompt"})
+
+    def check(self, spec: ModelSpec) -> list[str]:
+        return option_problems(_Options, spec) + ([] if spec.api_key else [_NO_KEY])
 
     def __init__(self) -> None:
         self._clients: LoopClients[AsyncAnthropic] = LoopClients(lambda client: client.close())
@@ -33,13 +53,7 @@ class AnthropicBackend:
         from anthropic import AsyncAnthropic
 
         if not api_key:
-            # Refuse rather than let the SDK fall back to ANTHROPIC_API_KEY: the registry
-            # row is the only place a credential is allowed to come from.
-            raise BackendError(
-                f"model {spec.name!r} (anthropic): no api_key reference in its registry row. "
-                "Add api_key: env:ANTHROPIC_API_KEY or api_key: file:~/.secrets/claude-api",
-                reason="auth",
-            )
+            raise ConfigError(f"models.{spec.name}.{_NO_KEY}")
         return self._clients.get(
             (spec.base_url, api_key, spec.timeout_s),
             lambda: AsyncAnthropic(
@@ -55,6 +69,7 @@ class AnthropicBackend:
     ) -> RawCompletion:
         import anthropic
 
+        read_options(_Options, spec)
         system = "\n\n".join(m.content for m in request.messages if m.role == "system")
         turns = [
             {"role": m.role, "content": m.content} for m in request.messages if m.role != "system"

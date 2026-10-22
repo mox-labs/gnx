@@ -193,6 +193,7 @@ async def test_anthropic_lifts_system_and_joins_text_blocks() -> None:
 
 
 async def test_anthropic_refuses_without_a_key_reference(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A missing reference is the row's fault, so a config error, never "the key was rejected".
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ambient")
-    with pytest.raises(BackendError, match="no api_key reference"):
+    with pytest.raises(ConfigError, match=r"models\.q\.api_key"):
         await AnthropicBackend().complete(_spec(backend="anthropic"), _request(), None)
