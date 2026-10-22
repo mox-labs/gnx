@@ -424,6 +424,30 @@ class TestRegister:
         assert record.read() == {"experiment": "before"}
         assert [p.name for p in tmp_path.iterdir()] == ["experiment.registration.json"]
 
+    def test_a_write_takes_a_plain_files_mode_and_leaves_the_umask_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the write read the umask by setting it to 0 and back, which another
+        thread of an embedding program could catch in between, creating its own files
+        world-writable. The file gets a plain write's mode, and the umask is never set."""
+        import os
+        import stat
+
+        from ix.adapters._out.registration_file import RegistrationFile
+
+        current = os.umask(0o027)
+        try:
+            set_to: list[int] = []
+            real = os.umask
+            monkeypatch.setattr(os, "umask", lambda mask: set_to.append(mask) or real(mask))
+            record = RegistrationFile(str(tmp_path / "experiment.registration.json"))
+            record.write({"experiment": "x"})
+            assert set_to == []
+        finally:
+            os.umask(current)
+        mode = stat.S_IMODE((tmp_path / "experiment.registration.json").stat().st_mode)
+        assert mode == 0o640
+
     def test_registering_again_unchanged_keeps_the_record(
         self, compare_data: dict[str, Any], write_experiment: Write
     ) -> None:

@@ -368,7 +368,8 @@ reasons, from §16 on.
 - **A lab's own kinds reach the run.** A kind declared in `<lab>/kinds/` validated against
   its declaration and then ran without it. The run, the preflight and a report now use the
   kinds the experiment was validated against.
-- **A registration is written whole or not at all**: beside the record, then moved over it.
+- **A registration is written whole or not at all**: beside the record, then moved over it,
+  with the mode a plain write gives, and the process's umask is never changed to learn it.
 - **A reworded note leaves the plan alone.** An `x-` note is outside the plan and probe-set
   digests, as the question and descriptions are; it stays in the experiment's own digest.
 - **A margin or threshold removed or added is named** as a deviation of its own, with both

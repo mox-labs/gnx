@@ -42,7 +42,7 @@ observe (a skill that cannot fire because the tool that fires one is not among i
 they go, which tool fires one, and whether it can write files are the runtime's to say, as its
 configured options make it (:class:`matrix.AgentCapabilities`): ix asks, and reads none of its
 options by name and knows no runtime's tool or directory. A runtime that names no place for
-skills is given none, and an `activation` sensor on one that names no skill tool (a stand-in
+skills is given none, and an ``activation`` sensor on one that names no skill tool (a stand-in
 aside) is refused at validate unless the sensor names the tool itself. As a
 :class:`~ix.domain.ports.StandIn` it puts the session on ``mock`` for a dry run, setting the
 runtime's own options aside.
