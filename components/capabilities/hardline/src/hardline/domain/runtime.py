@@ -72,8 +72,17 @@ Messages = str | Sequence[Message]
 
 logger = logging.getLogger("hardline")
 
+# Backoff is full jitter (a wait drawn from [0, min(cap, base * 2**attempt)]), which spreads
+# concurrent callers that failed together instead of sending them back together. The numbers are
+# fixed, where `retries` is per row, because they describe providers, not rows:
+#: A rate limit or an overload commonly clears within a second, so the first wait is short.
 _BACKOFF_BASE_S = 0.5
+#: Doubling stops at 8 s: with `retries` at most 10, one row's waits stay under a minute
+#: (at most 0.5 + 1 + 2 + 4 + 6 x 8 = 55.5 s) before its fallbacks are tried.
 _BACKOFF_CAP_S = 8.0
+#: A provider's Retry-After is honoured up to a minute. One asking for longer is better reported
+#: to the caller as transient, with its hint, than waited out inside a single call; a row's
+#: `limits.seconds` bounds every wait regardless.
 _RETRY_AFTER_CAP_S = 60.0
 
 
