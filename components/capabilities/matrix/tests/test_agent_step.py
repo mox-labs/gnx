@@ -387,3 +387,30 @@ async def test_every_offline_runtime_keeps_the_port_promise() -> None:
 def test_an_unknown_reason_is_a_failure_not_a_crash() -> None:
     error = AgentRuntimeError("quota exhausted", reason="quota")  # type: ignore[arg-type]
     assert (error.kind, error.exit_code, error.retryable) == ("component", 8, False)
+
+
+@pytest.mark.parametrize(
+    ("task", "inputs", "said"),
+    [
+        ("Review:\n{dif}", {"diff": DIFF}, "'dif'"),  # a typo: no input of that name
+        ("Review the change", {"diff": DIFF}, "'diff'"),  # an input the task never uses
+        ("Review:\n{}", {"diff": DIFF}, "positional"),
+        ("Review:\n{diff", {"diff": DIFF}, "invalid"),
+    ],
+)
+def test_a_task_template_is_checked_against_its_inputs_when_the_step_is_built(
+    task: str, inputs: dict[str, str], said: str
+) -> None:
+    """Regression (mx-src F13): a typo composed, wired and planned, and failed only when the
+    run reached the step, after its upstream work."""
+    with pytest.raises(ConfigError, match=said) as e:
+        AgentStep(AgentStepConfig(agent="a", inputs=inputs, task=task), agents={"a": object()})  # type: ignore[dict-item]
+    assert e.value.fix
+
+
+def test_a_template_may_index_an_input_and_escape_braces() -> None:
+    step = AgentStep(
+        AgentStepConfig(agent="a", inputs={"diff": DIFF}, task="{{literal}} {diff[0]}"),
+        agents={"a": object()},  # type: ignore[dict-item]
+    )
+    assert step.render({DIFF: ("xyz",)}) == "{literal} x"

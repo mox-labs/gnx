@@ -18,7 +18,7 @@ Config::
 
     agent: reviewer                       # a composed agent, by name
     inputs: {diff: acme.v1.diff}          # placeholder -> the kind it stands for
-    task: "Review this change:\\n{diff}"   # {placeholder}s; {{ }} for literal braces
+    task: "Review this change:\\n{diff}"   # {placeholder}s, checked against inputs when built
     response: acme.v1.review-reply        # default: matrix.v1.agent-response; one per step
     output: acme.v1.review                # optional: the reply, parsed as one JSON document
 """
@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict
 
 from matrix.domain.errors import ConfigError, ContractError, NotFoundError
 from matrix.domain.ids import check_type_url
+from matrix.domain.template import check_template
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -84,6 +85,10 @@ class AgentStep:
                 "template",
                 fix="give a task template with a {placeholder} for each input",
             )
+        if config.task is not None:
+            check_template(
+                config.task, config.inputs, where=f"agent-step task for {config.agent!r}"
+            )
         agent = agents.get(config.agent)
         if agent is None:
             raise NotFoundError(
@@ -114,10 +119,10 @@ class AgentStep:
             return next(iter(values.values()))
         try:
             return self._config.task.format_map(values)
-        except (KeyError, IndexError, ValueError) as e:
+        except (KeyError, IndexError, AttributeError, ValueError) as e:  # what an index asked
             raise ConfigError(
-                f"agent-step task template for {self._config.agent!r} is invalid: {e}",
-                fix="use {placeholder} for inputs and {{ }} for literal braces",
+                f"agent-step task template for {self._config.agent!r} cannot be filled: {e}",
+                fix="index or take an attribute of an input only where its rows have one",
             ) from e
 
     async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:

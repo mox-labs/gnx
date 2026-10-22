@@ -632,7 +632,7 @@ A registered `component` that runs one composed agent. Constants:
 |-----|------|---------|---------|
 | `agent` | `str` | required | a composed agent's name |
 | `inputs` | `dict[str, str]` | `{"task": "matrix.v1.task"}` | placeholder name to kind; the kinds are the step's `requires` |
-| `task` | `str \| None` | `None` | template with `{placeholder}`s (`{{ }}` for literal braces). `None` is allowed only with exactly one input, whose rows are the task |
+| `task` | `str \| None` | `None` | template with `{placeholder}`s (`{{ }}` for literal braces). Each placeholder names an input and each input has one, checked when the step is built (`ConfigError`). `None` is allowed only with exactly one input, whose rows are the task |
 | `response` | `str` | `matrix.v1.agent-response` | the kind the `AgentResponse` is provided as; one step per kind in a run |
 | `output` | `str \| None` | `None` | a kind; the reply, which must then be one JSON document, is provided as one row of it |
 

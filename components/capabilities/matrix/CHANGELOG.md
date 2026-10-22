@@ -36,6 +36,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **An agent step's task template is checked when the step is built.** A placeholder that
+  names no input, an input the template never uses, a positional `{}` and unbalanced braces
+  are each a `config` problem at `matrix check`, `matrix plan` and composition, with every
+  other problem. Before, a typo composed, wired and planned, and failed only when the run
+  reached the step, after its upstream work.
 - **Reused rows reach downstream components in the type a fresh run gives them.** A row of a
   kind with a registered schema is now recorded as an instance of that schema, whether it was
   handed over as one, as a dict, or read back from a store by `--from`. A consumer written

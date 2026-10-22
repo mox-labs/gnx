@@ -609,6 +609,8 @@ def _reference_agents() -> str:
 
 - It requires the kinds `inputs` names; one row fills a placeholder as itself (text as it
   stands, data as JSON), several as a JSON list. Without `task`, a single input is the task.
+  Each placeholder must name an input and each input must have a placeholder: the step is
+  refused when it is built (`config`), not when a run reaches it.
 - It provides an `AgentResponse` under `response`: `content`, `task` (as sent),
   `tool_calls`, `tokens_input`, `tokens_output`, `cost_usd`, `num_turns`, `model`, `stop`
   (`completed`, `max_turns`, `max_budget_usd`). A kind has one provider: two steps on the
