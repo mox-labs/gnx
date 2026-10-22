@@ -431,7 +431,7 @@ def _committed(lab: Path) -> str:
 
 
 class TestAVerdictIsTiedToWhatItJudged:
-    """Regression (W3.6): the experiment's digest covered its document, which names the
+    """Regression: the experiment's digest covered its document, which names the
     skills, plugins, fixtures and agent definition by path. Nothing hashed what was at
     those paths, so a registered run whose skill had been edited since was still gated, and
     no record said which skill, commit or versions a verdict was about."""
@@ -686,7 +686,7 @@ def _either(
 
 
 class TestThirdPartyRuntimes:
-    """Regression (W2.4, W2.5): ix told an agent runtime from a model runtime by name, so a
+    """Regression: ix told an agent runtime from a model runtime by name, so a
     third party's model runtime escaped the no-tools review, and a third party's agent
     runtime lost the session reviews. Each now gets the review of the port it is
     registered at, whatever it is called."""
@@ -728,7 +728,7 @@ class TestThirdPartyRuntimes:
     def test_each_model_call_ix_makes_is_a_matrix_model_span_as_a_model_steps_is(
         self, tmp_path: Path
     ) -> None:
-        """W7.12: ix made its direct model calls (a ``model-call`` trial, a judge on a model
+        """Regression: ix made its direct model calls (a ``model-call`` trial, a judge on a model
         runtime) beside matrix's event path, so none was a ``matrix.model`` span and a model
         runtime's own spans (hardline's ``chat``) had no call span to nest under. Each now
         goes through matrix's public call path, as a model step's call does."""
@@ -862,7 +862,7 @@ def _pooled(log: list[list[tuple[str, object]]]) -> matrix.Registry:
 
 
 class TestEachRuntimeIsClosedInTheLoopThatUsedIt:
-    """Regression (W6.8, ix's half): a ``model-call`` trial, a model judge's reading and
+    """Regression (ix's half): a ``model-call`` trial, a model judge's reading and
     each agent round build a runtime and never closed it. hardline keeps a client per event
     loop and can close it only in that loop, while it runs, so every one was left open
     until garbage collection, and hardline warned of it when the loop ended."""
@@ -930,7 +930,7 @@ def _sandboxed() -> matrix.Registry:
 
 
 class TestCapabilitiesAreAsked:
-    """W2.9: ix read two of claude-sdk's option names under ``runtime_options``
+    """Regression: ix read two of claude-sdk's option names under ``runtime_options``
     (``setting_sources``, ``permission_mode``) to tell whether a session would load its skills
     or could write files: Claude Code's knowledge inside ix, applied to any runtime given
     those names. ix now asks the runtime, which declares it as data
@@ -1068,7 +1068,7 @@ def _elsewhere() -> matrix.Registry:
 
 
 class TestSkillsGoWhereTheRuntimeSays:
-    """W2.9: ix copied a session's skills into its ``.claude/skills`` and read a skill as
+    """Regression: ix copied a session's skills into its ``.claude/skills`` and read a skill as
     fired when the session called ``Skill``, both Claude Code's answers, for every runtime.
     The runtime now declares both (``skills_dir``, ``skill_tool``), and ix asks it."""
 
@@ -1118,8 +1118,8 @@ PYDANTIC_AI = "matrix.v1.agent-runtime.pydantic-ai"
 
 
 class TestASecondRealAgentRuntime:
-    """matrix's ``pydantic-ai`` runtime is the second agent runtime that runs a model's loop
-    (W11.1), and ix names it in an ``agent-session`` subject as it names ``claude-sdk``: by
+    """matrix's ``pydantic-ai`` runtime is the second agent runtime that runs a model's loop,
+    and ix names it in an ``agent-session`` subject as it names ``claude-sdk``: by
     its registered name, its options declared by its config. Here its model is hardline's
     mock backend, a stand-in row, and its tool a function in this module: no model is
     called, and the session's loop, tool call included, runs for real."""
@@ -1717,7 +1717,7 @@ def _judged_calls(tmp_path: Path) -> ix.Report:
 
 
 class TestAVerdictTracesToTheModelThatAnswered:
-    """Regression (W3.7): ix's own model calls (the model-call subject, the model judge)
+    """Regression: ix's own model calls (the model-call subject, the model judge)
     left no row in the run's session table, and no interaction or reading said which
     sessions were behind it, so a verdict could not be traced to the model that answered."""
 
@@ -1812,9 +1812,9 @@ class TestFactorsDriveAgentSettings:
     def test_a_sweep_over_a_loops_rounds_runs_each_level_as_an_integer(
         self, tmp_path: Path
     ) -> None:
-        """Q11 (the rounds curve): ``characterize`` over the loop's ``rounds`` (1, 2, 3) on a
-        stand-in. Each level reaches the loop and the runtime as the integer it was written
-        as, and each trial takes that many rounds; a loop of one round is the first answer
+        """Owner ruling 2026-10-22 (the rounds curve): ``characterize`` over the loop's ``rounds``
+        (1, 2, 3) on a stand-in. Each level reaches the loop and the runtime as the integer it was
+        written as, and each trial takes that many rounds; a loop of one round is the first answer
         alone."""
         configs: list[Any] = []
         asked: list[str] = []

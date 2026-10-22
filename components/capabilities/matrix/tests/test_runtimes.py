@@ -110,7 +110,7 @@ async def test_a_call_carries_hardline_s_whole_record() -> None:
 
 
 async def test_the_provider_is_the_row_s_or_else_its_backend_s_on_the_call_and_its_row() -> None:
-    """Regression (W7.11): ``provider`` was set for the ``anthropic`` backend alone, so a call
+    """Regression: ``provider`` was set for the ``anthropic`` backend alone, so a call
     served by ollama, or any row of an OpenAI-compatible backend, said nobody served it. It is
     now the registry row's ``provider:``, and the backend's name for a row that names none, as
     hardline's own ``gen_ai.provider.name`` is; the session row a model step records says the
@@ -312,7 +312,7 @@ async def test_on_the_run_path_a_rate_limit_keeps_its_hint_and_anything_else_fai
 
 
 def test_an_agent_runtime_declares_what_its_sessions_do_as_data() -> None:
-    """W2.9: whether a session loads skills from settings or from its working directory,
+    """Whether a session loads skills from settings or from its working directory,
     which tool fires a skill and where in its working directory its skills must be placed,
     whether its tools can write files, and the config that keeps it from reading the machine
     it runs on, are the runtime's to declare (its config's ``capabilities()``, asked through

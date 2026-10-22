@@ -144,8 +144,8 @@ class TestTheSkillIsASkill:
         assert "httpx2" in names and "httpx" not in names
 
     def test_there_are_no_extras_to_name(self) -> None:
-        """Q13: ix and matrix bring every runtime and the OpenTelemetry SDK, so the package
-        declares no extra and the skill names none to install."""
+        """Owner ruling 2026-10-22 (no extras): ix and matrix bring every runtime and the
+        OpenTelemetry SDK, so the package declares no extra and the skill names none to install."""
         from importlib.metadata import metadata
 
         assert not metadata("ix").get_all("Provides-Extra")
@@ -335,7 +335,7 @@ class TestTheReferencesTeachFromTheRecords:
         ):
             assert said in running, said
         # A kind with no adapter says so where it is taught; one with an adapter does not.
-        # Changed requirement (W8.7): compose has an adapter.
+        # Changed requirement: compose has an adapter.
         marked = [line for line in kinds.splitlines() if "*(declared only: no adapter" in line]
         assert {line.split("`")[1] for line in marked} == {"inspect-task"}
 

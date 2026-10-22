@@ -136,8 +136,9 @@ def test_entries_describe_themselves_for_agents() -> None:
 
 
 def test_an_entry_declares_no_effects() -> None:
-    """Changed requirement (Q6): effects were labels nothing checked, and are removed. What
-    an entry is handed is its ``needs``; what it needs of the host its owner checks."""
+    """Changed requirement (owner ruling 2026-10-22): effects were labels nothing checked, and are
+    removed. What an entry is handed is its ``needs``; what it needs of the host its owner
+    checks."""
     entry = Registry().register("component", "acme.v1.x", build).entry("component", "acme.v1.x")
     assert "effects" not in entry.describe()
     with pytest.raises(TypeError):
@@ -354,7 +355,7 @@ class _Silent:
 def test_a_store_or_observer_class_that_breaks_its_port_is_refused_when_registered(
     point: str, cls: type, said: str
 ) -> None:
-    """As runtimes are (W8.1): a store without ``load`` composed and failed at ``--from``; an
+    """As runtimes are: a store without ``load`` composed and failed at ``--from``; an
     observer without ``on_event`` was logged as failing on every event of every run."""
     with pytest.raises(ConfigError, match=said) as e:
         Registry().register(point, f"acme.v1.{point}.x", cls)

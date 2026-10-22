@@ -1,6 +1,6 @@
 """``environment.compose``: a docker compose project brought up for a run and down after it.
 
-The requirements pinned here (W8.7): ``down`` is deferred before ``up``, so the stack comes
+The requirements pinned here: ``down`` is deferred before ``up``, so the stack comes
 down on every way the run can end (up done, up failed, up cancelled); each running service
 is bound with its published port and the image it runs; liveness is ``compose ps``; a
 project a killed run left is swept and a named project already in use is refused; the

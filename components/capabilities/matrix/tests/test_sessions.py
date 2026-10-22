@@ -3,7 +3,7 @@
 ``matrix.v1.session`` is matrix's own table, like the ledger. A reply row keeps the reply and
 points at its session row; the ledger entry of every row a component hands over names the
 sessions it ran since its previous hand-over. A reader without matrix joins the three with
-DuckDB, as ``docs/explanation/data-model.md`` shows (W3.5).
+DuckDB, as ``docs/explanation/data-model.md`` shows.
 """
 
 from __future__ import annotations
@@ -332,7 +332,7 @@ class _Hangs:
 async def test_a_cancelled_agent_session_is_a_session_row_that_says_so() -> None:
     """A session cancelled mid-flight (its component overran its deadline) was asked for and
     may have spent tokens: it is a row, ``cancelled``, with the ids it ran under and a digest
-    of what was sent (W3.9)."""
+    of what was sent."""
     sdk_trace = pytest.importorskip("opentelemetry.sdk.trace")
     from matrix.composition.telemetry import current_trace
 
@@ -366,7 +366,7 @@ async def test_a_cancelled_agent_session_is_a_session_row_that_says_so() -> None
 
 async def test_a_cancelled_model_call_is_a_session_row_that_says_so() -> None:
     """A model step's call cancelled with its run is a row, ``cancelled``, with a digest of
-    what was sent (W3.9)."""
+    what was sent."""
     from matrix import ModelStep, ModelStepConfig, RunCancelled
 
     step = ModelStep(ModelStepConfig(runtime="r"), model_runtimes={"r": _Hangs()})

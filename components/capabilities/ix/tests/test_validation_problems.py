@@ -611,14 +611,15 @@ class TestPlaceholders:
         assert (found.path, found.kind, found.got) == (
             "probes.0.target", "unbound_placeholder", "url",
         )  # fmt: skip
-        # Changed requirement (Q11): a facet every subject's kind offers binds too.
+        # Changed requirement (owner ruling 2026-10-22): a facet every subject's kind offers
+        # binds too.
         assert found.allowed == ("command", "pid")
 
     def test_a_probe_files_placeholder_is_filled_and_an_unbound_one_is_text(
         self, evaluate_data: dict[str, Any], write_experiment: Write
     ) -> None:
-        """Changed requirement (Q11): a probe file's options were not scanned, so ``{x}`` in
-        one ran as the text ``{x}`` whatever was meant. They are filled like an inline
+        """Changed requirement (owner ruling 2026-10-22): a probe file's options were not scanned,
+        so ``{x}`` in one ran as the text ``{x}`` whatever was meant. They are filled like an inline
         probe's. Changed again: a prompt is text, so ``{x}`` that nothing fills is sent as
         written, and validate warns rather than refuses; ``{{x}}`` is sent as written too."""
         file = write_experiment({k: v for k, v in evaluate_data.items() if k != "probes"})

@@ -172,8 +172,8 @@ def test_two_model_steps_each_name_the_kind_of_their_reply() -> None:
 
 
 def test_the_mock_model_runtime_is_a_stand_in_and_hardline_is_not() -> None:
-    """Changed requirement (Q6): effects are removed. A stand-in is declared, never read
-    from a runtime's effects."""
+    """Changed requirement (owner ruling 2026-10-22): effects are removed. A stand-in is declared,
+    never read from a runtime's effects."""
     box = container()
     box.wire(_step({}), inputs=[PROMPT])
     assert box.registry.entry("model-runtime", "matrix.v1.model-runtime.mock").stand_in
@@ -190,7 +190,7 @@ def test_a_model_step_s_fingerprint_follows_its_runtime_s_config() -> None:
 def test_a_model_step_closes_its_runtime_s_connections_in_the_loop_that_made_them(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Regression (W6.8): hardline keeps a model client per event loop and can close it only
+    """Regression: hardline keeps a model client per event loop and can close it only
     in that loop, while it runs. Nothing in matrix called hardline's ``aclose()``, so each
     run left its clients open, and the next loop to use the runtime logged that the last one
     had ended with them open. A model step now closes its runtime's connections when the run
@@ -265,7 +265,7 @@ class _Replies:
 async def test_a_reply_that_is_not_a_whole_answer_fails_the_step_saying_why(
     reply: ModelCall, reason: str, said: str, fix: str
 ) -> None:
-    """W3.3: a reply cut at max_tokens, refused, withheld or empty never stands on the board
+    """A reply cut at max_tokens, refused, withheld or empty never stands on the board
     as an answer, for a consumer to take as one. The step fails with the runtime's
     ``refused`` or ``failed`` reason and says which."""
     step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": _Replies(reply)})
@@ -299,7 +299,7 @@ class _Around(RecordingObserver):
 
 
 async def test_a_call_made_outside_a_step_takes_the_step_s_own_path() -> None:
-    """W7.12: a caller that calls a model runtime itself (ix's ``model-call`` trial, its judge)
+    """A caller that calls a model runtime itself (ix's ``model-call`` trial, its judge)
     could record the call's session row, and nothing else: no ``matrix.model`` events, so no
     span for the runtime's own spans to nest under. ``call_model`` is the model step's path,
     public: the start and end events, each observer's ``around`` entered while the runtime

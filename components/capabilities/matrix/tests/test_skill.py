@@ -156,8 +156,8 @@ def test_the_config_keys_are_the_models_and_unknown_ones_are_refused() -> None:
 
 
 def test_there_are_no_extras_to_name() -> None:
-    """Q13: every runtime and telemetry is a dependency of matrix, so the package declares no
-    extra and the skill names none to install."""
+    """Owner ruling 2026-10-22 (no extras): every runtime and telemetry is a dependency of matrix,
+    so the package declares no extra and the skill names none to install."""
     assert not metadata("matrix").get_all("Provides-Extra")
     assert "matrix[" not in matrix.skill() and "There are no extras." in matrix.skill()
 
@@ -352,7 +352,7 @@ def test_nothing_sends_a_reader_to_the_events_for_a_fact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Events are lossy: the skill and ``matrix run`` sent readers to ``events.jsonl`` for a
-    failed step's task (W5.2). No recipe reads them now, and each says they are lossy."""
+    failed step's task. No recipe reads them now, and each says they are lossy."""
     text = "\n".join([matrix.skill(), *(matrix.skill(name) for name in REFERENCES)])
     assert not re.search(r"^jq .*events\.jsonl", text, re.M)
     assert "lossy" in matrix.skill("running") and "lossy" in matrix.skill("telemetry")

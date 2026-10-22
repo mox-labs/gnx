@@ -224,8 +224,8 @@ class TestEvaluatorsThatReadTheReply:
 
 
 class TestEvaluatorsThatReadTheSpans:
-    """The agentic evaluators, on the spans a scripted session left in the trial (W4.11:
-    matrix's ``execute_tool`` spans carry what they read)."""
+    """The agentic evaluators, on the spans a scripted session left in the trial (matrix's
+    ``execute_tool`` spans carry what they read)."""
 
     async def test_tool_correctness_reads_the_sessions_tool_calls(
         self, provider: TracerProvider
@@ -315,7 +315,7 @@ class TestWithoutTheTrialsSpans:
         options = _agentic("ToolCorrectness", expected_tools=["Read"])
         with pytest.raises(NoSpansError, match="none were captured") as raised:
             await _read(options, trial)
-        # Changed requirement (W11.2b): a run keeps its spans in process, so the way to have
+        # Changed requirement: a run keeps its spans in process, so the way to have
         # them is the SDK, not export.
         assert "opentelemetry-sdk" in str(raised.value)
         # HasMatchingSpan raises where ToolCorrectness answers False: the same reason either way
@@ -561,7 +561,7 @@ class TestPlanAndRun:
     def test_a_judge_judges_on_a_hardline_row_end_to_end(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """W11.2b. Before, the root had no pydantic-ai Model over a model runtime to give, so a
+        """Before, the root had no pydantic-ai Model over a model runtime to give, so a
         judge evaluator on a real runtime was ``Runnable: no``. Now it judges on the matrix
         model runtime it names, here ``hardline`` with a mock row: the plan says it can run,
         and each reading is the row's grade, given as pydantic-ai's output tool call, through
@@ -584,8 +584,8 @@ class TestPlanAndRun:
         them through the Model matrix's runtime hands ix, never through ``call_model``, so a
         judged reading named no session and the record could not say which model judged. Each
         call is now a row of the run's session table, with the fields a model step's call
-        has, and the reading it was made for names it, as a judge sensor's reading does
-        (W3.7); the trial names only the subject's session."""
+        has, and the reading it was made for names it, as a judge sensor's reading does;
+        the trial names only the subject's session."""
         root, lab = _judged_by_a_hardline_row(tmp_path, monkeypatch)
         report = root.run(lab, exploratory=True)
         sessions = _rows(report, matrix.SESSION)
@@ -657,7 +657,7 @@ class TestPlanAndRun:
     def test_with_no_export_the_spans_are_kept_in_process_and_none_leaves(
         self, tmp_path: Path
     ) -> None:
-        """W11.2b. Before, a span evaluator had spans only when the ``OTEL_*`` variables asked
+        """Before, a span evaluator had spans only when the ``OTEL_*`` variables asked
         for export (the command installs the SDK, and matrix attaches its ``otel`` observer,
         only then): with nothing configured each reading failed. Now a run whose sensors read
         spans installs a tracer provider with no exporter and attaches matrix's observer, so

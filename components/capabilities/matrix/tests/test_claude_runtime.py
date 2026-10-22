@@ -580,7 +580,7 @@ def test_an_option_the_installed_sdk_lacks_is_refused_at_binding(
     matrix.BoundAgent(_defn(), _runtime())
 
 
-# --- what a session reports of itself (W3.4) ----------------------------------------------
+# --- what a session reports of itself ----------------------------------------------
 
 
 async def test_the_reply_is_the_session_s_result_and_its_transcript_is_kept_apart(
@@ -790,7 +790,7 @@ async def test_the_cli_is_handed_the_trace_context_of_its_session(
 ) -> None:
     """With OpenTelemetry active, the ``claude`` CLI the session starts is given the context of
     the session's own span (``TRACEPARENT``), so the CLI's spans join the run's trace; with no
-    span current it is given none (W4.3)."""
+    span current it is given none."""
     pytest.importorskip("opentelemetry.sdk")
     from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider

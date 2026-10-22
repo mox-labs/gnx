@@ -282,7 +282,7 @@ async def test_the_events_no_observer_received_are_counted_in_the_run_s_record(
 
 #: Every event matrix emits, with the fields it always carries. Within ``matrix.v1.event``
 #: fields are only ever added, so these may grow and never shrink; a new event is listed here
-#: or the test below fails (W5.3). Fields that apply only sometimes (a failure's
+#: or the test below fails. Fields that apply only sometimes (a failure's
 #: ``error``, a retried component's ``attempts``) are in docs/reference/api.md.
 PINNED: dict[str, set[str]] = {
     "matrix.run.start": {"components"},

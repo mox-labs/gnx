@@ -218,8 +218,9 @@ class TestPlanCounts:
         self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:
         """Changed requirement: spend is removed. A plan estimates no cost and holds a run
-        to no ceiling; what the run will do is in its trials. Changed requirement (Q6):
-        nor does it list effects; what the run needs of this host is added by the root."""
+        to no ceiling; what the run will do is in its trials. Changed requirement (owner ruling
+        2026-10-22): nor does it list effects; what the run needs of this host is added by the
+        root."""
         made = _plan(evaluate_data, vocabulary)
         assert "spend" not in made.document() and "effects" not in made.document()
         assert made.requirements == ()

@@ -682,8 +682,9 @@ def _mock(answer: Any) -> Any:
 
 
 def test_a_remotes_token_never_follows_a_redirect_off_its_origin(tmp_path: Path) -> None:
-    """P1.2's rule for an MCP server: the SDK's client follows no redirect, and its transport
-    one only within the server's origin, so the token never reaches another host."""
+    """The rule for a credentialed HTTP source, held for an MCP server: the SDK's client follows no
+    redirect, and its transport one only within the server's origin, so the token never reaches
+    another host."""
     sent: list[tuple[str, str | None]] = []
 
     def answer(request: httpx2.Request) -> httpx2.Response:
