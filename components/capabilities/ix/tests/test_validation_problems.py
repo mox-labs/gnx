@@ -662,6 +662,22 @@ class TestPlaceholders:
         }
 
 
+class TestAddresses:
+    @pytest.mark.parametrize("option", ["url", "ready"])
+    def test_a_port_out_of_range_is_refused_at_validate(
+        self, option: str, compare_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        """Regression: ``urlsplit(url).port`` raised out of the readiness check, so every
+        trial became a harness ``error`` instead of the experiment being refused."""
+        compare_data["subjects"]["buffered"][option] = "http://127.0.0.1:99999/healthz"
+        compare_data["subjects"]["streaming"]["url"] = "http://127.0.0.1:8080"
+        if option == "url":
+            compare_data["probes"][0]["target"] = "http://127.0.0.1:8080/x"
+        assert _validated(write_experiment, compare_data) == {
+            (f"subjects.buffered.{option}", "option_invalid")
+        }
+
+
 # --- the genre's requirements, across genres -------------------------------------------
 
 

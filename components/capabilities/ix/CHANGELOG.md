@@ -322,6 +322,9 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   paths both records held, so a margin that became none (`margin.value` against
   `margin`) was no deviation, and only the digests said the plan changed. It is now
   `design.margin changed after registration`, with both values.
+- **An address whose port is not one is refused at validate.** A `process` subject's `url`
+  or `ready` with a port out of range raised out of the readiness check, so every trial
+  became a harness `error`. The subject now reviews them (`option_invalid`).
 
 ## 0.5.0 — 2026-10-19
 
