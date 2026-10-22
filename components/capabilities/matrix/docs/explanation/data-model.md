@@ -92,7 +92,7 @@ a session.
 | Field | Meaning |
 |-------|---------|
 | `port` | `agent-runtime` (a session) or `model-runtime` (one call) |
-| `status`, `reason`, `error` | `completed` when the runtime replied, whatever the reply; `failed` when it raised instead, with the reason it classified (`rate_limited`, `timeout`, ...; null for an error it did not classify) and the error's message |
+| `status`, `reason`, `error` | `completed` when the runtime replied, whatever the reply; `failed` when it raised instead, with the reason it classified (`rate_limited`, `timeout`, ...; null for an error it did not classify) and the error's message; `cancelled`, reason `cancelled`, when it was cancelled before it replied |
 | `runtime`, `drives` | the runtime's type URL and the distributions it drives, when the caller knew them |
 | `agent` | the agent's name, for a session |
 | `name`, `model`, `family`, `provider`, `backend` | the model that answered: its registry name (a model call), the provider's id, its family, who served it |
@@ -113,6 +113,9 @@ made attempts: a model call that exhausted its retries, an agent session whose r
 failed. Its row says `failed` and why, and holds what the runtime's error carried of it: for
 the `hardline` model runtime every attempt made and the usage they reported (`attempt_log`,
 `usage`), for `claude-sdk` the session's id, usage, cost and turns when its result arrived.
+**So is a session that was cancelled** mid-flight (its component overran its deadline, or the
+run was cancelled): `status: cancelled`, with what matrix knew of it, since its runtime
+reported nothing: the runtime, the agent, the trace and span it ran in, and `sent`.
 
 **A reply row points at its session row.** The `AgentResponse` an agent step provides, and the
 `ModelCall` a model step provides, keep the reply and what a consumer acts on (`content` or

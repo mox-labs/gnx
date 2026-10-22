@@ -127,6 +127,10 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   the model runtime's own spans (hardline's `chat` per attempt) nest under it and the session
   row names it. It carries no usage: each attempt's inference spans and counters are the
   model runtime's own.
+- **A session or call that was cancelled is a row of `matrix.v1.session` too**, `status:
+  cancelled` (`Session.status` gains the value), reason `cancelled`, with the runtime, the
+  agent, the trace and span it ran in, and `sent`. It was asked for and may have spent tokens;
+  it was left out. `agent_session` and `call_session` take the `CancelledError` as `error=`.
 - **A session that failed is a row of `matrix.v1.session` too.** A model call that exhausted
   its retries, or an agent session that failed, was asked for and may have spent tokens; only
   completed ones were recorded. `Session` gains `status` (`completed`, or `failed`), `reason`

@@ -36,13 +36,14 @@ from matrix.domain.observer import (
     emit,
     observing,
 )
-from matrix.domain.session import agent_session, digest, record_session
+from matrix.domain.session import agent_session, digest, record_cancelled, record_session
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from matrix.domain.observer import Observer
     from matrix.domain.ports._out.agent_runtime import AgentRuntime
+    from matrix.domain.session import Session
 
 _SLUG = r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
 
@@ -256,8 +257,9 @@ class BoundAgent:
         with around(observing(self._observers), begun) as end:
             try:
                 response = await self._runtime.run(self._definition, task)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as e:
                 fields.update(status="cancelled", reason="cancelled")
+                record_cancelled(self._session(task, None, e))
                 raise
             except Exception as e:
                 fields.update(status="error", error=str(e), reason=getattr(e, "reason", None))
@@ -297,17 +299,20 @@ class BoundAgent:
     ) -> int | None:
         """Record the session in the run this is part of, whether it replied or failed; its
         row, or None outside a run."""
+        return record_session(self._session(task, response, error))
+
+    def _session(
+        self, task: str, response: AgentResponse | None, error: BaseException | None
+    ) -> Session:
         definition = self._definition
         sent = digest({"definition": definition.model_dump(mode="json"), "task": task})
-        return record_session(
-            agent_session(
-                response,
-                agent=definition.name,
-                sent=sent,
-                runtime=self._runtime_url,
-                drives=self._drives,
-                error=error,
-            )
+        return agent_session(
+            response,
+            agent=definition.name,
+            sent=sent,
+            runtime=self._runtime_url,
+            drives=self._drives,
+            error=error,
         )
 
     async def _tool(

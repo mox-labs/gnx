@@ -62,7 +62,7 @@ from matrix.domain.observer import (
     emit,
     observing,
 )
-from matrix.domain.session import call_sent, call_session, record_session
+from matrix.domain.session import call_sent, call_session, record_cancelled, record_session
 from matrix.domain.template import check_template, json_document, render
 
 if TYPE_CHECKING:
@@ -192,8 +192,16 @@ class ModelStep:
         with around(observing(), begun) as end:
             try:
                 call = await self._runtime.call(request)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as e:
                 fields.update(status="cancelled", reason="cancelled")
+                session = call_session(
+                    None,
+                    sent=call_sent(request),
+                    runtime=self._runtime_url,
+                    drives=self._drives,
+                    error=e,
+                )
+                record_cancelled(session)
                 raise
             except Exception as e:
                 fields.update(status="failed", error=str(e), reason=getattr(e, "reason", None))

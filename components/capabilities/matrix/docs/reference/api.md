@@ -525,7 +525,7 @@ A fact the runtime did not report is `None`.
 | Name | Signature | Does |
 |------|-----------|------|
 | `digest` | `(value) -> str` | `sha256:<hex>` over canonical JSON (keys sorted, no whitespace, UTF-8): the session row's `sent` |
-| `agent_session` | `(response, *, agent, sent, runtime=None, drives=(), error=None) -> Session` | the session row of an agent session, from its `AgentResponse`. For a session that failed, `error` is the exception and `response` what it carried (`AgentRuntimeError.response`, or `None`): the row is `status: failed` with the error's `reason` and message |
+| `agent_session` | `(response, *, agent, sent, runtime=None, drives=(), error=None) -> Session` | the session row of an agent session, from its `AgentResponse`. For a session that failed, `error` is the exception and `response` what it carried (`AgentRuntimeError.response`, or `None`): the row is `status: failed` with the error's `reason` and message. For one that was cancelled, `error` is the `CancelledError`: the row is `status: cancelled`, reason `cancelled` |
 | `call_session` | `(call, *, sent, runtime=None, drives=(), error=None) -> Session` | the session row of a model call, from its `ModelCall`. For a call that failed, `error` is the exception and `call` what it carried (`ModelRuntimeError.call`, or `None`) |
 | `call_sent` | `(request: ModelRequest) -> str` | the `sent` digest of a model call's request, as a model step computes it: of its prompt, system prompt, model and output schema |
 | `record_session` | `(session) -> int \| None` | records it in the run of the component running in this task, durably and in ledger order; its row, or `None` outside a run. The rows that component hands over next name it |

@@ -14,6 +14,10 @@ A session that **failed** is a row too (``status: failed``, with its ``reason`` 
 ``error``): it was asked for, and it may have spent tokens and made attempts. The row holds
 what the runtime's error carried of it (:attr:`ModelRuntimeError.call`,
 :attr:`AgentRuntimeError.response`), and is the failed component's, like any of its sessions.
+So is a session that was **cancelled** mid-flight (``status: cancelled``, reason
+``cancelled``): its runtime reported nothing, so the row holds what matrix knew, the runtime,
+the agent, the ids of the trace it ran in and the digest of what was sent. A cancellation
+never waits for its row: a row that cannot be recorded then is logged and left out.
 
 Like the ledger, the table is matrix's own: no component provides or requires it. It is
 written through the Construct like any table, durably and in ledger order, by whatever ran
@@ -26,8 +30,10 @@ the session ended in (``trace_id``, ``span_id``), when there is one. matrix mint
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -49,6 +55,8 @@ if TYPE_CHECKING:
 
 SESSION = "matrix.v1.session"
 
+logger = logging.getLogger("matrix.session")
+
 
 class Session(BaseModel):
     """One agent session or one model call: a row of ``matrix.v1.session``.
@@ -60,11 +68,13 @@ class Session(BaseModel):
 
     #: Which port ran it: ``agent-runtime`` (a session) or ``model-runtime`` (one call).
     port: Literal["agent-runtime", "model-runtime"]
-    #: ``failed`` when the runtime raised instead of replying; ``completed`` when it replied,
-    #: whatever the reply (``stop`` and ``finish_reason`` say how it ended).
-    status: Literal["completed", "failed"] = "completed"
-    #: Why it failed, as the runtime classified it (``rate_limited``, ``timeout``, ...); None
-    #: when it did not fail, or the runtime raised an error it did not classify.
+    #: ``failed`` when the runtime raised instead of replying; ``cancelled`` when it was
+    #: cancelled before it replied; ``completed`` when it replied, whatever the reply
+    #: (``stop`` and ``finish_reason`` say how it ended).
+    status: Literal["completed", "failed", "cancelled"] = "completed"
+    #: Why it failed, as the runtime classified it (``rate_limited``, ``timeout``, ...), or
+    #: ``cancelled``; None when it did not fail, or the runtime raised an error it did not
+    #: classify.
     reason: str | None = None
     #: The error's message, when it failed.
     error: str | None = None
@@ -148,13 +158,14 @@ def agent_session(
     sent: str,
     runtime: str | None = None,
     drives: tuple[str, ...] = (),
-    error: Exception | None = None,
+    error: BaseException | None = None,
 ) -> Session:
     """The session row of an agent session, from what its runtime reported.
 
     For a session that failed, pass the ``error`` and what the runtime knew of the session
     (the error's ``response``, when it is an :class:`AgentRuntimeError` that carries one;
-    else None): the row says it failed, and why."""
+    else None): the row says it failed, and why. For one that was cancelled, pass the
+    ``CancelledError``: the row says so."""
     if response is None:
         return Session(
             port="agent-runtime",
@@ -206,9 +217,10 @@ def call_session(
     sent: str,
     runtime: str | None = None,
     drives: tuple[str, ...] = (),
-    error: Exception | None = None,
+    error: BaseException | None = None,
 ) -> Session:
-    """The session row of a model call, from what its runtime reported.
+    """The session row of a model call, from what its runtime reported, or the
+    ``CancelledError`` that cancelled it (see :func:`agent_session`).
 
     For a call that failed, pass the ``error`` and what the runtime knew of the call (the
     error's ``call``, when it is a :class:`ModelRuntimeError` that carries one: for hardline,
@@ -245,10 +257,13 @@ def call_session(
     )
 
 
-def _failure(error: Exception | None) -> dict[str, Any]:
-    """A failed session's ``status``, ``reason`` and ``error``; nothing for one that replied."""
+def _failure(error: BaseException | None) -> dict[str, Any]:
+    """A failed or cancelled session's ``status``, ``reason`` and ``error``; nothing for one
+    that replied."""
     if error is None:
         return {}
+    if isinstance(error, asyncio.CancelledError):
+        return {"status": "cancelled", "reason": "cancelled"}
     reason = getattr(error, "reason", None)
     message = getattr(error, "message", None)
     return {
@@ -269,3 +284,12 @@ def record_session(session: Session) -> int | None:
     """Record ``session`` in the run this task is part of; its row, or None outside a run."""
     record = CURRENT_SESSIONS.get()
     return None if record is None else record(session)
+
+
+def record_cancelled(session: Session) -> None:
+    """Record a session that was cancelled, while its cancellation unwinds: what recording
+    raises (a store that failed) is logged, never raised in the cancellation's place."""
+    try:
+        record_session(session)
+    except Exception:
+        logger.exception("a cancelled session could not be recorded")

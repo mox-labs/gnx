@@ -579,7 +579,8 @@ With the default store a run is a directory under `.matrix/runs/<run_id>/`:
   step's are `ModelCall`s, the prompt as sent in `prompt`, the reply in `text`, why it
   ended (`finish_reason`); each points at its session row (`session`);
 - `matrix.v1.session.jsonl`: one line per agent session or model call, a failed one
-  included: `status` (`completed`, or `failed` with its `reason` and `error`), `runtime`, the
+  included: `status` (`completed`; `failed` with its `reason` and `error`; or `cancelled`),
+  `runtime`, the
   model that answered, `stop`, `finish_reason`, `usage` (`input_tokens` counts the cache's),
   `cost_usd`, `session_id`, `request_id`, `trace_id` and `span_id`, `fallback_from`,
   `attempts`, `attempt_log`, and `sent` (a digest of what was sent). The line's position
