@@ -178,9 +178,13 @@ class AnthropicBackend:
 def _turns(messages: Sequence[Message]) -> list[dict[str, Any]]:
     """The conversation as the API takes it. A tool's result is a ``tool_result`` block of a
     user turn: the results answering one assistant turn are one user turn, and whatever the
-    caller says next joins them there, after them."""
+    caller says next joins them there, after them. An assistant turn that says nothing (no
+    text, no tool calls) is left out: the API refuses a text block with no text, and the user
+    turns either side of it are combined by the API into one."""
     turns: list[dict[str, Any]] = []
     for message in messages:
+        if message.role == "assistant" and not message.content.strip() and not message.tool_calls:
+            continue
         role = "assistant" if message.role == "assistant" else "user"
         last = turns[-1] if turns else None
         if role == "user" and last is not None and last["role"] == "user" and _results(last):

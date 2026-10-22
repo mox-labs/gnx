@@ -114,7 +114,8 @@ s.completion  # the Completion that produced it, attempts included
 
 `extract` states the schema in an instruction (and hands it to the provider when the row's
 `structured` mode allows), validates the reply, and on failure shows the model its own reply
-and the validation error once before raising `SchemaError`. The repair is sent to the row that
+and the validation error once before raising `SchemaError`; an empty reply, which has nothing to
+show, is followed by a turn saying it was empty instead. The repair is sent to the row that
 answered, never back to a row before it in the fallback chain that has just failed. Each JSON value in the reply is
 tried in turn, so bracketed prose before the answer ("see [1]") does not hide it. A provider's
 "structured" mode is an optimisation; validation here is the guarantee.
