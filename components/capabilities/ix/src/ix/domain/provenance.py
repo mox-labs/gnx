@@ -157,6 +157,11 @@ class Provenance(Stored):
     versions: dict[str, str] = {}
     #: Every runtime installed at matrix's agent-runtime and model-runtime points.
     runtimes: tuple[RuntimeOrigin, ...] = ()
+    #: Each setting the run read (``ix.runs``, ``matrix.observers``, ``matrix.models``) and
+    #: the rung that set it: the config file (several, comma-separated, when tiers merged a
+    #: mapping), ``default`` when no tier set it, or ``given in code`` when the caller passed
+    #: the settings. Never the value.
+    settings: dict[str, str] = {}
 
     def checkout(self) -> str:
         """The commit in words: ``commit 1a2b3c4d5e6f (dirty)``, or why there is none."""

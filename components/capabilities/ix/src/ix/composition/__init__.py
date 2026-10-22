@@ -112,6 +112,10 @@ RUN_STORE = store_type_url("jsonl")
 #: The distributions whose installed versions each run records.
 RECORDED_VERSIONS = ("ix", "matrix", "hardline")
 
+#: The settings a run reads, whose rungs it records: where runs are kept, the observers of a
+#: run, and the models a model runtime is handed.
+READ_SETTINGS = ("ix.runs", "matrix.observers", "matrix.models")
+
 
 def type_url_problem(name: str) -> str | None:
     """Why ``name`` is not a type URL under the registry's grammar; None when it is one.
@@ -147,6 +151,23 @@ def load_settings() -> Config[IxSettings]:
             "set a value",
         ) from error
     return config
+
+
+def _rungs(config: Config[IxSettings]) -> dict[str, str]:
+    """Where each of :data:`READ_SETTINGS` was set: the file (each file that set part of a
+    mapping, comma-separated), ``default`` when no tier set it, or ``given in code`` for
+    settings a caller built rather than read from the tiers."""
+    if not config.sources:
+        return dict.fromkeys(READ_SETTINGS, "given in code")
+    found: dict[str, str] = {}
+    for key in READ_SETTINGS:
+        files = dict.fromkeys(
+            file
+            for path, file in config.origins.items()
+            if path == key or path.startswith(f"{key}.")
+        )
+        found[key] = ", ".join(files) or "default"
+    return found
 
 
 def _unsaid(record: logging.LogRecord) -> bool:
@@ -452,8 +473,9 @@ class Root:
 
     def _provenance(self, directory: str) -> Provenance:
         """Where a run in ``directory`` runs from: the commit, the installed versions of
-        matrix, ix and hardline, and every runtime installed at matrix's two runtime points
-        with the distribution that registered it and those it drives."""
+        matrix, ix and hardline, every runtime installed at matrix's two runtime points
+        with the distribution that registered it and those it drives, and the rung of each
+        setting the run read."""
         runtimes = tuple(
             RuntimeOrigin(
                 type_url=entry.type_url,
@@ -468,6 +490,7 @@ class Root:
             update={
                 "versions": {name: installed(name) for name in RECORDED_VERSIONS},
                 "runtimes": runtimes,
+                "settings": _rungs(self._settings()),
             }
         )
 

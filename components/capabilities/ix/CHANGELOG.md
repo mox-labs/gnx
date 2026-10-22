@@ -283,6 +283,10 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   `hardline`). ix asks through its `Runtimes` port (`drives`), so a third party's runtime
   records its SDK the same way. Each session row of an agent session, a model call or a
   judge names the same distributions (`drives`).
+- **A run records where each setting came from.** The manifest's `provenance.settings`
+  holds each setting the run read (`ix.runs`, `matrix.observers`, `matrix.models`) with the
+  config file that set it, `default`, or `given in code`; never the value. Before, only
+  `matrix config --tool ix --sources` could say, and only for the config as it is now.
 
 ## 0.5.0 — 2026-10-19
 

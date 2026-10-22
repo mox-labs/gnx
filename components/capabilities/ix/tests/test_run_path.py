@@ -27,10 +27,12 @@ import pytest
 import yaml
 from ix_fakes import LOG, FakeLoad, FakeSubject, FakeTiming, experiment, fake_registry
 from matrix import (
+    Config,
     Extension,
     JsonlConstructStore,
     MatrixConfig,
     default_registry,
+    load_config,
 )
 from matrix.adapters._out.stores.jsonl import JsonlStoreConfig
 
@@ -50,6 +52,7 @@ from ix.adapters._out.subjects import ProcessSubject
 from ix.application import running
 from ix.composition import RUNS_DIRECTORY, Root
 from ix.composition.extension import POINTS, register_run_path
+from ix.composition.settings import IxSettings
 from ix.domain import schema
 from ix.domain.kind import Metric
 from ix.domain.ports import Liveness, Preflight, Sensed
@@ -199,6 +202,36 @@ class TestTheRunStore:
         root = Root(registry=fake_registry(), run_store="matrix.v1.store.memory")
         with pytest.raises(ix.ConfigError, match="memory"):
             root.run(write_experiment(experiment()), exploratory=True)
+
+
+class TestWhereEachSettingCameFrom:
+    def test_the_run_records_the_tier_that_set_each_setting_it_read(
+        self, tmp_path: Path, write_experiment: Write
+    ) -> None:
+        """A setting the run read is recorded with its rung: the file that set it, or the
+        default when no tier did. Never its value, which may be a model registry."""
+        kept = tmp_path / "runs"
+        yours = tmp_path / "yours.yaml"
+        yours.write_text(yaml.safe_dump({"ix": {"runs": str(kept)}}))
+        project = tmp_path / "project.yaml"
+        project.write_text(yaml.safe_dump({"matrix": {"observers": []}}))
+        settings = load_config(client_type=IxSettings, client_key="ix", sources=[yours, project])
+        report = Root(registry=fake_registry(), settings=settings).run(
+            write_experiment(experiment()), exploratory=True
+        )
+        assert report.location.startswith(str(kept))
+        assert report.provenance is not None
+        assert report.provenance.settings == {
+            "ix.runs": str(yours),
+            "matrix.observers": str(project),
+            "matrix.models": "default",
+        }
+
+    def test_settings_given_in_code_say_so(self, write_experiment: Write) -> None:
+        report = Root(registry=fake_registry(), settings=Config[IxSettings](client=IxSettings()))
+        ran = report.run(write_experiment(experiment()), exploratory=True)
+        assert ran.provenance is not None
+        assert set(ran.provenance.settings.values()) == {"given in code"}
 
 
 class TestRegistrationAtRun:
