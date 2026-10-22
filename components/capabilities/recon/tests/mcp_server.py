@@ -9,6 +9,7 @@ for a test to mount in process (``FIXTURE.streamable_http_app()``). Its tools an
   its text, as servers that wrap their text answer do;
 * ``broken``: a tool error; ``nothing``: an answer with no content; ``prose``: text that is
   not JSON;
+* ``echo``: the object it is given, as structured content and as JSON in its text;
 * ``whoami``: the server's process id, and the ``FIXTURE_TOKEN`` and ``HOME`` it was started
   with, as JSON text;
 * ``fixture://papers``, and the template ``fixture://papers/{id}``: JSON text.
@@ -79,6 +80,13 @@ def nothing() -> types.CallToolResult:
 def prose() -> str:
     """Answers in words."""
     return "Here are some papers you might like."
+
+
+@FIXTURE.tool()
+def echo(answer: dict[str, Any]) -> dict[str, Any]:
+    """``answer`` as given, as structured content (and its JSON in the text): an answer the
+    test writes."""
+    return answer
 
 
 @FIXTURE.tool(structured_output=False)

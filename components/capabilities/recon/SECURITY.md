@@ -223,12 +223,31 @@ run lists it and the survey fails that table as `config`.
 repository, a mailbox, a drive), and its answer becomes the table, and with `preserve_raw`
 the capture: an archive of an `mcp` mission deserves the care its server's data does. In a
 capture, every credential value the source resolved (its token, its helper's headers, the
-variables given to a stdio server, each cookie's value) is replaced by the redaction marker
-wherever it stands whole in the result: as a whole JSON string, a header's value or a query
-parameter's, or any run of characters not joined to a letter, digit, `_` or `-` on either
-side. A piece of other text that happens to equal a short credential (the `2` of `2026`, for
-a header `X-Api-Key-Version: 2`) is kept. A credential the tool returns of its own is in the
-table as returned.
+variables given to a stdio server, each cookie's value) is replaced by the redaction marker,
+in the result and in the request recorded beside it. The replacing is done on the decoded
+result, before it is written as JSON, by one rule with a threshold of 8 characters:
+
+- **8 characters or more: wherever it appears**, inside other text too: at the start of a
+  line, after a tab, in a URL, run into other letters (`key-<token>`, `prefix_<token>`, a
+  CJK word), in the structured content and in the JSON a text block holds.
+- **Under 8 characters: only where it is a whole value**: a whole JSON string, a header's
+  whole value, or a whole query parameter's value in a string that is a URL. Never inside a
+  number, a boolean or longer text.
+
+Why the threshold. A real token is long, and a server that echoes one puts it where it likes,
+so a long credential is replaced as a substring: text that holds it holds the token, and a
+narrower test of where it stands lets one through (in written JSON a newline is the two
+characters `\n`, so a token at the start of a line looks joined to an `n`). A short value
+in a credential-named slot is as often a word or a number of its own: a cookie's
+`consent=true`, a stdio server's `DEBUG=1`, `X-Api-Key-Version: 2`. Replaced in text, it
+blanks every `true`, `1` or `2` in the capture, a JSON boolean or number included, and the
+capture is no longer JSON and cannot be read back by a `capture` collector. So a short one
+is replaced only where it is the whole value, and the capture stays JSON of the same shape.
+The cost, named: a credential under 8 characters inside longer text stays in the capture,
+and so does one inside the JSON of a tool's text block, which is one longer string (its
+structured content, when the tool declares an output schema, has it replaced). A credential
+that short is weak whatever recon does; keep a real one long. A credential the tool returns
+of its own is in the table as returned.
 
 **Telemetry.** Each call is a `recon.mcp.call` span with the method, the tool's name and
 the source, never its arguments or its result. FastMCP's own spans are not made for recon's

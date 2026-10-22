@@ -219,7 +219,7 @@ def test_a_tool_the_server_does_not_list_fails_its_table_as_config(tmp_path: Pat
     )
     missing, wrong = tables
     assert missing.error is not None and missing.error.kind == "config"
-    assert "it lists: broken, listing, nothing, prose, search, whoami, wrapped" in (
+    assert "it lists: broken, echo, listing, nothing, prose, search, whoami, wrapped" in (
         missing.error.message
     )
     assert wrong.error is not None and wrong.error.kind == "config"
@@ -382,7 +382,7 @@ def test_the_dry_run_starts_the_server_and_checks_each_call_against_its_listing(
     started = found["the stdio server of source 'fixture' starts and answers", True]
     assert started.needed_by == ["good", "missing", "wrong", "gone"]
     nope = found["the server of source 'fixture' lists the tool 'nope'", False]
-    assert nope.why.startswith("it lists: broken, listing") and nope.needed_by == ["missing"]
+    assert nope.why.startswith("it lists: broken, echo, listing") and nope.needed_by == ["missing"]
     schema = found[
         "the arguments given to 'search' (source 'fixture') match its input schema", False
     ]
@@ -531,23 +531,137 @@ def test_only_the_credentials_a_headers_helper_gives_are_redacted_in_a_capture(
     capture (the evidence, and the source to normalize again from) silently differed from
     the table. A header is a credential by its name; a bearer token is redacted alone too."""
     _seen, url = remote
-    helper = tmp_path / "helper.sh"
-    given = {"Authorization": "Bearer t0k", "X-Goog-Api-Key": "g00g", "X-Org": "acme"}
-    helper.write_text(f"#!/bin/sh\necho '{json.dumps(given)}'\n")
-    helper.chmod(0o755)
-    source = {"name": "fixture", "type": "mcp", "url": url, "headers_helper": str(helper)}
-    query = "acme t0k g00g"
+    given = {"Authorization": "Bearer t0kenValue", "X-Goog-Api-Key": "g00gKeyValue",
+             "X-Org": "acme"}  # fmt: skip
+    query = "acme t0kenValue g00gKeyValue"
     archive, [table] = _survey(
         tmp_path,
         [_call("papers", "search", arguments={"query": query}, extract="papers")],
-        source=source,
+        source=_helped(tmp_path, url, given),
         config={"preserve_raw": True},
     )
     assert table.status == "ok", table.error
     [capture] = [json.loads(line) for line in (archive / "captures.jsonl").read_text().splitlines()]
     body = (archive / capture["body"]).read_text()
     assert "acme" in body, "a header that is not a credential is evidence, kept"
-    assert "t0k" not in body and "g00g" not in body
+    assert "t0kenValue" not in body and "g00gKeyValue" not in body
+
+
+def _helped(project: Path, url: str, headers: dict[str, str]) -> dict[str, Any]:
+    """The remote fixture as a source whose ``headers_helper`` prints ``headers``."""
+    helper = project / "helper.sh"
+    helper.write_text(f"#!/bin/sh\necho '{json.dumps(headers)}'\n")
+    helper.chmod(0o755)
+    return {"name": "fixture", "type": "mcp", "url": url, "headers_helper": str(helper)}
+
+
+def _captured(archive: Path) -> tuple[str, dict[str, Any]]:
+    """The survey's one capture: its log line as written, and its body, which must be JSON."""
+    [line] = (archive / "captures.jsonl").read_text().splitlines()
+    body: dict[str, Any] = json.loads((archive / json.loads(line)["body"]).read_text())
+    return line, body
+
+
+def _replayed(project: Path, archive: Path, extract: str) -> list[dict[str, Any]]:
+    """The records a ``capture`` collector reads back from the survey's capture log."""
+    from recon.adapters._out.capture_collector import CaptureCollector
+    from recon.domain.models import CollectorEntry
+
+    log = str(archive / "captures.jsonl")
+    entry = CollectorEntry(name="again", type="capture", path=log, extract=extract)
+    return list(CaptureCollector(project).collect(entry, None))
+
+
+def test_a_long_credential_a_server_echoes_is_never_in_the_capture(
+    tmp_path: Path, remote: Any
+) -> None:
+    """Regression (gate B1): a credential was redacted only where it stood whole in the
+    capture's JSON text, so a token the server echoed after a newline or a tab (written
+    ``\\n``, ``\\t`` in JSON, joined to a letter), or after ``_``, ``-`` or a CJK letter, was
+    written into the capture, in the structured content and in the JSON of the text. A
+    credential of eight characters or more is redacted wherever it appears, the request
+    included, and the capture is still JSON that a ``capture`` collector replays."""
+    _seen, url = remote
+    token = "t0kSecretValue"
+    query = (
+        f"intro\n{token}\tx; a\r\n{token}; NAME\t{token}; prefix_{token}; key-{token}; "
+        f"トークン{token}"
+    )
+    given = {"Authorization": f"Bearer {token}", "X-Api-Key-Version": "1"}
+    archive, [table] = _survey(
+        tmp_path,
+        [_call("papers", "search", arguments={"query": query}, extract="papers")],
+        source=_helped(tmp_path, url, given),
+        config={"preserve_raw": True},
+    )
+    assert table.status == "ok", table.error
+    line, body = _captured(archive)
+    assert token not in json.dumps(body["structuredContent"], ensure_ascii=False)
+    [text] = body["content"]
+    assert token not in text["text"] and "«redacted by recon»" in text["text"]
+    assert token not in line, "nor does the request the capture records"
+    replayed = _replayed(tmp_path, archive, "structuredContent.papers")
+    assert [r["id"] for r in replayed] == ["p0", "p1"]
+    assert all(r["title"].count("«redacted by recon»") == 6 for r in replayed)
+
+
+@pytest.mark.parametrize("given", ["cookie", "env"])
+def test_a_short_credential_blanks_no_number_boolean_or_longer_text(
+    tmp_path: Path, remote: Any, given: str
+) -> None:
+    """Regression (gate B1-b): a short credential was redacted wherever it stood whole in
+    the capture's text, so a cookie's ``consent=true`` blanked every ``true`` and a stdio
+    server's ``DEBUG=1`` every ``1``, a JSON boolean or number included, and the capture was
+    no longer JSON: replaying it failed. A credential under eight characters is redacted only
+    where it is a whole value; the answer here holds none, so the capture is the answer."""
+    answer = {"count": 1, "ok": True, "flags": [True, 1, 11], "note": "true to form, 1 of 11",
+              "v": "v1"}  # fmt: skip
+    if given == "cookie":
+        _seen, url = remote
+        source = _helped(tmp_path, url, {"Cookie": "sid=s3ss10nValue; consent=true"})
+        env = None
+    else:
+        source = {**STDIO, "env": {"DEBUG": "env:DEBUG"}}
+        env = {"DEBUG": "1"}
+    archive, [table] = _survey(
+        tmp_path,
+        [_call("answer", "echo", arguments={"answer": answer})],
+        source=source,
+        env=env,
+        config={"preserve_raw": True},
+    )
+    assert table.status == "ok", table.error
+    _line, body = _captured(archive)
+    assert body["structuredContent"] == answer
+    [text] = body["content"]
+    assert json.loads(text["text"]) == answer
+    assert _replayed(tmp_path, archive, "structuredContent") == [answer]
+
+
+def test_a_short_credential_is_redacted_where_it_is_a_whole_value(
+    tmp_path: Path, remote: Any
+) -> None:
+    """A credential under eight characters is redacted where it is a whole JSON string or a
+    whole query parameter's value, and nowhere inside longer text: ``the k3y is k3y`` is
+    kept, and so is the text content, one string that holds the answer's JSON (SECURITY.md
+    names this)."""
+    _seen, url = remote
+    answer = {"key": "k3y", "url": "https://x.test/q?api_key=k3y&n=1", "text": "the k3y is k3y",
+              "n": 3}  # fmt: skip
+    archive, [table] = _survey(
+        tmp_path,
+        [_call("answer", "echo", arguments={"answer": answer})],
+        source=_helped(tmp_path, url, {"X-Api-Key": "k3y"}),
+        config={"preserve_raw": True},
+    )
+    assert table.status == "ok", table.error
+    _line, body = _captured(archive)
+    redacted = {**answer, "key": "«redacted by recon»",
+                "url": "https://x.test/q?api_key=%C2%ABredacted+by+recon%C2%BB&n=1"}  # fmt: skip
+    assert body["structuredContent"] == redacted
+    [text] = body["content"]
+    assert json.loads(text["text"]) == answer
+    assert _replayed(tmp_path, archive, "structuredContent") == [redacted]
 
 
 def _mock(answer: Any) -> Any:
