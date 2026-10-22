@@ -223,6 +223,9 @@ class _Runtimes:
             return None
         return frozenset() if config is None else frozenset(config.model_fields)
 
+    def drives(self, point: Point, name: str) -> dict[str, str]:
+        return {driven: installed(driven) for driven in self._entry(point, name).drives}
+
 
 @dataclass(frozen=True)
 class Telemetry:
@@ -450,12 +453,13 @@ class Root:
     def _provenance(self, directory: str) -> Provenance:
         """Where a run in ``directory`` runs from: the commit, the installed versions of
         matrix, ix and hardline, and every runtime installed at matrix's two runtime points
-        with the distribution that registered it."""
+        with the distribution that registered it and those it drives."""
         runtimes = tuple(
             RuntimeOrigin(
                 type_url=entry.type_url,
                 distribution=entry.origin,
                 version="" if entry.origin == "(direct)" else installed(entry.origin),
+                drives=self._runtimes.drives(point, entry.type_url),
             )
             for point in (AGENT_RUNTIME, MODEL_RUNTIME)
             for entry in self._registry.entries(point)

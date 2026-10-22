@@ -277,6 +277,12 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   and then ran without it: a sensor's `path` option reached its adapter as written, not
   resolved against the experiment's directory. The run, the preflight and a report now use
   the kinds the experiment was validated against.
+- **The SDK a runtime drives is recorded with its version.** Each runtime in the manifest's
+  `provenance.runtimes` now holds `drives`: each distribution its registration says it
+  drives, with its installed version (`claude-agent-sdk` for `claude-sdk`, `hardline` for
+  `hardline`). ix asks through its `Runtimes` port (`drives`), so a third party's runtime
+  records its SDK the same way. Each session row of an agent session, a model call or a
+  judge names the same distributions (`drives`).
 
 ## 0.5.0 — 2026-10-19
 

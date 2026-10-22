@@ -456,7 +456,8 @@ each file and folder the subjects and sensors name (`contents`, paths and digest
 the files hold); the git commit the experiment sits at and whether a tracked file differed
 from it (`dirty`), or `not a repository`; the installed versions of ix, matrix and hardline;
 and every agent and model runtime installed, by type URL, with the distribution that
-registered it and its version. `ix report` prints the digests (`Contents`), the commit
+registered it and its version, and each distribution it drives with that one's version (the
+Claude Agent SDK, for `claude-sdk`). `ix report` prints the digests (`Contents`), the commit
 (`Ran from`) and the versions, `ix runs` the commit, and `--json` carries all of it.
 
 An agent trial's interaction keeps the prompt, the reply, every tool call, each round's

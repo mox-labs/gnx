@@ -162,6 +162,13 @@ class Runtimes(Protocol):
         config, None for a name nothing registered there."""
         ...
 
+    def drives(self, point: Point, name: str) -> dict[str, str]:
+        """Each distribution the runtime drives (``claude-agent-sdk`` for ``claude-sdk``), as
+        its registration declares, with its installed version (``not installed`` for one
+        that is not); none for a runtime that declares none. Raises as :meth:`build` does
+        for an unknown name."""
+        ...
+
 
 class Respondent(Protocol):
     """What a ``prompt`` probe puts its prompt to, by the handle a subject opened it under:
@@ -300,7 +307,8 @@ class Session:
         config = _runtime_config(self.options, self.base, canned=canned if self.simulated else None)
         runtime = self.runtimes.build(AGENT_RUNTIME, self.runtime, config, cwd=str(self.workdir))
         url = matrix.agent_runtime_type_url(self.runtime)
-        bound = matrix.BoundAgent(self.definition, runtime, runtime_url=url)
+        drives = tuple(self.runtimes.drives(AGENT_RUNTIME, self.runtime))
+        bound = matrix.BoundAgent(self.definition, runtime, runtime_url=url, drives=drives)
         response: matrix.AgentResponse = await bound.run(task)
         return response
 

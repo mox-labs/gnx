@@ -962,8 +962,9 @@ then the report (`ix.v1.report`) on stdout.
   the files hold), the git commit and whether a tracked file differed from it
   (`provenance.commit`, `provenance.dirty`; `not a repository` outside one), the versions
   of ix, matrix and hardline, and each runtime installed with the distribution that
-  registered it. `ix report` prints them under `Contents`, `Ran from` and `Versions`; `ix
-  runs` gives each run's commit.
+  registered it and the versions of what it drives (`claude-agent-sdk` for `claude-sdk`).
+  `ix report` prints them under `Contents`, `Ran from` and `Versions`; `ix runs` gives each
+  run's commit.
 - **Stopping.** Ctrl-C stops the trial in flight, stops everything the run started and
   exits {EXIT_CODES["run_interrupted"]} with the partial report. `ix report <run directory>`
   reads any run again, finished or not; a run that did not finish gives no verdict, and one

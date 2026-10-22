@@ -122,6 +122,9 @@ class Runtimes:
     def takes(self, point: str, name: str) -> frozenset[str] | None:
         return self._takes
 
+    def drives(self, point: str, name: str) -> dict[str, str]:
+        return {}
+
 
 def _subject(runtime: str = "claude-sdk", **options: Any) -> SubjectConfig:
     """An ``agent-session`` subject. It names ``claude-sdk`` unless told otherwise; the

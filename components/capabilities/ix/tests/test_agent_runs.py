@@ -536,6 +536,36 @@ class TestAVerdictIsTiedToWhatItJudged:
         mock = next(r for r in provenance.runtimes if r.type_url == "matrix.v1.agent-runtime.mock")
         assert (mock.distribution, mock.version) == ("matrix", importlib.metadata.version("matrix"))
 
+    def test_a_runtime_is_recorded_with_the_version_of_what_it_drives(self, tmp_path: Path) -> None:
+        """A runtime declares the distributions it drives (matrix's ``Entry.drives``): the
+        manifest records each with its installed version (claude-sdk's SDK, beside the
+        matrix that registered it), and each session row on it names them."""
+        registry = _registry(_fires())
+        driving = "acme.v1.agent-runtime.over-pydantic"
+
+        def build() -> Scripted:
+            runtime = Scripted()
+            runtime.answer = _fires()
+            return runtime
+
+        registry.register("agent-runtime", driving, build, drives=("pydantic", "acme-gone"))
+        lab = _routing(
+            tmp_path, subjects={"catalog": {"kind": "agent-session", "runtime": driving}}
+        )
+        report = Root(registry=registry, settings=_settings()).run(lab, exploratory=True)
+        sessions = _session_rows(report)
+        assert sessions and all(row["drives"] == ["pydantic", "acme-gone"] for row in sessions)
+        provenance = report.provenance
+        assert provenance is not None
+        by_url = {runtime.type_url: runtime for runtime in provenance.runtimes}
+        assert by_url[driving].drives == {
+            "pydantic": importlib.metadata.version("pydantic"),
+            "acme-gone": "not installed",
+        }
+        sdk = by_url["matrix.v1.agent-runtime.claude-sdk"]
+        assert set(sdk.drives) == {"claude-agent-sdk"}
+        assert by_url[SCRIPTED].drives == {}
+
     def test_report_and_runs_show_the_subjects_digests_and_commit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

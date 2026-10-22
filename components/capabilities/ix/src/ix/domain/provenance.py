@@ -129,12 +129,15 @@ def named_files(experiment: Experiment, kinds: Kinds) -> tuple[Named, ...]:
 
 
 class RuntimeOrigin(Stored):
-    """A runtime installed at one of matrix's two runtime points: its type URL, and the
-    distribution that registered it with that distribution's version."""
+    """A runtime installed at one of matrix's two runtime points: its type URL, the
+    distribution that registered it with that distribution's version, and each distribution
+    it drives (``claude-agent-sdk`` for ``claude-sdk``) with its installed version, ``not
+    installed`` for one that is not."""
 
     type_url: str
     distribution: str = ""
     version: str = ""
+    drives: dict[str, str] = {}
 
 
 class Provenance(Stored):
