@@ -2,7 +2,9 @@
 
 Every table is a view named after its file (non-identifier characters become ``_``). The
 capture log is not a table. A table that collected nothing is a view with no rows: its one
-sentinel line is filtered out.
+sentinel line is filtered out, and the columns the sentinel keeps (its collector's
+``normalize:`` spec's) are the view's, null-typed, so a query of them binds as it would on a
+full table; ``_empty`` stays a column, for queries written against the sentinel.
 
 A view is made per table, and one that cannot be made does not stop the others. DuckDB reads
 a JSON object as a struct, so an object keyed by data rather than by field names (OpenAlex's
@@ -31,7 +33,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from recon.adapters._out.archive_files import is_empty_table, table_files
+from recon.adapters._out.archive_files import empty_table_columns, table_files
 from recon.domain.archives import Rows, table_name
 from recon.domain.errors import NotFoundError, Problem, QueryError
 
@@ -140,15 +142,24 @@ def _views(conn: Any, files: list[Path]) -> dict[str, tuple[Path, str]]:
     unreadable: dict[str, tuple[Path, str]] = {}
     for file in files:
         quoted = str(file).replace("'", "''")
-        where = " WHERE NOT _empty" if is_empty_table(file) else ""
+        empty = empty_table_columns(file)
+        if empty:
+            kept = [f"NULL AS {_identifier(column)}" for column in empty]
+            if "_empty" not in empty:
+                kept.append("NULL::BOOLEAN AS _empty")
+            body = f"SELECT {', '.join(kept)} WHERE false"
+        else:
+            where = " WHERE NOT _empty" if empty is not None else ""
+            body = f"SELECT * FROM read_json_auto('{quoted}'){where}"
         try:
-            conn.execute(
-                f'CREATE VIEW "{table_name(file.stem)}" AS '
-                f"SELECT * FROM read_json_auto('{quoted}'){where}"
-            )
+            conn.execute(f'CREATE VIEW "{table_name(file.stem)}" AS {body}')
         except duckdb.Error as exc:
             unreadable[table_name(file.stem)] = (file, _first_line(exc))
     return unreadable
+
+
+def _identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
 
 #: DuckDB's own hint on a struct it cannot infer; a view cannot take it, and the fix says

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Sequence
     from pathlib import Path
 
     from recon.domain.capture import CaptureLog
@@ -45,12 +45,19 @@ class ArchiveStore(Protocol):
         ...
 
     def write_table(
-        self, archive: Path, output: str, records: Generator[dict[str, Any], None, None]
+        self,
+        archive: Path,
+        output: str,
+        records: Generator[dict[str, Any], None, None],
+        *,
+        columns: Sequence[str] = (),
     ) -> int:
         """Write every record to the table ``output`` and return how many there were.
 
         The table appears whole or not at all: on any error, including one the records
         raise, nothing is left and the error propagates. ``records`` is closed either way.
+        ``columns`` are the table's columns when they are known (a ``normalize:`` spec's): a
+        table that collected nothing keeps them, so a query of them still binds.
         """
         ...
 

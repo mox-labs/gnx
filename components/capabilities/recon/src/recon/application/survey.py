@@ -199,13 +199,14 @@ class Survey:
         nothing: NoRecordsError | None = None
         try:
             records = _keeping_first(_tagged(collector, target, source, captures), first)
+            columns = list(entry.normalize or ())
             try:
-                count = self._archives.write_table(archive, output, records)
+                count = self._archives.write_table(archive, output, records, columns=columns)
             except NoRecordsError as said:
                 if first:  # records came before it: an empty table would drop them
                     raise
                 nothing = said
-                count = self._archives.write_table(archive, output, _no_records())
+                count = self._archives.write_table(archive, output, _no_records(), columns=columns)
         except Exception as exc:
             kind: ErrorKind = exc.kind if isinstance(exc, ReconError) else "run_failed"
             fix = exc.fix if isinstance(exc, ReconError) else None

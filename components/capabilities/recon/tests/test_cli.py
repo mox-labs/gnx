@@ -459,6 +459,21 @@ class TestQuery:
         human = unstyle(_invoke("query", "m", sql).stdout)
         assert "a_1_1" in human and "2" in human
 
+    def test_an_empty_table_answers_a_query_of_its_columns(self, project):
+        """Regression: a collector whose source had nothing wrote a table whose view had only
+        ``_empty``, and ``SELECT title FROM <table>`` failed (exit 10) where the same query
+        on a full archive ran."""
+        mission = {
+            "collectors": [
+                {"name": "hits", "type": "cli", "run": "true", "normalize": {"title": "line"}}
+            ]
+        }
+        _mission(project, "m", mission)
+        assert _invoke("survey", "m").exit_code == 0
+        result = _invoke("query", "m", "SELECT title FROM hits", "--json")
+        assert result.exit_code == 0, result.stderr
+        assert _doc(result)["rows"] == []
+
     def test_zero_rows_is_still_a_document(self, project):
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
