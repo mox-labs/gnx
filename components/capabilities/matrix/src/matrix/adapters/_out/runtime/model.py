@@ -15,7 +15,9 @@ The call's record carries hardline's whole record of it: why the reply ended
 its family and backend, ``fallback_from`` when a fallback answered, usage with cache tokens
 summed over every attempt, the request id, attempts, retries and latency, what was sent
 (``params``, ``turns_digest``), every backend call made (``attempt_log``) and the registry
-row that answered, with the tier that set each of its fields (``row``). A reply cut at
+row that answered, with the tier that set each of its fields (``row``). A call that fails
+raises a ``ModelRuntimeError`` whose ``call`` holds what hardline's error carried: every
+attempt made and the usage they reported. A reply cut at
 ``max_tokens``, refused or withheld is returned and said for what it is, as hardline returns
 it. hardline reports tokens, not dollars; bound a reply with ``max_tokens``.
 
@@ -38,7 +40,7 @@ from matrix.domain.model_call import (
 )
 
 if TYPE_CHECKING:
-    from hardline import Completion, Usage
+    from hardline import Attempt, Completion, Usage
     from hardline import ModelRuntime as Hardline
 
     from matrix.domain.model_call import ModelRequest
@@ -143,6 +145,7 @@ class HardlineModelRuntime:
                 f"model {model or '(default)'!r}: {e}",
                 reason=_reason(e),
                 retry_after_s=getattr(e, "retry_after", None),
+                call=_failed(e),
                 model=model,
             ) from e
         except Exception as e:  # the port promises a call record or a classified error
@@ -175,17 +178,34 @@ def _record(completion: Completion, value: Any) -> ModelCall:
         fallback_from=completion.fallback_from,
         latency_ms=completion.latency_ms,
         params=None if params is None else RequestParams(**params.model_dump()),
-        attempt_log=tuple(
-            CallAttempt(
-                name=attempt.name,
-                reason=attempt.reason,
-                usage=None if attempt.usage is None else _usage(attempt.usage),
-                latency_ms=attempt.latency_ms,
-            )
-            for attempt in completion.attempt_log
-        ),
+        attempt_log=tuple(_attempt(attempt) for attempt in completion.attempt_log),
         turns_digest=completion.turns_digest,
         row=None if row is None else RegistryRow(digest=row.digest, rungs=dict(row.rungs)),
+    )
+
+
+def _failed(error: Exception) -> ModelCall | None:
+    """What hardline's error says of a call that failed: every attempt made and the usage
+    they reported (a ``BackendError`` or ``SchemaError`` the runtime raised). None for an
+    error raised before anything was sent."""
+    log: tuple[Attempt, ...] = getattr(error, "attempt_log", ())
+    usage: Usage | None = getattr(error, "usage", None)
+    if not log and usage is None:
+        return None
+    attempts = getattr(error, "attempts", None)  # a SchemaError's schema attempts
+    return ModelCall(
+        usage=None if usage is None else _usage(usage),
+        attempts=attempts if isinstance(attempts, int) else None,
+        attempt_log=tuple(_attempt(attempt) for attempt in log),
+    )
+
+
+def _attempt(attempt: Attempt) -> CallAttempt:
+    return CallAttempt(
+        name=attempt.name,
+        reason=attempt.reason,
+        usage=None if attempt.usage is None else _usage(attempt.usage),
+        latency_ms=attempt.latency_ms,
     )
 
 

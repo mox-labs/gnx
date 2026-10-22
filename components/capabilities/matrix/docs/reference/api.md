@@ -523,12 +523,25 @@ A fact the runtime did not report is `None`.
 | Name | Signature | Does |
 |------|-----------|------|
 | `digest` | `(value) -> str` | `sha256:<hex>` over canonical JSON (keys sorted, no whitespace, UTF-8): the session row's `sent` |
-| `agent_session` | `(response, *, agent, sent, runtime=None, drives=()) -> Session` | the session row of an agent session, from its `AgentResponse` |
-| `call_session` | `(call, *, sent, runtime=None, drives=()) -> Session` | the session row of a model call, from its `ModelCall` |
+| `agent_session` | `(response, *, agent, sent, runtime=None, drives=(), error=None) -> Session` | the session row of an agent session, from its `AgentResponse`. For a session that failed, `error` is the exception and `response` what it carried (`AgentRuntimeError.response`, or `None`): the row is `status: failed` with the error's `reason` and message |
+| `call_session` | `(call, *, sent, runtime=None, drives=(), error=None) -> Session` | the session row of a model call, from its `ModelCall`. For a call that failed, `error` is the exception and `call` what it carried (`ModelRuntimeError.call`, or `None`) |
 | `record_session` | `(session) -> int \| None` | records it in the run of the component running in this task, durably and in ledger order; its row, or `None` outside a run. The rows that component hands over next name it |
 
-A `BoundAgent` and a model step record their sessions themselves. A component that calls a
-`ModelRuntime` itself records its calls with `record_session(call_session(...))`.
+A `BoundAgent` and a model step record their sessions themselves, the failed ones included. A
+component that calls a `ModelRuntime` itself records its calls, failed or not:
+
+```python
+from matrix import ModelRequest, ModelRuntimeError, call_session, digest, record_session
+
+request = ModelRequest(prompt="Rate this.", model="haiku")
+sent = digest({"prompt": request.prompt, "system": None, "model": "haiku", "output": None})
+try:
+    call = await runtime.call(request)
+except ModelRuntimeError as e:
+    record_session(call_session(e.call, sent=sent, error=e))
+    raise
+row = record_session(call_session(call, sent=sent))  # the row a reply can name
+```
 
 ### `Ref` and `REF`
 
@@ -1472,10 +1485,14 @@ callers treat it as the cancellation it is) with one addition, `run`, the partia
 `run.status` is `cancelled`, or `completed`/`failed` when the cancellation arrived as the run
 was already ending.
 
-`AgentRuntimeError(message, *, reason="failed", fix=None, retry_after_s=None, **details)`,
-and `ModelRuntimeError` with the same arguments, maps its `reason` (`RuntimeReason`) to a kind; a reason matrix does not know maps to
+`AgentRuntimeError(message, *, reason="failed", fix=None, retry_after_s=None, response=None,
+**details)`, and `ModelRuntimeError` with the same arguments and `call=None` in place of
+`response`, maps its `reason` (`RuntimeReason`) to a kind; a reason matrix does not know maps to
 `component`. `retryable` is true for the transient ones; `retry_after_s` is the backend's own
-hint, which a retry policy honours:
+hint, which a retry policy honours. `response` (an `AgentResponse`) and `call` (a `ModelCall`)
+are what the runtime knew of the session or call that failed, when it knew anything (`hardline`:
+every attempt and the usage they reported; `claude-sdk`: a failed result's id, usage, cost and
+turns); the session row of the failure is built from them:
 
 | `reason` | Kind | Meaning |
 |----------|------|---------|

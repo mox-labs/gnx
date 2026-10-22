@@ -143,7 +143,11 @@ class ModelStep:
         request = ModelRequest(
             prompt=prompt, model=self._config.model, system=self._config.system, output=self._output
         )
-        call = await self._runtime.call(request)
+        try:
+            call = await self._runtime.call(request)
+        except Exception as e:
+            self._record(request, e.call if isinstance(e, ModelRuntimeError) else None, e)
+            raise
         call = call.model_copy(update={"prompt": prompt, "session": self._record(request, call)})
         self._whole(call)
         rows: dict[str, Any] = {self._config.response: call.as_reply()}
@@ -153,9 +157,12 @@ class ModelStep:
             rows[self._config.output] = (reply,)
         return rows
 
-    def _record(self, request: ModelRequest, call: ModelCall) -> int | None:
-        """Record the call in the run's session table, whether or not its reply is whole;
-        its row, or None outside a run."""
+    def _record(
+        self, request: ModelRequest, call: ModelCall | None, error: Exception | None = None
+    ) -> int | None:
+        """Record the call in the run's session table, whether its reply is whole, not whole,
+        or it failed (``error``, with what the runtime knew of the call); its row, or None
+        outside a run."""
         output = request.output
         sent = digest(
             {
@@ -166,7 +173,9 @@ class ModelStep:
             }
         )
         return record_session(
-            call_session(call, sent=sent, runtime=self._runtime_url, drives=self._drives)
+            call_session(
+                call, sent=sent, runtime=self._runtime_url, drives=self._drives, error=error
+            )
         )
 
     def _whole(self, call: ModelCall) -> None:

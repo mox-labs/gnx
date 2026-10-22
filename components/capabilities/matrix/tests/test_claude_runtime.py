@@ -272,6 +272,31 @@ class TestSessionEnding:
         with pytest.raises(AgentRuntimeError, match="error_during_execution.*tool crashed"):
             await _runtime().run(_defn(), "hi")
 
+    async def test_a_failed_session_s_error_carries_what_its_result_says(self, monkeypatch):
+        """The session failed, but it ran and spent tokens: its id, usage and cost reach the
+        session table through the error (``response``)."""
+        from matrix import AgentRuntimeError
+
+        _install(
+            monkeypatch,
+            _assistant(sdk.TextBlock("partial")),
+            _result(
+                subtype="error_during_execution",
+                is_error=True,
+                session_id="s-9",
+                usage={"input_tokens": 4, "output_tokens": 2, "cache_read_input_tokens": 60},
+            ),
+        )
+        with pytest.raises(AgentRuntimeError) as e:
+            await _runtime().run(_defn(), "hi")
+        response = e.value.response
+        assert response is not None and response.stop is None
+        assert (response.session_id, response.tokens_input, response.cost_usd) == (
+            "s-9",
+            64,
+            0.01,
+        )
+
     async def test_a_budget_limit_is_reported_not_raised(self, monkeypatch):
         """``max_budget_usd`` is the SDK's own stop; matrix records it as the reason the
         session ended and counts nothing against it."""

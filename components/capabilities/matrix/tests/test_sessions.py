@@ -24,6 +24,8 @@ from matrix import (
     SESSION,
     TASK,
     AgentDefinition,
+    AgentResponse,
+    AgentRuntimeError,
     BoundAgent,
     CompilationError,
     Executor,
@@ -68,6 +70,7 @@ async def test_a_model_call_is_a_session_row_its_reply_points_at_and_its_rows_na
     assert (session.port, session.runtime) == ("model-runtime", "matrix.v1.model-runtime.mock")
     assert (session.family, session.backend, session.finish_reason) == ("mock", "mock", "stop")
     assert (session.attempts, session.retries, session.turns) == (1, 0, None)
+    assert (session.status, session.reason, session.error) == ("completed", None, None)
     assert session.sent == digest(
         {"prompt": "rate it", "system": "Be fair.", "model": None, "output": None}
     )
@@ -164,6 +167,117 @@ async def test_a_call_whose_reply_is_refused_is_still_on_the_record() -> None:
     (session,) = run.rows(SESSION)
     assert session.finish_reason == "stop" and run.rows(MODEL_CALL) == ()
     assert run.construct.provenance(SESSION)[0].component == "rate"
+
+
+class _Rating(BaseModel):
+    score: int
+
+
+async def test_a_failed_model_call_is_still_a_session_row_with_what_it_cost() -> None:
+    """A call that failed (here: its repair was rate limited, with no retries left) spent
+    tokens and made attempts. Its row says it failed, why, and what each attempt cost."""
+    hardline = pytest.importorskip("hardline")
+    from hardline.adapters._out.mock import MockBackend
+
+    from matrix import ModelStep, ModelStepConfig
+    from matrix.adapters._out.runtime.model import HardlineModelRuntime
+
+    row = {
+        "backend": "mock",
+        "model": "q-1",
+        "family": "q",
+        "retries": 0,
+        "options": {"script": ["not a rating", {"error": "rate_limit"}]},
+    }
+    runtime = HardlineModelRuntime(
+        hardline.build_runtime(
+            config={"default": "q", "models": {"q": row}}, backends={"mock": MockBackend()}
+        )
+    )
+    step = ModelStep(
+        ModelStepConfig(runtime="m", output=RATING),
+        model_runtimes={"m": runtime},
+        schemas={RATING: _Rating},
+    )
+    with pytest.raises(RunError) as e:
+        await Executor().run(wire({"rate": step}, inputs=[PROMPT]), {PROMPT: "rate it"})
+    run = e.value.run
+    (session,) = run.rows(SESSION)
+    assert (session.port, session.status, session.reason) == (
+        "model-runtime",
+        "failed",
+        "rate_limited",
+    )
+    assert session.error is not None and "rate_limit" in session.error
+    assert session.attempt_log is not None
+    assert [(a.name, a.reason) for a in session.attempt_log] == [("q", None), ("q", "rate_limit")]
+    assert session.usage is not None and session.usage == session.attempt_log[0].usage
+    assert session.usage.input_tokens > 0
+    assert session.sent == digest(
+        {"prompt": "rate it", "system": None, "model": None, "output": _Rating.model_json_schema()}
+    )
+    # Linkage is unchanged: the row is the failed component's, and no entry names it.
+    assert run.construct.provenance(SESSION)[0].component == "rate"
+    assert all(entry.sessions == () for entry in run.construct.ledger)
+
+
+class _Failing:
+    """An agent runtime whose sessions fail, as ``error`` says."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def check(self, definition: AgentDefinition) -> None:
+        pass
+
+    async def run(self, definition: AgentDefinition, task: str) -> Any:
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    ("error", "reason", "facts"),
+    [
+        (
+            AgentRuntimeError(
+                "agent 'a': session failed (HTTP 529)",
+                reason="unavailable",
+                response=AgentResponse(
+                    session_id="s-1", tokens_input=90, tokens_output=3, cost_usd=0.02, num_turns=2
+                ),
+            ),
+            "unavailable",
+            ("s-1", 90, 0.02, 2),
+        ),
+        (RuntimeError("the runtime broke its port"), None, (None, None, None, None)),
+    ],
+)
+async def test_a_failed_agent_session_is_still_a_session_row(
+    error: Exception, reason: str | None, facts: tuple[Any, ...]
+) -> None:
+    """A session that failed is on the record with what its runtime knew of it: its ids and
+    usage when the runtime's error carried them, and always that it failed and why."""
+    agent = BoundAgent(AgentDefinition(name="a"), _Failing(error), runtime_url="acme.v1.rt")
+
+    class _Once:
+        requires = frozenset({TASK})
+        provides = frozenset({"acme.v1.out"})
+
+        async def run(self, inputs: Any, ctx: Any) -> Any:
+            await agent.run("go")
+
+    with pytest.raises(RunError) as e:
+        await Executor().run(wire({"once": _Once()}, inputs=[TASK]), {TASK: "go"})
+    run = e.value.run
+    (session,) = run.rows(SESSION)
+    assert (session.port, session.agent, session.runtime) == ("agent-runtime", "a", "acme.v1.rt")
+    assert (session.status, session.reason, session.stop) == ("failed", reason, None)
+    assert session.error is not None and str(error) in session.error
+    usage = session.usage.input_tokens if session.usage is not None else None
+    assert (session.session_id, usage, session.cost_usd, session.turns) == facts
+    assert session.sent == digest(
+        {"definition": AgentDefinition(name="a").model_dump(mode="json"), "task": "go"}
+    )
+    assert run.construct.provenance(SESSION)[0].component == "once"
 
 
 def _recorded(root: Path, **step: Any) -> Any:

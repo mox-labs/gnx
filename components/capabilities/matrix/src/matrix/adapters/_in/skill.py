@@ -578,10 +578,12 @@ With the default store a run is a directory under `.matrix/runs/<run_id>/`:
   rows are `AgentResponse`s, the task as sent in `task`, the reply in `content`; a model
   step's are `ModelCall`s, the prompt as sent in `prompt`, the reply in `text`, why it
   ended (`finish_reason`); each points at its session row (`session`);
-- `matrix.v1.session.jsonl`: one line per agent session or model call: `runtime`, the model
-  that answered, `stop`, `finish_reason`, `usage`, `cost_usd`, `session_id`, `request_id`,
-  `trace_id` and `span_id`, `fallback_from`, `attempts`, and `sent` (a digest of what was
-  sent). The line's position (from 0) is the row a reply's `session` names;
+- `matrix.v1.session.jsonl`: one line per agent session or model call, a failed one
+  included: `status` (`completed`, or `failed` with its `reason` and `error`), `runtime`, the
+  model that answered, `stop`, `finish_reason`, `usage` (`input_tokens` counts the cache's),
+  `cost_usd`, `session_id`, `request_id`, `trace_id` and `span_id`, `fallback_from`,
+  `attempts`, `attempt_log`, and `sent` (a digest of what was sent). The line's position
+  (from 0) is the row a reply's `session` names;
 - `matrix.v1.ledger.jsonl`: which component handed each row over, when, and the session
   rows behind it (`sessions`);
 - `events.jsonl`: the run's events; `matrix.agent.start` carries each task as sent, so a
@@ -590,7 +592,7 @@ With the default store a run is a directory under `.matrix/runs/<run_id>/`:
 ```bash
 jq . .matrix/runs/RUN_ID/run.json
 jq -c '{task, content, session}' .matrix/runs/RUN_ID/acme.v1.claim-reply.jsonl
-jq -c '{runtime, model, stop, usage}' .matrix/runs/RUN_ID/matrix.v1.session.jsonl
+jq -c '{status, reason, runtime, model, stop, usage}' .matrix/runs/RUN_ID/matrix.v1.session.jsonl
 jq -c 'select(.name == "matrix.agent.start") | .fields' .matrix/runs/RUN_ID/events.jsonl
 ```
 

@@ -24,8 +24,10 @@ from matrix.domain.problems import counted, summary
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from matrix.domain.agent import AgentResponse
     from matrix.domain.construct import Construct
     from matrix.domain.executor import Run
+    from matrix.domain.model_call import ModelCall
     from matrix.domain.problems import Problem
 
 ErrorKind = Literal[
@@ -302,12 +304,30 @@ class _ClassifiedError(MatrixError):
 
 class AgentRuntimeError(_ClassifiedError):
     """An agent runtime could not complete a session, with a classified ``reason``. Every
-    agent runtime raises this for an execution failure, whatever its backend."""
+    agent runtime raises this for an execution failure, whatever its backend.
+
+    ``response`` is what the runtime knew of the failed session, when it knew anything: its
+    id, usage, cost, turns and the model that answered (claude-sdk's, from a result that says
+    the session failed). The session's row in ``matrix.v1.session`` is built from it."""
+
+    def __init__(
+        self, message: str, *, response: AgentResponse | None = None, **kwargs: Any
+    ) -> None:
+        super().__init__(message, **kwargs)
+        self.response = response
 
 
 class ModelRuntimeError(_ClassifiedError):
     """A model runtime could not complete a call, with a classified ``reason``. Every model
-    runtime raises this for an execution failure, whatever its backend."""
+    runtime raises this for an execution failure, whatever its backend.
+
+    ``call`` is what the runtime knew of the failed call, when it knew anything: for hardline,
+    every attempt made (``attempt_log``) and the usage they reported. The call's row in
+    ``matrix.v1.session`` is built from it."""
+
+    def __init__(self, message: str, *, call: ModelCall | None = None, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.call = call
 
 
 class RunError(MatrixError):

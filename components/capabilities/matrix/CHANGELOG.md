@@ -104,6 +104,21 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Added
 
+- **A session that failed is a row of `matrix.v1.session` too.** A model call that exhausted
+  its retries, or an agent session that failed, was asked for and may have spent tokens; only
+  completed ones were recorded. `Session` gains `status` (`completed`, or `failed`), `reason`
+  (the runtime's classified reason) and `error` (its message). The row holds what the
+  runtime's error carried, through two new, defaulted attributes:
+  - `ModelRuntimeError.call`: a `ModelCall` with what the runtime knew of the failed call. The
+    `hardline` model runtime fills it with hardline's `attempt_log` and `usage`.
+  - `AgentRuntimeError.response`: an `AgentResponse` with what the runtime knew of the failed
+    session. `claude-sdk` fills it from a result that says the session failed: its id, usage,
+    cost, turns and model.
+
+  `agent_session` and `call_session` take `error=`, and their record may be `None`. `BoundAgent`
+  and the model step record a failed session before re-raising; the row is the failed
+  component's, and no ledger entry names it.
+
 - **`matrix.v1.model-step`**: one model call as a component. It names a model runtime and a
   model, renders its `prompt` from its `inputs`, and provides a `ModelCall` (the prompt as
   sent, the reply, and the call's record, below) and, with `output`, the reply as a row of
