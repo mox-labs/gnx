@@ -81,7 +81,7 @@ TIERS: tuple[tuple[str, str], ...] = (
 CONFIG_KEYS: dict[str, str] = {
     "definitions": "directories of agent definitions (`*.md`, Claude Code format)",
     "agent_runtimes": "name: `{type, ...options}`: agent sessions, with a loop and tools; "
-    "`type` is `claude-sdk`, `mock`, or a registered agent runtime's type URL",
+    "`type` is `claude-sdk`, `pydantic-ai`, `mock`, or a registered agent runtime's type URL",
     "model_runtimes": "name: `{type, ...options}`: one model call each; `type` is `hardline`, "
     "`mock`, or a registered model runtime's type URL",
     "observers": "a short name or type URL, or `{type, ...options}`",
@@ -386,8 +386,8 @@ build as written:
   `mock:<agent>:<task>`; the model one by `responses`, `by_model`, `default`, else
   `mock:<model>:<prompt>`.
 - **`model`** is the runtime's to read: on `claude-sdk` an alias (`haiku`, `sonnet`, `opus`)
-  or a full model id; on a model step on `hardline`, a hardline registry name, checked when
-  the step is built.
+  or a full model id; on `pydantic-ai`, and on a model step on `hardline`, a hardline registry
+  name, checked when the agent is bound or the step is built.
 
 The order of `components` means nothing: the work is ordered by the kinds. Steps and runtimes
 in full: `matrix --skill -r agents`; store, limits and retries: `-r config`."""
@@ -718,6 +718,14 @@ Agent runtimes (`matrix.agent_runtimes`):
   default. `max_budget_usd` is the SDK's own option: the SDK ends a session once it has spent
   that many USD (`stop: max_budget_usd`), and `cost_usd` is what the SDK reported;
   `max_turns` (on the agent) bounds its turns.
+- `pydantic-ai`: a pydantic-ai agent loop whose every model call goes through hardline, in
+  any family it has a row for. Options: `models` (a hardline registry; else `matrix.models`),
+  `default_model`, `tools` (name to `module:function`, a Python function imported when the
+  runtime is built), `temperature`, `max_tokens`. An agent's `tools` choose from the
+  runtime's (unset: all; `[]`: none); `max_turns` bounds its model calls (`stop: max_turns`).
+  A tool it does not have, a model hardline cannot resolve, or tools on a row whose backend
+  cannot call them is refused at binding. Its tokens are counted by hardline, once; it
+  reports no cost.
 
 Model runtimes (`matrix.model_runtimes`):
 
@@ -778,7 +786,8 @@ The GenAI semantic conventions as read on 2026-10-19 (repository
   `gen_ai.invoke_agent.tool_calls`, `gen_ai.execute_tool.duration`,
   `gen_ai.client.inference.usage.input_tokens` / `output_tokens` (agent sessions only: a
   model call's tokens are counted by the model runtime, hardline, per attempt, and are on the
-  call's session row; nothing is counted twice); matrix's own where the
+  call's session row; a `pydantic-ai` session's calls are hardline's too, and its runtime
+  says so, `usage_counted_by`; nothing is counted twice); matrix's own where the
   conventions have none: `matrix.component.duration`, `matrix.component.count`,
   `matrix.component.retries`, `matrix.agent.cost_usd` (as a runtime reported it),
   `matrix.events.dropped`; and each

@@ -6,7 +6,8 @@ each call where a session reaches a model, beneath every runtime and backend tha
 * the Claude Agent SDK's ``query`` and ``ClaudeSDKClient.connect``, which start the
   ``claude`` CLI (matrix's ``claude-sdk`` runtime, and so an ix ``agent-session``);
 * hardline's network transport, which its provider backends open for every request they
-  send (matrix's ``model`` runtime, and an ix ``judge``). hardline speaks to providers over
+  send (matrix's ``hardline`` model runtime and ``pydantic-ai`` agent runtime, whose model
+  calls hardline makes, and an ix ``judge``). hardline speaks to providers over
   HTTP itself, with no provider SDK.
 
 A test that fakes one of these is untouched: a fake SDK module, or a backend handed an httpx2

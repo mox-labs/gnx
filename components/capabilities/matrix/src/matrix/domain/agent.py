@@ -234,7 +234,9 @@ class BoundAgent:
     async def run(self, task: str) -> AgentResponse:
         """Run the definition on the runtime. Emits ``matrix.agent.start`` (with the task as
         sent) and ``.end``, and a ``matrix.tool.start``/``.end`` pair for each tool call the
-        runtime timed. Inside a run, records the session (see the class docstring)."""
+        runtime timed. ``.end`` carries ``usage_counted_by`` when the runtime declares who
+        counts its model calls' tokens. Inside a run, records the session (see the class
+        docstring)."""
         span = uuid.uuid4().hex
         name = self._definition.name
         scope = CURRENT_SPAN.get()
@@ -277,6 +279,11 @@ class BoundAgent:
                     provider=response.provider,
                     tool_calls=len(response.tool_calls),
                 )
+                counted_by = getattr(self._runtime, "usage_counted_by", None)
+                if isinstance(counted_by, str) and counted_by:
+                    # The runtime's model calls are counted where they are made: an observer
+                    # counts this session's tokens no second time.
+                    fields["usage_counted_by"] = counted_by
                 for call in response.tool_calls:
                     await self._tool(call, span, run_id, component)
                 row = self._record(task, response)

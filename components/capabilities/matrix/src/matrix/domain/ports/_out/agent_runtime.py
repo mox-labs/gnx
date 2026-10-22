@@ -14,11 +14,14 @@ cannot play (skills its tools leave no way to use, an option its SDK does not ha
 binding refuses it before anything runs. A runtime that plays every definition implements it
 as a no-op.
 
-Two members are optional, read with ``getattr`` so a runtime written before them works
-unedited: ``warnings`` (problems a reader of its config should see), and ``resolved``: JSON
+Three members are optional, read with ``getattr`` so a runtime written before them works
+unedited: ``warnings`` (problems a reader of its config should see); ``resolved``: JSON
 data for what the runtime settled when it was built, beyond its own config, that decides how
-it answers. Composition digests it into the reuse fingerprint of every component that runs
-an agent on it.
+it answers, which composition digests into the reuse fingerprint of every component that runs
+an agent on it; and ``usage_counted_by``: the name of what counts the inference tokens of the
+runtime's model calls already (``hardline``, which counts every call it makes). An observer
+then counts a session's tokens no second time; its session row keeps them. A runtime whose
+calls nothing else counts leaves it unset.
 
 A runtime that also logs what its ``warnings`` say logs it on :data:`RUNTIME_LOGGER`, once per
 process, so a caller that builds a runtime per session is not told once per session. A

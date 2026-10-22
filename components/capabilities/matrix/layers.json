@@ -17,8 +17,8 @@
                 "matrix.domain.problems", "matrix.domain.ref", "matrix.domain.registry",
                 "matrix.domain.session", "matrix.domain.template",
                 "matrix.domain.ports._out"],
-      "forbid": ["opentelemetry", "yaml", "claude_agent_sdk", "hardline", "open", "os",
-                 "pathlib", "subprocess", "socket", "fcntl", "signal", "importlib", "sys"],
+      "forbid": ["opentelemetry", "yaml", "claude_agent_sdk", "hardline", "pydantic_ai", "open",
+                 "os", "pathlib", "subprocess", "socket", "fcntl", "signal", "importlib", "sys"],
       "why": {
         "stdlib": "computation (a template's placeholders read with string.Formatter, a session's request digested with hashlib and json), plus the asyncio scheduling, clock, run ids and log records the executor needs to run components",
         "pydantic": "the one third-party library the core admits: every document and config is a pydantic model, so the core runs with pydantic alone",
@@ -33,7 +33,7 @@
       "allow": ["__future__", "collections", "dataclasses", "typing",
                 "matrix.domain.agent", "matrix.domain.construct", "matrix.domain.executor",
                 "matrix.domain.model_call", "matrix.domain.observer", "matrix.domain.problems"],
-      "forbid": ["opentelemetry", "yaml", "logging", "open"],
+      "forbid": ["opentelemetry", "yaml", "logging", "open", "hardline", "pydantic_ai"],
       "why": {
         "domain types": "a port is stated in domain types: the agent runtime in agent's, the model runtime in model_call's, the store in construct's and executor's Run, the document source in problems'",
         "no matrix.domain.ports": "a port never reaches another port: how they combine is the root's",
@@ -47,20 +47,38 @@
                 "src/matrix/adapters/_out/observers/__init__.py",
                 "src/matrix/adapters/_out/observers/console.py",
                 "src/matrix/adapters/_out/observers/jsonl.py",
-                "src/matrix/adapters/_out/runtime/*.py", "src/matrix/adapters/_out/stores/*.py"],
+                "src/matrix/adapters/_out/runtime/__init__.py",
+                "src/matrix/adapters/_out/runtime/claude_sdk.py",
+                "src/matrix/adapters/_out/runtime/mock.py",
+                "src/matrix/adapters/_out/stores/*.py"],
+      "allow": ["*", "matrix.domain"],
+      "forbid": ["opentelemetry", "hardline", "pydantic_ai"],
+      "why": {
+        "*": "an adapter holds its own technology: yaml, rich, fcntl and sockets, the Claude Agent SDK (each technology confined to one file by single_importer)",
+        "matrix.domain": "the port it implements and the domain types it speaks in",
+        "not matrix.adapters or matrix.composition": "an adapter reaches no other adapter and does no wiring: one place chooses adapters",
+        "forbid opentelemetry": "the OpenTelemetry API is spoken by the otel observer alone, and the SDK is installed by the root's telemetry module alone",
+        "forbid hardline, pydantic_ai": "hardline is spoken by the two runtimes built on it alone (adapter_hardline), and pydantic-ai by one of them"
+      }
+    },
+    {
+      "name": "adapter_hardline",
+      "files": ["src/matrix/adapters/_out/runtime/model.py",
+                "src/matrix/adapters/_out/runtime/pydantic_ai.py"],
       "allow": ["*", "matrix.domain"],
       "forbid": ["opentelemetry"],
       "why": {
-        "*": "an adapter holds its own technology: yaml, rich, fcntl and sockets, the Claude Agent SDK, hardline (each technology confined to one file by single_importer)",
-        "matrix.domain": "the port it implements and the domain types it speaks in",
-        "not matrix.adapters or matrix.composition": "an adapter reaches no other adapter and does no wiring: one place chooses adapters",
-        "forbid opentelemetry": "the OpenTelemetry API is spoken by the otel observer alone, and the SDK is installed by the root's telemetry module alone"
+        "*": "hardline, and in pydantic_ai.py pydantic-ai, the agent framework whose model calls hardline makes (confined to that file by single_importer)",
+        "matrix.domain": "the port each implements and the domain types it speaks in",
+        "two files": "hardline is the technology of two runtimes, one per port: the model runtime (one call) and the pydantic-ai agent runtime (a session whose calls hardline makes). Like OpenTelemetry's two files, it is confined by 'forbid' in every other layer rather than by a single_importer rule, which names one file",
+        "forbid opentelemetry": "hardline traces its own calls; the runtimes name no telemetry"
       }
     },
     {
       "name": "adapter_otel",
       "files": ["src/matrix/adapters/_out/observers/otel.py"],
       "allow": ["*", "matrix.domain.observer"],
+      "forbid": ["hardline", "pydantic_ai"],
       "why": {
         "*": "the OpenTelemetry API, and importlib.metadata for the instrumentation scope's version",
         "matrix.domain.observer": "an observer needs only the Event type and the event names; nothing else of matrix"
@@ -71,7 +89,7 @@
       "files": ["src/matrix/adapters/_in/__init__.py", "src/matrix/adapters/_in/signals.py",
                 "src/matrix/adapters/_in/skill.py"],
       "allow": ["*", "matrix.domain"],
-      "forbid": ["opentelemetry"],
+      "forbid": ["opentelemetry", "hardline", "pydantic_ai"],
       "why": {
         "signals": "turns SIGTERM and SIGINT into cancellation: process technology, reaching no part of matrix",
         "skill": "renders the --skill text from the domain's declared names (errors, ids, the registry's points, the steps' types)",
@@ -82,7 +100,8 @@
       "name": "cli",
       "files": ["src/matrix/adapters/_in/cli.py"],
       "allow": ["*", "matrix"],
-      "forbid": ["opentelemetry", "ClaudeSdkRuntime", "HardlineModelRuntime", "MockAgentRuntime",
+      "forbid": ["opentelemetry", "hardline", "pydantic_ai", "ClaudeSdkRuntime",
+                 "HardlineModelRuntime", "PydanticAiRuntime", "MockAgentRuntime",
                  "MockModelRuntime", "JsonlConstructStore", "MemoryConstructStore",
                  "FileSource", "OtelObserver", "JsonlObserver", "ConsoleObserver"],
       "why": {
@@ -95,7 +114,7 @@
       "name": "process",
       "files": ["src/matrix/process.py"],
       "allow": ["*"],
-      "forbid": ["opentelemetry"],
+      "forbid": ["opentelemetry", "hardline", "pydantic_ai"],
       "why": {
         "*": "matrix.process is a public helper a component calls (start, kill_group): process technology, reaching no part of matrix"
       }
@@ -106,16 +125,18 @@
                 "src/matrix/composition/builtins.py", "src/matrix/composition/config.py",
                 "src/matrix/composition/container.py", "src/matrix/composition/documents.py"],
       "allow": ["*", "matrix"],
-      "forbid": ["opentelemetry"],
+      "forbid": ["opentelemetry", "hardline", "pydantic_ai"],
       "why": {
         "*, matrix": "the composition root chooses adapters, wires ports and holds configuration; the package __init__ re-exports the public surface",
-        "forbid opentelemetry": "the root installs telemetry through composition/telemetry.py alone"
+        "forbid opentelemetry": "the root installs telemetry through composition/telemetry.py alone",
+        "forbid hardline, pydantic_ai": "the root builds the runtimes on hardline through their adapters, and imports neither itself"
       }
     },
     {
       "name": "root_telemetry",
       "files": ["src/matrix/composition/telemetry.py"],
       "allow": ["*", "matrix.domain.errors", "matrix.domain.problems"],
+      "forbid": ["hardline", "pydantic_ai"],
       "why": {
         "*": "the OpenTelemetry SDK and its OTLP exporters, and the OTEL_* environment: installing a provider is configuration, so it is the root's, and the library itself stays on the API",
         "matrix.domain.errors, matrix.domain.problems": "a bad telemetry setting is a ConfigError with its problem"
@@ -124,9 +145,9 @@
   ],
   "single_importer": [
     {"name": "claude_agent_sdk", "only": "src/matrix/adapters/_out/runtime/claude_sdk.py"},
-    {"name": "hardline", "only": "src/matrix/adapters/_out/runtime/model.py"},
+    {"name": "pydantic_ai", "only": "src/matrix/adapters/_out/runtime/pydantic_ai.py"},
     {"name": "yaml", "only": "src/matrix/adapters/_out/documents/files.py"},
     {"name": "rich_click", "only": "src/matrix/adapters/_in/cli.py"}
   ],
-  "single_importer_why": "one file per technology: the Claude Agent SDK behind the agent runtime port, hardline behind the model runtime port, YAML behind the document source (FileSource hides the file formats), rich-click behind the command. OpenTelemetry is two files by design, the API in the otel observer and the SDK in the root's telemetry module, so it is confined by 'forbid' in every other layer rather than by a single_importer rule"
+  "single_importer_why": "one file per technology: the Claude Agent SDK behind the agent runtime port, pydantic-ai behind it too, YAML behind the document source (FileSource hides the file formats), rich-click behind the command. Two technologies are two files by design, so each is confined by 'forbid' in every other layer rather than by a single_importer rule: OpenTelemetry (the API in the otel observer, the SDK in the root's telemetry module) and hardline (the model runtime, and the pydantic-ai agent runtime whose model calls it makes)"
 }

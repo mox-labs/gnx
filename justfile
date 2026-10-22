@@ -116,9 +116,11 @@ lab:
 # list: the repository resolves that dependency on every supported path because the
 # clone carries the workspace root, and severing the package from the repo — what
 # this recipe does on purpose — lets PyPI's unrelated `matrix` 3.0.0 fill the gap.
-# ix is the one package with such a dependency: its run path is matrix components. It is
-# checked with matrix copied beside it and named explicitly, so the gap is filled by this
-# repository's matrix and ix's other imports are still held to what ix declares.
+# Two packages have such a dependency: matrix depends on hardline (its model runtime and its
+# pydantic-ai agent runtime make their calls through it; PyPI has an unrelated `hardline`
+# too), and ix on matrix (its run path is matrix components). Each is checked with what it
+# depends on copied beside it and named explicitly, so the gap is filled by this repository's
+# packages and its other imports are still held to what it declares.
 capabilities-standalone:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -128,7 +130,8 @@ capabilities-standalone:
       cp -R components/capabilities/$p "$tmp/$p"
       probe=("$p" --help)
       with=(--with ./$p)
-      if [ "$p" = ix ]; then with=(--with ./matrix --with ./ix); fi
+      if [ "$p" = matrix ]; then with=(--with ./hardline --with ./matrix); fi
+      if [ "$p" = ix ]; then with=(--with ./hardline --with ./matrix --with ./ix); fi
       if ( cd "$tmp" && uv run --isolated --no-project --quiet "${with[@]}" "${probe[@]}" >/dev/null ); then
         echo "  $p standalone OK"
       else

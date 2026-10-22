@@ -120,6 +120,29 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Added
 
+- **A second agent runtime, `pydantic-ai`** (`matrix.v1.agent-runtime.pydantic-ai`): a
+  pydantic-ai agent loop whose every model call goes through hardline, so a session runs on
+  hardline's registry rows, retries, fallbacks, call limits, record and telemetry, in any
+  model family hardline has a row for. Its config is what a session can be given: `models` (a
+  hardline registry; else `matrix.models`), `default_model`, `tools` (name to
+  `module:function`, a Python function imported when the runtime is built), `temperature`,
+  `max_tokens`. An agent's `tools` choose from the runtime's (unset: all; `[]`: none), and
+  `max_turns` bounds its model calls (`stop: max_turns`). `check` refuses, at binding, a tool
+  the runtime does not have, a model hardline cannot resolve, and tools on a row whose backend
+  cannot call them. Its session row names the model that answered last, its finish reason, the
+  usage summed over every call and pydantic-ai's run id; it reports no cost. A hardline failure
+  is an `AgentRuntimeError` with its reason, carrying what the session had spent.
+  pydantic-ai's own instrumentation is switched off on every agent, so it records no prompt or
+  reply. It drives `pydantic-ai-slim` and `hardline`.
+- **An agent runtime may say who already counts its model calls' tokens**: the optional
+  member `usage_counted_by` (`pydantic-ai` declares `hardline`). `BoundAgent` puts it on
+  `matrix.agent.end`, and the `otel` observer then adds that session's tokens to no counter;
+  its `invoke_agent` span and session row keep them. One agent run on hardline counts each
+  token once.
+- **`pydantic-ai-slim` and `hardline` are default dependencies.** Each is imported only inside
+  the adapter that uses it, so `import matrix` loads neither. The `models` extra stays, naming
+  hardline again, until every extra goes.
+
 - **The observable behaviours callers rely on are listed** (the design record, §16): the run
   layout and its file and table names, `run.json`'s keys, every `matrix.*` event and the
   fields it always carries, the span and metric names, and the exit kinds. Each is pinned by

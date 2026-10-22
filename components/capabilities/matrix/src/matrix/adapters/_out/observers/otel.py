@@ -49,10 +49,11 @@ exporter saw. The conventions' names where they define one: ``gen_ai.invoke_work
 **One owner per token.** These counters count agent sessions only, whose tokens no model
 runtime's call carries. A model call's tokens are counted by the model runtime that made it
 (hardline counts each attempt, on the same instruments), never here: matrix keeps them on the
-call's session row, and its ``matrix.model`` span carries no usage. So nothing is counted
-twice. The case this does not cover is an agent runtime whose model calls go through hardline
-itself: none does yet, and one that does must leave its session's tokens off the response it
-reports, or be counted twice.
+call's session row, and its ``matrix.model`` span carries no usage. An agent runtime whose
+model calls something else counts already (the ``pydantic-ai`` runtime's go through hardline)
+declares it, ``usage_counted_by``, which the session's end event carries; such a session's
+tokens are not added here, and stay on its span and its session row. So nothing is counted
+twice, and no runtime is told apart by its name.
 matrix's own where they define none: ``matrix.component.duration``,
 ``matrix.component.count``, ``matrix.component.retries``, ``matrix.agent.cost_usd`` and
 ``matrix.events.dropped``; and every ``ctx.measure`` as an instrument of its own name.
@@ -236,13 +237,15 @@ class OtelObserver:
         self._agent_duration.record(fields.get("duration_ms", 0) / 1000, timed)
         if "tool_calls" in fields:
             self._agent_tool_calls.record(fields["tool_calls"], about)
+        if fields.get("cost_usd"):
+            self._agent_cost.add(fields["cost_usd"], about)
+        if fields.get("usage_counted_by"):
+            return  # its model calls' tokens are counted where they were made
         tokens = {**about, "gen_ai.token.modality": "unknown"}
         if fields.get("tokens_input"):
             self._input_tokens.add(fields["tokens_input"], tokens)
         if fields.get("tokens_output"):
             self._output_tokens.add(fields["tokens_output"], tokens)
-        if fields.get("cost_usd"):
-            self._agent_cost.add(fields["cost_usd"], about)
 
     def _measure(self, event: Event) -> None:
         fields = event.fields
@@ -326,6 +329,7 @@ _MATRIX = frozenset(
         "runtime",
         "name",
         "finish_reason",
+        "usage_counted_by",
     }
 )
 #: The statuses matrix gives a component's ``ctx.span`` at its end.

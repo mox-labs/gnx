@@ -22,10 +22,18 @@ classifiers = [
 ]
 
 dependencies = [
+    # The `hardline` model runtime and the `pydantic-ai` agent runtime's model calls: any model
+    # family hardline has a registry row for. Bounded to the minor matrix is built against:
+    # before 1.0 a hardline minor may break.
+    "hardline>=0.2,<0.3",
     # The API only: spans and metrics cost nothing until an SDK is installed (the otel extra).
     # >=1.23: the first release with a synchronous gauge, which a `gauge` measure records to.
     "opentelemetry-api>=1.23",
     "pydantic>=2.0",
+    # The `pydantic-ai` agent runtime. Imported inside its adapter alone, when a runtime is
+    # built, so `import matrix` does not load it. The major its Model and Agent APIs are
+    # written against.
+    "pydantic-ai-slim>=2.59,<3",
     "pyyaml>=6.0",
     "rich>=13",
     "rich-click>=1.8",
@@ -50,8 +58,8 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "opentelemetry-sdk>=1.23"]
 # >=0.1.51: the first release that strips CLAUDECODE from the CLI's environment itself
 # (bisected against PyPI wheels), which is what lets the runtime leave os.environ alone.
 claude = ["claude-agent-sdk>=0.1.51"]
-# The `model` agent runtime: any model family hardline has a registry row for. Bounded to the
-# minor matrix is built against: before 1.0 a hardline minor may break.
+# hardline is a default dependency now; the extra stays, empty of anything new, until every
+# extra goes (Q13), so `matrix[models]` still resolves for whoever names it.
 models = ["hardline>=0.2,<0.3"]
 # The SDK and both OTLP exporters (http/protobuf, the spec's default, and grpc), which the
 # standard OTEL_* variables select.
