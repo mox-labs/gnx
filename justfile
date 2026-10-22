@@ -83,14 +83,15 @@ capabilities-typecheck:
     ( cd components/capabilities && .venv/bin/mypy --strict _testing conftest.py ) || fail=1
     exit $fail
 
-# Every package's but the gnx CLI's, which has none. A skip components/capabilities/conftest.py
-# does not expect fails the run, and every test is bounded in time (pytest-timeout). No test
-# reaches a live model: conftest.py refuses it.
+# Every package's but the gnx CLI's, which has none, and the workspace guard's own (_testing).
+# A skip components/capabilities/conftest.py does not expect fails the run, and every test is
+# bounded in time (pytest-timeout). No test reaches a live model or any host but this machine:
+# conftest.py refuses it.
 #
 # The capability packages' tests, each skip listed with its reason.
 capabilities-test:
     uv --directory components/capabilities run --group dev \
-        python -m pytest hardline/tests matrix/tests ix/tests recon/tests dao/tests \
+        python -m pytest hardline/tests matrix/tests ix/tests recon/tests dao/tests _testing \
         -q -rs --strict-skips
 
 # The docsite: svelte-kit sync + svelte-check + tsc --noEmit.
