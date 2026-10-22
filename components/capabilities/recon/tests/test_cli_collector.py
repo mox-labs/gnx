@@ -89,6 +89,17 @@ class TestCliCollector:
             records = list(CliCollector().collect(entry, source))
             assert "found" in records[0]["line"]
 
+    def test_a_local_source_that_is_not_a_directory_runs_nothing(self, tmp_path, monkeypatch):
+        """Regression: the command ran in recon's working directory instead."""
+        monkeypatch.chdir(tmp_path)
+        entry = CollectorEntry(name="cwd-test", type="cli", run="touch ran-here")
+        source = SourceEntry(name="repo", type="local", url=str(tmp_path / "missing"))
+        with pytest.raises(CollectionError) as excinfo:
+            list(CliCollector().collect(entry, source))
+        assert excinfo.value.kind == "config"
+        assert str(tmp_path / "missing") in str(excinfo.value)
+        assert not (tmp_path / "ran-here").exists()
+
     def test_normalize(self):
         entry = CollectorEntry(
             name="norm",

@@ -7,7 +7,8 @@ rather than stopping at the first. An unknown key does not stop the checks of th
 is in: the entry is checked again without it. Only an entry that does not parse even then
 is left unchecked, and the plan says so (``complete`` is false).
 
-Pure: no network, no subprocess, no filesystem. Collector types contribute through their
+Pure: no network, no subprocess, no filesystem; whether a ``local`` source's directory
+exists is asked of the predicate the caller passes. Collector types contribute through their
 ``CollectorType.check`` and ``describe`` hooks, which are pure by contract.
 """
 
@@ -27,7 +28,7 @@ from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
 
@@ -118,15 +119,22 @@ def fan_out(
 
 
 def build_plan(
-    raw: Any, plugins: Plugins, env: Mapping[str, str], *, base: Path | None = None
+    raw: Any,
+    plugins: Plugins,
+    env: Mapping[str, str],
+    *,
+    base: Path | None = None,
+    is_directory: Callable[[Path], bool] | None = None,
 ) -> Plan:
     """Validate ``raw`` (the parsed config) and resolve its runs.
 
     Each catalog and collector entry is validated on its own, so one malformed entry does
     not hide the problems in the others. A ``local`` source's relative ``url`` is resolved
     against ``base`` (the project root), so a mission means the same directories wherever
-    it is run from. ``env`` is read only to warn about a credential variable a used source
-    names and the environment does not set.
+    it is run from. Given ``is_directory``, a ``local`` source a run uses must name a
+    directory: a command never runs somewhere its mission did not say. ``env`` is read only
+    to warn about a credential variable a used source names and the environment does not
+    set.
     """
     warnings = [plugin_warning(b) for b in plugins.broken]
     if not isinstance(raw, dict):
@@ -164,6 +172,8 @@ def build_plan(
             if ctype is not None:
                 runs.append(_planned_run(entry, output, source, ctype))
 
+    if is_directory is not None:
+        problems += _directory_problems(sources, used_sources, is_directory, base)
     warnings += _credential_warnings(sources, used_sources, env)
     warnings += _mixed_fan_out_warnings(entries, catalog)
     config = None
@@ -563,6 +573,25 @@ def _mixed_fan_out_warnings(
         )
         for i, entry in entries
         if not entry.source
+    ]
+
+
+def _directory_problems(
+    sources: list[tuple[int, SourceEntry]],
+    used: set[str],
+    is_directory: Callable[[Path], bool],
+    base: Path | None,
+) -> list[Problem]:
+    relative = f"; a relative url is relative to the project root, {base}" if base else ""
+    return [
+        Problem(
+            f"catalog.{i}.url",
+            f"{src.url} is not a directory; a local source names the directory its commands run in",
+            fix=f"create the directory, or correct url:{relative}",
+            got=src.url,
+        )
+        for i, src in sources
+        if src.type == "local" and src.name in used and not is_directory(Path(src.url))
     ]
 
 

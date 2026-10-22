@@ -223,10 +223,19 @@ class CliCollector:
 
 
 def _cwd(source: SourceEntry | None) -> Path | None:
-    if source is None:
+    """The directory the commands run in: a ``local`` source's, which must be one; None,
+    recon's working directory, with no source or a source of another type."""
+    if source is None or source.type != "local":
         return None
     path = Path(source.url)
-    return path if path.is_dir() else None
+    if not path.is_dir():
+        raise CollectionError(
+            f"local source {source.name!r} names {source.url}, which is not a directory; "
+            "nothing was run",
+            kind="config",
+            fix="create the directory, or correct the source's url:",
+        )
+    return path
 
 
 def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[str | None, str]]:
@@ -269,7 +278,8 @@ def _check(entry: CollectorEntry) -> list[Problem]:
 
 def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
     # Effects are declared, not inspected: the command may do anything a shell can.
-    # The plan shows the exact commands so a reviewer can read them before they run.
+    # The plan shows the exact commands so a reviewer can read them before they run, and
+    # where: a local source's directory, or None for recon's working directory.
     return {
         "commands": [cmd for _pattern, cmd in _commands(entry, source)],
         "cwd": source.url if source is not None and source.type == "local" else None,

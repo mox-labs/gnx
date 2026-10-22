@@ -253,7 +253,13 @@ class Recon:
                 fix=f"recon init {name} --template <name> (see `recon templates`), "
                 f"or recon survey {name} -c <config.yaml>",
             ) from exc
-        plan = build_plan(source.data, self._plugins, self._env, base=self._missions.project)
+        plan = build_plan(
+            source.data,
+            self._plugins,
+            self._env,
+            base=self._missions.project,
+            is_directory=self._missions.is_directory,
+        )
         if not plan.valid:
             raise ConfigError(
                 f"{path}: {len(plan.problems)} problem(s)",

@@ -121,6 +121,9 @@ class MissionFiles:
         except OSError:
             return 0
 
+    def is_directory(self, path: Path) -> bool:
+        return path.is_dir()
+
     def templates(self) -> list[Template]:
         files = importlib.resources.files("recon.configs")
         found = []

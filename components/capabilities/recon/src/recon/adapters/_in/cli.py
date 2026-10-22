@@ -300,14 +300,18 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
 
 
 def _does(run: dict[str, Any]) -> str:
-    """A run's request (its method, URL, headers and body, a line each) or its commands."""
+    """A run's request (its method, URL, headers and body, a line each), or its commands and
+    the directory they run in."""
     if run.get("url"):
         lines = [f"{run.get('method', 'GET')} {run['url']}"]
         lines += [f"{name}: {value}" for name, value in (run.get("headers") or {}).items()]
         if run.get("body") is not None:
             lines.append(json.dumps(run["body"]))
         return "\n".join(lines)
-    return "; ".join(run.get("commands") or []) or run.get("path") or ""
+    commands = "; ".join(run.get("commands") or [])
+    if commands and "cwd" in run:
+        return f"{commands} (in {run['cwd'] or 'the working directory'})"
+    return commands or run.get("path") or ""
 
 
 def _print_event(event: dict[str, Any]) -> None:

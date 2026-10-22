@@ -483,3 +483,27 @@ class TestLocalSourcesAreRelativeToTheProject:
             "api": "https://x",
         }
         assert {r.output: r.detail["cwd"] for r in plan.runs}["ls-sub"] == str(tmp_path / "src")
+
+    def test_a_local_source_a_run_uses_must_be_a_directory(self, registry, tmp_path):
+        """Regression: a ``cli`` collector whose ``local`` source named a directory that did
+        not exist ran in recon's working directory, while the plan showed the missing one as
+        its ``cwd`` and the survey said ok: a mistyped path mined whatever tree recon was
+        started in."""
+        (tmp_path / "here").mkdir()
+        raw = {
+            "catalog": [
+                {"name": "here", "type": "local", "url": "here"},
+                {"name": "gone", "type": "local", "url": "does-not-exist"},
+                {"name": "unused", "type": "local", "url": "also-missing"},
+            ],
+            "collectors": [
+                {"name": "a", "type": "cli", "source": "here", "run": "pwd"},
+                {"name": "b", "type": "cli", "source": "gone", "run": "pwd"},
+            ],
+        }
+        plan = build_plan(raw, registry, {}, base=tmp_path, is_directory=Path.is_dir)
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("catalog.1.url", "invalid_value")
+        assert problem.got == str(tmp_path / "does-not-exist")
+        assert str(tmp_path) in problem.fix, "says what a relative url is relative to"
+        assert {r.output: r.detail["cwd"] for r in plan.runs}["a"] == str(tmp_path / "here")

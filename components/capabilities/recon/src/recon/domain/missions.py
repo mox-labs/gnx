@@ -74,6 +74,10 @@ class MissionStore(Protocol):
 
     def capture_count(self, name: str) -> int: ...
 
+    def is_directory(self, path: Path) -> bool:
+        """Whether ``path`` is a directory: a ``local`` source must name one."""
+        ...
+
     def templates(self) -> list[Template]:
         """The built-in templates, sorted by name."""
         ...

@@ -694,6 +694,8 @@ class TestMixedFanOut:
                         {"name": "b", "type": "local", "url": "b"}],
             "collectors": [{"name": "todos", "type": "cli", "run": "rg TODO ."}],
         }  # fmt: skip
+        (project / "a").mkdir()
+        (project / "b").mkdir()
         _mission(project, "m", config)
         assert _doc(_invoke("survey", "m", "-n", "--json"))["warnings"] == []
 
@@ -1227,6 +1229,67 @@ def test_a_config_error_says_when_checking_stopped_early(project):
     assert "checking stopped early" in human.stderr
     _mission(project, "n", {"collectors": [{"name": "c", "type": "ftp"}]})
     assert _error(_invoke("survey", "n", "-n", "--json"))["complete"] is True
+
+
+# --- the directory a command runs in ----------------------------------------------------------
+
+
+class TestTheDirectoryACommandRunsIn:
+    def test_a_local_source_whose_directory_is_missing_is_a_plan_problem(
+        self, project, monkeypatch
+    ):
+        """Regression: with ``url: does-not-exist`` and ``run: pwd``, run from a
+        subdirectory, the dry run named the missing directory as the cwd with no problem, and
+        the survey said ok with one row: the subdirectory."""
+        mission = {
+            "catalog": [{"name": "repo", "type": "local", "url": "does-not-exist"}],
+            "collectors": [{"name": "where", "type": "cli", "source": "repo", "run": "pwd"}],
+        }
+        _mission(project, "m", mission)
+        sub = project / "sub"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+
+        planned = _invoke("survey", "m", "-n", "--json")
+        assert planned.exit_code == 3
+        [problem] = _error(planned)["problems"]
+        assert problem["path"] == "catalog.0.url"
+        assert problem["got"] == str(project / "does-not-exist")
+        surveyed = _invoke("survey", "m", "--json")
+        assert surveyed.exit_code == 3
+        assert not (project / ".recon" / "m" / "archive").exists(), "nothing ran"
+
+    def test_the_dry_run_shows_the_directory_the_command_runs_in(self, project, monkeypatch):
+        (project / "src").mkdir()
+        mission = {
+            "catalog": [{"name": "repo", "type": "local", "url": "src"}],
+            "collectors": [
+                {"name": "where", "type": "cli", "source": "repo", "run": "pwd"},
+                {"name": "anywhere", "type": "cli", "run": "pwd"},
+            ],
+        }
+        _mission(project, "m", mission)
+        sub = project / "sub"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+
+        runs = {r["output"]: r for r in _doc(_invoke("survey", "m", "-n", "--json"))["runs"]}
+        assert runs["where"]["cwd"] == str(project / "src")
+        assert runs["anywhere-repo"]["cwd"] == str(project / "src")
+        human = unstyle(_invoke("survey", "m", "-n").stdout)
+        assert f"pwd (in {project / 'src'})" in human
+        rows = _doc(_invoke("survey", "m", "--json"))
+        assert rows["status"] == "ok"
+        lines = recon.query("m", 'SELECT line FROM "where"', root=project).rows
+        assert [Path(row["line"]).resolve() for row in lines] == [(project / "src").resolve()]
+
+    def test_a_command_with_no_local_source_is_shown_running_in_the_working_directory(
+        self, project
+    ):
+        _mission(project, "m", {"collectors": [{"name": "where", "type": "cli", "run": "pwd"}]})
+        [run] = _doc(_invoke("survey", "m", "-n", "--json"))["runs"]
+        assert run["cwd"] is None
+        assert "pwd (in the working directory)" in unstyle(_invoke("survey", "m", "-n").stdout)
 
 
 # --- the library, pointed at a project -------------------------------------------------------
