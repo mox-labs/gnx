@@ -30,8 +30,11 @@ from matrix import (
     CompilationError,
     Executor,
     MatrixConfig,
+    ModelRequest,
+    RunContext,
     RunError,
     Session,
+    call_sent,
     compose,
     default_registry,
     digest,
@@ -74,6 +77,7 @@ async def test_a_model_call_is_a_session_row_its_reply_points_at_and_its_rows_na
     assert session.sent == digest(
         {"prompt": "rate it", "system": "Be fair.", "model": None, "output": None}
     )
+    assert session.sent == call_sent(ModelRequest(prompt="rate it", system="Be fair."))
     assert (session.trace_id, session.span_id) == (None, None)  # no OTel span was current
     (reply,) = run.rows(MODEL_CALL)
     assert (reply.session, reply.text, reply.finish_reason) == (0, '{"score": 4}', "stop")
@@ -154,6 +158,33 @@ async def test_a_row_names_the_sessions_its_component_ran_since_its_last_hand_ov
     assert [e.sessions for e in run.construct.provenance("acme.v1.first")] == [(0,)]
     assert [e.sessions for e in run.construct.provenance("acme.v1.rest")] == [(1, 2), (1, 2)]
     assert {e.component for e in run.construct.provenance(SESSION)} == {"two"}
+
+
+async def test_a_component_can_ask_which_sessions_its_next_row_will_name() -> None:
+    """``ctx.sessions()`` is what the ledger entry of the component's next row will name, so
+    a component can put the sessions behind a row in the row itself."""
+    runtime = MockAgentRuntime(MockAgentRuntimeConfig(default="ok"))
+    agent = BoundAgent(AgentDefinition(name="a"), runtime)
+    seen: list[tuple[int, ...]] = []
+
+    class _Asks:
+        requires = frozenset({TASK})
+        provides = frozenset({"acme.v1.out"})
+
+        async def run(self, inputs: Any, ctx: Any) -> None:
+            await agent.run("one")
+            await agent.run("two")
+            seen.append(ctx.sessions())
+            ctx.provide("acme.v1.out", "first")
+            seen.append(ctx.sessions())
+            await agent.run("three")
+            seen.append(ctx.sessions())
+            ctx.provide("acme.v1.out", "second")
+
+    run = await Executor().run(wire({"asks": _Asks()}, inputs=[TASK]), {TASK: "go"})
+    assert seen == [(0, 1), (), (2,)]
+    assert [e.sessions for e in run.construct.provenance("acme.v1.out")] == [(0, 1), (2,)]
+    assert RunContext("r", "alone").sessions() == ()  # outside a run, none
 
 
 async def test_a_call_whose_reply_is_refused_is_still_on_the_record() -> None:

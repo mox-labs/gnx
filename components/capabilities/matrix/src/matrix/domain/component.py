@@ -68,6 +68,8 @@ class ContextHooks(Protocol):
 
     def span(self, name: str, fields: dict[str, Any]) -> AbstractAsyncContextManager[None]: ...
 
+    def sessions(self) -> tuple[int, ...]: ...
+
 
 class _Detached:
     """Hooks for a context built outside a run (a component under a unit test)."""
@@ -90,6 +92,9 @@ class _Detached:
     async def span(self, name: str, fields: dict[str, Any]) -> AsyncIterator[None]:
         yield
 
+    def sessions(self) -> tuple[int, ...]:
+        return ()
+
 
 class RunContext:
     """What a component may know about the run it is part of, and ask of it. Nothing about
@@ -106,6 +111,9 @@ class RunContext:
 
     ``defer(release)`` hands the run something to undo. Every deferred release is called once
     when the run ends, in reverse order, whether the run completed, failed or was cancelled.
+
+    ``sessions()`` names the rows of ``matrix.v1.session`` the component has run since it
+    last handed a row over: the ones its next row's ledger entry will name.
 
     ``emit``, ``measure`` and ``span`` are the component's telemetry: events on the run's
     channel, under a name the component namespaces with its own root (``acme.probe.sample``;
@@ -165,6 +173,12 @@ class RunContext:
         ``acme.probe.end`` (with ``status`` and ``duration_ms``) around the block. Spans and
         agent calls made inside it are its children."""
         return self._hooks.span(name, fields)
+
+    def sessions(self) -> tuple[int, ...]:
+        """The rows of ``matrix.v1.session`` this component has run since it last handed a
+        row over, failed ones included: the sessions the ledger entry of its next row will
+        name. A component that wants a row to name its sessions itself reads them here."""
+        return self._hooks.sessions()
 
     def __repr__(self) -> str:
         return f"RunContext(run_id={self.run_id!r}, component={self.component!r})"

@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from matrix.domain.agent import AgentResponse
-    from matrix.domain.model_call import ModelCall
+    from matrix.domain.model_call import ModelCall, ModelRequest
 
 SESSION = "matrix.v1.session"
 
@@ -124,6 +124,21 @@ def digest(value: Any) -> str:
     can recompute one without matrix. hardline's digests are the same."""
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def call_sent(request: ModelRequest) -> str:
+    """The ``sent`` digest of a model call's request: of its prompt, system prompt, model
+    and output schema. A caller that records a call it made itself digests its request with
+    this, as a model step does, so equal requests have equal digests whoever made them."""
+    output = request.output
+    return digest(
+        {
+            "prompt": request.prompt,
+            "system": request.system,
+            "model": request.model,
+            "output": None if output is None else output.model_json_schema(),
+        }
+    )
 
 
 def agent_session(

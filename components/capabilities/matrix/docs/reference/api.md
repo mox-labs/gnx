@@ -38,6 +38,7 @@ from matrix import (
     SESSION,
     digest,
     agent_session,
+    call_sent,
     call_session,
     record_session,
     Ref,
@@ -238,6 +239,7 @@ components.
 | `emit(name, **fields)` | emit one event |
 | `measure(name, value, *, unit="", kind="gauge", **attrs)` | record a number as a `matrix.measure` event; `kind` is `gauge`, `counter` or `histogram` |
 | `span(name, **fields)` | an async context manager emitting `<name>.start` and `<name>.end` (`status`, `duration_ms`); OpenTelemetry gets only its number and boolean fields unless content is asked for ([the `otel` observer](#the-otel-observer)) |
+| `sessions()` | the rows of `matrix.v1.session` the component has run since it last handed a row over, failed ones included: what the ledger entry of its next row will name. A row that should name its sessions itself reads them here. `()` outside a run |
 
 `provide` is synchronous. When it returns, the row has been validated against the kind's
 registered schema, appended to the Construct, and is durable in the run's store. It raises
@@ -525,16 +527,17 @@ A fact the runtime did not report is `None`.
 | `digest` | `(value) -> str` | `sha256:<hex>` over canonical JSON (keys sorted, no whitespace, UTF-8): the session row's `sent` |
 | `agent_session` | `(response, *, agent, sent, runtime=None, drives=(), error=None) -> Session` | the session row of an agent session, from its `AgentResponse`. For a session that failed, `error` is the exception and `response` what it carried (`AgentRuntimeError.response`, or `None`): the row is `status: failed` with the error's `reason` and message |
 | `call_session` | `(call, *, sent, runtime=None, drives=(), error=None) -> Session` | the session row of a model call, from its `ModelCall`. For a call that failed, `error` is the exception and `call` what it carried (`ModelRuntimeError.call`, or `None`) |
+| `call_sent` | `(request: ModelRequest) -> str` | the `sent` digest of a model call's request, as a model step computes it: of its prompt, system prompt, model and output schema |
 | `record_session` | `(session) -> int \| None` | records it in the run of the component running in this task, durably and in ledger order; its row, or `None` outside a run. The rows that component hands over next name it |
 
 A `BoundAgent` and a model step record their sessions themselves, the failed ones included. A
 component that calls a `ModelRuntime` itself records its calls, failed or not:
 
 ```python
-from matrix import ModelRequest, ModelRuntimeError, call_session, digest, record_session
+from matrix import ModelRequest, ModelRuntimeError, call_sent, call_session, record_session
 
 request = ModelRequest(prompt="Rate this.", model="haiku")
-sent = digest({"prompt": request.prompt, "system": None, "model": "haiku", "output": None})
+sent = call_sent(request)
 try:
     call = await runtime.call(request)
 except ModelRuntimeError as e:

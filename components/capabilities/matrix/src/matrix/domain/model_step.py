@@ -46,7 +46,7 @@ from pydantic import BaseModel, ConfigDict
 from matrix.domain.errors import ConfigError, ContractError, ModelRuntimeError, NotFoundError
 from matrix.domain.ids import check_type_url
 from matrix.domain.model_call import ModelRequest
-from matrix.domain.session import call_session, digest, record_session
+from matrix.domain.session import call_sent, call_session, record_session
 from matrix.domain.template import check_template, json_document, render
 
 if TYPE_CHECKING:
@@ -163,18 +163,13 @@ class ModelStep:
         """Record the call in the run's session table, whether its reply is whole, not whole,
         or it failed (``error``, with what the runtime knew of the call); its row, or None
         outside a run."""
-        output = request.output
-        sent = digest(
-            {
-                "prompt": request.prompt,
-                "system": request.system,
-                "model": request.model,
-                "output": None if output is None else output.model_json_schema(),
-            }
-        )
         return record_session(
             call_session(
-                call, sent=sent, runtime=self._runtime_url, drives=self._drives, error=error
+                call,
+                sent=call_sent(request),
+                runtime=self._runtime_url,
+                drives=self._drives,
+                error=error,
             )
         )
 

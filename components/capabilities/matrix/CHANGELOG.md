@@ -118,6 +118,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   `agent_session` and `call_session` take `error=`, and their record may be `None`. `BoundAgent`
   and the model step record a failed session before re-raising; the row is the failed
   component's, and no ledger entry names it.
+- **`RunContext.sessions()`**: the rows of `matrix.v1.session` the component has run since it
+  last handed a row over, the ones its next row's ledger entry will name. A component that
+  wants a row to name the sessions behind it (ix's interactions and readings) reads them here.
+- **`call_sent(request)`**: the `sent` digest of a model call's request, as a model step
+  computes it, for a component that records a call it made itself.
 
 - **`matrix.v1.model-step`**: one model call as a component. It names a model runtime and a
   model, renders its `prompt` from its `inputs`, and provides a `ModelCall` (the prompt as
