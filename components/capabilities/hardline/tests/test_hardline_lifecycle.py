@@ -44,8 +44,8 @@ _REAL_TRANSPORT = _http.network_transport
 
 
 class _LoopbackOnly(httpx2.AsyncBaseTransport):
-    def __init__(self) -> None:
-        self._inner = _REAL_TRANSPORT()
+    def __init__(self, proxy: str | None = None) -> None:
+        self._inner = _REAL_TRANSPORT(proxy)
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         if request.url.host != "127.0.0.1":

@@ -119,7 +119,8 @@ stop a component, whatever the reason:
    component that swallows the cancellation is abandoned after `cleanup_s` and reported as
    such.
 4. **Deferred release.** At the end of the run, everything components handed to `ctx.defer`
-   is called, last registered first, each bounded by `cleanup_s`.
+   is called, last registered first: an async one bounded by `cleanup_s`, a synchronous
+   one run to its end, which the event loop cannot interrupt.
 
 The reasons are a component's own deadline (`Limits.deadline_s`, overridden per component by
 `Limits.components`), another component's failure, and cancellation of the run, which is also
@@ -280,7 +281,9 @@ is a library, and installing an SDK, which decides where telemetry goes for the 
 is the application's. `matrix run` is an application, so it does, from the same variables.
 
 Telemetry is not data. Events reach observers through a bounded queue and a dispatcher, never
-on the task that emitted them, so an observer cannot stall a run: one that raises is skipped,
+on the task that emitted them, so an observer's `on_event` cannot stall a run (its optional
+`around`, entered in the work's own task so a library's span nests under matrix's, must not
+block for the same reason): one that raises is skipped,
 one that is slow makes the queue fill and events drop (counted, and reported), and one that
 never returns costs the run a bounded wait at its end. Nothing a run produces depends on an
 event arriving; results are read from the `Run` or its store. For the same reason observers are not an

@@ -96,8 +96,20 @@ class Span(Protocol):
         """Add attributes, as known by the time the work ends."""
         ...
 
-    def event(self, name: str, /, **attributes: Any) -> None:
-        """Record that something happened inside the span."""
+    def failed(self, reason: str) -> None:
+        """Say that the work ended in a failure, and its reason (``timeout``, ``exited``)."""
+        ...
+
+    def evaluated(
+        self,
+        metric: str,
+        *,
+        score: float | None = None,
+        label: str | None = None,
+        failure: str | None = None,
+    ) -> None:
+        """Record one metric read inside the span: its score as a number, or a pass/fail
+        ``label``, or the reason no value could be read (``failure``)."""
         ...
 
 
@@ -158,8 +170,9 @@ class Preflight(Protocol):
     def requirements(self, options: Mapping[str, Any], *, base: str) -> Sequence[Requirement]:
         """What carrying out an entry whose options are ``options`` needs of this host, each
         checked now. ``base`` is the directory the experiment's relative paths resolve
-        against. A requirement that depends on an option filled per cell (a ``{name}``
-        placeholder) is left out: it is told when the trial starts."""
+        against. It is asked once for each cell's options, a factor's ``{name}`` filled in;
+        a requirement that depends on a placeholder only a trial fills (an environment's
+        binding, ``{db.url}``) is left out: it is told when the trial starts."""
         ...
 
 

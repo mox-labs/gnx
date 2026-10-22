@@ -9,6 +9,11 @@ written, so the file can be followed while the run is going.
 The stream is telemetry: under load events may be missing, and a ``matrix.events.dropped``
 line says how many. Results are read from the run, never from here.
 
+A file is opened, its folders made, when the first event arrives, never when the observer is
+built (so ``matrix check`` and ``matrix plan``, which call nothing, touch nothing), and closed
+when a run's ``matrix.run.end`` has been written; the next event opens it again, for
+appending.
+
 Config: ``path`` (a file, appended to; omitted or ``-`` for stderr).
 
 Type URL: ``matrix.v1.observer.jsonl``.
@@ -23,6 +28,8 @@ from typing import TYPE_CHECKING, TextIO
 
 from pydantic import BaseModel, ConfigDict
 
+from matrix.domain.observer import RUN_END
+
 if TYPE_CHECKING:
     from matrix.domain.observer import Event
 
@@ -36,23 +43,35 @@ class JsonlObserverConfig(BaseModel):
 
 class JsonlObserver:
     def __init__(self, path: Path | str | None = None, *, stream: TextIO | None = None) -> None:
-        self._owned = False
-        if stream is not None:
-            self._stream = stream
-        elif path is None or str(path) == "-":
-            self._stream = sys.stderr
-        else:
-            target = Path(path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            self._stream = target.open("a", encoding="utf-8")
-            self._owned = True
+        #: The file to append to; None when writing to a stream it was given, or stderr.
+        self._path = None if stream is not None or path is None or str(path) == "-" else Path(path)
+        self._given = stream
+        #: The file this observer opened, while it is open.
+        self._file: TextIO | None = None
+
+    @property
+    def closed(self) -> bool:
+        """Whether this observer holds no file open."""
+        return self._file is None
+
+    def _stream(self) -> TextIO:
+        if self._path is None:
+            return self._given if self._given is not None else sys.stderr
+        if self._file is None:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = self._path.open("a", encoding="utf-8")
+        return self._file
 
     def on_event(self, event: Event) -> None:
-        self._stream.write(json.dumps(event.document(), default=str) + "\n")
-        self._stream.flush()
+        stream = self._stream()
+        stream.write(json.dumps(event.document(), default=str) + "\n")
+        stream.flush()
+        if event.name == RUN_END:
+            self.close()
 
     def close(self) -> None:
-        """Close the file this observer opened. A stream it was given is left alone."""
-        if self._owned:
-            self._stream.close()
-            self._owned = False
+        """Close the file this observer opened; the next event opens it again. A stream it
+        was given is left alone."""
+        if self._file is not None:
+            self._file.close()
+            self._file = None

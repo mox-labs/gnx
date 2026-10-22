@@ -174,7 +174,7 @@ class JudgeSensor:
     def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
         """That its runtime builds and can judge: a model runtime resolves the model, an
         agent runtime can play a one-turn session of it. Nothing for a judge that names no
-        runtime or both (the review reports it), or for options filled in per cell."""
+        runtime or both (the review reports it), or while an option holds a placeholder."""
         if any(placeholders(value) for value in options.values()):
             return []
         try:
@@ -223,7 +223,10 @@ class JudgeSensor:
         runtime.check(model)
         request = matrix.ModelRequest(prompt=task, system=SYSTEM, model=model)
         url = matrix.model_runtime_type_url(name)
-        calls = [await recorded_call(runtime, request, url=url) for _ in range(repeats)]
+        drives = tuple(self._runtimes.drives(MODEL_RUNTIME, name))
+        calls = [
+            await recorded_call(runtime, request, url=url, drives=drives) for _ in range(repeats)
+        ]
         return [_Reply(call.text, call.family, call.model, None) for call in calls]
 
     async def _by_agent(
@@ -237,7 +240,8 @@ class JudgeSensor:
         with tempfile.TemporaryDirectory(prefix="ix-judge-") as workdir:
             runtime = self._runtimes.build(AGENT_RUNTIME, name, config, cwd=workdir)
             url = matrix.agent_runtime_type_url(name)
-            judge = matrix.BoundAgent(definition, runtime, runtime_url=url)
+            drives = tuple(self._runtimes.drives(AGENT_RUNTIME, name))
+            judge = matrix.BoundAgent(definition, runtime, runtime_url=url, drives=drives)
             replies = [await judge.run(task) for _ in range(repeats)]
         return [_Reply(r.content, r.family, r.model, r.cost_usd) for r in replies]
 

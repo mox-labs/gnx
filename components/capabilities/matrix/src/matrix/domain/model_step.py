@@ -21,6 +21,10 @@ the wiring could say otherwise. The step raises :class:`ModelRuntimeError`, reas
 ``finish_reason``. A runtime that does not say why the reply ended (``finish_reason`` None)
 is not taken to have cut it, and the row keeps the None.
 
+The call is a span of work: ``matrix.model.start`` and ``.end`` (the model asked for, and the
+one that answered and why its reply ended), with each observer's ``around`` entered while the
+runtime works, so what the runtime opens inside it (hardline's spans) nests under it.
+
 Both the prompt's placeholders and the model name are checked when the step is built: a
 typo, or a model the runtime cannot resolve, is a ``config`` problem at composition. A
 runtime that holds connections (``aclose()``) has them closed when the run ends, in the run's
@@ -39,6 +43,9 @@ Config::
 
 from __future__ import annotations
 
+import asyncio
+import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
@@ -46,7 +53,16 @@ from pydantic import BaseModel, ConfigDict
 from matrix.domain.errors import ConfigError, ContractError, ModelRuntimeError, NotFoundError
 from matrix.domain.ids import check_type_url
 from matrix.domain.model_call import ModelRequest
-from matrix.domain.session import call_sent, call_session, record_session
+from matrix.domain.observer import (
+    CURRENT_SPAN,
+    MODEL_END,
+    MODEL_START,
+    Event,
+    around,
+    emit,
+    observing,
+)
+from matrix.domain.session import call_sent, call_session, record_cancelled, record_session
 from matrix.domain.template import check_template, json_document, render
 
 if TYPE_CHECKING:
@@ -143,12 +159,7 @@ class ModelStep:
         request = ModelRequest(
             prompt=prompt, model=self._config.model, system=self._config.system, output=self._output
         )
-        try:
-            call = await self._runtime.call(request)
-        except Exception as e:
-            self._record(request, e.call if isinstance(e, ModelRuntimeError) else None, e)
-            raise
-        call = call.model_copy(update={"prompt": prompt, "session": self._record(request, call)})
+        call = (await self._call(request)).model_copy(update={"prompt": prompt})
         self._whole(call)
         rows: dict[str, Any] = {self._config.response: call.as_reply()}
         if self._config.output is not None:
@@ -156,6 +167,69 @@ class ModelStep:
             reply = call.value if self._output is not None else self._json(call.text)
             rows[self._config.output] = (reply,)
         return rows
+
+    async def _call(self, request: ModelRequest) -> ModelCall:
+        """One call on the runtime, as a span of work (``matrix.model.start`` and ``.end``,
+        whose span is current in this task while the runtime works), recorded in the
+        session table whether it replied or failed. The call returned points at its row."""
+        scope = CURRENT_SPAN.get()
+        run_id, parent, component = (
+            (scope.run_id, scope.span, scope.component) if scope else (None, None, None)
+        )
+        span = uuid.uuid4().hex
+        runtime = self._config.runtime
+        begun = Event(
+            MODEL_START,
+            span=span,
+            run_id=run_id,
+            parent=parent,
+            fields={"runtime": runtime, "model": request.model},
+            component=component,
+        )
+        await emit((), begun)
+        started = time.monotonic()
+        fields: dict[str, Any] = {"runtime": runtime}
+        with around(observing(), begun) as end:
+            try:
+                call = await self._runtime.call(request)
+            except asyncio.CancelledError as e:
+                fields.update(status="cancelled", reason="cancelled")
+                session = call_session(
+                    None,
+                    sent=call_sent(request),
+                    runtime=self._runtime_url,
+                    drives=self._drives,
+                    error=e,
+                )
+                record_cancelled(session)
+                raise
+            except Exception as e:
+                fields.update(status="failed", error=str(e), reason=getattr(e, "reason", None))
+                fields["kind"] = getattr(e, "kind", type(e).__name__)
+                self._record(request, e.call if isinstance(e, ModelRuntimeError) else None, e)
+                raise
+            else:
+                fields.update(
+                    status="completed",
+                    name=call.name,
+                    model=call.model,
+                    family=call.family,
+                    provider=call.provider,
+                    finish_reason=call.finish_reason,
+                )
+                return call.model_copy(update={"session": self._record(request, call)})
+            finally:
+                fields["duration_ms"] = int((time.monotonic() - started) * 1000)
+                ended = Event(
+                    MODEL_END,
+                    span=span,
+                    run_id=run_id,
+                    parent=parent,
+                    fields=fields,
+                    component=component,
+                )
+                end(ended)
+                await emit((), ended)
 
     def _record(
         self, request: ModelRequest, call: ModelCall | None, error: Exception | None = None

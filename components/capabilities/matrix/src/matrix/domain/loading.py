@@ -181,7 +181,10 @@ class Loader:
         origins: dict[tuple[str, ...], str] = {}
         consulted: list[str] = []
         unreadable: list[Problem] = []
-        kept: dict[tuple[str, str], list[Any]] = {}
+        #: (section, field) -> each tier's entries of an accumulated field, with its file
+        kept: dict[tuple[str, str], list[tuple[Any, str]]] = {}
+        #: (section, field) -> an accumulated field a tier wrote as something else, and where
+        misshapen: dict[tuple[str, str], tuple[Any, str]] = {}
         for location in locations:
             found = self._source.document(location)
             if found is None:
@@ -198,14 +201,23 @@ class Loader:
                     continue  # absent, or the wrong shape, which validation reports
                 part = self._placed(model, part, found)
                 for name in _marked(model, Accumulate):
-                    if isinstance(part.get(name), list):
-                        kept.setdefault((section, name), []).extend(part.pop(name))
+                    if name not in part:
+                        continue
+                    value = part.pop(name)
+                    if isinstance(value, list):
+                        entries = kept.setdefault((section, name), [])
+                        entries += [(entry, found.source) for entry in value]
+                    else:  # kept for validation to report, never overwritten by the others
+                        misshapen.setdefault((section, name), (value, found.source))
                 tier[section] = part
             _merge(merged, tier, origins, found.source, ())
         if unreadable:
             raise invalid("the config cannot be read", unreadable, complete=False)
         for (section, name), entries in kept.items():
-            merged.setdefault(section, {})[name] = list(dict.fromkeys(entries))
+            _accumulated(merged.setdefault(section, {}), section, name, entries, origins)
+        for (section, name), (value, source) in misshapen.items():
+            merged.setdefault(section, {})[name] = value
+            origins[(section, name)] = source
 
         def source_of(path: tuple[str, ...]) -> str:
             for end in range(len(path), 0, -1):
@@ -248,6 +260,25 @@ class Loader:
                     self._source.beside(found, v) if isinstance(v, str) else v for v in value
                 ]
         return placed
+
+
+def _accumulated(
+    section: dict[str, Any],
+    at: str,
+    name: str,
+    entries: list[tuple[Any, str]],
+    origins: dict[tuple[str, ...], str],
+) -> None:
+    """Set the accumulated field ``name`` to every tier's entries, each once, noting the file
+    each came from (and every file that contributed, for the field as a whole)."""
+    kept: list[Any] = []
+    for entry, source in entries:
+        if entry in kept:  # by equality: an entry may be a mapping, which does not hash
+            continue
+        origins[(at, name, str(len(kept)))] = source
+        kept.append(entry)
+    section[name] = kept
+    origins[(at, name)] = ", ".join(dict.fromkeys(source for _, source in entries))
 
 
 def _merge(

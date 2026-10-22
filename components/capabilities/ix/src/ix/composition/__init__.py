@@ -45,6 +45,7 @@ from matrix import (
     default_registry,
     load_config,
     model_runtime_type_url,
+    store_type_url,
 )
 
 from ix.adapters._in.matrix_components import COMPOSITION, NEED
@@ -75,7 +76,7 @@ from ix.domain.design import entries_in_use
 from ix.domain.errors import ConfigError, IxError, NotFoundError, UsageError
 from ix.domain.experiment import Experiment
 from ix.domain.genre import Genres, genres
-from ix.domain.kind import KIND_FAMILIES, Kinds, kinds
+from ix.domain.kind import KIND_FAMILIES, Kinds, kinds, per_cell
 from ix.domain.plan import required
 from ix.domain.ports import Preflight
 from ix.domain.problem import InvalidExperimentError
@@ -87,7 +88,7 @@ from ix.domain.report import summary as summarize
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator, Mapping
 
-    from matrix import Entry
+    from matrix import ConstructStore, Entry
 
     from ix.api import PathLike, Source
     from ix.domain.design import Design
@@ -96,6 +97,7 @@ if TYPE_CHECKING:
     from ix.domain.ports import Requirement
     from ix.domain.problem import Problem, Validation
     from ix.domain.registration import Deviations, Registered, Registration
+    from ix.domain.report import RunSummary
     from ix.domain.run import Reading, RunRecord
 
 try:
@@ -108,8 +110,17 @@ except PackageNotFoundError:  # running from a source tree that was never instal
 #: settings say where every run is kept.
 RUNS_DIRECTORY = ".ix/runs"
 
+#: The store each run is kept in, at matrix's ``store`` point: a directory of tables per
+#: run, under the directory its config's ``root`` names, which is what ``ix report <run
+#: directory>`` and ``ix runs`` read.
+RUN_STORE = store_type_url("jsonl")
+
 #: The distributions whose installed versions each run records.
 RECORDED_VERSIONS = ("ix", "matrix", "hardline")
+
+#: The settings a run reads, whose rungs it records: where runs are kept, the observers of a
+#: run, and the models a model runtime is handed.
+READ_SETTINGS = ("ix.runs", "matrix.observers", "matrix.models")
 
 
 def type_url_problem(name: str) -> str | None:
@@ -146,6 +157,23 @@ def load_settings() -> Config[IxSettings]:
             "set a value",
         ) from error
     return config
+
+
+def _rungs(config: Config[IxSettings]) -> dict[str, str]:
+    """Where each of :data:`READ_SETTINGS` was set: the file (each file that set part of a
+    mapping, comma-separated), ``default`` when no tier set it, or ``given in code`` for
+    settings a caller built rather than read from the tiers."""
+    if not config.sources:
+        return dict.fromkeys(READ_SETTINGS, "given in code")
+    found: dict[str, str] = {}
+    for key in READ_SETTINGS:
+        files = dict.fromkeys(
+            file
+            for path, file in config.origins.items()
+            if path == key or path.startswith(f"{key}.")
+        )
+        found[key] = ", ".join(files) or "default"
+    return found
 
 
 def _unsaid(record: logging.LogRecord) -> bool:
@@ -222,6 +250,9 @@ class _Runtimes:
             return None
         return frozenset() if config is None else frozenset(config.model_fields)
 
+    def drives(self, point: Point, name: str) -> dict[str, str]:
+        return {driven: installed(driven) for driven in self._entry(point, name).drives}
+
 
 @dataclass(frozen=True)
 class Telemetry:
@@ -251,7 +282,9 @@ class _Opened:
 class Root:
     """The wired experiment model. Build one over another registry to bind other adapters;
     :func:`root` is the default, over every installed ``matrix.extensions`` entry point.
-    ``settings`` replaces what matrix's config tiers hold."""
+    ``settings`` replaces what matrix's config tiers hold. ``run_store`` is the type URL of
+    the store runs are kept in, built at matrix's ``store`` point: one whose config takes
+    ``root``, the directory a run's directory is made in."""
 
     def __init__(
         self,
@@ -263,6 +296,7 @@ class Root:
         version: str = VERSION,
         clock: Callable[[], str] = _now,
         run_id: Callable[[str], str] = _run_id,
+        run_store: str = RUN_STORE,
     ) -> None:
         self._genre_files = genre_files or GenreFiles()
         self._kind_files = kind_files or KindFiles()
@@ -271,6 +305,7 @@ class Root:
         self._version = version
         self._clock = clock
         self._run_id = run_id
+        self._run_store = run_store
         self._tracer = OtelTracer(version)
         self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix.models)
         self._supplies = {
@@ -332,9 +367,10 @@ class Root:
         """Every kind (type URL) whose adapter is registered and builds here."""
         return self._buildable()[0]
 
-    def _kit(self, kinds: Collection[str], declared: Kinds | None = None) -> Kit:
+    def _kit(self, kinds: Collection[str], declared: Kinds) -> Kit:
         """The adapters a run of ``kinds`` (type URLs) uses, each built from the registry,
-        with the declarations of those kinds."""
+        with the declarations of those kinds from ``declared``: the installed kinds and the
+        experiment's lab's, as the experiment was validated against."""
 
         def built(family: str) -> dict[str, Any]:
             return {
@@ -343,14 +379,13 @@ class Root:
                 if entry.type_url in kinds
             }
 
-        found = declared if declared is not None else self.kinds()
         return Kit(
             subjects=built("subject"),
             probes=built("probe"),
             sensors=built("sensor"),
             environments=built("environment"),
             clock_ns=time.time_ns,
-            kinds={name: kind for name, kind in found.kinds.items() if name in kinds},
+            kinds={name: kind for name, kind in declared.kinds.items() if name in kinds},
             tracer=self._tracer,
         )
 
@@ -458,13 +493,15 @@ class Root:
 
     def _provenance(self, directory: str) -> Provenance:
         """Where a run in ``directory`` runs from: the commit, the installed versions of
-        matrix, ix and hardline, and every runtime installed at matrix's two runtime points
-        with the distribution that registered it."""
+        matrix, ix and hardline, every runtime installed at matrix's two runtime points
+        with the distribution that registered it and those it drives, and the rung of each
+        setting the run read."""
         runtimes = tuple(
             RuntimeOrigin(
                 type_url=entry.type_url,
                 distribution=entry.origin,
                 version="" if entry.origin == "(direct)" else installed(entry.origin),
+                drives=self._runtimes.drives(point, entry.type_url),
             )
             for point in (AGENT_RUNTIME, MODEL_RUNTIME)
             for entry in self._registry.entries(point)
@@ -473,6 +510,7 @@ class Root:
             update={
                 "versions": {name: installed(name) for name in RECORDED_VERSIONS},
                 "runtimes": runtimes,
+                "settings": _rungs(self._settings()),
             }
         )
 
@@ -543,9 +581,9 @@ class Root:
     def _earlier(self, base: str, experiment: str) -> Iterator[RunRecord]:
         """The runs of ``experiment`` kept beside it, latest first, each read when asked."""
         records = self._records(str(Path(base).resolve()))
-        for summary in reversed(records.summaries()):
-            if summary.experiment == experiment and summary.status == "completed":
-                yield records.record(summary.run)
+        for record in records.records(latest_first=True):
+            if record.manifest.experiment == experiment and record.status == "completed":
+                yield record
 
     def register(
         self,
@@ -608,30 +646,53 @@ class Root:
         :class:`~ix.domain.ports.Preflight` (a subject, probe, sensor or environment), each
         checked now; and what the runtimes they build warn of (a permissive
         ``permission_mode``), each at ``<entry>.runtime_options.<option>``: an entry's
-        runtime options are its runtime's config. An adapter that cannot be built has
-        nothing to check: that is told as a kind with no adapter."""
+        runtime options are its runtime's config. Each cell's options are asked as its
+        trials will have them, so a factor on one option hides nothing. An adapter that
+        cannot be built has nothing to check: that is told as a kind with no adapter."""
         adapters: dict[str, object] = {}
         found: list[tuple[str, Requirement]] = []
         cautions: list[Problem] = []
-        for where, kind, options in entries_in_use(experiment, design, probes):
+        for where, kind, written in entries_in_use(experiment, design, probes):
             if kind not in adapters:
                 adapters[kind] = self._built(kind)
             adapter = adapters[kind]
             if not isinstance(adapter, Preflight):
                 continue
-            with self._runtimes.listening() as heard:
-                found += [(where, needed) for needed in adapter.requirements(options, base=base)]
-            cautions += [
-                problem.model_copy(update={"path": f"{where}.runtime_options.{problem.path}"})
-                for problem in converted(heard)
-            ]
+            for options in per_cell(written, experiment.factors):
+                with self._runtimes.listening() as heard:
+                    found += [
+                        (where, needed) for needed in adapter.requirements(options, base=base)
+                    ]
+                for caution in converted(heard):
+                    moved = caution.model_copy(
+                        update={"path": f"{where}.runtime_options.{caution.path}"}
+                    )
+                    if moved not in cautions:
+                        cautions.append(moved)
         return required(found), tuple(cautions)
+
+    def _store(self, directory: str) -> ConstructStore:
+        """The run store, built at matrix's ``store`` point to keep runs under
+        ``directory``."""
+        try:
+            store: ConstructStore = self._registry.create(
+                "store", self._run_store, {"root": directory}
+            )
+        except MatrixError as error:
+            raise carried_over(
+                f"the run store {self._run_store} cannot keep runs under {directory}",
+                error,
+                fix="name a store whose config takes root, the directory runs are kept "
+                "under (matrix's jsonl does)",
+            ) from error
+        return store
 
     def _records(self, base: str) -> RunRecords:
         """The runs of the experiment in the directory ``base``: under the settings' ``runs``,
         or ``.ix/runs`` beside it."""
         kept = self._settings().client.runs
-        return RunRecords(kept if kept else str(Path(base).resolve() / RUNS_DIRECTORY))
+        directory = kept if kept else str(Path(base).resolve() / RUNS_DIRECTORY)
+        return RunRecords(directory, self._store(directory))
 
     def run(
         self,
@@ -698,7 +759,7 @@ class Root:
             dry_run=notes,
             overridden=overridden,
         )
-        kit = self._kit(prepared.kinds)
+        kit = self._kit(prepared.kinds, opened.vocabulary.kinds)
         requirements, cautions = self._preflight(
             prepared.experiment, prepared.design, prepared.probes, directory
         )
@@ -712,7 +773,7 @@ class Root:
         with suppress(KeyboardInterrupt, asyncio.CancelledError):
             asyncio.run(
                 execute(
-                    root=records.root,
+                    store=records.store,
                     registry=self._registry,
                     config=MatrixConfig.model_validate(
                         {**COMPOSITION, "observers": self._settings().matrix.observers}
@@ -724,36 +785,52 @@ class Root:
                     tracer=self._tracer,
                 )
             )
-        return self._report(records, manifest.run)
+        return self._report(records.record(manifest.run))
 
-    def _report(self, records: RunRecords, run: str) -> Report:
-        record = records.record(run)
-        return build_report(record, readings=self._derived_readings(record))
+    def _report(self, record: RunRecord) -> Report:
+        readings, unread = self._derived_readings(record)
+        return build_report(record, readings=readings, unread=unread)
 
-    def _derived_readings(self, record: RunRecord) -> list[Reading] | None:
+    def _calls_a_model(self, sensor: str) -> bool:
+        """Whether the adapter of ``sensor`` (a type URL) is handed matrix's runtimes: the
+        only way ix gives an adapter a model to call."""
+        return RUNTIMES in self._registry.entry(POINTS["sensor"], sensor).needs
+
+    def _derived_readings(self, record: RunRecord) -> tuple[list[Reading] | None, str]:
         """The readings of a run that ended before its sensors read its interactions, taken
-        now from the stored tables and never written back. None when there are none to take,
-        or a sensor the run used has no adapter here."""
+        now from the stored tables and never written back; or None, and why they were not
+        taken, when there are some to take. A report calls no model: a run that used a
+        sensor that does (a judge) is not read here at all, and neither is one whose sensor
+        has no adapter here."""
         if not record.interactions or record.readings or record.status == "running":
-            return None
+            return None, ""
         setup = running.setup_of(record.manifest)
         sensors = {selected.kind for selected in setup.design.sensors}
-        if not sensors <= self._runnable:
-            return None
+        again = (
+            f"run the experiment again for its readings: ix run {record.manifest.base}; a run "
+            "reads its interactions as it finishes"
+        )
+        missing = sorted(sensors - self._runnable)
+        if missing:
+            return None, f"no adapter here reads {', '.join(map(schema.short, missing))}: {again}"
+        calling = sorted(kind for kind in sensors if self._calls_a_model(kind))
+        if calling:
+            named = ", ".join(map(schema.short, calling))
+            return None, f"{named} calls a model, and a report never does: {again}"
         derived = asyncio.run(
             running.sense(
                 setup,
-                self._kit(sensors),
+                self._kit(sensors, self.kinds(setup.base)),
                 trials=record.trials,
                 interactions=record.interactions,
             )
         )
-        return derived or None
+        return derived or None, ""
 
     def _locate(self, target: PathLike) -> tuple[RunRecords, str | None, str]:
         """(records, run id or None, experiment name) for a run directory or an experiment."""
         path = Path(os.fspath(target))
-        found = RunRecords.at(str(path)) if path.is_dir() else None
+        found = RunRecords.at(str(path), self._store) if path.is_dir() else None
         if found is not None:
             records, run = found
             return records, run, ""
@@ -764,33 +841,62 @@ class Root:
         """The report of a run: ``target`` is a run's directory, or an experiment (its file
         or directory), meaning its latest run."""
         records, run, experiment = self._locate(target)
-        if run is None:
-            found = [s for s in records.summaries() if not experiment or s.experiment == experiment]
-            if not found:
-                raise NotFoundError(
-                    f"{os.fspath(target)} has no runs in {records.root}",
-                    fix=f"ix run {os.fspath(target)}",
-                    details={"path": os.fspath(target)},
-                )
-            run = found[-1].run
-        return self._report(records, run)
+        if run is not None:
+            return self._report(records.record(run))
+        for record in records.records(latest_first=True):
+            if not experiment or record.manifest.experiment == experiment:
+                return self._report(record)
+        raise NotFoundError(
+            f"{os.fspath(target)} has no runs in {records.root}",
+            fix=f"ix run {os.fspath(target)}",
+            details={"path": os.fspath(target)},
+        )
 
     def runs(self, target: PathLike | None = None) -> Runs:
         """The runs kept beside an experiment, oldest first. ``target`` is the experiment
-        (its file or directory); with none, the current directory's runs of any experiment."""
-        if target is None:
-            records, experiment = self._records(os.getcwd()), ""
-        else:
+        (its file or directory); with none, every experiment's runs under the current
+        directory (each ``.ix/runs`` below it), or under the settings' ``runs``."""
+        if target is not None:
             records, _, experiment = self._locate(target)
-        found = []
-        for listed in records.summaries():
-            if experiment and listed.experiment != experiment:
+            return Runs(location=records.root, runs=tuple(self._listed(records, experiment)))
+        here = str(Path.cwd().resolve())
+        kept = self._settings().client.runs
+        places = [kept] if kept else _runs_under(here)
+        found = [
+            listed
+            for place in places
+            for listed in self._listed(RunRecords(place, self._store(place)), "")
+        ]
+        found.sort(key=lambda listed: (listed.started_at, listed.run))
+        return Runs(location=kept or here, runs=tuple(found))
+
+    def _listed(self, records: RunRecords, experiment: str) -> Iterator[RunSummary]:
+        """Each run in ``records`` of ``experiment`` (of any, when empty), oldest first,
+        each read once."""
+        for record in records.records():
+            if experiment and record.manifest.experiment != experiment:
                 continue
             try:
-                found.append(summarize(build_report(records.record(listed.run))))
+                yield summarize(build_report(record))
             except IxError:
-                found.append(listed)  # written by another ix: its id, state and counts only
-        return Runs(location=records.root, runs=tuple(found))
+                yield RunRecords.summary(record)  # another ix's: its id, state and counts
+
+
+def _runs_under(directory: str) -> list[str]:
+    """Every ``.ix/runs`` directory at or below ``directory``, in path order. A hidden
+    directory other than ``.ix``, and ``node_modules``, are not entered."""
+    found: list[str] = []
+    for at, folders, _ in os.walk(directory):
+        if os.path.basename(at) == ".ix":
+            if "runs" in folders:
+                found.append(os.path.join(at, "runs"))
+            folders[:] = []
+            continue
+        folders[:] = sorted(
+            name for name in folders
+            if name == ".ix" or not (name.startswith(".") or name == "node_modules")
+        )  # fmt: skip
+    return found
 
 
 _DEFAULT: Root | None = None

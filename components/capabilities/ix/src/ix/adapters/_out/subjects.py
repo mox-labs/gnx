@@ -12,10 +12,12 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from ix.adapters._out.processes import is_up, startable, wait_ready
 from ix.domain.kind import placeholders, seconds
 from ix.domain.ports import Requirement
+from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, SubjectError, Target
 
 if TYPE_CHECKING:
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
 
     from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import SubjectConfig
+    from ix.domain.ports import Surroundings
 
 #: How long a started program has to come up when the subject does not say.
 STARTUP_TIMEOUT_S = 30.0
@@ -47,6 +50,9 @@ class ProcessSubject:
 
     Offers ``pid`` (the process, which leads its own group) and ``url``.
 
+    A :class:`~ix.domain.ports.Review`: an address whose port is not one is refused at
+    ``validate``.
+
     Whose failure: a program that is not there is refused before the run starts. A command
     that cannot be started all the same, a program that exits before it is up, one that is
     not up in time, and one that dies during the probe are the subject's. An address that
@@ -56,6 +62,28 @@ class ProcessSubject:
 
     def __init__(self, launcher: Launcher) -> None:
         self._launcher = launcher
+
+    def review(self, options: Mapping[str, Any], around: Surroundings) -> list[Problem]:
+        """An address (``url``, ``ready``) whose port is not one: the readiness check could
+        not ask it, so no trial could start."""
+        found: list[Problem] = []
+        for key in ("url", "ready"):
+            value = options.get(key)
+            if not isinstance(value, str) or placeholders(value):
+                continue  # one a trial fills (a binding) is checked once it is filled
+            try:
+                _ = urlsplit(value).port  # raises for a port that is not one
+            except ValueError as error:
+                found.append(
+                    problem(
+                        f"{around.path}.{key}",
+                        kind="option_invalid",
+                        message=f"{key} {value!r} has no usable port: {error}",
+                        fix=f"give {key!r} a port from 1 to 65535, or none for the scheme's",
+                        got=value,
+                    )
+                )
+        return found
 
     def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
         """That its program can be started here."""

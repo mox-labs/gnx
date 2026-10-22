@@ -17,7 +17,7 @@ options:
   plugins: {type: paths, description: "plugin folders (relative to the experiment; a * matches several) or {type: local, path}, handed to the runtime as its plugins with every path absolute; a runtime whose config takes none refuses them"}
   skills: {type: paths, description: "skill folders (each holding SKILL.md), copied into the session's .claude/skills, which a session reads as its project settings"}
   fixtures: {type: paths, description: "files and folders, relative to the experiment, copied into each trial's working directory before the session starts"}
-  setup: {type: list, description: "a command run in the working directory after the fixtures are copied, before the session: [python3, seed.py]"}
-  loop: {type: mapping, description: "more rounds after the first: {strategy: self-review | test-feedback, rounds, prompt, until}"}
+  setup: {type: command, description: "a command run in the working directory after the fixtures are copied, before the session: [python3, seed.py]; the program, and each file an argument names relative to the experiment, are digested as what was tested"}
+  loop: {type: mapping, binds: [prompt, response, failures, until], description: "more rounds after the first: {strategy: self-review | test-feedback, rounds, prompt, until}; a prompt is the next round's task, with {prompt}, {response}, {until} and, for test-feedback, {failures} filled in each round"}
   runtime_options: {type: mapping, description: "the runtime's own config, passed through as written and checked by the runtime (claude-sdk: permission_mode, setting_sources, fallback_model, max_budget_usd, agents); `matrix describe matrix.v1.agent-runtime.<name>` lists a runtime's"}
 offers: [respondent, workdir]

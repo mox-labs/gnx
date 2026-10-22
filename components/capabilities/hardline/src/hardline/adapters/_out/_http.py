@@ -13,9 +13,11 @@ How httpx2 (2.10) is used, each choice checked against its source and recorded i
   neither ``SSL_CERT_FILE`` nor ``SSL_CERT_DIR`` changes what it trusts.
 * **TLS** is verified against the operating system's trust store, through ``truststore``,
   which httpx2 uses by default where httpx used certifi's bundle.
-* **Redirects are not followed** (httpx2's default, kept). A 3xx is reported with its
-  ``Location``: a moved endpoint is a row to correct, and following it would send the row's
-  key to wherever it points.
+* **Redirects are not followed** (httpx2's default, kept). A 3xx is a ``ConfigError`` whose fix
+  names where to point the row's ``base_url``: a moved endpoint is a row to correct, and
+  following it would send the row's key to wherever it points.
+* **A proxy only when the row names one** (``proxy:``), on the transport; never one from the
+  environment, and never one carrying credentials, which would sit in a config file.
 * **One timeout**, the row's ``timeout_s``, bounds each phase (connect, write, read, waiting
   for a pooled connection). httpx2's own default is 5 seconds, far below a model's reply time.
 * **No retries below the runtime.** The transport is built with ``retries=0`` and httpx2 never
@@ -43,14 +45,19 @@ if TYPE_CHECKING:
 
     from hardline.domain.types import ModelSpec
 
+#: What carries a request: the network, or a test's ``httpx2.MockTransport``. A backend names it
+#: by this name, so httpx2 is named in this file alone.
+Transport = httpx2.AsyncBaseTransport
+
 #: The most of a provider's error body quoted in a BackendError.
 _DETAIL_CHARS = 500
 
 
-def network_transport() -> httpx2.AsyncBaseTransport:
-    """The real network. The workspace's test guard refuses this call, so no test reaches a
-    provider; a test hands a backend an ``httpx2.MockTransport`` instead."""
-    return httpx2.AsyncHTTPTransport(trust_env=False, retries=0)
+def network_transport(proxy: str | None = None) -> httpx2.AsyncBaseTransport:
+    """The real network, through ``proxy`` when a row names one. The workspace's test guard
+    refuses this call, so no test reaches a provider; a test hands a backend an
+    ``httpx2.MockTransport`` instead."""
+    return httpx2.AsyncHTTPTransport(trust_env=False, retries=0, proxy=proxy)
 
 
 def client_timeout(spec: ModelSpec) -> httpx2.Timeout:
@@ -70,6 +77,25 @@ def location_problems(spec: ModelSpec) -> list[str]:
         return [f"base_url: {spec.base_url!r} is not a URL: {e}"]
     if url.scheme not in ("http", "https") or not url.host:
         return [f"base_url: {spec.base_url!r} must be an http:// or https:// URL"]
+    return _proxy_problems(spec.proxy)
+
+
+def _proxy_problems(proxy: str | None) -> list[str]:
+    """``proxy: ...`` when the row names a proxy hardline cannot use. The value is never
+    echoed, since a proxy URL can carry a password."""
+    if proxy is None:
+        return []
+    try:
+        url = httpx2.URL(proxy)
+    except httpx2.InvalidURL:
+        return ["proxy: not a URL"]
+    if url.scheme not in ("http", "https") or not url.host:
+        return ["proxy: must be an http:// or https:// URL"]
+    if url.userinfo:
+        return [
+            "proxy: carries credentials, which would sit in a config file; use a proxy that "
+            "needs none, or one that authenticates this machine"
+        ]
     return []
 
 
@@ -85,13 +111,17 @@ class Http:
 
     def _client(self, spec: ModelSpec, base_url: str) -> httpx2.AsyncClient:
         return self._clients.get(
-            (base_url, spec.timeout_s),
+            (base_url, spec.timeout_s, spec.proxy),
             lambda: httpx2.AsyncClient(
                 base_url=base_url,
                 timeout=client_timeout(spec),
                 follow_redirects=False,
                 trust_env=False,
-                transport=self._transport if self._transport is not None else network_transport(),
+                transport=(
+                    self._transport
+                    if self._transport is not None
+                    else network_transport(spec.proxy)
+                ),
             ),
         )
 
@@ -133,12 +163,7 @@ class Http:
 
         status = response.status_code
         if response.is_redirect:
-            raise BackendError(
-                f"{where}: HTTP {status}: redirected to {response.headers.get('location')!r}. "
-                "hardline does not follow redirects, which would send the key along: set "
-                "base_url to where the endpoint is now",
-                reason="unknown",
-            )
+            raise _redirected(spec, path, response)
         if not response.is_success:
             reason, retry_after = classify(status, response.headers)
             detail = scrub(_error_detail(response), api_key)
@@ -156,6 +181,31 @@ class Http:
                 reason="unknown",
             )
         return data
+
+
+def _redirected(spec: ModelSpec, path: str, response: httpx2.Response) -> ConfigError:
+    """A 3xx: the row's location is wrong, so a config error whose fix says where to point it.
+    When the new location ends with the path asked for, the base it implies is the fix."""
+    key = f"models.{spec.name}.base_url"
+    location = response.headers.get("location")
+    if not location:
+        return ConfigError(
+            f"{key}: {spec.base_url} answered HTTP {response.status_code}, a redirect with no "
+            "Location; hardline does not follow redirects",
+            fix=f"set {key} to where the endpoint is now",
+        )
+    moved = str(response.request.url.join(location))
+    suffix = "/" + path
+    base = moved[: -len(suffix)] if moved.endswith(suffix) else None
+    return ConfigError(
+        f"{key}: {spec.base_url} answered HTTP {response.status_code}, redirecting to "
+        f"{moved!r}. hardline does not follow redirects, which would send the key along",
+        fix=(
+            f"set {key} to {base!r}"
+            if base
+            else f"set {key} to where the endpoint is now; the server pointed at {moved!r}"
+        ),
+    )
 
 
 def _error_detail(response: httpx2.Response) -> str:

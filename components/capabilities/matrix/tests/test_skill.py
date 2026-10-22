@@ -347,3 +347,17 @@ def test_the_only_example_names_where_the_record_goes() -> None:
     assert "`matrix run live.yaml --only --input KIND=PATH`" in text
     assert "default `.matrix/runs` under the working directory" in text
     assert "matrix run live.yaml --only --input" in matrix.skill("config")
+
+
+def test_nothing_sends_a_reader_to_the_events_for_a_fact() -> None:
+    """Events are lossy: the skill and ``matrix run`` sent readers to ``events.jsonl`` for a
+    failed step's task (W5.2). No recipe reads them now, and each says they are lossy."""
+    from matrix.adapters._in.cli import _files
+
+    text = "\n".join([matrix.skill(), *(matrix.skill(name) for name in REFERENCES)])
+    assert not re.search(r"^jq .*events\.jsonl", text, re.M)
+    assert "lossy" in matrix.skill("running") and "lossy" in matrix.skill("telemetry")
+    (events,) = [
+        line for line in _files({"acme.v1.x": {"file": "acme.v1.x.jsonl"}}) if "events" in line
+    ]
+    assert "lossy" in events and "task" not in events

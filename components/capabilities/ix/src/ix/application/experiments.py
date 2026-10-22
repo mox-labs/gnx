@@ -19,6 +19,7 @@ from ix.domain.analysis import Spread, spread
 from ix.domain.design import select_sensors
 from ix.domain.errors import ConfigError, NotFoundError
 from ix.domain.experiment import PROBES_FOLDER, Experiment, ProbeConfig, ProbeSet, probe_set
+from ix.domain.kind import per_cell
 from ix.domain.plan import Plan, RegistrationStatus, Required, plan, sensitivity
 from ix.domain.ports import Review, Surroundings
 from ix.domain.problem import InvalidExperimentError, Problem, Validation, problem
@@ -189,8 +190,16 @@ def reviewed(
     found: list[Problem] = []
     for name, subject in experiment.subjects.items():
         built = adapter(schema.url("subject", subject.kind))
-        if isinstance(built, Review):
-            found += built.review(subject.options, around(f"subjects.{name}"))
+        if not isinstance(built, Review):
+            continue
+        # Each cell's options, as its trials will have them: a factor on one option hides
+        # nothing the adapter can tell about the others.
+        for options in per_cell(subject.options, experiment.factors):
+            found += [
+                said
+                for said in built.review(options, around(f"subjects.{name}"))
+                if said not in found
+            ]
     listed = {
         schema.url("sensor", entry.kind): index for index, entry in enumerate(experiment.sensors)
     }

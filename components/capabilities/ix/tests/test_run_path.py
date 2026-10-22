@@ -21,12 +21,21 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
 import yaml
 from ix_fakes import LOG, FakeLoad, FakeSubject, FakeTiming, experiment, fake_registry
-from matrix import Extension, MatrixConfig, MatrixError, default_registry
+from matrix import (
+    Config,
+    Extension,
+    JsonlConstructStore,
+    MatrixConfig,
+    MatrixError,
+    default_registry,
+    load_config,
+)
+from matrix.adapters._out.stores.jsonl import JsonlStoreConfig
 
 import ix
 from ix.adapters._in.matrix_components import (
@@ -44,6 +53,7 @@ from ix.adapters._out.subjects import ProcessSubject
 from ix.application import running
 from ix.composition import RUNS_DIRECTORY, Root
 from ix.composition.extension import POINTS, register_run_path
+from ix.composition.settings import IxSettings
 from ix.domain import schema
 from ix.domain.kind import Metric
 from ix.domain.ports import Liveness, Preflight, Sensed
@@ -150,11 +160,200 @@ class TestAFullRun:
         root.register(file)
         finished = root.run(file)
         location = Path(finished.location)
-        record = RunRecords(str(location.parent)).record(location.name)
+        record = RunRecords(str(location.parent), JsonlConstructStore(location.parent)).record(
+            location.name
+        )
         live = build_report(dataclasses.replace(record, status="running"))
         assert live.status == "running" and live.verdict is None
         assert live.no_verdict == "the run has not finished: 15 of 15 carried out so far"
         assert live.exit_code == 13 != finished.exit_code
+
+
+class _RecordingStore(JsonlConstructStore):
+    """matrix's JSONL store under another type URL, noting each directory it is built for."""
+
+    built: ClassVar[list[str]] = []
+
+    @classmethod
+    def from_config(cls, config: JsonlStoreConfig) -> JsonlConstructStore:
+        cls.built.append(config.root)
+        return cls(config.root)
+
+
+class TestTheRunStore:
+    def test_is_chosen_by_the_root_at_matrixs_store_point(self, write_experiment: Write) -> None:
+        """No adapter names a store: the root builds the one it chose through the registry,
+        for running, reporting and listing alike."""
+        registry = fake_registry()
+        url = "acme.v1.store.recording"
+        registry.register("store", url, _RecordingStore.from_config, config=JsonlStoreConfig)
+        _RecordingStore.built.clear()
+        root = Root(registry=registry, run_store=url)
+        file = write_experiment(experiment())
+        report = root.run(file, exploratory=True)
+        kept = str(file.parent.resolve() / RUNS_DIRECTORY)
+        assert report.location == f"{kept}/{report.run}"
+        assert root.report(report.location).run == report.run
+        assert [r.run for r in root.runs(file).runs] == [report.run]
+        assert set(_RecordingStore.built) == {kept}
+
+    def test_a_store_that_cannot_keep_runs_in_a_directory_is_a_config_error(
+        self, write_experiment: Write
+    ) -> None:
+        root = Root(registry=fake_registry(), run_store="matrix.v1.store.memory")
+        with pytest.raises(ix.ConfigError, match="memory"):
+            root.run(write_experiment(experiment()), exploratory=True)
+
+
+class TestAProcessSubjectsProgram:
+    def test_the_files_its_command_names_are_digested_and_an_edit_is_a_deviation(
+        self, write_experiment: Write
+    ) -> None:
+        """Regression: a process subject's command named its program and script by path,
+        and nothing digested them, so a registered run of an edited server was gated. Each
+        item of ``command`` that names a file, relative to ``cwd``, is now part of what was
+        tested; a program found on PATH and a plain argument are not files of the
+        experiment."""
+        data = experiment()
+        for subject in data["subjects"].values():
+            subject.update(command=["python3", "server.py", "--port", "1"], cwd="app")
+        file = write_experiment(data)
+        (file.parent / "app").mkdir()
+        (file.parent / "app" / "server.py").write_text("print('v1')\n")
+        root = Root(registry=fake_registry())
+        root.register(file)
+        report = root.run(file)
+        assert report.gated
+        named = {(c.entry, c.option, c.path, c.label) for c in report.contents}
+        assert named == {
+            (f"subjects.{name}", "command", "app/server.py", "file server.py")
+            for name in ("baseline", "candidate")
+        }
+
+        (file.parent / "app" / "server.py").write_text("print('v2')\n")
+        changed = root.deviations(file).deviations
+        assert {d.field for d in changed} >= {
+            "subjects.baseline.command[app/server.py]",
+            "subjects.candidate.command[app/server.py]",
+        }
+        assert not root.run(file).gated
+
+
+class _CountingStore(JsonlConstructStore):
+    """matrix's JSONL store, counting the runs it loads."""
+
+    loaded: ClassVar[list[str]] = []
+
+    def load(self, run_id: str) -> Any:
+        _CountingStore.loaded.append(run_id)
+        return super().load(run_id)
+
+    @classmethod
+    def from_config(cls, config: JsonlStoreConfig) -> JsonlConstructStore:
+        return cls(config.root)
+
+
+class TestWhatCallersRelyOn:
+    """The observable behaviours README's "What a caller may rely on" lists as contract,
+    pinned. The exit kinds and codes are pinned in ``test_ix_cli.py``
+    (``test_the_agreed_kinds_keep_their_agreed_codes``,
+    ``test_the_exit_codes_of_a_run_are_in_the_one_table``), and the span names in
+    ``test_agent_runs.py::TestTelemetry``."""
+
+    def test_a_runs_layout_and_table_names(self, root: Root, write_experiment: Write) -> None:
+        file = write_experiment(experiment())
+        report = root.run(file, exploratory=True)
+        location = Path(report.location)
+        assert location.parent == file.parent.resolve() / ".ix" / "runs"
+        assert location.name == report.run and location.name.startswith("fake-compare-")
+        tables = {kind: Path(path).name for kind, path in report.tables.items()}
+        assert {
+            kind: tables[kind]
+            for kind in ("ix.v1.run", "ix.v1.trial", "ix.v1.bindings", "ix.v1.interaction",
+                         "ix.v1.reading", "matrix.v1.ledger")
+        } == {
+            kind: f"{kind}.jsonl"
+            for kind in ("ix.v1.run", "ix.v1.trial", "ix.v1.bindings", "ix.v1.interaction",
+                         "ix.v1.reading", "matrix.v1.ledger")
+        }  # fmt: skip
+        assert (location / "run.json").is_file()
+
+    def test_the_events_and_their_fields(self, root: Root, write_experiment: Write) -> None:
+        seen: dict[str, set[str]] = {}
+        root.run(
+            write_experiment(experiment(repeats=5)),
+            exploratory=True,
+            on_event=lambda name, fields: seen.setdefault(name, set()).update(fields),
+        )
+        assert {name: fields for name, fields in seen.items() if name.startswith("ix.")} == {
+            "ix.environment.up": {"kind", "services"},
+            "ix.trial.start": {"seq", "total", "subject", "role", "probe", "cell"},
+            "ix.trial.end": {"seq", "total", "subject", "role", "failure", "duration_ms"},
+            "ix.sense.end": {"readings", "interactions"},
+        }
+
+
+class TestListingRuns:
+    def test_each_run_is_read_once(self, write_experiment: Write) -> None:
+        """Regression: listing read every record in full to summarize it, then again to
+        report it; a plan and a report of an experiment did the same to find its runs."""
+        registry = fake_registry()
+        url = "acme.v1.store.counting"
+        registry.register("store", url, _CountingStore.from_config, config=JsonlStoreConfig)
+        root = Root(registry=registry, run_store=url)
+        file = write_experiment(experiment())
+        runs = [root.run(file, exploratory=True).run for _ in range(2)]
+        _CountingStore.loaded.clear()
+        assert sorted(r.run for r in root.runs(file).runs) == sorted(runs)
+        assert sorted(_CountingStore.loaded) == sorted(runs)
+        _CountingStore.loaded.clear()
+        latest = root.report(file).run
+        assert _CountingStore.loaded == [latest]
+
+    def test_with_no_path_every_experiments_runs_under_the_directory(
+        self, write_experiment: Write, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: with no path ``ix runs`` read only ``./.ix/runs``, though its help
+        says every experiment's runs under the current directory: at a repository's root
+        after ``ix run lab/static`` it said there were none."""
+        root = Root(registry=fake_registry())
+        one = write_experiment(experiment(), "lab/one")
+        two = write_experiment(experiment(name="other"), "lab/two")
+        ran = [root.run(file, exploratory=True).run for file in (one, two)]
+        monkeypatch.chdir(one.parents[1])
+        listed = root.runs()
+        assert sorted(r.run for r in listed.runs) == sorted(ran)
+        assert listed.location == str(one.parents[1].resolve())
+
+
+class TestWhereEachSettingCameFrom:
+    def test_the_run_records_the_tier_that_set_each_setting_it_read(
+        self, tmp_path: Path, write_experiment: Write
+    ) -> None:
+        """A setting the run read is recorded with its rung: the file that set it, or the
+        default when no tier did. Never its value, which may be a model registry."""
+        kept = tmp_path / "runs"
+        yours = tmp_path / "yours.yaml"
+        yours.write_text(yaml.safe_dump({"ix": {"runs": str(kept)}}))
+        project = tmp_path / "project.yaml"
+        project.write_text(yaml.safe_dump({"matrix": {"observers": []}}))
+        settings = load_config(client_type=IxSettings, client_key="ix", sources=[yours, project])
+        report = Root(registry=fake_registry(), settings=settings).run(
+            write_experiment(experiment()), exploratory=True
+        )
+        assert report.location.startswith(str(kept))
+        assert report.provenance is not None
+        assert report.provenance.settings == {
+            "ix.runs": str(yours),
+            "matrix.observers": str(project),
+            "matrix.models": "default",
+        }
+
+    def test_settings_given_in_code_say_so(self, write_experiment: Write) -> None:
+        report = Root(registry=fake_registry(), settings=Config[IxSettings](client=IxSettings()))
+        ran = report.run(write_experiment(experiment()), exploratory=True)
+        assert ran.provenance is not None
+        assert set(ran.provenance.settings.values()) == {"given in code"}
 
 
 class TestRegistrationAtRun:
@@ -671,7 +870,7 @@ def test_a_trial_cancelled_mid_flight_by_matrix_still_releases_its_subject(
     async def cancelled_mid_trial() -> list[str]:
         run = asyncio.ensure_future(
             matrix_runs.execute(
-                root=str(file.parent / RUNS_DIRECTORY),
+                store=JsonlConstructStore(file.parent / RUNS_DIRECTORY),
                 registry=fake_registry(),
                 config=MatrixConfig.model_validate(COMPOSITION),
                 needs={NEED: kit},
@@ -904,6 +1103,48 @@ class TestBindingsReachTrials:
         ]
 
 
+class _ReadsAFile:
+    """A third party's sensor: reports the ``file`` option it was given."""
+
+    seen: ClassVar[list[str]] = []
+
+    def watch(self, target: Target, options: Any) -> None:
+        return None
+
+    async def sense(self, interaction: Interaction, *, truth: Any, options: Any) -> Any:
+        _ReadsAFile.seen.append(str(options["file"]))
+        return {"lines": 1.0}
+
+
+class TestALabsOwnKinds:
+    def test_reach_the_run_so_a_sensors_path_is_placed(self, write_experiment: Write) -> None:
+        """Regression: the run's kit took the installed kinds only, so a sensor kind a lab
+        declares in ``<lab>/kinds/`` ran without its declaration: its ``path`` option reached
+        the adapter as written, not resolved against the experiment."""
+        registry = fake_registry()
+        sensor = "acme.v1.sensor.reads-file"
+        registry.register(POINTS["sensor"], sensor, _ReadsAFile)
+        file = write_experiment(
+            experiment(sensors=[{"kind": sensor, "file": "data.txt"}], metrics=["lines"])
+        )
+        (file.parent / "kinds").mkdir()
+        (file.parent / "kinds" / "reads-file.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "schema": "ix.v1.kind",
+                    "name": sensor,
+                    "summary": "Reads a file.",
+                    "options": {"file": {"type": "path", "required": True}},
+                    "metrics": [{"name": "lines", "direction": "higher", "shape": "scalar"}],
+                }
+            )
+        )
+        _ReadsAFile.seen.clear()
+        report = Root(registry=registry).run(file, exploratory=True)
+        assert report.status == "completed"
+        assert set(_ReadsAFile.seen) == {f"{file.parent.resolve()}/data.txt"}
+
+
 class TestWhatCannotRun:
     def test_a_kind_with_no_adapter_is_a_warning_a_plan_note_and_a_refusal(
         self, evaluate_data: dict[str, Any], write_experiment: Write
@@ -1097,6 +1338,7 @@ def test_a_hard_kill_mid_run_leaves_every_finished_trial_readable_and_reportable
     # says none were taken; any other error while deriving them is raised, not read as that.
     unread = Root(registry=fake_registry(sensor=None)).report(location)
     assert unread.readings == "none" and unread.trials.carried_out == len(kept)
+    assert unread.unread.startswith("no adapter here reads timing: run the experiment again")
 
     def broken(*_: Any, **__: Any) -> Any:
         raise KeyError("a defect, not a missing adapter")

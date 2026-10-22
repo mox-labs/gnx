@@ -54,6 +54,7 @@ from ix.adapters._out.matrix_agents import (
     TOOL_USAGE,
     Runtimes,
     Sessions,
+    built,
     carried_out,
     runtime_requirement,
 )
@@ -115,13 +116,15 @@ class Call:
         canned = options.get("mock_response")
         if self.simulated and canned is not None:
             config[CANNED] = str(canned)
-        runtime = self.runtimes.build(MODEL_RUNTIME, self.options.runtime, config)
-        runtime.check(self.options.model)
+        with built():
+            runtime = self.runtimes.build(MODEL_RUNTIME, self.options.runtime, config)
+            runtime.check(self.options.model)
         request = matrix.ModelRequest(
             prompt=prompt, model=self.options.model, system=self.options.system_prompt
         )
         url = matrix.model_runtime_type_url(self.options.runtime)
-        call = await recorded_call(runtime, request, url=url)
+        drives = tuple(self.runtimes.drives(MODEL_RUNTIME, self.options.runtime))
+        call = await recorded_call(runtime, request, url=url, drives=drives)
         response: dict[str, Any] = {"prompt": prompt, "text": call.text, "refusal": call.refusal}
         if call.value is not None:
             response["value"] = call.value
@@ -142,20 +145,27 @@ class Call:
 
 
 async def recorded_call(
-    runtime: matrix.ModelRuntime, request: matrix.ModelRequest, *, url: str
+    runtime: matrix.ModelRuntime,
+    request: matrix.ModelRequest,
+    *,
+    url: str,
+    drives: tuple[str, ...] = (),
 ) -> matrix.ModelCall:
-    """One call on ``runtime`` (whose type URL is ``url``), recorded as a row of the run's
-    session table, as matrix's model step records its own: whether it replied or failed, and
-    for a failure what the runtime's error carried of it. Outside a run nothing is recorded.
-    The call returned points at its row (``session``); a failure is raised as it stands."""
+    """One call on ``runtime`` (whose type URL is ``url``, and which drives the distributions
+    ``drives``), recorded as a row of the run's session table, as matrix's model step records
+    its own: whether it replied or failed, and for a failure what the runtime's error carried
+    of it. Outside a run nothing is recorded. The call returned points at its row
+    (``session``); a failure is raised as it stands."""
     sent = matrix.call_sent(request)
     try:
         call: matrix.ModelCall = await runtime.call(request)
     except Exception as error:
         known = error.call if isinstance(error, matrix.ModelRuntimeError) else None
-        matrix.record_session(matrix.call_session(known, sent=sent, runtime=url, error=error))
+        matrix.record_session(
+            matrix.call_session(known, sent=sent, runtime=url, drives=drives, error=error)
+        )
         raise
-    row = matrix.record_session(matrix.call_session(call, sent=sent, runtime=url))
+    row = matrix.record_session(matrix.call_session(call, sent=sent, runtime=url, drives=drives))
     return call if row is None else call.model_copy(update={"session": row})
 
 
@@ -215,11 +225,9 @@ class ModelCallSubject:
 
     def review(self, options: Mapping[str, Any], around: Surroundings) -> list[Problem]:
         """A runtime option the runtime does not declare, and a sensor or probe that would
-        read what a call never leaves; nothing for options of the wrong shape, or filled in
-        per cell."""
+        read what a call never leaves; nothing for options of the wrong shape. ``validate``
+        asks it once for each cell's options."""
         found = _unobservable(around)
-        if any(placeholders(value) for value in options.values()):
-            return found
         try:
             parsed = CallOptions.model_validate(options)
         except ValidationError:
@@ -260,9 +268,10 @@ class ModelCallSubject:
 
     def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
         """Options it can carry out, and its runtime, built, resolving the model. Nothing
-        for options filled in per cell."""
+        while an option holds a placeholder only the trial fills (an environment's
+        binding)."""
         if any(placeholders(value) for value in options.values()):
-            return []  # filled per cell: told when the trial starts
+            return []  # told when the trial starts
         try:
             parsed = CallOptions.model_validate(options)
         except ValidationError as error:

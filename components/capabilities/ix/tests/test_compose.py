@@ -446,52 +446,68 @@ def _probes(found: Any) -> Any:
     return probe_set(found.probes)
 
 
-class TestTracing:
-    async def test_bringing_the_environment_up_is_a_span(self) -> None:
-        """Regression (ix-outer 20): the environment component ran untraced."""
+class _Traced(Scope):
+    """A scope that keeps each span it was asked for: its name, attributes and failure."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.spans: list[tuple[str, dict[str, Any]]] = []
+
+    def trace(self, name: str, /, **attributes: Any) -> Any:
+        from contextlib import contextmanager
+
+        spans = self.spans
+
+        @contextmanager
+        def span() -> Iterator[Any]:
+            class Span:
+                def set(self, **more: Any) -> None:
+                    attributes.update(more)
+
+                def failed(self, reason: str) -> None:
+                    attributes["failed"] = reason
+
+                def evaluated(self, metric: str, **_: Any) -> None:
+                    return None
+
+            try:
+                yield Span()
+            finally:
+                spans.append((name, attributes))
+
+        return span()
+
+
+class TestTracing:
+    def _bring_up(self, environment: Any, scope: _Traced) -> None:
+        kit = running.Kit(
+            subjects={}, probes={}, sensors={},
+            environments={schema.url("environment", "none"): environment}, clock_ns=lambda: 0,
+        )  # fmt: skip
+        asyncio.run(running.bring_up(running.setup_of(_manifest()), kit, scope))
+
+    def test_bringing_the_environment_up_is_a_span(self) -> None:
         class Up:
             async def up(self, environment: Any, *, base: str, scope: Any) -> Any:
                 return {"web": {"url": "http://127.0.0.1:1"}}
 
-        class Traced(Scope):
-            def __init__(self) -> None:
-                super().__init__()
-                self.spans: list[tuple[str, dict[str, Any]]] = []
+        scope = _Traced()
+        self._bring_up(Up(), scope)
+        ((name, attributes),) = scope.spans
+        assert name == "ix.environment"
+        assert attributes["ix.environment.kind"] == "none"
+        assert attributes["ix.environment.services"] == ["web"]
 
-            def trace(self, name: str, /, **attributes: Any) -> Any:
-                from contextlib import contextmanager
+    def test_a_bring_up_that_fails_marks_its_span_failed(self) -> None:
+        class Down:
+            async def up(self, environment: Any, *, base: str, scope: Any) -> Any:
+                raise HarnessError("not_ready", "the stack did not come up")
 
-                spans = self.spans
-
-                @contextmanager
-                def span() -> Iterator[Any]:
-                    class Span:
-                        def set(self, **more: Any) -> None:
-                            attributes.update(more)
-
-                        def event(self, name: str, /, **_: Any) -> None:
-                            return None
-
-                    yield Span()
-                    spans.append((name, attributes))
-
-                return span()
-
-        manifest = _manifest()
-        setup = running.setup_of(manifest)
-        kit = running.Kit(
-            subjects={}, probes={}, sensors={},
-            environments={schema.url("environment", "none"): Up()}, clock_ns=lambda: 0,
-        )  # fmt: skip
-        scope = Traced()
-        await running.bring_up(setup, kit, scope)
-        assert scope.spans == [
-            (
-                "ix.environment",
-                {"ix.run.id": manifest.run, "ix.environment": "none", "ix.environment.services": 1},
-            )
-        ]
+        scope = _Traced()
+        with pytest.raises(HarnessError):
+            self._bring_up(Down(), scope)
+        ((name, attributes),) = scope.spans
+        assert (name, attributes["failed"]) == ("ix.environment", "not_ready")
 
 
 def _manifest() -> Any:

@@ -177,6 +177,21 @@ def current_trace() -> tuple[str, str] | None:
     return trace.format_trace_id(context.trace_id), trace.format_span_id(context.span_id)
 
 
+def trace_environment() -> dict[str, str]:
+    """The OpenTelemetry context current in the calling task, as the environment variables a
+    child process reads it from (``TRACEPARENT``, ``TRACESTATE``; OpenTelemetry's
+    environment-variable carrier, the W3C header names upper-cased), through the configured
+    propagators. Empty when no span is current, or no SDK made one, so a child is handed
+    nothing then: what the ``claude-sdk`` runtime passes the CLI it starts."""
+    from opentelemetry import propagate
+
+    carrier: dict[str, str] = {}
+    propagate.inject(carrier)
+    if "traceparent" not in carrier:
+        return {}
+    return {key.upper(): value for key, value in carrier.items()}
+
+
 def configure_telemetry(
     *,
     service_name: str | None = None,

@@ -9,10 +9,18 @@ Everything, built-ins included, arrives as an :class:`Extension`. One that fails
 register is **quarantined**: recorded in :attr:`Registry.failures`, and the rest load.
 
 **A point may have a port.** What is registered at ``agent-runtime`` must keep the
-:class:`AgentRuntime` port, and at ``model-runtime`` the :class:`ModelRuntime` port: a class
-is held to it when it is registered, and whatever an entry builds when it is built, so a
-runtime that lacks a member is a ``ConfigError`` naming it, not an ``AttributeError`` the
-first time a caller reaches for it.
+:class:`AgentRuntime` port, at ``model-runtime`` the :class:`ModelRuntime` port, at ``store``
+the :class:`ConstructStore` port and at ``observer`` the :class:`Observer` port: a class is
+held to it when it is registered, and whatever an entry builds when it is built, so an
+implementation that lacks a member is a ``ConfigError`` naming it, not an ``AttributeError``
+the first time a caller reaches for it. Only the members a port requires are held; its
+optional ones (an observer's ``around``, a store's ``events``) are read with ``getattr``.
+
+**Points have owners.** A point is owned by the distribution that declared it
+(:meth:`Registry.add_point`), and matrix owns its own (:attr:`Registry.owners`). Another
+distribution that declares a point already owned, or gives it a port, is refused and
+quarantined whole; the owner may declare it again. Code registering directly (not through
+discovery) is trusted, as for type URLs.
 
 **Namespaces have owners.** A distribution owns the type URLs whose root segment is its own
 name (``matrix`` owns ``matrix.*``). When two extensions register one type URL, the owner
@@ -30,7 +38,9 @@ from pydantic import BaseModel, ValidationError
 
 from matrix.domain.errors import ConfigError, NotFoundError, invalid
 from matrix.domain.ids import parse_type_url
+from matrix.domain.observer import Observer
 from matrix.domain.ports._out.agent_runtime import AgentRuntime
+from matrix.domain.ports._out.construct_store import ConstructStore
 from matrix.domain.ports._out.model_runtime import ModelRuntime
 from matrix.domain.problems import from_validation_error, problem
 
@@ -50,7 +60,15 @@ MATRIX_POINTS = (
 )
 
 #: The port each of matrix's points holds what is registered there to.
-MATRIX_PORTS: dict[str, type] = {"agent-runtime": AgentRuntime, "model-runtime": ModelRuntime}
+MATRIX_PORTS: dict[str, type] = {
+    "agent-runtime": AgentRuntime,
+    "model-runtime": ModelRuntime,
+    "store": ConstructStore,
+    "observer": Observer,
+}
+
+#: Who a point or a type URL registered directly belongs to: whoever composes the registry.
+_DIRECT = "(direct)"
 
 
 def _breaks(found: Any, port: type) -> list[str]:
@@ -82,7 +100,7 @@ class Entry:
     needs: frozenset[str] = frozenset()
     summary: str = ""
     stability: Stability = "beta"
-    origin: str = "(direct)"
+    origin: str = _DIRECT
     #: Whether it stands in for the real thing: a mock's canned answers, not a model's.
     stand_in: bool = False
     #: The distributions it drives, by their installed names (``claude-agent-sdk``): what a
@@ -113,7 +131,7 @@ def _owns(origin: str, type_url: str) -> bool:
 
     Code registering directly (not through discovery) is trusted as the owner.
     """
-    if origin == "(direct)":
+    if origin == _DIRECT:
         return True
     name = origin.lower().replace("_", "-").replace(".", "-")
     return type_url.split(".", 1)[0] == name
@@ -145,16 +163,39 @@ class Registry:
     points: set[str] = field(default_factory=lambda: set(MATRIX_POINTS))
     #: The port a point holds its entries to, for the points that have one.
     ports: dict[str, type] = field(default_factory=lambda: dict(MATRIX_PORTS))
+    #: The distribution that declared each point; ``(direct)`` for one declared by the code
+    #: composing the registry.
+    owners: dict[str, str] = field(default_factory=lambda: dict.fromkeys(MATRIX_POINTS, "matrix"))
     failures: list[Failure] = field(default_factory=list)
     _entries: dict[tuple[str, str], Entry] = field(default_factory=dict)
-    _origin: str = "(direct)"
+    _origin: str = _DIRECT
     #: The entry point name of each distribution loaded so far.
     _extensions: dict[str, str] = field(default_factory=dict)
 
     def add_point(self, point: str, *, port: type | None = None) -> Registry:
         """Declare an extension point owned by the caller; with ``port``, a Protocol that
-        whatever is registered there must keep."""
+        whatever is registered there must keep. Raises ConfigError when another distribution
+        owns the point already."""
+        owner = self.owners.get(point)
+        if owner is not None and owner not in (_DIRECT, self._origin) and self._origin != _DIRECT:
+            if _owns(self._origin, point) and not _owns(owner, point):
+                # The point is under this distribution's name, and an impostor declared it
+                # first: the owner keeps it, and the impostor is quarantined whole.
+                self._quarantine(
+                    owner,
+                    f"declared extension point {point!r}, which is "
+                    f"{self._origin}'s; all of its entries and points were dropped",
+                )
+            else:
+                raise ConfigError(
+                    f"extension point {point!r} is declared by {owner}; {self._origin} cannot "
+                    "declare it again",
+                    fix=f"register at {owner}'s point as it declared it, or declare a point "
+                    "of your own, under your own name",
+                )
         self.points.add(point)
+        if self.owners.get(point) in (None, _DIRECT):
+            self.owners[point] = self._origin
         if port is not None:
             self.ports[point] = port
         return self
@@ -198,16 +239,10 @@ class Registry:
             if _owns(self._origin, type_url) and not _owns(existing.origin, type_url):
                 # The namespace's owner arrived after an impostor: the owner keeps its name,
                 # and every entry the impostor registered is quarantined with it.
-                self._entries = {
-                    k: e for k, e in self._entries.items() if e.origin != existing.origin
-                }
-                self.failures.append(
-                    Failure(
-                        extension=self._extensions.get(existing.origin, existing.origin),
-                        origin=existing.origin,
-                        error=f"registered {point} {type_url!r} in {self._origin}'s "
-                        "namespace; all of its entries were dropped",
-                    )
+                self._quarantine(
+                    existing.origin,
+                    f"registered {point} {type_url!r} in {self._origin}'s namespace; all of "
+                    "its entries and points were dropped",
                 )
             else:
                 raise ConfigError(
@@ -228,6 +263,17 @@ class Registry:
             drives=tuple(drives),
         )
         return self
+
+    def _quarantine(self, origin: str, why: str) -> None:
+        """Drop everything ``origin`` registered or declared, and record why."""
+        self._entries = {k: e for k, e in self._entries.items() if e.origin != origin}
+        for point in [p for p, owner in self.owners.items() if owner == origin]:
+            del self.owners[point]
+            self.points.discard(point)
+            self.ports.pop(point, None)
+        self.failures.append(
+            Failure(extension=self._extensions.get(origin, origin), origin=origin, error=why)
+        )
 
     def register_payload(
         self, type_url: str, model: type[BaseModel], summary: str = ""
@@ -359,6 +405,7 @@ class Registry:
         before = dict(self._entries)
         points = set(self.points)
         ports = dict(self.ports)
+        owners = dict(self.owners)
         failures = len(self.failures)
         self._origin = extension.origin
         self._extensions[extension.origin] = extension.name
@@ -368,8 +415,9 @@ class Registry:
             self._entries = before  # all-or-nothing
             self.points = points
             self.ports = ports
+            self.owners = owners
             del self.failures[failures:]
             return e
         finally:
-            self._origin = "(direct)"
+            self._origin = _DIRECT
         return None

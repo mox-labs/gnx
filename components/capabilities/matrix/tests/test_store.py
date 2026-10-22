@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from matrix import (
     MemoryConstructStore,
     NotFoundError,
     Ref,
+    Run,
     RunContext,
     RunError,
     StoreError,
@@ -628,3 +630,329 @@ def test_a_dead_writer_whose_pid_was_reused_still_reads_as_interrupted(tmp_path:
     record["writer"]["pid"] = os.getpid()  # the pid now belongs to a live process: this one
     record_path.write_text(json.dumps(record))
     assert JsonlConstructStore(runs).describe("killed")["status"] == "interrupted"
+
+
+def _killed(tmp_path: Path) -> Path:
+    """A run killed after three rows landed. Returns the root."""
+    script = tmp_path / "killed.py"
+    script.write_text(textwrap.dedent(_KILLED))
+    runs = tmp_path / "runs"
+    with subprocess.Popen(
+        [sys.executable, str(script), str(runs)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    ) as proc:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "ready", proc.stderr and proc.stderr.read()
+        proc.send_signal(signal.SIGKILL)
+        proc.wait(timeout=60)
+    return runs
+
+
+def _killed_mid_write(tmp_path: Path) -> Path:
+    """A run killed while it was writing: three rows landed, then a fourth row's line and an
+    event's line were cut short, as a kill (or a full disk) leaves them. Returns the root."""
+    runs = _killed(tmp_path)
+    directory = runs / "killed"
+    with (directory / f"{TRIAL}.jsonl").open("a") as table:
+        table.write('{"seq": 3, "se')
+    with (directory / "events.jsonl").open("a") as events:
+        events.write('{"schema": "matrix.v1.ev')
+    return runs
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_killed_run_once_read_says_interrupted_on_disk_and_reads_without_matrix(
+    tmp_path: Path,
+) -> None:
+    """A torn last line broke jq and DuckDB, and ``interrupted`` lived only in what
+    ``describe`` computed (mx-src F15's sibling, area 5). The first matrix reader that finds
+    the writer gone finishes the record: ``run.json`` says ``interrupted``, and each torn
+    tail is moved aside to ``<file>.torn``, so every file reads without matrix (W5.1)."""
+    runs = _killed_mid_write(tmp_path)
+    directory = runs / "killed"
+    assert json.loads((directory / "run.json").read_text())["status"] == "running"
+
+    described = JsonlConstructStore(runs).describe("killed")
+    assert described["status"] == "interrupted"
+    on_disk = json.loads((directory / "run.json").read_text())
+    assert on_disk["status"] == "interrupted" and on_disk["ended"] is None
+    assert on_disk["tables"][TRIAL]["rows"] == 3 and on_disk["torn"] == 0
+    for path in directory.glob("*.jsonl"):  # every line a JSON document, as jq reads them
+        assert all(json.loads(line) is not None for line in path.read_text().splitlines()), path
+    assert (directory / f"{TRIAL}.jsonl.torn").read_text() == '{"seq": 3, "se'
+    assert (directory / "events.jsonl.torn").read_text() == '{"schema": "matrix.v1.ev'
+    if shutil.which("jq"):
+        for path in directory.glob("*.jsonl"):
+            read = subprocess.run(["jq", "-c", ".", str(path)], capture_output=True, check=False)
+            assert read.returncode == 0, (path, read.stderr)
+    duckdb = pytest.importorskip("duckdb")
+    rows = duckdb.sql(f"SELECT seq FROM read_json_auto('{directory / TRIAL}.jsonl')").fetchall()
+    assert rows == [(0,), (1,), (2,)]
+    # Read again, the record is as it was left: finished once, by whoever read it first.
+    assert JsonlConstructStore(runs).describe("killed") == described
+    assert JsonlConstructStore(runs).load("killed").rows(TRIAL) == tuple(
+        {"seq": seq, "seed": 7} for seq in range(3)
+    )
+
+
+def test_a_write_cut_short_leaves_no_torn_line_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write the disk cut short (a full disk) is taken back before the StoreError is raised,
+    so the table never holds half a line while the process lives."""
+    from matrix.adapters._out.stores import jsonl
+
+    store = JsonlConstructStore(tmp_path)
+    run = Run(run_id="r", construct=Construct([TRIAL]))
+    writer = store.open(run)
+    writer.append(TRIAL, {"seq": 0})
+    real = os.write
+
+    def half(descriptor: int, data: bytes) -> int:
+        real(descriptor, data[: len(data) // 2])
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(jsonl.os, "write", half)
+    with pytest.raises(StoreError, match="No space left"):
+        writer.append(TRIAL, {"seq": 1, "note": "long enough to be cut in half"})
+    assert (tmp_path / "r" / f"{TRIAL}.jsonl").read_text() == '{"seq": 0}\n'
+
+
+def test_a_damaged_run_record_is_skipped_when_runs_are_listed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One unreadable ``run.json`` made ``runs()`` fail, and with it ``matrix runs`` (mx-src
+    F15): it is skipped, and said."""
+    store = JsonlConstructStore(tmp_path)
+    store.open(Run(run_id="good", construct=Construct([TRIAL]))).finish(
+        Run(run_id="good", construct=Construct([TRIAL]))
+    )
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "run.json").write_text("{trunc")
+    with caplog.at_level("WARNING", logger="matrix.store"):
+        assert store.runs() == ["good"]
+    assert any("bad" in r.getMessage() for r in caplog.records)
+
+
+def test_with_fsync_the_run_directory_is_flushed_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``fsync=True`` promises a record that survives the machine going down, which a new
+    file's or a renamed ``run.json``'s directory entry does not without the directory's own
+    flush (mx-src F28)."""
+    import stat
+
+    from matrix.adapters._out.stores import jsonl
+
+    flushed: list[bool] = []
+    real = os.fsync
+
+    def fsync(descriptor: int) -> None:
+        flushed.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
+        real(descriptor)
+
+    monkeypatch.setattr(jsonl.os, "fsync", fsync)
+    run = Run(run_id="r", construct=Construct([TRIAL]))
+    writer = JsonlConstructStore(tmp_path, fsync=True).open(run)
+    assert True in flushed  # the directory, once its files exist
+    flushed.clear()
+    writer.append(TRIAL, {"seq": 0})
+    assert flushed == [False]  # each row, flushed before append returns
+    flushed.clear()
+    writer.finish(run)
+    assert True in flushed  # and after run.json is renamed into place
+
+
+def test_a_store_root_that_is_a_file_is_not_called_an_existing_run(tmp_path: Path) -> None:
+    """Any ``FileExistsError`` read as "run already exists" (mx-src F29)."""
+    root = tmp_path / "runs"
+    root.write_text("not a directory")
+    with pytest.raises(StoreError) as e:
+        JsonlConstructStore(root).open(Run(run_id="r", construct=Construct([TRIAL])))
+    assert "already exists" not in str(e.value) and "not a directory" in str(e.value)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_the_documented_readers_skip_a_line_cut_short_in_a_run_not_yet_finished(
+    tmp_path: Path,
+) -> None:
+    """Before any matrix reader has finished a killed run, its tables may end in a cut line:
+    the recipes ``data-model.md`` gives read past it, run here as written there."""
+    import re
+    from pathlib import Path as _Path
+
+    runs = _killed_mid_write(tmp_path)
+    table = runs / "killed" / f"{TRIAL}.jsonl"
+    text = (_Path(__file__).parents[1] / "docs" / "explanation" / "data-model.md").read_text()
+    found = re.search(r"<!-- torn-tolerant -->\s*```sql\n(.*?)```", text, re.S)
+    assert found, "data-model.md shows how to read a table whose last line may be cut"
+    duckdb = pytest.importorskip("duckdb")
+    sql = found.group(1).replace("RUN/KIND.jsonl", str(table))
+    rows = duckdb.sql(sql).fetchall()
+    assert [(row, json.loads(doc)["seq"]) for row, doc in rows] == [(0, 0), (1, 1), (2, 2)]
+    assert "jq -cR 'fromjson? // empty' FILE" in text
+    if shutil.which("jq"):
+        read = subprocess.run(
+            ["jq", "-cR", "fromjson? // empty", str(table)], capture_output=True, check=True
+        )
+        assert [json.loads(line)["seq"] for line in read.stdout.splitlines()] == [0, 1, 2]
+
+
+# --- the record's observable behaviours, each pinned (W5.3; mx-tests 11) ------------------
+
+
+def test_every_table_file_exists_from_the_start_even_with_no_rows(tmp_path: Path) -> None:
+    store = JsonlConstructStore(tmp_path)
+    run = Run(run_id="r", construct=Construct([TRIAL, READING]))
+    store.open(run)
+    for kind in (TRIAL, READING, LEDGER, SESSION):
+        assert (tmp_path / "r" / f"{kind}.jsonl").read_text() == "", kind
+    assert (tmp_path / "r" / "events.jsonl").exists() is False  # only once a run keeps events
+
+
+def test_run_json_is_only_ever_replaced_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reader sees the record as it was while running or the finished one, never a mixture:
+    ``run.json`` is written to a sibling and renamed into place, at open and at finish."""
+    from matrix.adapters._out.stores import jsonl
+
+    renamed: list[tuple[str, str]] = []
+    real = os.replace
+
+    def replace(source: Any, target: Any) -> None:
+        renamed.append((os.path.basename(source), os.path.basename(target)))
+        real(source, target)
+
+    monkeypatch.setattr(jsonl.os, "replace", replace)
+    run = Run(run_id="r", construct=Construct([TRIAL]))
+    JsonlConstructStore(tmp_path).open(run).finish(run)
+    assert renamed == [("run.json.tmp", "run.json")] * 2
+    assert sorted(p.name for p in (tmp_path / "r").glob("run.json*")) == ["run.json"]
+
+
+async def test_the_run_directory_holds_what_the_docs_say(tmp_path: Path) -> None:
+    """The layout a reader without matrix relies on (data-model.md): the file names, and the
+    keys of a finished ``run.json``."""
+
+    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+        return {TRIAL: {"seq": 0}}
+
+    store = JsonlConstructStore(tmp_path)
+    await Executor().run(wire({"trials": Step(trials, provides=[TRIAL])}), store=store, run_id="r")
+    names = sorted(p.name for p in (tmp_path / "r").iterdir())
+    assert names == sorted(
+        [
+            "run.json",
+            f"{TRIAL}.jsonl",
+            f"{SESSION}.jsonl",
+            f"{LEDGER}.jsonl",
+            "events.jsonl",
+            "writer.lock",
+        ]
+    )
+    recorded = json.loads((tmp_path / "r" / "run.json").read_text())
+    assert set(recorded) == {
+        "schema",
+        "run_id",
+        "status",
+        "started",
+        "ended",
+        "components",
+        "failures",
+        "releases",
+        "events_dropped",
+        "tables",
+    }
+    assert (recorded["schema"], recorded["status"]) == ("matrix.v1.run", "completed")
+    assert recorded["tables"][TRIAL] == {"file": f"{TRIAL}.jsonl", "rows": 1}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_dead_run_on_another_host_still_reads_running_and_is_left_alone(tmp_path: Path) -> None:
+    """matrix does not guess: a writer on another host cannot be told dead, so its record is
+    neither called ``interrupted`` nor finished."""
+    runs = _killed(tmp_path)
+    record_path = runs / "killed" / "run.json"
+    record = json.loads(record_path.read_text())
+    record["writer"]["host"] = "another-host"
+    record_path.write_text(json.dumps(record))
+    described = JsonlConstructStore(runs).describe("killed")
+    assert described["status"] == "running" and described["tables"][TRIAL]["rows"] == 3
+    assert json.loads(record_path.read_text())["status"] == "running"
+
+
+class _Finishes:
+    """A store that records what it was asked, and whose event sink records being closed."""
+
+    def __init__(self, fail_on_append: int | None = None) -> None:
+        self.calls: list[str] = []
+        self._fail_on = fail_on_append
+        self._appends = 0
+        self._inner = MemoryConstructStore()
+
+    def open(self, run: Any) -> Any:
+        self._writer = self._inner.open(run)
+        return self
+
+    def append(self, kind: str, row: Any) -> None:
+        self._appends += 1
+        if self._appends == self._fail_on:
+            raise OSError("no space left on device")
+        self._writer.append(kind, row)
+
+    def finish(self, run: Any) -> str:
+        self.calls.append(f"finish:{run.status}")
+        return str(self._writer.finish(run))
+
+    def events(self) -> Any:
+        store = self
+
+        class Sink:
+            def on_event(self, event: Any) -> None:
+                return None
+
+            def close(self) -> None:
+                store.calls.append("close events")
+
+        return Sink()
+
+    def load(self, run_id: str) -> Construct:
+        return self._inner.load(run_id)
+
+    def describe(self, run_id: str) -> dict[str, Any]:
+        return self._inner.describe(run_id)
+
+    def runs(self) -> list[str]:
+        return self._inner.runs()
+
+
+async def test_a_failed_append_still_finishes_the_record_failed_then_closes_its_events() -> None:
+    """After a failed append no row is appended, but the store is still asked to finish the
+    record, as ``failed``; the event sink is closed after that, once the events drained."""
+
+    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+        ctx.provide(TRIAL, {"seq": 0})
+
+    store = _Finishes(fail_on_append=2)  # the first row's ledger entry lands, the row does not
+    with pytest.raises(RunError):
+        await Executor().run(wire({"trials": Step(trials, provides=[TRIAL])}), store=store)
+    assert store.calls == ["finish:failed", "close events"]
+
+
+async def test_an_unsafe_run_id_is_refused_before_anything_runs(tmp_path: Path) -> None:
+    ran: list[str] = []
+
+    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+        ran.append("ran")
+
+    with pytest.raises(ConfigError, match="safe"):
+        await Executor().run(
+            wire({"trials": Step(trials, provides=[TRIAL])}),
+            store=JsonlConstructStore(tmp_path),
+            run_id="../outside",
+        )
+    assert ran == [] and list(tmp_path.iterdir()) == []

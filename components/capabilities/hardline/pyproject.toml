@@ -11,14 +11,17 @@ authors = [
 # No provider SDK: both wire protocols (OpenAI-compatible chat completions, Anthropic's
 # Messages API) are spoken directly over httpx2, so nothing reads a location or a credential
 # from the environment behind a registry row's back. httpx2 is bounded to the major tested.
+# Telemetry is the OpenTelemetry API, which a library may depend on without choosing an SDK.
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "httpx2>=2.10,<3",
+    # The API only: it records nothing until an application installs an SDK. 1.27 for the
+    # histogram's explicit_bucket_boundaries_advisory.
+    "opentelemetry-api>=1.27",
+    # The CLI, on the workspace's one stack (Q9).
+    "rich-click>=1.8",
 ]
-
-[project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
 hardline = "hardline.adapters._in.cli:main"

@@ -409,15 +409,26 @@ class Experiment(Record):
 
     def digest(self, *, operative: bool = False) -> str:
         """Digest of what the experiment declares, over :func:`~ix.domain.schema.canonical`.
-        ``operative`` leaves the prose out (the question, the rationale, descriptions): that
-        digest changes only when what a run would do changes."""
+        ``operative`` leaves the prose out (the question, the rationale, descriptions, and
+        every ``x-`` note beside an option): that digest changes only when what a run would
+        do changes."""
         data = canonical(self)
         if operative:
             for field in PROSE_FIELDS:
                 data.pop(field, None)
             for subject in data.get("subjects", {}).values():
                 subject.pop("description", None)
+            data = _unnoted(data)
         return schema.digest(data)
+
+
+def _unnoted(value: Any) -> Any:
+    """``value`` without any key that is a note (``x-``), at any depth."""
+    if isinstance(value, dict):
+        return {k: _unnoted(v) for k, v in value.items() if not str(k).startswith("x-")}
+    if isinstance(value, list):
+        return [_unnoted(item) for item in value]
+    return value
 
 
 def cells(factors: dict[str, tuple[Level, ...]]) -> tuple[dict[str, Level], ...]:
@@ -442,9 +453,12 @@ class ProbeSet(Record):
 
 
 def probe_set(probes: tuple[ProbeConfig, ...]) -> ProbeSet:
-    """Name every probe and pin the set. A probe with no ``id`` is ``probe-<n>``, from 1."""
+    """Name every probe and pin the set. A probe with no ``id`` is ``probe-<n>``, from 1.
+    The digest is over what each probe applies and measures against: an ``x-`` note is
+    not part of it."""
     named = tuple(
         probe if probe.id else probe.model_copy(update={"id": f"probe-{index}"})
         for index, probe in enumerate(probes, start=1)
     )
-    return ProbeSet(probes=named, digest=schema.digest([canonical(probe) for probe in named]))
+    pinned = [_unnoted(canonical(probe)) for probe in named]
+    return ProbeSet(probes=named, digest=schema.digest(pinned))

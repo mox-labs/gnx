@@ -347,7 +347,7 @@ def _files(tables: dict[str, Any]) -> list[str]:
         f"  {str(info.get('file', '')):<{width}}  {_rows_of(info.get('rows', 0))} of {kind}"
         for kind, info in tables.items()
     ]
-    lines.append(f"  {'events.jsonl':<{width}}  the events, one a line; each agent's task as sent")
+    lines.append(f"  {'events.jsonl':<{width}}  the events, one a line: telemetry, lossy, no facts")
     lines.append("reading a run: matrix --skill -r running")
     return lines
 

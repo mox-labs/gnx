@@ -24,6 +24,7 @@ from ix.adapters._out.processes import accepts, answers
 from ix.adapters._out.sensors import MEMORY, MemorySensor, TimingSensor
 from ix.adapters._out.subjects import HttpSubject, ProcessSubject
 from ix.domain.experiment import EnvironmentConfig, SubjectConfig
+from ix.domain.ports import Surroundings
 from ix.domain.run import HarnessError, Interaction, SubjectError, Target
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -194,6 +195,16 @@ class TestProcessSubject:
         (tmp_path / "bin" / "proxy").write_text("#!/bin/sh\n")
         (tmp_path / "bin" / "proxy").chmod(0o755)
         assert told(["./proxy"], cwd="bin") is None
+
+    def test_an_address_a_trial_fills_is_not_judged_before_it_is_filled(self) -> None:
+        """A ``url`` that names an environment binding (``{upstream.port}``) has no port
+        until the trial fills it; the review refuses only a port that is not one."""
+        subject = ProcessSubject(MatrixLauncher())
+        around = Surroundings(path="subjects.proxy", base=".")
+        bound = {"command": ["./proxy"], "url": "http://127.0.0.1:{upstream.port}"}
+        assert subject.review(bound, around) == []
+        broken = subject.review({"command": ["./proxy"], "url": "http://127.0.0.1:99999"}, around)
+        assert [(p.path, p.kind) for p in broken] == [("subjects.proxy.url", "option_invalid")]
 
     async def test_a_command_that_cannot_be_started_is_the_subjects_failure(self) -> None:
         missing = SubjectConfig(kind="process", options={"command": ["./no-such-program"]})

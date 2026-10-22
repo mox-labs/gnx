@@ -437,3 +437,32 @@ def test_matrix_imports_and_composes_with_no_extra_installed() -> None:
         [sys.executable, "-c", script], capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_an_agent_step_s_fingerprint_follows_its_agent_s_definition_and_runtime() -> None:
+    """The reuse fingerprint covers what an agent is and where it runs: its prompt, model and
+    tools, and its runtime's options (data-model.md; mx-tests 11)."""
+
+    def printed(agent: dict[str, object], runtime: dict[str, object]) -> str:
+        container = compose(
+            _config(
+                agent_runtimes={"m": {"type": "mock", **runtime}},
+                agents={"a": {"runtime": "m", **agent}},
+                components=[
+                    {"name": "s", "type": "matrix.v1.agent-step", "config": {"agent": "a"}}
+                ],
+                inputs=["matrix.v1.task"],
+            ),
+            registry=default_registry(discover=False),
+        )
+        return container.wire().fingerprints["s"]
+
+    base = printed({"system_prompt": "x"}, {})
+    assert base == printed({"system_prompt": "x"}, {})
+    for agent, runtime in (
+        ({"system_prompt": "y"}, {}),
+        ({"system_prompt": "x", "model": "big"}, {}),
+        ({"system_prompt": "x", "tools": []}, {}),
+        ({"system_prompt": "x"}, {"default": "canned"}),
+    ):
+        assert printed(agent, runtime) != base, (agent, runtime)

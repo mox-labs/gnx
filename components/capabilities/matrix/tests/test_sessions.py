@@ -8,6 +8,7 @@ DuckDB, as ``docs/explanation/data-model.md`` shows (W3.5).
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from matrix import (
     BoundAgent,
     CompilationError,
     Executor,
+    Limits,
     MatrixConfig,
     ModelRequest,
     RunContext,
@@ -309,6 +311,82 @@ async def test_a_failed_agent_session_is_still_a_session_row(
         {"definition": AgentDefinition(name="a").model_dump(mode="json"), "task": "go"}
     )
     assert run.construct.provenance(SESSION)[0].component == "once"
+
+
+class _Hangs:
+    """An agent runtime and a model runtime whose session or call never returns."""
+
+    def check(self, _: Any) -> None:
+        return None
+
+    async def run(self, definition: Any, task: str) -> Any:
+        await asyncio.Event().wait()
+
+    async def call(self, request: Any) -> Any:
+        await asyncio.Event().wait()
+
+
+async def test_a_cancelled_agent_session_is_a_session_row_that_says_so() -> None:
+    """A session cancelled mid-flight (its component overran its deadline) was asked for and
+    may have spent tokens: it is a row, ``cancelled``, with the ids it ran under and a digest
+    of what was sent (W3.9)."""
+    sdk_trace = pytest.importorskip("opentelemetry.sdk.trace")
+    from matrix.composition.telemetry import current_trace
+
+    agent = BoundAgent(AgentDefinition(name="a"), _Hangs(), runtime_url="acme.v1.rt")
+
+    class _Asks:
+        requires = frozenset({TASK})
+        provides = frozenset({"acme.v1.out"})
+
+        async def run(self, inputs: Any, ctx: Any) -> Any:
+            await agent.run("go")
+
+    limits = Limits(deadline_s=0.05, grace_s=0, cleanup_s=1)
+    tracer = sdk_trace.TracerProvider().get_tracer("host")
+    with tracer.start_as_current_span("host"), pytest.raises(RunError) as e:
+        await Executor(trace=current_trace).run(
+            wire({"asks": _Asks()}, inputs=[TASK]), {TASK: "go"}, limits=limits
+        )
+    (session,) = e.value.run.rows(SESSION)
+    assert (session.port, session.agent, session.runtime) == ("agent-runtime", "a", "acme.v1.rt")
+    assert (session.status, session.reason, session.error) == ("cancelled", "cancelled", None)
+    assert session.sent == digest(
+        {"definition": AgentDefinition(name="a").model_dump(mode="json"), "task": "go"}
+    )
+    assert session.trace_id is not None and session.span_id is not None
+    assert e.value.run.construct.provenance(SESSION)[0].component == "asks"
+
+
+async def test_a_cancelled_model_call_is_a_session_row_that_says_so() -> None:
+    """A model step's call cancelled with its run is a row, ``cancelled``, with a digest of
+    what was sent (W3.9)."""
+    from matrix import ModelStep, ModelStepConfig, RunCancelled
+
+    step = ModelStep(ModelStepConfig(runtime="r"), model_runtimes={"r": _Hangs()})
+    started = asyncio.Event()
+
+    class _Watch:
+        def on_event(self, event: Any) -> None:
+            if event.name == "matrix.model.start":
+                started.set()
+
+    run = asyncio.ensure_future(
+        Executor([_Watch()]).run(
+            wire({"rate": step}, inputs=[PROMPT]), {PROMPT: "rate it"}, limits=Limits(grace_s=0)
+        )
+    )
+    await started.wait()
+    run.cancel()
+    with pytest.raises(RunCancelled) as e:
+        await run
+    (session,) = e.value.run.rows(SESSION)
+    assert (session.port, session.status, session.reason) == (
+        "model-runtime",
+        "cancelled",
+        "cancelled",
+    )
+    assert session.sent == call_sent(ModelRequest(prompt="rate it"))
 
 
 def _recorded(root: Path, **step: Any) -> Any:

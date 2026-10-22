@@ -56,7 +56,8 @@ other table has exactly one entry in it:
 `construct.rows("matrix.v1.ledger")` is the same thing as `construct.ledger`. No component
 may provide or require the ledger's kind.
 
-**The pointer** from an entry to its row is `(kind, row)`: the table, and a position in it.
+**The pointer** from an entry to its row is `(kind, row)`: the table, and a position in it
+(within one run; across runs a row is `(run_id, kind, row)`).
 Tables are append-only with one writer, so a position never changes, and nothing has to be
 added to a record to make it addressable. The alternative, an id carried in every row, would
 put matrix's field inside the caller's record, which is the wrapper the model does without.
@@ -92,7 +93,7 @@ a session.
 | Field | Meaning |
 |-------|---------|
 | `port` | `agent-runtime` (a session) or `model-runtime` (one call) |
-| `status`, `reason`, `error` | `completed` when the runtime replied, whatever the reply; `failed` when it raised instead, with the reason it classified (`rate_limited`, `timeout`, ...; null for an error it did not classify) and the error's message |
+| `status`, `reason`, `error` | `completed` when the runtime replied, whatever the reply; `failed` when it raised instead, with the reason it classified (`rate_limited`, `timeout`, ...; null for an error it did not classify) and the error's message; `cancelled`, reason `cancelled`, when it was cancelled before it replied |
 | `runtime`, `drives` | the runtime's type URL and the distributions it drives, when the caller knew them |
 | `agent` | the agent's name, for a session |
 | `name`, `model`, `family`, `provider`, `backend` | the model that answered: its registry name (a model call), the provider's id, its family, who served it |
@@ -113,6 +114,9 @@ made attempts: a model call that exhausted its retries, an agent session whose r
 failed. Its row says `failed` and why, and holds what the runtime's error carried of it: for
 the `hardline` model runtime every attempt made and the usage they reported (`attempt_log`,
 `usage`), for `claude-sdk` the session's id, usage, cost and turns when its result arrived.
+**So is a session that was cancelled** mid-flight (its component overran its deadline, or the
+run was cancelled): `status: cancelled`, with what matrix knew of it, since its runtime
+reported nothing: the runtime, the agent, the trace and span it ran in, and `sent`.
 
 **A reply row points at its session row.** The `AgentResponse` an agent step provides, and the
 `ModelCall` a model step provides, keep the reply and what a consumer acts on (`content` or
@@ -176,7 +180,7 @@ The observed state of one execution, kept apart from the wiring, which a run nev
 | `failures` | `list[ComponentFailure]` | `component`, `kind`, `message` for each component that failed |
 | `components` | `dict[str, ComponentEnding]` | name to `status`, `reason`, `duration_ms`, `abandoned`, `attempts`: how each component ended |
 | `releases` | `list[ReleaseOutcome]` | `component`, `status`, `error` for each deferred release, in the order called |
-| `events_dropped` | `int` | events no observer received |
+| `events_dropped` | `int` | events no observer received; in `run.json` too, since the record is finished after the queue is drained |
 | `reused_from` | `str \| None` | the run whose rows this one reused |
 | `fingerprints` | `dict[str, str]` | name to a digest of what each component was built from |
 
@@ -232,28 +236,67 @@ The stores:
 <root>/<run_id>/matrix.v1.session.jsonl one line per agent session or model call (a Session)
 <root>/<run_id>/matrix.v1.ledger.jsonl  one line per row landed: seq, kind, row, component, time,
                                          sessions
-<root>/<run_id>/events.jsonl            the run's events, one matrix.v1.event a line (telemetry)
+<root>/<run_id>/events.jsonl            the run's events, one matrix.v1.event a line: telemetry,
+                                         lossy, never the result
 <root>/<run_id>/writer.lock             held (flock) by the writing process while it lives
 ```
 
 One kind per file means one schema per file, so `jq` or DuckDB's `read_json_auto` reads a
 table without matrix installed. An agent step's reply rows are `AgentResponse`s that carry
-the task as sent (`task`) beside the reply (`content`), and each `matrix.agent.start` event
-carries it too, so a step that failed before its reply was recorded still shows what it was
-asked. A model step's reply rows are `ModelCall`s: the prompt as sent (`prompt`), the reply
+the task as sent (`task`) beside the reply (`content`). A model step's reply rows are `ModelCall`s: the prompt as sent (`prompt`), the reply
 (`text`, and `value` for a structured one) and why it ended (`finish_reason`). Both point at
 their session row (`session`), which holds the model that answered, its usage and ids. `matrix run` prints these files when the run ends; `matrix runs` lists the runs.
+
+**Events are not part of the record.** `events.jsonl` is telemetry kept beside it: an event
+that did not fit the bounded queue, or that was still in it when the run stopped waiting, is
+not there. `run.json` says how many (`events_dropped`), which is how a reader knows the file
+is incomplete. No fact is read from it. What a step that failed was asked is the one thing
+the record does not hold in full: its session row has `sent`, a digest of the definition and
+task (or the prompt), and the `matrix.agent.start` event carries the task as sent when it was
+delivered.
 
 **While a run is going**, `run.json` says `running`, names the process writing it
 (`writer`: pid and host) and lists each table's file; every table file exists. Each row is one `write` of one whole line to a file opened for
 appending, made before the append returns, so a process killed at any moment leaves every row
-it had appended. With `fsync=True` each row is also flushed to the disk, which survives the
-machine going down and costs a disk flush per row. A line cut short by a kill is the last line
-of its file and has no newline; readers do not count it as a row.
+it had appended. A write the disk cuts short (a full disk) is taken back before the error is
+raised. With `fsync=True` each row is also flushed to the disk, and the run's directory once
+its files are made and once `run.json` is renamed in, which survives the machine going down
+and costs a disk flush per row. A line cut short by a kill or a crash is the last line of its
+file and has no newline; matrix's readers do not count it as a row.
 
 **When a run ends**, `run.json` is replaced in one rename by the final document, with the row
 count of each table. A reader sees the record as it was while running or the finished one,
 never a mixture.
+
+**When a run was killed**, its writer could not finish the record, so the first matrix reader
+that finds the writer gone (`describe`, `load`, and so `matrix runs`, `matrix run --from` and
+every command that reads a run) finishes it: each file's cut-short last line, if there is one,
+is moved aside to `<file>.torn`, and `run.json` is replaced with `status: interrupted`, the
+row count of each table and `torn`. From then on `interrupted` is on disk and every file
+reads whole with `jq` or DuckDB. "Gone" is read from `writer.lock`, which the writer holds an
+`flock` on while it lives, and the reader holds it while it finishes the record, so it is
+finished once. Only a run on this host can be told dead; one written on another host stays
+`running`.
+
+**Reading a run that is still going**, or one no matrix reader has finished yet, a file's
+last line may be cut short. Read it so that line is skipped. With `jq`:
+
+```sh
+jq -cR 'fromjson? // empty' FILE
+```
+
+In DuckDB, with `ignore_errors = true`, which reads the cut line as a null:
+
+<!-- torn-tolerant -->
+```sql
+SELECT ordinality - 1 AS row, json
+FROM read_ndjson_objects('RUN/KIND.jsonl', ignore_errors = true) WITH ORDINALITY
+WHERE json IS NOT NULL;
+```
+
+A row's position is its identity within its run's table; across runs, a row is
+`(run_id, kind, row)`. Concatenating the tables of several runs, keep the run id beside each
+row, as the run's directory name or `run.json`'s `run_id`.
 
 ```python
 import asyncio
@@ -283,10 +326,12 @@ The store contract:
 - A store may refuse a row it cannot keep with a `ContractError`, only before writing anything
   for it, its ledger entry included; the component that handed it over fails, and the record
   goes on. Any other failure to append fails the run, as above.
-- `describe` returns `status` as recorded for a finished run. For one that never finished it
-  counts the rows on disk, reports `torn`, and says `running`, or `interrupted` when the
-  process that was writing it, on this host, no longer holds `writer.lock`. From another
-  host a dead run still reads `running`: matrix does not guess.
+- `describe` returns `status` as recorded for a finished run. For one that is still going it
+  counts the rows on disk, reports `torn`, and says `running`. One whose writer, on this
+  host, no longer holds `writer.lock` is finished as `interrupted` (above) and returned as
+  finished. From another host a dead run still reads `running`: matrix does not guess.
+- `runs()` skips a directory whose `run.json` cannot be read, and logs it on
+  `matrix.store`, so one damaged record does not hide the rest.
 - A missing run is a `NotFoundError` naming the runs that exist.
 - In the JSONL store a run id must be a safe directory name (`[A-Za-z0-9._-]`, not `.` or
   `..`); any other is a `ConfigError` before anything runs.

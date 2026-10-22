@@ -31,7 +31,7 @@ from typing import Any, Literal
 from pydantic import Field, ValidationError, model_validator
 
 from ix.domain import schema
-from ix.domain.experiment import Direction, Name, Shape
+from ix.domain.experiment import Direction, Level, Name, Shape, cells
 from ix.domain.problem import Problem, from_validation_error, problem
 from ix.domain.schema import DeclarationFile, Record
 
@@ -49,10 +49,16 @@ OptionType = Literal[
     "mapping",
     "path",
     "paths",
+    "command",
     "any",
 ]
 
-_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.-]*)\}")
+#: A placeholder, or a doubled brace, which is the brace itself: ``{{name}}`` is the text
+#: ``{name}``, as in Python's ``str.format``.
+_PLACEHOLDER = re.compile(r"\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_.-]*)\}")
+#: A value that is one placeholder and nothing else: filled, it becomes the level itself.
+_WHOLE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.-]*)\}")
+_BRACES = {"{{": "{", "}}": "}"}
 _DURATION = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)\s*$")
 _SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
 _RATE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/\s*(s|m))?\s*$")
@@ -62,9 +68,10 @@ NOTE_PREFIX = "x-"
 
 
 def placeholders(value: Any) -> list[str]:
-    """Every ``{name}`` in the strings of ``value``, in order of appearance."""
+    """Every ``{name}`` in the strings of ``value``, in order of appearance; a doubled brace
+    (``{{name}}``) is text, not one."""
     if isinstance(value, str):
-        return _PLACEHOLDER.findall(value)
+        return [name for name in _PLACEHOLDER.findall(value) if name]
     if isinstance(value, Mapping):
         return [name for item in value.values() for name in placeholders(item)]
     if isinstance(value, list | tuple):
@@ -74,17 +81,38 @@ def placeholders(value: Any) -> list[str]:
 
 def fill(value: Any, bound: Mapping[str, Any]) -> Any:
     """``value`` with each ``{name}`` that ``bound`` knows replaced by its level, in every
-    string at any depth of mappings and lists."""
+    string at any depth of mappings and lists. A string that is one placeholder and nothing
+    else becomes the level itself, with its type (``"{t}"`` filled with 0.5 is 0.5); one
+    inside more text is written into it. A doubled brace becomes one brace; an unknown
+    name stays as written."""
     if isinstance(value, str):
-        return _PLACEHOLDER.sub(
-            lambda match: str(bound[match.group(1)]) if match.group(1) in bound else match.group(0),
-            value,
-        )
+        whole = _WHOLE.fullmatch(value)
+        if whole is not None and whole.group(1) in bound:
+            return bound[whole.group(1)]
+
+        def replaced(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name is None:
+                return _BRACES[match.group(0)]
+            return str(bound[name]) if name in bound else match.group(0)
+
+        return _PLACEHOLDER.sub(replaced, value)
     if isinstance(value, Mapping):
         return {key: fill(item, bound) for key, item in value.items()}
     if isinstance(value, list | tuple):
         return [fill(item, bound) for item in value]
     return value
+
+
+def per_cell(options: Mapping[str, Any], factors: Mapping[str, tuple[Level, ...]]) -> list[Any]:
+    """``options`` filled for each cell of ``factors``, as a trial in that cell has them;
+    each distinct filling once, in the order of the cells."""
+    found: list[Any] = []
+    for cell in cells(dict(factors)):
+        filled = fill(options, cell)
+        if filled not in found:
+            found.append(filled)
+    return found
 
 
 def seconds(value: Any) -> float | None:
@@ -168,6 +196,13 @@ class Option(Record):
     #: open (unlike ``allowed``, another value is accepted). A missing option's fix lists
     #: them, so an author picks one knowingly rather than inheriting a default.
     choices: dict[str, str] = {}
+    #: For a ``command``: the option that holds the directory its relative paths are
+    #: relative to (``cwd``), itself relative to the experiment. Absent: the experiment's
+    #: directory.
+    within: str = ""
+    #: The placeholders the adapter fills in this option's value itself, at run time (a
+    #: loop's ``{prompt}`` and ``{response}``): validation reads them as bound.
+    binds: tuple[str, ...] = ()
     description: str = ""
 
 
@@ -219,6 +254,8 @@ class Kind(Record):
             unknown = sorted(set(option.required_when) - set(self.options))
             if unknown:
                 raise ValueError(f"{name} is required_when {unknown}, which are not options")
+            if option.within and (option.type != "command" or option.within not in self.options):
+                raise ValueError(f"{name} is within {option.within!r}: a command names an option")
         return self
 
     @property
@@ -270,9 +307,16 @@ def _fits(value: Any, option: Option) -> bool:
             ok = isinstance(value, str) and bool(value)
         case "paths":
             ok = isinstance(value, list | tuple) and all(map(_a_path, value))
+        case "command":
+            ok = isinstance(value, list | tuple) and bool(value) and all(map(_an_argument, value))
         case _:
             ok = True
     return ok and (not option.allowed or str(value) in option.allowed)
+
+
+def _an_argument(item: Any) -> bool:
+    """An item of a ``command``: a program or an argument, written as text or a number."""
+    return isinstance(item, str | int | float) and not isinstance(item, bool)
 
 
 def _a_path(item: Any) -> bool:
@@ -283,7 +327,10 @@ def _a_path(item: Any) -> bool:
 
 
 #: A type's name in a sentence, where it is not the name itself.
-_TYPE_WORDS = {"paths": "list of paths"}
+_TYPE_WORDS = {
+    "paths": "list of paths",
+    "command": "command: a program and its arguments, as a non-empty list of text",
+}
 
 _EXAMPLES = {
     "duration": ", such as 60s or 2m",

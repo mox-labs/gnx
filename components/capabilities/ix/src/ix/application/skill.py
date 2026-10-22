@@ -743,10 +743,14 @@ whether it came from the experiment, the genre or ix.
   (`10pp`) or a share (`0.05`), never in percent (`unit_mismatch`), and below the whole range
   (`1`, `100pp`). A rate's threshold is a share strictly between 0 and 1 (`0.9`, not `90%`
   or `90`): one at 0 or 1 or beyond is passed by every rate or by none (`invalid_value`).
-- **Placeholders.** In an inline probe, `{{name}}` is a factor, an option every subject
-  sets, or what the environment binds a service with: `{{<service>.url}}`, `.host`, `.port`
-  (a `process` service's `url`, a `compose` service's published port); anything else is
-  `unbound_placeholder`. A subject's options take a service's bindings and the factors too.
+- **Placeholders.** `{{name}}` in a subject's option is a factor's level, filled per cell;
+  a value that is one placeholder takes the level with its type (`max_turns: "{{turns}}"`
+  is the integer). In a probe, inline or from a file, it is a factor, an option every
+  subject sets, or a facet every subject's kind offers (`{{pid}}`). Both take what the
+  environment binds a service with: `{{<service>.url}}`, `.host`, `.port` (a `process`
+  service's `url`, a `compose` service's published port). A loop's `prompt` fills
+  `{{prompt}}`, `{{response}}`, `{{until}}` and `{{failures}}` itself. Anything else is
+  `unbound_placeholder`. `{{{{name}}}}` is the text `{{name}}`, for code in a prompt.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the
   experiment, one file per probe (`.md`, `.yaml`): a markdown file's text is the prompt,
   and its frontmatter keys other than `id` (default: the file's name), `kind` (default
@@ -904,7 +908,9 @@ threshold, guardrails, control, repeats, seed, order, calibration, estimators, t
 and its parameters, the sensors), the digests of the probe set, the experiment and the
 plan, and the digest of each file and folder the subjects and sensors name: `skills`,
 `plugins` (each folder a `*` matches), `fixtures`, `definition`, `graders`, `rubric_file`,
-and any option a kind declares a `path` or `paths`.
+any option a kind declares a `path` or `paths`, and each item of a `command` (a process's
+`command`, relative to its `cwd`; a session's `setup`) that names a file: `[python3,
+server.py]` digests `server.py`.
 
 Digests are over meaning: a comment, key order or a default written out is not a change. A
 reworded `question` or `rationale` changes the experiment's digest and not the plan's. A
@@ -962,12 +968,14 @@ then the report (`ix.v1.report`) on stdout.
   the files hold), the git commit and whether a tracked file differed from it
   (`provenance.commit`, `provenance.dirty`; `not a repository` outside one), the versions
   of ix, matrix and hardline, and each runtime installed with the distribution that
-  registered it. `ix report` prints them under `Contents`, `Ran from` and `Versions`; `ix
-  runs` gives each run's commit.
+  registered it and the versions of what it drives (`claude-agent-sdk` for `claude-sdk`).
+  `ix report` prints them under `Contents`, `Ran from` and `Versions`; `ix runs` gives each
+  run's commit.
 - **Stopping.** Ctrl-C stops the trial in flight, stops everything the run started and
   exits {EXIT_CODES["run_interrupted"]} with the partial report. `ix report <run directory>`
   reads any run again, finished or not; a run that did not finish gives no verdict, and one
-  still running exits {EXIT_CODES["running"]}.
+  still running exits {EXIT_CODES["running"]}. A report calls no model: a run stopped
+  before its judge read is reported without readings (`unread` says why); run it again.
 - **Refused before anything starts**: any requirement of this host that does not hold: a
   command that is not there, an `auth` variable that is not set, `k6` missing for
   `http-load`, the docker daemon down for `compose`, an agent runtime that cannot start or

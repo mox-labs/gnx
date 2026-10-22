@@ -4,8 +4,9 @@ Messages and an optional output schema go in; text (or a validated object) comes
 tagged with the family that answered, what it cost, and enough provenance to ledger.
 Stateless: the conversation belongs to the caller.
 
-Type URLs follow the matrix convention ``<namespace>.v<version>/<resource>`` (xDS
-TypedExtensionConfig), so a composition root can key on them.
+The one type URL, ``hardline.v1/completion``, follows the matrix convention
+``<namespace>.v<version>/<resource>`` (xDS TypedExtensionConfig). A backend is keyed by its
+entry-point name alone.
 """
 
 from __future__ import annotations
@@ -19,11 +20,6 @@ from hardline.domain.errors import Reason  # noqa: TC001 -- pydantic reads it at
 
 NAMESPACE = "hardline.v1"
 COMPLETION_TYPE_URL = f"{NAMESPACE}/completion"
-
-
-def backend_type_url(name: str) -> str:
-    """Registry key for a backend short name, e.g. ``openai-compat``."""
-    return f"{NAMESPACE}/backend.{name}"
 
 
 Role = Literal["system", "user", "assistant"]
@@ -58,6 +54,31 @@ class Message(BaseModel):
     content: str
 
 
+#: The bounds a ``CallLimits`` can set, by key.
+Limit = Literal["attempts", "seconds", "tokens"]
+
+
+class CallLimits(BaseModel):
+    """Bounds on one logical call: a ``complete`` or ``extract``, with every retry, fallback and
+    schema repair it makes. Each is unset by default, which leaves the call bounded only by its
+    chain: (schema repairs + 1) x the sum over the chain of (retries + 1) backend calls.
+
+    The row asked for sets the bounds of the whole call; a fallback's own ``limits`` apply only
+    to a call that asks for the fallback by name.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Backend calls, at most: every retry, fallback and schema repair counts one.
+    attempts: int | None = Field(default=None, ge=1)
+    #: Wall time from the call's start, in seconds. An attempt still running when it passes is
+    #: cut, and a wait for a retry that would pass it is not started.
+    seconds: float | None = Field(default=None, gt=0)
+    #: Tokens reported (input and output), summed over the call's backend calls. Checked
+    #: between calls, so the call that crosses it completes; a failed call reports none.
+    tokens: int | None = Field(default=None, ge=1)
+
+
 class ModelSpec(BaseModel):
     """One registry row: a model is configuration, not a class.
 
@@ -73,6 +94,9 @@ class ModelSpec(BaseModel):
     model: str = Field(min_length=1)
     family: str = Field(pattern=_SLUG)
     base_url: str | None = None
+    #: An http:// or https:// proxy every request of this row goes through. Nothing in the
+    #: environment (``HTTPS_PROXY``) is read: a row with no ``proxy`` connects directly.
+    proxy: str | None = None
     api_key: str | None = None
     local: bool = False
     structured: StructuredMode = "prompt"
@@ -86,6 +110,8 @@ class ModelSpec(BaseModel):
     #: failure. Never on a bad key or a malformed request — those are faults to fix, and
     #: another model would hide them. The Completion names the model that answered.
     fallbacks: tuple[str, ...] = ()
+    #: Bounds on a call that asks for this row, across its retries, fallbacks and repairs.
+    limits: CallLimits = CallLimits()
     options: dict[str, Any] = {}
 
     @field_validator("api_key")
@@ -220,6 +246,12 @@ class Completion(BaseModel):
     ``length``, a refusal is ``refusal`` with ``refusal`` set, a withheld one
     ``content_filter``. ``answered`` is true only for a whole answer, and is what to check
     before taking ``text`` as one.
+
+    **Who upgrades first.** A Completion's JSON validates back into a Completion, and refuses a
+    key it does not know (``extra="forbid"``). A minor release of hardline may add keys, each with
+    a default; none is removed or renamed while ``type_url`` is ``hardline.v1/completion``. So a
+    reader of stored Completion JSON upgrades first: it installs the newer hardline before any
+    writer does, or it reads the JSON as a mapping rather than through this model.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -266,6 +298,64 @@ class Completion(BaseModel):
         provider did not say why it ended.
         """
         return self.finish_reason == "stop" and self.refusal is None and bool(self.text)
+
+
+class Problem(BaseModel):
+    """One thing wrong with a configuration, or worth a warning about it.
+
+    The problem record the capability CLIs share (``components/capabilities/error-envelope.json``
+    in the workspace): ``path`` is the offending key, dotted from the document root
+    (``models.a.fallbacks``); ``kind`` is a kind the tools share (``unknown_key``,
+    ``invalid_value``, ...) or one of hardline's own (``shared_fate``); ``source`` is the tier
+    the key came from, when known.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str
+    kind: str
+    message: str
+    fix: str | None = None
+    allowed: tuple[str, ...] = ()
+    got: str | int | float | bool | None = None
+    source: str | None = None
+
+
+class AttemptFailed(BaseModel):
+    """A backend call of a logical call failed. ``retry_in_s`` is the wait before the same row
+    is asked again; None when it will not be: the call falls back, or fails."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The row the logical call asked for.
+    requested: str
+    attempt: Attempt
+    retry_in_s: float | None = None
+
+
+class FellBack(BaseModel):
+    """Row ``name`` spent its retries on a transient failure, and the call asks ``to`` next."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    requested: str
+    name: str
+    to: str
+    reason: Reason
+
+
+class Answered(BaseModel):
+    """A logical call answered: ``completion`` is what its caller gets, record and all."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    requested: str
+    completion: Completion
+
+
+#: What a ``CallObserver`` is told about a logical call. An observer ignores a kind it does not
+#: know, so a new kind of event breaks none.
+CallEvent = AttemptFailed | FellBack | Answered
 
 
 @dataclass(frozen=True)

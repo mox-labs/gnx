@@ -48,10 +48,10 @@ def test_a_missing_need_is_a_config_error() -> None:
 
 
 def test_untyped_entries_take_no_config() -> None:
-    registry = Registry().register("observer", "acme.v1.obs", lambda: "built")
-    assert registry.create("observer", "acme.v1.obs") == "built"
+    registry = Registry().register("component", "acme.v1.thing", lambda: "built")
+    assert registry.create("component", "acme.v1.thing") == "built"
     with pytest.raises(ConfigError, match="takes no config"):
-        registry.create("observer", "acme.v1.obs", {"x": 1})
+        registry.create("component", "acme.v1.thing", {"x": 1})
 
 
 def test_unknown_point_and_malformed_ids_are_refused() -> None:
@@ -324,3 +324,103 @@ def test_every_built_in_runtime_keeps_its_port() -> None:
         assert entries
         for entry in entries:
             assert isinstance(registry.create(point, entry.type_url, needs=needs), port)
+
+
+# --- stores and observers are held to their ports; points have owners ----------------------
+
+
+class _NoLoad:
+    """A third party's store that forgot ``load``."""
+
+    def open(self, run: object) -> object: ...
+
+    def describe(self, run_id: str) -> dict[str, object]: ...
+
+    def runs(self) -> list[str]: ...
+
+
+class _Silent:
+    """A third party's observer that receives nothing."""
+
+    def on_events(self, event: object) -> None: ...
+
+
+@pytest.mark.parametrize(
+    ("point", "cls", "said"), [("store", _NoLoad, "load"), ("observer", _Silent, "on_event")]
+)
+def test_a_store_or_observer_class_that_breaks_its_port_is_refused_when_registered(
+    point: str, cls: type, said: str
+) -> None:
+    """As runtimes are (W8.1): a store without ``load`` composed and failed at ``--from``; an
+    observer without ``on_event`` was logged as failing on every event of every run."""
+    with pytest.raises(ConfigError, match=said) as e:
+        Registry().register(point, f"acme.v1.{point}.x", cls)
+    assert e.value.fix
+
+
+@pytest.mark.parametrize("point", ["store", "observer"])
+def test_a_store_or_observer_built_as_something_else_is_a_config_error(point: str) -> None:
+    registry = Registry().register(point, f"acme.v1.{point}.x", lambda: object())
+    with pytest.raises(ConfigError, match="not a") as e:
+        registry.create(point, f"acme.v1.{point}.x", where="matrix.x")
+    assert e.value.exit_code == 3
+
+
+def test_every_built_in_store_and_observer_keeps_its_port(tmp_path: Any) -> None:
+    from matrix import ConstructStore, Observer
+
+    registry = default_registry(discover=False)
+    for entry in registry.entries("store"):
+        config = {"root": str(tmp_path)} if entry.config is not None else None
+        assert isinstance(registry.create("store", entry.type_url, config), ConstructStore)
+    for entry in registry.entries("observer"):
+        assert isinstance(registry.create("observer", entry.type_url), Observer)
+
+
+def test_each_point_records_its_owner_and_another_cannot_redeclare_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``add_point`` recorded no owner, so any extension could declare another's point, with
+    a port of its own (ix.md, D30). The owner is the distribution that declared it first;
+    matrix owns its own points."""
+
+    def ix(registry: Registry) -> None:
+        registry.add_point("ix.subject")
+
+    def squatter(registry: Registry) -> None:
+        registry.register("component", "squat.v1.x", build)
+        registry.add_point("ix.subject", port=Settings)
+
+    eps = [_entry_point("ix", ix, "ix"), _entry_point("squat", squatter, "squat")]
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
+    registry = load_extensions(Registry())
+    assert registry.owners["ix.subject"] == "ix"
+    assert registry.owners["agent-runtime"] == "matrix"
+    assert "ix.subject" not in registry.ports  # the squatter's port did not land
+    assert ("component", "squat.v1.x") not in registry  # quarantined whole
+    (failure,) = registry.failures
+    assert failure.extension == "squat" and "ix.subject" in failure.error and "ix" in failure.error
+    registry.add_point("ix.subject")  # code that composes directly is trusted, as for type URLs
+    assert registry.owners["ix.subject"] == "ix"
+
+
+def test_a_point_under_a_distribution_s_name_is_its_own_whoever_declared_it_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """'aaa' sorts first and declares ``ix.subject`` with a port of its own; ix keeps its
+    point anyway, as matrix keeps its type URLs, and the impostor is dropped whole."""
+
+    def impostor(registry: Registry) -> None:
+        registry.add_point("ix.subject", port=Settings)
+        registry.register("component", "aaa.v1.x", build)
+
+    def ix(registry: Registry) -> None:
+        registry.add_point("ix.subject")
+
+    eps = [_entry_point("aaa", impostor, "aaa"), _entry_point("ix", ix, "ix")]
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
+    registry = load_extensions(Registry())
+    assert registry.owners["ix.subject"] == "ix" and "ix.subject" not in registry.ports
+    assert ("component", "aaa.v1.x") not in registry
+    (failure,) = registry.failures
+    assert failure.extension == "aaa" and "ix.subject" in failure.error

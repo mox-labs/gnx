@@ -288,6 +288,20 @@ class TestPlanDigest:
         assert _plan(compare_data, moved).digest == before.digest
         assert _plan(compare_data, moved).notes == ("settled by the canon",)
 
+    def test_a_reworded_note_is_outside_the_plan_digest(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: an ``x-`` note stayed in the options the plan digest covers, so
+        rewording one moved the plan, against the digest's own promise."""
+        compare_data["subjects"]["buffered"]["x-why"] = "the current proxy"
+        compare_data["probes"][0]["x-why"] = "a large download"
+        before = _plan(compare_data, vocabulary)
+        compare_data["subjects"]["buffered"]["x-why"] = "the proxy in production today"
+        compare_data["probes"][0]["x-why"] = "one big file"
+        after = _plan(compare_data, vocabulary)
+        assert after.digest == before.digest
+        assert after.experiment_digest != before.experiment_digest
+
     def test_a_field_added_to_the_plan_document_changes_no_digest(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:
@@ -375,6 +389,28 @@ class TestRegister:
         file = tmp_path / "proxy.yaml"
         file.write_text(yaml.safe_dump(compare_data))
         assert ix.register(file).location == str(tmp_path / "proxy.registration.json")
+
+    def test_a_write_cut_short_leaves_the_record_as_it_was(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the registration was written in place, so a crash mid-write left a
+        file the next read refuses as not JSON. It is written beside and moved into place:
+        a write that does not finish leaves the old record whole, and no stray file."""
+        import os
+
+        from ix.adapters._out.registration_file import RegistrationFile
+
+        record = RegistrationFile(str(tmp_path / "experiment.registration.json"))
+        record.write({"experiment": "before"})
+
+        def cut(*_: Any) -> None:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(os, "replace", cut)
+        with pytest.raises(OSError, match="No space"):
+            record.write({"experiment": "after", "design": {"repeats": 5}})
+        assert record.read() == {"experiment": "before"}
+        assert [p.name for p in tmp_path.iterdir()] == ["experiment.registration.json"]
 
     def test_registering_again_unchanged_keeps_the_record(
         self, compare_data: dict[str, Any], write_experiment: Write
@@ -489,6 +525,41 @@ class TestDeviations:
         moved = next(d for d in ix.deviations(file).deviations if d.field.startswith("design."))
         assert (moved.field, moved.registered, moved.current) == (
             "design.threshold.value", 0.9, 0.6,
+        )  # fmt: skip
+
+    def test_a_removed_margin_is_named(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: values were compared only on paths both records held, so a margin
+        that became none (``margin.value`` against ``margin``) was no deviation, and only
+        the digests said that the plan changed."""
+        registered = examine(compare_data, vocabulary, base=".").design
+        changed = {**compare_data, "comparison": "superiority"}
+        del changed["margin"]
+        now = examine(changed, vocabulary, base=".").design
+        assert registered is not None and now is not None
+        named = {
+            d.field: d
+            for d in deviations(
+                Registration(experiment="x", design=registered.document()),
+                Registration(experiment="x", design=now.document()),
+            )
+        }
+        assert named["design.margin"].current is None
+        assert named["design.margin"].registered["value"] == 5.0
+        assert named["design.margin"].message == "margin changed after registration"
+
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [({"op": ">=", "value": 0.9}, None), (None, {"op": ">=", "value": 0.9})],
+    )
+    def test_a_threshold_removed_or_added_is_named(self, before: Any, after: Any) -> None:
+        def registered(threshold: Any) -> Registration:
+            return Registration(experiment="x", design={"threshold": threshold, "repeats": 5})
+
+        (found,) = deviations(registered(before), registered(after))
+        assert (found.field, found.registered, found.current) == (
+            "design.threshold", before, after,
         )  # fmt: skip
 
     def test_a_reworded_question_changes_the_declaration_and_not_the_plan(

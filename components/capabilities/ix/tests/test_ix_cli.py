@@ -638,8 +638,11 @@ class TestGenresAndKindsCommands:
         assert load["schema"] == "ix.v1.kind"
         assert load["options"]["duration"] == {
             "type": "duration", "required": True, "allowed": [], "required_when": {},
-            "choices": {}, "description": "how long the measured load lasts",
+            "choices": {}, "within": "", "binds": [],
+            "description": "how long the measured load lasts",
         }  # fmt: skip
+        command = document["kinds"]["ix.v1.subject.process"]["options"]["command"]
+        assert (command["type"], command["within"]) == ("command", "cwd")
         runtime = document["kinds"]["ix.v1.subject.agent-session"]["options"]["runtime"]
         assert runtime["required"] and set(runtime["choices"]) == {"claude-sdk", "mock"}
         runtime = document["kinds"]["ix.v1.subject.model-call"]["options"]["runtime"]
@@ -912,6 +915,33 @@ def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     assert own["simulated"] == 16  # a registered run a stand-in answered is ix's own kind
     assert len(set(EXIT_CODES.values())) == len(EXIT_CODES)  # one kind to a code
     assert not set(own.values()) & set(agreed.values())
+
+
+class _Bar:
+    def __init__(self) -> None:
+        self.stopped = False
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+@pytest.mark.parametrize("raised", [RuntimeError("a defect"), KeyboardInterrupt()])
+def test_the_progress_bar_stops_however_the_run_ends(
+    raised: BaseException, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: only an ``IxError`` stopped the bar, so a defect or a Ctrl-C outside the
+    run printed its envelope over a live display."""
+    import ix.adapters._in.cli as cli
+
+    bar = _Bar()
+    monkeypatch.setattr(cli, "_progress", lambda as_json: (None, bar))
+
+    def fails(*_: Any, **__: Any) -> Any:
+        raise raised
+
+    monkeypatch.setattr(ix, "run", fails)
+    CliRunner().invoke(main, ["run", "lab"])
+    assert bar.stopped
 
 
 class TestStandardInputAndWarnings:

@@ -80,11 +80,13 @@ def _matched(written: str, base: str) -> list[str]:
 
 def contents(named: Iterable[Named], base: str) -> tuple[Content, ...]:
     """What each file or folder ``named`` lists holds, its relative paths resolved against
-    the directory ``base``. Raises :class:`ConfigError` for one that is there and cannot be
-    read."""
+    the directory ``base``; an item of a command only when it names a file, as written.
+    Raises :class:`ConfigError` for one that is there and cannot be read."""
     found: list[Content] = []
     for item in named:
-        for path in _matched(item.path, base):
+        if item.argument and not Path(base, item.path).expanduser().is_file():
+            continue  # a program on PATH, or an argument that names no file here
+        for path in [item.path] if item.argument else _matched(item.path, base):
             try:
                 held = digest(Path(base, path).expanduser())
             except OSError as error:
