@@ -24,7 +24,8 @@ from recon.application.plan import build_plan
 
 SKILL = recon.skill()
 REFERENCES = {name: recon.skill(name) for name in recon.skill_references()}
-REPO = Path(recon.__file__).resolve().parents[5]
+PACKAGE = Path(__file__).resolve().parents[1]
+REPO = PACKAGE.parents[2]
 
 #: The top-level keys a skill's frontmatter may have and still upload (Claude Code docs).
 PORTABLE_KEYS = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
@@ -117,7 +118,7 @@ def test_the_plugin_copy_is_what_the_command_prints() -> None:
     directory = REPO / "plugins" / "recon" / "skills" / "recon"
     if not directory.is_dir():
         pytest.skip("not run from the repository")
-    script = Path(recon.__file__).resolve().parents[2] / "scripts" / "plugin_skill.py"
+    script = PACKAGE / "scripts" / "plugin_skill.py"
     spec = importlib.util.spec_from_file_location("plugin_skill", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -130,7 +131,7 @@ def test_the_capture_format_page_is_the_skill_reference() -> None:
     """The capture format is an interface other tools write to, so a person reads it in the
     docs and an agent in ``recon --skill -r capture-format``. One text: the docs page is a
     copy of the reference, and an edit to one without the other fails here."""
-    page = Path(recon.__file__).resolve().parents[2] / "docs" / "reference" / "capture-format.md"
+    page = PACKAGE / "docs" / "reference" / "capture-format.md"
     if not page.is_file():
         pytest.skip("not run from the repository")
     assert page.read_text(encoding="utf-8") == REFERENCES["capture-format"]

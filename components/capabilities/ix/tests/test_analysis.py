@@ -22,6 +22,8 @@ from ix.domain.genre import AnalysisRef
 from ix.domain.run import Failure, Interaction, Reading, Trial, schedule
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from ix.application.experiments import Vocabulary
     from ix.domain.design import Design
 
@@ -45,7 +47,7 @@ class Tables:
 
     def measure(
         self,
-        values: dict[str, float | bool | tuple[int, int]],
+        values: Mapping[str, float | bool | tuple[int, int]],
         *,
         metric: str = "ttfb",
         wobble: float = 1.0,
@@ -132,7 +134,11 @@ class TestTheNumbers:
         ]
         bounds = [1.0, 1.5, 0.5, 0.001, 1.0]
         for span, bound in zip(spans, bounds, strict=True):
-            searched = intervals._bisect(lambda alpha, s=span, b=bound: s(alpha)[0] > b)
+
+            def excludes(alpha: float, span: intervals.Span = span, bound: float = bound) -> bool:
+                return span(alpha)[0] > bound
+
+            searched = intervals._bisect(excludes)
             assert span.above(bound) == pytest.approx(searched, rel=1e-6)
 
     @pytest.mark.parametrize("units", [100, 10_000])
@@ -320,7 +326,7 @@ class TestCompare:
         variant = by_role["variant"]
         assert variant.n == 10 and variant.statistic == "p99" and variant.estimator == "mean"
         assert variant.value == pytest.approx(110.0, abs=0.5) and variant.unit == "ms"
-        assert variant.interval is not None
+        assert variant.interval is not None and variant.value is not None
         assert variant.interval.low <= variant.value <= variant.interval.high
 
 

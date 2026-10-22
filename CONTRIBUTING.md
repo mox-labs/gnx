@@ -28,15 +28,17 @@ enforce this — they share the same pattern, so they cannot disagree.
 
 ## Gates: the justfile is the single source of truth
 
-The hook and CI both call `just`, so a local check and the CI check cannot
-drift.
+The hook and CI both call `just` (`just check` and `just ci`), so a local check
+and the CI check cannot drift.
 
 ```sh
 just              # list every gate
 just check        # what every commit must pass: the docsite, a staged secret scan,
-                  # the identity grammar, component payloads, the plugin projection
-just ci           # the full CI gate: also the capability packages' tests, lint,
-                  # strict typecheck and standalone install, and the lab
+                  # the identity grammar, component payloads, the plugin projection,
+                  # and the capability packages' lint and format
+just ci           # the full CI gate: also the capability packages' tests, their strict
+                  # typecheck, each installed alone from its wheel and smoke-tested,
+                  # and the lab
 just lab          # validate and plan the lab's experiments; nothing is run
 ```
 
@@ -50,6 +52,10 @@ uv --project components/capabilities run pytest components/capabilities/ix/tests
 No test reaches a live model: `components/capabilities/conftest.py` refuses every call
 where an agent session or a model call would spend money, and fails the test that made it.
 Use matrix's `mock` runtime, or a fake, instead.
+
+`just capabilities-test` lists every skip with its reason, and fails on a skip that
+conftest.py's `EXPECTED_SKIPS` does not name: a test that cannot run here is either made to
+run or named there with why.
 
 ## One-time setup: wire the hooks
 
@@ -70,5 +76,7 @@ message on every commit. CI mirrors both.
 - [just](https://just.systems) — the gate runner.
 - [gitleaks](https://github.com/gitleaks/gitleaks) — the secret scanner.
 - [uv](https://docs.astral.sh/uv/) — the capability packages' workspace.
-- [k6](https://k6.io) — only to run ix's service experiments (`ix run` on an
-  `http-load` probe); no gate needs it.
+- [k6](https://k6.io) — ix's service experiments (`ix run` on an `http-load` probe), and
+  ix's end-to-end tests in `just ci`.
+- [docker](https://docs.docker.com/compose/) with compose — ix's `compose` environment, and
+  its live test in `just ci`, which needs `alpine:3.20` pulled.

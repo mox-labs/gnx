@@ -36,7 +36,8 @@ from ix.composition.settings import IxSettings
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-EXAMPLE = Path(ix.__file__).resolve().parents[2] / "examples" / "harness-integrity"
+PACKAGE = Path(__file__).resolve().parents[1]
+EXAMPLE = PACKAGE / "examples" / "harness-integrity"
 
 
 def _settings(**fields: Any) -> matrix.Config[IxSettings]:
@@ -1070,7 +1071,7 @@ class TestAVerdictTracesToTheModelThatAnswered:
 
     def test_the_readmes_join_reads_a_readings_model_without_ix(self, tmp_path: Path) -> None:
         duckdb = pytest.importorskip("duckdb")
-        readme = (Path(ix.__file__).resolve().parents[2] / "README.md").read_text()
+        readme = (PACKAGE / "README.md").read_text()
         found = re.search(r"<!-- reading-to-session -->\s*```sql\n(.*?)```", readme, re.S)
         assert found, "the README shows the join from a reading to its session"
         report = _judged_calls(tmp_path)
@@ -1157,7 +1158,7 @@ class TestFactorsDriveAgentSettings:
         assert report.status == "completed" and report.simulated == "all"
         built = {type(level) for level in configs}
         assert built == {int} and set(configs) == {1, 2, 3}
-        by_cell = {}
+        by_cell: dict[int, int] = {}
         for interaction in _rows(report, "ix.v1.interaction"):
             usage = interaction["observations"]["usage"]
             by_cell.setdefault(usage["rounds"], 0)
@@ -1276,7 +1277,7 @@ class TestTelemetry:
         root.plan(lab)
         report = root.run(lab, exploratory=True)
         spans = exporter.get_finished_spans()
-        assert {span.instrumentation_scope.name for span in spans} == {"ix"}
+        assert {getattr(span.instrumentation_scope, "name", None) for span in spans} == {"ix"}
         names = [span.name for span in spans]
         assert names.count("ix.trial") == 15 and names.count("ix.plan") == 1
         assert names.count("ix.run") == 1 and names.count("ix.sensor") == 30  # 2 sensors

@@ -427,6 +427,22 @@ async def test_a_row_names_its_proxy(proxy: str | None, monkeypatch: pytest.Monk
 
 
 @pytest.mark.parametrize(
+    ("backend", "name"), [(OpenAICompatBackend, "openai-compat"), (AnthropicBackend, "anthropic")]
+)
+async def test_a_backend_given_no_transport_reaches_the_workspace_guard(
+    backend: Callable[[], ModelBackend], name: str, refused_live_calls: list[str]
+) -> None:
+    """The workspace guard refuses ``_http.network_transport``. This holds that a backend's
+    request is carried by that very name, so the guard is in its path (ix-tests F12): a backend
+    that bound the transport some other way would reach the provider past it. The row points
+    at a closed loopback port all the same."""
+    with pytest.raises(AssertionError, match="a live model session"):
+        await backend().complete(_spec(backend=name), _request(), "k")
+    assert refused_live_calls == ["hardline.adapters._out._http.network_transport"]
+    refused_live_calls.clear()
+
+
+@pytest.mark.parametrize(
     ("proxy", "problem"),
     [
         ("proxy.local:3128", "http:// or https://"),

@@ -29,7 +29,13 @@ import re
 from pathlib import Path
 
 import pytest
-from _testing.layers import Plant, check, copy_tree, load, plant, plants, reaches_outside
+
+try:
+    from _testing.layers import Plant, check, copy_tree, load, plant, plants, reaches_outside
+except ImportError:  # a package run apart from its workspace has no shared checker
+    pytest.skip(
+        "not run from the workspace: no _testing beside the packages", allow_module_level=True
+    )
 
 import matrix
 

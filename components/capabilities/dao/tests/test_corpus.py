@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+import pytest
+
 from dao.adapters._out.corpus import for_project, load_catalog, parse_catalog, projects
 from dao.domain.models import DomainType, Grounding
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 CATALOG = """\
 # Agent Craft — domains
@@ -23,18 +30,18 @@ CATALOG = """\
 """
 
 
-def test_parses_rows_and_skips_header_separator_and_totals():
+def test_parses_rows_and_skips_header_separator_and_totals() -> None:
     d = parse_catalog(CATALOG)
     # 4 table rows, but `mystery` has an unknown type and is skipped rather than guessed.
     assert [x.name for x in d] == ["aces-dx", "krishna", "tacit-knowledge-elicitation"]
 
 
-def test_unknown_type_is_skipped_not_defaulted():
+def test_unknown_type_is_skipped_not_defaulted() -> None:
     """A bad classification must not become a silent DomainType.CRAFT."""
     assert all(x.name != "mystery" for x in parse_catalog(CATALOG))
 
 
-def test_fields_and_grounding():
+def test_fields_and_grounding() -> None:
     krishna = next(x for x in parse_catalog(CATALOG) if x.name == "krishna")
     assert krishna.type is DomainType.FIGURE
     assert krishna.grounding is Grounding.DISTILLED
@@ -42,7 +49,7 @@ def test_fields_and_grounding():
     assert krishna.confidence == 9
 
 
-def test_multi_valued_informs_splits():
+def test_multi_valued_informs_splits() -> None:
     tacit = next(x for x in parse_catalog(CATALOG) if x.name == "tacit-knowledge-elicitation")
     assert tacit.informs == ("cix:radix", "research:polanyi")
     assert tacit.informs_project("cix") == ("radix",)
@@ -50,24 +57,24 @@ def test_multi_valued_informs_splits():
     assert tacit.informs_project("guild-arch") == ()
 
 
-def test_projects_counts_edges_not_domains():
+def test_projects_counts_edges_not_domains() -> None:
     counts = projects(parse_catalog(CATALOG))
     assert counts["guild-arch"] == 2
     assert counts["cix"] == 1
     assert counts["research"] == 1
 
 
-def test_for_project_filters():
+def test_for_project_filters() -> None:
     rows = for_project(parse_catalog(CATALOG), "guild-arch")
     assert {r.name for r in rows} == {"aces-dx", "krishna"}
 
 
-def test_missing_corpus_degrades_to_empty(tmp_path):
+def test_missing_corpus_degrades_to_empty(tmp_path: Path) -> None:
     """A project may ground its bench some other way; absence is not an error."""
     assert load_catalog(tmp_path) == []
 
 
-def test_reads_the_real_catalog_if_present():
+def test_reads_the_real_catalog_if_present() -> None:
     """Integration: when dao-corpus is on disk, the totals must agree with its own header.
 
     The catalog states '43 figure, 33 craft' — if the parser drifts, this catches it
@@ -75,7 +82,7 @@ def test_reads_the_real_catalog_if_present():
     """
     real = load_catalog()
     if not real:
-        return  # corpus not present on this machine; the unit tests above still bind
+        pytest.skip("the dao corpus is not on this machine")  # the tests above still bind
     figures = sum(1 for d in real if d.type is DomainType.FIGURE)
     craft = sum(1 for d in real if d.type is DomainType.CRAFT)
     assert figures + craft == len(real)

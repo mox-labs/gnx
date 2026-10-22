@@ -655,7 +655,8 @@ class TestAReadingOfTheWrongShape:
 
     @pytest.mark.parametrize(
         "given",
-        [[0.5], None, "fast", Sensed(values=[0.5]), Sensed(values={}, detail=["x"])],
+        # Each is the wrong shape on purpose: what a sensor's types promise, it may not keep.
+        [[0.5], None, "fast", Sensed(values=[0.5]), Sensed(values={}, detail=["x"])],  # type: ignore[arg-type]
         ids=["list", "none", "text", "sensed-list", "sensed-detail-list"],
     )
     async def test_a_sensor_that_gives_no_mapping_fails_its_readings(self, given: Any) -> None:
@@ -663,6 +664,9 @@ class TestAReadingOfTheWrongShape:
         to values raised out of the sense step, failing every reading of the run."""
 
         class Odd:
+            def watch(self, target: Target, options: Any) -> None:
+                return None
+
             async def sense(self, interaction: Any, *, truth: Any, options: Any) -> Any:
                 return given
 
@@ -1016,6 +1020,8 @@ class TestABrokenExtension:
 
 
 class _Scope:
+    run_id = "r"
+
     def __init__(self) -> None:
         self.stopping = asyncio.Event()
 
@@ -1408,7 +1414,7 @@ def test_the_example_experiments_are_what_the_fakes_can_stand_in_for(
     30 trials (the genre's 10 repeats of control, candidate and the control again), and
     names only kinds this ix can run."""
     for name in ("identical", "slower"):
-        file = Path(ix.__file__).parents[2] / "examples" / "delay-server" / f"{name}.yaml"
+        file = Path(__file__).resolve().parents[1] / "examples" / "delay-server" / f"{name}.yaml"
         assert ix.validate(file).valid
         plan = ix.plan(file)
         assert plan.trials.total == 30 and plan.unimplemented == ()

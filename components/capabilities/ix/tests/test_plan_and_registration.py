@@ -20,8 +20,8 @@ from click.testing import CliRunner
 import ix
 from ix.adapters._in.cli import main
 from ix.application.experiments import Vocabulary, examine, make_plan
-from ix.domain.experiment import Experiment
-from ix.domain.plan import Plan, cells
+from ix.domain.experiment import Experiment, cells
+from ix.domain.plan import Plan
 from ix.domain.registration import Registration, deviations
 
 if TYPE_CHECKING:

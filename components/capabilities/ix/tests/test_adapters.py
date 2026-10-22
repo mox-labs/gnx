@@ -16,7 +16,6 @@ from typing import Any
 
 import pytest
 
-import ix
 from ix.adapters._out import k6_load
 from ix.adapters._out.environments import NoEnvironment, ProcessEnvironment
 from ix.adapters._out.matrix_process import MatrixLauncher
@@ -29,7 +28,7 @@ from ix.domain.run import HarnessError, Interaction, SubjectError, Target
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 
-SERVER = Path(ix.__file__).parents[2] / "examples" / "delay-server" / "server.py"
+SERVER = Path(__file__).resolve().parents[1] / "examples" / "delay-server" / "server.py"
 
 
 def _free_port() -> int:
@@ -59,8 +58,21 @@ def _alive(pid: int) -> bool:
     return True
 
 
+async def _until_reached(reached: asyncio.Event, trial: asyncio.Future[None]) -> None:
+    """Wait until ``trial`` has reached its subject. A trial that ends first, by failing before
+    it got there, raises its error here; waiting on ``reached`` alone would wait forever."""
+    waiting: asyncio.Future[Any] = asyncio.ensure_future(reached.wait())
+    await asyncio.wait({waiting, trial}, return_when=asyncio.FIRST_COMPLETED)
+    waiting.cancel()
+    if trial.done():
+        trial.result()
+        raise AssertionError("the trial ended without reaching its subject")
+
+
 class Scope:
-    """A stand-in for whatever runs ix's work: the three members and nothing more."""
+    """A stand-in for whatever runs ix's work: its members and nothing more."""
+
+    run_id = "r"
 
     def __init__(self) -> None:
         self.stopping = asyncio.Event()
@@ -127,11 +139,22 @@ class TestProcessSubject:
                 await asyncio.Event().wait()
 
         task = asyncio.ensure_future(trial())
-        await reached.wait()
+        await _until_reached(reached, task)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         assert not _alive(pids[0])
+
+    @pytest.mark.timeout(5)
+    async def test_a_trial_that_fails_before_it_is_reached_ends_the_wait(self) -> None:
+        """Regression (ix-tests F4): a trial that failed before ``reached.set()`` left the test
+        above waiting on ``reached`` forever, and the whole suite with it."""
+
+        async def trial() -> None:
+            raise SubjectError("the subject never came up")
+
+        with pytest.raises(SubjectError, match="never came up"):
+            await _until_reached(asyncio.Event(), asyncio.ensure_future(trial()))
 
     async def test_a_program_that_exits_before_it_is_up_is_the_subjects_failure(self) -> None:
         port = _free_port()

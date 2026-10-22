@@ -1,6 +1,6 @@
 {
   "schema": "gnx.v1.error-envelope",
-  "description": "The one shape every capability CLI prints for a failing command under --json, on stderr, and the one problem record inside it. `<tool>` is the tool's own schema namespace (matrix, ix, recon). A consumer tolerates keys and problem kinds it does not know: both sets grow.",
+  "description": "The one shape every capability CLI prints for a failing command under --json, on stderr, and the one problem record inside it. `<tool>` is the tool's own schema namespace (matrix, ix, recon, hardline). A consumer tolerates keys and problem kinds it does not know: both sets grow.",
   "envelope": {
     "schema": "<tool>.v1.error",
     "error": {
