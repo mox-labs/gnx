@@ -81,8 +81,16 @@ def _as_messages(messages: Messages, system: str | None) -> tuple[Message, ...]:
     if system is not None:
         turns.insert(0, Message(role="system", content=system))
     if not turns:
-        raise ValueError("at least one message is required")
+        raise ConfigError("at least one message is required")
     return tuple(turns)
+
+
+def _check_overrides(max_tokens: int | None, temperature: float | None) -> None:
+    """The call's overrides, held to a registry row's bounds before anything is sent."""
+    if max_tokens is not None and max_tokens <= 0:
+        raise ConfigError(f"max_tokens must be > 0, got {max_tokens}")
+    if temperature is not None and not temperature >= 0:  # also refuses nan
+        raise ConfigError(f"temperature must be >= 0, got {temperature}")
 
 
 def _validate[M: BaseModel](output: type[M], text: str) -> M:
@@ -144,7 +152,7 @@ class ModelRuntime:
                 "model registry does not match installed backends:\n" + "\n".join(problems)
             )
         if schema_retries < 0:
-            raise ValueError("schema_retries must be >= 0")
+            raise ConfigError(f"schema_retries must be >= 0, got {schema_retries}")
         self._registry = registry
         self._backends = dict(backends)
         self._secrets = secrets
@@ -204,6 +212,7 @@ class ModelRuntime:
         temperature: float | None = None,
     ) -> Completion:
         """One call, text out. ``model=None`` uses the registry default."""
+        _check_overrides(max_tokens, temperature)
         spec = self._registry.get(model)
         turns = _as_messages(messages, system)
         started = self._clock()
@@ -231,6 +240,7 @@ class ModelRuntime:
         response is validated here either way — a provider's "structured" mode is an
         optimisation, never the guarantee.
         """
+        _check_overrides(max_tokens, temperature)
         spec = self._registry.get(model)
         schema = output.model_json_schema()
         turns = list(_as_messages(messages, system))

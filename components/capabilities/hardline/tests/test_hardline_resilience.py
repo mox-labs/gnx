@@ -166,6 +166,13 @@ async def test_extract_falls_back_and_sums_usage() -> None:
     assert s.completion.usage.output_tokens > 0
 
 
+def test_a_repeated_fallback_is_refused() -> None:
+    # F11: `[b, b]` was accepted, so b was retried twice in full and the warning for the first
+    # b was suppressed.
+    with pytest.raises(ConfigError, match=r"models\.a\.fallbacks.*'b' more than once"):
+        mock_runtime({"a": _row(["x"], fallbacks=["b", "b"]), "b": _row(["y"])})
+
+
 @pytest.mark.parametrize(
     ("fallbacks", "problem"), [(["a"], "the model itself"), (["nope"], "not in the registry")]
 )

@@ -87,6 +87,15 @@ class ModelSpec(BaseModel):
             )
         return value
 
+    @field_validator("fallbacks")
+    @classmethod
+    def _fallbacks_are_distinct(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        # A repeated fallback would be asked again in full after it had just failed.
+        repeated = sorted({name for name in value if value.count(name) > 1})
+        if repeated:
+            raise ValueError(f"names {', '.join(map(repr, repeated))} more than once")
+        return value
+
 
 class Request(BaseModel):
     """What the runtime hands a backend for one attempt."""
@@ -96,7 +105,7 @@ class Request(BaseModel):
     messages: tuple[Message, ...] = Field(min_length=1)
     json_schema: dict[str, Any] | None = None
     max_tokens: int = Field(gt=0)
-    temperature: float | None = None
+    temperature: float | None = Field(default=None, ge=0.0)
 
 
 class Usage(BaseModel):

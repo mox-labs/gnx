@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from hardline import (
     COMPLETION_TYPE_URL,
+    ConfigError,
     ContractError,
     Message,
     ModelRegistry,
@@ -234,3 +235,30 @@ async def test_call_overrides_beat_row_defaults() -> None:
     await rt.complete("q", "a")
     await rt.complete("q", "a", max_tokens=7, temperature=0.0)
     assert seen == [(50, 0.2), (7, 0.0)]
+
+
+# --- the error contract: everything raised on purpose is a HardlineError (F3, F11) -------
+
+
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [
+        ({"messages": []}, "at least one message"),
+        ({"max_tokens": 0}, "max_tokens"),
+        ({"temperature": -1.0}, "temperature"),
+        ({"temperature": float("nan")}, "temperature"),
+    ],
+)
+async def test_a_bad_call_argument_is_a_config_error(call: dict[str, Any], match: str) -> None:
+    # Before: a bare ValueError (no messages), a pydantic ValidationError (max_tokens=0), and a
+    # negative temperature sent to the provider. None of them is caught by `except HardlineError`.
+    rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}})
+    kwargs = {"messages": "hi", **call}
+    for method in (rt.complete, lambda *a, **k: rt.extract(*a, output=Verdict, **k)):
+        with pytest.raises(ConfigError, match=match):
+            await method("q", **kwargs)
+
+
+def test_a_negative_schema_retries_is_a_config_error() -> None:
+    with pytest.raises(ConfigError, match="schema_retries"):
+        mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}}, schema_retries=-1)
