@@ -5,16 +5,23 @@ so that it and everything it forks can be ended together, and end it. The compos
 supplies the one that does it.
 
 :func:`wait_ready` and :func:`answers` are how a started program is known to be up: a URL
-that answers, or failing that a port that accepts a connection.
+that answers, or failing that a port that accepts a connection. :func:`startable` is the
+requirement that a program can be started here at all.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
 import httpx
+
+from ix.domain.kind import placeholders
+from ix.domain.ports import Requirement
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -33,6 +40,33 @@ class Launcher(Protocol):
     async def stop(self, process: asyncio.subprocess.Process, *, grace_s: float = 5.0) -> None:
         """End the process and everything it started: politely, then for good."""
         ...
+
+
+def startable(program: str, *, base: str, cwd: str = ".") -> Requirement | None:
+    """The requirement that ``program`` can be started here: a bare name is on PATH, a path
+    (``./proxy``) is an executable file, relative to ``cwd`` under the directory ``base``.
+    None when either holds a ``{placeholder}``: it is told when the trial starts."""
+    if placeholders([program, cwd]):
+        return None
+    if Path(program).name != program:
+        found = Path(base, cwd, program)
+        if found.is_file() and os.access(found, os.X_OK):
+            return Requirement(need=f"{program!r} is an executable file", holds=True)
+        return Requirement(
+            need=f"{program!r} is an executable file",
+            holds=False,
+            why=f"{program!r} is not an executable file at {found}",
+            fix="correct the path (it is relative to the experiment's directory and the "
+            "entry's cwd), or make the file executable",
+        )
+    if shutil.which(program) is not None:
+        return Requirement(need=f"{program!r} on PATH", holds=True)
+    return Requirement(
+        need=f"{program!r} on PATH",
+        holds=False,
+        why=f"{program!r} is not on PATH",
+        fix=f"install {program}, or name it by its path",
+    )
 
 
 async def answers(url: str) -> bool:

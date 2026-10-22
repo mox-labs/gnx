@@ -30,11 +30,11 @@ from ix.adapters._out.matrix_judge import STAND_IN_REPLY, JudgeSensor
 from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.domain.design import SelectedSensor
 from ix.domain.experiment import ProbeConfig, SubjectConfig
-from ix.domain.ports import Sensed, Surroundings
+from ix.domain.ports import Requirement, Sensed, Surroundings
 from ix.domain.run import HarnessError, Interaction, SubjectError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 
 def _reply(text: str = "", **fields: Any) -> matrix.AgentResponse:
@@ -410,12 +410,17 @@ class TestAValueErrorIsToldBySource:
         assert "could not be built" in str(failed.value)
 
 
+def _unmet(found: Sequence[Requirement]) -> str | None:
+    """Why the first requirement that does not hold does not; None when every one holds."""
+    return next((required.why for required in found if not required.holds), None)
+
+
 class TestPreflight:
     def _unstartable(self, tmp_path: Path, scripted: Scripted | None = None, **options: Any) -> Any:
         adapter = AgentSessionSubject(
             Sessions(), Runtimes(scripted or Scripted(_reply())), MatrixLauncher()
         )
-        return adapter.unstartable(_subject(**options), base=str(tmp_path))
+        return _unmet(adapter.requirements(_subject(**options).options, base=str(tmp_path)))
 
     def test_what_can_be_told_before_anything_starts(self, tmp_path: Path) -> None:
         assert self._unstartable(tmp_path) is None
@@ -435,7 +440,7 @@ class TestPreflight:
         runtimes = Runtimes(Scripted(_reply()))
         adapter = AgentSessionSubject(Sessions(), runtimes, MatrixLauncher())
         unnamed = SubjectConfig.model_validate({"kind": "agent-session", "max_turns": 1})
-        said = adapter.unstartable(unnamed, base=str(tmp_path))
+        said = _unmet(adapter.requirements(unnamed.options, base=str(tmp_path)))
         assert said is not None and said.startswith("runtime:")
         assert runtimes.built == []
 
@@ -457,7 +462,7 @@ class TestPreflight:
         runtimes = Runtimes(Scripted(_reply()))
         adapter = AgentSessionSubject(Sessions(), runtimes, MatrixLauncher())
         subject = _subject(runtime_options={"permission_mode": "plan"})
-        assert adapter.unstartable(subject, base=str(tmp_path)) is None
+        assert _unmet(adapter.requirements(subject.options, base=str(tmp_path))) is None
         assert runtimes.built == [
             ("agent-runtime", "claude-sdk", {"permission_mode": "plan"}, None)
         ]
@@ -1233,11 +1238,11 @@ class TestAModelCall:
                 {"kind": "model-call", "runtime": "hardline", **options}
             )
 
-        assert adapter.unstartable(subject(model="fast"), base=".") is None
-        said = adapter.unstartable(subject(model="unknown"), base=".")
+        assert _unmet(adapter.requirements(subject(model="fast").options, base=".")) is None
+        said = _unmet(adapter.requirements(subject(model="unknown").options, base="."))
         assert said is not None and "no model 'unknown'" in said
         unnamed = SubjectConfig.model_validate({"kind": "model-call"})
-        said = adapter.unstartable(unnamed, base=".")
+        said = _unmet(adapter.requirements(unnamed.options, base="."))
         assert said is not None and said.startswith("runtime:")
 
     def test_what_a_model_call_leaves_nothing_to_read_for_is_refused(self, tmp_path: Path) -> None:

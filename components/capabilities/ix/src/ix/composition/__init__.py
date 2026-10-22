@@ -72,10 +72,13 @@ from ix.application.running import Kit
 from ix.composition.extension import LAUNCHER, POINTS, RUNTIMES, SESSIONS
 from ix.composition.settings import IxSettings
 from ix.domain import schema
+from ix.domain.design import entries_in_use
 from ix.domain.errors import ConfigError, IxError, NotFoundError, UsageError
 from ix.domain.experiment import Experiment
 from ix.domain.genre import Genres, genres
-from ix.domain.kind import KIND_FAMILIES, Kinds, kinds
+from ix.domain.kind import KIND_FAMILIES, Kinds, kinds, per_cell
+from ix.domain.plan import required
+from ix.domain.ports import Preflight
 from ix.domain.problem import InvalidExperimentError
 from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
 from ix.domain.report import Report, Runs
@@ -89,7 +92,9 @@ if TYPE_CHECKING:
 
     from ix.api import PathLike, Source
     from ix.domain.design import Design
-    from ix.domain.plan import Plan
+    from ix.domain.experiment import ProbeSet
+    from ix.domain.plan import Plan, Required
+    from ix.domain.ports import Requirement
     from ix.domain.problem import Problem, Validation
     from ix.domain.registration import Deviations, Registered, Registration
     from ix.domain.report import RunSummary
@@ -341,14 +346,26 @@ class Root:
         except ConfigError:
             return None
 
+    def _buildable(self) -> tuple[frozenset[str], dict[str, str]]:
+        """Every kind (type URL) whose registered adapter builds here, and why each other
+        registered one cannot be built. Building one starts nothing: an adapter is built
+        with what it needs and holds on to it."""
+        built: set[str] = set()
+        broken: dict[str, str] = {}
+        for family in KIND_FAMILIES:
+            for entry in self._registry.entries(POINTS[family]):
+                try:
+                    self._adapter(entry)
+                except ConfigError as error:
+                    broken[entry.type_url] = str(error)
+                else:
+                    built.add(entry.type_url)
+        return frozenset(built), broken
+
     @property
     def _runnable(self) -> frozenset[str]:
-        """Every kind (type URL) an adapter is registered for."""
-        return frozenset(
-            entry.type_url
-            for family in KIND_FAMILIES
-            for entry in self._registry.entries(POINTS[family])
-        )
+        """Every kind (type URL) whose adapter is registered and builds here."""
+        return self._buildable()[0]
 
     def _kit(self, kinds: Collection[str], declared: Kinds) -> Kit:
         """The adapters a run of ``kinds`` (type URLs) uses, each built from the registry,
@@ -387,9 +404,11 @@ class Root:
             f"{failure.extension} ({failure.origin}): {failure.error}"
             for failure in self._registry.failures
         )
+        built, broken = self._buildable()
         return found.model_copy(
             update={
-                "runnable": tuple(sorted(self._runnable & set(found.kinds))),
+                "runnable": tuple(sorted(built & set(found.kinds))),
+                "unbuildable": dict(sorted(broken.items())),
                 "quarantined": quarantined,
             }
         )
@@ -533,17 +552,20 @@ class Root:
             opened = self._open(source, base=base, registration=registration)
             # Check the experiment before the record: an invalid experiment is the first
             # thing to say, whatever state its registration is in.
-            experiment = use_cases.valid(opened.examined, "planned").experiment
-            unstartable, cautions = self._preflight(
-                experiment, str(Path(opened.base).resolve()), opened.vocabulary.kinds
+            checked = use_cases.valid(opened.examined, "planned")
+            requirements, cautions = self._preflight(
+                checked.experiment,
+                checked.design,
+                checked.probes,
+                str(Path(opened.base).resolve()),
             )
             made = use_cases.make_plan(
                 self._digested(opened.examined, opened.vocabulary, opened.base),
                 opened.vocabulary,
                 self._stored(opened),
                 location=opened.registration.location if opened.registration else "",
-                unstartable=unstartable,
-                earlier=self._earlier(opened.base, experiment.name),
+                requirements=requirements,
+                earlier=self._earlier(opened.base, checked.experiment.name),
             )
             made = made.model_copy(update={"warnings": (*made.warnings, *cautions)})
             span.set(
@@ -618,26 +640,36 @@ class Root:
     # --- running ---
 
     def _preflight(
-        self, experiment: Experiment, base: str, declared: Kinds
-    ) -> tuple[tuple[str, ...], tuple[Problem, ...]]:
-        """What the subjects' adapters can tell before anything starts: why a subject cannot
-        start here (``subjects.<name>: <why>``), and what the runtimes they would build warn
-        of (a permissive ``permission_mode``), each at
-        ``subjects.<name>.runtime_options.<option>``: a subject's runtime options are its
-        runtime's config."""
-        kinds = {schema.url("subject", subject.kind) for subject in experiment.subjects.values()}
-        subjects = self._kit(kinds, declared).subjects
-        reasons: list[str] = []
+        self, experiment: Experiment, design: Design, probes: ProbeSet, base: str
+    ) -> tuple[tuple[Required, ...], tuple[Problem, ...]]:
+        """What a run needs of this host, from every adapter in use that is a
+        :class:`~ix.domain.ports.Preflight` (a subject, probe, sensor or environment), each
+        checked now; and what the runtimes they build warn of (a permissive
+        ``permission_mode``), each at ``<entry>.runtime_options.<option>``: an entry's
+        runtime options are its runtime's config. Each cell's options are asked as its
+        trials will have them, so a factor on one option hides nothing. An adapter that
+        cannot be built has nothing to check: that is told as a kind with no adapter."""
+        adapters: dict[str, object] = {}
+        found: list[tuple[str, Requirement]] = []
         cautions: list[Problem] = []
-        for name, subject in experiment.subjects.items():
-            alone = experiment.model_copy(update={"subjects": {name: subject}})
-            with self._runtimes.listening() as heard:
-                reasons += running.unstartable(alone, subjects, base)
-            cautions += [
-                found.model_copy(update={"path": f"subjects.{name}.runtime_options.{found.path}"})
-                for found in converted(heard)
-            ]
-        return tuple(reasons), tuple(cautions)
+        for where, kind, written in entries_in_use(experiment, design, probes):
+            if kind not in adapters:
+                adapters[kind] = self._built(kind)
+            adapter = adapters[kind]
+            if not isinstance(adapter, Preflight):
+                continue
+            for options in per_cell(written, experiment.factors):
+                with self._runtimes.listening() as heard:
+                    found += [
+                        (where, needed) for needed in adapter.requirements(options, base=base)
+                    ]
+                for caution in converted(heard):
+                    moved = caution.model_copy(
+                        update={"path": f"{where}.runtime_options.{caution.path}"}
+                    )
+                    if moved not in cautions:
+                        cautions.append(moved)
+        return required(found), tuple(cautions)
 
     def _store(self, directory: str) -> ConstructStore:
         """The run store, built at matrix's ``store`` point to keep runs under
@@ -728,8 +760,10 @@ class Root:
             overridden=overridden,
         )
         kit = self._kit(prepared.kinds, opened.vocabulary.kinds)
-        running.check_startable(prepared.experiment, kit, directory)
-        _, cautions = self._preflight(prepared.experiment, directory, opened.vocabulary.kinds)
+        requirements, cautions = self._preflight(
+            prepared.experiment, prepared.design, prepared.probes, directory
+        )
+        running.check_startable(requirements)
         manifest = prepared.manifest.model_copy(
             update={"warnings": cautions, "provenance": self._provenance(directory)}
         )

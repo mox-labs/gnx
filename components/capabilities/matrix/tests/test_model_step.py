@@ -166,10 +166,11 @@ def test_two_model_steps_each_name_the_kind_of_their_reply() -> None:
     assert (clash.path, clash.got) == ("components.two.config.response", MODEL_CALL)
 
 
-def test_a_model_step_carries_its_runtime_s_effects_and_the_mock_is_a_stand_in() -> None:
+def test_the_mock_model_runtime_is_a_stand_in_and_hardline_is_not() -> None:
+    """Changed requirement (Q6): effects are removed. A stand-in is declared, never read
+    from a runtime's effects."""
     box = container()
-    wiring = box.wire(_step({}), inputs=[PROMPT])
-    assert wiring.effects == {"rate": frozenset()}
+    box.wire(_step({}), inputs=[PROMPT])
     assert box.registry.entry("model-runtime", "matrix.v1.model-runtime.mock").stand_in
     assert not box.registry.entry("model-runtime", "matrix.v1.model-runtime.hardline").stand_in
 

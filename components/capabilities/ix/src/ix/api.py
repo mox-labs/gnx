@@ -119,10 +119,10 @@ def run(
     ``<experiment directory>/.ix/runs/<run id>/``.
 
     Raises before anything starts: :class:`InvalidExperimentError`; :class:`ConfigError`
-    when a kind the experiment names has no adapter or a subject cannot start on this host
-    (:attr:`Plan.unstartable` lists those beforehand); :class:`UnregisteredError` when the
-    experiment has no registration and neither ``exploratory`` nor ``dry_run`` is set. An
-    exploratory run gives no verdict.
+    when a kind the experiment names has no adapter, or something it requires of this host
+    does not hold (:attr:`Plan.requirements` lists each beforehand, with whether it holds);
+    :class:`UnregisteredError` when the experiment has no registration and neither
+    ``exploratory`` nor ``dry_run`` is set. An exploratory run gives no verdict.
 
     ``dry_run`` runs the experiment as written with every subject on a stand-in (an agent
     session on matrix's ``mock`` runtime, replying with each probe's ``mock_response``) and

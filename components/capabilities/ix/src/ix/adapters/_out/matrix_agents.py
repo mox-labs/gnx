@@ -64,15 +64,16 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 import matrix
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ix.adapters._out.processes import startable
 from ix.adapters._out.python_checks import code_in, run_cases
 from ix.domain.errors import IxError
-from ix.domain.kind import fill, seconds
-from ix.domain.ports import StoodIn
+from ix.domain.kind import fill, placeholders, seconds
+from ix.domain.ports import Requirement, StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, SubjectError, Target
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 
     from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import SubjectConfig
@@ -432,6 +433,57 @@ class Sessions:
             ) from None
 
 
+def runtime_requirement(need: str, attempt: Callable[[], object]) -> Requirement:
+    """``need``, holding when ``attempt`` (building a runtime, checking it can play what it
+    will be given) raises nothing it would raise for a config that does not work here."""
+    try:
+        attempt()
+    except (matrix.MatrixError, IxError, ValidationError, ValueError) as error:
+        return Requirement(
+            need=need, holds=False, why=str(error), fix=str(getattr(error, "fix", "") or "")
+        )
+    return Requirement(need=need, holds=True)
+
+
+def carried_out(error: ValidationError) -> Requirement:
+    """The requirement that an entry's options are ones its adapter can carry out, which
+    ``error`` says they are not: its first problem, at its option's path."""
+    first = error.errors()[0]
+    where = ".".join(str(part) for part in first["loc"])
+    return Requirement(
+        need="options the adapter can carry out",
+        holds=False,
+        why=f"{where}: {first['msg']}",
+        fix=f"correct {where}",
+    )
+
+
+def _files_there(options: SessionOptions, base: str) -> Requirement:
+    """That every file the session names is there: its fixtures, skills, plugins and
+    definition. A plugin path with a ``*`` must match something, or the session would run
+    without the plugins the experiment meant to measure."""
+    named = [*options.fixtures, *options.skills, *filter(None, [options.definition])]
+    named += [p if isinstance(p, str) else str(p.get("path", "")) for p in options.plugins]
+    need = "the files the session names are there (fixtures, skills, plugins, definition)"
+    for path in named:
+        if "*" in path:
+            if not glob(str(_within(base, path))):
+                return Requirement(
+                    need=need,
+                    holds=False,
+                    why=f"{path!r} matches nothing in {base}",
+                    fix="correct the path; it is relative to the experiment's directory",
+                )
+        elif not _within(base, path).exists():
+            return Requirement(
+                need=need,
+                holds=False,
+                why=f"{path!r} is not at {_within(base, path)}",
+                fix="correct the path; it is relative to the experiment's directory",
+            )
+    return Requirement(need=need, holds=True)
+
+
 def _options(subject: SubjectConfig) -> SessionOptions:
     return SessionOptions.model_validate(subject.options)
 
@@ -638,40 +690,35 @@ class AgentSessionSubject:
         )
         return StoodIn(options={**kept, "runtime": STAND_IN}, notes=tuple(notes))
 
-    def unstartable(self, subject: SubjectConfig, *, base: str) -> str | None:
-        """What can be told before anything starts: the options' shapes, the files they
-        name, the runtime and whether it can play the definition, the setup program."""
+    def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
+        """What a session needs here: options it can carry out, the files they name, its
+        setup program, and its runtime, built, able to play the definition. Nothing while
+        an option holds a placeholder only the trial fills (an environment's binding)."""
+        if any(placeholders(value) for value in options.values()):
+            return []  # told when the trial starts
         try:
-            options = _options(subject)
+            parsed = SessionOptions.model_validate(options)
         except ValidationError as error:
-            first = error.errors()[0]
-            where = ".".join(str(part) for part in first["loc"])
-            return f"{where}: {first['msg']}"
-        named = [*options.fixtures, *options.skills, *filter(None, [options.definition])]
-        named += [p if isinstance(p, str) else str(p.get("path", "")) for p in options.plugins]
-        for path in named:
-            if "*" in path:
-                # Only a plugin path may match several: one that matches none would run the
-                # session without the plugins the experiment meant to measure.
-                if not glob(str(_within(base, path))):
-                    return f"{path!r} matches nothing in {base}"
-            elif not _within(base, path).exists():
-                return f"{path!r} is not at {_within(base, path)}"
-        if (
-            options.setup
-            and shutil.which(options.setup[0]) is None
-            and not _within(base, options.setup[0]).is_file()
-        ):
-            return f"setup program {options.setup[0]!r} is not on PATH"
-        try:
-            definition = _definition("preflight", options, base)
+            return [carried_out(error)]
+        found = [_files_there(parsed, base)]
+        if parsed.setup:
+            setup = startable(parsed.setup[0], base=base)
+            if setup is not None:
+                found.append(setup)
+
+        def plays() -> None:
+            definition = _definition("preflight", parsed, base)
             runtime = self._runtimes.build(
-                AGENT_RUNTIME, options.runtime, _runtime_config(options, base)
+                AGENT_RUNTIME, parsed.runtime, _runtime_config(parsed, base)
             )
             runtime.check(definition)
-        except (matrix.MatrixError, IxError, ValidationError, ValueError) as error:
-            return str(error)
-        return None
+
+        found.append(
+            runtime_requirement(
+                f"agent runtime {parsed.runtime!r} builds and can play the session", plays
+            )
+        )
+        return found
 
     @asynccontextmanager
     async def reach(self, name: str, subject: SubjectConfig, *, base: str) -> AsyncIterator[Target]:

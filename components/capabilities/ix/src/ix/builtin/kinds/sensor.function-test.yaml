@@ -5,7 +5,6 @@ options:
   timeout: {type: duration, description: time allowed for all the tests of one trial; 30s when absent}
   file: {type: string, description: "a file the probe collected from the working directory (collect:) to test instead of the response's last python block"}
   pass_at: {type: number, description: "the weighted score at which tests_passed is true; 1 (every test) when absent"}
-effects: [code]
 needs: [response]
 truth: [function_name, test_cases, tiers]
 metrics:

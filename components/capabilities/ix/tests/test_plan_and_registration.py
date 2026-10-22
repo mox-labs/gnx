@@ -206,10 +206,11 @@ class TestPlanCounts:
         self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:
         """Changed requirement: spend is removed. A plan estimates no cost and holds a run
-        to no ceiling; what the run will do is in its trials and its effects."""
+        to no ceiling; what the run will do is in its trials. Changed requirement (Q6):
+        nor does it list effects; what the run needs of this host is added by the root."""
         made = _plan(evaluate_data, vocabulary)
-        assert "spend" not in made.document()
-        assert {e.effect for e in made.effects} == {"tools", "process", "filesystem"}
+        assert "spend" not in made.document() and "effects" not in made.document()
+        assert made.requirements == ()
 
     def test_the_genres_note_is_said_once(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary

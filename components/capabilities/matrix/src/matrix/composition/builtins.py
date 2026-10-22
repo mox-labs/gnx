@@ -159,7 +159,6 @@ def register(registry: Registry) -> None:
         _claude_sdk,
         config=ClaudeSdkRuntimeConfig,
         needs={"cwd"},
-        effects={"model", "network", "subprocess", "filesystem"},
         summary="Claude Agent SDK sessions: tools, multiple turns, plugins, skills, subagents",
         drives=("claude-agent-sdk",),
     )
@@ -168,7 +167,6 @@ def register(registry: Registry) -> None:
         agent_runtime_type_url("mock"),
         MockAgentRuntime,
         config=MockAgentRuntimeConfig,
-        effects=set(),
         summary="A stand-in for any agent: deterministic replies from config; offline",
         stability="stable",
         stand_in=True,
@@ -179,7 +177,6 @@ def register(registry: Registry) -> None:
         _hardline,
         config=HardlineModelRuntimeConfig,
         needs={"models"},
-        effects={"model", "network"},
         summary="One model call through hardline, in any model family it has a row for",
         drives=("hardline",),
     )
@@ -188,7 +185,6 @@ def register(registry: Registry) -> None:
         model_runtime_type_url("mock"),
         MockModelRuntime,
         config=MockModelRuntimeConfig,
-        effects=set(),
         summary="A stand-in for any model: deterministic replies from config; offline",
         stand_in=True,
     )
@@ -221,7 +217,6 @@ def register(registry: Registry) -> None:
         observer_type_url("otel"),
         _otel,
         config=OtelObserverConfig,
-        effects={"network"},
         summary="OpenTelemetry spans and metrics on the GenAI conventions, without content "
         "unless capture_content; exported when the OTEL_* variables say where (requires "
         "matrix[otel])",
@@ -230,7 +225,6 @@ def register(registry: Registry) -> None:
         "observer",
         observer_type_url("console"),
         _console,
-        effects=set(),
         summary="Progress on stderr: component states and elapsed time, live on a terminal",
     )
     registry.register(
@@ -238,7 +232,6 @@ def register(registry: Registry) -> None:
         observer_type_url("jsonl"),
         _jsonl,
         config=JsonlObserverConfig,
-        effects={"filesystem"},
         summary="One JSON line per event, to a file or stderr: the stream an agent tails",
     )
     registry.register(
@@ -246,7 +239,6 @@ def register(registry: Registry) -> None:
         store_type_url("jsonl"),
         JsonlConstructStore.from_config,
         config=JsonlStoreConfig,
-        effects={"filesystem"},
         summary="Each run a directory of JSONL tables, written as it goes, with its events",
         stability="stable",
     )
@@ -254,6 +246,5 @@ def register(registry: Registry) -> None:
         "store",
         store_type_url("memory"),
         MemoryConstructStore,
-        effects=set(),
         summary="Runs kept in memory for the life of the process: tests and embedding",
     )

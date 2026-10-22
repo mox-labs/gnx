@@ -20,7 +20,7 @@ from ix.domain import schema
 from ix.domain.analysis import METHOD
 from ix.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT, UsageError
 from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment, Threshold
-from ix.domain.kind import EFFECTS, KIND_FAMILIES, NOTE_PREFIX
+from ix.domain.kind import KIND_FAMILIES, NOTE_PREFIX
 from ix.domain.plan import VERDICTS
 from ix.domain.problem import PROBLEM_KINDS
 
@@ -93,11 +93,14 @@ PREREQUISITES: dict[str, str] = {
     "function-test": "and `outcome` run Python in a child process with a time limit and no "
     "credentials in its environment; it is not a sandbox, so test code from a subject you "
     "would run yourself",
-    "http-load": "runs `k6` from `PATH`: check with `k6 version`. Without it every trial is "
-    "a harness failure (`tool_missing`) and the run decides nothing",
+    "http-load": "runs `k6` from `PATH`: check with `k6 version`. `ix plan` lists it under "
+    "`Runnable: no` when it is not there",
     "memory": "samples resident memory with `ps`, so it reads memory on macOS and Linux",
     "process": "starts the `command` it is given; `ix plan` lists a program that is not "
     "there under `Runnable: no`",
+    "compose": "runs `docker compose` against a daemon that answers: `ix plan` checks docker, "
+    "the daemon, compose and the file, and lists what fails under `Runnable: no`. A dry run "
+    "brings the stack up for real",
 }
 
 #: The example the skill opens with. It runs as written where `python3` and `k6` are
@@ -222,7 +225,7 @@ description: >-
 Read the diff, then list what is wrong with it, the most serious first."""
 
 #: A probe file of the ``agents`` reference: frontmatter keys are truth, except ``id``,
-#: ``kind``, ``effects`` and ``options``, which holds the prompt kind's options.
+#: ``kind`` and ``options``, which holds the prompt kind's options.
 PROBE_FILE = """\
 ---
 id: review-ask
@@ -489,7 +492,7 @@ def _quick_start() -> str:
             "```bash",
             f"ix validate lab/static   # {ok}: valid. {invalid}: fix every problem listed, "
             "validate again",
-            "ix plan lab/static       # read Decides, Trials, Effects; runs nothing. "
+            "ix plan lab/static       # read Decides, Trials, Requires; runs nothing. "
             "Runnable: no (--json: runnable false) means stop and fix what it lists",
             f"ix register lab/static   # {ok}: the design is frozen in "
             "lab/static/experiment.registration.json",
@@ -499,7 +502,8 @@ def _quick_start() -> str:
             "```",
             "",
             "`ix plan` exits 0 whether or not this host can run the plan: it only shows. "
-            "Read the plan before every run: its Trials and Effects are what the run will do, "
+            "Read the plan before every run: its Trials are what the run will do and Requires "
+            "what it needs of this host, "
             "and nothing has happened yet. Decide before you run: the registration is what the "
             "verdict is held to.",
         ]
@@ -696,7 +700,6 @@ seed: <n>"""
         for name, (what, examples) in VALUE_FORMS.items()
     )
     operators = ", ".join(f"`{op}`" for op in get_args(Threshold.model_fields["op"].annotation))
-    effects = "; ".join(f"`{name}` {what}" for name, what in EFFECTS.items())
     return f"""\
 ## The experiment file
 
@@ -743,17 +746,16 @@ whether it came from the experiment, the genre or ix.
 - **Placeholders.** `{{name}}` in a subject's option is a factor's level, filled per cell;
   a value that is one placeholder takes the level with its type (`max_turns: "{{turns}}"`
   is the integer). In a probe, inline or from a file, it is a factor, an option every
-  subject sets, or a facet every subject's kind offers (`{{pid}}`). A loop's `prompt` fills
+  subject sets, or a facet every subject's kind offers (`{{pid}}`). Both take what the
+  environment binds a service with: `{{<service>.url}}`, `.host`, `.port` (a `process`
+  service's `url`, a `compose` service's published port). A loop's `prompt` fills
   `{{prompt}}`, `{{response}}`, `{{until}}` and `{{failures}}` itself. Anything else is
   `unbound_placeholder`. `{{{{name}}}}` is the text `{{name}}`, for code in a prompt.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the
   experiment, one file per probe (`.md`, `.yaml`): a markdown file's text is the prompt,
   and its frontmatter keys other than `id` (default: the file's name), `kind` (default
-  `prompt`), `options` and `effects` are the probe's truth (reference data a sensor
-  measures against; it never reaches the subject). A truth key no sensor in use reads is
-  `truth_unclaimed`.
-- **Effects** come from the kinds. `effects:` beside a `kind` adds to them and cannot remove
-  one. Effects: {effects}.
+  `prompt`) and `options` are the probe's truth (reference data a sensor measures against;
+  it never reaches the subject). A truth key no sensor in use reads is `truth_unclaimed`.
 """
 
 
@@ -842,8 +844,6 @@ def _kind_line(kind: Kind, runnable: bool) -> str:
         facets.append(f"needs {', '.join(kind.needs)}")
     if kind.offers:
         facets.append(f"offers {', '.join(kind.offers)}")
-    if kind.effects:
-        facets.append(f"effects {', '.join(kind.effects)}")
     if kind.truth:
         facets.append(f"reads truth {', '.join(kind.truth)}")
     if facets:
@@ -872,7 +872,6 @@ def _kinds(kinds: Kinds) -> str:
             or "- (none installed)"
         )
         blocks.append(f"### {titles[family]}\n\n{lines}")
-    effects = "; ".join(f"`{name}` {what}" for name, what in EFFECTS.items())
     families = "\n\n".join(blocks)
     return f"""\
 ## Kinds
@@ -883,17 +882,18 @@ behind. Required options are marked `*`.
 
 A kind marked **declared only** has no adapter in this ix: an experiment that uses it can be
 validated, planned and registered, `validate` warns (`kind_unimplemented`), the plan says
-`Runnable: no`, and `ix run` refuses it before anything starts. A subject this host cannot
-start as written (a command that is not there, an `auth` variable that is not set) is listed
-in the plan's `unstartable` and under `Runnable: no`; it can still be registered.
+`Runnable: no`, and `ix run` refuses it before anything starts; so does a kind whose adapter
+cannot be built here (`ix kinds` says why). What an entry needs of this host (a program on
+PATH, an `auth` variable that is set, a runtime that resolves the model, the docker daemon)
+its adapter checks: the plan's `requirements` list each with `holds`, and one that does not
+hold is under `Runnable: no` with its `why` and `fix`. It depends on the host, so the
+experiment can still be registered.
 
 A `process` subject is up when its `ready` URL answers an HTTP GET with a status below 500;
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One
 that is not up within `startup_timeout` (30s) fails the trial as the subject's (`not_ready`).
 
 {families}
-
-Effects: {effects}.
 """
 
 
@@ -976,9 +976,10 @@ then the report (`ix.v1.report`) on stdout.
   reads any run again, finished or not; a run that did not finish gives no verdict, and one
   still running exits {EXIT_CODES["running"]}. A report calls no model: a run stopped
   before its judge read is reported without readings (`unread` says why); run it again.
-- **Refused before anything starts**: a subject command that is not there, an `auth`
-  variable that is not set, and an agent runtime that cannot start or cannot play its
-  agent (the plan lists them under `unstartable`).
+- **Refused before anything starts**: any requirement of this host that does not hold: a
+  command that is not there, an `auth` variable that is not set, `k6` missing for
+  `http-load`, the docker daemon down for `compose`, an agent runtime that cannot start or
+  cannot play its agent (the plan's `requirements`, each with `holds`, `why` and `fix`).
 - **A dry run gives no verdict.** `ix run <path> --dry-run` runs the file as written
   with every agent session and model call on matrix's `mock` runtime of its port (`ix
   --skill -r agents`); a subject with no stand-in (a `process`) is refused. A run in which
@@ -1059,7 +1060,7 @@ probes and a metric. What makes it one is the kinds.
   makes, so validate refuses them on it (`unobservable`), and a `function-test` `file`.
 - **The probe is `prompt`.** Write one file per probe in a `probes/` folder beside the
   experiment and leave `probes:` out: the markdown body is the prompt, and every
-  frontmatter key but `id`, `kind`, `options` and `effects` is the truth sensors read
+  frontmatter key but `id`, `kind` and `options` is the truth sensors read
   (it never reaches the agent). Probe options, under `options:` in a file: `collect`
   (files the agent writes, kept for grading), `feedback` (tests a test-feedback loop shows
   the agent), `mock_response` (the reply a stand-in runtime such as `mock` gives),

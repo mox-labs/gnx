@@ -250,7 +250,8 @@ class TestEveryClaimHolds:
         directory.mkdir()
         (directory / "experiment.yaml").write_text(QUICK_START)
         plan = ix.plan(directory)
-        assert plan.genre == "evaluate" and plan.unstartable == () and plan.unimplemented == ()
+        assert plan.genre == "evaluate" and plan.unimplemented == ()
+        assert {r.need for r in plan.requirements} == {"'python3' on PATH", "'k6' on PATH"}
         assert set(yaml.safe_load(QUICK_START)) == {"name", "question", "genre", "subjects",
                                                     "probes", "primary", "threshold"}  # fmt: skip
 
@@ -317,8 +318,9 @@ class TestTheReferencesTeachFromTheRecords:
         ):
             assert said in running, said
         # A kind with no adapter says so where it is taught; one with an adapter does not.
+        # Changed requirement (W8.7): compose has an adapter.
         marked = [line for line in kinds.splitlines() if "*(declared only: no adapter" in line]
-        assert {line.split("`")[1] for line in marked} == {"inspect-task", "compose"}
+        assert {line.split("`")[1] for line in marked} == {"inspect-task"}
 
     def test_every_genre_from_its_record(self) -> None:
         genres, skill = _reference("genres"), _skill()

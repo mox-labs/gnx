@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+### Added: `environment.compose`
+
+A docker compose project brought up once for a run and down after it, for experiments whose
+subjects need several services. Record section 22 has the reasons.
+
+- `docker compose up -d --wait` brings it up, healthchecks included; `down -v
+  --remove-orphans` is deferred before `up`, so a stack that came up in part, or whose up
+  was cancelled, still comes down. The environment's releases are given longer than
+  matrix's default for it.
+- Each running service is bound with its first published port (`{web.url}`, `.host`,
+  `.port`) and the image id it runs, in the run's bindings row. The compose file and
+  `env_file` are digested into the registration and the manifest.
+- Without `project`, the project is named for the run, and a stack a killed run left is
+  swept; a `project` written that already has containers is refused.
+- Options: `file`, `project`, `services`, `wait_timeout`, `profiles`, `env_file`, `build`,
+  `pull`. The kind's `file` is now a `path`.
+- The preflight checks docker, its daemon, compose and the files; liveness is `compose ps`.
+- A dry run says the environment is brought up for real (`stood_in`), for `process` too.
+- `Scope` has `run_id`.
+
+### Added: environment bindings reach the trials
+
+- **A subject or a probe names a service by its bindings.** `{<service>.url}`, `.host` and
+  `.port` in a subject's or a probe's options are filled from what the environment bound
+  for that service, and `validate` accepts them for each service the environment's options
+  name. An environment kind declares the keys it binds (`binds:`). Before, bindings were used
+  only to ask whether the environment was still up.
+- **`environment.process` binds where a service listens**: its new `url` option, or the
+  address of its `ready` URL.
+- **A run whose environment came up without a service the experiment names** fails before
+  any trial (`unbound`), naming what it did bind.
+
+### Fixed
+
+- `environment.process` asks the process it started whether it is still up. It asked
+  `os.kill(pid, 0)` of the stored pid, which read a pid the system had given to another
+  process as the service still up, and raised out of the run for one another user owns.
+
+### Changed (breaking): requirements in place of effects
+
+Effects were labels nothing checked (Q6). Record section 21 has the reasons.
+
+- **Removed**: `effects` in kind files (a kind file that still declares them is refused),
+  `effects:` beside an experiment's subject, probe, sensor or environment (now an option the
+  kind does not take), `Plan.effects` and `Effect`, `EffectName` and `EFFECTS`, and the
+  `effects` column of `ix kinds`.
+- **Every adapter may say what it needs of this host.** `Preflight` was the subjects'
+  alone (`unstartable`); it is now `requirements(options, *, base)`, optional for any
+  adapter, each `Requirement` with `need`, `holds`, `why` and `fix`. `process`, `http`,
+  `agent-session` and `model-call` check what they checked before; `http-load` checks `k6`
+  on PATH, `environment.process` each service's program, and `judge` its runtime.
+- **The plan lists them.** `Plan.requirements` (each `need`, `holds`, `why`, `fix` and the
+  entries that need it) replaces `Plan.unstartable`; `ix plan` prints them under
+  `Requires:`, and those that do not hold under `Runnable: no` with the fix. `ix run` refuses
+  to start while one does not hold.
+- **Registrations change digest.** The plan digest no longer covers effects, so every
+  experiment registered before this release shows a `plan_digest` deviation and its next
+  run is ungated: amend the registration (`ix register <path> --amend --reason "effects
+  removed"`) to gate it again.
+
+### Changed: an adapter is held to its port, and one that cannot be built cannot run
+
+- **The kind ports are checked at registration.** `Subject`, `Probe`, `Sensor` and
+  `Environment` are runtime-checkable, and each is the port of its family's point. A class
+  registered there that lacks a member (a subject with no `reach`) is refused when it is
+  registered, so its extension is quarantined, rather than validated and run with every trial
+  a harness failure. What a factory builds is held to the port when it is built.
+- **An adapter that cannot be built is not runnable.** `ix kinds` lists the kinds whose
+  adapter builds here as `runnable`, and the rest under `unbuildable` with why (a need
+  nothing supplies). `ix validate` warns of it (`kind_unimplemented`, with the reason), `ix
+  plan` says `Runnable: no` with it, and `ix run` refuses it naming it.
+- **Who keeps a kind or genre name does not depend on the order files are read.** An owner
+  read after two impostors was refused as a third duplicate.
+
 ### Added: a verdict traces to the model that answered
 
 `docs/design/2026-10-19-record.md` §19 has the reasons.

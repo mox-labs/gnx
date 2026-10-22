@@ -65,6 +65,10 @@ class _TracedScope:
         self._tracer = tracer
 
     @property
+    def run_id(self) -> str:
+        return self._ctx.run_id
+
+    @property
     def stopping(self) -> Flag:
         return self._ctx.stopping
 
@@ -161,9 +165,7 @@ def _sense(*, ix_kit: Kit) -> SenseComponent:
     return SenseComponent(ix_kit)
 
 
-#: The three components by type URL: how each is built and what it does. Their effects are
-#: whatever the kinds of the experiment being run declare, so none is declared: unknown,
-#: never "none".
+#: The three components by type URL: how each is built and what it does.
 COMPONENTS: dict[str, tuple[Callable[..., object], str]] = {
     ENVIRONMENT: (
         _environment,

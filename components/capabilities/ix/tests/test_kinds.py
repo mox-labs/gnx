@@ -9,7 +9,8 @@ the author; a kind is a data file a third party can ship.
 from __future__ import annotations
 
 from importlib import metadata
-from typing import TYPE_CHECKING, Any, get_args
+from itertools import permutations
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
@@ -21,8 +22,6 @@ from ix.composition import type_url_problem
 from ix.domain.design import select_sensors
 from ix.domain.experiment import Experiment, probe_set
 from ix.domain.kind import (
-    EFFECTS,
-    EffectName,
     Kind,
     Kinds,
     arrivals,
@@ -125,19 +124,13 @@ class TestBuiltInKinds:
             for name, option in kind.options.items():
                 assert option.description, f"{kind.label}.{name}"
 
-    def test_effects_are_a_closed_vocabulary(self, builtin_kinds: Kinds) -> None:
-        assert set(get_args(EffectName)) == set(EFFECTS)  # every effect a kind may name is told
+    def test_a_kind_declares_no_effects(self, builtin_kinds: Kinds) -> None:
+        """Changed requirement (Q6): effects were labels nothing checked, and are removed. A
+        kind file that still declares them is refused, so its author is told."""
         for kind in builtin_kinds.kinds.values():
-            assert set(kind.effects) <= set(EFFECTS), kind.name
-        declared = {k.label: set(k.effects) for k in builtin_kinds.of("subject")}
-        assert declared == {
-            "process": {"process"}, "http": {"network"},
-            "agent-session": {"tools", "process", "filesystem"}, "model-call": {"network"},
-        }  # fmt: skip
-        judge = builtin_kinds.get("sensor", "judge")
-        assert judge is not None and judge.effects == ()
+            assert "effects" not in kind.document(), kind.name
         with pytest.raises(ValidationError):
-            Kind.model_validate(_sensor("x", effects=["telepathy"]))
+            Kind.model_validate(_sensor("x", effects=["network"]))
 
     def test_subjects_offer_and_probes_need(self, builtin_kinds: Kinds) -> None:
         offers = {k.label: set(k.offers) for k in builtin_kinds.of("subject")}
@@ -571,47 +564,76 @@ class TestMetricProviders:
         assert problem.fix.startswith("write it beside `kind`, out of `truth:`")
 
 
-# --- effects come from the kinds -------------------------------------------------------
+# --- what a run needs of this host ------------------------------------------------------
 
 
-class TestEffects:
-    def test_the_plan_reports_what_the_kinds_declare_without_being_told(
-        self, evaluate_data: dict[str, Any], write_experiment: Write
+def _executable(path: Path) -> Path:
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return path
+
+
+class TestRequirements:
+    def test_an_entry_writes_no_effects(
+        self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
     ) -> None:
-        plan = ix.plan(write_experiment(evaluate_data))
-        assert {(e.effect, e.source, e.declared_by) for e in plan.effects} == {
-            ("tools", "subjects.catalog", "kind"),
-            ("process", "subjects.catalog", "kind"),
-            ("filesystem", "subjects.catalog", "kind"),
-        }
-        assert all(e.detail == EFFECTS[e.effect] for e in plan.effects)
-
-    def test_the_author_adds_effects_and_cannot_remove_one(
-        self, compare_data: dict[str, Any], write_experiment: Write
-    ) -> None:
-        before = ix.plan(write_experiment(compare_data, "before"))
+        """Changed requirement (Q6): an author could add effects beside a kind; nothing
+        checked them. Now ``effects:`` is an option the kind does not take."""
         compare_data["subjects"]["buffered"]["effects"] = ["binds 127.0.0.1:8080"]
-        compare_data["subjects"]["streaming"]["effects"] = []
-        after = ix.plan(write_experiment(compare_data, "after"))
-        declared = {(e.effect, e.source) for e in before.effects}
-        assert declared <= {(e.effect, e.source) for e in after.effects}
-        added = [e for e in after.effects if e.declared_by == "experiment"]
-        assert [(e.effect, e.source) for e in added] == [
-            ("binds 127.0.0.1:8080", "subjects.buffered")
-        ]
-        assert ("process", "subjects.streaming") in declared
+        found = _found(compare_data, builtin_genres, builtin_kinds)
+        assert ("subjects.buffered.effects", "option_unknown") in found
 
-    def test_a_sensor_ix_selected_brings_its_effects(
-        self, evaluate_data: dict[str, Any], write_experiment: Write
+    def test_the_plan_lists_what_the_run_needs_here_and_whether_each_holds(
+        self,
+        compare_data: dict[str, Any],
+        write_experiment: Write,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        evaluate_data["genre"] = "characterize"
-        evaluate_data["factors"] = {"model": ["small", "large"]}
-        evaluate_data["subjects"]["catalog"]["model"] = "small"
-        evaluate_data["primary"] = {"metric": "tests_passed"}
-        evaluate_data["probes"][0]["truth"] = {"function_name": "f", "test_cases": []}
-        del evaluate_data["threshold"]
-        plan = ix.plan(write_experiment(evaluate_data))
-        assert ("code", "sensor function-test") in {(e.effect, e.source) for e in plan.effects}
+        """Q6: in place of effects, the plan says what each adapter needs of this host, once
+        however many entries need it, and whether it holds now. One that does not makes the
+        plan not runnable, with why and the fix; the host is in no digest."""
+        tools = tmp_path / "bin"
+        tools.mkdir()
+        monkeypatch.setenv("PATH", str(tools))
+        file = write_experiment(compare_data)
+        _executable(file.parent / "proxy")
+        plan = ix.plan(file)
+        assert [(r.need, r.holds, r.needed_by) for r in plan.requirements] == [
+            ("'./proxy' is an executable file", True, ("subjects.buffered", "subjects.streaming")),
+            ("'k6' on PATH", False, ("probes.0",)),
+        ]
+        (unmet,) = plan.unmet
+        assert (unmet.why, unmet.fix) == (
+            "'k6' is not on PATH",
+            "install k6, or name it by its path",
+        )
+        assert not plan.runnable
+        with pytest.raises(ix.ConfigError) as refused:
+            ix.run(file, exploratory=True)
+        assert "'k6' is not on PATH" in str(refused.value)
+        _executable(tools / "k6")
+        again = ix.plan(file)
+        assert again.runnable and all(r.holds for r in again.requirements)
+        assert again.digest == plan.digest
+
+    def test_an_environment_says_what_it_needs_too(
+        self,
+        compare_data: dict[str, Any],
+        write_experiment: Write,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The preflight was the subjects' alone; every family's adapter may have one."""
+        monkeypatch.setenv("PATH", str(tmp_path))
+        compare_data["environment"] = {
+            "kind": "process",
+            "services": {"upstream": {"command": ["no-such-upstream"]}},
+        }
+        plan = ix.plan(write_experiment(compare_data))
+        upstream = next(r for r in plan.requirements if r.needed_by == ("environment",))
+        assert (upstream.need, upstream.holds) == ("'no-such-upstream' on PATH", False)
+        assert not plan.runnable
 
     def test_a_run_that_calls_a_model_needs_no_spend_and_takes_none(
         self, evaluate_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
@@ -708,3 +730,23 @@ class TestKindExtensionPoint:
         found = kinds(files, grammar=type_url_problem)
         assert found.get("sensor", "twin") is None and found.get("sensor", "timing") is not None
         assert [p.kind for p in found.rejected["lab.v1.sensor.twin"]] == ["name_taken"] * 2
+
+    @pytest.mark.parametrize("order", list(permutations(range(3))))
+    def test_the_owner_keeps_its_name_whatever_order_the_files_arrive_in(
+        self, order: tuple[int, ...]
+    ) -> None:
+        """Regression (ix-domain 14): two impostors read before the owner had the owner
+        refused as a duplicate. Who keeps a name does not depend on the order files are read."""
+        owner = {**_sensor("x"), "name": "acme.v1.sensor.twin", "summary": "The owner's."}
+        impostor = {**_sensor("x"), "name": "acme.v1.sensor.twin", "summary": "Not acme's."}
+        files = [
+            DeclarationFile(origin="owner.yaml", data=owner, owned=True),
+            DeclarationFile(origin="one.yaml", data=impostor),
+            DeclarationFile(origin="two.yaml", data=impostor),
+        ]
+        found = kinds([files[i] for i in order], grammar=type_url_problem)
+        twin = found.kinds.get("acme.v1.sensor.twin")
+        assert twin is not None and twin.summary == "The owner's."
+        refused = found.rejected["acme.v1.sensor.twin"]
+        assert sorted(str(p.source) for p in refused) == ["one.yaml", "two.yaml"]
+        assert {p.kind for p in refused} == {"name_taken"}

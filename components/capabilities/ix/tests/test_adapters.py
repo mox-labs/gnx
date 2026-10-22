@@ -24,6 +24,7 @@ from ix.adapters._out.processes import accepts, answers
 from ix.adapters._out.sensors import MEMORY, MemorySensor, TimingSensor
 from ix.adapters._out.subjects import HttpSubject, ProcessSubject
 from ix.domain.experiment import EnvironmentConfig, SubjectConfig
+from ix.domain.ports import Surroundings
 from ix.domain.run import HarnessError, Interaction, SubjectError, Target
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -180,8 +181,8 @@ class TestProcessSubject:
         subject = ProcessSubject(MatrixLauncher())
 
         def told(command: list[str], **options: Any) -> str | None:
-            written = SubjectConfig(kind="process", options={"command": command, **options})
-            return subject.unstartable(written, base=str(tmp_path))
+            found = subject.requirements({"command": command, **options}, base=str(tmp_path))
+            return next((required.why for required in found if not required.holds), None)
 
         assert (
             told(["./proxy-typo"])
@@ -194,6 +195,16 @@ class TestProcessSubject:
         (tmp_path / "bin" / "proxy").write_text("#!/bin/sh\n")
         (tmp_path / "bin" / "proxy").chmod(0o755)
         assert told(["./proxy"], cwd="bin") is None
+
+    def test_an_address_a_trial_fills_is_not_judged_before_it_is_filled(self) -> None:
+        """A ``url`` that names an environment binding (``{upstream.port}``) has no port
+        until the trial fills it; the review refuses only a port that is not one."""
+        subject = ProcessSubject(MatrixLauncher())
+        around = Surroundings(path="subjects.proxy", base=".")
+        bound = {"command": ["./proxy"], "url": "http://127.0.0.1:{upstream.port}"}
+        assert subject.review(bound, around) == []
+        broken = subject.review({"command": ["./proxy"], "url": "http://127.0.0.1:99999"}, around)
+        assert [(p.path, p.kind) for p in broken] == [("subjects.proxy.url", "option_invalid")]
 
     async def test_a_command_that_cannot_be_started_is_the_subjects_failure(self) -> None:
         missing = SubjectConfig(kind="process", options={"command": ["./no-such-program"]})
@@ -259,12 +270,13 @@ class TestHttpSubject:
         self, auth: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("IX_TEST_TOKEN", "s3cret")
-        subject = SubjectConfig(kind="http", options={"url": "https://x.test", "auth": auth})
-        assert HttpSubject().unstartable(subject, base=".") is not None
-        named = SubjectConfig(
-            kind="http", options={"url": "https://x.test", "auth": "env:IX_TEST_TOKEN"}
+        (unset,) = HttpSubject().requirements({"url": "https://x.test", "auth": auth}, base=".")
+        assert not unset.holds
+        assert "s3cret" not in f"{unset.need} {unset.why} {unset.fix}"
+        (named,) = HttpSubject().requirements(
+            {"url": "https://x.test", "auth": "env:IX_TEST_TOKEN"}, base="."
         )
-        assert HttpSubject().unstartable(named, base=".") is None
+        assert named.holds and named.need == "variable IX_TEST_TOKEN is set (auth)"
 
 
 class TestEnvironments:
@@ -285,7 +297,15 @@ class TestEnvironments:
         scope = Scope()
         bindings = await ProcessEnvironment(MatrixLauncher()).up(environment, base=".", scope=scope)
         pid = bindings["upstream"]["pid"]
-        assert bindings == {"upstream": {"pid": pid, "ready": server["ready"]}}
+        assert bindings == {
+            "upstream": {
+                "pid": pid,
+                "host": "127.0.0.1",
+                "port": port,
+                "url": f"http://127.0.0.1:{port}",
+                "ready": server["ready"],
+            }
+        }
         assert _alive(pid) and await answers(server["ready"])
         await scope.release()
         assert not _alive(pid)
@@ -311,6 +331,13 @@ class TestEnvironments:
         finally:
             await scope.release()
         assert await NoEnvironment().lost({}) is None
+
+    async def test_a_pid_it_did_not_start_is_not_read_as_its_service(self) -> None:
+        """Regression (ix-outer 15): liveness was ``os.kill(pid, 0)`` on the stored pid, so a
+        pid the system gave to another live process read as the service still up, and one
+        another user owns raised out of the run. It asks the process it started."""
+        provider = ProcessEnvironment(MatrixLauncher())
+        assert await provider.lost({"upstream": {"pid": os.getpid()}}) == "service upstream exited"
 
     async def test_a_service_that_does_not_come_up_fails_and_is_still_released(self) -> None:
         port = _free_port()

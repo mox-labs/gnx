@@ -92,11 +92,10 @@ class TestExperimentRecord:
         compare_data["subjects"]["buffered"] = {
             "kind": "process",
             "description": "the current build",
-            "effects": ["binds :8080"],
             "command": ["./proxy"],
         }
         subject = _load(compare_data).subjects["buffered"]
-        assert (subject.kind, subject.effects) == ("process", ("binds :8080",))
+        assert (subject.kind, subject.description) == ("process", "the current build")
         assert subject.options == {"command": ["./proxy"]}
 
     def test_truth_is_a_field_of_the_probe_not_an_option(

@@ -259,8 +259,6 @@ class Wiring:
     depends: Mapping[str, tuple[str, ...]]
     #: kind -> a pydantic model that rows of that kind must validate against
     schemas: Mapping[str, type[BaseModel]] = field(default_factory=dict)
-    #: name -> the effects its registration declares; ``None`` means unknown
-    effects: Mapping[str, frozenset[str] | None] = field(default_factory=dict)
     #: name -> a digest of what the component was built from (its type and config), when
     #: the caller knows it: a later run reuses a component's rows only when its digest is
     #: the same
@@ -283,27 +281,12 @@ class Wiring:
             )
         return tuple(placed)
 
-    def declared_effects(self) -> frozenset[str] | None:
-        """Every effect the components declare; ``None`` if any component's are unknown.
-
-        Unknown is never read as "none": a component built outside the registry, or
-        registered without effects, makes the whole run's effects unknown.
-        """
-        found: set[str] = set()
-        for name in self.components:
-            effects = self.effects.get(name)
-            if effects is None:
-                return None
-            found |= effects
-        return frozenset(found)
-
 
 def wire(
     components: Mapping[str, Any] | Iterable[Any],
     *,
     inputs: Iterable[str] = (),
     schemas: Mapping[str, type[BaseModel]] | None = None,
-    effects: Mapping[str, frozenset[str] | None] | None = None,
     fingerprints: Mapping[str, str] | None = None,
 ) -> Wiring:
     """Infer the wiring of ``components`` and check it. Raises CompilationError listing every
@@ -349,7 +332,6 @@ def wire(
         providers=providers,
         depends=depends,
         schemas=dict(schemas or {}),
-        effects=dict(effects or {}),
         fingerprints=dict(fingerprints or {}),
     )
 

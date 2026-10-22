@@ -1,13 +1,20 @@
 """Kinds: what a subject, a probe, a sensor or an environment of a given kind is, as data.
 
-A kind's declaration says which options it takes (their types, which are required), what
-using it does to the world (``effects``), which facets it ``offers`` and which it ``needs``,
-and, for a sensor, the metrics it provides (with whether a model judges them) and the probe
-truth it reads. ``validate`` holds an experiment to these declarations and ``plan`` reports
-their effects, so neither depends on the author asserting them.
+A kind's declaration says which options it takes (their types, which are required), which
+facets it ``offers`` and which it ``needs``, and, for a sensor, the metrics it provides (with
+whether a model judges them) and the probe truth it reads. ``validate`` holds an experiment
+to these declarations, so it does not depend on the author asserting them.
 
 A declaration starts nothing and measures nothing: the adapter registered under the kind's
-type URL does.
+type URL does. What carrying a kind out needs of the host (a program, a daemon, a variable)
+is the adapter's to check (:class:`~ix.domain.ports.Preflight`), not the declaration's to
+claim.
+
+**The families are closed** (:data:`KIND_FAMILIES`). Each has its own place in a run: the
+environment is brought up once, a subject is reached for each trial, a probe applied to it,
+a sensor reads what it left behind. A new family would need a new place in that loop and in
+the schedule, the record and the analysis, which a declaration cannot give it; a new kind of
+an existing family needs only its file and its adapter.
 
 **Facets** are how kinds fit together without knowing each other. A subject kind offers how
 it can be reached (``url``, ``pid``, ``agent``); a probe kind needs some of those and offers
@@ -28,20 +35,8 @@ from ix.domain.experiment import Direction, Level, Name, Shape, cells
 from ix.domain.problem import Problem, from_validation_error, problem
 from ix.domain.schema import DeclarationFile, Record
 
+#: The families of kind, in the order a run uses them; closed (see the module docstring).
 KIND_FAMILIES: tuple[str, ...] = ("subject", "probe", "sensor", "environment")
-
-EffectName = Literal["process", "network", "tools", "code", "containers", "filesystem"]
-
-#: What using a kind can do to the world. A closed set, so that a plan can be read at a
-#: glance: each effect it lists is one of these, said in the same words.
-EFFECTS: dict[EffectName, str] = {
-    "process": "starts a process on this machine",
-    "network": "sends requests over the network",
-    "tools": "lets a model call tools",
-    "code": "executes generated code",
-    "containers": "starts containers",
-    "filesystem": "writes files outside the run's own record",
-}
 
 OptionType = Literal[
     "string",
@@ -217,7 +212,6 @@ class Kind(Record):
     name: str
     summary: str = Field(min_length=1)
     options: dict[Name, Option] = {}
-    effects: tuple[EffectName, ...] = ()
     offers: tuple[str, ...] = ()
     needs: tuple[str, ...] = ()
     #: Sensors only: the metrics this sensor provides.
@@ -228,6 +222,9 @@ class Kind(Record):
     duration: tuple[str, ...] = ()
     #: Sensors only: the expected and observed labels its readings' detail holds.
     confusion: Confusion | None = None
+    #: Environment kinds only: what each service it brings up is bound with (``host``,
+    #: ``port``, ``url``), which a subject's or a probe's option names as ``{<service>.<key>}``.
+    binds: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _coherent(self) -> Kind:
@@ -248,6 +245,8 @@ class Kind(Record):
             raise ValueError("only a probe kind declares duration")
         if self.confusion is not None and family != "sensor":
             raise ValueError("only a sensor kind declares confusion")
+        if self.binds and family != "environment":
+            raise ValueError("only an environment kind declares binds")
         for name in self.duration:
             if name not in self.options or self.options[name].type != "duration":
                 raise ValueError(f"duration names {name!r}, which is not a duration option")
@@ -341,6 +340,29 @@ _EXAMPLES = {
 }
 
 
+def services(options: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """The services an environment's options name: the keys of a ``services`` mapping or the
+    items of a list; None when they name none, so which services come up is known only once
+    they are up (a compose file's every service)."""
+    named = options.get("services")
+    if isinstance(named, Mapping):
+        return tuple(str(name) for name in named)
+    if isinstance(named, list | tuple) and named:
+        return tuple(str(name) for name in named)
+    return None
+
+
+def binding_names(kind: Kind | None, options: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """Every ``<service>.<key>`` an environment of ``kind`` written with ``options`` binds;
+    None when its services are not named, so any service may be."""
+    if kind is None or not kind.binds:
+        return ()
+    named = services(options)
+    if named is None:
+        return None
+    return tuple(f"{service}.{key}" for service in named for key in kind.binds)
+
+
 def placed(kind: Kind, options: Mapping[str, Any], base: str) -> dict[str, Any]:
     """``options`` with each option ``kind`` declares a ``path`` resolved against the
     directory ``base``: a relative path is joined to it, an absolute one stands."""
@@ -429,9 +451,13 @@ class Kinds(Record):
     kinds: dict[str, Kind] = {}
     #: Refused kind files, by kind name (or by origin when the file gave no name).
     rejected: dict[str, tuple[Problem, ...]] = {}
-    #: The kinds (type URLs) an adapter is registered for: a run can use these. A kind that
-    #: is declared and not listed here can be validated, planned and registered, not run.
+    #: The kinds (type URLs) whose adapter is registered and builds here: a run can use
+    #: these. A kind that is declared and not listed here can be validated, planned and
+    #: registered, not run.
     runnable: tuple[str, ...] = ()
+    #: Kinds (type URLs) whose registered adapter cannot be built here, each with why: a
+    #: need nothing supplies, or a factory that built something not of its port's shape.
+    unbuildable: dict[str, str] = {}
     #: Extensions that failed to load, one sentence each: an adapter one of them registers
     #: is missing from ``runnable``.
     quarantined: tuple[str, ...] = ()
@@ -452,14 +478,14 @@ def kinds(files: Iterable[DeclarationFile], *, grammar: schema.Grammar) -> Kinds
     declare one name, a file that does not own it is refused alone if the other does, and
     both are refused otherwise."""
     rejected: dict[str, list[Problem]] = {}
-    accepted: dict[str, tuple[DeclarationFile, Kind]] = {}
-    duplicated: set[str] = set()
+    declared: dict[str, list[tuple[DeclarationFile, Kind]]] = {}
 
     for file in files:
         kind = _parsed(file, grammar, rejected)
         if kind is not None:
-            claim(kind.name, file, kind, accepted, duplicated, rejected, noun="kind")
+            declared.setdefault(kind.name, []).append((file, kind))
 
+    accepted = settle(declared, rejected, noun="kind")
     return Kinds(
         kinds={name: kind for name, (_, kind) in sorted(accepted.items())},
         rejected={name: tuple(found) for name, found in sorted(rejected.items())},
@@ -516,40 +542,37 @@ def unreadable(origin: str) -> tuple[Problem, ...]:
     )
 
 
-def claim[T](
-    name: str,
-    file: DeclarationFile,
-    declared: T,
-    accepted: dict[str, tuple[DeclarationFile, T]],
-    duplicated: set[str],
+def settle[T](
+    declared: Mapping[str, list[tuple[DeclarationFile, T]]],
     rejected: dict[str, list[Problem]],
     *,
     noun: str,
-) -> None:
-    """Accept ``declared`` under ``name`` unless another file holds the name. Of a file that
-    owns the name's namespace and one that does not, the one that does not is refused; two
-    files alike are both refused, and so is any later file that declares the name, so that
-    neither silently wins."""
-    held = accepted.get(name)
-    if held is not None and held[0].owned != file.owned:
-        intruder = held[0] if file.owned else file
-        rejected.setdefault(name, []).append(
-            problem(
-                "name",
-                kind="name_taken",
-                message=f"{name} belongs to the package that owns its namespace; this file "
-                "cannot declare it again",
-                fix=f"give this {noun} a name in its own namespace",
-                source=intruder.origin,
-            )
-        )
-        if file.owned:
-            accepted[name] = (file, declared)
-        return
-    if held is not None or name in duplicated:
-        duplicated.add(name)
-        first = accepted.pop(name, None)
-        for origin in [file.origin] + ([first[0].origin] if first else []):
+) -> dict[str, tuple[DeclarationFile, T]]:
+    """Of the files that declare each name, the one that keeps it; the others are added to
+    ``rejected``. A file that owns the name's namespace keeps it, and every file that does
+    not is refused; two or more files alike are all refused, so that none silently wins.
+    Which file keeps a name does not depend on the order the files were read in."""
+    accepted: dict[str, tuple[DeclarationFile, T]] = {}
+    for name, held in declared.items():
+        owners = [entry for entry in held if entry[0].owned]
+        if owners:
+            for file, _ in held:
+                if not file.owned:
+                    rejected.setdefault(name, []).append(
+                        problem(
+                            "name",
+                            kind="name_taken",
+                            message=f"{name} belongs to the package that owns its namespace; "
+                            "this file cannot declare it again",
+                            fix=f"give this {noun} a name in its own namespace",
+                            source=file.origin,
+                        )
+                    )
+        contenders = owners or held
+        if len(contenders) == 1:
+            accepted[name] = contenders[0]
+            continue
+        for file, _ in contenders:
             rejected.setdefault(name, []).append(
                 problem(
                     "name",
@@ -557,8 +580,7 @@ def claim[T](
                     message=f"{name} is declared by more than one {noun} file",
                     fix="give one of them another name; ix refuses both so that neither "
                     "silently wins",
-                    source=origin,
+                    source=file.origin,
                 )
             )
-        return
-    accepted[name] = (file, declared)
+    return accepted

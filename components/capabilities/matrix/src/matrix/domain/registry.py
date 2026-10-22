@@ -1,9 +1,9 @@
 """The registry: extension points, and the implementations registered at each.
 
-An **entry** is one implementation at one point, under a type URL. Its ``effects`` say what
-it may touch; ``None`` means unknown, which is never read as "none". An entry that stands in
-for the real thing (a mock runtime: canned replies, no model) declares ``stand_in``, so a
-caller can tell a stand-in's answers from a model's without reading anything else into it.
+An **entry** is one implementation at one point, under a type URL, with what it needs built
+in. An entry that stands in for the real thing (a mock runtime: canned replies, no model)
+declares ``stand_in``, so a caller can tell a stand-in's answers from a model's without
+reading anything else into it.
 
 Everything, built-ins included, arrives as an :class:`Extension`. One that fails to load or
 register is **quarantined**: recorded in :attr:`Registry.failures`, and the rest load.
@@ -98,7 +98,6 @@ class Entry:
     build: Callable[..., Any]
     config: type[BaseModel] | None = None
     needs: frozenset[str] = frozenset()
-    effects: frozenset[str] | None = None
     summary: str = ""
     stability: Stability = "beta"
     origin: str = _DIRECT
@@ -117,7 +116,6 @@ class Entry:
             "stability": self.stability,
             "origin": self.origin,
             "needs": sorted(self.needs),
-            "effects": None if self.effects is None else sorted(self.effects),
             "stand_in": self.stand_in,
             "drives": list(self.drives),
             "config": None if self.config is None else self.config.model_json_schema(),
@@ -210,7 +208,6 @@ class Registry:
         *,
         config: type[BaseModel] | None = None,
         needs: frozenset[str] | set[str] | tuple[str, ...] = (),
-        effects: frozenset[str] | set[str] | tuple[str, ...] | None = None,
         summary: str = "",
         stability: Stability = "beta",
         stand_in: bool = False,
@@ -259,7 +256,6 @@ class Registry:
             build=build,
             config=config,
             needs=frozenset(needs),
-            effects=None if effects is None else frozenset(effects),
             summary=summary,
             stability=stability,
             origin=self._origin,

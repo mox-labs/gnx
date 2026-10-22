@@ -31,7 +31,6 @@ environment:
     upstream:
       command: ["./tools/blobserve", "--sizes", "1MiB,64MiB,1GiB"]
       ready: "http://127.0.0.1:9000/healthz"
-  effects: ["binds 127.0.0.1:9000"]
 
 # Every combination is a cell: 3 sizes x 3 rates = 9.
 factors:

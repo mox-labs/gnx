@@ -231,8 +231,8 @@ class Count:
 
 def _registry() -> Any:
     registry = default_registry(discover=False)
-    registry.register("component", "acme.v1.upper", Upper, effects=set())
-    registry.register("component", "acme.v1.count", Count, effects=set())
+    registry.register("component", "acme.v1.upper", Upper)
+    registry.register("component", "acme.v1.count", Count)
     return registry
 
 
@@ -375,8 +375,8 @@ async def test_a_failed_component_is_not_reused(tmp_path: Path) -> None:
             raise RuntimeError("bug")
 
     registry = default_registry(discover=False)
-    registry.register("component", "acme.v1.upper", Upper, effects=set())
-    registry.register("component", "acme.v1.count", Broken, effects=set())
+    registry.register("component", "acme.v1.upper", Upper)
+    registry.register("component", "acme.v1.count", Broken)
     config = _config(store={"type": "jsonl", "root": str(tmp_path)})
     with pytest.raises(RunError):
         await compose(config, registry=registry).run({TEXT: ["a"]}, run_id="first")
@@ -407,8 +407,8 @@ async def test_a_component_stopped_before_it_finished_is_not_reused(tmp_path: Pa
             raise RuntimeError("kaput")
 
     registry = default_registry(discover=False)
-    registry.register("component", "acme.v1.upper", Partial, effects=set())
-    registry.register("component", "acme.v1.fails", Fails, effects=set())
+    registry.register("component", "acme.v1.upper", Partial)
+    registry.register("component", "acme.v1.fails", Fails)
     config = MatrixConfig.model_validate(
         {
             "inputs": [TEXT],

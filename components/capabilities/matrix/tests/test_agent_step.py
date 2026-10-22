@@ -237,9 +237,7 @@ def _registry_with(cls: type) -> Any:
     registry = Registry()
     for e in base.entries():
         build = (lambda c, _cls=cls: _cls(c)) if e.type_url.endswith("runtime.mock") else e.build
-        registry.register(
-            e.point, e.type_url, build, config=e.config, needs=e.needs, effects=e.effects
-        )
+        registry.register(e.point, e.type_url, build, config=e.config, needs=e.needs)
     return registry
 
 
@@ -298,15 +296,6 @@ async def test_an_agent_called_by_a_component_reports_as_its_child() -> None:
     agent_start = next(e for e in recorder.events if e.name == "matrix.agent.start")
     assert (agent_start.run_id, agent_start.parent) == (run.run_id, started.span)
     assert agent_start.component == "s"
-
-
-def test_a_wiring_carries_its_components_effects() -> None:
-    box = container()
-    wiring = box.wire(
-        [{"name": "rev", "type": AGENT_STEP, "config": {"agent": "reviewer"}}], inputs=[TASK]
-    )
-    assert wiring.effects == {"rev": frozenset()}  # the mock runtime touches nothing
-    assert wiring.declared_effects() == frozenset()
 
 
 def test_the_container_reports_unbuildable_entries_with_the_wiring_problems() -> None:

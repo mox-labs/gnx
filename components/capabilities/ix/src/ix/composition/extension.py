@@ -23,6 +23,7 @@ from ix.adapters._out.agent_sensors import (
     ToolUsageSensor,
     UsageSensor,
 )
+from ix.adapters._out.compose import ComposeEnvironment
 from ix.adapters._out.environments import NoEnvironment, ProcessEnvironment
 from ix.adapters._out.k6_load import K6Load
 from ix.adapters._out.matrix_agents import AgentSessionSubject, PromptProbe
@@ -31,6 +32,7 @@ from ix.adapters._out.matrix_judge import JudgeSensor
 from ix.adapters._out.sensors import MemorySensor, TimingSensor
 from ix.adapters._out.subjects import HttpSubject, ProcessSubject
 from ix.domain import schema
+from ix.domain.ports import Environment, Probe, Sensor, Subject
 
 if TYPE_CHECKING:
     from matrix import Registry
@@ -41,6 +43,15 @@ POINTS: dict[str, str] = {
     "probe": "ix.probe",
     "sensor": "ix.sensor",
     "environment": "ix.environment",
+}
+
+#: The port each family's point holds what is registered there to: a class that lacks one
+#: of its members is refused at registration, and what a factory builds when it is built.
+PORTS: dict[str, type] = {
+    "subject": Subject,
+    "probe": Probe,
+    "sensor": Sensor,
+    "environment": Environment,
 }
 
 #: The need of an adapter that starts processes: a ``Launcher``.
@@ -56,8 +67,8 @@ SESSIONS = "sessions"
 def register_run_path(registry: Registry) -> None:
     """Declare ix's points and register its components and row schemas: all of ix but its
     adapters."""
-    for point in POINTS.values():
-        registry.add_point(point)
+    for family, point in POINTS.items():
+        registry.add_point(point, port=PORTS[family])
     for type_url, (build, summary) in COMPONENTS.items():
         registry.register("component", type_url, build, needs={NEED}, summary=summary)
     for kind, model in PAYLOADS.items():
@@ -92,6 +103,8 @@ def register(registry: Registry) -> None:
          {RUNTIMES}),
         ("environment", "none", NoEnvironment, "Nothing to bring up", set()),
         ("environment", "process", ProcessEnvironment, "Programs started for the run", {LAUNCHER}),
+        ("environment", "compose", ComposeEnvironment, "A docker compose project up for the run",
+         {LAUNCHER}),
     ]  # fmt: skip
     for family, name, build, summary, needs in adapters:
         registry.register(

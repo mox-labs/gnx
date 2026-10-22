@@ -31,6 +31,7 @@ from matrix import (
     Extension,
     JsonlConstructStore,
     MatrixConfig,
+    MatrixError,
     default_registry,
     load_config,
 )
@@ -60,7 +61,7 @@ from ix.domain.report import report as build_report
 from ix.domain.run import CALIBRATION, Failure, HarnessError, Interaction, Reading, Target
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
     from ix.domain.experiment import Shape
 
@@ -835,9 +836,6 @@ class _Held:
 
 
 class _HeldSubject:
-    def unstartable(self, subject: Any, *, base: str) -> str | None:
-        return None
-
     def reach(self, name: str, subject: Any, *, base: str) -> _Held:
         return _Held(name)
 
@@ -953,6 +951,53 @@ class TestABrokenExtension:
             root.run(write_experiment(data, "memory"), exploratory=True)
         assert "s3_client" in str(refused.value)
 
+    def test_an_adapter_that_cannot_be_built_is_not_runnable_and_validate_says_why(
+        self, write_experiment: Write
+    ) -> None:
+        """Regression (ix-tests F2): an adapter whose ``needs`` nothing supplies was listed as
+        runnable, ``validate`` said nothing and ``plan`` said runnable; only ``run`` refused."""
+
+        def needs_a_client(*, s3_client: Any) -> Any:
+            return s3_client
+
+        registry = fake_registry()
+        registry.register(
+            POINTS["sensor"], "ix.v1.sensor.memory", needs_a_client, needs={"s3_client"}
+        )
+        root = Root(registry=registry)
+        found = root.kinds()
+        assert "ix.v1.sensor.memory" not in found.runnable
+        assert "s3_client" in found.unbuildable["ix.v1.sensor.memory"]
+        file = write_experiment(experiment(metrics=["memory_peak"]))
+        checked = root.validate(file)
+        assert checked.valid  # the experiment is sound; this host's adapter is not
+        (warning,) = [w for w in checked.warnings if w.kind == "kind_unimplemented"]
+        assert "cannot be built" in warning.message and "s3_client" in warning.message
+        planned = root.plan(file)
+        assert not planned.runnable
+        assert any("s3_client" in reason for reason in planned.unimplemented)
+
+    def test_an_adapter_not_of_its_ports_shape_is_refused_when_it_is_registered(
+        self, write_experiment: Write
+    ) -> None:
+        """Regression (ix-tests F1): a class with none of the Subject port's members was
+        registered, validated as runnable, and its run "completed" with every trial a harness
+        failure (``AttributeError: ... no attribute 'reach'``)."""
+
+        class NotASubject:
+            pass
+
+        with pytest.raises(MatrixError) as refused:
+            fake_registry(subject=NotASubject)
+        assert "reach" in str(refused.value)
+
+        def register(registry: Any) -> None:
+            registry.register(POINTS["subject"], "acme.v1.subject.odd", NotASubject)
+
+        loaded = fake_registry().load([Extension(name="acme", origin="acme", register=register)])
+        assert "reach" in loaded.failures[0].error
+        assert "acme.v1.subject.odd" not in {entry.type_url for entry in loaded.entries()}
+
     def test_a_kind_without_an_adapter_names_a_quarantined_extension(
         self, evaluate_data: dict[str, Any], write_experiment: Write
     ) -> None:
@@ -987,6 +1032,75 @@ def _trial_positions(root: Root, file: Path) -> dict[tuple[str, str], list[int]]
         found.setdefault((trial["subject"], trial["role"]), []).append(trial["seq"])
     LOG.clear()
     return found
+
+
+class _Upstream:
+    """An environment that brings up one service and binds how to reach it."""
+
+    async def up(self, environment: Any, *, base: str, scope: Any) -> Any:
+        return {"upstream": {"host": "127.0.0.1", "port": 9, "url": "http://127.0.0.1:9"}}
+
+
+class _Seeing(FakeSubject):
+    """A fake subject that logs what its ``env`` option was filled with."""
+
+    @asynccontextmanager
+    async def reach(self, name: str, subject: Any, *, base: str) -> AsyncIterator[Target]:
+        LOG.append(f"env {subject.options.get('env', {}).get('UPSTREAM')}")
+        async with super().reach(name, subject, base=base) as target:
+            yield target
+
+
+class _Aiming(FakeLoad):
+    """A fake load that logs the target it was given."""
+
+    async def apply(
+        self, options: Mapping[str, Any], target: Target, *, seed: int
+    ) -> Mapping[str, Mapping[str, Any]]:
+        LOG.append(f"target {options['target']}")
+        return await super().apply(options, target, seed=seed)
+
+
+class TestBindingsReachTrials:
+    """Regression (ix-outer 5): an environment's bindings were used only to ask whether it
+    was still up; no subject or probe could name them, so an example hard-coded its
+    upstream's port."""
+
+    def _registry(self) -> Any:
+        registry = fake_registry(subject=_Seeing, probe=_Aiming)
+        registry.register(POINTS["environment"], "ix.v1.environment.process", _Upstream)
+        return registry
+
+    def _data(self, target: str = "{upstream.url}/x") -> dict[str, Any]:
+        data = experiment()
+        data["environment"] = {"kind": "process", "services": {"upstream": {"command": ["up"]}}}
+        for subject in data["subjects"].values():
+            subject["env"] = {**subject["env"], "UPSTREAM": "{upstream.url}"}
+        data["probes"][0]["target"] = target
+        return data
+
+    def test_a_subject_and_a_probe_name_a_service_by_its_bindings(
+        self, write_experiment: Write
+    ) -> None:
+        LOG.clear()
+        root = Root(registry=self._registry())
+        file = write_experiment(self._data())
+        assert root.validate(file).valid
+        report = root.run(file, exploratory=True)
+        assert report.status == "completed"
+        assert {line for line in LOG if line.startswith(("env", "target"))} == {
+            "env http://127.0.0.1:9",
+            "target http://127.0.0.1:9/x",
+        }
+
+    def test_a_service_the_environment_does_not_bring_up_is_bound_to_nothing(
+        self, write_experiment: Write
+    ) -> None:
+        root = Root(registry=self._registry())
+        problems = root.validate(write_experiment(self._data("{elsewhere.url}/x"))).problems
+        assert [(p.path, p.kind, p.got) for p in problems] == [
+            ("probes.0.target", "unbound_placeholder", "elsewhere.url")
+        ]
 
 
 class _ReadsAFile:
@@ -1076,16 +1190,15 @@ class TestWhatCannotRun:
         assert LOG == [] and not (file.parent / RUNS_DIRECTORY).exists()
 
     def test_what_ix_can_run_is_listed_with_the_kinds(self) -> None:
+        """Changed requirement (W8.7): ``compose`` has an adapter."""
         kinds = ix.kinds()
         runnable = {schema.short(name) for name in kinds.runnable}
         assert runnable == {
             "process", "http", "http-load", "timing", "memory", "none", "agent-session",
             "model-call", "prompt", "activation", "tool-usage", "function-test", "outcome",
-            "text-match", "usage", "judge",
+            "text-match", "usage", "judge", "compose",
         }  # fmt: skip
-        assert set(kinds.kinds) - set(kinds.runnable) == {
-            "ix.v1.probe.inspect-task", "ix.v1.environment.compose",
-        }  # fmt: skip
+        assert set(kinds.kinds) - set(kinds.runnable) == {"ix.v1.probe.inspect-task"}
         assert set(kinds.runnable) < set(kinds.kinds)
 
     def test_a_plan_of_something_runnable_names_nothing_missing(
@@ -1098,12 +1211,9 @@ class TestWhatCannotRun:
         self, compare_data: dict[str, Any], write_experiment: Write
     ) -> None:
         file = write_experiment(compare_data)  # its subjects run ./proxy, which is not there
-        unstartable = ix.plan(file).unstartable
-        assert [reason.split(":")[0] for reason in unstartable] == [
-            "subjects.buffered",
-            "subjects.streaming",
-        ]
-        assert all("'./proxy' is not an executable file" in reason for reason in unstartable)
+        proxy = next(r for r in ix.plan(file).unmet if r.need == "'./proxy' is an executable file")
+        assert proxy.needed_by == ("subjects.buffered", "subjects.streaming")
+        assert "'./proxy' is not an executable file" in proxy.why
         assert ix.register(file).outcome == "created"
         with pytest.raises(ix.ConfigError, match="cannot start"):
             ix.run(file)
@@ -1372,9 +1482,6 @@ def test_an_extension_adds_an_adapter_for_its_own_kind_without_an_edit_to_ix(
     family, under the kind's type URL. ix lists it as runnable and runs it."""
 
     class Echo:
-        def unstartable(self, subject: Any, *, base: str) -> str | None:
-            return None
-
         @asynccontextmanager
         async def reach(self, name: str, subject: Any, *, base: str) -> AsyncIterator[Target]:
             yield Target(subject=name, facets={"url": "http://echo", "env": {}})

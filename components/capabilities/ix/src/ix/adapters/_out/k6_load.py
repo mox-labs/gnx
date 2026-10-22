@@ -38,6 +38,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ix.adapters._out.processes import startable
 from ix.domain.kind import arrivals, seconds
 from ix.domain.run import HarnessError, SubjectError
 
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from ix.adapters._out.processes import Launcher
+    from ix.domain.ports import Requirement
     from ix.domain.run import Target
 
 #: Time allowed beyond the load itself for k6 to start, stop and write its summary.
@@ -268,11 +270,18 @@ class K6Load:
     ``closed`` holds ``concurrency`` clients), ``duration``, ``warmup``, ``timeout`` (how
     long a request may go unanswered before it fails), ``method``, ``headers`` and
     ``verify_body`` (``sha256``: every body must match the first one fetched).
+
+    Needs k6 on PATH, which its preflight checks before anything starts.
     """
 
     def __init__(self, launcher: Launcher, binary: str = "k6") -> None:
         self._launcher = launcher
         self._binary = binary
+
+    def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
+        """That the load tool is on PATH."""
+        found = startable(self._binary, base=base)
+        return [] if found is None else [found]
 
     def budget_s(self, options: Mapping[str, Any]) -> float | None:
         total = (seconds(options.get("warmup")) or 0.0) + (seconds(options.get("duration")) or 0.0)

@@ -5,7 +5,6 @@ options:
   graders: {type: path, required: true, description: "the module, relative to the experiment: GRADERS maps a probe id (or a probe's truth grader) to a function of the response text, or of the text and the trial, returning a score from 0 to 1"}
   timeout: {type: duration, description: time allowed for one grading; 30s when absent}
   pass_above: {type: number, description: "the score above which outcome_passed is true; 0.5 when absent"}
-effects: [code]
 needs: [response]
 truth: [grader, expected_facts]
 metrics:

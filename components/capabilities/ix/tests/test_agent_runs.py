@@ -700,7 +700,7 @@ class TestThirdPartyRuntimes:
         # The model is resolved before anything starts: an unknown one cannot start.
         unknown = _either(tmp_path / "unknown", {"kind": "model-call", "runtime": ONESHOT,
                                                  "model": "two-2"})  # fmt: skip
-        assert any("oneshot has no model 'two-2'" in r for r in root.plan(unknown).unstartable)
+        assert any("oneshot has no model 'two-2'" in r.why for r in root.plan(unknown).unmet)
 
     def test_an_agent_runtime_gets_the_session_reviews(self, tmp_path: Path) -> None:
         root = Root(registry=_third_parties(), settings=_settings())
@@ -720,11 +720,12 @@ class TestThirdPartyRuntimes:
     def test_each_subject_takes_runtimes_of_its_own_port_only(self, tmp_path: Path) -> None:
         root = Root(registry=_third_parties(), settings=_settings())
         on_a_model = _either(tmp_path / "a", {"kind": "agent-session", "runtime": ONESHOT})
-        (said,) = root.plan(on_a_model).unstartable
-        assert said.startswith(f"subjects.it: no agent runtime {ONESHOT!r}")
+        (said,) = root.plan(on_a_model).unmet
+        assert said.needed_by == ("subjects.it",)
+        assert said.why.startswith(f"no agent runtime {ONESHOT!r}")
         on_an_agent = _either(tmp_path / "m", {"kind": "model-call", "runtime": SCRIPTED})
-        (said,) = root.plan(on_an_agent).unstartable
-        assert said.startswith(f"subjects.it: no model runtime {SCRIPTED!r}")
+        (said,) = root.plan(on_an_agent).unmet
+        assert said.why.startswith(f"no model runtime {SCRIPTED!r}")
 
     def test_a_judge_uses_the_port_its_option_names(self, tmp_path: Path) -> None:
         root = Root(registry=_third_parties(), settings=_settings())
@@ -1279,7 +1280,12 @@ class TestTelemetry:
         names = [span.name for span in spans]
         assert names.count("ix.trial") == 15 and names.count("ix.plan") == 1
         assert names.count("ix.run") == 1 and names.count("ix.sensor") == 30  # 2 sensors
+        # Regression (ix-outer 20): bringing the environment up ran untraced.
+        assert names.count("ix.environment") == 1
         run = next(span for span in spans if span.name == "ix.run")
+        environment = next(span for span in spans if span.name == "ix.environment")
+        assert environment.parent is not None
+        assert environment.parent.span_id == run.context.span_id
         trial = next(span for span in spans if span.name == "ix.trial")
         assert trial.parent is not None and trial.parent.span_id == run.context.span_id
         # Bringing the environment up is ix's work too: one span, under the run.

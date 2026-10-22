@@ -33,8 +33,8 @@ from ix.domain.analysis import ANALYSES, analysis_unsupported
 from ix.domain.design import Design, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError
 from ix.domain.experiment import Experiment, ProbeConfig
-from ix.domain.kind import fill, per_cell, placed
-from ix.domain.ports import Liveness, Preflight, Recorded, Sensed, StandIn, Traced
+from ix.domain.kind import fill, placed, placeholders
+from ix.domain.ports import Liveness, Recorded, Sensed, StandIn, Traced
 from ix.domain.registration import deviations
 from ix.domain.run import (
     Failure,
@@ -44,6 +44,7 @@ from ix.domain.run import (
     RunManifest,
     Trial,
     TrialError,
+    bound,
     schedule,
     schedule_digest,
 )
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
     from ix.application.experiments import Examined, Vocabulary
     from ix.domain.experiment import ProbeSet
     from ix.domain.kind import Kind, Metric
+    from ix.domain.plan import Required
     from ix.domain.ports import (
         Environment,
         Measured,
@@ -134,13 +136,15 @@ def _span(scope: Scope | None, name: str, **attributes: Any) -> Iterator[Span]:
 
 @dataclass(frozen=True)
 class Prepared:
-    """A run that may start: its experiment and manifest, the trials it will carry out and
-    the kinds (type URLs) it uses."""
+    """A run that may start: its experiment, design and probes, its manifest, the trials it
+    will carry out and the kinds (type URLs) it uses."""
 
     experiment: Experiment
     manifest: RunManifest
     trials: tuple[Trial, ...]
     kinds: tuple[str, ...]
+    design: Design
+    probes: ProbeSet
 
 
 def prepare(
@@ -176,11 +180,16 @@ def prepare(
     experiment, design, probes = checked.experiment, checked.design, checked.probes
     missing = missing_adapters(experiment, design, probes, vocabulary.adapters or frozenset())
     if missing:
-        named = ", ".join(f"{kind} ({where})" for where, kind in missing)
+        broken = vocabulary.kinds.unbuildable
+        named = ", ".join(
+            f"{kind} ({where})"
+            + (f", only one that cannot be built: {broken[kind]}" if kind in broken else "")
+            for where, kind in missing
+        )
         raise ConfigError(
             f"{examined.source} cannot be run here: this ix has no adapter for {named}",
-            fix="`ix kinds` marks the kinds that can be run; the experiment is still valid "
-            "to plan and register",
+            fix="`ix kinds` marks the kinds that can be run, and says why an adapter cannot "
+            "be built; the experiment is still valid to plan and register",
         )
     unsupported = analysis_unsupported(design.analysis)
     if unsupported is not None:
@@ -232,6 +241,8 @@ def prepare(
         ),
         trials=trials,
         kinds=tuple(kind for _, kind in kinds_in_use(experiment, design, probes)),
+        design=design,
+        probes=probes,
     )
 
 
@@ -285,43 +296,31 @@ def stand_in(
         sensors.append(
             sensor if options is None else sensor.model_copy(update={"options": options})
         )
+    environment = experiment.environment
+    kept = stood(
+        "environment", adapter(schema.url("environment", environment.kind)), environment.options
+    )
+    if kept is None:
+        # An environment with no stand-in is brought up for real by a dry run, which says so.
+        notes.append(f"environment: {environment.kind} is brought up for real; it has no stand-in")
     changes: dict[str, Any] = {"subjects": subjects, "sensors": tuple(sensors)}
+    if kept is not None:
+        changes["environment"] = environment.model_copy(update={"options": kept})
     if tuple(rewritten) != probes.probes:
         # Probes read from files are carried inline once a stand-in changes one.
         changes["probes"] = tuple(rewritten)
     return experiment.model_copy(update=changes), tuple(notes)
 
 
-def unstartable(
-    experiment: Experiment, subjects: Mapping[str, Subject], base: str
-) -> tuple[str, ...]:
-    """``subjects.<name>: <why>`` for each subject its adapter can already tell will not start
-    on this host (a command that is not there, an unset credential), in any cell: each
-    cell's options are asked as its trials will have them. A subject whose adapter is not a
-    :class:`Preflight` has nothing to tell; one whose kind has no adapter in ``subjects`` is
-    skipped, as that is told as a kind with no adapter."""
-    reasons: list[str] = []
-    for name, subject in experiment.subjects.items():
-        adapter = subjects.get(schema.url("subject", subject.kind))
-        if not isinstance(adapter, Preflight):
-            continue
-        for options in per_cell(subject.options, experiment.factors):
-            filled = subject.model_copy(update={"options": options})
-            reason = adapter.unstartable(filled, base=base)
-            if reason is not None and f"subjects.{name}: {reason}" not in reasons:
-                reasons.append(f"subjects.{name}: {reason}")
-    return tuple(reasons)
-
-
-def check_startable(experiment: Experiment, kit: Kit, base: str) -> None:
-    """Refuse, before anything starts, what :func:`unstartable` finds. Raises
-    :class:`ConfigError` naming each subject."""
-    reasons = unstartable(experiment, kit.subjects, base)
-    if reasons:
+def check_startable(requirements: Sequence[Required]) -> None:
+    """Refuse, before anything starts, a run whose requirements do not all hold here.
+    Raises :class:`ConfigError` naming each, with what was found and its fix."""
+    unmet = [required.text() for required in requirements if not required.holds]
+    if unmet:
         raise ConfigError(
-            "the experiment cannot start: " + "; ".join(reasons),
-            fix="correct each subject named, or the host: a command and its cwd are relative "
-            "to the experiment's directory, and a variable an auth names must be set",
+            "the experiment cannot start on this host: " + "; ".join(unmet),
+            fix="make each requirement named hold, or correct the entry that needs it; `ix "
+            "plan` lists every requirement with whether it holds",
         )
 
 
@@ -383,7 +382,11 @@ async def bring_up(setup: Setup, kit: Kit, scope: Scope) -> Bindings:
     provider = kit.environments[schema.url("environment", environment.kind)]
     attributes = {"ix.run.id": setup.manifest.run, "ix.environment.kind": environment.kind}
     with _span(scope, "ix.environment", **attributes) as span:
-        bindings = await provider.up(environment, base=setup.base, scope=scope)
+        try:
+            bindings = await provider.up(environment, base=setup.base, scope=scope)
+        except TrialError as error:
+            span.failed(error.reason)
+            raise
         span.set(**{"ix.environment.services": sorted(bindings)})
     scope.emit(ENVIRONMENT_UP, kind=environment.kind, services=sorted(bindings))
     return bindings
@@ -455,9 +458,14 @@ async def invoke(
     scope: Scope,
     *,
     hold: list[AsyncExitStack] | None = None,
+    bindings: Bindings | None = None,
 ) -> Interaction:
     """Carry out one trial and say what happened. A failure of an adapter becomes the
     trial's failure; a defect in ix itself raises.
+
+    The subject's options are filled from the trial's cell and the environment's
+    ``bindings`` (``{db.url}``); the probe's from those, the subject's options and what the
+    subject offers.
 
     Order: the subject is reached, then each sensor that must watch begins, then the probe
     is applied; the watchers stop, then the subject is released. The interaction names the
@@ -469,7 +477,10 @@ async def invoke(
     before = _recorded(scope)
     adapters = _adapters(trial, setup, kit)
     subject = setup.experiment.subjects[trial.subject]
-    filled = subject.model_copy(update={"options": fill(subject.options, trial.cell)})
+    services = bound(bindings or {})
+    filled = subject.model_copy(
+        update={"options": fill(subject.options, {**services, **trial.cell})}
+    )
     probe_options = setup.probes[trial.probe].options
     observations: dict[str, dict[str, Any]] = {}
     watching: dict[str, dict[str, Any]] = {}
@@ -488,10 +499,10 @@ async def invoke(
     except Exception as error:
         failure = _failure(error)
     if failure is None:
-        bound = {**filled.options, **target.facets, **trial.cell}
+        known = {**services, **filled.options, **target.facets, **trial.cell}
         try:
             observations = await _apply(
-                adapters.probe, fill(probe_options, bound), target, trial.seed, scope
+                adapters.probe, fill(probe_options, known), target, trial.seed, scope
             )
         except Exception as error:
             failure = _failure(error)
@@ -555,6 +566,13 @@ async def carry_out(
     :class:`HarnessError` ends the run.
     """
     environment = _environment(setup, kit)
+    unbound = _unbound(setup, kit, bindings)
+    if unbound:
+        raise HarnessError(
+            "unbound",
+            f"the environment came up without {', '.join(unbound)}, which the experiment "
+            f"names; it bound {', '.join(sorted(bound(bindings))) or 'nothing'}",
+        )
     open_now: list[AsyncExitStack] = []
 
     async def release_open() -> None:
@@ -576,7 +594,7 @@ async def carry_out(
             cell=dict(trial.cell),
         )
         with _span(scope, "ix.trial", **_trial_attributes(trial, setup)) as span:
-            interaction = await invoke(trial, setup, kit, scope, hold=open_now)
+            interaction = await invoke(trial, setup, kit, scope, hold=open_now, bindings=bindings)
             lost = await environment.lost(bindings) if isinstance(environment, Liveness) else None
             if lost is not None:
                 interaction = interaction.model_copy(
@@ -604,6 +622,26 @@ async def carry_out(
         if lost is not None:
             raise HarnessError("environment_lost", f"the environment went down: {lost}")
     return done
+
+
+def _unbound(setup: Setup, kit: Kit, bindings: Bindings) -> tuple[str, ...]:
+    """Each ``{<service>.<key>}`` (a key the environment's kind binds) the subjects or probes
+    name that the environment, now up, did not bind: validation can hold them only to the
+    services an environment's options list."""
+    environment = schema.url("environment", setup.experiment.environment.kind)
+    declared = kit.kinds.get(environment)
+    keys = set(declared.binds) if declared is not None else set()
+    services = bound(bindings)
+    factors = set(setup.experiment.factors)
+    written = [subject.options for subject in setup.experiment.subjects.values()]
+    written += [probe.options for probe in setup.probes.values()]
+    named = {
+        name
+        for options in written
+        for name in placeholders(options)
+        if "." in name and name.rpartition(".")[2] in keys and name not in factors
+    }
+    return tuple(sorted(name for name in named if name not in services))
 
 
 def _trial_outcome(interaction: Interaction) -> dict[str, Any]:

@@ -99,8 +99,7 @@ more than one option differs.
 Leave `probes:` out of the experiment and ix reads the `probes/` folder beside it, one file
 per probe. In a markdown file the body is the prompt, and the frontmatter is the probe's
 **truth**: the reference the sensors grade against, which never reaches the agent. The keys
-`id` (default: the file's name), `kind` (default `prompt`), `options` and `effects` are not
-truth.
+`id` (default: the file's name), `kind` (default `prompt`) and `options` are not truth.
 
 `probes/plain-units.md`:
 
@@ -185,15 +184,13 @@ Verdict:      holds / fails / inconclusive
 ...
 Trials:       2 subjects x 1 cell x 2 probes x 10 repeats = 40, + 20 A/A = 60
 ...
-Effects:      tools: lets a model call tools  (subjects.single, subjects.reviewed)
-              process: starts a process on this machine  (subjects.single, subjects.reviewed)
-              filesystem: writes files outside the run's own record  (subjects.single, subjects.reviewed)
-              code: executes generated code  (sensor function-test)
+Requires:     yes  the files the session names are there (fixtures, skills, plugins, definition)  (subjects.single, subjects.reviewed)
+              yes  agent runtime 'claude-sdk' builds and can play the session  (subjects.single, subjects.reviewed)
 ```
 
 The control also runs against itself in every block (the A/A check), so the trials are 60,
 not 40: 60 sessions, each a call to a paid model on `claude-sdk`. A plan that cannot run here ends with `Runnable: no` and says
-why: a runtime that cannot start, a file the subject names that is not there.
+why, with the fix: a runtime that cannot start, a file the subject names that is not there.
 
 `ix validate` also refuses a session its sensors could not see into (`unobservable`): a
 skill with no `Skill` tool among `tools`, skills a session's `setting_sources` would never

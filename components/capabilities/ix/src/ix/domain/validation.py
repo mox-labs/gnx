@@ -32,7 +32,7 @@ from ix.domain.design import (
 from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment, default_estimator
 from ix.domain.genre import CONTROL
 from ix.domain.intervals import MEDIAN_MIN
-from ix.domain.kind import NOTE_PREFIX, placeholders
+from ix.domain.kind import NOTE_PREFIX, binding_names, placeholders
 from ix.domain.problem import Problem, Validation, from_validation_error, problem
 
 if TYPE_CHECKING:
@@ -559,8 +559,26 @@ def _placeholders(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None)
     with the cell's levels, the options of the subject it is applied to and the facets that
     subject offers: a factor, an option every subject sets, or a facet every subject's kind
     offers. A facet that is also an option of the kind (a process's ``url``) is offered only
-    when the option is set, so it binds only as that option."""
+    when the option is set, so it binds only as that option. Both are also filled with what
+    the environment binds each service with (``{db.url}``)."""
     factors = sorted(experiment.factors)
+    environment = experiment.environment
+    declared = kinds.get("environment", environment.kind)
+    services = binding_names(declared, environment.options)
+
+    def served(bound: Sequence[str], value: Any) -> list[str]:
+        """``bound`` and what the environment binds its services with: each service its
+        options name, or, for one that names none (a compose file's every service), any
+        ``<service>.<key>`` with a key its kind binds, checked once it is up."""
+        found = {*bound, *(services or ())}
+        if services is None and declared is not None:
+            found |= {
+                name
+                for name in placeholders(value)
+                if "." in name and name.rpartition(".")[2] in declared.binds
+            }
+        return sorted(found)
+
     problems: list[Problem] = []
     shared: list[set[str]] = []
     for name, subject in experiment.subjects.items():
@@ -571,9 +589,13 @@ def _placeholders(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None)
             if key.startswith(NOTE_PREFIX):
                 continue
             option = kind.options.get(key) if kind else None
-            binds = sorted({*factors, *(option.binds if option else ())})
+            binds = served(sorted({*factors, *(option.binds if option else ())}), value)
             problems += _unbound(
-                f"subjects.{name}.{key}", value, binds, "declare factors: {{{name}: [...]}}"
+                f"subjects.{name}.{key}",
+                value,
+                binds,
+                "declare factors: {{{name}: [...]}}, or name a service the environment binds "
+                "({{<service>.url}})",
             )
     bound = sorted(set(factors) | (set.intersection(*shared) if shared else set()))
     inline = bool(experiment.probes)
@@ -582,8 +604,9 @@ def _placeholders(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None)
             problems += _unbound(
                 f"probes.{index if inline else probe.id}.{key}",
                 value,
-                bound,
-                "declare factors: {{{name}: [...]}}, or set {name!r} on every subject",
+                served(bound, value),
+                "declare factors: {{{name}: [...]}}, set {name!r} on every subject, or name a "
+                "service the environment binds ({{<service>.url}})",
             )
     return problems
 
@@ -656,7 +679,7 @@ def _misplaced_option(path: str, key: str, value: Any, *, inline: bool) -> Probl
     else:
         where = (
             f"write it under `options:` in the probe file's frontmatter (`options: {{{key}: "
-            f"{shown}}}`); every other frontmatter key but id, kind and effects is truth"
+            f"{shown}}}`); every other frontmatter key but id, kind and options is truth"
         )
     return problem(
         path,
@@ -700,32 +723,47 @@ def _parity(experiment: Experiment, control: str | None) -> list[Problem]:
     return warnings
 
 
+def _unimplemented(where: str, kind: str, kinds: Kinds) -> Problem:
+    """The warning for a kind in use that has no adapter here, or one that cannot be built."""
+    named = f"{schema.family_of(kind) or 'kind'} kind {schema.short(kind)}"
+    unable = "the experiment can be checked, planned and registered, and `ix run` would refuse it"
+    broken = kinds.unbuildable.get(kind)
+    if broken is not None:
+        return problem(
+            where,
+            kind="kind_unimplemented",
+            message=f"the adapter for {named} cannot be built here ({broken}): {unable}",
+            fix="fix or uninstall the extension that registered it; `ix kinds` lists every "
+            "adapter that cannot be built, with why",
+            got=schema.short(kind),
+        )
+    elsewhere = (
+        f"; an extension failed to load and may be the one that registers it "
+        f"({'; '.join(kinds.quarantined)}): `matrix catalog` shows why"
+        if kinds.quarantined
+        else ""
+    )
+    return problem(
+        where,
+        kind="kind_unimplemented",
+        message=f"this ix has no adapter for {named}: {unable}",
+        fix="use a kind `ix kinds` marks runnable, or run it where an adapter for "
+        f"{schema.short(kind)} is installed{elsewhere}",
+        got=schema.short(kind),
+    )
+
+
 def _unrunnable(
     experiment: Experiment,
     design: Design,
     probes: ProbeSet,
     adapters: frozenset[str],
-    quarantined: tuple[str, ...],
+    kinds: Kinds,
 ) -> list[Problem]:
-    """A warning for each kind in use with no adapter here, and for an analysis this ix
-    does not have."""
-    elsewhere = (
-        f"; an extension failed to load and may be the one that registers it "
-        f"({'; '.join(quarantined)}): `matrix catalog` shows why"
-        if quarantined
-        else ""
-    )
+    """A warning for each kind in use with no adapter here, or one that cannot be built, and
+    for an analysis this ix does not have."""
     warnings = [
-        problem(
-            where,
-            kind="kind_unimplemented",
-            message=f"this ix has no adapter for {schema.family_of(kind) or 'kind'} kind "
-            f"{schema.short(kind)}: the experiment can be checked, planned and registered, "
-            "and `ix run` would refuse it",
-            fix="use a kind `ix kinds` marks runnable, or run it where an adapter for "
-            f"{schema.short(kind)} is installed{elsewhere}",
-            got=schema.short(kind),
-        )
+        _unimplemented(where, kind, kinds)
         for where, kind in missing_adapters(experiment, design, probes, adapters)
     ]
     unsupported = analysis_unsupported(design.analysis)
@@ -811,7 +849,7 @@ def check(
     warnings = _parity(experiment, control if genre and genre.role(CONTROL) else None)
     # Said of a valid experiment only: an invalid one cannot run for reasons already given.
     if not problems and design is not None and probes is not None and adapters is not None:
-        warnings += _unrunnable(experiment, design, probes, adapters, kinds.quarantined)
+        warnings += _unrunnable(experiment, design, probes, adapters, kinds)
     warnings += _refused(experiment, genres, kinds)
     return Checked(
         problems=tuple(problems),

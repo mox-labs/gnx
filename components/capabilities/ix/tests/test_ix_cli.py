@@ -352,15 +352,19 @@ class TestPlanCommand:
             "schema", "digest", "experiment", "experiment_digest", "genre", "genre_url",
             "question", "decides", "comparison", "guardrails", "verdict_form", "subjects",
             "control", "factors", "probes", "calibration", "trials", "schedule_digest", "duration",
-            "order", "sensors", "effects", "registration", "sensitivity",
-            "provenance", "unimplemented", "unstartable", "notes", "warnings", "runnable",
+            "order", "sensors", "requirements", "registration", "sensitivity",
+            "provenance", "unimplemented", "notes", "warnings", "runnable",
         ]  # fmt: skip
         assert re.fullmatch(r"[0-9a-f]{64}", document["schedule_digest"])
         assert document["unimplemented"] == []
         # Its subjects run ./proxy, which is not there: the plan only shows, so it exits 0,
         # and says in the document as on the terminal that a run here would not start.
-        assert document["unstartable"] and document["runnable"] is False
-        assert "Runnable" in _run("plan", str(file)).stdout
+        (proxy,) = [r for r in document["requirements"] if not r["holds"]][:1]
+        assert proxy["needed_by"] == ["subjects.buffered", "subjects.streaming"]
+        assert "'./proxy' is not an executable file" in proxy["why"]
+        assert document["runnable"] is False
+        printed = _run("plan", str(file)).stdout
+        assert "Runnable" in printed and "Requires" in printed
         assert document["schema"] == "ix.v1.plan"
         assert re.fullmatch(r"[0-9a-f]{64}", document["digest"])
         assert document["subjects"][0] == {
@@ -377,8 +381,8 @@ class TestPlanCommand:
         for value in document["provenance"]:
             assert set(value) == {"path", "value", "source", "note"}
             assert value["source"] in ("experiment", "genre", "ix")
-        for effect in document["effects"]:
-            assert set(effect) == {"effect", "detail", "source", "declared_by"}
+        for required in document["requirements"]:
+            assert set(required) == {"need", "holds", "why", "fix", "needed_by"}
 
     def test_the_same_file_prints_the_same_document(
         self, compare_data: dict[str, Any], write_experiment: Write
@@ -400,7 +404,7 @@ class TestPlanCommand:
         assert lines[1].startswith("Question:")
         order = [text.index(label) for label in (
             "Question:", "Decides:", "Comparison:", "Guardrails:", "Verdict:", "Subjects",
-            "Trials:", "Duration:", "Order:", "Effects:", "Registration:", "Design",
+            "Trials:", "Duration:", "Order:", "Requires:", "Registration:", "Design",
         )]  # fmt: skip
         assert order == sorted(order) and "Spend" not in text
         flat = " ".join(text.split())
@@ -623,7 +627,9 @@ class TestGenresAndKindsCommands:
         result = _run("kinds", "--json")
         assert result.exit_code == 0
         document = _json(result)
-        assert list(document) == ["schema", "kinds", "rejected", "runnable", "quarantined"]
+        assert list(document) == [
+            "schema", "kinds", "rejected", "runnable", "unbuildable", "quarantined",
+        ]  # fmt: skip
         assert "ix.v1.probe.http-load" in document["runnable"]
         assert "ix.v1.subject.agent-session" in document["runnable"]
         assert "ix.v1.probe.inspect-task" not in document["runnable"]
@@ -706,10 +712,10 @@ class TestExamplesAndLab:
         assert planned.exit_code == 0, planned.stderr
         plan = _json(planned)
         assert plan["experiment"] == example
-        # Every kind they use has an adapter here; whether this host can start the subjects
-        # (./proxy, the claude extra) is the plan's unstartable.
+        # Every kind they use has an adapter here; whether this host can start them (./proxy,
+        # k6, the claude CLI) is the plan's requirements.
         assert document["warnings"] == [] and plan["unimplemented"] == []
-        assert plan["runnable"] is (plan["unstartable"] == [])
+        assert plan["runnable"] is all(r["holds"] for r in plan["requirements"])
 
     def test_the_proxy_comparison(self) -> None:
         plan = ix.plan(EXAMPLES_DIR / "proxy-streaming")
@@ -720,21 +726,21 @@ class TestExamplesAndLab:
         assert {s.label: s.metrics for s in plan.sensors} == {
             "timing": ("ttfb", "throughput"), "memory": ("memory_peak",),
         }  # fmt: skip
-        declared = {(e.effect, e.source) for e in plan.effects if e.declared_by == "kind"}
-        assert ("process", "subjects.buffered") in declared and ("network", "probes.0") in declared
-        added = [e.effect for e in plan.effects if e.declared_by == "experiment"]
-        assert added == ["binds 127.0.0.1:9000"]
+        needs = {r.need: r.needed_by for r in plan.requirements}
+        assert needs["'k6' on PATH"] == ("probes.0",)
+        assert any("environment" in by for by in needs.values())
 
     def test_the_agent_evaluation(self) -> None:
         plan = ix.plan(EXAMPLES_DIR / "catalog-routing")
         assert plan.genre == "evaluate" and plan.control is None
         assert plan.probes.ids == ("decoy-clear-ask", "does-it-follow", "vague-ask")
-        assert plan.runnable, plan.unstartable
+        assert plan.runnable, plan.unmet
         assert plan.trials.total == 36
         # 36 trials, every one passing, can show a pass rate above 0.9; 30 could not.
         assert not plan.sensitivity.text.startswith("This run cannot hold")
         assert {s.label for s in plan.sensors} == {"activation", "usage"}
-        assert {e.effect for e in plan.effects} == {"tools", "process", "filesystem"}
+        (session,) = [r for r in plan.requirements if "agent runtime" in r.need]
+        assert session.needed_by == ("subjects.catalog",) and session.holds
 
     def test_the_experiment_the_readme_shows_validates(self, tmp_path: Path) -> None:
         readme = (PACKAGE / "README.md").read_text(encoding="utf-8")

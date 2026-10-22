@@ -243,10 +243,9 @@ class Container:
         an entry that cannot be built, and whatever :func:`~matrix.domain.component.wire`
         finds in those that can.
 
-        The wiring carries each component's declared effects (an ``agent-step`` has its
-        agent's runtime's, a ``model-step`` its model runtime's) and its fingerprint, which a
-        later run compares before it reuses the component's rows: a digest of its type, its
-        config, and each need it is handed (an ``agent-step``'s own agent, a ``model-step``'s
+        The wiring carries each component's fingerprint, which a later run compares before
+        it reuses the component's rows: a digest of its type, its config, and each need it
+        is handed (an ``agent-step``'s own agent, a ``model-step``'s
         own model runtime, every agent or model runtime for another component that needs
         them, ``models``, ``cwd``). An agent counts by its definition, its runtime's config
         and needs, and what that runtime resolved when it was built; a model runtime by its
@@ -260,7 +259,6 @@ class Container:
         ]
         kinds = self._config.matrix.inputs if inputs is None else tuple(inputs)
         built: dict[str, Any] = {}
-        effects: dict[str, frozenset[str] | None] = {}
         prints: dict[str, str] = {}
         problems: list[Problem] = []
         seen: set[str] = set()
@@ -282,7 +280,6 @@ class Container:
                     needs={**self.needs(), "name": entry.name},
                     where=f"{where}.config",
                 )
-                effects[entry.name] = self._effects(entry)
                 prints[entry.name] = self._fingerprint(entry)
             except MatrixError as e:
                 problems += _problems_of(e, where, entry)
@@ -291,7 +288,6 @@ class Container:
                 built,
                 inputs=kinds,
                 schemas=self._registry.payload_schemas(),
-                effects=effects,
                 fingerprints=prints,
             )
             if not problems:
@@ -305,23 +301,6 @@ class Container:
             fix="fix each listed component or kind; every problem is reported at once",
             error=CompilationError,
         )
-
-    def _effects(self, entry: ComponentConfig) -> frozenset[str] | None:
-        matrix = self._config.matrix
-        if entry.type == AGENT_STEP:
-            spec = matrix.agents.get(str(entry.config.get("agent")))
-            runtime = matrix.agent_runtimes.get(spec.runtime) if spec else None
-            if runtime is None:
-                return None
-            url = agent_runtime_type_url(runtime.type)
-            return self._registry.entry(AGENT_RUNTIME, url).effects
-        if entry.type == MODEL_STEP:
-            runtime = matrix.model_runtimes.get(str(entry.config.get("runtime")))
-            if runtime is None:
-                return None
-            url = model_runtime_type_url(runtime.type)
-            return self._registry.entry(MODEL_RUNTIME, url).effects
-        return self._registry.entry("component", entry.type).effects
 
     def _fingerprint(self, entry: ComponentConfig) -> str:
         """A digest of what the component is built from: its type and config, and each need

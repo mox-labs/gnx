@@ -55,9 +55,12 @@ from ix.adapters._out.matrix_agents import (
     Runtimes,
     Sessions,
     built,
+    carried_out,
+    runtime_requirement,
 )
 from ix.domain.errors import IxError
-from ix.domain.ports import StoodIn
+from ix.domain.kind import placeholders
+from ix.domain.ports import Requirement, StoodIn
 from ix.domain.problem import Problem, problem
 from ix.domain.run import HarnessError, Target
 
@@ -263,21 +266,27 @@ class ModelCallSubject:
         )
         return StoodIn(options={**kept, "runtime": STAND_IN}, notes=notes)
 
-    def unstartable(self, subject: SubjectConfig, *, base: str) -> str | None:
-        """What can be told before anything starts: the options' shapes, the runtime, its
-        config, and whether it resolves the model."""
+    def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
+        """Options it can carry out, and its runtime, built, resolving the model. Nothing
+        while an option holds a placeholder only the trial fills (an environment's
+        binding)."""
+        if any(placeholders(value) for value in options.values()):
+            return []  # told when the trial starts
         try:
-            options = _options(subject)
+            parsed = CallOptions.model_validate(options)
         except ValidationError as error:
-            first = error.errors()[0]
-            where = ".".join(str(part) for part in first["loc"])
-            return f"{where}: {first['msg']}"
-        try:
-            runtime = self._runtimes.build(MODEL_RUNTIME, options.runtime, options.runtime_options)
-            runtime.check(options.model)
-        except (matrix.MatrixError, IxError, ValidationError, ValueError) as error:
-            return str(error)
-        return None
+            return [carried_out(error)]
+
+        def resolves() -> None:
+            runtime = self._runtimes.build(MODEL_RUNTIME, parsed.runtime, parsed.runtime_options)
+            runtime.check(parsed.model)
+
+        model = parsed.model or "its default model"
+        return [
+            runtime_requirement(
+                f"model runtime {parsed.runtime!r} builds and resolves {model}", resolves
+            )
+        ]
 
     @asynccontextmanager
     async def reach(self, name: str, subject: SubjectConfig, *, base: str) -> AsyncIterator[Target]:

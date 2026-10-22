@@ -147,14 +147,6 @@ def test_a_component_is_structural() -> None:
     assert not isinstance(object(), Component)
 
 
-def test_a_wiring_reports_the_effects_its_components_declare() -> None:
-    parts = {"a": Part(set(), {A}), "b": Part({A}, set())}
-    assert wire(parts).declared_effects() is None  # nothing declared is unknown, never "none"
-    known = wire(parts, effects={"a": frozenset({"network"}), "b": frozenset()})
-    assert known.declared_effects() == {"network"}
-    assert wire(parts, effects={"a": frozenset(), "b": None}).declared_effects() is None
-
-
 def test_a_kind_without_a_version_segment_does_not_wire() -> None:
     """Regression: ``acme.shout`` wired, though the skill teaches a kind is
     ``<namespace>.v<N>.<name>``, so an unversioned one-way door went out unnoticed."""

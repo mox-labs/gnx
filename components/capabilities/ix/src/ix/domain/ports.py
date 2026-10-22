@@ -5,10 +5,14 @@ which tool applies a stimulus (:class:`Probe`), how a measurement is taken
 (:class:`Sensor`), and what is brought up around the subjects (:class:`Environment`).
 :class:`Scope` is all ix assumes of whatever runs its work. The rest are optional, so an
 adapter need not answer what it cannot tell: a subject or a sensor may also be a
-:class:`Review` and a :class:`StandIn`, a subject a :class:`Preflight`, an environment a
+:class:`Review` and a :class:`StandIn`, any adapter a :class:`Preflight`, an environment a
 :class:`Liveness`, and a scope :class:`Traced` and :class:`Recorded`. Without one there is
 nothing to check, to stand in, to trace or to name, and the run proceeds. A kind's options,
-effects, facets and metrics are data (:mod:`ix.domain.kind`), not part of these ports.
+facets and metrics are data (:mod:`ix.domain.kind`), not part of these ports.
+
+The four kind ports are runtime-checkable: each is the port of its family's extension point,
+so a class registered there that lacks one of its members is refused when it is registered,
+and whatever a factory builds is held to it when it is built.
 
 Each port is named for what it is to a run; what an experiment writes for one is its config
 (:class:`~ix.domain.experiment.SubjectConfig`, ``ProbeConfig``, ``SensorConfig``,
@@ -64,6 +68,11 @@ class Flag(Protocol):
 
 class Scope(Protocol):
     """All ix assumes of whatever runs its components."""
+
+    #: The run's id, unique to it: what an adapter names what it starts for the run after,
+    #: so that two runs, or a run and what a killed one left behind, do not collide.
+    @property
+    def run_id(self) -> str: ...
 
     #: Set when the run is asked to finish now. Work that returns soon after keeps what it
     #: has recorded.
@@ -124,9 +133,9 @@ class Traced(Protocol):
     def trace(self, name: str, /, **attributes: Any) -> AbstractContextManager[Span]: ...
 
 
+@runtime_checkable
 class Subject(Protocol):
-    """Brings one subject up for one trial and takes it down again. May also be a
-    :class:`Preflight`."""
+    """Brings one subject up for one trial and takes it down again."""
 
     def reach(
         self, name: str, subject: SubjectConfig, *, base: str
@@ -138,13 +147,32 @@ class Subject(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class Requirement:
+    """Something an adapter needs of this host to carry an entry out as written, and whether
+    it holds here now: a program on PATH, a daemon that answers, a variable that is set, a
+    file that is there, a runtime that resolves the model. ``need`` says what, in words that
+    stay the same whether it holds or not; ``why`` says what was found when it does not, and
+    ``fix`` how to make it hold."""
+
+    need: str
+    holds: bool
+    why: str = ""
+    fix: str = ""
+
+
 @runtime_checkable
 class Preflight(Protocol):
-    """Optional for a :class:`Subject`: what it can tell before anything starts."""
+    """Optional for any adapter (a subject, probe, sensor or environment): what it needs of
+    this host, each checked before anything starts. ``ix plan`` lists them with whether each
+    holds, and ``ix run`` refuses to start while one does not."""
 
-    def unstartable(self, subject: SubjectConfig, *, base: str) -> str | None:
-        """Why ``subject`` cannot be started as written, in words; None when nothing says it
-        cannot. ``base`` is the directory the experiment's relative paths resolve against."""
+    def requirements(self, options: Mapping[str, Any], *, base: str) -> Sequence[Requirement]:
+        """What carrying out an entry whose options are ``options`` needs of this host, each
+        checked now. ``base`` is the directory the experiment's relative paths resolve
+        against. It is asked once for each cell's options, a factor's ``{name}`` filled in;
+        a requirement that depends on a placeholder only a trial fills (an environment's
+        binding, ``{db.url}``) is left out: it is told when the trial starts."""
         ...
 
 
@@ -194,6 +222,7 @@ class StandIn(Protocol):
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn: ...
 
 
+@runtime_checkable
 class Probe(Protocol):
     """Applies one stimulus to a target."""
 
@@ -214,6 +243,7 @@ class Probe(Protocol):
         ...
 
 
+@runtime_checkable
 class Sensor(Protocol):
     """Measures: during the probe when it must (``watch``), from the interaction after."""
 
@@ -236,6 +266,7 @@ class Sensor(Protocol):
         ...
 
 
+@runtime_checkable
 class Environment(Protocol):
     """Brings up what the subjects need around them, once per run. May also be a
     :class:`Liveness`."""

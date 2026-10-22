@@ -45,14 +45,14 @@ through hardline) and `otel` (export of spans over OTLP). A service experiment n
 
 ```bash
 ix validate <path>     # every problem at once, nothing run; exits 3 when the file is invalid
-ix plan <path>         # the decision, the trials, the effects; runs nothing
+ix plan <path>         # the decision, the trials, what it needs here; runs nothing
 ix register <path>     # freeze the design beside the file, before any run
 ix run <path>          # carry it out; the exit code is the verdict
 ix report <path>       # the latest run's report again, computed from its record
 ```
 
-`validate` and `plan` run nothing. Read the plan before you register: its `Trials` and
-`Effects` are what a run will do. Register before you run: the registration is what the
+`validate` and `plan` run nothing. Read the plan before you register: its `Trials` are what
+a run will do, and `Requires` what it needs of this host, each with whether it holds here. Register before you run: the registration is what the
 verdict is held to, so a margin cannot move once the numbers are in. `ix run` refuses an
 experiment that is not registered (exit 15); `--exploratory` runs it anyway and gives no
 verdict. A run exits 0 when the verdict holds, 10 when it fails and 11 when it is
@@ -114,8 +114,8 @@ Verdict:      holds / fails / inconclusive
 ...
 Trials:       2 subjects x 1 cell x 1 probe x 10 repeats = 20, + 10 A/A = 30
 Duration:     about 2m (30 trials, probe time only; setup and teardown add to it)
-Effects:      process: starts a process on this machine  (subjects.baseline, subjects.candidate, probes.0)
-              network: sends requests over the network  (probes.0)
+Requires:     yes  'python3' on PATH  (subjects.baseline, subjects.candidate)
+              yes  'k6' on PATH  (probes.0)
 Registration: none
 ```
 
@@ -243,8 +243,8 @@ or `max` as its estimator.
 ## Kinds
 
 A subject, a probe, a sensor and the environment each name a **kind**. A kind is declared as
-data, the way a genre is: its options (with types, and which are required), its effects, the
-facets it offers and needs, and for a sensor the metrics it provides and whether a model
+data, the way a genre is: its options (with types, and which are required), the facets it
+offers and needs, and for a sensor the metrics it provides and whether a model
 judges them. `ix kinds` lists them.
 
 | family | kinds |
@@ -273,11 +273,14 @@ A declaration is not an adapter. ix can **run** these:
 | sensor | `text-match` | `text_matched`: the reply starts or ends with, equals, contains, excludes or matches (a regular expression) what the probe's truth or the sensor's options say; no code of your own |
 | sensor | `usage` | tokens, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, and `hit_limit`, as the runtime reported them; what it did not report (a model call's cost or turns) is left out |
 | sensor | `judge` | a model scores the reply against a rubric, by one call on the model runtime `model_runtime` names or a one-turn session on the agent runtime `agent_runtime` names; its metrics are reported and never decide |
-| environment | `none`, `process` | nothing; or programs started before the trials and stopped when the run ends |
+| environment | `none`, `process` | nothing; or programs started before the trials and stopped when the run ends, each bound with where it listens (`{<service>.url}`, `.host`, `.port`), which a subject's or a probe's options name |
+| environment | `compose` | a docker compose project brought up once for the run (`docker compose up -d --wait`, healthchecks included) and down after it (`down -v --remove-orphans`, deferred before `up`, so a stack that came up in part still comes down); each running service bound with its first published port (`{web.url}`) and the image id it runs, in the run's bindings row; a service found stopped or unhealthy after a trial fails the run. Without `project`, the project is named for the run, and a stack a killed run left is swept; a `project` written that already has containers is refused |
 
-`inspect-task` and `compose` are declared only. An experiment that uses one is still valid:
+`inspect-task` is declared only. An experiment that uses one is still valid:
 `ix validate` warns (`kind_unimplemented`), `ix plan` prints `Runnable: no` with the kinds,
-and `ix run` refuses it before anything starts. `ix kinds` marks each kind.
+and `ix run` refuses it before anything starts. `ix kinds` marks each kind. An adapter that
+is registered but cannot be built here (a need nothing supplies) is treated the same way,
+and `ix kinds` says why under `unbuildable`.
 
 An adapter plugs in through matrix's registry, as every extension does. A package declares
 its kind as data at the `ix.kind` entry point, and registers the adapter from its
@@ -287,7 +290,9 @@ that way, its own included, so a new one needs no edit to ix. An adapter declare
 needs built: `launcher` to start processes, `runtimes` to run an agent or make a model call
 on matrix's runtimes (at its `agent-runtime` or `model-runtime` point), `sessions` to share
 an agent session or a model call between a subject and a probe, by the handle the subject
-offers as its `respondent` facet.
+offers as its `respondent` facet. Each family's point holds what is registered there to its
+port (`Subject`, `Probe`, `Sensor`, `Environment` in `ix.domain.ports`): a class that lacks
+one of its members is refused at registration.
 
 ```python
 def register(registry):
@@ -384,8 +389,10 @@ env/a.yaml]` the program and its config. A program found on PATH is not the expe
 
 ## Running
 
-A run brings the environment up once, then carries out the trials one at a time in the
-order the plan fixed (`plan` and `run` compute the same list, and the plan's digest covers
+A run brings the environment up once, binds each service it brought up with how to reach
+it (a subject's or a probe's option names `{<service>.url}`, `.host`, `.port`; a run whose
+environment comes up without a service the experiment names fails before any trial), then
+carries out the trials one at a time in the order the plan fixed (`plan` and `run` compute the same list, and the plan's digest covers
 it). For each trial: start the subject, let the sensors that must watch begin, apply the
 probe, stop the watchers, stop the subject. The sensors then read every trial that was
 carried out. Progress goes to stderr (a bar on a terminal, one line per trial otherwise,
@@ -422,11 +429,14 @@ nothing under `--json`); the report goes to stdout.
   run started, and exits 12 with the partial report. A run the harness could not finish (an
   environment that did not come up, or went down between trials) exits 8. `ix report` of a
   run still being written exits 13.
-- **Refused before it starts**: a subject command that is not there, an `auth` variable
-  that is not set, a file an agent subject names that is not there, an agent runtime that
-  cannot start or cannot play the agent as written, and a model runtime that cannot start
-  or cannot resolve the subject's model. `ix plan` lists them under
-  `Runnable: no` beforehand; they depend on the host, so they do not stop `ix register`.
+- **Refused before it starts**: whatever an entry needs of this host that does not hold
+  here. Each adapter checks its own (a `preflight`): a program that is not there (a
+  subject's or a service's command, `k6` for `http-load`), an `auth` variable that is not
+  set, a file an agent subject names that is not there, an agent runtime that cannot start
+  or cannot play the agent as written, a model runtime (a subject's or a judge's) that
+  cannot start or cannot resolve the model. `ix plan` lists every requirement under
+  `Requires` with whether it holds, and those that do not under `Runnable: no` with the
+  fix; they depend on the host, so they do not stop `ix register`.
 - **Failures have an owner.** A trial the subject failed (it exited, it was not up in time,
   it answered no request successfully within the measured time, it returned a different body; an agent session that
   broke, was refused or ran past its probe's `timeout`) counts against the subject. A trial the harness failed (k6 missing
