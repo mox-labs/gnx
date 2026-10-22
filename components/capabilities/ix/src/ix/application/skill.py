@@ -995,8 +995,9 @@ then the report (`ix.v1.report`) on stdout.
 - **Stopping.** Ctrl-C stops the trial in flight, stops everything the run started and
   exits {EXIT_CODES["run_interrupted"]} with the partial report. `ix report <run directory>`
   reads any run again, finished or not; a run that did not finish gives no verdict, and one
-  still running exits {EXIT_CODES["running"]}. A report calls no model: a run stopped
-  before its judge read is reported without readings (`unread` says why); run it again.
+  still running exits {EXIT_CODES["running"]}. A report calls no model and runs no code: a
+  run stopped before a judge, an `evaluator`, `function-test` or `outcome` read is reported
+  without readings (`unread` says why); run it again.
 - **Refused before anything starts**: any requirement of this host that does not hold: a
   command that is not there, an `auth` variable that is not set, `k6` missing for
   `http-load`, the docker daemon down for `compose`, an agent runtime that cannot start or

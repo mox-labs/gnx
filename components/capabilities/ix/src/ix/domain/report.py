@@ -138,7 +138,8 @@ class Report(Record):
     readings: Literal["recorded", "derived", "none"] = "recorded"
     #: Why the interactions of a run that ended before its sensors read them were not read
     #: when this report was made, and how to get readings: a sensor the run used has no
-    #: adapter here, or calls a model, which a report never does. Empty otherwise.
+    #: adapter here, or may call a model or starts processes, which a report never does.
+    #: Empty otherwise.
     unread: str = ""
     analysis: Analysis
     #: ``all`` when a stand-in (a mock runtime) answered every trial, ``some`` when it

@@ -840,17 +840,30 @@ class Root:
         readings, unread = self._derived_readings(record)
         return build_report(record, readings=readings, unread=unread)
 
-    def _calls_a_model(self, sensor: str) -> bool:
-        """Whether the adapter of ``sensor`` (a type URL) is handed matrix's runtimes: the
-        only way ix gives an adapter a model to call."""
-        return RUNTIMES in self._registry.entry(POINTS["sensor"], sensor).needs
+    def _acts(self, sensors: Collection[str]) -> str:
+        """What the adapters of ``sensors`` (type URLs) are handed that acts outside this
+        process, said in words: matrix's runtimes or a judge's models (it may call a model),
+        or a launcher (it starts processes: the experiment's graders, the agent's code).
+        Empty when none is: those are the sensors a report may run."""
+        needs = {sensor: self._registry.entry(POINTS["sensor"], sensor).needs for sensor in sensors}
+
+        def named(given: set[str]) -> str:
+            return ", ".join(schema.short(s) for s in sorted(needs) if needs[s] & given)
+
+        said = []
+        if calling := named({RUNTIMES, JUDGE_MODELS}):
+            said.append(f"{calling} may call a model")
+        if starting := named({LAUNCHER}):
+            said.append(f"{starting} starts processes")
+        return "; ".join(said)
 
     def _derived_readings(self, record: RunRecord) -> tuple[list[Reading] | None, str]:
         """The readings of a run that ended before its sensors read its interactions, taken
         now from the stored tables and never written back; or None, and why they were not
-        taken, when there are some to take. A report calls no model: a run that used a
-        sensor that does (a judge) is not read here at all, and neither is one whose sensor
-        has no adapter here."""
+        taken, when there are some to take. A report is a read: it calls no model and starts
+        no process, so a run that used a sensor that may (a judge, ``outcome``,
+        ``function-test``) is not read here at all, and neither is one whose sensor has no
+        adapter here."""
         if not record.interactions or record.readings or record.status == "running":
             return None, ""
         setup = running.setup_of(record.manifest)
@@ -863,10 +876,9 @@ class Root:
         missing = sorted(sensors - built)
         if missing:
             return None, f"no adapter here reads {', '.join(map(schema.short, missing))}: {again}"
-        calling = sorted(kind for kind in sensors if self._calls_a_model(kind))
-        if calling:
-            named = ", ".join(map(schema.short, calling))
-            return None, f"{named} calls a model, and a report never does: {again}"
+        acts = self._acts(sensors)
+        if acts:
+            return None, f"{acts}, and a report does neither: {again}"
         derived = asyncio.run(
             running.sense(
                 setup,

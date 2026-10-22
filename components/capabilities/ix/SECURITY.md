@@ -16,14 +16,22 @@ Audience: anyone running ix against an experiment, a genre or a kind they did no
 | `register` | the same | `<file-stem>.registration.json` beside the experiment |
 | `genres`, `kinds`, `--skill` | genre and kind files | nothing |
 | `run` | the same as `plan`, the environment, and the git work tree the experiment sits in | `<experiment directory>/.ix/runs/<run id>/` (or under `runs:` in ix's settings); temporary directories it removes; whatever the programs and sessions it starts write |
-| `report`, `runs` | the experiment file; the runs under `.ix/runs` | nothing |
+| `report`, `runs` | the experiment file; the runs under `.ix/runs` | nothing, but for the first read of a run whose `ix run` was killed on this host: matrix's store finishes its record as `interrupted` (`run.json` replaced, a cut-short last line moved to `<file>.torn`) |
 
-`report` and `runs` call no model. A report of a run that ended before its sensors read
-its interactions reads them then, but only with sensors whose adapters are not handed
-matrix's runtimes; a run that used one (a `judge`) is reported without readings (the test
-suite holds this with a judge that counts its calls over two reports). A third-party sensor
-that reaches a model provider by its own means, not through the runtimes ix hands it, is
-outside what ix can tell.
+`report` and `runs` call no model and start no process. A report of a run that ended before
+its sensors read its interactions reads them then, but only with sensors whose adapters ix
+hands nothing that acts outside its own process: not matrix's runtimes or a judge's models
+(a `judge`, an `evaluator`), and not a launcher (`function-test` and `outcome`, which run
+the agent's code and the experiment's graders). A run that used one is reported without
+readings, and the report says why and to run the experiment again (the test suite holds
+this with a judge that counts its calls, and with graders that leave a mark if they run,
+over two reports). A third-party sensor that reaches a model provider or starts a program by
+its own means, not through what ix hands it, is outside what ix can tell.
+
+`plan`, and `run` before its first trial, ask each adapter in use what it needs of this host:
+that builds the runtimes the subjects and sensors name (no session starts and no model is
+called), looks for programs on `PATH`, and starts `docker info` and `docker compose version`
+for a `compose` environment.
 
 `run` also **starts**: `git -c core.fsmonitor=false -C <experiment directory>` three times
 (`rev-parse --is-inside-work-tree`, `rev-parse --verify HEAD`, `status --porcelain

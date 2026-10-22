@@ -1593,6 +1593,39 @@ class TestAReportCallsNoModel:
             assert "judge" in report.unread and "ix run" in report.unread
         assert judged == []  # two reports, no call
 
+    def test_a_report_runs_neither_the_agents_code_nor_the_graders(self, tmp_path: Path) -> None:
+        """Regression: only sensors that call a model were kept out of a report; ``outcome``
+        and ``function-test`` start processes (the experiment's graders, the agent's code),
+        so ``ix report``, a read command, ran them on every report of a stopped run."""
+        registry = _registry(_fires())
+        environment = "acme.v1.environment.goes-down"
+        registry.register("ix.environment", environment, _GoesDown)
+        lab = _routing(
+            tmp_path,
+            metrics=["tests_score"],
+            sensors=[{"kind": "outcome", "graders": "graders.py"}],
+            environment={"kind": environment},
+        )
+        ran_graders = tmp_path / "graders-ran"
+        (lab / "graders.py").write_text(
+            f"open({str(ran_graders)!r}, 'a').write('ran\\n')\nGRADERS = {{}}\n"
+        )
+        (lab / "kinds").mkdir()
+        (lab / "kinds" / "goes-down.yaml").write_text(
+            yaml.safe_dump(
+                {"schema": "ix.v1.kind", "name": environment, "summary": "Lost after a trial."}
+            )
+        )
+        root = Root(registry=registry, settings=_settings())
+        ran = root.run(lab, exploratory=True)
+        assert ran.status == "failed" and ran.trials.carried_out == 2
+        assert ran.readings == "none" and "outcome starts processes" in ran.unread
+        for _ in range(2):
+            report = root.report(ran.location)
+            assert report.readings == "none"
+            assert "outcome starts processes" in report.unread and "ix run" in report.unread
+        assert not ran_graders.exists()  # neither the run's own report nor the two after
+
     def test_a_run_whose_sensors_call_no_model_is_still_read_at_report_time(
         self, tmp_path: Path
     ) -> None:

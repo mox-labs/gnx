@@ -527,7 +527,8 @@ disk when its trial finishes, so a run that is killed outright keeps every trial
 finished. `ix report <run directory>` reads a run in any state. When a run ended before its
 sensors read the interactions (it was stopped or killed), the report reads them from the
 stored interactions and says `readings: derived`; nothing is written back. A report never
-calls a model: when a sensor the run used does (a `judge`), it reads none and says so
+calls a model or starts a process: when a sensor the run used may (a `judge`, an
+`evaluator`, or `function-test` and `outcome`, which run code), it reads none and says so
 (`unread`), and the readings come from running the experiment again. Keep `.ix/` out
 of version control.
 
