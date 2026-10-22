@@ -4,8 +4,11 @@
 
 set shell := ["bash", "-uc"]
 
-# Everything a commit must pass. The pre-commit hook calls this.
-check: docs-check secrets grammar payloads projection
+# The pre-commit hook calls this. Its lint and format gates are CI's own, so a line CI would
+# refuse cannot be committed.
+#
+# Everything a commit must pass.
+check: docs-check secrets grammar payloads projection capabilities-lint
 
 # The CI gate (mirrors the hook; slow gates are added here as the CLI lands).
 ci: docs-check secrets-all grammar payloads projection recon-skill capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone lab

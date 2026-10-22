@@ -34,7 +34,8 @@ drift.
 ```sh
 just              # list every gate
 just check        # what every commit must pass: the docsite, a staged secret scan,
-                  # the identity grammar, component payloads, the plugin projection
+                  # the identity grammar, component payloads, the plugin projection,
+                  # and the capability packages' lint and format
 just ci           # the full CI gate: also the capability packages' tests, lint,
                   # strict typecheck and standalone install, and the lab
 just lab          # validate and plan the lab's experiments; nothing is run
