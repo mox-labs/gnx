@@ -23,7 +23,8 @@ data goes is decided by the hardline registry; hardline's own security notes cov
 
 `compose` builds runtimes from `matrix.runtimes.<name>` and binds agents from
 `matrix.agents.<name>`. Every authority-bearing value — `permission_mode`, `cwd`,
-`setting_sources`, `plugins`, a definition's `tools` — arrives from config: a `matrix:`
+`setting_sources`, `plugins`, `skills`, inline subagents (`agents`, each with its own prompt
+and tools), a definition's `tools` — arrives from config: a `matrix:`
 section, an ix `experiment.yaml`, a markdown agent file.
 
 **A matrix config file, and every agent file in a `definitions` directory, is a capability

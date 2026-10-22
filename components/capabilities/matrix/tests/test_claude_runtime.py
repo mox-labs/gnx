@@ -332,3 +332,104 @@ def test_max_budget_usd_reaches_the_real_sdk_options() -> None:
     runtime = ClaudeSdkRuntime(ClaudeSdkRuntimeConfig(max_budget_usd=0.5))
     assert sdk.ClaudeAgentOptions(**runtime.options(_defn())).max_budget_usd == 0.5
     assert "max_budget_usd" not in ClaudeSdkRuntime().options(_defn())
+
+
+# --- what the runtime accepts, declared in its config -------------------------------------
+
+
+async def test_inline_subagents_reach_the_sdk_as_its_agent_definitions(monkeypatch) -> None:
+    """Regression (mx-src F11): the ``agents`` option was forwarded as plain dicts, and the
+    SDK converts each with ``dataclasses.asdict`` once the CLI has started, so every session
+    with inline subagents failed. The fake ``query`` does what the SDK's client does."""
+    import dataclasses
+
+    seen = _install(monkeypatch, _result())
+    runtime = _runtime(
+        agents={
+            "critic": {
+                "description": "Finds faults.",
+                "prompt": "Be harsh.",
+                "tools": ["Read"],
+                "model": "haiku",
+                "max_turns": 2,
+            }
+        }
+    )
+    await runtime.run(_defn(), "go")
+    (critic,) = seen["calls"][0]["options"].agents.values()
+    sent = {k: v for k, v in dataclasses.asdict(critic).items() if v is not None}
+    assert sent == {
+        "description": "Finds faults.",
+        "prompt": "Be harsh.",
+        "tools": ["Read"],
+        "model": "haiku",
+        "maxTurns": 2,
+    }
+
+
+def _create(options: dict):
+    from matrix import default_registry, runtime_type_url
+
+    return default_registry(discover=False).create(
+        "runtime", runtime_type_url("claude-sdk"), options, needs={"cwd": None}, where="r"
+    )
+
+
+@pytest.mark.parametrize(
+    ("options", "path"),
+    [
+        (
+            {"agents": {"critic": {"description": "d", "prompt": "p", "colour": "red"}}},
+            "agents.critic.colour",
+        ),
+        ({"agents": {"critic": {"prompt": "p"}}}, "agents.critic.description"),
+        ({"setting_sources": ["usr"]}, "setting_sources.0"),
+        ({"plugins": [{"name": "recon"}]}, "plugins.0"),
+        ({"skills": "every"}, "skills"),
+    ],
+)
+def test_what_the_runtime_cannot_play_is_refused_where_it_is_configured(
+    options: dict, path: str
+) -> None:
+    """The config schema is the declaration of what a session can be given: an option
+    outside it fails at composition, at its key, never inside the SDK after the CLI started."""
+    with pytest.raises(matrix.ConfigError) as e:
+        _create(options)
+    assert any(p.path.startswith(f"r.{path}") for p in e.value.problems), e.value.problems
+    assert "matrix describe" in (e.value.fix or "")
+
+
+def test_skills_reach_the_sdk_options(fake_sdk) -> None:
+    assert _runtime(skills=["review"]).sdk_options(_defn()).skills == ["review"]
+    assert _runtime(skills="all").sdk_options(_defn()).skills == "all"
+    assert _runtime().sdk_options(_defn()).skills is None
+
+
+def test_skills_an_agent_s_tools_leave_no_way_to_use_are_refused_at_binding(fake_sdk) -> None:
+    runtime = _runtime(skills=["review"])
+    with pytest.raises(matrix.ConfigError, match="only through the Skill tool") as e:
+        matrix.BoundAgent(_defn(tools=("Read",)), runtime)
+    assert "add Skill" in (e.value.fix or "")
+    matrix.BoundAgent(_defn(tools=("Read", "Skill")), runtime)
+    matrix.BoundAgent(_defn(tools=None), runtime)  # the SDK's default toolset has it
+    matrix.BoundAgent(_defn(tools=("Read",)), _runtime(skills=[]))  # no skills to use
+
+
+def test_an_option_the_installed_sdk_lacks_is_refused_at_binding(monkeypatch) -> None:
+    """What the SDK accepts is its own dataclasses' fields: an SDK older than an option is a
+    config problem with the remedy, not a TypeError inside the session."""
+    import dataclasses
+
+    older = dataclasses.make_dataclass(
+        "ClaudeAgentOptions",
+        [
+            (f.name, f.type, dataclasses.field(default=None))
+            for f in dataclasses.fields(sdk.ClaudeAgentOptions)
+            if f.name != "skills"
+        ],
+    )
+    monkeypatch.setattr(sdk, "ClaudeAgentOptions", older)
+    with pytest.raises(matrix.ConfigError, match="has no skills") as e:
+        matrix.BoundAgent(_defn(), _runtime(skills=["review"]))
+    assert "upgrade" in (e.value.fix or "")
+    matrix.BoundAgent(_defn(), _runtime())

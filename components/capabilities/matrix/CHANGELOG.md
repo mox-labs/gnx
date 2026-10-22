@@ -23,6 +23,12 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Changed (breaking)
 
+- **What a `claude-sdk` session can be given is declared by its config, and checked.**
+  `setting_sources` takes only `user`, `project` and `local`; each of `plugins` is
+  `{type: local, path}`; `skills` (names, or `all`) is new, passed as the SDK's own option.
+  An option outside the config fails at its key at composition. At binding, the runtime
+  refuses a definition whose `tools` leave out `Skill` when it has `skills`, and any option
+  the installed SDK's own dataclasses do not have, saying how to fix it.
 - The agent-call counts move from the plan's `spend` record to the plan itself:
   `agent_calls_min`, `agent_calls_max`. `matrix plan` prints them as `agent calls: N to M`.
 - **A component that returns after it was asked to stop ends `stopped`**, not `completed`.
@@ -36,6 +42,10 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **The `claude-sdk` runtime's inline subagents work.** `agents` was forwarded as plain
+  dicts, which the SDK converts with `dataclasses.asdict` once the CLI has started, so every
+  session with a subagent failed. Each is now the SDK's `AgentDefinition`, with typed keys:
+  `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`.
 - **An agent step's task template is checked when the step is built.** A placeholder that
   names no input, an input the template never uses, a positional `{}` and unbalanced braces
   are each a `config` problem at `matrix check`, `matrix plan` and composition, with every
