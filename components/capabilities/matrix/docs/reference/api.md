@@ -878,7 +878,7 @@ called with the registry, and anything it raises, importing included, quarantine
 
 | Method | Signature | Behaviour |
 |--------|-----------|-----------|
-| `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point; with `port`, a Protocol whatever is registered there must keep |
+| `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point, owned by the distribution declaring it; with `port`, a Protocol whatever is registered there must keep. `ConfigError` when another distribution owns the point already |
 | `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta", stand_in=False, drives=()) -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
 | `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the first line of the model's docstring |
 | `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
@@ -889,9 +889,17 @@ called with the registry, and anything it raises, importing included, quarantine
 | `load` | `(extensions: Iterable[Extension]) -> Registry` | Loads the extensions, in name order (see below) |
 
 Attributes: `points: set[str]`, `ports: dict[str, type]` (point to the Protocol its entries
-keep: `agent-runtime` to `AgentRuntime`, `model-runtime` to `ModelRuntime`),
-`failures: list[Failure]`. A port is held by its members: each must be there and callable,
-and one the port awaits must be a coroutine function.
+keep: `agent-runtime` to `AgentRuntime`, `model-runtime` to `ModelRuntime`, `store` to
+`ConstructStore`, `observer` to `Observer`), `owners: dict[str, str]` (point to the
+distribution that declared it: `matrix` for matrix's own, `(direct)` for one declared by the
+code composing the registry), `failures: list[Failure]`. A port is held by its required
+members: each must be there and callable, and one the port awaits must be a coroutine
+function; a port's optional members (an observer's `around`, a store's `events` and
+`location`) are not required. A point under a distribution's name (`ix.subject`) belongs to
+that distribution whoever declared it first: an impostor that did is quarantined whole, as for
+type URLs. Any other point belongs to the distribution that declared it first. Another that
+declares an owned point again, with or without a port, is refused and quarantined whole; the
+owner, and code composing the registry directly, may.
 
 `load_extensions(registry, group="matrix.extensions") -> Registry` loads every entry point in
 the group into `registry`: each entry point's value is `register(registry) -> None`.

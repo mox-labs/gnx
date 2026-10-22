@@ -207,6 +207,15 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   are now called lossy wherever the record is described, and the docs say the one thing the
   tables do not hold in full: what a step that failed was asked (its session row has `sent`,
   a digest).
+- **Stores and observers are held to their ports at registration**, as runtimes are: a
+  class registered at `store` or `observer` that lacks a required member is a `ConfigError`
+  naming it, and so is whatever an entry builds there. A store without `load` composed and
+  failed at `--from`; an observer without `on_event` was logged as failing on every event.
+- **Extension points have owners** (`Registry.owners`): matrix owns its own; a point under a
+  distribution's name (`ix.subject`) is that distribution's whoever declared it first, as for
+  type URLs; any other point is its first declarer's. Another distribution that declares an
+  owned point again, or gives it a port, is refused and quarantined whole. Any extension could
+  declare another's point before.
 - **A killed run reads without matrix.** A cut-short last line broke `jq` (exit 5) and
   DuckDB (`Malformed JSON`), though matrix's own reader skipped it, and `interrupted` was
   only what `describe` computed: `run.json` said `running` for ever. Now the first matrix
