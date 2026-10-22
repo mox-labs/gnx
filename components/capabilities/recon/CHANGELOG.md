@@ -10,6 +10,10 @@
 
 ### Fixed
 
+- **recon's spans are current while its work runs, and requests carry their trace context.** recon built its OpenTelemetry spans from events and never made one current, so a span another library opened during a table (an instrumented HTTP client, a plugin's own) landed under the caller's span or in a trace of its own; and no request carried `traceparent`, so a server's spans could not join. A sink may now have an optional `around(event)`, entered for the work of each span (the OpenTelemetry sink makes its span current there), and `trace_headers(span)`, which the requester sends with each attempt.
+- **An event-log line can be found in the exported trace.** The event log counts span ids from 1 and OpenTelemetry's are random, with nothing tying them; each exported span now carries `recon.event.span`, its event-log id.
+- **A dropped sink no longer loses the spans it held open.** A sink that raised was dropped with its OpenTelemetry spans started and never ended, so they were never exported. A sink may have an optional `close()`, called when it is dropped; the OpenTelemetry sink ends its open spans as failed there.
+
 - **Telemetry is exported signal by signal.** Any export variable installed both providers, so a traces endpoint alone also sent metrics to the default endpoint, which logged failures; and only the tracer provider was checked, so a program that installed its own tracer provider got no metrics from recon, and one with its own meter provider had recon try to replace it. A signal is now exported when the shared endpoint, its own endpoint or its exporter asks for it, and only when the program has installed no provider for it.
 
 - **A rate limit or timeout that cannot be kept is a plan problem.** `rate_limit: {rps: 0}` divided by zero on the fourth request and failed the table as `unknown`; `burst: 0` waited forever for a token; a timeout of 0 or less was accepted. `rps` and `timeout` must be above 0 and `burst` at least 1.

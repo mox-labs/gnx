@@ -148,6 +148,12 @@ nor span messages. The
 endpoint the variables name receives the mission's URLs, table and collector names, and
 record counts: point it at a collector you trust with them.
 
+When an SDK is installed (the `OTEL_*` variables, or a program's own setup), each HTTP
+request also carries a W3C `traceparent` header naming its span, and `tracestate` and any
+baggage the caller's context holds, so the source's server can join recon's trace. It
+learns a trace id and a span id, nothing of the mission. With no SDK, no such header is
+sent.
+
 ## Findings
 
 ### R-1 — generator cleanup silenced to satisfy the type checker (fixed 2026-08-17)

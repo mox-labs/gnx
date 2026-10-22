@@ -14,7 +14,8 @@ attributes OpenTelemetry's HTTP client span conventions (semconv v1.44.0, stable
 ``http.request.method``, ``server.address``, ``server.port``, ``url.full`` and, when there
 is one, ``http.response.status_code``; ``http.request.resend_count`` on a retry; and
 ``error.type`` on a failure: the status code, the httpx2 exception class
-(``httpx2.ConnectError``, ``httpx2.TooManyRedirects``), or ``body_too_large``. ``url.full``
+(``httpx2.ConnectError``, ``httpx2.TooManyRedirects``), or ``body_too_large``. Each send
+carries its span's trace context (``traceparent``) when a sink traces. ``url.full``
 carries no credentials: user information, the source's ``auth.param`` and the convention's
 signature parameters are ``REDACTED``, as they are in an error's message; a failed attempt's
 span message is the status, the exception class or the size refusal, never the URL. A
@@ -345,10 +346,14 @@ class HttpRequester:
                 event_hooks=hooks,
                 transport=self._transport,
             ) as client:
-                request = client.build_request(
-                    method, target, headers=headers or {}, json=json_body
-                )
-                return retrying(lambda: self._attempt(client, request, source, next(resends)))
+
+                def attempt() -> HttpResponse:
+                    request = client.build_request(
+                        method, target, headers=headers or {}, json=json_body
+                    )
+                    return self._attempt(client, request, source, next(resends))
+
+                return retrying(attempt)
         except (httpx2.HTTPStatusError, httpx2.RequestError) as exc:
             status = ""
             snippet = ""
@@ -378,6 +383,8 @@ class HttpRequester:
         self._rate_limiter.acquire(source)
         attributes = _span_attributes(request, source, resend)
         with self._telemetry.span(HTTP_REQUEST, attributes, kind="client") as span:
+            # Each send names its own span as the parent of whatever the server records.
+            request.headers.update(self._telemetry.trace_headers(span))
             try:
                 response = _send(client, request, source, self._clock)
             except _StatusError as exc:

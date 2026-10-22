@@ -2,8 +2,14 @@
 
 :class:`OtelEvents` is a sink. It writes through the OpenTelemetry API's global providers
 (instrumentation scope ``recon``, schema URL of semconv v1.44.0), which do nothing until an
-SDK is installed, so it costs next to nothing when nobody is listening. Its metrics are
-derived from the ``recon.collect`` end events:
+SDK is installed, so it costs next to nothing when nobody is listening. Each span carries
+``recon.event.span``, the id its events have in the survey's event log, so a line of
+``telemetry.jsonl`` is found in the exported trace as the span of that survey's trace (the
+one whose root carries its ``recon.archive``) with that id. While recon's work runs, its span
+is the current one (``around``), so a span another library opens meanwhile nests under it;
+an HTTP request carries its attempt's span as ``traceparent`` (``trace_headers``). When the
+sink is dropped (it raised), ``close`` ends the spans it holds open, as failed, so they are
+exported rather than lost. Its metrics are derived from the ``recon.collect`` end events:
 
 * ``recon.collect.records`` (counter, ``{record}``): records written, by
   ``recon.collector.type``;
@@ -30,12 +36,16 @@ from recon.domain.telemetry import COLLECT, HTTP_REQUEST
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from contextlib import AbstractContextManager
     from datetime import datetime
 
     from recon.domain.telemetry import Event
 
 #: The semantic conventions recon's attributes follow.
 SCHEMA_URL = "https://opentelemetry.io/schemas/1.44.0"
+
+#: The attribute that holds a span's id in the survey's event log.
+EVENT_SPAN = "recon.event.span"
 
 #: The signals recon exports.
 SIGNALS = ("TRACES", "METRICS")
@@ -64,9 +74,10 @@ class OtelEvents:
     def __init__(
         self, version: str, *, tracer_provider: Any = None, meter_provider: Any = None
     ) -> None:
-        from opentelemetry import metrics, trace
+        from opentelemetry import metrics, propagate, trace
 
         self._trace = trace
+        self._propagate = propagate
         self._tracer = trace.get_tracer(
             "recon", version, tracer_provider=tracer_provider, schema_url=SCHEMA_URL
         )
@@ -90,7 +101,7 @@ class OtelEvents:
                 _span_name(event),
                 context=context,
                 kind=kinds.CLIENT if event.kind == "client" else kinds.INTERNAL,
-                attributes=event.attributes,
+                attributes={**event.attributes, EVENT_SPAN: event.span},
                 start_time=_nanoseconds(event.time),
             )
             return
@@ -103,6 +114,35 @@ class OtelEvents:
         span.end(end_time=_nanoseconds(event.time))
         if event.name == f"{COLLECT}.end":
             self._measure(event)
+
+    def around(self, event: Event) -> AbstractContextManager[Any] | None:
+        """The span ``event`` started, current for the work inside it."""
+        span = self._open.get(event.span)
+        if span is None:
+            return None
+        manager: AbstractContextManager[Any] = self._trace.use_span(
+            span, end_on_exit=False, record_exception=False, set_status_on_exception=False
+        )
+        return manager
+
+    def trace_headers(self, span_id: str) -> dict[str, str]:
+        """``traceparent`` (and ``tracestate``) naming the open span ``span_id``; none when
+        nothing records it (no SDK installed)."""
+        span = self._open.get(span_id)
+        if span is None or not span.get_span_context().is_valid:
+            return {}
+        carrier: dict[str, str] = {}
+        self._propagate.inject(carrier, context=self._trace.set_span_in_context(span))
+        return carrier
+
+    def close(self) -> None:
+        """End every span still open, as failed: recon sends this sink nothing more."""
+        for span in reversed(list(self._open.values())):
+            span.set_status(
+                self._trace.StatusCode.ERROR, "recon stopped sending telemetry to this sink"
+            )
+            span.end()
+        self._open.clear()
 
     def _measure(self, event: Event) -> None:
         about = {"recon.collector.type": str(event.attributes.get("recon.collector.type"))}
