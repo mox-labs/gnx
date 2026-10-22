@@ -53,6 +53,7 @@ OptionType = Literal[
     "list",
     "mapping",
     "path",
+    "paths",
     "any",
 ]
 
@@ -268,15 +269,28 @@ def _fits(value: Any, option: Option) -> bool:
             ok = isinstance(value, Mapping)
         case "path":
             ok = isinstance(value, str) and bool(value)
+        case "paths":
+            ok = isinstance(value, list | tuple) and all(map(_a_path, value))
         case _:
             ok = True
     return ok and (not option.allowed or str(value) in option.allowed)
 
 
+def _a_path(item: Any) -> bool:
+    """An item of a ``paths`` option: a path, or a mapping that holds one (``{type: local,
+    path: plugins/lint}``)."""
+    path = item.get("path") if isinstance(item, Mapping) else item
+    return isinstance(path, str) and bool(path)
+
+
+#: A type's name in a sentence, where it is not the name itself.
+_TYPE_WORDS = {"paths": "list of paths"}
+
 _EXAMPLES = {
     "duration": ", such as 60s or 2m",
     "rate": ", a whole number of arrivals such as 80/s or 600/m (2.5/s is 150/m)",
     "path": ", relative to the experiment's directory",
+    "paths": ", each relative to the experiment's directory",
 }
 
 
@@ -317,7 +331,9 @@ def check_options(kind: Kind, options: Mapping[str, Any], path: str) -> list[Pro
             )
         elif not _fits(value, option):
             expected = (
-                f"one of {', '.join(option.allowed)}" if option.allowed else f"a {option.type}"
+                f"one of {', '.join(option.allowed)}"
+                if option.allowed
+                else f"a {_TYPE_WORDS.get(option.type, option.type)}"
             )
             problems.append(
                 problem(

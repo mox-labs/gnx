@@ -27,7 +27,7 @@ import os
 import secrets
 import time
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _installed_version
@@ -61,6 +61,7 @@ from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.adapters._out.matrix_runs import Runs as RunRecords
 from ix.adapters._out.matrix_runs import execute
 from ix.adapters._out.otel_tracing import OtelTracer
+from ix.adapters._out.provenance import checkout, contents, installed
 from ix.adapters._out.registration_file import RegistrationFile
 from ix.application import experiments as use_cases
 from ix.application import running
@@ -75,6 +76,7 @@ from ix.domain.experiment import Experiment
 from ix.domain.genre import Genres, genres
 from ix.domain.kind import KIND_FAMILIES, Kinds, kinds
 from ix.domain.problem import InvalidExperimentError
+from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
 from ix.domain.report import Report, Runs
 from ix.domain.report import report as build_report
 from ix.domain.report import summary as summarize
@@ -100,6 +102,9 @@ except PackageNotFoundError:  # running from a source tree that was never instal
 #: Where an experiment's runs are kept, relative to the experiment's directory, unless the
 #: settings say where every run is kept.
 RUNS_DIRECTORY = ".ix/runs"
+
+#: The distributions whose installed versions each run records.
+RECORDED_VERSIONS = ("ix", "matrix", "hardline")
 
 
 def type_url_problem(name: str) -> str | None:
@@ -424,6 +429,34 @@ class Root:
         absolute = str(Path(base).resolve())
         return use_cases.reviewed(examined, vocabulary, self._built, base=absolute)
 
+    def _digested(self, examined: Examined, vocabulary: Vocabulary, base: str) -> Examined:
+        """``examined`` with what each file and folder its subjects and sensors name holds:
+        what registration freezes and a run is held to."""
+        if examined.experiment is None:
+            return examined
+        named = named_files(examined.experiment, vocabulary.kinds)
+        return replace(examined, contents=contents(named, str(Path(base).resolve())))
+
+    def _provenance(self, directory: str) -> Provenance:
+        """Where a run in ``directory`` runs from: the commit, the installed versions of
+        matrix, ix and hardline, and every runtime installed at matrix's two runtime points
+        with the distribution that registered it."""
+        runtimes = tuple(
+            RuntimeOrigin(
+                type_url=entry.type_url,
+                distribution=entry.origin,
+                version="" if entry.origin == "(direct)" else installed(entry.origin),
+            )
+            for point in (AGENT_RUNTIME, MODEL_RUNTIME)
+            for entry in self._registry.entries(point)
+        )
+        return checkout(directory).model_copy(
+            update={
+                "versions": {name: installed(name) for name in RECORDED_VERSIONS},
+                "runtimes": runtimes,
+            }
+        )
+
     def _stored(self, opened: _Opened) -> Registration | None:
         if opened.registration is None:
             return None
@@ -465,7 +498,7 @@ class Root:
             experiment = use_cases.valid(opened.examined, "planned").experiment
             unstartable, cautions = self._preflight(experiment, str(Path(opened.base).resolve()))
             made = use_cases.make_plan(
-                opened.examined,
+                self._digested(opened.examined, opened.vocabulary, opened.base),
                 opened.vocabulary,
                 self._stored(opened),
                 location=opened.registration.location if opened.registration else "",
@@ -514,7 +547,7 @@ class Root:
             )
         use_cases.require_valid(opened.examined, "registered")
         outcome = use_cases.register(
-            opened.examined,
+            self._digested(opened.examined, opened.vocabulary, opened.base),
             opened.vocabulary,
             self._stored(opened),
             location=opened.registration.location,
@@ -536,7 +569,7 @@ class Root:
         opened = self._open(source, base=base, registration=registration)
         use_cases.require_valid(opened.examined, "compared with its registration")
         return use_cases.find_deviations(
-            opened.examined,
+            self._digested(opened.examined, opened.vocabulary, opened.base),
             opened.vocabulary,
             self._stored(opened),
             location=opened.registration.location if opened.registration else "",
@@ -626,7 +659,7 @@ class Root:
             )
             use_cases.require_valid(examined, "dry run on its stand-ins")
         prepared = running.prepare(
-            examined,
+            self._digested(examined, opened.vocabulary, directory),
             opened.vocabulary,
             stored,
             run=self._run_id(examined.name),
@@ -640,7 +673,9 @@ class Root:
         kit = self._kit(prepared.kinds)
         running.check_startable(prepared.experiment, kit, directory)
         _, cautions = self._preflight(prepared.experiment, directory)
-        manifest = prepared.manifest.model_copy(update={"warnings": cautions})
+        manifest = prepared.manifest.model_copy(
+            update={"warnings": cautions, "provenance": self._provenance(directory)}
+        )
         # A stop request (Ctrl-C, SIGTERM) arrives here as the cancellation it is, after
         # matrix stopped the trial in flight, released what was started and finished the
         # record. The report then says how far the run got.

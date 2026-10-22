@@ -1,9 +1,11 @@
 """Registration: an experiment's design, frozen before anything runs.
 
 A registration stores the resolved design (what the author chose and what the genre
-supplied) and the digests of the probe set, the experiment and the reviewed plan. Whatever
-differs later is a **deviation**: recorded and printed in the report, so a decision cannot
-move after the numbers are in without the reader seeing it. A design value that only one of
+supplied), the digests of the probe set, the experiment and the reviewed plan, and the
+digest of each file and folder the subjects and sensors name (``contents``, see
+:mod:`ix.domain.provenance`). Whatever differs later is a **deviation**: recorded and
+printed in the report, so a decision cannot move after the numbers are in without the
+reader seeing it. A design value that only one of
 two records holds is not compared, so a record written by a newer ix still loads.
 
 **Amending** replaces the frozen design on purpose; the superseded record is kept inside the
@@ -19,6 +21,7 @@ from pydantic import Field, field_validator
 
 from ix.domain import schema
 from ix.domain.errors import EXIT_CODES, ConfigError
+from ix.domain.provenance import Content
 from ix.domain.schema import Record, Stored
 
 if TYPE_CHECKING:
@@ -77,6 +80,8 @@ class Registration(Stored):
     plan_digest: str = ""
     #: The ``ix.v1.design`` document as it stood, without its provenance.
     design: dict[str, Any] = {}
+    #: The digest of each file and folder the subjects and sensors name: what was tested.
+    contents: tuple[Content, ...] = ()
     registered_at: str = ""
     ix_version: str = ""
     #: Earlier registrations this one replaced, oldest first.
@@ -130,10 +135,12 @@ def freeze(
     probes: ProbeSet,
     *,
     plan_digest: str,
+    contents: tuple[Content, ...] = (),
     registered_at: str = "",
     ix_version: str = "",
 ) -> Registration:
-    """The registration of an experiment as it stands now."""
+    """The registration of an experiment as it stands now, ``contents`` being what the
+    files its subjects and sensors name hold."""
     frozen = design.document()
     frozen.pop("provenance", None)
     for metric in frozen.get("metrics", []):
@@ -144,6 +151,7 @@ def freeze(
         probes_digest=probes.digest,
         plan_digest=plan_digest,
         design=frozen,
+        contents=contents,
         registered_at=registered_at,
         ix_version=ix_version,
     )
@@ -166,7 +174,9 @@ def deviations(registered: Registration, current: Registration) -> tuple[Deviati
     """Every frozen value in which ``current`` differs from ``registered``.
 
     Design values are compared path by path over the paths both records hold, so a value an
-    older record never stored is not a deviation. Then the three digests.
+    older record never stored is not a deviation. Then the three digests, then each file
+    and folder the subjects and sensors name, by what it is (``skill review changed after
+    registration``).
     """
     found: list[Deviation] = []
     was = _leaves({k: v for k, v in registered.design.items() if k not in _NOT_COMPARED})
@@ -192,7 +202,44 @@ def deviations(registered: Registration, current: Registration) -> tuple[Deviati
                     message=f"{what} changed after registration",
                 )
             )
+    found += _contents(registered.contents, current.contents)
     return tuple(found)
+
+
+def _contents(registered: tuple[Content, ...], current: tuple[Content, ...]) -> list[Deviation]:
+    """Each file or folder that differs from what was frozen: its digest moved, it was
+    deleted or created, or the experiment stopped or started naming it. A registration that
+    froze no contents (written before ix recorded them) is not compared."""
+    if not registered:
+        return []
+    was = {content.key: content for content in registered}
+    now = {content.key: content for content in current}
+    found: list[tuple[Content, str, str, str]] = []
+    for key, before in was.items():
+        after = now.get(key)
+        if after is None:
+            found.append((before, before.digest, "", "was dropped from the experiment"))
+        elif after.digest != before.digest:
+            how = (
+                "was deleted" if not after.digest
+                else "was created" if not before.digest
+                else "changed"
+            )  # fmt: skip
+            found.append((after, before.digest, after.digest, how))
+    found += [
+        (after, "", after.digest, "was added to the experiment")
+        for key, after in now.items()
+        if key not in was
+    ]
+    return [
+        Deviation(
+            field=content.field,
+            registered=before or None,
+            current=after or None,
+            message=f"{content.label or content.field} {how} after registration",
+        )
+        for content, before, after, how in found
+    ]
 
 
 def amend(

@@ -3,7 +3,8 @@
 A report is a pure function of a run's record. It states the question and the decision the
 experiment declared, the verdict, the estimates behind it, the calibration check, the failures by
 owner, and the warrant: what the verdict rests on and what weakens it (deviations from the
-registration, trials left out, the method's own standing).
+registration, trials left out, the method's own standing), and what it was about: the
+digest of each file the subjects and sensors name, the commit, and the versions that ran it.
 
 **A verdict is a gate result, and only some runs give one.** ``verdict`` is set when the
 genre decides, the run was held to a registration it had not moved away from, it finished,
@@ -41,6 +42,7 @@ from ix.domain.errors import EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT, ConfigError
 from ix.domain.genre import VerdictForm
 from ix.domain.plan import best_case
 from ix.domain.problem import Problem
+from ix.domain.provenance import Content, Provenance
 from ix.domain.registration import Deviation
 from ix.domain.run import RunStatus, cell_key
 from ix.domain.schema import Record
@@ -123,6 +125,12 @@ class Report(Record):
     registered_at: str = ""
     #: How the experiment differed from its registration when the run started.
     deviations: tuple[Deviation, ...] = ()
+    #: What the verdict is about: the digest of each file and folder the subjects and
+    #: sensors name, as the run found them.
+    contents: tuple[Content, ...] = ()
+    #: Where the run ran from: the commit and the versions that ran it. None for a run an
+    #: earlier ix recorded.
+    provenance: Provenance | None = None
     trials: TrialCounts
     #: ``recorded``: by the run. ``derived``: the run ended before its sensors read the
     #: interactions, so the report read them. ``none``: no readings, because none were
@@ -278,6 +286,8 @@ def report(
         stood_in=manifest.stood_in,
         registered_at=str((manifest.registration or {}).get("registered_at", "")),
         deviations=manifest.deviations,
+        contents=manifest.contents,
+        provenance=manifest.provenance,
         trials=counts,
         readings=source,
         analysis=analysis,
@@ -401,6 +411,10 @@ class RunSummary(Record):
     #: for a run whose report could not be computed here.
     verdict: Outcome | None = None
     indication: Outcome | None = None
+    #: The commit the run ran from, and whether a tracked file differed from it; empty for
+    #: a run outside a git work tree.
+    commit: str = ""
+    dirty: bool = False
 
 
 def summary(report: Report) -> RunSummary:
@@ -423,6 +437,8 @@ def summary(report: Report) -> RunSummary:
         mode=mode,
         verdict=report.verdict,
         indication=report.indication,
+        commit=report.provenance.commit if report.provenance else "",
+        dirty=report.provenance.dirty if report.provenance else False,
     )
 
 

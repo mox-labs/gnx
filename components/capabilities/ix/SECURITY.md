@@ -12,13 +12,19 @@ Audience: anyone running ix against an experiment, a genre or a kind they did no
 
 | Command | Reads | Writes |
 |---|---|---|
-| `validate`, `plan`, `deviations` | the experiment file (or standard input, given `-`); genre and kind files; probe files; the registration file; ix's settings; for `plan`, the runs under `.ix/runs` | nothing |
+| `validate`, `plan`, `deviations` | the experiment file (or standard input, given `-`); genre and kind files; probe files; the registration file; ix's settings; for `plan`, the runs under `.ix/runs`; for `plan` and `deviations` (and `register` and `run`, below), every file and folder the subjects and sensors name, to digest it | nothing |
 | `register` | the same | `<file-stem>.registration.json` beside the experiment |
 | `genres`, `kinds`, `--skill` | genre and kind files | nothing |
-| `run` | the same as `validate`, and the environment | `<experiment directory>/.ix/runs/<run id>/` (or under `runs:` in ix's settings); temporary directories it removes; whatever the programs and sessions it starts write |
+| `run` | the same as `plan`, the environment, and the git work tree the experiment sits in | `<experiment directory>/.ix/runs/<run id>/` (or under `runs:` in ix's settings); temporary directories it removes; whatever the programs and sessions it starts write |
 | `report`, `runs` | the experiment file; the runs under `.ix/runs` | nothing |
 
-`run` also **starts**: each `process` subject's `command`, each `process` environment
+`run` also **starts**: `git -c core.fsmonitor=false -C <experiment directory>` three times
+(`rev-parse --is-inside-work-tree`, `rev-parse --verify HEAD`, `status --porcelain
+--untracked-files=no`) to record the commit, with the repository's file-system monitor
+turned off. A repository's own config can still name a program git runs while it reads the
+tree (a clean filter), as it can for any `git status`: the experiment's repository is
+trusted as the experiment is (boundary 6). It also starts each `process` subject's
+`command`, each `process` environment
 service's `command`, `k6` for an `http-load` probe, `ps` for the `memory` sensor, an agent
 session for each trial of an `agent-session` subject (on `claude-sdk`, the Claude Code CLI,
 through the Claude Agent SDK), a model call for each trial of a `model-call` subject (on
@@ -53,9 +59,12 @@ YAML only and imports nothing.
 
 Probes not written inline are read from the `probes/` folder beside the experiment.
 `fixtures`, `skills`, `plugins`, `definition`, `graders` and `rubric_file` are read from
-where they point, relative to the experiment or absolute, as the user running ix. A probe
-file's content goes into the probe set's digest; the plan prints probe ids and the digest,
-not the content. The registration is written beside the experiment file, under a name
+where they point, relative to the experiment or absolute, as the user running ix, and so is
+any other option a kind declares a `path` or `paths`. `plan`, `register`, `deviations` and
+`run` read each of them, every file under a folder with links followed, to digest it. A
+probe file's content goes into the probe set's digest; the plan prints probe ids and the
+digest, not the content. Of the files the subjects and sensors name, the registration and
+the run's record keep the path as written and the digest, never what the file holds. The registration is written beside the experiment file, under a name
 derived from the file's own name.
 
 ### 4. A declaration is a claim, not a control
@@ -175,8 +184,9 @@ or the keys hardline's registry names); ix neither reads nor stores them.
 
 ### 12. The record holds what the run saw
 
-`.ix/runs/` holds the experiment as run (commands, URLs, literal headers), the design, every
-measurement, and for an agent trial the prompt, the reply, every tool call with its input
+`.ix/runs/` holds the experiment as run (commands, URLs, literal headers), the design, the
+path and digest of each file the subjects and sensors name, the commit and the installed
+versions, every measurement, and for an agent trial the prompt, the reply, every tool call with its input
 (the commands a session ran included), each round's transcript and the files collected.
 Keep it out of version control if any of that is private. A record is plain files: it can be
 edited, and `ix report` reports what the files say.
