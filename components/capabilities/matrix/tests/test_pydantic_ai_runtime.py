@@ -417,6 +417,33 @@ async def test_a_tool_whose_module_raises_on_import_fails_the_session_as_a_confi
     assert "tools.boom" in str(raised.value) and error in str(raised.value)
 
 
+async def test_a_tool_whose_import_failed_is_not_imported_again_by_a_later_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module whose import raised is left out of ``sys.modules``, so importing it again
+    runs its top-level code again. The runtime remembers the failure: every later session
+    that offers the tool fails the same way, and the module's import runs once."""
+    ran = tmp_path / "ran"
+    (tmp_path / "counted_at_import.py").write_text(
+        f"with open({str(ran)!r}, 'a') as f:\n"
+        "    f.write('x')\n"
+        "raise RuntimeError('boom at import')\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    runtime = PydanticAiRuntime(
+        _models("never asked"),
+        PydanticAiRuntimeConfig(default_model="q", tools={"boom": "counted_at_import:define"}),
+    )
+    failures = []
+    for _ in range(2):
+        with pytest.raises(AgentRuntimeError) as raised:
+            await runtime.run(_agent(), "define ossify")
+        failures.append((raised.value.reason, raised.value.kind, str(raised.value)))
+    assert failures[0] == failures[1]
+    assert failures[0][:2] == ("incapable", "config") and "RuntimeError" in failures[0][2]
+    assert ran.read_text() == "x"
+
+
 def test_a_tool_in_a_module_of_a_module_is_found_when_built() -> None:
     """Regression: a module whose parent is loaded but is no package (``os.path``) was read
     as not found, though it imports, so ``tools: {join: "os.path:join"}`` was refused."""

@@ -343,8 +343,9 @@ A session is pydantic-ai's agent loop, and every model call in it is a hardline 
 session runs on hardline's registry rows, with their retries, fallbacks, call limits, record
 and telemetry, in any model family hardline has a row for. The runtime's `tools` are Python
 functions named `module:function`: each module is found when the runtime is built, without
-running it, and imported when a session first offers the tool; a function's typed
-parameters and docstring are what the model is told of it. An agent's `tools` choose from them
+running it, and imported when a session first offers the tool. A module whose import fails
+fails that session and every later one that offers the tool, without being imported again. A
+function's typed parameters and docstring are what the model is told of it. An agent's `tools` choose from them
 (unset: all of them; `[]`: none), and `max_turns` bounds its model calls: a session that
 reaches it ends with `stop: max_turns`. Its reply is the run's output; its session row names
 the model that answered last, its finish reason, the usage summed over every call and

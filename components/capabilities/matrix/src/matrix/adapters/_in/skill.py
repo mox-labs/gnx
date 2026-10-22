@@ -705,7 +705,8 @@ Agent runtimes (`matrix.agent_runtimes`):
 - `pydantic-ai`: a pydantic-ai agent loop whose every model call goes through hardline, in
   any family it has a row for. Options: `models` (a hardline registry; else `matrix.models`),
   `default_model`, `tools` (name to `module:function`, a Python function whose module is
-  found when the runtime is built and imported when a session first offers it),
+  found when the runtime is built and imported when a session first offers it; one whose
+  import fails fails every session that offers it, and is not imported again),
   `temperature`, `max_tokens`. An agent's `tools` choose from the
   runtime's (unset: all; `[]`: none); `max_turns` bounds its model calls (`stop: max_turns`).
   A tool it does not have, a model hardline cannot resolve, or tools on a row whose backend
