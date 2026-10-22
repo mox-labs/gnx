@@ -835,6 +835,48 @@ def _trial_positions(root: Root, file: Path) -> dict[tuple[str, str], list[int]]
     return found
 
 
+class _ReadsAFile:
+    """A third party's sensor: reports the ``file`` option it was given."""
+
+    seen: ClassVar[list[str]] = []
+
+    def watch(self, target: Target, options: Any) -> None:
+        return None
+
+    async def sense(self, interaction: Interaction, *, truth: Any, options: Any) -> Any:
+        _ReadsAFile.seen.append(str(options["file"]))
+        return {"lines": 1.0}
+
+
+class TestALabsOwnKinds:
+    def test_reach_the_run_so_a_sensors_path_is_placed(self, write_experiment: Write) -> None:
+        """Regression: the run's kit took the installed kinds only, so a sensor kind a lab
+        declares in ``<lab>/kinds/`` ran without its declaration: its ``path`` option reached
+        the adapter as written, not resolved against the experiment."""
+        registry = fake_registry()
+        sensor = "acme.v1.sensor.reads-file"
+        registry.register(POINTS["sensor"], sensor, _ReadsAFile)
+        file = write_experiment(
+            experiment(sensors=[{"kind": sensor, "file": "data.txt"}], metrics=["lines"])
+        )
+        (file.parent / "kinds").mkdir()
+        (file.parent / "kinds" / "reads-file.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "schema": "ix.v1.kind",
+                    "name": sensor,
+                    "summary": "Reads a file.",
+                    "options": {"file": {"type": "path", "required": True}},
+                    "metrics": [{"name": "lines", "direction": "higher", "shape": "scalar"}],
+                }
+            )
+        )
+        _ReadsAFile.seen.clear()
+        report = Root(registry=registry).run(file, exploratory=True)
+        assert report.status == "completed"
+        assert set(_ReadsAFile.seen) == {f"{file.parent.resolve()}/data.txt"}
+
+
 class TestWhatCannotRun:
     def test_a_kind_with_no_adapter_is_a_warning_a_plan_note_and_a_refusal(
         self, evaluate_data: dict[str, Any], write_experiment: Write

@@ -272,6 +272,11 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   same. Readings are still derived at report time with sensors that call no model; a run
   that used one is reported with `readings: none` and `unread` naming the sensor and the
   fix (run the experiment again).
+- **A lab's own kinds reach the run.** The run built its adapters with the installed kinds'
+  declarations only, so a kind declared in `<lab>/kinds/` validated against its declaration
+  and then ran without it: a sensor's `path` option reached its adapter as written, not
+  resolved against the experiment's directory. The run, the preflight and a report now use
+  the kinds the experiment was validated against.
 
 ## 0.5.0 — 2026-10-19
 

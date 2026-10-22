@@ -325,9 +325,10 @@ class Root:
             for entry in self._registry.entries(POINTS[family])
         )
 
-    def _kit(self, kinds: Collection[str], declared: Kinds | None = None) -> Kit:
+    def _kit(self, kinds: Collection[str], declared: Kinds) -> Kit:
         """The adapters a run of ``kinds`` (type URLs) uses, each built from the registry,
-        with the declarations of those kinds."""
+        with the declarations of those kinds from ``declared``: the installed kinds and the
+        experiment's lab's, as the experiment was validated against."""
 
         def built(family: str) -> dict[str, Any]:
             return {
@@ -336,14 +337,13 @@ class Root:
                 if entry.type_url in kinds
             }
 
-        found = declared if declared is not None else self.kinds()
         return Kit(
             subjects=built("subject"),
             probes=built("probe"),
             sensors=built("sensor"),
             environments=built("environment"),
             clock_ns=time.time_ns,
-            kinds={name: kind for name, kind in found.kinds.items() if name in kinds},
+            kinds={name: kind for name, kind in declared.kinds.items() if name in kinds},
             tracer=self._tracer,
         )
 
@@ -506,7 +506,9 @@ class Root:
             # Check the experiment before the record: an invalid experiment is the first
             # thing to say, whatever state its registration is in.
             experiment = use_cases.valid(opened.examined, "planned").experiment
-            unstartable, cautions = self._preflight(experiment, str(Path(opened.base).resolve()))
+            unstartable, cautions = self._preflight(
+                experiment, str(Path(opened.base).resolve()), opened.vocabulary.kinds
+            )
             made = use_cases.make_plan(
                 self._digested(opened.examined, opened.vocabulary, opened.base),
                 opened.vocabulary,
@@ -588,7 +590,7 @@ class Root:
     # --- running ---
 
     def _preflight(
-        self, experiment: Experiment, base: str
+        self, experiment: Experiment, base: str, declared: Kinds
     ) -> tuple[tuple[str, ...], tuple[Problem, ...]]:
         """What the subjects' adapters can tell before anything starts: why a subject cannot
         start here (``subjects.<name>: <why>``), and what the runtimes they would build warn
@@ -596,7 +598,7 @@ class Root:
         ``subjects.<name>.runtime_options.<option>``: a subject's runtime options are its
         runtime's config."""
         kinds = {schema.url("subject", subject.kind) for subject in experiment.subjects.values()}
-        subjects = self._kit(kinds).subjects
+        subjects = self._kit(kinds, declared).subjects
         reasons: list[str] = []
         cautions: list[Problem] = []
         for name, subject in experiment.subjects.items():
@@ -697,9 +699,9 @@ class Root:
             dry_run=notes,
             overridden=overridden,
         )
-        kit = self._kit(prepared.kinds)
+        kit = self._kit(prepared.kinds, opened.vocabulary.kinds)
         running.check_startable(prepared.experiment, kit, directory)
-        _, cautions = self._preflight(prepared.experiment, directory)
+        _, cautions = self._preflight(prepared.experiment, directory, opened.vocabulary.kinds)
         manifest = prepared.manifest.model_copy(
             update={"warnings": cautions, "provenance": self._provenance(directory)}
         )
@@ -757,7 +759,7 @@ class Root:
         derived = asyncio.run(
             running.sense(
                 setup,
-                self._kit(sensors),
+                self._kit(sensors, self.kinds(setup.base)),
                 trials=record.trials,
                 interactions=record.interactions,
             )
