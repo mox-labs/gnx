@@ -61,7 +61,7 @@ def _alive(pid: int) -> bool:
 async def _until_reached(reached: asyncio.Event, trial: asyncio.Future[None]) -> None:
     """Wait until ``trial`` has reached its subject. A trial that ends first, by failing before
     it got there, raises its error here; waiting on ``reached`` alone would wait forever."""
-    waiting = asyncio.ensure_future(reached.wait())
+    waiting: asyncio.Future[Any] = asyncio.ensure_future(reached.wait())
     await asyncio.wait({waiting, trial}, return_when=asyncio.FIRST_COMPLETED)
     waiting.cancel()
     if trial.done():
@@ -70,7 +70,9 @@ async def _until_reached(reached: asyncio.Event, trial: asyncio.Future[None]) ->
 
 
 class Scope:
-    """A stand-in for whatever runs ix's work: the three members and nothing more."""
+    """A stand-in for whatever runs ix's work: its members and nothing more."""
+
+    run_id = "r"
 
     def __init__(self) -> None:
         self.stopping = asyncio.Event()

@@ -1158,7 +1158,7 @@ class TestFactorsDriveAgentSettings:
         assert report.status == "completed" and report.simulated == "all"
         built = {type(level) for level in configs}
         assert built == {int} and set(configs) == {1, 2, 3}
-        by_cell = {}
+        by_cell: dict[int, int] = {}
         for interaction in _rows(report, "ix.v1.interaction"):
             usage = interaction["observations"]["usage"]
             by_cell.setdefault(usage["rounds"], 0)
@@ -1277,7 +1277,7 @@ class TestTelemetry:
         root.plan(lab)
         report = root.run(lab, exploratory=True)
         spans = exporter.get_finished_spans()
-        assert {span.instrumentation_scope.name for span in spans} == {"ix"}
+        assert {getattr(span.instrumentation_scope, "name", None) for span in spans} == {"ix"}
         names = [span.name for span in spans]
         assert names.count("ix.trial") == 15 and names.count("ix.plan") == 1
         assert names.count("ix.run") == 1 and names.count("ix.sensor") == 30  # 2 sensors

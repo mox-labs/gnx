@@ -28,7 +28,7 @@ def _reading(seq: int, value: bool, **detail: Any) -> Reading:
 
 
 def _trials(probes: dict[str, int]) -> list[Trial]:
-    trials = []
+    trials: list[Trial] = []
     for probe, count in probes.items():
         for _ in range(count):
             trials.append(

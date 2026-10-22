@@ -369,7 +369,7 @@ class TestWhoseFailure:
     async def test_the_runtimes_reason_says_whose(
         self, reason: str, owner: type[Exception], tmp_path: Path
     ) -> None:
-        error = matrix.AgentRuntimeError("it broke", reason=reason)  # type: ignore[arg-type]
+        error = matrix.AgentRuntimeError("it broke", reason=reason)
         with pytest.raises(owner) as failed:
             await _ask(Runtimes(Scripted(error)), {"prompt": "Go."}, base=tmp_path)
         assert failed.value.reason == reason  # type: ignore[attr-defined]
@@ -536,7 +536,7 @@ class TestReview:
 
     def test_a_session_with_no_skill_anywhere(self, tmp_path: Path) -> None:
         activation = _around(tmp_path, ("activation", {}))
-        hermetic = {"setting_sources": []}
+        hermetic: dict[str, Any] = {"setting_sources": []}
         assert self._review(activation, runtime_options=hermetic) == {
             ("subjects.agent.runtime_options.setting_sources", "unobservable")
         }
@@ -1103,7 +1103,9 @@ class TestJudge:
                 self, point: str, name: str, config: Mapping[str, Any], *, cwd: str | None = None
             ) -> Any:
                 built = real.build(point, name, config, cwd=cwd)  # type: ignore[arg-type]
-                self.sdk = built.options(matrix.AgentDefinition(name="judge", tools=()))
+                self.sdk = built.options(
+                    matrix.AgentDefinition(name="judge", system_prompt="", tools=())
+                )
                 return super().build(point, name, config, cwd=cwd)
 
             def takes(self, point: str, name: str) -> frozenset[str] | None:
@@ -1224,7 +1226,7 @@ class TestAModelCall:
     async def test_the_runtimes_reason_says_whose(
         self, reason: str, owner: type[Exception]
     ) -> None:
-        error = matrix.ModelRuntimeError("it broke", reason=reason)  # type: ignore[arg-type]
+        error = matrix.ModelRuntimeError("it broke", reason=reason)
         with pytest.raises(owner) as failed:
             await _call_trial(Runtimes(ScriptedModel(error)), {"prompt": "Go."})
         assert failed.value.reason == reason  # type: ignore[attr-defined]
