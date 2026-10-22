@@ -139,14 +139,17 @@ def discover_sources(project_root: Path | None = None) -> list[ConfigSource]:
     return tiers
 
 
-def merge_tiers(sources: Sequence[ConfigSource]) -> tuple[dict[str, Any], dict[str, str], str]:
+def merge_tiers(
+    sources: Sequence[ConfigSource],
+) -> tuple[dict[str, Any], dict[str, dict[str, str]], str]:
     """Merge tiers: later tiers override earlier ones field by field, per model.
 
-    Returns the merged mapping, a model-name → source map for error attribution, and a
-    one-line description of the tiers consulted.
+    Returns the merged mapping; for each model, ``{field: source}``, the tier that set each
+    field, ordered so the last entry is the last tier that touched the row; and a one-line
+    description of the tiers consulted.
     """
     merged_models: dict[str, dict[str, Any]] = {}
-    origins: dict[str, str] = {}
+    origins: dict[str, dict[str, str]] = {}
     default: Any = None
     consulted: list[str] = []
     for source in sources:
@@ -169,7 +172,10 @@ def merge_tiers(sources: Sequence[ConfigSource]) -> tuple[dict[str, Any], dict[s
             if not isinstance(row, Mapping):
                 raise ConfigError(f"{source.describe()}: models.{name}: must be a mapping")
             merged_models[str(name)] = {**merged_models.get(str(name), {}), **row}
-            origins[str(name)] = source.describe()
+            fields = origins.setdefault(str(name), {})
+            for field in row:
+                fields.pop(str(field), None)  # re-inserted, so the latest tier is last
+                fields[str(field)] = source.describe()
     merged: dict[str, Any] = {"models": merged_models}
     if default is not None:
         merged["default"] = default

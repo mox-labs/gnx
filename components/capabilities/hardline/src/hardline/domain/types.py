@@ -15,6 +15,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from hardline.domain.errors import Reason  # noqa: TC001 -- pydantic reads it at runtime
+
 NAMESPACE = "hardline.v1"
 COMPLETION_TYPE_URL = f"{NAMESPACE}/completion"
 
@@ -157,6 +159,47 @@ class RawCompletion(BaseModel):
     raw: dict[str, Any] = {}
 
 
+class RequestParams(BaseModel):
+    """What was sent to the model that answered, after its row's defaults were applied."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_tokens: int
+    temperature: float | None
+    #: How structured output was asked for; None for a plain completion.
+    structured: StructuredMode | None
+
+
+class Attempt(BaseModel):
+    """One backend call made for a logical call: a retry, a fallback or a schema attempt."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The registry row asked.
+    name: str
+    #: Why the call failed; None for a call that answered.
+    reason: Reason | None = None
+    #: What the provider reported. A failed call reports none, so it costs nothing here.
+    usage: Usage | None = None
+    latency_ms: int
+
+
+class RowRecord(BaseModel):
+    """The registry row that answered, as it was configured.
+
+    ``digest`` is that of the row's whole spec (``ModelSpec.model_dump(mode="json")``); see
+    ``domain/digests.py``. ``rungs`` names, for each field a configuration set, the tier that
+    set it: a file with how it was found (``cwd ./hardline.yaml``), a host's section
+    (``matrix.models``), or the backend's default location. A field not named kept the model's
+    default.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    digest: str
+    rungs: dict[str, str] = {}
+
+
 class Completion(BaseModel):
     """What a caller gets back. Every field needed to ledger the call.
 
@@ -180,7 +223,8 @@ class Completion(BaseModel):
     model: str
     backend: str
     local: bool
-    #: Summed over every call that contributed, retries and repair attempts included.
+    #: Summed over every backend call that reported usage: each of ``attempt_log``. A failed
+    #: call reports none (the provider sends usage with an answer), so it adds nothing.
     usage: Usage
     request_id: str | None
     latency_ms: int
@@ -195,6 +239,15 @@ class Completion(BaseModel):
     native_finish_reason: str | None = None
     #: What the model said when it refused; None when it did not refuse.
     refusal: str | None = None
+    #: What was sent to the model that answered.
+    params: RequestParams | None = None
+    #: Every backend call made, in order, with why each failed.
+    attempt_log: tuple[Attempt, ...] = ()
+    #: The digest of the turns the answering call was sent: for ``extract``, the schema
+    #: instruction and any repair turns included. See ``domain/digests.py``.
+    turns_digest: str | None = None
+    #: The registry row that answered, its digest and the tier that set each field.
+    row: RowRecord | None = None
     raw: dict[str, Any] = {}
 
     @property

@@ -23,26 +23,41 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from hardline.domain.digests import digest
 from hardline.domain.errors import ConfigError, UnknownModelError
-from hardline.domain.types import ModelSpec
+from hardline.domain.types import ModelSpec, RowRecord
 
 _TOP_LEVEL_KEYS = frozenset({"default", "models"})
 
 
-def _format_validation(source: str, name: str, err: ValidationError) -> str:
+def _format_validation(
+    fields: Mapping[str, str], where: str, name: str, err: ValidationError
+) -> str:
+    """One line per issue, each naming the tier that set the field, else ``where``."""
     lines = []
     for issue in err.errors():
         loc = ".".join(str(p) for p in issue["loc"])
         key = f"models.{name}.{loc}" if loc else f"models.{name}"
+        source = fields.get(str(issue["loc"][0]), where) if issue["loc"] else where
         lines.append(f"  {source}: {key}: {issue['msg']}")
     return "\n".join(lines)
 
 
 class ModelRegistry:
-    """An immutable name → ModelSpec table with an optional default."""
+    """An immutable name → ModelSpec table with an optional default.
 
-    def __init__(self, specs: Mapping[str, ModelSpec], default: str | None = None) -> None:
+    ``rungs`` maps a row name to ``{field: tier}``, the tier that set each field the
+    configuration set; ``record(name)`` hands it out with the row's digest.
+    """
+
+    def __init__(
+        self,
+        specs: Mapping[str, ModelSpec],
+        default: str | None = None,
+        rungs: Mapping[str, Mapping[str, str]] | None = None,
+    ) -> None:
         self._specs = dict(specs)
+        self._rungs = {name: dict((rungs or {}).get(name, {})) for name in self._specs}
         if default is not None and default not in self._specs:
             raise ConfigError(
                 f"default model {default!r} is not in the registry. "
@@ -56,12 +71,14 @@ class ModelRegistry:
         data: Mapping[str, Any],
         *,
         source: str = "<config>",
-        origins: Mapping[str, str] | None = None,
+        origins: Mapping[str, Mapping[str, str]] | None = None,
     ) -> ModelRegistry:
         """Validate a ``{default?, models: {...}}`` mapping.
 
-        ``origins`` maps a model name to the source that last defined it, so an error in
-        a merged config still points at the right file.
+        ``origins`` maps a model name to ``{field: source}``, the tier that set each field, in
+        the order the tiers were read. An error in a merged config then points at the file
+        that set the bad field (or, for a missing one, the last file that touched the row), and
+        the registry keeps the map as each row's rungs. Without it, every field is ``source``'s.
         """
         unknown = set(data) - _TOP_LEVEL_KEYS
         if unknown:
@@ -75,34 +92,43 @@ class ModelRegistry:
 
         specs: dict[str, ModelSpec] = {}
         problems: list[str] = []
+        rungs: dict[str, dict[str, str]] = {}
         for name, raw in raw_models.items():
-            where = (origins or {}).get(name, source)
             if not isinstance(raw, Mapping):
-                problems.append(f"  {where}: models.{name}: must be a mapping")
+                problems.append(f"  {source}: models.{name}: must be a mapping")
                 continue
+            fields = dict((origins or {}).get(name) or dict.fromkeys(raw, source))
+            fields.pop("name", None)  # the key names the row; its tiers are its fields'
+            where = next(reversed(fields.values()), source)
             if "name" in raw and raw["name"] != name:
                 problems.append(f"  {where}: models.{name}.name: must match its key or be omitted")
                 continue
             try:
                 specs[str(name)] = ModelSpec.model_validate({**raw, "name": name})
             except ValidationError as e:
-                problems.append(_format_validation(where, str(name), e))
+                problems.append(_format_validation(fields, where, str(name), e))
+            rungs[str(name)] = fields
         if problems:
             raise ConfigError("invalid model registry:\n" + "\n".join(problems))
 
         default = data.get("default")
-        return cls(specs, default=str(default) if default is not None else None)
+        return cls(specs, default=str(default) if default is not None else None, rungs=rungs)
 
     def with_locations(self, defaults: Mapping[str, str]) -> ModelRegistry:
         """This registry with ``defaults[backend]`` written into each row that names no
-        ``base_url``, so every row records where it sends."""
-        specs = {
-            name: spec.model_copy(update={"base_url": defaults[spec.backend]})
-            if spec.base_url is None and spec.backend in defaults
-            else spec
-            for name, spec in self._specs.items()
-        }
-        return ModelRegistry(specs, default=self._default)
+        ``base_url``, so every row records where it sends, and the rung says whose it was."""
+        specs = dict(self._specs)
+        rungs = {name: dict(fields) for name, fields in self._rungs.items()}
+        for name, spec in self._specs.items():
+            if spec.base_url is None and spec.backend in defaults:
+                specs[name] = spec.model_copy(update={"base_url": defaults[spec.backend]})
+                rungs[name]["base_url"] = f"default of backend {spec.backend}"
+        return ModelRegistry(specs, default=self._default, rungs=rungs)
+
+    def record(self, name: str) -> RowRecord:
+        """Row ``name`` as configured: its digest, and the tier that set each field."""
+        spec = self.get(name)
+        return RowRecord(digest=digest(spec.model_dump(mode="json")), rungs=self._rungs[name])
 
     def get(self, name: str | None = None) -> ModelSpec:
         """Look up a model by name, or the default when ``name`` is None."""

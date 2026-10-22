@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Self, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from hardline.domain.digests import turns_digest
 from hardline.domain.errors import (
     BackendError,
     ConfigError,
@@ -39,11 +40,13 @@ from hardline.domain.errors import (
 from hardline.domain.ports._out.backend import CheckedBackend, ClosableBackend
 from hardline.domain.structured import json_candidates, retry_instruction, schema_instruction
 from hardline.domain.types import (
+    Attempt,
     Completion,
     Message,
     ModelSpec,
     RawCompletion,
     Request,
+    RequestParams,
     Structured,
     Usage,
 )
@@ -70,8 +73,24 @@ _RETRY_AFTER_CAP_S = 60.0
 class _Answer:
     raw: RawCompletion
     spec: ModelSpec  # the model that answered
+    request: Request  # what it was sent
     retries: int
-    usage: Usage  # every call this answer cost, failed ones included where reported
+
+
+def _total(log: Sequence[Attempt]) -> Usage:
+    """The usage the calls in ``log`` reported, summed. A failed call reported none."""
+    total = Usage()
+    for attempt in log:
+        if attempt.usage is not None:
+            total = total + attempt.usage
+    return total
+
+
+def _logged[E: BackendError](error: E, log: Sequence[Attempt]) -> E:
+    """``error`` carrying the calls made so far and what they cost, for the caller to read."""
+    error.attempt_log = tuple(log)
+    error.usage = _total(log)
+    return error
 
 
 def _as_messages(messages: Messages, system: str | None) -> tuple[Message, ...]:
@@ -225,11 +244,12 @@ class ModelRuntime:
         spec = self._registry.get(model)
         turns = _as_messages(messages, system)
         started = self._clock()
+        log: list[Attempt] = []
         answer = await self._call(
-            spec, lambda s: self._request(s, turns, None, max_tokens, temperature)
+            spec, lambda s: self._request(s, turns, None, max_tokens, temperature), log
         )
         return self._completion(
-            spec, answer, answer.usage, attempts=1, retries=answer.retries, started=started
+            spec, answer, log, attempts=1, retries=answer.retries, started=started
         )
 
     async def extract(
@@ -256,7 +276,7 @@ class ModelRuntime:
         turns.append(Message(role="user", content=schema_instruction(schema)))
 
         started = self._clock()
-        usage = Usage()
+        log: list[Attempt] = []
         retries = 0
         last_text = ""
         last_error = ""
@@ -268,8 +288,7 @@ class ModelRuntime:
             def build(s: ModelSpec, sent: tuple[Message, ...] = sent) -> Request:
                 return self._request(s, sent, schema, max_tokens, temperature)
 
-            answer = await self._call(spec, build)
-            usage = usage + answer.usage
+            answer = await self._call(spec, build, log)
             retries += answer.retries
             last_text = answer.raw.text
             try:
@@ -280,7 +299,7 @@ class ModelRuntime:
                 turns.append(Message(role="user", content=retry_instruction(last_error)))
                 continue
             completion = self._completion(
-                spec, answer, usage, attempts=attempts, retries=retries, started=started
+                spec, answer, log, attempts=attempts, retries=retries, started=started
             )
             return Structured(value=value, completion=completion)
 
@@ -290,6 +309,8 @@ class ModelRuntime:
             last_text=last_text,
             validation=last_error,
             attempts=attempts,
+            attempt_log=tuple(log),
+            usage=_total(log),
         )
 
     # --- internals -------------------------------------------------------------------
@@ -309,18 +330,32 @@ class ModelRuntime:
             temperature=temperature if temperature is not None else spec.temperature,
         )
 
-    async def _call(self, spec: ModelSpec, build: Callable[[ModelSpec], Request]) -> _Answer:
-        """One logical call: retries on ``spec``, then each fallback, until one answers."""
+    async def _call(
+        self, spec: ModelSpec, build: Callable[[ModelSpec], Request], log: list[Attempt]
+    ) -> _Answer:
+        """One logical call: retries on ``spec``, then each fallback, until one answers.
+
+        Each backend call is appended to ``log``; a BackendError raised from here carries it.
+        """
         retries = 0
         last: BackendError | None = None
         chain = [spec, *(self._registry.get(name) for name in spec.fallbacks)]
         for candidate in chain:
             request = build(candidate)
             for attempt in range(candidate.retries + 1):
+                attempt_started = self._clock()
                 try:
                     raw = await self._attempt(candidate, request)
                 except BackendError as e:
+                    log.append(
+                        Attempt(
+                            name=candidate.name,
+                            reason=e.reason,
+                            latency_ms=self._ms_since(attempt_started),
+                        )
+                    )
                     if not e.retryable:
+                        _logged(e, log)
                         raise
                     last = e
                     if attempt < candidate.retries:
@@ -336,7 +371,14 @@ class ModelRuntime:
                         )
                         await self._sleep(delay)
                     continue
-                return _Answer(raw=raw, spec=candidate, retries=retries, usage=raw.usage)
+                log.append(
+                    Attempt(
+                        name=candidate.name,
+                        usage=raw.usage,
+                        latency_ms=self._ms_since(attempt_started),
+                    )
+                )
+                return _Answer(raw=raw, spec=candidate, request=request, retries=retries)
             if candidate is not chain[-1]:
                 logger.warning(
                     "model %r still failing (%s) after %d retries; falling back",
@@ -346,13 +388,17 @@ class ModelRuntime:
                 )
         assert last is not None  # the loop only falls through after a retryable failure
         tried = ", ".join(c.name for c in chain)
-        raise BackendError(
+        exhausted = BackendError(
             f"model {spec.name!r}: transient failures exhausted retries"
             + (f" and fallbacks ({tried})" if len(chain) > 1 else "")
             + f". Last: {last}",
             reason=last.reason,
             retry_after=last.retry_after,
-        ) from last
+        )
+        raise _logged(exhausted, log) from last
+
+    def _ms_since(self, started: float) -> int:
+        return int((self._clock() - started) * 1000)
 
     def _delay(self, attempt: int, retry_after: float | None) -> float:
         """Full-jitter exponential backoff; a provider's Retry-After, when given, wins."""
@@ -375,13 +421,13 @@ class ModelRuntime:
         self,
         requested: ModelSpec,
         answer: _Answer,
-        usage: Usage,
+        log: Sequence[Attempt],
         *,
         attempts: int,
         retries: int,
         started: float,
     ) -> Completion:
-        spec, raw = answer.spec, answer.raw
+        spec, raw, request = answer.spec, answer.raw, answer.request
         return Completion(
             name=spec.name,
             text=raw.text,
@@ -389,14 +435,22 @@ class ModelRuntime:
             model=raw.model or spec.model,
             backend=spec.backend,
             local=spec.local,
-            usage=usage,
+            usage=_total(log),
             request_id=raw.request_id,
-            latency_ms=int((self._clock() - started) * 1000),
+            latency_ms=self._ms_since(started),
             attempts=attempts,
             retries=retries,
             fallback_from=requested.name if spec.name != requested.name else None,
             finish_reason=raw.finish_reason,
             native_finish_reason=raw.native_finish_reason,
             refusal=raw.refusal,
+            params=RequestParams(
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                structured=spec.structured if request.json_schema is not None else None,
+            ),
+            attempt_log=tuple(log),
+            turns_digest=turns_digest(request.messages),
+            row=self._registry.record(spec.name),
             raw=raw.raw,
         )

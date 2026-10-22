@@ -7,7 +7,10 @@ before wrapping them (see ``adapters/_out/_scrub.py``).
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from hardline.domain.types import Attempt, Usage
 
 #: Why a provider call failed, in terms a caller can act on (cf. Google AIP-193's
 #: machine-readable reason). The first three are transient: the same call may succeed later.
@@ -47,6 +50,11 @@ class BackendError(HardlineError):
     because a retry or another model would hide a configuration fault.
     """
 
+    #: Set by the runtime on the error a caller sees: every backend call the logical call made,
+    #: and the usage those calls reported (an ``extract`` repair that answered included).
+    attempt_log: tuple[Attempt, ...] = ()
+    usage: Usage | None = None
+
     def __init__(
         self, message: str, *, reason: Reason = "unknown", retry_after: float | None = None
     ) -> None:
@@ -74,8 +82,20 @@ class SchemaError(HardlineError):
     what to do with a model that will not produce the shape it was asked for.
     """
 
-    def __init__(self, message: str, *, last_text: str, validation: str, attempts: int) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        last_text: str,
+        validation: str,
+        attempts: int,
+        attempt_log: tuple[Attempt, ...] = (),
+        usage: Usage | None = None,
+    ) -> None:
         super().__init__(message)
         self.last_text = last_text
         self.validation = validation
         self.attempts = attempts
+        #: Every backend call made, and the usage they reported: what the failure cost.
+        self.attempt_log = attempt_log
+        self.usage = usage

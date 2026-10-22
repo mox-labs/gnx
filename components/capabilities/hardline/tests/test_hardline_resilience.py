@@ -15,7 +15,7 @@ import pytest
 from hardline_helpers import mock_runtime
 from pydantic import BaseModel
 
-from hardline import BackendError, ConfigError, Usage
+from hardline import BackendError, ConfigError, SchemaError, Usage
 
 
 class Sleeps:
@@ -158,7 +158,68 @@ async def test_extract_falls_back_and_sums_usage() -> None:
     s = await rt.extract("a", "judge this", Verdict)
     assert s.value.ok is True
     assert s.completion.family == "llama" and s.completion.fallback_from == "a"
-    assert s.completion.usage.output_tokens > 0
+    # F5: this asserted only `> 0`. The failed call reported nothing, so the total is exactly
+    # what b reported for '{"ok": true}' (two words in the mock's count).
+    assert s.completion.usage.output_tokens == 2
+    assert [(t.name, t.reason, t.usage is None) for t in s.completion.attempt_log] == [
+        ("a", "unavailable", True),
+        ("b", None, False),
+    ]
+    assert s.completion.usage == s.completion.attempt_log[-1].usage
+
+
+# --- the attempt log: each row tried, and why it failed (W3.2) -----------------------------
+
+
+async def test_the_attempt_log_names_each_row_tried_and_why() -> None:
+    rt = mock_runtime(
+        {
+            "primary": _row([{"error": "unavailable"}], retries=1, fallbacks=["backup"]),
+            "backup": _row(["from backup"]),
+        },
+        sleep=Sleeps(),
+    )
+    c = await rt.complete("primary", "hi")
+    assert [(t.name, t.reason) for t in c.attempt_log] == [
+        ("primary", "unavailable"),
+        ("primary", "unavailable"),
+        ("backup", None),
+    ]
+    assert all(t.latency_ms >= 0 for t in c.attempt_log)
+
+
+async def test_an_exhausted_chain_carries_its_log_and_what_it_cost() -> None:
+    class Verdict(BaseModel):
+        ok: bool
+
+    # One schema attempt answers (not valid), the repair finds every row down: the first
+    # attempt's tokens were spent, and the error says so rather than dropping them.
+    rt = mock_runtime(
+        {"a": _row(["not json", {"error": "rate_limit"}], retries=0)},
+        sleep=Sleeps(),
+    )
+    with pytest.raises(BackendError) as e:
+        await rt.extract("a", "?", Verdict)
+    assert [(t.name, t.reason) for t in e.value.attempt_log] == [("a", None), ("a", "rate_limit")]
+    assert e.value.usage == e.value.attempt_log[0].usage and e.value.usage.output_tokens == 2
+
+
+async def test_a_fault_raised_at_once_carries_its_log() -> None:
+    rt = mock_runtime({"a": _row([{"error": "auth"}])}, sleep=Sleeps())
+    with pytest.raises(BackendError) as e:
+        await rt.complete("a", "hi")
+    assert [(t.name, t.reason) for t in e.value.attempt_log] == [("a", "auth")]
+
+
+async def test_a_schema_failure_carries_what_it_cost() -> None:
+    class Verdict(BaseModel):
+        ok: bool
+
+    rt = mock_runtime({"a": _row(["nope", "still nope"])})
+    with pytest.raises(SchemaError) as e:
+        await rt.extract("a", "?", Verdict)
+    assert [t.reason for t in e.value.attempt_log] == [None, None]
+    assert e.value.usage.output_tokens == 1 + 2
 
 
 def test_a_repeated_fallback_is_refused() -> None:
