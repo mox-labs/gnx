@@ -795,6 +795,88 @@ class TestThirdPartyRuntimes:
         assert {j["runtime"] for j in on_a_session} == {SCRIPTED}
 
 
+class _Pooled:
+    """What a runtime holding connections per event loop (hardline's clients) is asked: the
+    loop each call or session ran in, then the loop each ``aclose()`` ran in."""
+
+    def __init__(self, log: list[list[tuple[str, object]]]) -> None:
+        self.events: list[tuple[str, object]] = []
+        log.append(self.events)
+
+    def used(self) -> None:
+        self.events.append(("used", asyncio.get_running_loop()))
+
+    async def aclose(self) -> None:
+        self.events.append(("closed", asyncio.get_running_loop()))
+
+
+class PooledModel(Oneshot, _Pooled):
+    async def call(self, request: matrix.ModelRequest) -> matrix.ModelCall:
+        self.used()
+        return await super().call(request)
+
+
+class PooledAgent(Scripted, _Pooled):
+    async def run(self, definition: matrix.AgentDefinition, task: str) -> matrix.AgentResponse:
+        self.used()
+        return await super().run(definition, task)
+
+
+POOLED_MODEL = "acme.v1.model-runtime.pooled"
+POOLED_AGENT = "acme.v1.agent-runtime.pooled"
+
+
+def _pooled(log: list[list[tuple[str, object]]]) -> matrix.Registry:
+    registry = _third_parties()
+
+    def model() -> PooledModel:
+        runtime = PooledModel(log)
+        runtime.answer = lambda prompt: '{"score": 0.7}' if "Rubric:" in prompt else "BANANA"
+        return runtime
+
+    def agent(config: ScriptedConfig) -> PooledAgent:
+        runtime = PooledAgent(log)
+        runtime.answer = lambda task: matrix.AgentResponse(
+            content='{"score": 0.6}' if "Rubric:" in task else "BANANA", num_turns=1
+        )
+        return runtime
+
+    registry.register("model-runtime", POOLED_MODEL, model)
+    registry.register("agent-runtime", POOLED_AGENT, agent, config=ScriptedConfig)
+    return registry
+
+
+class TestEachRuntimeIsClosedInTheLoopThatUsedIt:
+    """Regression (W6.8, ix's half): a ``model-call`` trial, a model judge's reading and
+    each agent round build a runtime and never closed it. hardline keeps a client per event
+    loop and can close it only in that loop, while it runs, so every one was left open
+    until garbage collection, and hardline warned of it when the loop ended."""
+
+    @pytest.mark.parametrize(
+        ("subject", "judge"),
+        [
+            ({"kind": "model-call", "runtime": POOLED_MODEL}, {"model_runtime": POOLED_MODEL}),
+            ({"kind": "agent-session", "runtime": POOLED_AGENT}, {"agent_runtime": POOLED_AGENT}),
+        ],
+    )
+    def test_each_built_runtime_is_closed_after_its_calls_in_their_loop(
+        self, tmp_path: Path, subject: dict[str, Any], judge: dict[str, str]
+    ) -> None:
+        log: list[list[tuple[str, object]]] = []
+        lab = _either(
+            tmp_path, subject, sensors=[{"kind": "judge", "rubric": "Helpful.", **judge}],
+            metrics=["judged_score"],
+        )  # fmt: skip
+        report = Root(registry=_pooled(log), settings=_settings()).run(lab, exploratory=True)
+        assert report.status == "completed"
+        used = [events for events in log if events]
+        assert len(used) >= 2 * 10  # a subject's and a judge's runtime for each trial
+        for events in used:  # each closed once, after its calls, in the loop they ran in
+            kinds = [kind for kind, _ in events]
+            assert kinds == ["used"] * (len(kinds) - 1) + ["closed"], kinds
+            assert len({loop for _, loop in events}) == 1
+
+
 class SandboxConfig(BaseModel):
     """A third party's agent runtime config. It takes an option of claude-sdk's name with a
     meaning of its own (``setting_sources``: where it reads its sandbox's settings from,

@@ -337,7 +337,10 @@ class Session:
             url = matrix.agent_runtime_type_url(self.runtime)
             drives = tuple(self.runtimes.drives(AGENT_RUNTIME, self.runtime))
             bound = matrix.BoundAgent(self.definition, runtime, runtime_url=url, drives=drives)
-        response: matrix.AgentResponse = await bound.run(task)
+        try:
+            response: matrix.AgentResponse = await bound.run(task)
+        finally:
+            await released(runtime)
         return response
 
     async def _failures(self, text: str, feedback: Mapping[str, Any]) -> list[str]:
@@ -890,6 +893,16 @@ def _limit(options: Mapping[str, Any]) -> float:
     """How long one session (every round of it), or one call, may take: the probe's
     ``timeout``."""
     return seconds(options.get("timeout")) or SESSION_TIMEOUT_S
+
+
+async def released(runtime: object) -> None:
+    """Close what ``runtime`` opened for its calls (hardline's clients), if it says how
+    (``aclose``). hardline keeps a client per event loop and can close it only in that loop,
+    while it runs, so whoever made the calls closes the runtime there, once they are done:
+    a runtime is built per round, per call and per reading, and is not used again."""
+    close = getattr(runtime, "aclose", None)
+    if callable(close):
+        await close()
 
 
 @contextmanager
