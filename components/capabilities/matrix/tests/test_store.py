@@ -12,12 +12,14 @@ import textwrap
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from matrix import (
     LEDGER,
     REF,
+    ConfigError,
     Construct,
+    ContractError,
     Executor,
     Inputs,
     JsonlConstructStore,
@@ -332,6 +334,88 @@ async def test_a_run_that_cannot_be_finished_in_the_store_is_a_failed_run() -> N
         await Executor().run(wire({"a": Step(body)}), store=Failing(on_finish=True))
     assert (e.value.kind, e.value.component) == ("store", "$store")
     assert e.value.run.status == "failed" and e.value.run.components["a"].status == "completed"
+
+
+async def test_a_schema_that_raises_any_error_breaks_the_contract_and_the_run_ends_failed(
+    tmp_path: Path,
+) -> None:
+    """A validator may raise what pydantic does not wrap (a TypeError). That is still a row
+    its kind refuses: the component fails, its sibling is stopped before the run returns, and
+    the record says ``failed``."""
+
+    class Strict(BaseModel):
+        seq: int
+
+        @field_validator("seq")
+        @classmethod
+        def _not_negative(cls, value: int) -> int:
+            if value < 0:
+                raise TypeError("negative")
+            return value
+
+    running = asyncio.Event()
+    unwound: list[str] = []
+
+    async def bad(inputs: Inputs, ctx: RunContext) -> Any:
+        await running.wait()
+        return {TRIAL: {"seq": -1}}
+
+    async def sibling(inputs: Inputs, ctx: RunContext) -> Any:
+        running.set()
+        try:
+            await ctx.stopping.wait()
+        finally:
+            unwound.append("sibling")
+
+    store = JsonlConstructStore(tmp_path)
+    wiring = wire(
+        {"bad": Step(bad, provides=[TRIAL]), "sibling": Step(sibling)}, schemas={TRIAL: Strict}
+    )
+    # (The timeout turns "the sibling was orphaned, never asked to stop" into a failure.)
+    with pytest.raises(RunError) as e:
+        async with asyncio.timeout(30):
+            await Executor().run(wiring, store=store, run_id="r")
+    assert (e.value.kind, e.value.cause_kind, e.value.component) == (
+        "run_failed",
+        "contract",
+        "bad",
+    )
+    assert "negative" in str(e.value)
+    assert unwound == ["sibling"] and e.value.run.components["sibling"].reason == "run_failed"
+    assert store.describe("r")["status"] == "failed"
+
+
+async def test_a_run_whose_record_broke_in_an_unforeseen_way_is_recorded_failed() -> None:
+    """Whatever escapes the run (here a store's own error, not a StoreError, while the inputs
+    are recorded) reaches the caller, and the record never says ``completed``."""
+
+    class Refusing(Failing):
+        def append(self, kind: str, row: Any) -> None:
+            raise ConfigError("the bucket is read-only")
+
+    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+        return None
+
+    store = Refusing()
+    wiring = wire({"a": Step(body, requires=[SEED])}, inputs=[SEED])
+    with pytest.raises(ConfigError, match="read-only"):
+        await Executor().run(wiring, {SEED: 1}, store=store, run_id="r")
+    assert store.describe("r")["status"] == "failed"
+
+
+async def test_an_input_that_cannot_be_copied_is_refused_before_the_record_opens(
+    tmp_path: Path,
+) -> None:
+    import threading
+
+    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+        return None
+
+    store = JsonlConstructStore(tmp_path)
+    wiring = wire({"a": Step(body, requires=[SEED])}, inputs=[SEED])
+    with pytest.raises(ContractError, match="must be data"):
+        await Executor().run(wiring, {SEED: {"lock": threading.Lock()}}, store=store, run_id="r")
+    assert store.runs() == [] and not (tmp_path / "r").exists()
 
 
 async def test_a_jsonl_writer_refuses_a_kind_the_run_has_no_table_for(tmp_path: Path) -> None:

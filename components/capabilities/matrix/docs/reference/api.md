@@ -345,7 +345,8 @@ async Executor.run(
 
 1. `inputs` must hold exactly the declared run inputs, or `ConfigError` lists a problem for
    each missing (`inputs.<kind>`, `missing_key`) and unknown (`unknown_key`) one. Each maps a kind to one row, or to a list or tuple of rows. Each row is
-   validated against its kind's schema, if one is registered (`ContractError` otherwise).
+   validated against its kind's schema, if one is registered, and copied: a row its schema
+   refuses, or one that cannot be copied, is a `ContractError`.
    A name in `limits.components` that is not in the wiring is a `ConfigError`
    (`limits.components.<name>`, `name_unknown`). A `reuse` whose components depend on one
    that is not reused is a `ConfigError`. All of this is checked before anything runs.
@@ -361,7 +362,7 @@ async Executor.run(
 4. Rows a component hands over with `ctx.provide` are recorded then. What it returns is
    recorded when it ends: every returned row is checked first, and if one fails none is
    recorded. A row of an undeclared kind, a return value that is not a mapping, or a row that
-   fails its kind's schema is a `ContractError`.
+   fails its kind's schema (whatever its validator raises) is a `ContractError`.
 5. A component that raises becomes a `ComponentError` (a `MatrixError` it raises keeps its own
    kind); a component past its deadline is a `ComponentError` saying so, with
    `details["reason"] == "timeout"`. A failure its retry policy covers is run again first.
@@ -381,7 +382,10 @@ async Executor.run(
    failed one.
 8. When the run ends, every release registered with `ctx.defer` is called, last registered
    first, each bounded by `cleanup_s`, whatever the run's status. A synchronous release runs
-   on the event loop and is not bounded. Then the store's record is finished.
+   on the event loop and is not bounded. Then the store's record is finished. An error that
+   escapes the executor itself (a defect, or a store's error that is not a `StoreError`)
+   reaches the caller after the same steps, and the record says `failed`, never
+   `completed`.
 
 Cancelling the task that awaits `run` (directly, or through Ctrl-C or SIGTERM) stops every
 running component by the same sequence, skips the rest, calls the releases, and then raises

@@ -34,6 +34,18 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   already returned when the stop was requested is `completed`, with no reason. A consumer
   that reads component endings must tolerate the new state, as the vocabulary is open.
 
+### Fixed
+
+- **A run's record no longer says `completed` when the executor raised.** A schema validator
+  that raised something pydantic does not wrap (a `TypeError`) escaped the executor raw: the
+  other components were left running, releases ran under them, and `run.json` said
+  `completed`. Any error from checking or recording a component's rows is now a
+  `ContractError` that fails that component, and whatever else escapes the run marks it
+  `failed` before it reaches the caller.
+- **An input row that cannot be copied is refused before the record opens**, as the other
+  input checks are. It used to open the run and leave a `completed` record with no
+  components.
+
 ### Security
 
 - **No content leaves through OpenTelemetry by default.** The `otel` observer exported every

@@ -345,8 +345,9 @@ class Executor:
         reuse do not fit the wiring.
         """
         limits = limits or Limits()
-        supplied = {kind: _rows(value) for kind, value in (inputs or {}).items()}
-        _check_inputs(wiring, supplied, limits)
+        supplied = _check_inputs(
+            wiring, {kind: _rows(value) for kind, value in (inputs or {}).items()}, limits
+        )
         if reuse is not None:
             _check_reuse(wiring, reuse)
         run = Run(
@@ -423,9 +424,12 @@ def _check_reuse(wiring: Wiring, reuse: Reuse) -> None:
         )
 
 
-def _check_inputs(wiring: Wiring, supplied: Mapping[str, tuple[Any, ...]], limits: Limits) -> None:
-    """Raise ConfigError unless ``supplied`` holds exactly the run inputs, each row meets its
-    kind's schema, and ``limits`` names only components of the run."""
+def _check_inputs(
+    wiring: Wiring, supplied: Mapping[str, tuple[Any, ...]], limits: Limits
+) -> dict[str, tuple[Any, ...]]:
+    """The run's own copy of ``supplied``, once it holds exactly the run inputs, each row meets
+    its kind's schema and can be copied, and ``limits`` names only components of the run.
+    Raises ConfigError, or ContractError for a row, before the run's record is opened."""
     problems = [
         problem(
             f"inputs.{kind}",
@@ -463,6 +467,7 @@ def _check_inputs(wiring: Wiring, supplied: Mapping[str, tuple[Any, ...]], limit
     for kind, rows in supplied.items():
         for row in rows:
             _validate(wiring, kind, row, where=f"input {kind!r}")
+    return {kind: tuple(_private(row, kind) for row in rows) for kind, rows in supplied.items()}
 
 
 def _open(store: ConstructStore, run: Run) -> RunWriter:
@@ -687,6 +692,9 @@ class _Session:
         if reuse is not None:
             fields["reused_from"] = reuse.run_id
         self.emit(RUN_START, span=run.run_id, fields=fields, parent=None)
+        #: What escaped the run, if anything did: matrix's own defect, or an error nobody
+        #: classified. The run then did not complete, whatever its failures say.
+        escaped: BaseException | None = None
         try:
             try:
                 for kind, rows in supplied.items():
@@ -697,13 +705,22 @@ class _Session:
             if reuse is not None and self._halted is None:
                 self._reuse(reuse)
             await self._schedule()
+        except BaseException as e:
+            escaped = e
+            raise
         finally:
             # Settled before the releases run: a cancellation that arrives while they do
             # still reaches the caller, but it did not stop any component.
-            cancelled = self._cancelled
+            cancelled = self._cancelled or isinstance(escaped, asyncio.CancelledError)
             await self._release()
             run.ended = datetime.now(UTC)
-            run.status = "cancelled" if cancelled else "failed" if run.failures else "completed"
+            run.status = (
+                "cancelled"
+                if cancelled
+                else "failed"
+                if run.failures or escaped is not None
+                else "completed"
+            )
             self._finish()
             self.emit(
                 RUN_END,
@@ -990,7 +1007,16 @@ class _Session:
             )
             failure.__cause__ = raised
             return _Outcome("failed", failure)
-        self._commit(step, task.result())
+        try:
+            self._commit(step, task.result())
+        except MatrixError:
+            raise
+        except Exception as e:
+            raise ContractError(
+                f"component {name!r}: what it returned could not be recorded: "
+                f"{type(e).__name__}: {e}",
+                component=name,
+            ) from e
         if on_deadline:
             return _Outcome("failed", overran)
         return _Outcome("completed" if step.progress.reason is None else "stopped")
@@ -1179,3 +1205,9 @@ def _validate(wiring: Wiring, kind: str, row: Any, *, where: str) -> None:
             for err in e.errors()
         )
         raise ContractError(f"{where}: row is not a valid {kind}: {issues}", table=kind) from None
+    except Exception as e:
+        # A validator may raise what pydantic does not wrap (a TypeError, say): the schema
+        # still refused the row.
+        raise ContractError(
+            f"{where}: row is not a valid {kind}: {type(e).__name__}: {e}", table=kind
+        ) from e
