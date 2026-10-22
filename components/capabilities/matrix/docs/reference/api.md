@@ -221,7 +221,8 @@ components.
 registered schema, appended to the Construct, and is durable in the run's store. It raises
 `ContractError` for a kind the component does not provide or a row that fails the schema, and
 `StoreError` when the store could not keep the row (the run then fails with kind `store`,
-whatever the component does with the exception).
+whatever the component does with the exception). Once the store has failed, every later
+`provide` in the run raises `StoreError` too, so no call returns for a row the record lacks.
 
 A name given to `emit`, `measure` or `span` is dotted lower-case with at least two segments,
 and not under `matrix.*`; anything else is a `ContractError`. After the component has ended
@@ -379,7 +380,7 @@ async Executor.run(
    One that had already returned when the stop was requested is `completed`.
 7. A store that cannot keep a row, or cannot finish the run, fails the run: `RunError` with
    kind `store`, whatever `on_failure` says. No row is appended to that record after the
-   failed one.
+   failed one, nor kept in the run's Construct: a later `ctx.provide` raises `StoreError`.
 8. When the run ends, every release registered with `ctx.defer` is called, last registered
    first, each bounded by `cleanup_s`, whatever the run's status. A synchronous release runs
    on the event loop and is not bounded. Then the store's record is finished. An error that

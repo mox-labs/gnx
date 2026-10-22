@@ -136,6 +136,23 @@ def test_the_ledger_entry_is_written_before_its_row() -> None:
     assert isinstance(written[2][1], LedgerEntry) and written[2][1].row == 1
 
 
+def test_after_a_failed_write_through_every_append_is_refused() -> None:
+    written: list[str] = []
+
+    def sink(kind: str, row: Any) -> None:
+        if len(written) == 1:
+            raise OSError("no space left on device")
+        written.append(kind)
+
+    construct = Construct([TRIAL])
+    construct.write_through(sink)
+    with pytest.raises(OSError):
+        construct.append(TRIAL, {"seq": 0}, component="trials")
+    with pytest.raises(StoreError, match="no space left on device"):
+        construct.append(TRIAL, {"seq": 1}, component="trials")
+    assert written == [LEDGER] and construct.rows(TRIAL) == () and len(construct) == 0
+
+
 def test_a_ledger_entry_whose_row_never_landed_is_reported_as_torn(tmp_path: Path) -> None:
     entries = [
         {"seq": 0, "kind": TRIAL, "row": 0, "component": "trials", "time": "2026-01-01T00:00:00Z"},
@@ -307,6 +324,38 @@ async def test_a_store_that_fails_fails_the_run_with_kind_store() -> None:
     assert store.appends == 4  # and nothing was written after the failure
     loaded = store.load(run.run_id)
     assert loaded.rows(TRIAL) == ({"seq": 0},) and [t.row for t in loaded.torn] == [1]
+
+
+async def test_a_row_handed_over_after_the_store_failed_is_refused_not_kept_in_memory() -> None:
+    """Under ``isolate`` a sibling may still be running when the store fails. Its next
+    ``provide`` raises: a row that returned normally would be one the record lacks."""
+    failed = asyncio.Event()
+    refused: list[BaseException] = []
+
+    async def first(inputs: Inputs, ctx: RunContext) -> Any:
+        try:
+            ctx.provide(TRIAL, {"seq": 0})
+        finally:
+            failed.set()
+
+    async def second(inputs: Inputs, ctx: RunContext) -> Any:
+        await failed.wait()
+        try:
+            ctx.provide(READING, "kept?")
+        except StoreError as e:
+            refused.append(e)
+            raise
+
+    store = Failing(on_append=2)  # the first row's ledger entry lands, the row does not
+    wiring = wire(
+        {"first": Step(first, provides=[TRIAL]), "second": Step(second, provides=[READING])}
+    )
+    with pytest.raises(RunError) as e:
+        await Executor().run(wiring, store=store, limits=Limits(on_failure="isolate"))
+    run = e.value.run
+    assert len(refused) == 1 and store.appends == 2
+    assert run.components["second"].status == "failed"
+    assert run.rows(READING) == () and store.load(run.run_id).rows(READING) == ()
 
 
 async def test_a_returned_row_or_an_input_the_store_cannot_keep_fails_the_run() -> None:

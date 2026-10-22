@@ -173,7 +173,8 @@ The store contract:
   rewritten.
 - `append(kind, row)` is durable when it returns. A store that cannot append, or cannot
   finish, fails the run: `RunError` with kind `store`. After one failed append no row is
-  appended to that record; the store is still asked to finish it, as `failed`.
+  appended to that record, and none is kept in memory either: a later `ctx.provide` raises
+  `StoreError`. The store is still asked to finish the record, as `failed`.
 - `load` works on a run in any state. From the JSONL store rows come back as JSON data, not
   as the Python objects that produced them (a pydantic model comes back as a dict).
 - `describe` returns `status` as recorded for a finished run. For one that never finished it

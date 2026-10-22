@@ -42,6 +42,10 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   `completed`. Any error from checking or recording a component's rows is now a
   `ContractError` that fails that component, and whatever else escapes the run marks it
   `failed` before it reaches the caller.
+- **After a store fails, `ctx.provide` raises every time.** A component still running
+  after a failed append (under `isolate`, or within its grace) could hand over a row,
+  have the call return normally, and end `completed`, though the row was only in memory.
+  Every append after a failed write-through now raises `StoreError`.
 - **An input row that cannot be copied is refused before the record opens**, as the other
   input checks are. It used to open the run and leave a `completed` record with no
   components.
