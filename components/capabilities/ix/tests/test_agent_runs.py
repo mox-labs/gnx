@@ -1404,6 +1404,47 @@ class TestAPromptReachesTheAgentAsWritten:
         assert Loop(strategy="self-review", until="{{done}} {}").until == "{done} {}"
 
 
+class TestTheLiveGuardIsOnIxsPath:
+    """ix-tests F12: the workspace guard replaces the calls where a session or a model call
+    reaches a provider, and its own check reads only that the names are replaced. These
+    hold that a run through ix calls those very names, so the guard is in ix's path too. In
+    case one ever is not, each first points the provider at a closed port, away from this
+    user's config and keys."""
+
+    @pytest.fixture(autouse=True)
+    def _nowhere(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+        for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_a_claude_sdk_session_reaches_the_guard(
+        self, tmp_path: Path, refused_live_calls: list[str]
+    ) -> None:
+        lab = _either(tmp_path, {"kind": "agent-session", "runtime": "claude-sdk",
+                                 "runtime_options": {"setting_sources": []}})  # fmt: skip
+        report = Root(settings=_settings()).run(lab, exploratory=True)
+        refused = list(refused_live_calls)
+        refused_live_calls.clear()  # before anything can fail: what is left fails the test
+        assert report.trials.carried_out == 10
+        assert refused and set(refused) == {"claude_agent_sdk.query"}
+
+    def test_a_hardline_model_call_reaches_the_guard(
+        self, tmp_path: Path, refused_live_calls: list[str]
+    ) -> None:
+        row = {"backend": "openai-compat", "model": "q-1", "family": "q",
+               "base_url": "http://127.0.0.1:9/v1"}  # fmt: skip
+        settings = matrix.Config[IxSettings](
+            client=IxSettings(), matrix=matrix.MatrixConfig(models={"models": {"q": row}})
+        )
+        lab = _either(tmp_path, {"kind": "model-call", "runtime": "hardline", "model": "q"})
+        report = Root(settings=settings).run(lab, exploratory=True)
+        refused = list(refused_live_calls)
+        refused_live_calls.clear()  # before anything can fail: what is left fails the test
+        assert report.trials.carried_out == 10
+        assert refused and set(refused) == {"hardline.adapters._out._http.network_transport"}
+
+
 class TestATextCheck:
     """Regression: a rule like "the reply starts with BANANA" needed a graders module."""
 
