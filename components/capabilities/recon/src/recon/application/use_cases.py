@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 from recon.application.captures import record_hook_payload
 from recon.application.plan import Plan, build_plan, plugin_warning
-from recon.application.survey import ARCHIVE_ID_FORMAT, EventCallback, Survey
+from recon.application.survey import EventCallback, Survey
+from recon.domain.archives import ARCHIVE_ID_FORMAT
 from recon.domain.documents import (
     ArchiveStatus,
     BrokenPluginInfo,
@@ -176,9 +177,10 @@ class Recon:
         replace: bool = False,
         on_event: EventCallback | None = None,
     ) -> SurveyDocument:
-        """Plan, then run every table and write one archive. A survey whose tables failed
-        still returns its document (``status: incomplete``);
-        :func:`~recon.domain.documents.survey_failure` says what the failures add up to.
+        """Plan, then run every table and write one archive. A survey whose tables failed,
+        or whose archive could not be finished, still returns its document (``status:
+        incomplete``); :func:`~recon.domain.documents.survey_failure` says what that adds up
+        to.
         Each table written that SQL cannot read is a ``table_unreadable`` warning, so it is
         found here rather than by the first query."""
         source, plan, copy_to = self._prepare(name, config, replace)
@@ -224,6 +226,8 @@ class Recon:
             span.set("recon.records", sum(t.records for t in tables))
             if (kind := failure_kind(tables)) is not None:
                 span.fail(kind, f"{len(failed_tables)} of {len(tables)} table(s) failed")
+            elif not survey.finished:
+                span.fail("run_failed", "the archive could not be finished")
             warnings += survey.warnings
             for unreadable in self._query.unreadable(archive):
                 warnings.append(unreadable)
@@ -232,7 +236,7 @@ class Recon:
         return SurveyDocument(
             mission=name,
             archive=str(archive),
-            status="incomplete" if failed_tables else "ok",
+            status="incomplete" if failed_tables or not survey.finished else "ok",
             tables=tables,
             warnings=[w.document() for w in warnings + _dropped(telemetry)],
         )
@@ -250,7 +254,13 @@ class Recon:
                 fix=f"recon init {name} --template <name> (see `recon templates`), "
                 f"or recon survey {name} -c <config.yaml>",
             ) from exc
-        plan = build_plan(source.data, self._plugins, self._env, base=self._missions.project)
+        plan = build_plan(
+            source.data,
+            self._plugins,
+            self._env,
+            base=self._missions.project,
+            is_directory=self._missions.is_directory,
+        )
         if not plan.valid:
             raise ConfigError(
                 f"{path}: {len(plan.problems)} problem(s)",
@@ -320,7 +330,7 @@ class Recon:
                     type_url=t.get("type_url"),
                     status=t.get("status"),
                     records=t.get("records"),
-                    error=TableError.model_validate(t["error"]) if t.get("error") else None,
+                    error=_table_error(t.get("error")),
                 )
                 for t in meta["tables"]
             ],
@@ -328,19 +338,23 @@ class Recon:
 
     def query(self, name: str, sql: str, *, archive_id: str | None = None) -> QueryRows:
         """Run ``sql`` against the latest archive, or the one named. ``state`` says whether
-        the archive is incomplete, so its rows may be partial."""
+        the archive is incomplete, so its rows may be partial. A row is an object keyed by
+        column, so a name the SQL gives twice is made unique, in ``columns`` and every row,
+        with the suffix DuckDB gives it in a subquery (``a``, ``a_1``, then ``a_1_1`` on a
+        further clash)."""
         archive = self._archive(name, archive_id)
         telemetry = self._telemetry(None)
         with telemetry.span(QUERY, {"recon.mission": name, "recon.archive": archive.name}) as span:
             result = self._query.execute(archive, sql)
             span.set("recon.rows", len(result.rows))
-        rows = [dict(zip(result.columns, row, strict=True)) for row in result.rows]
+        columns = _unique(result.columns)
+        rows = [dict(zip(columns, row, strict=True)) for row in result.rows]
         return QueryRows(
             mission=name,
             archive=str(archive),
             archive_id=archive.name,
             state="incomplete" if self._archives.is_incomplete(archive) else "ok",
-            columns=result.columns,
+            columns=columns,
             rows=rows,
             count=len(rows),
             warnings=[w.document() for w in result.warnings + _dropped(telemetry)],
@@ -382,6 +396,31 @@ class Recon:
             return record_hook_payload(self._missions.capture_log(name), payload)
         except ConfigError as exc:
             raise ConfigError(str(exc), fix="run recon capture from a PostToolUse hook") from exc
+
+
+def _unique(columns: list[str]) -> list[str]:
+    """``columns``, each name already taken given ``_1`` until it is not."""
+    taken: set[str] = set()
+    unique = []
+    for column in columns:
+        while column in taken:
+            column = f"{column}_1"
+        taken.add(column)
+        unique.append(column)
+    return unique
+
+
+def _table_error(error: Any) -> TableError | None:
+    """A table's error as ``meta.yaml`` holds it, read for the fields this recon knows: one
+    a newer recon wrote may carry more, and is not refused for them."""
+    if not isinstance(error, dict):
+        return None
+    fix = error.get("fix")
+    return TableError(
+        kind=str(error.get("kind", "unknown")),
+        message=str(error.get("message", "")),
+        fix=fix if isinstance(fix, str) else None,
+    )
 
 
 def _text(value: Any) -> str | None:

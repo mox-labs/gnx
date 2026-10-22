@@ -94,11 +94,11 @@ The codes up to 9 are the ones every gnx capability CLI agrees on; recon's own k
 | 5 | `transient`: retry later |
 | 6 | `auth`: a credential was refused |
 | 7 | `conflict`: `init` or `survey -c` would overwrite a different mission config; `--replace` overwrites it |
-| 8 | `run_failed`: a table failed, not only on credentials or transiently; the archive is kept (a table's own unclassified error carries the same kind) |
+| 8 | `run_failed`: a table failed, not only on credentials or transiently, or the archive could not be finished; the archive is kept (a table's own unclassified error carries the same kind) |
 | 10 | `query`: the SQL failed or reached outside the mission's archives |
 | 130 | `interrupted`: Ctrl-C or SIGTERM |
 
-A survey in which any table failed still writes its archive (marked `.incomplete`) and still reports every table's status, then exits **6** if any table failed on credentials, **5** if every failure was transient, and **8** otherwise. Every failure, a usage error and Ctrl-C included, prints one envelope on stderr (one JSON line under `--json`), the shape the capability CLIs agree on: `{"schema": "recon.v1.error", "error": {"kind", "message", "fix", "complete", "problems", "details"}}`. Each problem is `{path, kind, message, fix, allowed, got, source}`, its `path` dotted from the top of the config (`collectors.0.type`) and its `kind` from the shared vocabulary (`unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, ...). `complete` is false when part of the config could not be checked, so more problems may follow the fixes. Warnings travel inside the `--json` document, as problem records in its `warnings` list: among them `fan_out_mixed` (a plan's unpinned collector would run against sources of different types), `extract_missing` (a survey's table of a collector without `extract:` got one record holding a list of objects, the path to set as `extract:` named) and `table_unreadable` (a survey wrote, or a query's archive has, a table SQL cannot read).
+A survey in which any table failed still writes its archive (marked `.incomplete`) and still reports every table's status, then exits **6** if any table failed on credentials, **5** if every failure was transient, and **8** otherwise. A survey whose every table succeeded but whose `meta.yaml` or completion marker could not be written (a full disk) reports `status: incomplete` with an `archive_unfinished` warning, and exits **8** too. Every failure, a usage error and Ctrl-C included, prints one envelope on stderr (one JSON line under `--json`), the shape the capability CLIs agree on: `{"schema": "recon.v1.error", "error": {"kind", "message", "fix", "complete", "problems", "details"}}`. Each problem is `{path, kind, message, fix, allowed, got, source}`, its `path` dotted from the top of the config (`collectors.0.type`) and its `kind` from the shared vocabulary (`unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, ...). `complete` is false when part of the config could not be checked, so more problems may follow the fixes. Warnings travel inside the `--json` document, as problem records in its `warnings` list: among them `fan_out_mixed` (a plan's unpinned collector would run against sources of different types), `extract_missing` (a survey's table of a collector without `extract:` got one record holding a list of objects, the path to set as `extract:` named), `table_unreadable` (a survey wrote, or a query's archive has, a table SQL cannot read) `archive_unfinished` (the survey could not write `meta.yaml` or mark its archive complete), and `extract_unresolved`, `records_not_objects` and `captures_unmatched`, each for a table kept empty because recon could not find or keep its records (an `extract:` that resolves to nothing in a response that is not empty, items that are not objects, captures no filter kept), so an empty table never reads as a source that had nothing.
 
 ## Archives
 
@@ -110,11 +110,12 @@ A survey in which any table failed still writes its archive (marked `.incomplete
                        fix} (null for a table that succeeded)
   telemetry.jsonl      the survey's recon.v1.event lines (see Telemetry); not a table
   .incomplete          written first, removed once meta.yaml is written and every table
-                       succeeded: a failed table, Ctrl-C, SIGTERM or a kill leaves it
+                       succeeded: a failed table, Ctrl-C, SIGTERM, a kill or a meta.yaml
+                       that could not be written leaves it
   captures.jsonl, raw/ the capture log, when preserve_raw: true
 ```
 
-A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`).
+A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`), and read a `meta.yaml` from a newer recon for the fields they know. Only a directory named as a survey names its archive (`2026-04-01-143022-000000`) is an archive: another directory under `archive/` is left alone.
 
 ## Capture logs
 

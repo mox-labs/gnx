@@ -181,6 +181,40 @@ class TestSurvey:
         assert tables["ok"]["status"] == "ok", "every table's status is still reported"
         assert [tables[f"t{i}"]["error"]["kind"] for i in range(len(kinds))] == kinds
 
+    @pytest.mark.parametrize("step", ["write_meta", "mark_complete"])
+    def test_an_archive_that_could_not_be_finished_is_incomplete_and_fails(
+        self, project, monkeypatch, step
+    ):
+        """Regression: a survey whose ``meta.yaml`` or completion step failed (a full disk)
+        said ``status: ok`` and exited 0, and under --json the one word of it, an event,
+        went nowhere; the archive stayed incomplete and only a later query said so."""
+
+        def fails(self, archive, *args):
+            raise OSError(28, "No space left on device")
+
+        unfinished = type("Unfinished", (composition.ArchiveFiles,), {step: fails})
+        monkeypatch.setattr(composition, "ArchiveFiles", unfinished)
+        _mission(project, "m", OK_CONFIG)
+        result = _invoke("survey", "m", "--json")
+
+        assert result.exit_code == 8
+        doc = _doc(result)
+        assert doc["status"] == "incomplete"
+        assert [t["status"] for t in doc["tables"]] == ["ok"]
+        [warning] = [w for w in doc["warnings"] if w["kind"] == "archive_unfinished"]
+        assert "No space left on device" in warning["message"]
+        assert warning["kind"] in recon.PROBLEM_KINDS
+        error = _error(result)
+        assert error["kind"] == "run_failed"
+        assert "could not be finished" in error["message"]
+        assert error["details"] == {"archive": doc["archive"], "failed": []}
+        assert (Path(doc["archive"]) / ".incomplete").exists()
+
+        human = _invoke("survey", "m")
+        assert human.exit_code == 8
+        assert "No space left on device" in human.stderr
+        assert "error (run_failed):" in human.stderr
+
     def test_no_config_is_not_found(self, project):
         result = _invoke("survey", "nope", "--json")
         assert result.exit_code == 4
@@ -409,6 +443,37 @@ class TestQuery:
         assert doc["rows"] == [{"a": 1}, {"a": 2}]
         assert doc["count"] == 2
 
+    def test_columns_that_share_a_name_are_all_kept(self, project):
+        """Regression: ``SELECT h.a, g.a`` printed ``columns: ["a", "a"]`` but each row held
+        one ``a``: a row is an object, and the second value overwrote the first. Repeated
+        names are made unique as DuckDB makes them in a subquery (``a_1``, then ``a_1_1``
+        on a further clash), in ``columns`` and in every row alike."""
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        sql = "SELECT h.a, g.a, 0 AS a_1 FROM hello h, hello g WHERE h.a = 1 AND g.a = 2"
+
+        doc = _doc(_invoke("query", "m", sql, "--json"))
+
+        assert doc["columns"] == ["a", "a_1", "a_1_1"]
+        assert doc["rows"] == [{"a": 1, "a_1": 2, "a_1_1": 0}]
+        human = unstyle(_invoke("query", "m", sql).stdout)
+        assert "a_1_1" in human and "2" in human
+
+    def test_an_empty_table_answers_a_query_of_its_columns(self, project):
+        """Regression: a collector whose source had nothing wrote a table whose view had only
+        ``_empty``, and ``SELECT title FROM <table>`` failed (exit 10) where the same query
+        on a full archive ran."""
+        mission = {
+            "collectors": [
+                {"name": "hits", "type": "cli", "run": "true", "normalize": {"title": "line"}}
+            ]
+        }
+        _mission(project, "m", mission)
+        assert _invoke("survey", "m").exit_code == 0
+        result = _invoke("query", "m", "SELECT title FROM hits", "--json")
+        assert result.exit_code == 0, result.stderr
+        assert _doc(result)["rows"] == []
+
     def test_zero_rows_is_still_a_document(self, project):
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
@@ -528,6 +593,60 @@ class TestAnUnreadableTable:
         assert error["kind"] == "query"
         assert "$inverted_index" in error["fix"] and "read_ndjson_objects" in error["fix"]
         assert error["details"]["table"] == "oa_works"
+
+
+class TestWhatCountsAsAnArchive:
+    def test_a_directory_not_named_as_a_survey_names_one_is_not_an_archive(self, project):
+        """Regression: any directory under ``archive/`` was an archive, so a stray
+        ``notes/`` sorted after the timestamps, became the latest, and every query failed
+        with "no tables"."""
+        _mission(project, "m", OK_CONFIG)
+        assert _invoke("survey", "m").exit_code == 0
+        (project / ".recon" / "m" / "archive" / "notes").mkdir()
+
+        [mission] = _doc(_invoke("status", "m", "--json"))["missions"]
+        assert mission["archives"] == 1
+        assert [a["id"] for a in mission["history"]] != ["notes"]
+        result = _invoke("query", "m", "SELECT a FROM hello ORDER BY a", "--json")
+        assert result.exit_code == 0, result.stderr
+        assert _doc(result)["rows"] == [{"a": 1}, {"a": 2}]
+
+    def test_a_newer_meta_yaml_is_read_for_what_this_recon_knows(self, project):
+        """Regression: ``meta.yaml`` from a newer recon, with a field this one does not know
+        in a table's error, made ``status`` fail as a defect (exit 1)."""
+        mission = _mission(project, "m", OK_CONFIG)
+        archive = mission / "archive" / "2027-01-01-000000-000000"
+        archive.mkdir(parents=True)
+        (archive / "t.jsonl").write_text('{"a": 1}\n')
+        (archive / ".incomplete").write_text("")
+        (archive / "meta.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "format_version": 3,
+                    "recon_version": "9.0.0",
+                    "lineage": {"parent": "x"},
+                    "tables": [
+                        {
+                            "name": "t",
+                            "status": "error",
+                            "records": 0,
+                            "attempts": 2,
+                            "error": {
+                                "kind": "rate_limited",
+                                "message": "slow down",
+                                "fix": None,
+                                "retry_after": 30,
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+        result = _invoke("status", "m", "--json")
+        assert result.exit_code == 0, result.stderr
+        [table] = _doc(result)["missions"][0]["latest"]["tables"]
+        assert table["error"] == {"kind": "rate_limited", "message": "slow down", "fix": None}
+        assert _doc(result)["missions"][0]["latest"]["format_version"] == 3
 
 
 class TestArchiveHistory:
@@ -660,6 +779,8 @@ class TestMixedFanOut:
                         {"name": "b", "type": "local", "url": "b"}],
             "collectors": [{"name": "todos", "type": "cli", "run": "rg TODO ."}],
         }  # fmt: skip
+        (project / "a").mkdir()
+        (project / "b").mkdir()
         _mission(project, "m", config)
         assert _doc(_invoke("survey", "m", "-n", "--json"))["warnings"] == []
 
@@ -1193,6 +1314,67 @@ def test_a_config_error_says_when_checking_stopped_early(project):
     assert "checking stopped early" in human.stderr
     _mission(project, "n", {"collectors": [{"name": "c", "type": "ftp"}]})
     assert _error(_invoke("survey", "n", "-n", "--json"))["complete"] is True
+
+
+# --- the directory a command runs in ----------------------------------------------------------
+
+
+class TestTheDirectoryACommandRunsIn:
+    def test_a_local_source_whose_directory_is_missing_is_a_plan_problem(
+        self, project, monkeypatch
+    ):
+        """Regression: with ``url: does-not-exist`` and ``run: pwd``, run from a
+        subdirectory, the dry run named the missing directory as the cwd with no problem, and
+        the survey said ok with one row: the subdirectory."""
+        mission = {
+            "catalog": [{"name": "repo", "type": "local", "url": "does-not-exist"}],
+            "collectors": [{"name": "where", "type": "cli", "source": "repo", "run": "pwd"}],
+        }
+        _mission(project, "m", mission)
+        sub = project / "sub"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+
+        planned = _invoke("survey", "m", "-n", "--json")
+        assert planned.exit_code == 3
+        [problem] = _error(planned)["problems"]
+        assert problem["path"] == "catalog.0.url"
+        assert problem["got"] == str(project / "does-not-exist")
+        surveyed = _invoke("survey", "m", "--json")
+        assert surveyed.exit_code == 3
+        assert not (project / ".recon" / "m" / "archive").exists(), "nothing ran"
+
+    def test_the_dry_run_shows_the_directory_the_command_runs_in(self, project, monkeypatch):
+        (project / "src").mkdir()
+        mission = {
+            "catalog": [{"name": "repo", "type": "local", "url": "src"}],
+            "collectors": [
+                {"name": "where", "type": "cli", "source": "repo", "run": "pwd"},
+                {"name": "anywhere", "type": "cli", "run": "pwd"},
+            ],
+        }
+        _mission(project, "m", mission)
+        sub = project / "sub"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+
+        runs = {r["output"]: r for r in _doc(_invoke("survey", "m", "-n", "--json"))["runs"]}
+        assert runs["where"]["cwd"] == str(project / "src")
+        assert runs["anywhere-repo"]["cwd"] == str(project / "src")
+        human = unstyle(_invoke("survey", "m", "-n").stdout)
+        assert f"pwd (in {project / 'src'})" in human
+        rows = _doc(_invoke("survey", "m", "--json"))
+        assert rows["status"] == "ok"
+        lines = recon.query("m", 'SELECT line FROM "where"', root=project).rows
+        assert [Path(row["line"]).resolve() for row in lines] == [(project / "src").resolve()]
+
+    def test_a_command_with_no_local_source_is_shown_running_in_the_working_directory(
+        self, project
+    ):
+        _mission(project, "m", {"collectors": [{"name": "where", "type": "cli", "run": "pwd"}]})
+        [run] = _doc(_invoke("survey", "m", "-n", "--json"))["runs"]
+        assert run["cwd"] is None
+        assert "pwd (in the working directory)" in unstyle(_invoke("survey", "m", "-n").stdout)
 
 
 # --- the library, pointed at a project -------------------------------------------------------

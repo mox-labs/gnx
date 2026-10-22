@@ -1,0 +1,222 @@
+[
+ {
+  "url": "https://api.github.com/repos/python/cpython/issues/160233",
+  "repository_url": "https://api.github.com/repos/python/cpython",
+  "labels_url": "https://api.github.com/repos/python/cpython/issues/160233/labels{/name}",
+  "comments_url": "https://api.github.com/repos/python/cpython/issues/160233/comments",
+  "events_url": "https://api.github.com/repos/python/cpython/issues/160233/events",
+  "html_url": "https://github.com/python/cpython/pull/160233",
+  "id": 5977860762,
+  "node_id": "PR_kwDOBN0Z8c8AAAABKAEwHQ",
+  "number": 160233,
+  "title": "[3.15] gh-159003: Document Flet in macOS, iOS, and Android guides (GH-159042)",
+  "user": {
+   "login": "miss-islington",
+   "id": 31488909,
+   "type": "User"
+  },
+  "labels": [
+   {
+    "id": 538516109,
+    "name": "docs",
+    "color": "09fc59"
+   },
+   {
+    "id": 667924166,
+    "name": "skip news",
+    "color": "000000"
+   }
+  ],
+  "state": "closed",
+  "locked": false,
+  "assignees": [],
+  "milestone": null,
+  "comments": 1,
+  "created_at": "2026-10-22T10:49:08Z",
+  "updated_at": "2026-10-22T11:13:29Z",
+  "closed_at": "2026-10-22T11:13:22Z",
+  "assignee": null,
+  "author_association": "CONTRIBUTOR",
+  "issue_field_values": [],
+  "type": null,
+  "active_lock_reason": null,
+  "draft": false,
+  "pull_request": {
+   "url": "https://api.github.com/repos/python/cpython/pulls/160233",
+   "html_url": "https://github.com/python/cpython/pull/160233",
+   "diff_url": "https://github.com/python/cpython/pull/160233.diff",
+   "patch_url": "https://github.com/python/cpython/pull/160233.patch",
+   "merged_at": "2026-10-22T11:13:22Z"
+  },
+  "closed_by": {
+   "login": "hugovk",
+   "id": 1324225,
+   "node_id": "MDQ6VXNlcjEzMjQyMjU=",
+   "avatar_url": "https://avatars.githubusercontent.com/u/1324225?v=4",
+   "gravatar_id": "",
+   "url": "https://api.github.com/users/hugovk",
+   "html_url": "https://github.com/hugovk",
+   "followers_url": "https://api.github.com/users/hugovk/followers",
+   "following_url": "https://api.github.com/users/hugovk/following{/other_user}",
+   "gists_url": "https://api.github.com/users/hugovk/gists{/gist_id}",
+   "starred_url": "https://api.github.com/users/hugovk/starred{/owner}{/repo}",
+   "subscriptions_url": "https://api.github.com/users/hugovk/subscriptions",
+   "organizations_url": "https://api.github.com/users/hugovk/orgs",
+   "repos_url": "https://api.github.com/users/hugovk/repos",
+   "events_url": "https://api.github.com/users/hugovk/events{/privacy}",
+   "received_events_url": "https://api.github.com/users/hugovk/received_events",
+   "type": "User",
+   "user_view_type": "public",
+   "site_admin": false
+  },
+  "state_reason": null
+ },
+ {
+  "url": "https://api.github.com/repos/python/cpython/issues/160235",
+  "repository_url": "https://api.github.com/repos/python/cpython",
+  "labels_url": "https://api.github.com/repos/python/cpython/issues/160235/labels{/name}",
+  "comments_url": "https://api.github.com/repos/python/cpython/issues/160235/comments",
+  "events_url": "https://api.github.com/repos/python/cpython/issues/160235/events",
+  "html_url": "https://github.com/python/cpython/pull/160235",
+  "id": 5978095504,
+  "node_id": "PR_kwDOBN0Z8c8AAAABKAQ6Kw",
+  "number": 160235,
+  "title": "[3.15] gh-157140: Fix inaccuracies in the curses documentation (GH-157141)",
+  "user": {
+   "login": "serhiy-storchaka",
+   "id": 3659035,
+   "type": "User"
+  },
+  "labels": [
+   {
+    "id": 538516109,
+    "name": "docs",
+    "color": "09fc59"
+   },
+   {
+    "id": 667924166,
+    "name": "skip news",
+    "color": "000000"
+   }
+  ],
+  "state": "closed",
+  "locked": false,
+  "assignees": [],
+  "milestone": null,
+  "comments": 1,
+  "created_at": "2026-10-22T11:05:50Z",
+  "updated_at": "2026-10-22T11:13:06Z",
+  "closed_at": "2026-10-22T11:13:03Z",
+  "assignee": null,
+  "author_association": "MEMBER",
+  "issue_field_values": [],
+  "type": null,
+  "active_lock_reason": null,
+  "draft": false,
+  "pull_request": {
+   "url": "https://api.github.com/repos/python/cpython/pulls/160235",
+   "html_url": "https://github.com/python/cpython/pull/160235",
+   "diff_url": "https://github.com/python/cpython/pull/160235.diff",
+   "patch_url": "https://github.com/python/cpython/pull/160235.patch",
+   "merged_at": "2026-10-22T11:13:03Z"
+  },
+  "closed_by": {
+   "login": "serhiy-storchaka",
+   "id": 3659035,
+   "node_id": "MDQ6VXNlcjM2NTkwMzU=",
+   "avatar_url": "https://avatars.githubusercontent.com/u/3659035?v=4",
+   "gravatar_id": "",
+   "url": "https://api.github.com/users/serhiy-storchaka",
+   "html_url": "https://github.com/serhiy-storchaka",
+   "followers_url": "https://api.github.com/users/serhiy-storchaka/followers",
+   "following_url": "https://api.github.com/users/serhiy-storchaka/following{/other_user}",
+   "gists_url": "https://api.github.com/users/serhiy-storchaka/gists{/gist_id}",
+   "starred_url": "https://api.github.com/users/serhiy-storchaka/starred{/owner}{/repo}",
+   "subscriptions_url": "https://api.github.com/users/serhiy-storchaka/subscriptions",
+   "organizations_url": "https://api.github.com/users/serhiy-storchaka/orgs",
+   "repos_url": "https://api.github.com/users/serhiy-storchaka/repos",
+   "events_url": "https://api.github.com/users/serhiy-storchaka/events{/privacy}",
+   "received_events_url": "https://api.github.com/users/serhiy-storchaka/received_events",
+   "type": "User",
+   "user_view_type": "public",
+   "site_admin": false
+  },
+  "state_reason": null
+ },
+ {
+  "url": "https://api.github.com/repos/python/cpython/issues/157140",
+  "repository_url": "https://api.github.com/repos/python/cpython",
+  "labels_url": "https://api.github.com/repos/python/cpython/issues/157140/labels{/name}",
+  "comments_url": "https://api.github.com/repos/python/cpython/issues/157140/comments",
+  "events_url": "https://api.github.com/repos/python/cpython/issues/157140/events",
+  "html_url": "https://github.com/python/cpython/issues/157140",
+  "id": 5379696473,
+  "node_id": "I_kwDOBN0Z8c8AAAABQKenWQ",
+  "number": 157140,
+  "title": "Five curses documentation statements contradict the implementation",
+  "user": {
+   "login": "fedonman",
+   "id": 3442573,
+   "type": "User"
+  },
+  "labels": [
+   {
+    "id": 538516109,
+    "name": "docs",
+    "color": "09fc59"
+   },
+   {
+    "id": 11921109973,
+    "name": "topic-curses",
+    "color": "0052cc"
+   }
+  ],
+  "state": "closed",
+  "locked": false,
+  "assignees": [],
+  "milestone": null,
+  "comments": 0,
+  "created_at": "2026-09-07T22:51:03Z",
+  "updated_at": "2026-10-22T11:11:48Z",
+  "closed_at": "2026-10-22T11:11:48Z",
+  "assignee": null,
+  "author_association": "CONTRIBUTOR",
+  "issue_field_values": [],
+  "type": null,
+  "active_lock_reason": null,
+  "sub_issues_summary": {
+   "total": 0,
+   "completed": 0,
+   "percent_completed": 0
+  },
+  "issue_dependencies_summary": {
+   "blocked_by": 0,
+   "total_blocked_by": 0,
+   "blocking": 0,
+   "total_blocking": 0
+  },
+  "closed_by": {
+   "login": "serhiy-storchaka",
+   "id": 3659035,
+   "node_id": "MDQ6VXNlcjM2NTkwMzU=",
+   "avatar_url": "https://avatars.githubusercontent.com/u/3659035?v=4",
+   "gravatar_id": "",
+   "url": "https://api.github.com/users/serhiy-storchaka",
+   "html_url": "https://github.com/serhiy-storchaka",
+   "followers_url": "https://api.github.com/users/serhiy-storchaka/followers",
+   "following_url": "https://api.github.com/users/serhiy-storchaka/following{/other_user}",
+   "gists_url": "https://api.github.com/users/serhiy-storchaka/gists{/gist_id}",
+   "starred_url": "https://api.github.com/users/serhiy-storchaka/starred{/owner}{/repo}",
+   "subscriptions_url": "https://api.github.com/users/serhiy-storchaka/subscriptions",
+   "organizations_url": "https://api.github.com/users/serhiy-storchaka/orgs",
+   "repos_url": "https://api.github.com/users/serhiy-storchaka/repos",
+   "events_url": "https://api.github.com/users/serhiy-storchaka/events{/privacy}",
+   "received_events_url": "https://api.github.com/users/serhiy-storchaka/received_events",
+   "type": "User",
+   "user_view_type": "public",
+   "site_admin": false
+  },
+  "state_reason": "completed",
+  "pinned_comment": null
+ }
+]

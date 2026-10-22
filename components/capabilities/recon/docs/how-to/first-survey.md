@@ -109,7 +109,7 @@ cat .recon/dep-releases/archive/*/probe.jsonl | jq .
 
 Read off the shape: `tag_name` is at the top level, `published_at` is a string timestamp, `author` is a nested object where `login` is the field that matters, `html_url` is the web-viewable link. There's a lot of noise in the raw response — URLs for the API's own routing, numeric IDs that don't matter, metadata fields that are never queried. The normalize spec is about throwing the noise away and keeping what's load-bearing.
 
-> **Two shapes to catch here.** GitHub returns a bare list, so each release is a record. An API that wraps its list in an object (arXiv's Atom feed under `feed.entry`, OpenAlex under `results`) needs `extract:` naming it; without it the table is one record holding everything, and the survey warns `extract_missing` with the path to set. Probe such an API with two or three records, not one: the survey recognizes the wrapped list only when it holds two or more, and a collector that already has `extract:` is never warned. And a field that is an object keyed by data rather than by names, such as OpenAlex's `abstract_inverted_index`, can stop SQL reading the table: the survey warns `table_unreadable`; normalize the field (`$inverted_index`) or leave it out.
+> **Two shapes to catch here.** GitHub returns a bare list, so each release is a record. An API that wraps its list in an object (arXiv's Atom feed under `feed.entry`, OpenAlex under `results`) needs `extract:` naming it; without it the table is one record holding everything, and the survey warns `extract_missing` with the path to set. Probe such an API with two or three records, not one: the survey recognizes the wrapped list only when it holds two or more, and a collector that already has `extract:` is not warned about the lists inside its records (it is warned when the extract finds nothing in a response that is not empty). And a field that is an object keyed by data rather than by names, such as OpenAlex's `abstract_inverted_index`, can stop SQL reading the table: the survey warns `table_unreadable`; normalize the field (`$inverted_index`) or leave it out.
 
 ## Stage 3 — Write the normalize spec
 
@@ -224,7 +224,7 @@ Three JSONL files in the latest archive, one per collector. The `probe` collecto
 
 ## Stage 5 — Query
 
-DuckDB reads JSONL natively. Table names derive from filenames (hyphens become underscores). Query the latest archive:
+DuckDB reads JSONL natively. Table names derive from filenames, every character but a letter, digit or `_` becoming `_` (hyphens become underscores). Query the latest archive:
 
 ```bash
 recon query dep-releases "SELECT tag, published FROM tokio ORDER BY published DESC LIMIT 5"

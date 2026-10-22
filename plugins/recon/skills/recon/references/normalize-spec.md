@@ -76,6 +76,8 @@ Transforms are extensions: each is registered under the entry-point group `recon
 | `$first` | `list` | First element or `None` | Keep the first of a list-map |
 | `$markitdown` | Local file path string | Markdown text | Convert a PDF, DOCX, PPTX, XLSX, EPub, CSV, image or audio file a record names (markitdown) |
 
+A null or empty input gives an empty string (`$first`: `null`). A value of another type than the one a built-in takes (`$join` on a string, `$inverted_index` on a list, `$html2text` on an object) gives `null` for that record's field, as a path that does not resolve does: the rest of the record and the table are kept.
+
 ### $html2text
 
 Strips HTML tags, scripts, styles. Preserves paragraph breaks. Uses stdlib `html.parser`.
@@ -114,7 +116,7 @@ match: "data.submatches.*.match.text|$first"    # rg --json: the first matched t
 # ["TODO", "FIXME"] → "TODO"
 ```
 
-On a string, `$first` returns its first character: apply it only to a list.
+On anything but a list, `$first` gives `null`.
 
 ### $markitdown
 
@@ -164,7 +166,7 @@ response_format: xml
 # "http://a9.com/-/spec/opensearch/1.1/" → "opensearch:" prefix
 ```
 
-`entry`, `author`, `link` and `category` are always lists, even with one element, so `author.*.name` works for a single author.
+`entry`, `author`, `link` and `category` are always lists, even with one element, so `author.*.name` works for a single author, and a path into one of them names its index: `link.0.@href`, `author.0.name` (`link.@href` resolves to nothing).
 
 Access XML attributes with `@` prefix: `"arxiv:primary_category.@term"`.
 
@@ -179,6 +181,6 @@ extract: "results"           # OpenAlex: response.results[...]
 extract: "hits.hits"         # Zenodo: response.hits.hits[...]
 ```
 
-It uses the path syntax above. A single object at the path is one record; in a list, anything that is not an object is dropped.
+It uses the path syntax above. A single object at the path is one record; in a list, anything that is not an object is dropped. An empty list at the path, or an empty response, gives no records and no warning: the source had nothing. A response that is not empty and gives none keeps its table empty and is warned: `extract` resolves to nothing in it, absent or null (`extract_unresolved`, naming the keys at its top level: often an error object sent with status 200), or what it names holds no object, such as a list of ids (`records_not_objects`).
 
-Without the `extract` a response needs, its records stay inside one record, the whole response. A survey that gets exactly one record holding a list of two or more objects, from a collector with neither `extract:` nor `normalize:`, warns (`extract_missing`) and names the list's path to set as `extract`. A collector with `extract:` is never warned: its one record is a record, and a list inside it (a paper's `author`) is that record's own.
+Without the `extract` a response needs, its records stay inside one record, the whole response. A survey that gets exactly one record holding a list of two or more objects, from a collector with neither `extract:` nor `normalize:`, warns (`extract_missing`) and names the list's path to set as `extract`. A collector with `extract:` is not warned about lists inside its one record: that record is a record, and a list inside it (a paper's `author`) is its own.

@@ -1,0 +1,25 @@
+{
+ "_id": "typescript",
+ "name": "typescript",
+ "description": "TypeScript is a language for application scale JavaScript development",
+ "dist-tags": {
+  "dev": "3.9.4",
+  "tag-for-publishing-older-releases": "4.1.6",
+  "insiders": "4.6.2-insiders.20220225",
+  "rc": "7.0.1-rc",
+  "latest": "7.0.2",
+  "beta": "7.1.0-beta",
+  "next": "7.1.0-dev.20261022.1"
+ },
+ "repository": {
+  "url": "git+https://github.com/microsoft/TypeScript.git",
+  "type": "git"
+ },
+ "homepage": "https://www.typescriptlang.org/",
+ "license": "Apache-2.0",
+ "time": {
+  "created": "2012-10-01T15:35:39.553Z",
+  "modified": "2026-10-22T08:12:07.486Z",
+  "7.0.2": "2026-07-08T15:55:18.431Z"
+ }
+}

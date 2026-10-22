@@ -1,0 +1,20 @@
+<feed xmlns="http://www.w3.org/2005/Atom"><id>https://hnrss.org/frontpage.atom</id><title>Hacker News: Front Page</title><updated>2026-10-22T11:25:25Z</updated><link href="https://hnrss.org/frontpage.atom" rel="self" type="application/atom+xml"></link>
+<entry><title><![CDATA[Several Linux kernel vulnerabilities accidentally posted to public mailing list]]></title><link href="https://www.phoronix.com/news/LKML-New-Trend-Vulnerabilities" rel="alternate"></link><author><name>mrkn1</name></author><content type="html"><![CDATA[
+<p>Article URL: <a href="https://www.phoronix.com/news/LKML-New-Trend-Vulnerabilities">https://www.phoronix.com/news/LKML-New-Trend-Vulnerabilities</a></p>
+<p>Comments URL: <a href="https://news.ycombinator.com/item?id=50193804">https://news.ycombinator.com/item?id=50193804</a></p>
+<p>Points: 7</p>
+<p># Comments: 0</p>
+]]></content><updated>2026-10-22T11:12:37Z</updated><published>2026-10-22T11:12:37Z</published><id>https://news.ycombinator.com/item?id=50193804</id></entry>
+<entry><title><![CDATA[Faster than earcut: triangulating 3.7M map polygons in 489 ms]]></title><link href="https://globus.software/blog/2026/10/16/cutting-map-polygons/" rel="alternate"></link><author><name>molind</name></author><content type="html"><![CDATA[
+<p>Article URL: <a href="https://globus.software/blog/2026/10/16/cutting-map-polygons/">https://globus.software/blog/2026/10/16/cutting-map-polygons/</a></p>
+<p>Comments URL: <a href="https://news.ycombinator.com/item?id=50193170">https://news.ycombinator.com/item?id=50193170</a></p>
+<p>Points: 51</p>
+<p># Comments: 8</p>
+]]></content><updated>2026-10-22T09:31:18Z</updated><published>2026-10-22T09:31:18Z</published><id>https://news.ycombinator.com/item?id=50193170</id></entry>
+<entry><title><![CDATA[CVE-2026-111943: Compromised Intermediate Certificate Authority]]></title><link href="https://nvd.nist.gov/vuln/detail/cve-2026-111943" rel="alternate"></link><author><name>keks24</name></author><content type="html"><![CDATA[
+<p>Article URL: <a href="https://nvd.nist.gov/vuln/detail/cve-2026-111943">https://nvd.nist.gov/vuln/detail/cve-2026-111943</a></p>
+<p>Comments URL: <a href="https://news.ycombinator.com/item?id=50192900">https://news.ycombinator.com/item?id=50192900</a></p>
+<p>Points: 145</p>
+<p># Comments: 34</p>
+]]></content><updated>2026-10-22T08:51:31Z</updated><published>2026-10-22T08:51:31Z</published><id>https://news.ycombinator.com/item?id=50192900</id></entry>
+</feed>

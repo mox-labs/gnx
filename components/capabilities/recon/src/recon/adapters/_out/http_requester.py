@@ -13,11 +13,11 @@ attributes OpenTelemetry's HTTP client span conventions (semconv v1.44.0, stable
 ``http.request.method``, ``server.address``, ``server.port``, ``url.full`` and, when there
 is one, ``http.response.status_code``; ``http.request.resend_count`` on a retry; and
 ``error.type`` on a failure: the status code, the httpx exception class
-(``httpx.ConnectError``), or ``body_too_large``. ``url.full`` carries no credentials: user
-information, the source's ``auth.param`` and the convention's signature parameters are
-``REDACTED``, as they are in an error's message; a failed attempt's span message is the
-status, the exception class or the size refusal, never the URL. A redirect httpx follows
-stays inside its attempt's span.
+(``httpx.ConnectError``, ``httpx.TooManyRedirects``), or ``body_too_large``. ``url.full``
+carries no credentials: user information, the source's ``auth.param`` and the convention's
+signature parameters are ``REDACTED``, as they are in an error's message; a failed attempt's
+span message is the status, the exception class or the size refusal, never the URL. A
+redirect httpx follows stays inside its attempt's span.
 
 A source's credential goes only to the origin its request was built for. httpx drops an
 ``Authorization`` header when a redirect leaves the origin; recon drops the source's own
@@ -96,13 +96,23 @@ _HTTP_FIX: dict[ErrorKind, str] = {
     "run_failed": "check the source's url, the collector's endpoint and params against the API",
 }
 
+#: The next step after a request error that is not a transport error, by its class.
+_REQUEST_FIX: dict[type[httpx.HTTPError], str] = {
+    httpx.TooManyRedirects: "the source redirected more times than httpx follows, most likely "
+    "in a loop: request the URL the redirects should end at, as the source's url: and the "
+    "endpoint:",
+    httpx.DecodingError: "the source sent a body that does not decode as its Content-Encoding "
+    "says: a retry may get a sound one; if not, the fault is the source's",
+}
+
 
 def classify_http_failure(exc: BaseException) -> ErrorKind:
     """What the caller should do about a failed request, once retries are spent.
 
     401 / 403 → ``auth`` (a new credential, not a retry); 429, 5xx and transport errors
     (timeouts, connection refused) → ``transient`` (retrying later may succeed); any other
-    status → ``run_failed``.
+    status, and a request error that is not a transport error (too many redirects, a body
+    that does not decode) → ``run_failed``.
     """
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
@@ -287,6 +297,17 @@ class HttpxRequester:
         token, so rate limits are always honored at the page level. A body larger than
         ``source.max_bytes`` raises CollectionError (kind ``run_failed``) and is not retried.
         """
+        try:
+            # Merged, not passed as params=, which would replace a query the URL has.
+            target = httpx.URL(url).copy_merge_params(params or {})
+        except httpx.InvalidURL as exc:
+            raise CollectionError(
+                f"source {source.name!r}: its url and the collector's endpoint do not make a "
+                f"URL that can be requested ({exc})",
+                kind="config",
+                fix="correct the source's url: and the collector's endpoint: so they join into "
+                "one URL",
+            ) from exc
         self._rate_limiter.acquire(source)
         resends = itertools.count()
         retrying = Retrying(
@@ -295,8 +316,6 @@ class HttpxRequester:
             retry=retry_if_exception(_is_retryable),
             reraise=True,
         )
-        # Merged, not passed as params=, which would replace a query the URL has.
-        target = httpx.URL(url).copy_merge_params(params or {})
         hooks = {"request": [_credential_stays_at(target, source.auth.header)]}
         try:
             # Sync on purpose: a survey runs its requests one at a time, so async buys nothing.
@@ -307,7 +326,7 @@ class HttpxRequester:
                     method, target, headers=headers or {}, json=json_body
                 )
                 return retrying(lambda: self._attempt(client, request, source, next(resends)))
-        except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
             status = ""
             snippet = ""
             if isinstance(exc, httpx.HTTPStatusError):
@@ -315,8 +334,10 @@ class HttpxRequester:
                 text = exc.snippet if isinstance(exc, _StatusError) else ""
                 if text:
                     snippet = f"\nResponse body: {text[:200]}"
+            elif not isinstance(exc, httpx.TransportError):
+                status = f" (httpx.{type(exc).__name__}: {exc})"
             kind = classify_http_failure(exc)
-            fix = _HTTP_FIX[kind]
+            fix = _REQUEST_FIX.get(type(exc), _HTTP_FIX[kind])
             wait = _retry_after(exc)
             shown = reported_url(url, source.auth.param)
             if wait is not None and wait > _MAX_RETRY_AFTER_S:
@@ -339,7 +360,7 @@ class HttpxRequester:
                 span.set("http.response.status_code", code)
                 span.fail(str(code), f"HTTP {code}")
                 raise
-            except httpx.TransportError as exc:
+            except httpx.RequestError as exc:
                 span.fail(f"httpx.{type(exc).__name__}", type(exc).__name__)
                 raise
             except _TooLargeError:

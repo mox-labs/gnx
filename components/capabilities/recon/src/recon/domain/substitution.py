@@ -1,11 +1,15 @@
-"""``{placeholder}`` substitution — filling config templates from variables. Pure."""
+"""``{placeholder}`` substitution — filling config templates from variables. Pure.
+
+A placeholder is ``{name}``, the name a letter or ``_`` and then letters, digits or ``_``:
+``{3}`` and ``{2,5}``, a regular expression's counts, are not placeholders.
+"""
 
 from __future__ import annotations
 
 import re
 from typing import Any
 
-_PLACEHOLDER = re.compile(r"\{(\w+)\}")
+_PLACEHOLDER = re.compile(r"\{([A-Za-z_]\w*)\}")
 
 
 def substitute(value: Any, variables: dict[str, str]) -> Any:

@@ -143,7 +143,64 @@ class TestEveryProblemWithAPath:
         )
         assert "also produced by collectors.0" in _paths(plan)["collectors.1.name"]
 
-    @pytest.mark.parametrize("name", ["captures", "telemetry"])
+    @pytest.mark.parametrize(
+        ("first", "second", "view"),
+        [("a-b", "a_b", "a_b"), ("Foo", "foo", "Foo"), ("oa.works", "OA-works", "oa_works")],
+    )
+    def test_outputs_that_would_be_one_table_are_a_problem(self, registry, first, second, view):
+        """Regression: ``a-b`` and ``a_b`` are one view to SQL, which turns every character
+        but a letter, digit or ``_`` into ``_``; ``Foo`` and ``foo`` are one view, since SQL
+        ignores case, and one file on macOS. Both pairs planned valid, then one table's rows
+        were read as the other's, or overwrote them, and the survey said ok."""
+        plan = _plan(
+            {
+                "collectors": [
+                    {"name": first, "type": "cli", "run": "true"},
+                    {"name": second, "type": "cli", "run": "true"},
+                ]
+            },
+            registry,
+        )
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.1.name", "name_taken")
+        assert problem.got == second
+        assert f"collectors.0 ({first!r})" in problem.message
+        assert view.lower() in problem.message.lower()
+
+    def test_a_fanned_out_output_that_would_be_one_table_with_another_is_a_problem(self, registry):
+        plan = _plan(
+            {
+                "catalog": [{"name": "Repo", "type": "local", "url": "/tmp"}],
+                "collectors": [
+                    {"name": "scan", "type": "cli", "run": "true"},
+                    {"name": "scan-repo", "type": "cli", "source": "Repo", "run": "true"},
+                ],
+            },
+            registry,
+        )
+        assert "collectors.0 ('scan-Repo')" in _paths(plan)["collectors.1.name"]
+
+    @pytest.mark.parametrize("name", ["bad/name", "../x", "..", "a..b", "back\\slash"])
+    def test_an_output_name_that_is_not_one_file_name_is_a_problem(self, registry, name):
+        """Regression: ``bad/name`` planned valid and its table failed as ``unknown`` for
+        want of a directory; ``../x`` wrote outside the archive."""
+        plan = _plan({"collectors": [{"name": name, "type": "cli", "run": "true"}]}, registry)
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.0.name", "invalid_value")
+        assert problem.got == name
+
+    def test_a_source_name_that_makes_an_output_not_one_file_name_is_a_problem(self, registry):
+        plan = _plan(
+            {
+                "catalog": [{"name": "x/y", "type": "local", "url": "/tmp"}],
+                "collectors": [{"name": "scan", "type": "cli", "run": "true"}],
+            },
+            registry,
+        )
+        [problem] = plan.problems
+        assert problem.path == "collectors.0.name" and problem.got == "scan-x/y"
+
+    @pytest.mark.parametrize("name", ["captures", "telemetry", "Captures", "TELEMETRY"])
     def test_the_names_of_the_archive_s_logs_are_reserved(self, registry, name):
         plan = _plan({"collectors": [{"name": name, "type": "cli", "run": "true"}]}, registry)
         assert "reserved" in _paths(plan)["collectors.0.name"]
@@ -208,6 +265,49 @@ class TestEveryProblemWithAPath:
             registry,
         )
         assert plan.valid, plan.problems
+
+    def test_a_web_endpoint_placeholder_is_a_problem(self, registry):
+        """Regression: a web collector fills no placeholder, and ``/page/{slug}`` was
+        fetched literally with a valid plan."""
+        plan = _plan(
+            {
+                "catalog": [{"name": "docs", "type": "web", "url": "https://docs.example.test"}],
+                "collectors": [{"name": "p", "type": "web", "endpoint": "/page/{slug}"}],
+            },
+            registry,
+        )
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.0.endpoint", "unresolved")
+        assert "{slug}" in problem.message
+
+    @pytest.mark.parametrize(
+        "collector",
+        [
+            {"type": "web", "endpoint": "/search?q=\\w{3}-\\d{2,4}"},
+            {"type": "api", "endpoint": "/search", "params": {"q": "\\w{3}\\d{2,}"}},
+            {"type": "cli", "run": "rg --json '\\w{3}' ."},
+        ],
+        ids=["web", "api", "cli"],
+    )
+    def test_a_regex_quantifier_is_not_a_placeholder(self, registry, collector):
+        plan = _plan(
+            {
+                "catalog": [{"name": "s", "type": "web", "url": "https://s.example.test"}],
+                "collectors": [{"name": "c", "source": "s", **collector}],
+            },
+            registry,
+        )
+        assert plan.valid, plan.problems
+
+    def test_braces_a_command_owns_are_passed_as_written(self, registry):
+        """In ``run:`` recon fills ``{url}`` and ``{pattern}``; any other ``{...}`` is the
+        command's own (cargo's ``--format '{p} {f}'``, a jq object) and is not checked."""
+        plan = _plan(
+            {"collectors": [{"name": "c", "type": "cli", "run": "cargo tree --format '{p} {f}'"}]},
+            registry,
+        )
+        assert plan.valid, plan.problems
+        assert plan.runs[0].detail["commands"] == ["cargo tree --format '{p} {f}'"]
 
     def test_unresolved_body_placeholder_is_caught_before_a_request(self, registry):
         plan = _plan(
@@ -426,3 +526,27 @@ class TestLocalSourcesAreRelativeToTheProject:
             "api": "https://x",
         }
         assert {r.output: r.detail["cwd"] for r in plan.runs}["ls-sub"] == str(tmp_path / "src")
+
+    def test_a_local_source_a_run_uses_must_be_a_directory(self, registry, tmp_path):
+        """Regression: a ``cli`` collector whose ``local`` source named a directory that did
+        not exist ran in recon's working directory, while the plan showed the missing one as
+        its ``cwd`` and the survey said ok: a mistyped path mined whatever tree recon was
+        started in."""
+        (tmp_path / "here").mkdir()
+        raw = {
+            "catalog": [
+                {"name": "here", "type": "local", "url": "here"},
+                {"name": "gone", "type": "local", "url": "does-not-exist"},
+                {"name": "unused", "type": "local", "url": "also-missing"},
+            ],
+            "collectors": [
+                {"name": "a", "type": "cli", "source": "here", "run": "pwd"},
+                {"name": "b", "type": "cli", "source": "gone", "run": "pwd"},
+            ],
+        }
+        plan = build_plan(raw, registry, {}, base=tmp_path, is_directory=Path.is_dir)
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("catalog.1.url", "invalid_value")
+        assert problem.got == str(tmp_path / "does-not-exist")
+        assert str(tmp_path) in problem.fix, "says what a relative url is relative to"
+        assert {r.output: r.detail["cwd"] for r in plan.runs}["a"] == str(tmp_path / "here")

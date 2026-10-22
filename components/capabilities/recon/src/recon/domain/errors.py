@@ -69,8 +69,8 @@ EXIT_MEANINGS: dict[str, str] = {
     "archive is kept, marked incomplete",
     "auth": "a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete",
     "conflict": "init, or survey -c, would overwrite a different mission config",
-    "run_failed": "a table failed, and not only on credentials or transiently; the archive "
-    "is kept, marked incomplete",
+    "run_failed": "a table failed, and not only on credentials or transiently, or the archive "
+    "could not be finished; the archive is kept, marked incomplete",
     "query": "the SQL failed, or reached outside the mission's archives",
     "interrupted": "the command was interrupted (Ctrl-C or SIGTERM) before it finished; a "
     "survey's archive is marked incomplete",
@@ -88,7 +88,8 @@ EXIT_NEXT: dict[str, str] = {
     "auth": "set the variable the failing source's auth.env names to a valid key, then "
     "survey again",
     "conflict": "add --replace to overwrite it, or choose another mission name",
-    "run_failed": "read each failed table's error and fix its cause, then plan and survey again",
+    "run_failed": "read each failed table's error, or the archive_unfinished warning, and fix "
+    "its cause, then plan and survey again",
     "query": "correct the SQL as the error's `fix` says; for a missing table, it names the "
     "tables there are",
     "interrupted": "run the command again",
@@ -118,6 +119,14 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "extract_missing",
     # a table's file that SQL cannot read as a table
     "table_unreadable",
+    # the survey could not write meta.yaml or mark its archive complete
+    "archive_unfinished",
+    # a table kept empty because recon could not find or keep its records: an extract: that
+    # resolves to nothing in a response that is not empty, items that are not objects,
+    # captures no filter kept
+    "extract_unresolved",
+    "records_not_objects",
+    "captures_unmatched",
 )
 
 
@@ -240,3 +249,20 @@ class CollectionError(ReconError):
     helps; any other failure is ``run_failed``, or ``config`` when the mission must change."""
 
     kind: ErrorKind = "run_failed"
+
+
+class NoRecordsError(CollectionError):
+    """A collector found nothing to keep, for a reason worth saying: an ``extract:`` that
+    resolves to nothing in a response that is not empty, items that are not objects,
+    captures no filter kept. A source that had nothing says nothing; this is the other case.
+
+    Raised before any record is yielded. The survey then keeps the table, empty, and warns
+    with the message and ``fix`` as a ``problem_kind`` problem at ``collectors.<i>.<field>``;
+    raised after a record, it fails the table as ``run_failed``, since keeping an empty
+    table would drop what came first. A collector type of any package may raise it.
+    """
+
+    def __init__(self, message: str, *, problem_kind: str, field: str, fix: str) -> None:
+        super().__init__(message, fix=fix)
+        self.problem_kind = problem_kind
+        self.field = field

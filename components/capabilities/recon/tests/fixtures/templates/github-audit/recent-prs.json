@@ -1,0 +1,250 @@
+[
+ {
+  "url": "https://api.github.com/repos/python/cpython/pulls/160233",
+  "id": 4966133789,
+  "node_id": "PR_kwDOBN0Z8c8AAAABKAEwHQ",
+  "html_url": "https://github.com/python/cpython/pull/160233",
+  "diff_url": "https://github.com/python/cpython/pull/160233.diff",
+  "patch_url": "https://github.com/python/cpython/pull/160233.patch",
+  "issue_url": "https://api.github.com/repos/python/cpython/issues/160233",
+  "number": 160233,
+  "state": "closed",
+  "locked": false,
+  "title": "[3.15] gh-159003: Document Flet in macOS, iOS, and Android guides (GH-159042)",
+  "user": {
+   "login": "miss-islington",
+   "id": 31488909,
+   "type": "User"
+  },
+  "created_at": "2026-10-22T10:49:08Z",
+  "updated_at": "2026-10-22T11:13:29Z",
+  "closed_at": "2026-10-22T11:13:22Z",
+  "merged_at": "2026-10-22T11:13:22Z",
+  "merge_commit_sha": "c86e7ff8302eeda0659511c095135646a8d7a560",
+  "labels": [
+   {
+    "id": 538516109,
+    "name": "docs",
+    "color": "09fc59"
+   },
+   {
+    "id": 667924166,
+    "name": "skip news",
+    "color": "000000"
+   }
+  ],
+  "milestone": null,
+  "draft": false,
+  "commits_url": "https://api.github.com/repos/python/cpython/pulls/160233/commits",
+  "review_comments_url": "https://api.github.com/repos/python/cpython/pulls/160233/comments",
+  "review_comment_url": "https://api.github.com/repos/python/cpython/pulls/comments{/number}",
+  "comments_url": "https://api.github.com/repos/python/cpython/issues/160233/comments",
+  "statuses_url": "https://api.github.com/repos/python/cpython/statuses/521fa7f087c945c8c0a2d8788188bdc4bdf2f1e3",
+  "head": {
+   "label": "miss-islington:backport-22762c0-3.15",
+   "ref": "backport-22762c0-3.15",
+   "sha": "521fa7f087c945c8c0a2d8788188bdc4bdf2f1e3"
+  },
+  "base": {
+   "label": "python:3.15",
+   "ref": "3.15",
+   "sha": "ef377463b6a597ca1349d3c3feeecd90a93cb1bb"
+  },
+  "author_association": "CONTRIBUTOR",
+  "auto_merge": {
+   "enabled_by": {
+    "login": "hugovk",
+    "id": 1324225,
+    "node_id": "MDQ6VXNlcjEzMjQyMjU=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1324225?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/hugovk",
+    "html_url": "https://github.com/hugovk",
+    "followers_url": "https://api.github.com/users/hugovk/followers",
+    "following_url": "https://api.github.com/users/hugovk/following{/other_user}",
+    "gists_url": "https://api.github.com/users/hugovk/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/hugovk/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/hugovk/subscriptions",
+    "organizations_url": "https://api.github.com/users/hugovk/orgs",
+    "repos_url": "https://api.github.com/users/hugovk/repos",
+    "events_url": "https://api.github.com/users/hugovk/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/hugovk/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+   },
+   "merge_method": "squash",
+   "commit_title": "[3.15] gh-159003: Document Flet in macOS, iOS, and Android guides (GH-159042) (#160233)",
+   "commit_message": "Co-authored-by: Feodor Fitsner <feodor@appveyor.com>\n"
+  },
+  "assignee": null,
+  "active_lock_reason": null
+ },
+ {
+  "url": "https://api.github.com/repos/python/cpython/pulls/160235",
+  "id": 4966332971,
+  "node_id": "PR_kwDOBN0Z8c8AAAABKAQ6Kw",
+  "html_url": "https://github.com/python/cpython/pull/160235",
+  "diff_url": "https://github.com/python/cpython/pull/160235.diff",
+  "patch_url": "https://github.com/python/cpython/pull/160235.patch",
+  "issue_url": "https://api.github.com/repos/python/cpython/issues/160235",
+  "number": 160235,
+  "state": "closed",
+  "locked": false,
+  "title": "[3.15] gh-157140: Fix inaccuracies in the curses documentation (GH-157141)",
+  "user": {
+   "login": "serhiy-storchaka",
+   "id": 3659035,
+   "type": "User"
+  },
+  "created_at": "2026-10-22T11:05:50Z",
+  "updated_at": "2026-10-22T11:13:06Z",
+  "closed_at": "2026-10-22T11:13:03Z",
+  "merged_at": "2026-10-22T11:13:03Z",
+  "merge_commit_sha": "50b46304c4ac2bb1c25329991b6435468bcc7e74",
+  "labels": [
+   {
+    "id": 538516109,
+    "name": "docs",
+    "color": "09fc59"
+   },
+   {
+    "id": 667924166,
+    "name": "skip news",
+    "color": "000000"
+   }
+  ],
+  "milestone": null,
+  "draft": false,
+  "commits_url": "https://api.github.com/repos/python/cpython/pulls/160235/commits",
+  "review_comments_url": "https://api.github.com/repos/python/cpython/pulls/160235/comments",
+  "review_comment_url": "https://api.github.com/repos/python/cpython/pulls/comments{/number}",
+  "comments_url": "https://api.github.com/repos/python/cpython/issues/160235/comments",
+  "statuses_url": "https://api.github.com/repos/python/cpython/statuses/482eae1a48fa1ee0f096b2c55a8eeb13adedbd4b",
+  "head": {
+   "label": "serhiy-storchaka:backport-97d3611-3.15",
+   "ref": "backport-97d3611-3.15",
+   "sha": "482eae1a48fa1ee0f096b2c55a8eeb13adedbd4b"
+  },
+  "base": {
+   "label": "python:3.15",
+   "ref": "3.15",
+   "sha": "77e7e6b81aee3864a887f5566d877d35b4356e4c"
+  },
+  "author_association": "MEMBER",
+  "auto_merge": {
+   "enabled_by": {
+    "login": "serhiy-storchaka",
+    "id": 3659035,
+    "node_id": "MDQ6VXNlcjM2NTkwMzU=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/3659035?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/serhiy-storchaka",
+    "html_url": "https://github.com/serhiy-storchaka",
+    "followers_url": "https://api.github.com/users/serhiy-storchaka/followers",
+    "following_url": "https://api.github.com/users/serhiy-storchaka/following{/other_user}",
+    "gists_url": "https://api.github.com/users/serhiy-storchaka/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/serhiy-storchaka/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/serhiy-storchaka/subscriptions",
+    "organizations_url": "https://api.github.com/users/serhiy-storchaka/orgs",
+    "repos_url": "https://api.github.com/users/serhiy-storchaka/repos",
+    "events_url": "https://api.github.com/users/serhiy-storchaka/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/serhiy-storchaka/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+   },
+   "merge_method": "squash",
+   "commit_title": "[3.15] gh-157140: Fix inaccuracies in the curses documentation (GH-157141) (GH-160235)",
+   "commit_message": "Correct the descriptions of halfdelay(), termname(), window.scroll(),\nwindow.insnstr() and window.insch().\n(cherry picked from commit 97d361116f27d9a53ff735151ba26f5bcb463b74)\n\nCo-authored-by: Vyron Vasileiadis <hi@fedonman.com>"
+  },
+  "assignee": null,
+  "active_lock_reason": null
+ },
+ {
+  "url": "https://api.github.com/repos/python/cpython/pulls/160236",
+  "id": 4966334648,
+  "node_id": "PR_kwDOBN0Z8c8AAAABKARAuA",
+  "html_url": "https://github.com/python/cpython/pull/160236",
+  "diff_url": "https://github.com/python/cpython/pull/160236.diff",
+  "patch_url": "https://github.com/python/cpython/pull/160236.patch",
+  "issue_url": "https://api.github.com/repos/python/cpython/issues/160236",
+  "number": 160236,
+  "state": "open",
+  "locked": false,
+  "title": "[3.14] gh-157140: Fix inaccuracies in the curses documentation (GH-157141)",
+  "user": {
+   "login": "serhiy-storchaka",
+   "id": 3659035,
+   "type": "User"
+  },
+  "created_at": "2026-10-22T11:05:57Z",
+  "updated_at": "2026-10-22T11:10:20Z",
+  "closed_at": null,
+  "merged_at": null,
+  "merge_commit_sha": "ca6c70bba5c2e3de06ae88caeb8f5c34d3506b4b",
+  "labels": [
+   {
+    "id": 538516109,
+    "name": "docs",
+    "color": "09fc59"
+   },
+   {
+    "id": 666979871,
+    "name": "awaiting core review",
+    "color": "fbca04"
+   },
+   {
+    "id": 667924166,
+    "name": "skip news",
+    "color": "000000"
+   }
+  ],
+  "milestone": null,
+  "draft": false,
+  "commits_url": "https://api.github.com/repos/python/cpython/pulls/160236/commits",
+  "review_comments_url": "https://api.github.com/repos/python/cpython/pulls/160236/comments",
+  "review_comment_url": "https://api.github.com/repos/python/cpython/pulls/comments{/number}",
+  "comments_url": "https://api.github.com/repos/python/cpython/issues/160236/comments",
+  "statuses_url": "https://api.github.com/repos/python/cpython/statuses/3b084d9a8fd4d67c9b874c7b6f477a64ffb3157d",
+  "head": {
+   "label": "serhiy-storchaka:backport-97d3611-3.14",
+   "ref": "backport-97d3611-3.14",
+   "sha": "3b084d9a8fd4d67c9b874c7b6f477a64ffb3157d"
+  },
+  "base": {
+   "label": "python:3.14",
+   "ref": "3.14",
+   "sha": "0edb9151e22d4671965c62b3539932c9963ac69d"
+  },
+  "author_association": "MEMBER",
+  "auto_merge": {
+   "enabled_by": {
+    "login": "serhiy-storchaka",
+    "id": 3659035,
+    "node_id": "MDQ6VXNlcjM2NTkwMzU=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/3659035?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/serhiy-storchaka",
+    "html_url": "https://github.com/serhiy-storchaka",
+    "followers_url": "https://api.github.com/users/serhiy-storchaka/followers",
+    "following_url": "https://api.github.com/users/serhiy-storchaka/following{/other_user}",
+    "gists_url": "https://api.github.com/users/serhiy-storchaka/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/serhiy-storchaka/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/serhiy-storchaka/subscriptions",
+    "organizations_url": "https://api.github.com/users/serhiy-storchaka/orgs",
+    "repos_url": "https://api.github.com/users/serhiy-storchaka/repos",
+    "events_url": "https://api.github.com/users/serhiy-storchaka/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/serhiy-storchaka/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+   },
+   "merge_method": "squash",
+   "commit_title": "[3.14] gh-157140: Fix inaccuracies in the curses documentation (GH-157141) (GH-160236)",
+   "commit_message": "Correct the descriptions of halfdelay(), termname(), window.scroll(),\nwindow.insnstr() and window.insch().\n(cherry picked from commit 97d361116f27d9a53ff735151ba26f5bcb463b74)\n\nCo-authored-by: Vyron Vasileiadis <hi@fedonman.com>"
+  },
+  "assignee": null,
+  "active_lock_reason": null
+ }
+]

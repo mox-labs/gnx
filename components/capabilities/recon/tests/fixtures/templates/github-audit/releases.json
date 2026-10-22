@@ -1,0 +1,50 @@
+[
+ {
+  "url": "https://api.github.com/repos/astral-sh/uv/releases/420219944",
+  "assets_url": "https://api.github.com/repos/astral-sh/uv/releases/420219944/assets",
+  "upload_url": "https://uploads.github.com/repos/astral-sh/uv/releases/420219944/assets{?name,label}",
+  "html_url": "https://github.com/astral-sh/uv/releases/tag/0.13.5",
+  "id": 420219944,
+  "author": {
+   "login": "astral-releases-bot[bot]",
+   "id": 328004183,
+   "type": "Bot"
+  },
+  "node_id": "RE_kwDOKbIFZc4ZDAwo",
+  "tag_name": "0.13.5",
+  "target_commitish": "46776a95d6686ac0160c10611327ce491e6b202f",
+  "name": "0.13.5",
+  "draft": false,
+  "immutable": true,
+  "prerelease": false,
+  "created_at": "2026-10-22T00:56:29Z",
+  "updated_at": "2026-10-22T01:35:54Z",
+  "published_at": "2026-10-22T01:35:54Z",
+  "tarball_url": "https://api.github.com/repos/astral-sh/uv/tarball/0.13.5",
+  "zipball_url": "https://api.github.com/repos/astral-sh/uv/zipball/0.13.5"
+ },
+ {
+  "url": "https://api.github.com/repos/astral-sh/uv/releases/418555132",
+  "assets_url": "https://api.github.com/repos/astral-sh/uv/releases/418555132/assets",
+  "upload_url": "https://uploads.github.com/repos/astral-sh/uv/releases/418555132/assets{?name,label}",
+  "html_url": "https://github.com/astral-sh/uv/releases/tag/0.13.4",
+  "id": 418555132,
+  "author": {
+   "login": "astral-releases-bot[bot]",
+   "id": 328004183,
+   "type": "Bot"
+  },
+  "node_id": "RE_kwDOKbIFZc4Y8qT8",
+  "tag_name": "0.13.4",
+  "target_commitish": "7456b60bc6bc348e13e06e3691bf08e78d3aef54",
+  "name": "0.13.4",
+  "draft": false,
+  "immutable": true,
+  "prerelease": false,
+  "created_at": "2026-10-20T14:41:38Z",
+  "updated_at": "2026-10-20T16:53:15Z",
+  "published_at": "2026-10-20T15:24:59Z",
+  "tarball_url": "https://api.github.com/repos/astral-sh/uv/tarball/0.13.4",
+  "zipball_url": "https://api.github.com/repos/astral-sh/uv/zipball/0.13.4"
+ }
+]

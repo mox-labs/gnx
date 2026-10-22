@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING, Any
 
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError
+from recon.domain.errors import CollectionError, Problem
 from recon.domain.http import reported_url
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
+from recon.domain.substitution import find_unresolved
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -111,6 +112,25 @@ def _headers(source: SourceEntry, user_agent: str) -> dict[str, str]:
     }
 
 
+def _check(entry: CollectorEntry) -> list[Problem]:
+    """A web collector fills no placeholder, so one in ``endpoint`` would be fetched as
+    written."""
+    unresolved = sorted(set(find_unresolved(entry.endpoint or "")))
+    if not unresolved:
+        return []
+    names = ", ".join(f"{{{name}}}" for name in unresolved)
+    return [
+        Problem(
+            "endpoint",
+            f"unresolved placeholder(s) {names}: a web collector fills none",
+            kind="unresolved",
+            fix="write the value into endpoint:, or use an api collector, whose params: fill "
+            "an endpoint's placeholders",
+            got=entry.endpoint,
+        )
+    ]
+
+
 def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
     """The request a run sends, as the api type describes one."""
     if source is None:
@@ -128,5 +148,6 @@ collector_type = CollectorType(
     summary="HTTP GET → document converted to markdown → one record",
     requires_source=True,
     normalizes=True,
+    check=_check,
     describe=_describe,
 )

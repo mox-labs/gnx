@@ -9,8 +9,10 @@ from importlib.metadata import requires
 import pytest
 from packaging.requirements import Requirement
 
+from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.duckdb_query import SQL_DOCS, UNNEST_DOCS, DuckdbQuery
 from recon.domain.errors import QueryError
+from tests.recon_fakes import FixedClock
 
 
 def execute(archive, sql):
@@ -257,6 +259,23 @@ class TestEmptyTable:
     def test_a_record_that_merely_has_the_field_is_kept(self, tmp_path):
         archive = _archive(tmp_path, {"t": [{"_empty": True, "a": 1}, {"_empty": True, "a": 2}]})
         assert execute(archive, "SELECT count(*) FROM t")[1] == [(2,)]
+
+    def test_an_empty_table_keeps_the_columns_its_spec_names(self, tmp_path):
+        """Regression: an empty table's view had only ``_empty``, so a query that works on a
+        full archive (``SELECT title FROM papers``) failed with a Binder Error on one whose
+        source returned nothing. The store keeps the columns the collector's spec names."""
+        archive = tmp_path / "m" / "archive" / "2026-01-01-000000-000000"
+        archive.mkdir(parents=True)
+        ArchiveFiles(FixedClock()).write_table(
+            archive, "papers", (r for r in ()), columns=["title", "year"]
+        )
+
+        assert execute(archive, "SELECT title, year FROM papers WHERE year > 2020")[1] == []
+        assert execute(archive, "SELECT count(*) FROM papers")[1] == [(0,)]
+        columns, _ = execute(archive, "SELECT * FROM papers")
+        assert columns[:2] == ["title", "year"]
+        sql = "SELECT count(*) FROM papers WHERE NOT coalesce(_empty, false)"
+        assert execute(archive, sql)[1] == [(0,)], "the sentinel's filter still runs"
 
 
 class TestOneUnreadableTable:

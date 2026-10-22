@@ -36,7 +36,10 @@ catalog:
 
 collectors:
   # PyPI — path-based lookup by exact package name.
-  # Replace "pydantic" with your target package.
+  # Replace "pydantic" with your target package. A package on current metadata
+  # leaves info.home_page and info.license empty: its links are under
+  # info.project_urls, keyed as its authors chose ("Source", "Repository",
+  # "Homepage"), and its license is info.license_expression.
   - name: pypi-info
     type: api
     source: pypi
@@ -45,8 +48,8 @@ collectors:
       name: "info.name"
       version: "info.version"
       summary: "info.summary"
-      source_url: "info.home_page"
-      license: "info.license"
+      source_url: "info.project_urls.Source"
+      license: "info.license_expression"
 
   # npm — path-based lookup. Replace "typescript" with your target.
   - name: npm-info

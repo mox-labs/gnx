@@ -12,9 +12,11 @@
       captures.jsonl, raw/    the capture log, when the mission preserves raw
 
 A table that collected nothing holds one sentinel line, ``{"_empty": true}``, so DuckDB can
-still read the file; it is not a record and is not counted. ``meta.yaml`` is read back in
-the current shape whether it was written as ``format_version: 1`` (``collectors`` with an
-``error`` string) or 2 (``tables`` with ``error: {kind, message}``).
+still read the file; it is not a record and is not counted. When the table's columns are
+known (its collector's ``normalize:`` spec), the line keeps them as ``_columns``, so the
+table's view still has them. ``meta.yaml`` is read back in the current shape whether it was
+written as ``format_version: 1`` (``collectors`` with an ``error`` string) or 2 (``tables``
+with ``error: {kind, message}``).
 """
 
 from __future__ import annotations
@@ -22,18 +24,19 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.event_log import EventLog
-from recon.domain.archives import EVENT_LOG_NAME
+from recon.domain.archives import ARCHIVE_ID_FORMAT, EVENT_LOG_NAME
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Sequence
     from pathlib import Path
 
     from recon.domain.clock import Clock
@@ -58,7 +61,12 @@ class ArchiveFiles:
         return archive
 
     def write_table(
-        self, archive: Path, output: str, records: Generator[dict[str, Any], None, None]
+        self,
+        archive: Path,
+        output: str,
+        records: Generator[dict[str, Any], None, None],
+        *,
+        columns: Sequence[str] = (),
     ) -> int:
         path = archive / f"{output}.jsonl"
         tmp = path.with_suffix(".jsonl.tmp")
@@ -74,7 +82,10 @@ class ArchiveFiles:
                         f.flush()
                         os.fsync(f.fileno())
                 if count == 0:
-                    f.write(json.dumps(EMPTY_SENTINEL) + "\n")
+                    empty = (
+                        {**EMPTY_SENTINEL, "_columns": list(columns)} if columns else EMPTY_SENTINEL
+                    )
+                    f.write(json.dumps(empty) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, path)
@@ -108,7 +119,7 @@ class ArchiveFiles:
         archive = mission_dir / "archive"
         if not archive.is_dir():
             return []
-        return sorted(d for d in archive.iterdir() if d.is_dir())
+        return sorted(d for d in archive.iterdir() if d.is_dir() and _is_archive_id(d.name))
 
     def is_incomplete(self, archive: Path) -> bool:
         return (archive / INCOMPLETE_MARKER).exists()
@@ -133,22 +144,38 @@ class ArchiveFiles:
         return {**raw, "tables": [t for t in raw.get("tables") or [] if isinstance(t, dict)]}
 
 
+def _is_archive_id(name: str) -> bool:
+    """Whether ``name`` is one a survey gives its archive: a stray ``notes/`` is not."""
+    try:
+        datetime.strptime(name, ARCHIVE_ID_FORMAT)
+    except ValueError:
+        return False
+    return True
+
+
 def table_files(archive: Path) -> list[Path]:
     """The archive's tables: every JSONL file but the capture log and the event log."""
     logs = {CAPTURE_LOG_NAME, EVENT_LOG_NAME}
     return [p for p in sorted(archive.glob("*.jsonl")) if p.name not in logs]
 
 
-def is_empty_table(path: Path) -> bool:
-    """True when the table file holds the empty sentinel and nothing else."""
+def empty_table_columns(path: Path) -> list[str] | None:
+    """The columns an empty table keeps (none when they were not known); None when the file
+    holds anything but the empty sentinel."""
     with open(path, encoding="utf-8") as f:
         first, second = f.readline(), f.readline()
     if second.strip():
-        return False
+        return None
     try:
-        return bool(json.loads(first) == EMPTY_SENTINEL)
+        line = json.loads(first)
     except json.JSONDecodeError:
-        return False
+        return None
+    if not isinstance(line, dict) or line.get("_empty") is not True:
+        return None
+    columns = line.get("_columns", [])
+    if set(line) - {"_empty", "_columns"} or not isinstance(columns, list):
+        return None
+    return [str(column) for column in columns]
 
 
 def _v1_table(entry: dict[str, Any]) -> dict[str, Any]:

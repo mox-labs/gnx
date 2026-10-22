@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any
 import recon
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
-from recon.application.survey import ARCHIVE_ID_FORMAT, Survey
+from recon.application.survey import Survey
+from recon.domain.archives import ARCHIVE_ID_FORMAT
 from recon.domain.http import HttpResponse
 from recon.domain.telemetry import Telemetry
 

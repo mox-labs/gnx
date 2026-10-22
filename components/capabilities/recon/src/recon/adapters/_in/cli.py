@@ -300,14 +300,18 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
 
 
 def _does(run: dict[str, Any]) -> str:
-    """A run's request (its method, URL, headers and body, a line each) or its commands."""
+    """A run's request (its method, URL, headers and body, a line each), or its commands and
+    the directory they run in."""
     if run.get("url"):
         lines = [f"{run.get('method', 'GET')} {run['url']}"]
         lines += [f"{name}: {value}" for name, value in (run.get("headers") or {}).items()]
         if run.get("body") is not None:
             lines.append(json.dumps(run["body"]))
         return "\n".join(lines)
-    return "; ".join(run.get("commands") or []) or run.get("path") or ""
+    commands = "; ".join(run.get("commands") or [])
+    if commands and "cwd" in run:
+        return f"{commands} (in {run['cwd'] or 'the working directory'})"
+    return commands or run.get("path") or ""
 
 
 def _print_event(event: dict[str, Any]) -> None:
@@ -333,6 +337,8 @@ def _print_event(event: dict[str, Any]) -> None:
             err.print(f"[dim]    fix: {escape(event['fix'])}[/]")
     elif kind == "archive_warning":
         err.print(f"[yellow]  warning: archive: {escape(event['reason'])}[/]")
+        if event.get("fix"):
+            err.print(f"[dim]    fix: {escape(event['fix'])}[/]")
 
 
 # --- status ------------------------------------------------------------------------------
@@ -431,12 +437,13 @@ def _archive_tables(document: recon.StatusDocument) -> list[Table]:
 def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
     """Query a mission's latest archive, or the one --archive names, with SQL (DuckDB).
 
-    Each table is a view named after its file (hyphens become underscores). The output
-    names the archive the rows came from. An older archive's table, or a table's raw lines,
-    is read by its file: read_json_auto('<archive dir>/<table>.jsonl') for an earlier
-    archive, read_ndjson_objects(...) for each line as JSON text, and WITH ORDINALITY after
-    either for each row's line number in the file. Read one archive's file: a glob across
-    archives numbers all its files' lines as one, and their columns can differ.
+    Each table is a view named after its file, every character but a letter, digit or _
+    becoming _ (oa-works is oa_works); SQL ignores its case. The output names the archive
+    the rows came from. An older archive's table, or a table's raw lines, is read by its
+    file: read_json_auto('<archive dir>/<table>.jsonl') for an earlier archive,
+    read_ndjson_objects(...) for each line as JSON text, and WITH ORDINALITY after either
+    for each row's line number in the file. Read one archive's file: a glob across archives
+    numbers all its files' lines as one, and their columns can differ.
 
     \b
     recon query my-scan "SELECT title, year FROM s2_search LIMIT 10"

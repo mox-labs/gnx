@@ -11,7 +11,7 @@ from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import DEFAULT_USER_AGENT
 from recon.domain.capture import REDACTED
-from recon.domain.errors import CollectionError
+from recon.domain.errors import CollectionError, NoRecordsError
 from recon.domain.http import HttpResponse
 from recon.domain.models import AuthConfig, CollectorEntry, SourceEntry
 from recon.domain.normalize import resolve_path, to_records
@@ -83,11 +83,47 @@ class TestEnsureList:
     def test_single_dict(self):
         assert to_records({"a": 1}, None) == [{"a": 1}]
 
-    def test_string(self):
-        assert to_records("text", None) == []
-
     def test_none(self):
         assert to_records(None, None) == []
+
+    @pytest.mark.parametrize(
+        ("data", "extract"), [({"data": []}, "data"), ([], None), ({}, "data"), (None, "data")]
+    )
+    def test_an_empty_body_or_an_empty_list_has_no_records_and_nothing_to_say(self, data, extract):
+        assert to_records(data, extract) == []
+
+
+class TestNoPlausibleEmptyTable:
+    """Regression: a body whose records recon could not find or keep gave an empty table and
+    "ok", indistinguishable from a source that had nothing: a 200 carrying an error object,
+    a changed response shape, a list of ids. Each now says why, as ``NoRecordsError``, which the
+    survey turns into a warning."""
+
+    def test_an_extract_that_resolves_to_nothing_in_a_non_empty_body(self):
+        with pytest.raises(NoRecordsError) as excinfo:
+            to_records({"error": {"message": "quota"}}, "data.items")
+        found = excinfo.value
+        assert (found.problem_kind, found.field) == ("extract_unresolved", "extract")
+        assert "data.items" in str(found) and "error" in str(found)
+        assert "extract:" in found.fix
+
+    def test_an_extract_that_names_a_null(self):
+        with pytest.raises(NoRecordsError, match="data"):
+            to_records({"data": None, "total": 0}, "data")
+
+    @pytest.mark.parametrize(
+        ("data", "extract"), [({"ids": ["a", "b"]}, "ids"), (["a", "b"], None), ({"n": 3}, "n")]
+    )
+    def test_items_that_are_not_objects(self, data, extract):
+        with pytest.raises(NoRecordsError) as excinfo:
+            to_records(data, extract)
+        found = excinfo.value
+        assert (found.problem_kind, found.field) == ("records_not_objects", "extract")
+        assert "not objects" in str(found) or "not an object" in str(found)
+
+    def test_a_text_body_is_not_records(self):
+        with pytest.raises(NoRecordsError, match="str"):
+            to_records("text", None)
 
 
 class TestResolveAuth:

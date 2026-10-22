@@ -284,13 +284,24 @@ _SURVEY_FAILURE_FIX = {
 
 
 def survey_failure(document: SurveyDocument) -> ReconError | None:
-    """The error a survey's failed tables add up to, or None when every table succeeded. Its
-    kind is ``auth``, ``transient`` or ``run_failed``; its details name the archive and the
-    failed tables."""
+    """The error a survey's failed tables add up to, or None when every table succeeded and
+    the archive was finished. Its kind is ``auth``, ``transient`` or ``run_failed``; an
+    archive that could not be finished, every table having succeeded, is ``run_failed``
+    too, and its ``archive_unfinished`` warning says why. The details name the archive and
+    the failed tables."""
     kind = failure_kind(document.tables)
+    failed = [t.name for t in document.failed]
+    if kind is None and document.status == "incomplete":
+        return ReconError(
+            f"every table succeeded, but the archive could not be finished, so it reads "
+            f"incomplete: {document.archive}",
+            kind="run_failed",
+            fix="read the survey's archive_unfinished warning, free space in the archive's "
+            f"directory or make it writable, then: recon survey {document.mission}",
+            details={"archive": document.archive, "failed": failed},
+        )
     if kind is None:
         return None
-    failed = [t.name for t in document.failed]
     return ReconError(
         f"{len(failed)} of {len(document.tables)} table(s) failed; the archive is incomplete",
         kind=kind,
