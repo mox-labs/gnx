@@ -302,3 +302,56 @@ def test_a_redirect_within_the_origin_keeps_the_credential(monkeypatch, origin, 
     sent = _redirecting(monkeypatch, location, origin)
     assert sent[1][0] == "https://api.example.test/landing"
     assert sent[1][1]["x-api-key"] == "SECRET1"
+
+
+# --- failures httpx raises that are not transport errors --------------------------------
+
+
+def _answered_by(monkeypatch, answer):
+    client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(answer), **kw)
+    )
+    clock = SystemClock()
+    return HttpxRequester(RateLimiter(clock), clock)
+
+
+def test_a_redirect_loop_is_a_classified_failure(monkeypatch):
+    """Regression: ``TooManyRedirects`` is not a transport error, so it escaped unclassified
+    and its table failed with no fix."""
+    requester = _answered_by(
+        monkeypatch, lambda request: httpx.Response(302, headers={"Location": "/again"})
+    )
+    source = SourceEntry(name="s", url="https://api.example.test")
+    with pytest.raises(CollectionError) as excinfo:
+        requester.request(source, "GET", "https://api.example.test/start")
+    error = excinfo.value
+    assert error.kind == "run_failed" and "TooManyRedirects" in str(error)
+    assert "redirect" in error.fix
+
+
+def test_a_body_that_does_not_decode_is_a_classified_failure(monkeypatch):
+    """Regression: a body whose Content-Encoding lies (``DecodingError``) escaped
+    unclassified."""
+    requester = _answered_by(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200, headers={"Content-Encoding": "gzip"}, content=b"not gzip at all"
+        ),
+    )
+    source = SourceEntry(name="s", url="https://api.example.test")
+    with pytest.raises(CollectionError) as excinfo:
+        requester.request(source, "GET", "https://api.example.test/x")
+    error = excinfo.value
+    assert error.kind == "run_failed" and "DecodingError" in str(error)
+    assert "Content-Encoding" in error.fix
+
+
+def test_a_url_that_is_not_one_is_a_config_error(monkeypatch):
+    """Regression: ``InvalidURL`` escaped unclassified; the URL is the mission's to fix."""
+    requester = _answered_by(monkeypatch, lambda request: httpx.Response(200))
+    source = SourceEntry(name="s", url="http://[::1")
+    with pytest.raises(CollectionError) as excinfo:
+        requester.request(source, "GET", "http://[::1/x")
+    error = excinfo.value
+    assert error.kind == "config" and "url:" in error.fix

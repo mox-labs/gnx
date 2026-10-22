@@ -65,7 +65,8 @@ ARCHIVE_ID_FORMAT = "%Y-%m-%d-%H%M%S-%f"
 class CollectorError(CollectionError):
     """A collector's exception, tagged with the entry and source it came from.
 
-    The cause's ``kind`` and ``fix`` carry through, so a 429 stays ``transient``.
+    The cause's ``kind`` and ``fix`` carry through, so a 429 stays ``transient``; a cause
+    that is not a recon error is ``run_failed``, the kind its survey has too.
     """
 
     def __init__(self, collector_name: str, source_name: str | None, cause: BaseException):
@@ -73,7 +74,7 @@ class CollectorError(CollectionError):
         self.source_name = source_name
         self.cause = cause
         where = collector_name + (f" against '{source_name}'" if source_name else "")
-        kind: ErrorKind = cause.kind if isinstance(cause, ReconError) else "unknown"
+        kind: ErrorKind = cause.kind if isinstance(cause, ReconError) else "run_failed"
         fix = cause.fix if isinstance(cause, ReconError) else None
         super().__init__(f"[{where}] {cause}", kind=kind, fix=fix)
 
@@ -206,7 +207,7 @@ class Survey:
                 nothing = said
                 count = self._archives.write_table(archive, output, _no_records())
         except Exception as exc:
-            kind: ErrorKind = exc.kind if isinstance(exc, ReconError) else "unknown"
+            kind: ErrorKind = exc.kind if isinstance(exc, ReconError) else "run_failed"
             fix = exc.fix if isinstance(exc, ReconError) else None
             seconds = self._clock.monotonic() - start
             return self._failed(span, table, kind, str(exc), seconds, fix)

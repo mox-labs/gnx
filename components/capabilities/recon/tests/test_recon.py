@@ -505,6 +505,25 @@ class TestEventCallback:
         assert ok_event["records"] == 1
 
 
+class TestAnUnclassifiedTableError:
+    def test_has_the_shared_kind_run_failed(self, tmp_path):
+        """Regression: a collector's exception that was not a recon error gave the table the
+        kind ``unknown``, whose next step is "report it as a bug in recon", where the
+        CHANGELOG and README said ``run_failed``."""
+
+        class Breaks:
+            def collect(self, entry, source, *, captures=None):
+                raise AttributeError("'list' object has no attribute 'items'")
+                yield {}
+
+        config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
+        archive, [table] = run(config, {"x": Breaks()}, tmp_path)
+        assert table.error is not None and table.error.kind == "run_failed"
+        assert "'list' object has no attribute 'items'" in table.error.message
+        meta = yaml.safe_load((archive / "meta.yaml").read_text())
+        assert meta["tables"][0]["error"]["kind"] == "run_failed"
+
+
 class TestTableErrorCarriesItsFix:
     """A collector that knows the remedy says so; the table's error keeps it."""
 
