@@ -16,18 +16,13 @@
   A digest is `sha256:` over canonical JSON, so a reader can recompute it without hardline. New exports: `Attempt`, `RequestParams`, `RowRecord`, `FinishReason`.
 - A `BackendError` the runtime raises carries `attempt_log` and `usage`, and a `SchemaError` too: what the failed call cost.
 - **`ModelRuntime.aclose()`, and `async with runtime`.** Either closes the connections that the backends opened in the running event loop. The runtime stays usable afterwards. A backend that holds connections defines its own async `aclose()`, which the runtime calls; a backend without one is left alone.
-
 - **A call has its own bound: `limits`.** A row may set `limits: {attempts, seconds, tokens}`, which bound a call that asks for it across every retry, fallback and schema repair: backend calls, wall time from the call's start (a running attempt is cut when it passes, and a wait for a retry that would pass it is not started), and tokens reported. Each is unset by default. A call a limit stops raises the error it would have raised, with `limit` naming the bound; the message names the setting (`limits.attempts=4`). New export: `CallLimits`.
-
 - **A fallback that shares its primary's fate is warned of.** A fallback on the same backend and `base_url` as its row fails with it when that server is down. `ModelRuntime.warnings` lists each as a `Problem` of kind `shared_fate`, the runtime logs it once when built, and `hardline check` prints it (`warnings` in `check --json`). New export: `Problem`.
-
 - **A call's failed attempts, fallbacks and answer are told to an observer.** `build_runtime(observer=...)` takes a `CallObserver`, whose `observe(event)` hears `AttemptFailed`, `FellBack` and `Answered` as each happens. It replaces the `hardline` logger's `WARNING` on a fallback and `INFO` on a retry, which no handler of hardline's reached. New exports: `CallObserver`, `CallEvent`, `AttemptFailed`, `FellBack`, `Answered`.
-
 - **OpenTelemetry, on the GenAI semantic conventions.** `build_runtime` wraps every backend so that each backend call is one `chat {model}` span (CLIENT, under the caller's span, so a retry or a fallback is a sibling) and records `gen_ai.client.inference.duration` and the `gen_ai.client.inference.usage.*` token counters; its default observer counts `hardline.retries` and `hardline.fallbacks`. hardline owns the inference counters for the calls it makes. No content is recorded, and there is no option to record it. The API only: nothing is recorded until the application installs an SDK. `build_runtime` takes `tracer_provider` and `meter_provider`. hardline now depends on `opentelemetry-api`.
-
 - **A backend's author can check it against the installed hardline**: `backend_problems(backend)` reads the port's members (`structured_modes` a frozenset of known modes holding `prompt`, an async `complete`, and the optional `check`, `aclose` and `default_base_url` well formed), and `await answer_problems(backend, spec)` makes one call and requires a `RawCompletion` with a `finish_reason`. The requirements were a test in hardline's repository, which no wheel carries, and it checked only that the members existed. The port's docstring now states them.
-
 - **Who upgrades first is stated**: a `Completion` refuses JSON keys it does not know, and a minor release may add keys, so a reader of stored `Completion` JSON upgrades hardline before any writer does (README, `Completion`).
+- **A row names its proxy**: `proxy: http://proxy.internal:3128`. Nothing in the environment chooses one, so a user behind a proxy had no route; a proxy URL carrying credentials is refused. Errors may carry their own `fix`, as `HardlineError.fix`.
 
 ### Changed (breaking)
 
@@ -37,7 +32,6 @@
 - **No proxy or certificate variable changes where a request goes or what it trusts**: clients ignore `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE` and `SSL_CERT_DIR`. TLS is verified against the system trust store (truststore).
 - **A keyless `openai-compat` row sends no `Authorization` header**, where the SDK needed a placeholder key.
 - **A redirect is a config error, not followed**: a `ConfigError` (exit 3) whose `fix` names where to point the row's `base_url`, derived from the `Location`. Following it would send the row's key along. Before, it was `unknown` (exit 1, "report a bug").
-- **A row names its proxy**: `proxy: http://proxy.internal:3128`. Nothing in the environment chooses one, so a user behind a proxy had no route; a proxy URL carrying credentials is refused. Errors may carry their own `fix`, as `HardlineError.fix`.
 - **A `base_url` must be an http:// or https:// URL**, checked when the runtime is composed.
 - Provider errors carry the provider's own message (`error.message`), with the key scrubbed, and name the row's location; `api.openai.com` is no longer named for a row that does not send there.
 - **hardline's own backends register through its own `hardline.backends` entry points**, like a third party's, and the hard-coded table is gone. `discover_backends()` no longer takes `include_entry_points`; it returns exactly the installed entry points.
