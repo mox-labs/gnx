@@ -130,9 +130,16 @@ class AgentCapabilities(BaseModel):
     #: Whether a session loads skills from settings (this machine's, the user's, the
     #: project's), beyond those it is given as plugins.
     settings_skills: bool | None = None
-    #: Whether a session loads the skills in its working directory (``.claude/skills``),
+    #: Whether a session loads the skills in its working directory (in ``skills_dir``),
     #: where a caller puts the skills it gives a session.
     project_skills: bool | None = None
+    #: The tool a session calls to fire a skill (Claude Code's ``Skill``): the call a caller
+    #: reads to tell that one fired. None for a runtime that names none.
+    skill_tool: str | None = None
+    #: Where a caller places the skills it gives a session, relative to the session's working
+    #: directory (Claude Code's ``.claude/skills``), each a folder holding its ``SKILL.md``.
+    #: None for a runtime that names no place: its sessions find none there.
+    skills_dir: str | None = None
     #: Whether a session's tools can write files.
     writes_files: bool | None = None
     #: Config that keeps a session from reading anything of the machine it runs on beyond

@@ -121,11 +121,15 @@ lab:
 # UNION of their dependencies, and imports each from its checkout. So an under-declared
 # dependency, an entry point the wheel's metadata lacks, or a file the wheel leaves out is
 # invisible to every other gate. `--help` sees only what the CLI imports at start; a command
-# reaches what a user's first use does:
+# reaches what a user's first use does. No package has extras, so each install is the plain
+# one, and it carries every runtime and telemetry: a check that builds each runtime with the
+# OTEL_* variables set, and expects no warning, fails on one an install lacks.
 #
 #   hardline  `models` and `check` of a registry with a local and a hosted row
-#   matrix    `check` and `plan` of a config with a mock agent and an agent step
-#   ix        `validate`, `plan` and a dry run of examples/harness-integrity
+#   matrix    `check` and `plan` of a config with a mock agent and an agent step; `check` of
+#             one with every runtime (claude-sdk, pydantic-ai, hardline), asked for OTLP export
+#   ix        `validate`, `plan` and a dry run of examples/harness-integrity; `plan` of an
+#             agent session on claude-sdk, asked for console export
 #   recon     a survey of a cli collector, then a query of the timestamp it collected
 #   gnx, dao  `--help`: their commands read this repository
 #
@@ -162,12 +166,27 @@ capabilities-standalone:
         > matrix.yaml
       matrix check --only matrix.yaml --json | expect 'd["ok"]'
       matrix plan --only matrix.yaml --json | expect 'd["ok"] and d["stages"] == [["greet"]]'
+      printf '%s\n' 'matrix:' \
+        '  agent_runtimes: {claude: {type: claude-sdk}, loop: {type: pydantic-ai}}' \
+        '  model_runtimes: {calls: {type: hardline}}' \
+        '  models: {models: {local: {backend: openai-compat, base_url: "http://127.0.0.1:9/v1", model: m, family: qwen}}}' \
+        > runtimes.yaml
+      OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9 matrix check --only runtimes.yaml --json \
+        | expect 'd["ok"] and d["warnings"] == [] and d["agent_runtimes"] == ["claude", "loop"]'
     }
     smoke_ix() {
       cp -R "$examples/harness-integrity" .
       ix validate harness-integrity --json | expect 'd["valid"]'
       ix plan harness-integrity --json | expect 'd["runnable"]'
       ix run harness-integrity --dry-run --json | expect 'd["status"] == "completed"'
+      mkdir on-claude
+      printf '%s\n' 'name: on-claude' 'question: Does the agent name a fruit?' 'genre: evaluate' \
+        'subjects:' '  agent: {kind: agent-session, runtime: claude-sdk, runtime_options: {setting_sources: []}}' \
+        'probes:' '  - {id: ask, kind: prompt, prompt: "Name a fruit."}' \
+        'sensors:' '  - {kind: text-match, contains: banana}' \
+        'primary: {metric: text_matched}' 'threshold: {op: ">=", value: 0.5}' > on-claude/experiment.yaml
+      OTEL_TRACES_EXPORTER=console OTEL_METRICS_EXPORTER=none ix plan on-claude --json \
+        | expect 'd["runnable"] and d["warnings"] == []'
     }
     smoke_recon() {
       printf '%s\n' 'collectors:' '  - name: releases' '    type: cli' '    run: |' \

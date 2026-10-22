@@ -84,13 +84,13 @@ REFERENCES: dict[str, str] = {
 #: What a runnable kind needs on the host beyond ix, by kind label. The tests hold each key
 #: to a kind this ix can run, and ``http-load`` to the program its adapter starts.
 PREREQUISITES: dict[str, str] = {
-    "agent-session": "runs on one of matrix's agent runtimes: `claude-sdk` needs `ix[claude]`, "
-    "the Claude Code CLI and its credentials; `pydantic-ai` needs a hardline model (its "
+    "agent-session": "runs on one of matrix's agent runtimes: `claude-sdk` needs the Claude "
+    "Code CLI and its credentials; `pydantic-ai` needs a hardline model (its "
     "`models` or matrix's) and makes every model call through hardline; `mock` needs nothing "
     "and calls no model. `ix plan` lists one that cannot start under `Runnable: no`",
-    "model-call": "runs on one of matrix's model runtimes: `hardline` needs `ix[models]` and a "
-    "hardline model; `mock` needs nothing and calls no model. `ix plan` lists a runtime that "
-    "cannot start, or a model it cannot resolve, under `Runnable: no`",
+    "model-call": "runs on one of matrix's model runtimes: `hardline` needs a hardline model; "
+    "`mock` needs nothing and calls no model. `ix plan` lists a runtime that cannot start, or "
+    "a model it cannot resolve, under `Runnable: no`",
     "function-test": "and `outcome` run Python in a child process with a time limit and no "
     "credentials in its environment; it is not a sandbox, so test code from a subject you "
     "would run yourself",
@@ -477,15 +477,13 @@ def _install(version: str, kinds: Kinds) -> str:
             "",
             "```bash",
             f'uv tool install "{source}"',
-            "# or, to run agent sessions on the claude-sdk agent runtime",
-            f'uv tool install "ix[claude] @ {source}"',
             f"ix --version      # ix, version {version}",
             "```",
             "",
             "ix is on no package index: it is installed from its repository at the release's "
-            "tag, and uv takes matrix, which ix runs on, from the same repository. The extras: "
-            "`claude` (the `claude-sdk` agent runtime), `models` (the `hardline` model "
-            "runtime), `otel` (export of spans over OTLP).",
+            "tag, and uv takes matrix, which ix runs on, from the same repository. Every agent "
+            "and model runtime comes with it (`claude-sdk`, `pydantic-ai`, `hardline`), and "
+            "the OpenTelemetry SDK that exports spans over OTLP: there are no extras.",
             "",
             "What the runnable kinds need on the host:",
             "",
@@ -1063,8 +1061,9 @@ probes and a metric. What makes it one is the kinds.
   its type URL. Left out, validate reports `option_missing`. The other options:
   `definition` (a Claude Code agent file: body is the system prompt), `model`,
   `system_prompt`, `tools` (`[]`: none), `max_turns`, `plugins` (folders, `*` allowed,
-  handed to the runtime as its `plugins`), `skills` (folders copied into the session's
-  `.claude/skills`, read as its `project` settings), `fixtures` (files and folders copied
+  handed to the runtime as its `plugins`), `skills` (folders copied to where the runtime
+  says a session finds its skills: claude-sdk's `.claude/skills`, read as its `project`
+  settings), `fixtures` (files and folders copied
   into the working directory first), `setup` (a command run there after them:
   `[python3, seed.py]`) and `runtime_options`: the runtime's own config, passed through as
   written. For `claude-sdk` that is `permission_mode`, `setting_sources` (`[]` keeps this
@@ -1116,7 +1115,8 @@ probes and a metric. What makes it one is the kinds.
   `judged_eval_passed` and `judged_eval_score` (`evaluator`, below).
 - **Validate checks that the sensors can see.** A setting that makes what a sensor reads
   impossible is `unobservable`, refused before any trial, whatever the runtime is called:
-  a skill with no `Skill` tool among `tools`, `skills` on a runtime that, as configured,
+  a skill whose `tools` leave out the tool the runtime says fires one (claude-sdk's
+  `Skill`), `skills` on a runtime that names no place for them or, as configured,
   loads none from the working directory (claude-sdk with `setting_sources` that leave
   `project` out), a `tool-usage` tool the session may not call, a session with no skill,
   plugin or setting to fire, files to `collect` with no tool to write them or on a runtime
@@ -1145,11 +1145,12 @@ A skill is a folder holding `SKILL.md`, beside the experiment:
 `SKILL.md` opens with frontmatter that has both keys: `name` (lowercase letters, digits
 and hyphens, the folder's name) and `description` (what the skill does and when to use
 it: the agent reads only this to decide whether to fire it). `skills:` copies each folder
-into the session's `.claude/skills`, which a session reads as its `project` settings:
+to where the runtime says a session finds its skills; for claude-sdk, the session's
+`.claude/skills`, which it reads as its `project` settings:
 `setting_sources: [project]` reads them and nothing else of this machine, since the
 working directory is the trial's own (`[]` would read none, and validate refuses it). A
-skill fires through the `Skill` tool, so `tools`, when you list them, must include
-`Skill`. `expected_skill` is the skill's `name`. Skills in a plugin come
+skill fires through the tool the runtime names, claude-sdk's `Skill`, so `tools`, when you
+list them, must include it. `expected_skill` is the skill's `name`. Skills in a plugin come
 with `plugins:` instead; `expected_skill: review` matches the plugin's `acme:review`, and
 `expected_skill: acme:review` names that plugin's skill only. A skill installed on this
 machine is read only when its settings source is listed (`setting_sources: [user]`), and
@@ -1274,7 +1275,7 @@ input, never what is expected, and ix compares what came back, so printing passi
 or rewriting the cases fails. A session's working directory is a fresh temporary directory,
 removed after the trial; the agent's tools act on your machine as `permission_mode`
 allows. Telemetry: with `OTEL_EXPORTER_OTLP_ENDPOINT` set, ix exports `ix.plan`, `ix.run`,
-`ix.trial` and `ix.sensor` spans and matrix the sessions inside them (`ix[otel]`).
+`ix.trial` and `ix.sensor` spans and matrix the sessions inside them.
 """
 
 

@@ -196,6 +196,12 @@ def _calls(*calls: tuple[str, dict[str, Any]]) -> dict[str, Any]:
     return {"tool_calls": [{"name": name, "input": given} for name, given in calls]}
 
 
+def _skills_fired(*calls: tuple[str, dict[str, Any]]) -> dict[str, Any]:
+    """What a claude-sdk session leaves: its tool calls, and the tool its runtime says fires
+    a skill."""
+    return {**_calls(*calls), "skill_tool": "Skill"}
+
+
 # --- the session ---------------------------------------------------------------------------
 
 
@@ -518,9 +524,10 @@ class TestReview:
         around: Surroundings,
         runtime: str = "claude-sdk",
         takes: frozenset[str] | None = CLAUDE_SDK,
+        does: Callable[[Mapping[str, Any]], matrix.AgentCapabilities | None] | None = None,
         **options: Any,
     ) -> set[tuple[str, str]]:
-        runtimes = Runtimes(Scripted(_reply()), takes=takes)
+        runtimes = Runtimes(Scripted(_reply()), takes=takes, does=does)
         adapter = AgentSessionSubject(Sessions(), runtimes, MatrixLauncher())
         found = adapter.review({"runtime": runtime, **options}, around)
         return {(problem.path, problem.kind) for problem in found}
@@ -549,10 +556,14 @@ class TestReview:
         self, tmp_path: Path, runtime: str
     ) -> None:
         """Regression: the reviews ran only for a runtime named ``claude-sdk``, so a session
-        on any other agent runtime, given skills and no Skill tool, passed validate."""
+        on any other agent runtime, given skills and no tool to fire them, passed validate.
+        A runtime under any name is held to the skill tool it declares; one that declares
+        none has none to be held to."""
         activation = _around(tmp_path, ("activation", {}))
-        found = self._review(activation, runtime, None, skills=["skills/review"], tools=[])
+        options: dict[str, Any] = {"skills": ["skills/review"], "tools": []}
+        found = self._review(activation, runtime, None, _claude_sdk_does, **options)
         assert found == {("subjects.agent.tools", "unobservable")}
+        assert self._review(activation, runtime, None, _declares_nothing, **options) == set()
 
     def test_the_tools_a_definition_file_gives_count(self, tmp_path: Path) -> None:
         (tmp_path / "agent.md").write_text("---\nname: a\ntools: [Read]\n---\nBe brief.\n")
@@ -711,7 +722,7 @@ class TestActivation:
         self, expectation: str, calls: list[Any], passed: bool, fired: str
     ) -> None:
         truth = {"expectation": expectation, "expected_skill": "aces"}
-        found = await _sense(ActivationSensor(), _interaction(_calls(*calls)), truth)
+        found = await _sense(ActivationSensor(), _interaction(_skills_fired(*calls)), truth)
         assert found.values == {"activated_correctly": passed}
         assert found.detail["fired"] == fired
         expected = {"must_trigger": "aces", "should_not_trigger": "none"}.get(expectation)
@@ -735,10 +746,27 @@ class TestActivation:
         firing read as ``review`` firing, and the detail recorded ``review`` as fired."""
         truth = {"expectation": "must_trigger", "expected_skill": expected}
         calls = [("Skill", {"skill": skill}) for skill in called]
-        found = await _sense(ActivationSensor(), _interaction(_calls(*calls)), truth)
+        found = await _sense(ActivationSensor(), _interaction(_skills_fired(*calls)), truth)
         assert found.values == {"activated_correctly": passed}
         assert found.detail["fired"] == fired
         assert found.detail["skills_called"] == called
+
+    async def test_the_tool_is_the_one_the_runtime_names_or_else_the_options(self) -> None:
+        """W2.9: the sensor knew Claude Code's ``Skill`` tool, and read its calls on any
+        runtime. It now reads the tool the session's runtime names (the response's
+        ``skill_tool``), or the one its ``tool`` option names; with neither, no call is a
+        skill firing."""
+        truth = {"expectation": "must_trigger", "expected_skill": "aces"}
+        calls = (("Skill", {"skill": "aces"}), ("use_skill", {"skill": "aces"}))
+
+        async def fired(response: dict[str, Any], **options: Any) -> list[str]:
+            found = await _sense(ActivationSensor(), _interaction(response), truth, **options)
+            return list(found.detail["skills_called"])
+
+        assert await fired(_calls(*calls)) == []
+        assert await fired({**_calls(*calls), "skill_tool": "use_skill"}) == ["aces"]
+        assert await fired(_skills_fired(*calls)) == ["aces"]
+        assert await fired(_calls(*calls), tool="use_skill") == ["aces"]
 
     async def test_an_expectation_it_does_not_know_is_the_sensors_failure(self) -> None:
         with pytest.raises(ValueError, match="must_triger"):

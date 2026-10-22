@@ -173,26 +173,24 @@ class ConfigError(MatrixError, ValueError):
     kind: ErrorKind = "config"
 
 
-def missing_extra(extra: str, *, needed_by: str, module: str) -> ConfigError:
-    """The error for selecting something whose optional dependency is not installed.
-
-    ``extra`` is the name in matrix's ``[project.optional-dependencies]``; ``details`` carries
-    it and the missing ``module`` so a caller can act without parsing the message.
+def missing_dependency(*, needed_by: str, module: str) -> ConfigError:
+    """The error for selecting something whose dependency cannot be imported. matrix depends
+    on every one it imports, so the install is incomplete; ``details`` carries the missing
+    ``module`` so a caller can act without parsing the message.
     """
     return ConfigError(
         f"{needed_by} requires {module!r}, which is not installed",
-        fix=install_extra(extra),
-        extra=extra,
+        fix=reinstall(),
         missing=module,
     )
 
 
-def install_extra(extra: str) -> str:
-    """How to install matrix's ``extra``: into a project, and into an installed tool."""
-    requirement = REQUIREMENT.replace("matrix @", f"matrix[{extra}] @", 1)
+def reinstall() -> str:
+    """How to repair an install that lacks one of matrix's dependencies: in a project, and in
+    an installed tool."""
     return (
-        f'install matrix\'s {extra} extra: uv add "{requirement}" in a project, or '
-        f'uv tool install --with "{requirement}" <tool> for an installed tool'
+        f'reinstall matrix, which depends on it: uv add "{REQUIREMENT}" in a project, or '
+        "uv tool install --reinstall <the tool's requirement> for an installed tool"
     )
 
 

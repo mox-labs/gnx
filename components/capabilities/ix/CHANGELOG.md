@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Removed (breaking): extras
+
+`claude`, `models`, `otel` and `dev` are gone (Q13). matrix, which ix depends on, brings every
+agent and model runtime and the OpenTelemetry SDK and OTLP exporters, so a plain install runs
+agent sessions on `claude-sdk` and exports spans. A requirement that names an extra
+(`ix[claude] @ ...`) now fails to resolve: drop the brackets. A warning matrix carries over for
+an install that lacks one is `dependency_missing` (was `extra_missing`).
+
 ### Added: pydantic-evals' evaluators as a sensor
 
 The `evaluator` sensor runs one of pydantic-evals' evaluators over each trial, named by
@@ -33,7 +41,9 @@ had no pydantic-ai model to give it (W11.2b). It now judges on the pydantic-ai m
 named matrix model runtime gives (matrix's `pydantic_ai_model`): on `hardline`, the registry
 row `model` names, each request a hardline call, from `matrix.models` or the sensor's
 `runtime_options` and from nowhere else. A model runtime that gives none is still
-`Runnable: no`, saying so. The judge's connections close when its reading ends.
+`Runnable: no`, saying so. The judge's connections close when its reading ends. Each of its
+calls is a row of the run's session table, and the reading names it (`sessions`), as a judge
+sensor's reading does.
 
 ### Added: span evaluators read spans with nothing exported
 
@@ -96,7 +106,13 @@ subjects need several services. Record section 22 has the reasons.
   directory, whether its tools can write, and what config keeps the machine out. claude-sdk
   answers as before; the `pydantic-ai` runtime says it loads no skills, so skills given to
   one of its sessions are `unobservable`. A problem names the option the runtime says
-  decides it.
+  decides it. ix also knew Claude Code's `Skill` tool and `.claude/skills`, for every runtime:
+  a session's skills now go where its runtime says (`skills_dir`), the `activation` sensor
+  reads calls of the tool the runtime says fires a skill (`skill_tool`, kept in the trial's
+  `response`; the sensor's `tool` option still overrides it), and validate holds `tools` to
+  that tool. Skills given to a session on a runtime that declares its sessions but names no
+  place for them are `unobservable`. A runtime that declares nothing has no skills placed and
+  none read as fired.
 
 - **A model call ix makes is a `matrix.model` span** (W7.12). A `model-call` trial and a judge
   on a model runtime recorded their session rows beside matrix's event path, so neither was a

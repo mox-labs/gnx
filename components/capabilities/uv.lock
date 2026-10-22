@@ -28,9 +28,8 @@ dev = [
     { name = "gnx", editable = "gnx" },
     { name = "hardline", editable = "hardline" },
     { name = "ix", editable = "ix" },
-    { name = "matrix", extras = ["claude"], editable = "matrix" },
+    { name = "matrix", editable = "matrix" },
     { name = "mypy", specifier = ">=1.8" },
-    { name = "opentelemetry-sdk", specifier = ">=1.20" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-timeout", specifier = ">=2.3" },
@@ -675,19 +674,12 @@ dependencies = [
     { name = "rich" },
 ]
 
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "rich", specifier = ">=13" },
 ]
-provides-extras = ["dev"]
 
 [[package]]
 name = "defusedxml"
@@ -1055,38 +1047,17 @@ dependencies = [
     { name = "rich-click" },
 ]
 
-[package.optional-dependencies]
-claude = [
-    { name = "matrix", extra = ["claude"] },
-]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-models = [
-    { name = "matrix", extra = ["models"] },
-]
-otel = [
-    { name = "matrix", extra = ["otel"] },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "matrix", editable = "matrix" },
-    { name = "matrix", extras = ["claude"], marker = "extra == 'claude'", editable = "matrix" },
-    { name = "matrix", extras = ["models"], marker = "extra == 'models'", editable = "matrix" },
-    { name = "matrix", extras = ["otel"], marker = "extra == 'otel'", editable = "matrix" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", specifier = ">=1.20" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-evals", specifier = ">=2.59,<3" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "rich", specifier = ">=13" },
     { name = "rich-click", specifier = ">=1.8" },
 ]
-provides-extras = ["claude", "models", "otel", "dev"]
 
 [[package]]
 name = "jaraco-classes"
@@ -1471,8 +1442,11 @@ name = "matrix"
 version = "0.6.0"
 source = { editable = "matrix" }
 dependencies = [
+    { name = "claude-agent-sdk" },
     { name = "hardline" },
     { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-sdk" },
     { name = "pydantic" },
     { name = "pydantic-ai-slim" },
     { name = "pyyaml" },
@@ -1480,41 +1454,19 @@ dependencies = [
     { name = "rich-click" },
 ]
 
-[package.optional-dependencies]
-claude = [
-    { name = "claude-agent-sdk" },
-]
-dev = [
-    { name = "opentelemetry-sdk" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-models = [
-    { name = "hardline" },
-]
-otel = [
-    { name = "opentelemetry-exporter-otlp" },
-    { name = "opentelemetry-sdk" },
-]
-
 [package.metadata]
 requires-dist = [
-    { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.1.51" },
+    { name = "claude-agent-sdk", specifier = ">=0.1.51" },
     { name = "hardline", editable = "hardline" },
-    { name = "hardline", marker = "extra == 'models'", editable = "hardline" },
     { name = "opentelemetry-api", specifier = ">=1.23" },
-    { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.23" },
-    { name = "opentelemetry-sdk", marker = "extra == 'dev'", specifier = ">=1.23" },
-    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.23" },
+    { name = "opentelemetry-exporter-otlp", specifier = ">=1.23" },
+    { name = "opentelemetry-sdk", specifier = ">=1.23" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-ai-slim", specifier = ">=2.59,<3" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13" },
     { name = "rich-click", specifier = ">=1.8" },
 ]
-provides-extras = ["dev", "claude", "models", "otel"]
 
 [[package]]
 name = "mcp"
@@ -2552,11 +2504,6 @@ dependencies = [
     { name = "xmltodict" },
 ]
 
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "duckdb", specifier = ">=1.0,<2" },
@@ -2568,7 +2515,6 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytz", specifier = ">=2024.1" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
@@ -2576,7 +2522,6 @@ requires-dist = [
     { name = "tenacity", specifier = ">=9.0" },
     { name = "xmltodict", specifier = ">=0.13" },
 ]
-provides-extras = ["dev"]
 
 [[package]]
 name = "referencing"

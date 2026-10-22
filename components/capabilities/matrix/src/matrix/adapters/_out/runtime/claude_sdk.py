@@ -36,7 +36,7 @@ option, so the spans the CLI exports are children of the session's ``invoke_agen
 no span current it hands nothing. The SDK lets an explicit ``env`` win over its own injection,
 so this does not depend on which SDK version does that.
 
-Type URL: ``matrix.v1.agent-runtime.claude-sdk``. Requires the ``claude`` extra.
+Type URL: ``matrix.v1.agent-runtime.claude-sdk``.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from matrix.domain.agent import AgentCapabilities, AgentResponse
-from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason, missing_extra
+from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason, missing_dependency
 from matrix.domain.ports._out.agent_runtime import RUNTIME_LOGGER
 from matrix.domain.problems import Problem, problem
 
@@ -77,6 +77,8 @@ _LOGGED: set[str] = set()
 
 #: The tool through which a session uses a skill.
 SKILL_TOOL = "Skill"
+#: Where, under its working directory, a session finds skills as its ``project`` settings.
+SKILLS_DIR = ".claude/skills"
 
 FAMILY = "claude"
 #: ``gen_ai.provider.name``: the provider the SDK's sessions are served by.
@@ -165,12 +167,16 @@ class ClaudeSdkRuntimeConfig(BaseModel):
         """What a session does under this config. ``setting_sources`` decides which skills
         it loads: from settings when it lists any source, from its working directory's
         ``.claude/skills`` when it lists ``project``; unset, the CLI's own default decides,
-        which is not claimed. ``permission_mode: plan`` writes nothing. ``setting_sources:
-        []`` keeps this machine's settings, CLAUDE.md and hooks out."""
+        which is not claimed. Whatever the config, a skill fires through the ``Skill`` tool,
+        and the skills a session is given are placed in its ``.claude/skills``.
+        ``permission_mode: plan`` writes nothing. ``setting_sources: []`` keeps this
+        machine's settings, CLAUDE.md and hooks out."""
         sources = self.setting_sources
         return AgentCapabilities(
             settings_skills=None if sources is None else bool(sources),
             project_skills=None if sources is None else "project" in sources,
+            skill_tool=SKILL_TOOL,
+            skills_dir=SKILLS_DIR,
             writes_files=False if self.permission_mode == "plan" else None,
             hermetic={"setting_sources": []},
             set_by={
@@ -195,8 +201,8 @@ class ClaudeSdkRuntime:
         try:
             import claude_agent_sdk  # noqa: F401
         except ImportError as e:
-            raise missing_extra(
-                "claude", needed_by="the claude-sdk runtime", module="claude_agent_sdk"
+            raise missing_dependency(
+                needed_by="the claude-sdk runtime", module="claude_agent_sdk"
             ) from e
         self._config = config or ClaudeSdkRuntimeConfig()
         self._trace_environment = trace_environment

@@ -17,6 +17,14 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Removed (breaking)
 
+- **Extras** (Q13). `claude`, `models`, `otel` and `dev` are gone: the Claude Agent SDK, the
+  OpenTelemetry SDK and both OTLP exporters are dependencies, as hardline and pydantic-ai
+  already were, each imported only when what uses it is built. A requirement that names an
+  extra (`matrix[otel] @ ...`) now fails to resolve: drop the brackets. An install that lacks
+  one of them (a broken environment) reports it as the problem kind `dependency_missing`
+  (was `extra_missing`), with a fix that reinstalls matrix; `missing_extra` and
+  `install_extra` in `matrix.domain.errors` are `missing_dependency` and `reinstall`. The
+  workspace's `dev` dependency group carries the test tools.
 - **Spend.** matrix cannot measure what a run costs: it sees only what each runtime reports,
   and the `model` runtime reports tokens, not dollars. So the spend ceiling and everything
   built on it are gone, and nothing replaces them:
@@ -121,11 +129,13 @@ the `model` effect or none at all. Record section 17 has the reasons.
 ### Added
 
 - **What an agent runtime's sessions do is data it declares: `AgentCapabilities`.** Whether a
-  session loads skills from settings or from its working directory, whether its tools can
-  write files, the config that keeps it from reading the machine it runs on, and the config
+  session loads skills from settings or from its working directory, which tool fires a skill
+  (`skill_tool`) and where a session's skills must be placed (`skills_dir`), whether its tools
+  can write files, the config that keeps it from reading the machine it runs on, and the config
   key that decides each. A runtime's config class declares them (`capabilities()`), and
   `Entry.capabilities(config)` asks. `claude-sdk` answers from `setting_sources` and
-  `permission_mode`, `pydantic-ai` declares that it loads no skills, the `mock` declares
+  `permission_mode`, and names `Skill` and `.claude/skills`; `pydantic-ai` declares that it
+  loads no skills, the `mock` declares
   nothing. A caller (ix) asks the runtime instead of reading Claude Code's option names
   (W2.9).
 
@@ -134,7 +144,11 @@ the `model` effect or none at all. Record section 17 has the reasons.
   hardline call with the runtime's `max_tokens` and `temperature` as defaults, and an `aclose()`
   for its connections. It is how ix's evaluator judge gets its model from the model runtime the
   experiment names, from config and nowhere else (W11.2b). The `Model` is the one the
-  `pydantic-ai` agent runtime already used; it now takes default settings.
+  `pydantic-ai` agent runtime already used; it now takes default settings. Inside a run each
+  call it makes is a row of the session table, with the fields a model step's call has, failed
+  and cancelled ones too, under the runtime's type URL and `drives`
+  (`HardlineModelRuntime(..., runtime_url=, drives=)`, which composition passes); its `sent`
+  digests the call's row, turns and tools.
 
 - **A model step's call path is public: `call_model(runtime, request, *, name, ...)`.** A
   caller that calls a model runtime itself (ix's `model-call` trial and its judge) could record
@@ -263,6 +277,11 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Fixed
 
+- **A model call names who served it.** `ModelCall.provider`, and the session row's, were set
+  for hardline's `anthropic` backend alone, so a row served by ollama or any other
+  OpenAI-compatible server said nobody served it. The `hardline` model runtime and the
+  `pydantic-ai` agent runtime now name the registry row's `provider:`, and the backend's name
+  (`openai-compat`) for a row that names none, as hardline's own `gen_ai.provider.name` does.
 - **A hardline that adds a request param no longer fails every model step.** The `hardline`
   model runtime built its `RequestParams` from all of hardline's (`**params.model_dump()`),
   which refuse a key they do not know, so hardline's new `params.tools` failed each step with

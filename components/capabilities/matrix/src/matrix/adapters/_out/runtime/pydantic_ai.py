@@ -25,8 +25,9 @@ cannot call them. A definition's ``tools`` choose from the runtime's: ``None`` i
 **What a response carries.** The reply (``content``) is the run's output; every text the model
 wrote along the way is the ``transcript``; each tool call is timed from the response that asked
 for it to the request that carried its result, and ``error`` when the tool failed or its
-arguments were refused. ``model``, ``family``, ``finish_reason`` and ``native_finish_reason`` are
-those of the call that answered last, hardline's ``Completion``; usage is summed over every call
+arguments were refused. ``model``, ``family``, ``provider``, ``finish_reason`` and
+``native_finish_reason`` are those of the call that answered last, hardline's ``Completion``
+(``provider`` its row's ``provider:``, else its backend's name); usage is summed over every call
 of the session, each already summed over its attempts; ``num_turns`` counts the calls;
 ``session_id`` is pydantic-ai's run id. No cost: hardline reports tokens, and pydantic-ai's own
 price estimate is not a provider's report (Q1).
@@ -50,7 +51,10 @@ one loop share them, and they are closed when the last session running in that l
 
 **The model alone.** :func:`hardline_model` is the same ``Model`` for a caller that runs
 pydantic-ai itself: the ``hardline`` model runtime hands it out (``pydantic_ai_model``), so an
-evaluator's judge calls its model on a row its config names, and nothing else.
+evaluator's judge calls its model on a row its config names, and nothing else. Handed out, each
+call it makes is recorded by the runtime as a row of the run's session table (``record``),
+replied, failed or cancelled: what was sent is digested as the call's turns, tools and row.
+Inside an agent session nothing records the calls one by one: the session is the row.
 
 ``pydantic_ai`` and ``hardline`` are imported inside the methods that use them, so importing
 matrix loads neither. Type URL: ``matrix.v1.agent-runtime.pydantic-ai``.
@@ -70,6 +74,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from matrix.domain.agent import AgentCapabilities, AgentResponse
 from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason
 from matrix.domain.problems import problem
+from matrix.domain.session import digest
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -82,6 +87,10 @@ if TYPE_CHECKING:
     from pydantic_ai.settings import ModelSettings
 
     from matrix.domain.agent import AgentDefinition
+
+    #: Records one call a hardline Model made: its row, the digest of what it sent, and its
+    #: Completion, or the error it raised.
+    type Recorder = Callable[[str, str, Completion | None, BaseException | None], None]
 
 
 class PydanticAiRuntimeConfig(BaseModel):
@@ -109,8 +118,9 @@ class PydanticAiRuntimeConfig(BaseModel):
 
     def capabilities(self) -> AgentCapabilities:
         """A session loads no skill, from settings or its working directory: pydantic-ai has
-        none. It reads nothing of the machine beyond its config, so nothing keeps it out.
-        Whether its tools write files is the functions' own to say."""
+        none, so no tool fires one and nowhere is one placed. It reads nothing of the machine
+        beyond its config, so nothing keeps it out. Whether its tools write files is the
+        functions' own to say."""
         return AgentCapabilities(settings_skills=False, project_skills=False)
 
 
@@ -291,14 +301,26 @@ class PydanticAiRuntime:
 
 
 def hardline_model(
-    models: Hardline, row: str | None, *, settings: Mapping[str, Any] | None = None
+    models: Hardline,
+    row: str | None,
+    *,
+    settings: Mapping[str, Any] | None = None,
+    record: Recorder | None = None,
 ) -> _HardlineModel:
     """pydantic-ai's ``Model`` over ``row`` of the hardline runtime ``models`` (None: its
     default), each request one hardline call, for a caller that runs pydantic-ai itself.
     ``settings`` are its default model settings (``max_tokens``, ``temperature``), which a
-    request's own override. Its ``aclose()`` closes the connections its calls opened in the
-    running event loop. Raises hardline's ``UnknownModelError`` for a row it cannot resolve."""
-    return _model_class()(models, row, _Session(), dict(settings or {}) or None)
+    request's own override. ``record`` is called once a call has answered or raised, with
+    what it sent. Its ``aclose()`` closes the connections its calls opened in the running event
+    loop. Raises hardline's ``UnknownModelError`` for a row it cannot resolve."""
+    return _model_class()(models, row, _Session(record=record), dict(settings or {}) or None)
+
+
+def served_by(models: Hardline, completion: Completion) -> str:
+    """Who served ``completion``, as the GenAI conventions name providers: its registry row's
+    ``provider``, or else its backend's name, as hardline's own ``gen_ai.provider.name`` is. An
+    OpenAI-compatible backend cannot tell which server answered; the row's author can."""
+    return models.registry.get(completion.name).provider or completion.backend
 
 
 def _imported(name: str, reference: str) -> Callable[..., Any]:
@@ -332,9 +354,12 @@ def _imported(name: str, reference: str) -> Callable[..., Any]:
 
 @dataclass
 class _Session:
-    """What one session's model calls answered, in order: hardline's Completions."""
+    """What one session's model calls answered, in order: hardline's Completions, and who
+    served the last of them. ``record``, when set, records each call as it ends."""
 
     calls: list[Completion] = field(default_factory=list)
+    provider: str | None = None
+    record: Recorder | None = None
 
     def response(
         self,
@@ -376,7 +401,7 @@ class _Session:
             native_finish_reason=None if last is None else last.native_finish_reason,
             family=None if last is None else last.family,
             model=None if last is None else last.model,
-            provider=None if last is None else _PROVIDERS.get(last.backend),
+            provider=self.provider,
             tokens_input=usage.input_tokens,
             tokens_output=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens,
@@ -422,10 +447,6 @@ def _tool_calls(messages: Sequence[ModelMessage]) -> tuple[dict[str, Any], ...]:
                         asked.update(ended=answer.timestamp.isoformat(), error=failed)
     return tuple(calls)
 
-
-#: hardline backends that speak to one provider, by the GenAI conventions' provider name. An
-#: OpenAI-compatible backend may front any provider, so it names none.
-_PROVIDERS: dict[str, str] = {"anthropic": "anthropic"}
 
 _BACKEND_REASONS: dict[str, RuntimeReason] = {
     "rate_limit": "rate_limited",
@@ -533,14 +554,24 @@ def _model_class() -> Callable[
                 for tool in (*params.declared_function_tools, *params.output_tools)
             ]
             given = settings or {}
-            completion = await self._hardline.complete(
-                self._row,
-                turns,
-                max_tokens=given.get("max_tokens"),
-                temperature=given.get("temperature"),
-                tools=tools,
-            )
+            record = self.session.record
+            sent = "" if record is None else _sent(self._row, turns, tools)
+            try:
+                completion = await self._hardline.complete(
+                    self._row,
+                    turns,
+                    max_tokens=given.get("max_tokens"),
+                    temperature=given.get("temperature"),
+                    tools=tools,
+                )
+            except (asyncio.CancelledError, Exception) as error:
+                if record is not None:
+                    record(self._row, sent, None, error)
+                raise
             self.session.calls.append(completion)
+            if record is not None:
+                record(self._row, sent, completion, None)
+            provider = self.session.provider = served_by(self._hardline, completion)
             parts: list[Any] = [TextPart(completion.text)] if completion.text else []
             parts.extend(
                 ToolCallPart(call.name, call.arguments, tool_call_id=call.id)
@@ -556,7 +587,7 @@ def _model_class() -> Callable[
                     cache_write_tokens=usage.cache_write_tokens,
                 ),
                 model_name=completion.model,
-                provider_name=completion.backend,
+                provider_name=provider,
                 provider_response_id=completion.request_id,
                 finish_reason=cast("Any", _FINISH.get(completion.finish_reason or "")),
             )
@@ -608,6 +639,18 @@ def _model_class() -> Callable[
     return cast(
         "Callable[[Hardline, str | None, _Session, dict[str, Any] | None], _HardlineModel]",
         HardlineModel,
+    )
+
+
+def _sent(row: str, turns: Sequence[Turn], tools: Sequence[Any]) -> str:
+    """The digest of what one call sent (:func:`~matrix.domain.session.digest`): its row, its
+    turns and the tools it offered. Equal digests, equal requests."""
+    return digest(
+        {
+            "model": row,
+            "turns": [turn.model_dump(mode="json") for turn in turns],
+            "tools": [tool.model_dump(mode="json") for tool in tools],
+        }
     )
 
 

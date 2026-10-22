@@ -58,11 +58,16 @@ class Scripted:
 
 
 class ScriptedConfig(BaseModel):
-    """What the scripted runtime takes: a third party's config, declared as matrix's are."""
+    """What the scripted runtime takes: a third party's config, declared as matrix's are. Its
+    sessions find the skills they are given in ``acme/skills`` and fire one through a tool
+    named ``Skill``, and it says so."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     family: str = "scripted"
+
+    def capabilities(self) -> matrix.AgentCapabilities:
+        return matrix.AgentCapabilities(skill_tool="Skill", skills_dir="acme/skills")
 
 
 def _registry(answer: Callable[[str], matrix.AgentResponse]) -> matrix.Registry:
@@ -742,12 +747,16 @@ class TestThirdPartyRuntimes:
         root = Root(registry=_third_parties(), settings=_settings())
         (tmp_path / "skills" / "review").mkdir(parents=True)
         session = {"kind": "agent-session", "runtime": SCRIPTED, "skills": ["skills/review"]}
-        lab = _either(
-            tmp_path, {**session, "tools": [], "runtime_options": {"permission_mode": "plan"}},
-            routing=True, sensors=[{"kind": "activation"}],
-        )  # fmt: skip
+        lab = _either(tmp_path, {**session, "tools": []}, routing=True,
+                      sensors=[{"kind": "activation"}])  # fmt: skip
         assert {(p.path, p.kind) for p in root.validate(lab).problems} == {
             ("subjects.it.tools", "unobservable"),
+        }
+        # An option its config refuses: a config refused has no capabilities to ask of.
+        planning = {**session, "runtime_options": {"permission_mode": "plan"}}
+        lab = _either(tmp_path / "options", planning, routing=True,
+                      sensors=[{"kind": "activation"}])  # fmt: skip
+        assert {(p.path, p.kind) for p in root.validate(lab).problems} == {
             ("subjects.it.runtime_options.permission_mode", "option_unknown"),
         }
         fixed = _either(tmp_path, session, routing=True, sensors=[{"kind": "activation"}])
@@ -799,6 +808,8 @@ class SandboxConfig(BaseModel):
         return matrix.AgentCapabilities(
             settings_skills=True,
             project_skills=True,
+            skill_tool="Skill",
+            skills_dir="sandbox/skills",
             writes_files=not self.read_only,
             set_by={"writes_files": "read_only"},
         )
@@ -872,6 +883,94 @@ class TestCapabilitiesAreAsked:
         assert self._validated(tmp_path / "b", session, sensors=[{"kind": "activation"}]) == {
             ("subjects.it.runtime", "unobservable")
         }
+
+
+class ElsewhereConfig(BaseModel):
+    """A third party's agent runtime whose sessions find their skills somewhere of its own,
+    and fire one through a tool of its own name: nothing of Claude Code's."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    def capabilities(self) -> matrix.AgentCapabilities:
+        return matrix.AgentCapabilities(
+            project_skills=True, skill_tool="use_skill", skills_dir="agent/skills"
+        )
+
+
+ELSEWHERE = "acme.v1.agent-runtime.elsewhere"
+
+
+class Elsewhere:
+    """``acme``'s runtime: a session fires each skill it finds in its ``agent/skills``, and
+    keeps every file it saw in its working directory."""
+
+    seen: list[list[str]]
+
+    def __init__(self, cwd: str) -> None:
+        self.cwd = Path(cwd)
+
+    def check(self, definition: matrix.AgentDefinition) -> None:
+        return None
+
+    async def run(self, definition: matrix.AgentDefinition, task: str) -> matrix.AgentResponse:
+        Elsewhere.seen.append(
+            sorted(str(f.relative_to(self.cwd)) for f in self.cwd.rglob("*") if f.is_file())
+        )
+        skills = sorted(path.name for path in (self.cwd / "agent" / "skills").glob("*"))
+        calls = tuple({"name": "use_skill", "input": {"skill": skill}} for skill in skills)
+        return matrix.AgentResponse(content="ok", tool_calls=calls, num_turns=1, family="acme")
+
+
+def _elsewhere() -> matrix.Registry:
+    registry = _third_parties()
+
+    def build(config: ElsewhereConfig, *, cwd: str | None = None) -> Elsewhere:
+        return Elsewhere(cwd or ".")  # the preflight builds it with no directory
+
+    registry.register("agent-runtime", ELSEWHERE, build, config=ElsewhereConfig, needs={"cwd"})
+    return registry
+
+
+class TestSkillsGoWhereTheRuntimeSays:
+    """W2.9: ix copied a session's skills into its ``.claude/skills`` and read a skill as
+    fired when the session called ``Skill``, both Claude Code's answers, for every runtime.
+    The runtime now declares both (``skills_dir``, ``skill_tool``), and ix asks it."""
+
+    def test_skills_are_placed_and_read_as_fired_where_the_runtime_says(
+        self, tmp_path: Path
+    ) -> None:
+        subject = {"kind": "agent-session", "runtime": ELSEWHERE, "skills": ["skills/review"]}
+        lab = _either(tmp_path, subject, routing=True, sensors=[{"kind": "activation"}],
+                      metrics=["activated_correctly"])  # fmt: skip
+        (lab / "skills" / "review").mkdir(parents=True)
+        (lab / "skills" / "review" / "SKILL.md").write_text(SKILL)
+        root = Root(registry=_elsewhere(), settings=_settings())
+        assert root.validate(lab).valid
+        Elsewhere.seen = []
+        report = root.run(lab, exploratory=True)
+        assert Elsewhere.seen and all(
+            files == ["agent/skills/review/SKILL.md"] for files in Elsewhere.seen
+        )
+        readings = [r for r in _rows(report, "ix.v1.reading")
+                    if r["metric"] == "activated_correctly"]  # fmt: skip
+        fired = {r["detail"]["fired"] for r in readings}
+        assert fired == {"review"}  # every trial fired it, decoy and all
+        responses = [row["observations"]["response"] for row in _rows(report, "ix.v1.interaction")]
+        assert {response["skill_tool"] for response in responses} == {"use_skill"}
+
+    def test_a_session_that_cannot_call_the_runtimes_skill_tool_is_a_problem(
+        self, tmp_path: Path
+    ) -> None:
+        subject = {"kind": "agent-session", "runtime": ELSEWHERE, "skills": ["skills/review"]}
+        root = Root(registry=_elsewhere(), settings=_settings())
+        for tools, problems in [(["Read", "Skill"], 1), (["Read", "use_skill"], 0)]:
+            lab = _either(tmp_path / str(problems), {**subject, "tools": tools}, routing=True,
+                          sensors=[{"kind": "activation"}])  # fmt: skip
+            found = root.validate(lab).problems
+            assert [(p.path, p.kind) for p in found] == [("subjects.it.tools", "unobservable")][
+                :problems
+            ]
+            assert all("use_skill" in p.message and "use_skill" in (p.fix or "") for p in found)
 
 
 def lookup(word: str) -> str:

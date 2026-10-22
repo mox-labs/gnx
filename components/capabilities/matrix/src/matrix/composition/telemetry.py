@@ -1,8 +1,8 @@
 """Telemetry: OpenTelemetry, configured the standard way, and the record's own event log.
 
 matrix emits events; the ``otel`` observer turns them into spans and metrics through the
-OpenTelemetry API, which is a base dependency and does nothing until an SDK is configured.
-The SDK and the OTLP exporters are the ``otel`` extra.
+OpenTelemetry API, which does nothing until an SDK is configured. The SDK and the OTLP
+exporters are dependencies too, imported only when export is asked for.
 
 **A library uses the API; an application installs the SDK** (OpenTelemetry's own rule).
 Composing, wiring and running never install a tracer or meter provider. When the environment
@@ -20,8 +20,9 @@ not ``true``:
   (``service.name`` is ``matrix`` when neither sets it). A program that configures
   OpenTelemetry itself does not call it.
 
-When the environment asks for export and the extra is missing, nothing is exported, and
-:func:`warnings` says so as a problem every ``matrix`` document carries; it is never silent.
+When the environment asks for export and an install lacks the SDK or the exporters, nothing
+is exported, and :func:`warnings` says so as a problem every ``matrix`` document carries; it
+is never silent.
 
 **With nothing configured**, a run given a store that keeps events (the JSONL store) still
 writes them into its record, ``events.jsonl``: the local sink.
@@ -35,7 +36,7 @@ from dataclasses import dataclass, field
 from importlib.util import find_spec
 from typing import TYPE_CHECKING, Any
 
-from matrix.domain.errors import install_extra, missing_extra
+from matrix.domain.errors import missing_dependency, reinstall
 from matrix.domain.problems import Problem, problem
 
 if TYPE_CHECKING:
@@ -75,7 +76,7 @@ def requested(environ: Mapping[str, str] | None = None) -> str | None:
     return None
 
 
-#: What the ``otel`` extra installs that export needs.
+#: What export needs beyond the API: the SDK and the OTLP exporters, imported only then.
 _SDK = "opentelemetry.sdk"
 _OTLP = "opentelemetry.exporter.otlp.proto.http"
 
@@ -100,8 +101,8 @@ def _missing(environ: Mapping[str, str]) -> str | None:
 
 
 def warnings(environ: Mapping[str, str] | None = None) -> tuple[Problem, ...]:
-    """What a reader should know about telemetry before a run: export asked for without the
-    extra that does it, or a variable naming what matrix does not install."""
+    """What a reader should know about telemetry before a run: export asked for in an install
+    that lacks what does it, or a variable naming what matrix does not install."""
     env = os.environ if environ is None else environ
     variable = requested(env)
     if variable is None:
@@ -111,10 +112,10 @@ def warnings(environ: Mapping[str, str] | None = None) -> tuple[Problem, ...]:
         return (
             problem(
                 variable,
-                "extra_missing",
-                f"{variable} asks for OpenTelemetry export, but matrix[otel] is not installed "
-                f"({lacking} is missing): nothing will be exported",
-                fix=install_extra("otel"),
+                "dependency_missing",
+                f"{variable} asks for OpenTelemetry export, but {lacking} is not installed: "
+                "nothing will be exported",
+                fix=reinstall(),
                 got=env.get(variable),
             ),
         )
@@ -206,9 +207,9 @@ def configure_telemetry(
     nothing this does nothing. ``endpoint`` exports OTLP there, and ``console`` prints to
     stderr, whatever the variables say. ``OTEL_SDK_DISABLED=true`` turns all of it off.
 
-    Raises ConfigError without ``matrix[otel]`` when ``endpoint`` or ``console`` asked for
-    export; when only the environment did, the returned :class:`Telemetry` carries the
-    warning instead.
+    Raises ConfigError in an install that lacks the SDK or the exporters when ``endpoint`` or
+    ``console`` asked for export; when only the environment did, the returned
+    :class:`Telemetry` carries the warning instead.
     """
     if _true(os.environ.get("OTEL_SDK_DISABLED")):
         return Telemetry()
@@ -216,9 +217,9 @@ def configure_telemetry(
     if not (endpoint or console or by_environment):
         return Telemetry()
     if (endpoint or console) and not _installed(_SDK):
-        raise missing_extra("otel", needed_by="telemetry", module=_SDK)
+        raise missing_dependency(needed_by="telemetry", module=_SDK)
     if endpoint and not _installed(_OTLP):
-        raise missing_extra("otel", needed_by="OTLP export", module=_OTLP)
+        raise missing_dependency(needed_by="OTLP export", module=_OTLP)
     if not _installed(_SDK):  # only the environment asked: say so, and go on
         return Telemetry(warnings=warnings())
     plan = _plan(endpoint=endpoint, console=console, by_environment=by_environment)
@@ -334,6 +335,6 @@ def _otlp(signal: str, endpoint: str | None) -> Any:
         url = f"{endpoint.rstrip('/')}/v1/metrics" if endpoint else None
         return HttpMetricExporter(endpoint=url) if url else HttpMetricExporter()
     except ImportError as e:
-        raise missing_extra(
-            "otel", needed_by=f"OTLP export of {signal}", module="opentelemetry.exporter.otlp"
+        raise missing_dependency(
+            needed_by=f"OTLP export of {signal}", module="opentelemetry.exporter.otlp"
         ) from e

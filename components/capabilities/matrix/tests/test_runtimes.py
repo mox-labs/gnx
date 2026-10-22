@@ -6,15 +6,21 @@ import pytest
 from pydantic import BaseModel
 
 from matrix import (
+    MODEL_STEP,
+    PROMPT,
+    SESSION,
     AgentDefinition,
     AgentRuntime,
     ConfigError,
+    MatrixConfig,
     ModelCall,
     ModelRequest,
     ModelRuntime,
     ModelRuntimeError,
     RequestParams,
     TokenUsage,
+    compose,
+    default_registry,
 )
 from matrix.adapters._out.runtime.mock import (
     MockAgentRuntime,
@@ -28,6 +34,7 @@ MODELS = {
     "models": {
         "q": {"backend": "mock", "model": "qwen-8b", "family": "qwen", "local": True},
         "h": {"backend": "mock", "model": "haiku", "family": "claude"},
+        "served": {"backend": "mock", "model": "llama-3", "family": "llama", "provider": "ollama"},
         "down": {
             "backend": "mock",
             "model": "flaky-1",
@@ -97,6 +104,28 @@ async def test_a_call_carries_hardline_s_whole_record() -> None:
     assert call.row is not None and call.row.digest.startswith("sha256:")
     assert call.row.rungs["model"] == "matrix.models"
     assert not hasattr(call, "num_turns") and not hasattr(call, "stop")
+
+
+async def test_the_provider_is_the_row_s_or_else_its_backend_s_on_the_call_and_its_row() -> None:
+    """Regression (W7.11): ``provider`` was set for the ``anthropic`` backend alone, so a call
+    served by ollama, or any row of an OpenAI-compatible backend, said nobody served it. It is
+    now the registry row's ``provider:``, and the backend's name for a row that names none, as
+    hardline's own ``gen_ai.provider.name`` is; the session row a model step records says the
+    same."""
+    assert (await _hardline().call(ModelRequest(prompt="x", model="served"))).provider == "ollama"
+    assert (await _hardline().call(ModelRequest(prompt="x"))).provider == "mock"
+    box = compose(
+        MatrixConfig.model_validate(
+            {"models": MODELS, "model_runtimes": {"m": {"type": "hardline"}}}
+        ),
+        registry=default_registry(discover=False),
+    )
+    for model, provider in [("served", "ollama"), ("q", "mock")]:
+        step = {"runtime": "m", "model": model}
+        wiring = box.wire([{"name": "ask", "type": MODEL_STEP, "config": step}], inputs=[PROMPT])
+        run = await box.executor().run(wiring, {PROMPT: "hello"})
+        (session,) = run.rows(SESSION)
+        assert (session.name, session.provider) == (model, provider)
 
 
 async def test_a_reply_that_is_not_a_whole_answer_says_why() -> None:
@@ -246,6 +275,7 @@ async def test_on_the_run_path_a_rate_limit_keeps_its_hint_and_anything_else_fai
 
 def test_an_agent_runtime_declares_what_its_sessions_do_as_data() -> None:
     """W2.9: whether a session loads skills from settings or from its working directory,
+    which tool fires a skill and where in its working directory its skills must be placed,
     whether its tools can write files, and the config that keeps it from reading the machine
     it runs on, are the runtime's to declare (its config's ``capabilities()``, asked through
     ``Entry.capabilities``), so a caller asks the runtime instead of reading option names it
@@ -259,6 +289,9 @@ def test_an_agent_runtime_declares_what_its_sessions_do_as_data() -> None:
     # Unset, the CLI's own default decides, which the runtime does not claim to know.
     assert (unset.settings_skills, unset.project_skills, unset.writes_files) == (None,) * 3
     assert unset.hermetic == {"setting_sources": []}
+    # Claude Code's answers, whatever the config: a skill fires through its Skill tool, and a
+    # session finds the skills it is given in its working directory's .claude/skills.
+    assert (unset.skill_tool, unset.skills_dir) == ("Skill", ".claude/skills")
     assert unset.set_by == {
         "settings_skills": "setting_sources",
         "project_skills": "setting_sources",
@@ -276,8 +309,9 @@ def test_an_agent_runtime_declares_what_its_sessions_do_as_data() -> None:
     # A config the runtime refuses has no answers: building it says why.
     assert claude.capabilities({"permission_mode": "sometimes"}) is None
     pydantic_ai = registry.entry("agent-runtime", "matrix.v1.agent-runtime.pydantic-ai")
+    # pydantic-ai loads no skills: no tool fires one, and nowhere is one placed.
     assert pydantic_ai.capabilities({}) == AgentCapabilities(
-        settings_skills=False, project_skills=False
+        settings_skills=False, project_skills=False, skill_tool=None, skills_dir=None
     )
     # The stand-in declares nothing: a dry run is reviewed as the session it stands in for.
     assert registry.entry("agent-runtime", "matrix.v1.agent-runtime.mock").capabilities({}) is None

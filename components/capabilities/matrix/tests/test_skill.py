@@ -40,7 +40,6 @@ from matrix.adapters._in.skill import (
     CONFIG_KEYS,
     ENTRY_POINT,
     EXTENSION_EXAMPLE,
-    EXTRAS,
     NEEDS,
     REFERENCES,
     TIERS,
@@ -156,11 +155,11 @@ def test_the_config_keys_are_the_models_and_unknown_ones_are_refused() -> None:
         load_config(sources=[io.StringIO("matrix: {runtimez: {}}\n")])
 
 
-def test_the_extras_are_the_packages() -> None:
-    declared = set(metadata("matrix").get_all("Provides-Extra") or []) - {"dev"}
-    assert set(EXTRAS) == declared
-    for name in EXTRAS:
-        assert f"- `{name}`: " in matrix.skill()
+def test_there_are_no_extras_to_name() -> None:
+    """Q13: every runtime and telemetry is a dependency of matrix, so the package declares no
+    extra and the skill names none to install."""
+    assert not metadata("matrix").get_all("Provides-Extra")
+    assert "matrix[" not in matrix.skill() and "There are no extras." in matrix.skill()
 
 
 def test_the_install_lines_name_this_release_by_its_tag() -> None:

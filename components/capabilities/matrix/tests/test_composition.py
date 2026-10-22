@@ -400,31 +400,32 @@ def test_bound_agent_keeps_definition_immutable() -> None:
 
 
 @pytest.mark.parametrize(
-    ("module", "config", "extra"),
+    ("module", "config"),
     [
-        ("claude_agent_sdk", {"agent_runtimes": {"r": {"type": "claude-sdk"}}}, "claude"),
-        ("hardline", {"model_runtimes": {"r": {"type": "hardline"}}}, "models"),
+        ("claude_agent_sdk", {"agent_runtimes": {"r": {"type": "claude-sdk"}}}),
+        ("hardline", {"model_runtimes": {"r": {"type": "hardline"}}}),
     ],
 )
-def test_selecting_what_a_missing_extra_provides_is_a_config_error_naming_the_extra(
-    monkeypatch: pytest.MonkeyPatch, module: str, config: dict[str, object], extra: str
+def test_selecting_what_an_incomplete_install_lacks_is_a_config_error_saying_how_to_repair(
+    monkeypatch: pytest.MonkeyPatch, module: str, config: dict[str, object]
 ) -> None:
-    """Regression: a missing extra raised a bare ImportError, with no kind and no fix."""
+    """Regression: a missing dependency raised a bare ImportError, with no kind and no fix.
+    matrix depends on each one (Q13: no extras), so the fix reinstalls matrix."""
     monkeypatch.setitem(sys.modules, module, None)
     with pytest.raises(ConfigError) as raised:
         compose(_config(**config))
     error = raised.value.payload()["error"]
     assert error["kind"] == "config"
     (found,) = error["problems"]
-    assert (found["kind"], found["got"]) == ("extra_missing", module)
+    assert (found["kind"], found["got"]) == ("dependency_missing", module)
     tag = f"matrix-v{version('matrix')}"  # the release the installed matrix is
-    requirement = f'"matrix[{extra}] @ git+https://github.com/mox-labs/gnx@{tag}#subdirectory='
+    requirement = f'"matrix @ git+https://github.com/mox-labs/gnx@{tag}#subdirectory='
     assert f"uv add {requirement}" in error["fix"]  # never `pip install matrix`, which is
-    assert f"uv tool install --with {requirement}" in error["fix"]  # another package
+    assert "uv tool install --reinstall" in error["fix"]  # another package
     assert "pip install" not in error["fix"] and found["fix"] == error["fix"]
 
 
-def test_matrix_imports_and_composes_with_no_extra_installed() -> None:
+def test_matrix_imports_and_composes_without_importing_a_runtime_s_dependencies() -> None:
     script = (
         "import sys\n"
         "for name in ('claude_agent_sdk', 'hardline', 'opentelemetry'):\n"

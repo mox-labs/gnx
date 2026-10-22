@@ -188,7 +188,7 @@ def configure_telemetry() -> Telemetry:
     they ask for nothing this does nothing. For a program's entry point (the ``ix`` command
     calls it), never for a library: the providers it installs are the process's own.
 
-    Returns its ``warnings`` (export asked for without matrix's ``otel`` extra), which a
+    Returns its ``warnings`` (export asked for in an install that cannot do it), which a
     command's documents carry, and ``shutdown()``, to call once the work is done.
     """
     return _root().configure_telemetry()

@@ -12,11 +12,15 @@ the model, and a reply that does not fit is repaired within hardline's bound.
 
 A caller that runs pydantic-ai itself (an evaluator's judge) asks ``pydantic_ai_model(model)``
 for pydantic-ai's ``Model`` on a row this runtime resolves, with its ``max_tokens`` and
-``temperature``: the model a caller gets is the one this runtime's config names.
+``temperature``: the model a caller gets is the one this runtime's config names. Each request
+it makes is one call, and inside a run a row of the run's session table, with the fields a
+model step's call has (under ``runtime_url`` and ``drives``, as composition builds the runtime)
+and failed or cancelled ones too, so a caller's reading can name the calls behind it.
 
 The call's record carries hardline's whole record of it: why the reply ended
 (``finish_reason``, the provider's own value, and any refusal), the model that answered and
-its family and backend, ``fallback_from`` when a fallback answered, usage with cache tokens
+its family, backend and provider (the row's ``provider:``, else the backend's name, as
+hardline's telemetry names it), ``fallback_from`` when a fallback answered, usage with cache tokens
 summed over every attempt, the request id, attempts, retries and latency, what was sent
 (``params``, ``turns_digest``), every backend call made (``attempt_log``) and the registry
 row that answered, with the tier that set each of its fields (``row``). A call that fails
@@ -25,16 +29,18 @@ attempt made and the usage they reported. A reply cut at
 ``max_tokens``, refused or withheld is returned and said for what it is, as hardline returns
 it. hardline reports tokens, not dollars; bound a reply with ``max_tokens``.
 
-Type URL: ``matrix.v1.model-runtime.hardline``. Requires the ``models`` extra (hardline).
+Type URL: ``matrix.v1.model-runtime.hardline``.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
-from matrix.domain.errors import ConfigError, ModelRuntimeError, RuntimeReason, missing_extra
+from matrix.adapters._out.runtime.pydantic_ai import served_by
+from matrix.domain.errors import ConfigError, ModelRuntimeError, RuntimeReason, missing_dependency
 from matrix.domain.model_call import (
     CallAttempt,
     ModelCall,
@@ -42,6 +48,7 @@ from matrix.domain.model_call import (
     RequestParams,
     TokenUsage,
 )
+from matrix.domain.session import call_session, record_cancelled, record_session
 
 if TYPE_CHECKING:
     from hardline import Attempt, Completion, Usage
@@ -68,24 +75,42 @@ class HardlineModelRuntimeConfig(BaseModel):
 
 
 class HardlineModelRuntime:
-    def __init__(self, runtime: Hardline, config: HardlineModelRuntimeConfig | None = None) -> None:
+    """``runtime_url`` and ``drives`` are what the session rows of the calls its pydantic-ai
+    ``Model`` makes are recorded under: its registry entry's type URL and distributions."""
+
+    def __init__(
+        self,
+        runtime: Hardline,
+        config: HardlineModelRuntimeConfig | None = None,
+        *,
+        runtime_url: str | None = None,
+        drives: tuple[str, ...] = (),
+    ) -> None:
         self._runtime = runtime
         self._config = config or HardlineModelRuntimeConfig()
+        self._runtime_url = runtime_url
+        self._drives = drives
 
     @classmethod
-    def from_config(cls, config: HardlineModelRuntimeConfig) -> HardlineModelRuntime:
+    def from_config(
+        cls,
+        config: HardlineModelRuntimeConfig,
+        *,
+        runtime_url: str | None = None,
+        drives: tuple[str, ...] = (),
+    ) -> HardlineModelRuntime:
         try:
             from hardline import build_runtime
         except ImportError as e:
-            raise missing_extra(
-                "models", needed_by="the hardline model runtime", module="hardline"
+            raise missing_dependency(
+                needed_by="the hardline model runtime", module="hardline"
             ) from e
         runtime = (
             build_runtime(config=config.models, label="matrix.models")
             if config.models is not None
             else build_runtime()
         )
-        return cls(runtime, config)
+        return cls(runtime, config, runtime_url=runtime_url, drives=drives)
 
     @property
     def models(self) -> Hardline:
@@ -128,19 +153,43 @@ class HardlineModelRuntime:
     def pydantic_ai_model(self, model: str | None = None) -> Any:
         """pydantic-ai's ``Model`` on the row ``model`` names (unset: ``default_model``, then
         the registry's default), its requests made through this runtime's hardline with this
-        runtime's ``max_tokens`` and ``temperature`` as defaults. Its ``aclose()`` closes the
-        connections its calls opened in the running event loop. Raises ``ConfigError`` for a
-        name the registry does not resolve, as :meth:`check` does."""
+        runtime's ``max_tokens`` and ``temperature`` as defaults. Inside a run, each of its
+        calls is a row of the run's session table (see the module docstring). Its ``aclose()``
+        closes the connections its calls opened in the running event loop. Raises
+        ``ConfigError`` for a name the registry does not resolve, as :meth:`check` does."""
         from matrix.adapters._out.runtime.pydantic_ai import hardline_model
 
         self.check(model)
         given = {"max_tokens": self._config.max_tokens, "temperature": self._config.temperature}
         settings = {key: value for key, value in given.items() if value is not None}
-        return hardline_model(self._runtime, model or self._config.default_model, settings=settings)
+        return hardline_model(
+            self._runtime,
+            model or self._config.default_model,
+            settings=settings,
+            record=self._recorded,
+        )
+
+    def _recorded(
+        self, row: str, sent: str, completion: Completion | None, error: BaseException | None
+    ) -> None:
+        """Record a call the pydantic-ai ``Model`` made on ``row`` as the row a model step's
+        call is: from its Completion, or, when it raised, from the error as :meth:`call`
+        classifies it."""
+        call: ModelCall | None = None
+        if completion is not None:
+            call = _record(completion, None, served_by(self._runtime, completion))
+        elif error is not None and not isinstance(error, asyncio.CancelledError):
+            error = _classified(row, error)
+            call = error.call
+        session = call_session(
+            call, sent=sent, runtime=self._runtime_url, drives=self._drives, error=error
+        )
+        if isinstance(error, asyncio.CancelledError):
+            record_cancelled(session)
+        else:
+            record_session(session)
 
     async def call(self, request: ModelRequest) -> ModelCall:
-        from hardline import HardlineError
-
         model = request.model or self._config.default_model
         options: dict[str, Any] = {
             "system": request.system,
@@ -157,24 +206,12 @@ class HardlineModelRuntime:
                 )
                 completion = structured.completion
                 value = structured.value.model_dump(mode="json")
-        except HardlineError as e:
-            raise ModelRuntimeError(
-                f"model {model or '(default)'!r}: {e}",
-                reason=_reason(e),
-                retry_after_s=getattr(e, "retry_after", None),
-                call=_failed(e),
-                model=model,
-            ) from e
         except Exception as e:  # the port promises a call record or a classified error
-            raise ModelRuntimeError(
-                f"model {model or '(default)'!r}: {type(e).__name__}: {e}",
-                reason="failed",
-                model=model,
-            ) from e
-        return _record(completion, value)
+            raise _classified(model, e) from e
+        return _record(completion, value, served_by(self._runtime, completion))
 
 
-def _record(completion: Completion, value: Any) -> ModelCall:
+def _record(completion: Completion, value: Any, provider: str) -> ModelCall:
     params = completion.params
     row = completion.row
     return ModelCall(
@@ -187,7 +224,7 @@ def _record(completion: Completion, value: Any) -> ModelCall:
         model=completion.model,
         family=completion.family,
         backend=completion.backend,
-        provider=_PROVIDERS.get(completion.backend),
+        provider=provider,
         usage=_usage(completion.usage),
         request_id=completion.request_id,
         attempts=completion.attempts,
@@ -209,7 +246,28 @@ def _record(completion: Completion, value: Any) -> ModelCall:
     )
 
 
-def _failed(error: Exception) -> ModelCall | None:
+def _classified(model: str | None, error: BaseException) -> ModelRuntimeError:
+    """``error``, raised by a call on ``model``, in the port's vocabulary: hardline's own errors
+    keep their classification, their Retry-After and what they say of the call; anything else
+    is ``failed``."""
+    from hardline import HardlineError
+
+    if isinstance(error, HardlineError):
+        return ModelRuntimeError(
+            f"model {model or '(default)'!r}: {error}",
+            reason=_reason(error),
+            retry_after_s=getattr(error, "retry_after", None),
+            call=_failed(error),
+            model=model,
+        )
+    return ModelRuntimeError(
+        f"model {model or '(default)'!r}: {type(error).__name__}: {error}",
+        reason="failed",
+        model=model,
+    )
+
+
+def _failed(error: BaseException) -> ModelCall | None:
     """What hardline's error says of a call that failed: every attempt made and the usage
     they reported (a ``BackendError`` or ``SchemaError`` the runtime raised). None for an
     error raised before anything was sent."""
@@ -243,10 +301,6 @@ def _usage(usage: Usage) -> TokenUsage:
     )
 
 
-#: hardline backends that speak to one provider, by the GenAI conventions' provider name. An
-#: OpenAI-compatible backend may front any provider, so it names none.
-_PROVIDERS: dict[str, str] = {"anthropic": "anthropic"}
-
 _BACKEND_REASONS: dict[str, RuntimeReason] = {
     "rate_limit": "rate_limited",
     "timeout": "timeout",
@@ -256,7 +310,7 @@ _BACKEND_REASONS: dict[str, RuntimeReason] = {
 }
 
 
-def _reason(error: Exception) -> RuntimeReason:
+def _reason(error: BaseException) -> RuntimeReason:
     """hardline's classification, in the runtime port's vocabulary."""
     from hardline import BackendError, SecretError, UnknownModelError
 

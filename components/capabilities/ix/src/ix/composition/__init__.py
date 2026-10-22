@@ -465,7 +465,7 @@ class Root:
     def configure_telemetry(self) -> Telemetry:
         """Install the OpenTelemetry SDK from the standard ``OTEL_*`` variables, through
         matrix, for an application's entry point (the ``ix`` command): a library never
-        installs one. Its warnings (export asked for without matrix's ``otel`` extra) are
+        installs one. Its warnings (export asked for in an install that cannot do it) are
         what every document the command prints carries."""
         handle = matrix.configure_telemetry()
         return Telemetry(warnings=converted(handle.warnings), _handle=handle)

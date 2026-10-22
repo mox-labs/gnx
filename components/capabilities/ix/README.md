@@ -14,8 +14,6 @@ runs, runs it one trial at a time and reports a verdict: `holds`, `fails` or
 ```bash
 # the ix command
 uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
-# the same, with the claude-sdk agent runtime for agent sessions
-uv tool install "ix[claude] @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
 # the library, in a project
 uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
 ```
@@ -23,9 +21,10 @@ uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=componen
 ix is installed from its repository at the release's tag. It is on no package index, and the
 project named `ix` on PyPI is another one. ix runs on matrix, a package of the same
 repository: installed from the git URL, uv clones the repository, finds the workspace it
-belongs to and takes matrix from there. The extras are `claude` (the `claude-sdk` agent
-runtime: Claude Agent SDK sessions), `models` (the `hardline` model runtime: one model call
-through hardline) and `otel` (export of spans over OTLP). A service experiment needs `k6` on `PATH`.
+belongs to and takes matrix from there. Every runtime comes with it: `claude-sdk` (Claude
+Agent SDK sessions), `pydantic-ai` (a pydantic-ai loop whose model calls hardline makes),
+`hardline` (one model call through hardline), and the OpenTelemetry SDK that exports spans
+over OTLP. There are no extras. A service experiment needs `k6` on `PATH`.
 
 ## The experiment model
 
@@ -182,10 +181,11 @@ read as a fact like its tokens; nothing limits a run by it.
 Work in this order:
 
 1. `ix validate` and `ix plan`. Validate also refuses a session its sensors could not see
-   into (`unobservable`): a skill with no `Skill` tool among its `tools`, a tool-reading
+   into (`unobservable`): a skill whose `tools` leave out the tool that fires one (the
+   runtime names it: claude-sdk's `Skill`), a tool-reading
    sensor on a `model-call` subject, files to collect that no tool can write. `Runnable` says
-   whether the runtime can start here (`claude-sdk` needs `ix[claude]`, the Claude Code CLI
-   and its credentials).
+   whether the runtime can start here (`claude-sdk` needs the Claude Code CLI and its
+   credentials).
 2. **Dry run.** Give the probe a `mock_response`, a reply whose grade you know, and run
    `ix run <path> --dry-run`: the file as written, with the session on the `mock` runtime
    and the real runtime's config (`runtime_options`, `plugins`) set aside (the report
@@ -266,7 +266,7 @@ A declaration is not an adapter. ix can **run** these:
 | probe | `prompt` | puts the prompt to the session or the call and keeps the reply; for a session also every tool call, each round's transcript and the files named in `collect` |
 | sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests and dropped arrivals, of those sent and dropped), from what the load probe recorded |
 | sensor | `memory` | `memory_peak`: the highest resident memory of the subject's process group, sampled with `ps` every `interval` while the probe runs |
-| sensor | `activation` | `activated_correctly`: the expected skill fired (a `Skill` tool call naming it whole: `review` is fired by `review` or `plugin:review`, never by `code-review-lite`), or nothing fired for a decoy |
+| sensor | `activation` | `activated_correctly`: the expected skill fired (a call of the tool the session's runtime says fires a skill, claude-sdk's `Skill`, or of the sensor's `tool`, naming it whole: `review` is fired by `review` or `plugin:review`, never by `code-review-lite`), or nothing fired for a decoy |
 | sensor | `tool-usage` | `tool_used_correctly`, `tool_usage_score`: the agent used a tool with the expected command (the whole word, ignoring case: `dig` is not `digest`) and arguments, called by name or run through `Bash` |
 | sensor | `function-test` | `tests_passed`, `tests_pass_share`, `tests_score`: the truth's test cases run against the code in the reply, or a file the agent wrote, in a child process |
 | sensor | `outcome` | `outcome_score`, `outcome_passed`: the experiment's own grader functions, run in a child process; without one, the share of the truth's `expected_facts` the reply holds |
@@ -496,7 +496,8 @@ matrix's config names for ix: `observers:` under `matrix:` in any tier
 **From a verdict to the model that answered.** Each interaction names the rows of
 `matrix.v1.session` behind its trial (`sessions`): every agent session (each round of a loop)
 or model call the subject made, failed ones included. Each reading names the rows its sensor
-made (`sessions`: a judge's calls), and joins its interaction on `seq`. A session row holds
+made (`sessions`: a judge's calls, a judge evaluator's included), and joins its interaction on
+`seq`. A session row holds
 the runtime, the model that answered and its family, the usage, the ids (the runtime's, and
 the OpenTelemetry trace and span the session ran in), the attempts, and whether it failed and
 why. A row's position in its file, from 0, is the number the others name. In DuckDB, with
@@ -639,8 +640,8 @@ the observers of a run, and the models a `hardline` model runtime is handed.
 ix makes spans through the OpenTelemetry API, under the instrumentation scope `ix`:
 `ix.plan`, `ix.run`, `ix.environment`, `ix.trial` and `ix.sensor`, with each reading as a
 `gen_ai.evaluation.result` event and a failure's reason as `error.type`. The agent sessions inside a trial are matrix's spans. The
-`ix` command installs the SDK from the standard `OTEL_*` variables when the `otel` extra is
-installed; set without it, every `--json` document carries a warning. A program that
+`ix` command installs the SDK, which comes with it, from the standard `OTEL_*` variables; in
+an install that lacks it, every `--json` document carries a warning instead. A program that
 imports ix configures OpenTelemetry itself, or calls `ix.configure_telemetry()`.
 
 The `evaluator` sensor reads a trial's spans in this process, from the SDK's tracer

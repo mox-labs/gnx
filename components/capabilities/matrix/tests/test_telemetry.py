@@ -93,14 +93,14 @@ def test_disabled_means_nothing_even_when_asked(
     assert not configure_telemetry(console=True).enabled and clean == []
 
 
-def test_export_asked_for_without_the_extra_is_a_warning_naming_the_install(
+def test_export_asked_for_in_an_install_without_the_sdk_is_a_warning_naming_the_repair(
     monkeypatch: pytest.MonkeyPatch, clean: list[str]
 ) -> None:
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
     monkeypatch.setattr(telemetry, "_installed", lambda module=telemetry._SDK: False)
     (warning,) = telemetry.warnings()
-    assert (warning.path, warning.kind) == ("OTEL_EXPORTER_OTLP_ENDPOINT", "extra_missing")
-    assert 'uv add "matrix[otel] @ git+' in warning.fix and "pip" not in warning.fix
+    assert (warning.path, warning.kind) == ("OTEL_EXPORTER_OTLP_ENDPOINT", "dependency_missing")
+    assert 'uv add "matrix @ git+' in warning.fix and "pip" not in warning.fix
     installed = configure_telemetry()
     assert not installed.enabled and installed.warnings == (warning,) and clean == []
     assert compose(MatrixConfig()).warnings == (warning,)
@@ -171,7 +171,7 @@ def test_matrix_run_says_when_export_cannot_happen(
     (tmp_path / "matrix.yaml").write_text("matrix: {}\n")
     assert main(["run", "--json"]) == 0
     (warning,) = json.loads(capsys.readouterr().out)["warnings"]
-    assert warning["kind"] == "extra_missing"
+    assert warning["kind"] == "dependency_missing"
     assert matrix.EXIT_CODES["ok"] == 0
 
 

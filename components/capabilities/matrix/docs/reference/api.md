@@ -658,14 +658,18 @@ AgentCapabilities`, which `Entry.capabilities(config)` asks of a config. `AgentC
 | Field | Type | Meaning |
 |-------|------|---------|
 | `settings_skills` | `bool \| None` | a session loads skills from settings (this machine's, the user's, the project's), beyond those it is given as plugins |
-| `project_skills` | `bool \| None` | a session loads the skills in its working directory (`.claude/skills`) |
+| `project_skills` | `bool \| None` | a session loads the skills in its working directory (in `skills_dir`) |
+| `skill_tool` | `str \| None` | the tool a session calls to fire a skill: the call a caller reads to tell that one fired; `None` for a runtime that names none |
+| `skills_dir` | `str \| None` | where a caller places the skills it gives a session, relative to the session's working directory, each a folder holding its `SKILL.md`; `None` for a runtime that names no place |
 | `writes_files` | `bool \| None` | a session's tools can write files |
 | `hermetic` | `dict[str, Any]` | config that keeps a session from reading the machine it runs on beyond what it is given, for a caller to lay under its own; `{}`: nothing to add |
 | `set_by` | `dict[str, str]` | the config key that decides each answer, by the answer's name |
 
 `claude-sdk` answers from `setting_sources` (unset: the CLI's own default, not claimed) and
-`permission_mode` (`plan` writes nothing), with `hermetic` `{setting_sources: []}`.
-`pydantic-ai` loads no skills, from anywhere, and needs nothing to keep the machine out. The
+`permission_mode` (`plan` writes nothing), with `hermetic` `{setting_sources: []}`; whatever
+its config, a skill fires through `Skill` and a session's skills go in `.claude/skills`.
+`pydantic-ai` loads no skills, from anywhere (no `skill_tool`, no `skills_dir`), and needs
+nothing to keep the machine out. The
 `mock` declares nothing.
 
 A runtime that also logs what its `warnings` say logs it at WARNING on the logger named
@@ -692,7 +696,7 @@ takes the short name.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `claude-sdk` | `matrix.v1.agent-runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | Extra `[claude]`. The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call. The reply is the session's result, every text block its `transcript`. `model` is the one the SDK's `model_usage` names, or, when it names several, the one that wrote the final reply. `tokens_input` adds the cache's tokens to Anthropic's `input_tokens`, which leaves them out. Keeps the session id and the SDK's `stop_reason` (`native_finish_reason`, mapped to `finish_reason`). With OpenTelemetry active, hands the CLI the trace context current when the session starts (`TRACEPARENT`, `TRACESTATE`, through the SDK's `env`), so the CLI's spans join the run's trace under the session's `invoke_agent` |
+| `claude-sdk` | `matrix.v1.agent-runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call. The reply is the session's result, every text block its `transcript`. `model` is the one the SDK's `model_usage` names, or, when it names several, the one that wrote the final reply. `tokens_input` adds the cache's tokens to Anthropic's `input_tokens`, which leaves them out. Keeps the session id and the SDK's `stop_reason` (`native_finish_reason`, mapped to `finish_reason`). With OpenTelemetry active, hands the CLI the trace context current when the session starts (`TRACEPARENT`, `TRACESTATE`, through the SDK's `env`), so the CLI's spans join the run's trace under the session's `invoke_agent` |
 | `pydantic-ai` | `matrix.v1.agent-runtime.pydantic-ai` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `tools` (tool name to `module:function`, a Python function imported when the runtime is built), `temperature`, `max_tokens` | `models` | A pydantic-ai `Agent` per session, its model a hardline row: every model call goes through hardline, with the row's retries, fallbacks, limits, record and telemetry. The definition's `system_prompt` is the agent's instructions; its `tools` choose from the runtime's (`None`: all, `()`: none); `max_turns` bounds its model calls (`stop: max_turns` when reached; pydantic-ai's own default bound otherwise). An agent's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` refuses a tool the runtime does not have, a model the registry cannot resolve, and tools on a row (or a fallback) whose backend cannot call them. The reply is the run's output, every text the model wrote its `transcript`; each tool call is timed from the response that asked for it to the request that carried its result, `error` when the tool failed or its arguments were refused. `model`, `family`, `finish_reason` and `native_finish_reason` are those of the last call; usage is summed over every call; `num_turns` counts the calls; `session_id` is pydantic-ai's run id; no cost. A hardline failure is an `AgentRuntimeError` with its reason mapped, carrying what the session had spent (`response`). `usage_counted_by: "hardline"`. pydantic-ai's instrumentation is switched off on every agent. Has `aclose()`; hardline's connections in a loop close when the last session running there ends. Imports pydantic-ai and hardline only when built |
 | `mock` | `matrix.v1.agent-runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Plays every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports no cost (`cost_usd` is `None`): no provider reported one. Records `calls`, each `(agent, task)` |
 
@@ -820,7 +824,9 @@ pydantic-ai's `Model` on a model name the runtime resolves (raising `ConfigError
 does), its requests made as the runtime makes its own calls, for a caller that runs pydantic-ai
 itself, such as an evaluator's judge; the `Model` has an async `aclose()` for the connections its
 calls opened. The `hardline` runtime has it: the row's requests go through hardline with the
-runtime's `max_tokens` and `temperature` as defaults.
+runtime's `max_tokens` and `temperature` as defaults, and inside a run each is a row of the
+session table with the fields a model step's call has (its `sent` the digest of the call's row,
+turns and tools), failed and cancelled ones too.
 
 ### Built-in model runtimes
 
@@ -829,7 +835,7 @@ takes the short name.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `hardline` | `matrix.v1.model-runtime.hardline` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. A request's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` resolves it. With `output`, the call is hardline's `extract`, which repairs a reply that does not fit within its bound. Carries hardline's whole record of the call: why it ended, the model that answered, `fallback_from`, usage with cache tokens, the request id, attempts, retries, latency, `params`, `attempt_log`, `turns_digest` and `row`. A reply cut short or refused is returned and said for what it is. Reports tokens, no cost. Has `aclose()` and `pydantic_ai_model()` |
+| `hardline` | `matrix.v1.model-runtime.hardline` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | A request's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` resolves it. With `output`, the call is hardline's `extract`, which repairs a reply that does not fit within its bound. Carries hardline's whole record of the call: why it ended, the model that answered, its `provider` (the row's `provider:`, else the backend's name, as hardline's telemetry names it), `fallback_from`, usage with cache tokens, the request id, attempts, retries, latency, `params`, `attempt_log`, `turns_digest` and `row`. A reply cut short or refused is returned and said for what it is. Reports tokens, no cost. Has `aclose()` and `pydantic_ai_model()` |
 | `mock` | `matrix.v1.model-runtime.mock` | `responses` (the whole prompt as sent, to a reply), `by_model` (model name to a reply), `default` (reply for an unmatched prompt and model; `None` echoes `mock:<model>:<prompt>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Accepts every model name. Validates a reply against the request's `output` as a real runtime does. A call reports one attempt, no retries, no tokens, its latency and `finish_reason: stop`, and no cost. Records `calls`, each `(model, prompt)` |
 
 Classes: `matrix.adapters._out.runtime.model.HardlineModelRuntime`,
@@ -1244,9 +1250,10 @@ OpenTelemetry itself does not. With no arguments the standard variables decide:
 
 When the variables ask for export, composition also attaches the `otel` observer to every
 container. `endpoint` exports OTLP there and `console=True` to stderr, whatever the variables
-say; without `[otel]` either raises `ConfigError` naming the install. When only the variables
-asked and `[otel]` is missing, nothing is exported and the returned `Telemetry`, the
-container's `warnings` and every `--json` document carry an `extra_missing` warning.
+say; in an install that lacks the SDK or the exporters, either raises `ConfigError` naming
+the reinstall. When only the variables asked and they are missing, nothing is exported and the
+returned `Telemetry`, the container's `warnings` and every `--json` document carry a
+`dependency_missing` warning.
 
 `Telemetry`: `enabled`, `exporters` (`traces:otlp`, ...), `warnings`, and `shutdown()`, which
 flushes and stops what was installed. Call it when the work is done.
@@ -1487,7 +1494,7 @@ the config names one.
 | `observers` | `tuple[Observer, ...]` |
 | `store` | the `ConstructStore` `matrix.store` built; `ConfigError` when there is none |
 | `limits` | `matrix.limits`, a `Limits` |
-| `warnings` | `tuple[Problem, ...]`: a permissive runtime, export asked for without its extra |
+| `warnings` | `tuple[Problem, ...]`: a permissive runtime, export asked for in an install that cannot do it |
 | `agent(name)` | `BoundAgent`; `NotFoundError` listing configured agents |
 | `agent_runtime(name)` | `AgentRuntime`; `NotFoundError` listing configured agent runtimes |
 | `model_runtime(name)` | `ModelRuntime`; `NotFoundError` listing configured model runtimes |
@@ -1545,7 +1552,7 @@ Every key is present; `fix` falls back to what to do next on the error's kind; `
 
 Problem kinds: the agreed `yaml_syntax`, `schema_unsupported`, `wrong_shape`, `unknown_key`,
 `missing_key`, `invalid_value`, `name_unknown`, `name_taken`; and matrix's own `unprovided` (a
-required kind nothing provides), `cycle`, `extra_missing` and `permissive` (warnings carry
+required kind nothing provides), `cycle`, `dependency_missing` and `permissive` (warnings carry
 these two). A consumer tolerates a kind it does not know.
 
 The exit codes are the ones the capability tools agree on, one kind per code:
@@ -1570,7 +1577,7 @@ means and `EXIT_NEXT` what to do next. Two error kinds are finer than an exit: `
 |-------|------|------|-------------|
 | `MatrixError` | `unknown` | `Exception` | base class |
 | `UsageError` | `usage` | | the `matrix` command was given a command, flag or argument it does not take |
-| `ConfigError` | `config` | `ValueError` | a config, definition, document, type URL, input or argument is invalid (every problem in `problems`); or what the config selects needs an extra that is not installed (an `extra_missing` problem whose `fix` is the `uv` install) |
+| `ConfigError` | `config` | `ValueError` | a config, definition, document, type URL, input or argument is invalid (every problem in `problems`); or what the config selects needs a dependency the install lacks (a `dependency_missing` problem whose `fix` is the `uv` reinstall) |
 | `CompilationError` | `config` | `ConfigError` | components cannot be wired; `problems` lists every problem |
 | `NotFoundError` | `not_found` | `KeyError` | a name, type URL, file, kind with rows or run does not exist; the message lists those that do |
 | `ContractError` | `contract` | | a row is of a kind its component does not provide, or fails its kind's schema; or a run input does |
