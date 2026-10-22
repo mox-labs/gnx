@@ -21,12 +21,18 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
 import yaml
 from ix_fakes import LOG, FakeLoad, FakeSubject, FakeTiming, experiment, fake_registry
-from matrix import Extension, MatrixConfig, default_registry
+from matrix import (
+    Extension,
+    JsonlConstructStore,
+    MatrixConfig,
+    default_registry,
+)
+from matrix.adapters._out.stores.jsonl import JsonlStoreConfig
 
 import ix
 from ix.adapters._in.matrix_components import (
@@ -150,11 +156,49 @@ class TestAFullRun:
         root.register(file)
         finished = root.run(file)
         location = Path(finished.location)
-        record = RunRecords(str(location.parent)).record(location.name)
+        record = RunRecords(str(location.parent), JsonlConstructStore(location.parent)).record(
+            location.name
+        )
         live = build_report(dataclasses.replace(record, status="running"))
         assert live.status == "running" and live.verdict is None
         assert live.no_verdict == "the run has not finished: 15 of 15 carried out so far"
         assert live.exit_code == 13 != finished.exit_code
+
+
+class _RecordingStore(JsonlConstructStore):
+    """matrix's JSONL store under another type URL, noting each directory it is built for."""
+
+    built: ClassVar[list[str]] = []
+
+    @classmethod
+    def from_config(cls, config: JsonlStoreConfig) -> JsonlConstructStore:
+        cls.built.append(config.root)
+        return cls(config.root)
+
+
+class TestTheRunStore:
+    def test_is_chosen_by_the_root_at_matrixs_store_point(self, write_experiment: Write) -> None:
+        """No adapter names a store: the root builds the one it chose through the registry,
+        for running, reporting and listing alike."""
+        registry = fake_registry()
+        url = "acme.v1.store.recording"
+        registry.register("store", url, _RecordingStore.from_config, config=JsonlStoreConfig)
+        _RecordingStore.built.clear()
+        root = Root(registry=registry, run_store=url)
+        file = write_experiment(experiment())
+        report = root.run(file, exploratory=True)
+        kept = str(file.parent.resolve() / RUNS_DIRECTORY)
+        assert report.location == f"{kept}/{report.run}"
+        assert root.report(report.location).run == report.run
+        assert [r.run for r in root.runs(file).runs] == [report.run]
+        assert set(_RecordingStore.built) == {kept}
+
+    def test_a_store_that_cannot_keep_runs_in_a_directory_is_a_config_error(
+        self, write_experiment: Write
+    ) -> None:
+        root = Root(registry=fake_registry(), run_store="matrix.v1.store.memory")
+        with pytest.raises(ix.ConfigError, match="memory"):
+            root.run(write_experiment(experiment()), exploratory=True)
 
 
 class TestRegistrationAtRun:
@@ -674,7 +718,7 @@ def test_a_trial_cancelled_mid_flight_by_matrix_still_releases_its_subject(
     async def cancelled_mid_trial() -> list[str]:
         run = asyncio.ensure_future(
             matrix_runs.execute(
-                root=str(file.parent / RUNS_DIRECTORY),
+                store=JsonlConstructStore(file.parent / RUNS_DIRECTORY),
                 registry=fake_registry(),
                 config=MatrixConfig.model_validate(COMPOSITION),
                 needs={NEED: kit},

@@ -198,6 +198,25 @@ def test_only_composition_and_the_matrix_adapters_name_matrix() -> None:
         assert not any(_names_matrix(file) for file in _files(layer)), layer
 
 
+def test_only_composition_names_a_store() -> None:
+    """Which store keeps a run is the root's choice, made at matrix's ``store`` point: no
+    other module names one of matrix's stores, so there is no second wiring."""
+    stores = {"JsonlConstructStore", "MemoryConstructStore"}
+
+    def names(file: Path) -> set[str]:
+        found: set[str] = set()
+        for node in ast.walk(ast.parse(file.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Name):
+                found.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                found.add(node.attr)
+            elif isinstance(node, ast.ImportFrom):
+                found.update(alias.name for alias in node.names)
+        return found
+
+    assert {file.relative_to(SRC).as_posix() for file in _files() if stores & names(file)} == set()
+
+
 def _registers(file: Path) -> bool:
     """Whether ``file`` calls a registry's API to declare or register something."""
     for node in ast.walk(ast.parse(file.read_text(encoding="utf-8"))):

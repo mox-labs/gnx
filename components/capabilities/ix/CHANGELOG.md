@@ -261,6 +261,10 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
 - **Bringing the environment up is traced.** The environment component ran with matrix's
   plain context, so bring-up had no span of ix's. It is now `ix.environment`, under
   `ix.run`, with the environment's kind and the services it bound.
+- **The run store is the composition root's choice.** The adapter that runs an experiment
+  built matrix's `JsonlConstructStore` itself. The root now builds the store at matrix's
+  `store` point (`Root(run_store=...)`, `jsonl` by default, whose config takes the `root`
+  directory) and hands it in, for running, reporting and listing alike.
 
 ## 0.5.0 — 2026-10-19
 

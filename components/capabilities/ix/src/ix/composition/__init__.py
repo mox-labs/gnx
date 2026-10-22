@@ -45,6 +45,7 @@ from matrix import (
     default_registry,
     load_config,
     model_runtime_type_url,
+    store_type_url,
 )
 
 from ix.adapters._in.matrix_components import COMPOSITION, NEED
@@ -84,7 +85,7 @@ from ix.domain.report import summary as summarize
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator, Mapping
 
-    from matrix import Entry
+    from matrix import ConstructStore, Entry
 
     from ix.api import PathLike, Source
     from ix.domain.design import Design
@@ -102,6 +103,11 @@ except PackageNotFoundError:  # running from a source tree that was never instal
 #: Where an experiment's runs are kept, relative to the experiment's directory, unless the
 #: settings say where every run is kept.
 RUNS_DIRECTORY = ".ix/runs"
+
+#: The store each run is kept in, at matrix's ``store`` point: a directory of tables per
+#: run, under the directory its config's ``root`` names, which is what ``ix report <run
+#: directory>`` and ``ix runs`` read.
+RUN_STORE = store_type_url("jsonl")
 
 #: The distributions whose installed versions each run records.
 RECORDED_VERSIONS = ("ix", "matrix", "hardline")
@@ -246,7 +252,9 @@ class _Opened:
 class Root:
     """The wired experiment model. Build one over another registry to bind other adapters;
     :func:`root` is the default, over every installed ``matrix.extensions`` entry point.
-    ``settings`` replaces what matrix's config tiers hold."""
+    ``settings`` replaces what matrix's config tiers hold. ``run_store`` is the type URL of
+    the store runs are kept in, built at matrix's ``store`` point: one whose config takes
+    ``root``, the directory a run's directory is made in."""
 
     def __init__(
         self,
@@ -258,6 +266,7 @@ class Root:
         version: str = VERSION,
         clock: Callable[[], str] = _now,
         run_id: Callable[[str], str] = _run_id,
+        run_store: str = RUN_STORE,
     ) -> None:
         self._genre_files = genre_files or GenreFiles()
         self._kind_files = kind_files or KindFiles()
@@ -266,6 +275,7 @@ class Root:
         self._version = version
         self._clock = clock
         self._run_id = run_id
+        self._run_store = run_store
         self._tracer = OtelTracer(version)
         self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix.models)
         self._supplies = {
@@ -599,11 +609,28 @@ class Root:
             ]
         return tuple(reasons), tuple(cautions)
 
+    def _store(self, directory: str) -> ConstructStore:
+        """The run store, built at matrix's ``store`` point to keep runs under
+        ``directory``."""
+        try:
+            store: ConstructStore = self._registry.create(
+                "store", self._run_store, {"root": directory}
+            )
+        except MatrixError as error:
+            raise carried_over(
+                f"the run store {self._run_store} cannot keep runs under {directory}",
+                error,
+                fix="name a store whose config takes root, the directory runs are kept "
+                "under (matrix's jsonl does)",
+            ) from error
+        return store
+
     def _records(self, base: str) -> RunRecords:
         """The runs of the experiment in the directory ``base``: under the settings' ``runs``,
         or ``.ix/runs`` beside it."""
         kept = self._settings().client.runs
-        return RunRecords(kept if kept else str(Path(base).resolve() / RUNS_DIRECTORY))
+        directory = kept if kept else str(Path(base).resolve() / RUNS_DIRECTORY)
+        return RunRecords(directory, self._store(directory))
 
     def run(
         self,
@@ -682,7 +709,7 @@ class Root:
         with suppress(KeyboardInterrupt, asyncio.CancelledError):
             asyncio.run(
                 execute(
-                    root=records.root,
+                    store=records.store,
                     registry=self._registry,
                     config=MatrixConfig.model_validate(
                         {**COMPOSITION, "observers": self._settings().matrix.observers}
@@ -723,7 +750,7 @@ class Root:
     def _locate(self, target: PathLike) -> tuple[RunRecords, str | None, str]:
         """(records, run id or None, experiment name) for a run directory or an experiment."""
         path = Path(os.fspath(target))
-        found = RunRecords.at(str(path)) if path.is_dir() else None
+        found = RunRecords.at(str(path), self._store) if path.is_dir() else None
         if found is not None:
             records, run = found
             return records, run, ""

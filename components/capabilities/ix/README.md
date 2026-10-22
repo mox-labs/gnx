@@ -431,7 +431,9 @@ nothing under `--json`); the report goes to stdout.
 
 ### The record
 
-A run is one matrix run, and matrix's record is the only store:
+A run is one matrix run, and matrix's record is the only store. The composition root
+builds it at matrix's `store` point: `jsonl`, a directory of tables per run (a program
+that builds its own `Root` may name another store whose config takes `root`):
 
 ```
 <experiment directory>/.ix/runs/<experiment>-<UTC time>-<4 hex>/
