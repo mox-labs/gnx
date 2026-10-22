@@ -56,6 +56,16 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   and what its runtime resolved (the `model` runtime's registry); `models`; `cwd` (the
   process's when none was given). Fingerprints change shape, so a record written before this
   release is not reused. Runtimes gain an optional `resolved` member for this.
+- **A cancelled agent session ends `cancelled`.** `matrix.agent.end` carried no `status` when
+  the session was cancelled, so its `invoke_agent` span ended without an error and the
+  duration metric had no `error.type`. It now says `status: cancelled`, and the otel observer
+  gives every ending that was cancelled (session, component, run) an `error.type`.
+- **`Retry` honours `retry_after_s=0`.** An error's own hint of `0` ("retry now") was read as
+  no hint, and the policy backed off instead (or took a different value from the error's
+  details).
+- **`process.start` keeps a pending cancellation.** Cancelled while a child was being started
+  whose start then failed (no such program), the caller got the start's error in place of
+  the cancellation.
 - **A run's record no longer says `completed` when the executor raised.** A schema validator
   that raised something pydantic does not wrap (a `TypeError`) escaped the executor raw: the
   other components were left running, releases ran under them, and `run.json` said

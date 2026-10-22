@@ -217,6 +217,36 @@ async def test_a_failed_session_carries_its_error_type() -> None:
     assert failed.status.status_code == trace.StatusCode.ERROR
 
 
+async def test_a_cancelled_session_ends_cancelled_and_its_span_carries_an_error_type() -> None:
+    import asyncio
+
+    from matrix import AgentDefinition, BoundAgent, RecordingObserver
+
+    started = asyncio.Event()
+
+    class Slow:
+        def check(self, definition: AgentDefinition) -> None:
+            pass
+
+        async def run(self, definition: AgentDefinition, task: str) -> Any:
+            started.set()
+            await asyncio.Event().wait()
+
+    observer, recorder = _observer(), RecordingObserver()
+    agent = BoundAgent(AgentDefinition(name="slow"), Slow(), observers=[observer, recorder])
+    _EXPORTER.clear()
+    session = asyncio.ensure_future(agent.run("task"))
+    await started.wait()
+    session.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await session
+    (end,) = [e for e in recorder.events if e.name == "matrix.agent.end"]
+    assert end.fields["status"] == "cancelled"
+    (span,) = [s for s in _EXPORTER.get_finished_spans() if s.name == "invoke_agent slow"]
+    assert span.attributes["error.type"] == "cancelled"
+    assert span.status.status_code == trace.StatusCode.ERROR
+
+
 _SECRET = "SECRET"
 
 

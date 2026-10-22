@@ -20,6 +20,7 @@ from matrix import (
     JsonlConstructStore,
     Limits,
     MatrixConfig,
+    MatrixError,
     MemoryConstructStore,
     RecordingObserver,
     ReleaseOutcome,
@@ -117,6 +118,18 @@ def test_a_reported_retry_after_is_the_wait_up_to_the_cap() -> None:
     assert policy.wait_s(1, hinted) == 4
     assert policy.wait_s(1, AgentRuntimeError("x", reason="rate_limited", retry_after_s=99)) == 10
     assert (policy.wait_s(1, plain), policy.wait_s(2, plain), policy.wait_s(5, plain)) == (1, 2, 10)
+
+    # A backend that says "retry now" is honoured, not read as "no hint", and an error's own
+    # hint wins over what its details say.
+    class BusyError(MatrixError):
+        kind = "transient"
+
+        def __init__(self, hint: float, **details: Any) -> None:
+            super().__init__("busy", **details)
+            self.retry_after_s = hint
+
+    assert policy.wait_s(1, BusyError(0)) == 0
+    assert policy.wait_s(1, BusyError(0, retry_after_s=5)) == 0
 
 
 async def test_the_wait_honours_retry_after() -> None:

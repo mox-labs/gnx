@@ -118,7 +118,9 @@ class Retry(BaseModel):
 
     def wait_s(self, attempt: int, error: MatrixError) -> float:
         """Seconds to wait after failed attempt ``attempt`` (from 1) before the next."""
-        hinted = getattr(error, "retry_after_s", None) or error.details.get("retry_after_s")
+        hinted = getattr(error, "retry_after_s", None)
+        if hinted is None:  # 0 is a hint too: "retry now"
+            hinted = error.details.get("retry_after_s")
         if isinstance(hinted, int | float) and not isinstance(hinted, bool) and hinted >= 0:
             return min(float(hinted), self.max_wait_s)
         return min(self.backoff_s * self.multiplier ** (attempt - 1), self.max_wait_s)

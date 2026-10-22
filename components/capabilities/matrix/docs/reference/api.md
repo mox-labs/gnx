@@ -317,7 +317,7 @@ A component that failed is run again when its error matches `errors` (its kind,
 attempt handed over no rows (a second attempt would add to the record, not replace what is
 there). It waits `backoff_s * multiplier ** (n - 1)` after attempt `n`, or the
 `retry_after_s` the error reported (an `AgentRuntimeError` carries the backend's
-`Retry-After`), never more than `max_wait_s`. A wait ends early when the run stops. Each
+`Retry-After`; `0` means retry now), never more than `max_wait_s`. A wait ends early when the run stops. Each
 retry is a `matrix.component.retry` event, and `ComponentEnding.attempts` counts them. The
 field is `errors`, not `on`: YAML reads a bare `on` key as `true`.
 
@@ -440,7 +440,9 @@ directly; only the first call for a process signals. A child that moves itself t
 session is not reached.
 
 `await process.start(argv, **options) -> asyncio.subprocess.Process` starts `argv` in its
-own process group and defers nothing: ending it is the caller's, with `kill_group`. Use the
+own process group and defers nothing: ending it is the caller's, with `kill_group`. If the
+caller is cancelled while the child is being started, the child is killed and the caller gets
+the cancellation, even when the start itself failed. Use the
 pair when a component starts and stops a child for each repetition of its work, so the run's
 releases do not grow with the repetitions:
 
@@ -814,7 +816,7 @@ shares a `span`. An agent called from inside a component reports that component'
 | `matrix.release.start` | new id / run id | |
 | `matrix.release.end` | same / run id | `status` (`released`, `failed`, `abandoned`), `error` |
 | `matrix.agent.start` | new id / the calling span | `agent`, `model`, `task` (the task as sent) |
-| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`; or `status="error"`, `error`, `reason`, `kind` |
+| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`; or `status="error"`, `error`, `reason`, `kind`; or, when the session was cancelled, `status="cancelled"`, `reason="cancelled"` |
 | `matrix.tool.start` | new id / the agent's span | `agent`, `tool`, `call_id`; timed when the runtime saw the call start |
 | `matrix.tool.end` | same / the agent's span | `agent`, `tool`, `call_id`, `status` (`ok`, `error`), `duration_ms`; timed when the runtime saw its result |
 | `matrix.measure` | new id / the calling span | `name`, `value`, `unit`, `kind`, `attrs` |
@@ -903,10 +905,10 @@ own times (not when the observer received them):
 
 | Span | Kind | Attributes |
 |------|------|------------|
-| `invoke_workflow` (a run) | INTERNAL | `gen_ai.operation.name=invoke_workflow`, `matrix.run.id`, `matrix.status`, `matrix.rows`, `matrix.duration_ms`, `matrix.reused_from`; `error.type` when it failed |
-| `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.duration_ms`, `matrix.attempts`, `matrix.abandoned`; `matrix.kind` and `error.type` (the error's kind) when it failed. The conventions have no step |
+| `invoke_workflow` (a run) | INTERNAL | `gen_ai.operation.name=invoke_workflow`, `matrix.run.id`, `matrix.status`, `matrix.rows`, `matrix.duration_ms`, `matrix.reused_from`; `error.type` when it failed or was cancelled |
+| `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.duration_ms`, `matrix.attempts`, `matrix.abandoned`; `matrix.kind` and `error.type` (the error's kind, or the stop's reason for one cancelled) when it failed or was cancelled. The conventions have no step |
 | `matrix.release` | INTERNAL | `matrix.component`, `matrix.status`; `error.type` when it failed. With content: `matrix.error` |
-| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed. With content: `matrix.task`, `matrix.error` |
+| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed, and `error.type=cancelled` when the session was cancelled. With content: `matrix.task`, `matrix.error` |
 | `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`, `matrix.status`, `matrix.duration_ms`; `error.type=tool_error` when the tool reported an error |
 | a component's `ctx.span(name)` | INTERNAL | `matrix.component`; its number and boolean fields and its status under its root (`acme.rows`, `acme.status`, `acme.duration_ms`). With content: its string fields too |
 

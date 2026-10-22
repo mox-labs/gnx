@@ -183,6 +183,16 @@ async def test_a_child_being_started_when_the_caller_is_cancelled_does_not_survi
         await task
 
 
+async def test_a_cancellation_during_a_start_that_fails_is_still_a_cancellation() -> None:
+    """The child could not be started (no such program) while the caller was being cancelled:
+    the caller is told it was cancelled, not handed the start's error in its place."""
+    starting = asyncio.ensure_future(start(["/nonexistent/matrix-test-program"]))
+    await asyncio.sleep(0)  # the start is under way
+    assert starting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await starting
+
+
 async def test_a_kill_cancelled_during_its_grace_still_kills_the_group() -> None:
     """Cancelled while waiting out the grace, the call sends SIGKILL before it gives up, so
     a child that ignores SIGTERM does not survive; a later call then has nothing to do."""
