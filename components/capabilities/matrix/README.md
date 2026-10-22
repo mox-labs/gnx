@@ -77,7 +77,9 @@ the run, so one class can be used twice.
   never sees the Construct or another component's rows.
 - `run` returns a mapping of kind to one row, or to a list of rows. It may return nothing.
 - matrix holds it to what it declared: a row of a kind it does not provide, or one that fails
-  the kind's schema (when the wiring carries one), is a `ContractError`.
+  the kind's schema (when the wiring carries one), is a `ContractError`. A row of a kind with
+  a schema is recorded as an instance of it, so a dict handed over reaches the components
+  that require the kind as that model, on a fresh run and on one that reuses the rows.
 
 `wire` raises one `CompilationError` listing every problem: a required kind that nothing
 provides and that is not a run input, a kind with two providers, a cycle. Each kind has
@@ -138,10 +140,12 @@ be a row (a sample series, a capture) stays where it is and the row carries a
 ## Stopping, and cleaning up
 
 A run ends `completed`, `failed` or `cancelled`, and every component in it ends `completed`,
-`failed`, `cancelled` or `skipped` (`run.components`). However a component comes to be
-stopped (its deadline passed, another component failed, the caller cancelled, the process got
-SIGTERM or Ctrl-C), it is stopped the same way: `ctx.stopping` is set, it has `grace_s` to
-return what it has, then it is cancelled. When the run ends, everything components handed to
+`stopped`, `failed`, `cancelled`, `skipped` or `reused` (`run.components`). However a component
+comes to be stopped (its deadline passed, another component failed, the caller cancelled, the
+process got SIGTERM or Ctrl-C), it is stopped the same way: `ctx.stopping` is set, it has
+`grace_s` to return what it has, then it is cancelled. What it returns is recorded, and it
+ends `stopped` (`failed` past its deadline): the rows may be partial, so `matrix run --from`
+runs it again rather than reuse them. When the run ends, everything components handed to
 `ctx.defer` is called, last first.
 
 ```python

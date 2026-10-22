@@ -290,7 +290,9 @@ need not import matrix. This runs as written:
   (`Executor().run(..., store=JsonlConstructStore(dir))`) and then killed keeps it.
 - **`ctx.stopping`** is an `asyncio.Event` set when the run asks the component to finish
   (its deadline, another component's failure, a cancel). Check it and return what you
-  have; a component that does not is cancelled after the grace period.
+  have: it is recorded, and the component ends `stopped` (past its deadline, `failed`), not
+  `completed`, because what it returned may be partial; `--from` never reuses it. A
+  component that does not return is cancelled after the grace period.
 - **`ctx.defer(release)`** registers a sync or async release, called once when the run
   ends, last first, whether it completed, failed or was cancelled.
 - **`ctx.emit`, `ctx.measure`, `ctx.span`** are telemetry under your own namespace
@@ -529,8 +531,8 @@ be recorded, and the `limits`. A problem anywhere is the error envelope with eve
 
 `matrix run [CONFIG] --input KIND=PATH ... --json` runs it. Each `--input` file holds one
 JSON value a line, the rows of that run-input kind (`-` is standard input, once). It prints
-`matrix.v1.run`: `run_id`, `status`, `components` (how each ended: `completed`, `failed`,
-`cancelled`, `skipped`, `reused`, with `attempts` when retried), `failures`, `releases`,
+`matrix.v1.run`: `run_id`, `status`, `components` (how each ended: `completed`, `stopped`,
+`failed`, `cancelled`, `skipped`, `reused`, with `attempts` when retried), `failures`, `releases`,
 `location` and `warnings`. A run that fails exits 8 (`run_failed`) and still prints the
 document; Ctrl-C or SIGTERM stops every component, calls every release, and exits 130.
 `--run-id` names the run (default `<UTC time>-<4 hex>`); an id already taken is a `store`
@@ -562,10 +564,13 @@ A run killed mid-way keeps every row it had recorded and reads `interrupted`.
 ## Starting from a recorded run
 
 `matrix run --from RUN_ID` runs again with that run's inputs, and reuses the rows of each
-component that completed there, was built from the same type, config and (for an agent
-step) agent definition and runtime, and whose providers are reused too: those components
-end `reused`, the rest run. Reused rows are JSON data as the store keeps them, not the
-objects first handed over. `--input` cannot be given with it.
+component that completed there (`stopped` is not completed), was built from the same
+type, config and needs (an agent step's agent definition, runtime and the models its runtime
+resolved; `matrix.models`; the working directory), and whose providers are reused too: those
+components end `reused`, the rest run. A code change with the same config is not seen. A
+reused row of a kind with a registered schema reaches its consumers as an instance of that
+schema, as on a fresh run; a kind without one is reused as the JSON the store kept.
+`--input` cannot be given with it.
 
 ## From Python
 

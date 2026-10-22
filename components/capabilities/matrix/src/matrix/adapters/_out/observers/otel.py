@@ -13,7 +13,7 @@ instrumentation scope ``matrix``:
 * an agent session is ``invoke_agent {agent}`` (kind INTERNAL: the agent is invoked in this
   process), with ``gen_ai.agent.name``, ``gen_ai.request.model``, ``gen_ai.provider.name``,
   ``gen_ai.response.model``, ``gen_ai.usage.input_tokens``, ``gen_ai.usage.output_tokens``
-  and, when it failed, ``error.type``;
+  and, when it failed or was cancelled, ``error.type``;
 * a tool call the runtime timed is ``execute_tool {tool}``, with ``gen_ai.tool.name`` and
   ``gen_ai.tool.call.id``;
 * a component's own ``ctx.span`` is a span of that name.
@@ -239,11 +239,11 @@ def _plain(value: Any) -> bool:
 
 
 def _error_type(event: Event) -> str | None:
-    """``error.type`` for an ending that failed: the classified reason or kind, else the
-    status that says it failed."""
+    """``error.type`` for an ending that failed or was cancelled: the classified reason or
+    kind, else the status that says so."""
     fields = event.fields
     status = fields.get("status")
-    if status not in ("failed", "error"):
+    if status not in ("failed", "error", "cancelled"):
         return None
     for key in ("reason", "kind"):
         if fields.get(key):

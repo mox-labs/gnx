@@ -72,9 +72,11 @@ logger = logging.getLogger("matrix.executor")
 
 RUN_SCHEMA = "matrix.v1.run"
 
-#: How a component ended: ``reused`` when its rows were carried over from an earlier run. Open:
-#: a consumer must tolerate a state it does not know.
-ComponentStatus = Literal["completed", "failed", "cancelled", "skipped", "reused"]
+#: How a component ended. ``stopped``: it returned after it was asked to stop (another
+#: component failed, or the run was cancelled), so what it returned is recorded but may be
+#: partial, and it is never reused. ``reused``: its rows were carried over from an earlier
+#: run. Open: a consumer must tolerate a state it does not know.
+ComponentStatus = Literal["completed", "stopped", "failed", "cancelled", "skipped", "reused"]
 #: Why a component was asked to stop.
 StopReason = Literal["deadline", "run_failed", "cancelled"]
 #: What a retry policy may name: any ``transient`` failure, or one of its reasons.
@@ -116,7 +118,9 @@ class Retry(BaseModel):
 
     def wait_s(self, attempt: int, error: MatrixError) -> float:
         """Seconds to wait after failed attempt ``attempt`` (from 1) before the next."""
-        hinted = getattr(error, "retry_after_s", None) or error.details.get("retry_after_s")
+        hinted = getattr(error, "retry_after_s", None)
+        if hinted is None:  # 0 is a hint too: "retry now"
+            hinted = error.details.get("retry_after_s")
         if isinstance(hinted, int | float) and not isinstance(hinted, bool) and hinted >= 0:
             return min(float(hinted), self.max_wait_s)
         return min(self.backoff_s * self.multiplier ** (attempt - 1), self.max_wait_s)
@@ -343,8 +347,9 @@ class Executor:
         reuse do not fit the wiring.
         """
         limits = limits or Limits()
-        supplied = {kind: _rows(value) for kind, value in (inputs or {}).items()}
-        _check_inputs(wiring, supplied, limits)
+        supplied = _check_inputs(
+            wiring, {kind: _rows(value) for kind, value in (inputs or {}).items()}, limits
+        )
         if reuse is not None:
             _check_reuse(wiring, reuse)
         run = Run(
@@ -421,9 +426,12 @@ def _check_reuse(wiring: Wiring, reuse: Reuse) -> None:
         )
 
 
-def _check_inputs(wiring: Wiring, supplied: Mapping[str, tuple[Any, ...]], limits: Limits) -> None:
-    """Raise ConfigError unless ``supplied`` holds exactly the run inputs, each row meets its
-    kind's schema, and ``limits`` names only components of the run."""
+def _check_inputs(
+    wiring: Wiring, supplied: Mapping[str, tuple[Any, ...]], limits: Limits
+) -> dict[str, tuple[Any, ...]]:
+    """The run's own copy of ``supplied``, once it holds exactly the run inputs, each row meets
+    its kind's schema and can be copied, and ``limits`` names only components of the run.
+    Raises ConfigError, or ContractError for a row, before the run's record is opened."""
     problems = [
         problem(
             f"inputs.{kind}",
@@ -458,9 +466,12 @@ def _check_inputs(wiring: Wiring, supplied: Mapping[str, tuple[Any, ...]], limit
     ]
     if problems:
         raise invalid("the run cannot start", problems)
-    for kind, rows in supplied.items():
-        for row in rows:
-            _validate(wiring, kind, row, where=f"input {kind!r}")
+    return {
+        kind: tuple(
+            _private(_validate(wiring, kind, row, where=f"input {kind!r}"), kind) for row in rows
+        )
+        for kind, rows in supplied.items()
+    }
 
 
 def _open(store: ConstructStore, run: Run) -> RunWriter:
@@ -484,19 +495,23 @@ class _Progress:
         self.stop = asyncio.Event()
         self.reason: StopReason | None = None
         self.running = False
+        #: The component's task while it runs.
+        self._task: asyncio.Future[Any] | None = None
         #: The first store failure met while recording one of this component's rows.
         self.broke: StoreError | None = None
 
-    def begin(self) -> None:
+    def begin(self, task: asyncio.Future[Any]) -> None:
         self.running = True
+        self._task = task
 
     def end(self) -> None:
         self.running = False
 
     def request_stop(self, reason: StopReason) -> bool:
         """Set the stop flag for ``reason``; False when a stop was already requested, whose
-        reason stands."""
-        if self.reason is not None:
+        reason stands, or when the component had already returned: what it returned then
+        was not cut short."""
+        if self.reason is not None or (self._task is not None and self._task.done()):
             return False
         self.reason = reason
         self.stop.set()
@@ -681,6 +696,9 @@ class _Session:
         if reuse is not None:
             fields["reused_from"] = reuse.run_id
         self.emit(RUN_START, span=run.run_id, fields=fields, parent=None)
+        #: What escaped the run, if anything did: matrix's own defect, or an error nobody
+        #: classified. The run then did not complete, whatever its failures say.
+        escaped: BaseException | None = None
         try:
             try:
                 for kind, rows in supplied.items():
@@ -691,13 +709,22 @@ class _Session:
             if reuse is not None and self._halted is None:
                 self._reuse(reuse)
             await self._schedule()
+        except BaseException as e:
+            escaped = e
+            raise
         finally:
             # Settled before the releases run: a cancellation that arrives while they do
             # still reaches the caller, but it did not stop any component.
-            cancelled = self._cancelled
+            cancelled = self._cancelled or isinstance(escaped, asyncio.CancelledError)
             await self._release()
             run.ended = datetime.now(UTC)
-            run.status = "cancelled" if cancelled else "failed" if run.failures else "completed"
+            run.status = (
+                "cancelled"
+                if cancelled
+                else "failed"
+                if run.failures or escaped is not None
+                else "completed"
+            )
             self._finish()
             self.emit(
                 RUN_END,
@@ -718,20 +745,41 @@ class _Session:
                 )
 
     def _reuse(self, reuse: Reuse) -> None:
-        """Record each reused component's rows as it recorded them, and end it ``reused``."""
+        """Record each reused component's rows as it recorded them, and end it ``reused``.
+
+        A component whose rows cannot be recorded (its kind's schema now refuses one) ends
+        ``failed`` and is not run; a reused component that depends on it is skipped. What
+        comes after follows ``on_failure``, as for any failure: under ``isolate`` the other
+        reused components are still reused.
+        """
+        ended = self._run.components
+        why = f"from run {reuse.run_id}"
         for name in self._wiring.order():
             tables = reuse.rows.get(name)
             if tables is None:
                 continue
+            if self._halted is not None:
+                return  # what is left is skipped with the rest of the run
+            broken = [d for d in self._wiring.depends[name] if ended[d].status not in _DONE]
+            if broken:
+                self._skip(name, f"upstream: {broken[0]}")
+                continue
             try:
-                for kind, rows in tables.items():
-                    for row in rows:
-                        self._record(name, kind, row)
+                kept = [
+                    (kind, _validate(self._wiring, kind, row, where=f"reused {name!r} {kind!r}"))
+                    for kind, rows in tables.items()
+                    for row in rows
+                ]
+                for kind, row in kept:
+                    self._record(name, kind, row, checked=True)
             except MatrixError as e:
+                ending = ComponentEnding(status="failed", reason=why)
+                ended[name] = ending
+                self.tell(COMPONENT_END, {**ending.document(), "kind": e.kind}, component=name)
                 self._failed(name, e)
-                return
-            ending = ComponentEnding(status="reused", reason=f"from run {reuse.run_id}")
-            self._run.components[name] = ending
+                continue
+            ending = ComponentEnding(status="reused", reason=why)
+            ended[name] = ending
             self.tell(COMPONENT_END, ending.document(), component=name)
 
     def _finish(self) -> None:
@@ -921,7 +969,7 @@ class _Session:
         )
         scope = SpanScope(self.run_id, step.span, step.name, self._channel)
         task = asyncio.ensure_future(_call(step.component, inputs, step.context, scope))
-        step.progress.begin()
+        step.progress.begin(task)
         sent = await self._await_with_stop_path(step, task)
         return self._ending(step, task, sent=sent)
 
@@ -947,7 +995,8 @@ class _Session:
 
     def _ending(self, step: _Step, task: asyncio.Future[Any], *, sent: bool) -> _Outcome:
         """How a component's task ended, given whether it was cancelled. What it returned in
-        time, or within the grace of a stop request, is recorded."""
+        time, or within the grace of a stop request, is recorded; after a stop request it
+        ends ``stopped``, since it returned what it had, not necessarily all of it."""
         name = step.name
         overran = ComponentError(
             f"component {name!r} timed out after {step.deadline_s}s",
@@ -983,8 +1032,19 @@ class _Session:
             )
             failure.__cause__ = raised
             return _Outcome("failed", failure)
-        self._commit(step, task.result())
-        return _Outcome("failed", overran) if on_deadline else _Outcome("completed")
+        try:
+            self._commit(step, task.result())
+        except MatrixError:
+            raise
+        except Exception as e:
+            raise ContractError(
+                f"component {name!r}: what it returned could not be recorded: "
+                f"{type(e).__name__}: {e}",
+                component=name,
+            ) from e
+        if on_deadline:
+            return _Outcome("failed", overran)
+        return _Outcome("completed" if step.progress.reason is None else "stopped")
 
     def _commit(self, step: _Step, result: Any) -> None:
         """Record what a component returned: every row checked first, then all appended."""
@@ -1005,9 +1065,11 @@ class _Session:
                 component=name,
                 declared=sorted(step.provides),
             )
-        returned = [(kind, row) for kind, value in result.items() for row in _rows(value)]
-        for kind, row in returned:
-            _validate(self._wiring, kind, row, where=f"component {name!r} kind {kind!r}")
+        returned = [
+            (kind, _validate(self._wiring, kind, row, where=f"component {name!r} kind {kind!r}"))
+            for kind, value in result.items()
+            for row in _rows(value)
+        ]
         for kind, row in returned:
             self._record(name, kind, row, checked=True)
 
@@ -1029,8 +1091,9 @@ class _Session:
             raise
 
     def _record(self, name: str, kind: str, row: Any, *, checked: bool = False) -> None:
+        """Record ``row``; ``checked`` when it is already as :func:`_validate` returns it."""
         if not checked:
-            _validate(self._wiring, kind, row, where=f"component {name!r} kind {kind!r}")
+            row = _validate(self._wiring, kind, row, where=f"component {name!r} kind {kind!r}")
         # The record keeps its own copy: a component that goes on to change the object it
         # handed over cannot change what was recorded.
         kept = _private(row, kind)
@@ -1158,15 +1221,25 @@ def _private(value: Any, kind: str) -> Any:
         ) from e
 
 
-def _validate(wiring: Wiring, kind: str, row: Any, *, where: str) -> None:
+def _validate(wiring: Wiring, kind: str, row: Any, *, where: str) -> Any:
+    """``row`` as the record keeps it: an instance of its kind's schema, however it was handed
+    over (a dict, or rows read back from a store, are validated into one), so a consumer gets
+    the same type on a fresh run and on one that reuses the rows. A kind without a schema
+    keeps ``row`` as it is. Raises ContractError when the schema refuses the row."""
     schema: type[BaseModel] | None = wiring.schemas.get(kind)
     if schema is None or isinstance(row, schema):
-        return
+        return row
     try:
-        schema.model_validate(row)
+        return schema.model_validate(row)
     except ValidationError as e:
         issues = "; ".join(
             f"{'.'.join(str(p) for p in err['loc']) or '(root)'}: {err['msg']}"
             for err in e.errors()
         )
         raise ContractError(f"{where}: row is not a valid {kind}: {issues}", table=kind) from None
+    except Exception as e:
+        # A validator may raise what pydantic does not wrap (a TypeError, say): the schema
+        # still refused the row.
+        raise ContractError(
+            f"{where}: row is not a valid {kind}: {type(e).__name__}: {e}", table=kind
+        ) from e

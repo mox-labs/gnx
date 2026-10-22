@@ -17,6 +17,11 @@ returns: a process killed at any moment leaves every row it had appended. (Pass
 ``fsync=True`` to also survive the machine going down, at the cost of a disk flush per row.)
 A line that was cut short is the last line of its file and has no newline; readers ignore it.
 
+**A row is JSON data.** Models, dataclasses, sets, tuples and datetimes inside it are written
+as pydantic writes them (``to_jsonable_python``). A row holding anything else is refused with a
+ContractError naming where in the row it is, before anything is written for it: a row's ledger
+entry waits for the row, and the two are written together.
+
 **When a run ends** ``run.json`` is replaced in one rename with the final document. A run
 that never got that far still reads ``running``; ``describe`` says ``interrupted`` instead
 when the process that was writing it, on this host, is gone. "Gone" is read from
@@ -37,15 +42,15 @@ import json
 import os
 import re
 import socket
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
+from pydantic_core import PydanticSerializationError, to_jsonable_python
 
 from matrix.domain.component import LEDGER
 from matrix.domain.construct import Construct
-from matrix.domain.errors import ConfigError, NotFoundError, StoreError
+from matrix.domain.errors import ConfigError, ContractError, NotFoundError, StoreError
 
 if TYPE_CHECKING:
     from matrix.domain.executor import Run
@@ -69,14 +74,32 @@ class JsonlStoreConfig(BaseModel):
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
-def _json(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, tuple):
-        return [_json(v) for v in value]
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return value
+def _encode(kind: str, row: Any) -> bytes:
+    """``row`` as one JSON line. Raises ContractError naming the part of it that is not data."""
+    try:
+        return json.dumps(to_jsonable_python(row)).encode() + b"\n"
+    except (PydanticSerializationError, TypeError, ValueError) as e:
+        raise ContractError(
+            f"a row of {kind!r} is not JSON data at {_culprit(row)}: {e}",
+            fix="hand over data (models, dicts, lists, strings, numbers), not live objects",
+            table=kind,
+        ) from None
+
+
+def _culprit(value: Any, path: str = "") -> str:
+    """Where in ``value`` the first part that cannot be written as JSON is, as a dotted path."""
+    if isinstance(value, dict):
+        items: Any = value.items()
+    elif isinstance(value, list | tuple):
+        items = enumerate(value)
+    else:
+        return path or "(root)"
+    for key, item in items:
+        try:
+            json.dumps(to_jsonable_python(item))
+        except (PydanticSerializationError, TypeError, ValueError):
+            return _culprit(item, f"{path}.{key}" if path else str(key))
+    return path or "(root)"
 
 
 def _file(kind: str) -> str:
@@ -122,7 +145,7 @@ class _EventLog:
         self._file = path.open("a", encoding="utf-8")
 
     def on_event(self, event: Event) -> None:
-        self._file.write(json.dumps(event.document(), default=str) + "\n")
+        self._file.write(json.dumps(to_jsonable_python(event.document(), fallback=str)) + "\n")
         self._file.flush()
 
     def close(self) -> None:
@@ -137,17 +160,36 @@ class _JsonlRunWriter:
         self._lock = lock
         self._open: dict[str, int] = {}
         self._rows: dict[str, int] = dict.fromkeys(tables, 0)
+        #: A ledger entry's line, waiting for its row's: a refused row leaves neither.
+        self._entry: bytes | None = None
 
     def append(self, kind: str, row: Any) -> None:
-        name = self._tables.get(kind)
-        if name is None:
+        if kind not in self._tables:
             raise StoreError(
                 f"run at {self._directory} has no table for kind {kind!r}. "
                 f"Tables: {', '.join(self._tables)}",
                 table=kind,
             )
         try:
-            line = json.dumps(_json(row), default=str).encode() + b"\n"
+            line = _encode(kind, row)
+        except ContractError:
+            if kind != LEDGER:
+                self._entry = None  # the refused row's entry goes with it
+            raise
+        if kind == LEDGER and self._entry is None:
+            self._entry = line
+            return
+        entry, self._entry = self._entry, None
+        if entry is not None:
+            self._write(LEDGER, entry)
+        if kind == LEDGER:
+            self._entry = line
+        else:
+            self._write(kind, line)
+
+    def _write(self, kind: str, line: bytes) -> None:
+        name = self._tables[kind]
+        try:
             descriptor = self._open.get(kind)
             if descriptor is None:
                 descriptor = self._open[kind] = os.open(
@@ -158,7 +200,7 @@ class _JsonlRunWriter:
                 raise OSError(f"wrote {written} of {len(line)} bytes")
             if self._fsync:
                 os.fsync(descriptor)
-        except (OSError, TypeError, ValueError) as e:
+        except OSError as e:
             raise StoreError(
                 f"could not append a row of {kind!r} to {self._directory / name}: "
                 f"{type(e).__name__}: {e}",
@@ -170,6 +212,9 @@ class _JsonlRunWriter:
         return _EventLog(self._directory / EVENTS)
 
     def finish(self, run: Run) -> str:
+        if self._entry is not None:  # an entry whose row never came: torn, as a kill leaves it
+            entry, self._entry = self._entry, None
+            self._write(LEDGER, entry)
         try:
             for descriptor in self._open.values():
                 os.close(descriptor)

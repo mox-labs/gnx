@@ -50,7 +50,7 @@ RELEASE_START = "matrix.release.start"
 RELEASE_END = "matrix.release.end"  # status, error?
 AGENT_START = "matrix.agent.start"  # agent, model, task (as sent)
 AGENT_END = "matrix.agent.end"  # agent, status, tokens_*, cost_usd, model, family, provider,
-#   duration_ms, tool_calls; reason and error when it failed
+#   duration_ms, tool_calls; reason and error when it failed; status cancelled when cancelled
 TOOL_START = "matrix.tool.start"  # tool, call_id?, agent; timed as the runtime saw the call
 TOOL_END = "matrix.tool.end"  # tool, call_id?, agent, status, duration_ms
 MEASURE = "matrix.measure"  # name, value, unit, kind, attrs

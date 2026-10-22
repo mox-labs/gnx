@@ -14,6 +14,7 @@ it reached) and raises :class:`~matrix.domain.errors.AgentRuntimeError` with a c
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from datetime import datetime
@@ -188,6 +189,9 @@ class BoundAgent:
         fields: dict[str, Any] = {"agent": name}
         try:
             response = await self._runtime.run(self._definition, task)
+        except asyncio.CancelledError:
+            fields.update(status="cancelled", reason="cancelled")
+            raise
         except Exception as e:
             fields.update(status="error", error=str(e), reason=getattr(e, "reason", None))
             fields["kind"] = getattr(e, "kind", type(e).__name__)

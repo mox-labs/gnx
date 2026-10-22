@@ -198,9 +198,11 @@ class Container:
         finds in those that can.
 
         The wiring carries each component's declared effects (an ``agent-step`` has its
-        agent's runtime's) and its fingerprint: a digest of its type and config, and for an
-        ``agent-step`` of its agent's definition and runtime, which a later run compares
-        before it reuses the component's rows.
+        agent's runtime's) and its fingerprint, which a later run compares before it reuses
+        the component's rows: a digest of its type, its config, and each need it is handed
+        (an ``agent-step``'s own agent, every agent for another component that needs
+        ``agents``, ``models``, ``cwd``). An agent counts by its definition, its runtime's
+        config and needs, and what that runtime resolved when it was built.
         """
         configured = components is None
         prefix = "matrix." if configured else ""
@@ -266,17 +268,53 @@ class Container:
         return self._registry.entry("component", entry.type).effects
 
     def _fingerprint(self, entry: ComponentConfig) -> str:
+        """A digest of what the component is built from: its type and config, and each need
+        it is handed that decides what it does. An agent step is handed its own agent; any
+        other component that needs ``agents`` is handed every agent."""
+        needs = set(self._registry.entry("component", entry.type).needs)
         made_of: dict[str, Any] = {"type": entry.type, "config": entry.config}
         if entry.type == AGENT_STEP:
-            name = str(entry.config.get("agent"))
-            agent = self._agents.get(name)
-            spec = self._config.matrix.agents.get(name)
-            if agent is not None and spec is not None:
-                made_of["agent"] = agent.definition.model_dump(mode="json")
-                runtime = self._config.matrix.runtimes.get(spec.runtime)
-                made_of["runtime"] = None if runtime is None else runtime.model_dump(mode="json")
+            needs.discard("agents")
+            made_of["agent"] = self._agent_made_of(str(entry.config.get("agent")))
+        made_of["needs"] = self._needs_made_of(needs)
         text = json.dumps(made_of, sort_keys=True, default=str)
         return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+
+    def _agent_made_of(self, name: str) -> dict[str, Any] | None:
+        """What decides how the agent ``name`` answers: its definition, its runtime's config
+        and the needs that runtime was handed, and what the runtime resolved when it was
+        built (``resolved``: a model runtime's registry, from ``matrix.models`` or the tiers
+        hardline discovered)."""
+        agent = self._agents.get(name)
+        spec = self._config.matrix.agents.get(name)
+        if agent is None or spec is None:
+            return None
+        runtime = self._config.matrix.runtimes.get(spec.runtime)
+        found: dict[str, Any] = {
+            "definition": agent.definition.model_dump(mode="json"),
+            "runtime": None if runtime is None else runtime.model_dump(mode="json"),
+        }
+        url = None if runtime is None else runtime_type_url(runtime.type)
+        if url is not None and ("runtime", url) in self._registry:
+            found["needs"] = self._needs_made_of(self._registry.entry("runtime", url).needs)
+        resolved = getattr(agent.runtime, "resolved", None)
+        if resolved is not None:
+            found["resolved"] = resolved
+        return found
+
+    def _needs_made_of(self, needs: Iterable[str]) -> dict[str, Any]:
+        """The value of each need matrix hands over, as it decides the work: every agent, the
+        model registry, the working directory (the process's when none was given). A need a
+        host adds through ``context`` is its own, and not digested."""
+        found: dict[str, Any] = {}
+        for need in sorted(needs):
+            if need == "agents":
+                found[need] = {name: self._agent_made_of(name) for name in sorted(self._agents)}
+            elif need == "models":
+                found[need] = self._config.matrix.models
+            elif need == "cwd":
+                found[need] = str(self._context.get("cwd") or Path.cwd())
+        return found
 
     def executor(self, observers: Sequence[Observer] = ()) -> Executor:
         """An executor over the composed observers (and ``observers``) that turns SIGTERM and
@@ -289,11 +327,13 @@ class Container:
 
     def reuse(self, run_id: str, wiring: Wiring | None = None) -> Reuse:
         """What of the recorded run ``run_id`` a run of ``wiring`` (the configured one by
-        default) may reuse: each component that completed there, was built from the same
-        fingerprint, and whose providers are all reused too, with its rows as recorded.
+        default) may reuse: each component that completed there (``completed`` or
+        ``reused``, never ``stopped``), was built from the same fingerprint, and whose
+        providers are all reused too, with its rows as recorded.
 
-        Rows come back as the store keeps them (JSON data), not as the objects that were
-        handed over. Raises NotFoundError when there is no such run.
+        Rows come back as the store keeps them (JSON data); the executor validates each into
+        its kind's schema as it records it, as on a fresh run. Raises NotFoundError when there
+        is no such run.
         """
         wiring = wiring or self.wire()
         described = self.store.describe(run_id)
@@ -307,7 +347,7 @@ class Container:
             if (
                 mine is not None
                 and prints.get(name) == mine
-                and ending.get("status") in ("completed", "reused")
+                and _finished(ending)
                 and all(d in reused for d in wiring.depends[name])
             ):
                 provides = wiring.components[name].provides
@@ -355,6 +395,14 @@ class Container:
             run_id=run_id or new_run_id(),
             reuse=reuse,
         )
+
+
+def _finished(ending: Mapping[str, Any]) -> bool:
+    """Whether a recorded ending is finished work. A ``completed`` that carries a stop's
+    reason is a component that returned after a stop request, as records written before
+    ``stopped`` existed say it: partial, like ``stopped``."""
+    status = ending.get("status")
+    return status == "reused" or (status == "completed" and ending.get("reason") is None)
 
 
 def new_run_id() -> str:

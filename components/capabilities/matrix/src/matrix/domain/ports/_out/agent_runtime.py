@@ -10,8 +10,11 @@ session. Content is a sample, never guaranteed; a caller judges it, the runtime 
 cannot honour (a single-call runtime handed tools), so binding refuses it before anything runs.
 A runtime that accepts every definition implements it as a no-op.
 
-One member is optional, read with ``getattr`` so a runtime written before it works
-unedited: ``warnings`` (problems a reader of its config should see).
+Two members are optional, read with ``getattr`` so a runtime written before them works
+unedited: ``warnings`` (problems a reader of its config should see), and ``resolved``: JSON
+data for what the runtime settled when it was built, beyond its own config, that decides how
+it answers (the model runtime's registry, read from hardline's tiers). Composition digests it
+into the reuse fingerprint of every component that runs an agent on it.
 
 A runtime that also logs what its ``warnings`` say logs it on :data:`RUNTIME_LOGGER`, once per
 process, so a caller that builds a runtime per session is not told once per session. A

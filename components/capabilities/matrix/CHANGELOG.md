@@ -25,6 +25,67 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 - The agent-call counts move from the plan's `spend` record to the plan itself:
   `agent_calls_min`, `agent_calls_max`. `matrix plan` prints them as `agent calls: N to M`.
+- **A component that returns after it was asked to stop ends `stopped`**, not `completed`.
+  Another component's failure or the run's cancellation asks the running components to stop,
+  and the protocol tells them to return what they have; that may be partial. Its rows are
+  still recorded, with the stop's `reason` beside the status. `matrix run --from` (and
+  `Container.reuse`) never reuses a `stopped` component, nor a `completed` ending that
+  carries a stop's `reason`, which is how earlier records wrote one. A component that had
+  already returned when the stop was requested is `completed`, with no reason. A consumer
+  that reads component endings must tolerate the new state, as the vocabulary is open.
+
+### Fixed
+
+- **Reused rows reach downstream components in the type a fresh run gives them.** A row of a
+  kind with a registered schema is now recorded as an instance of that schema, whether it was
+  handed over as one, as a dict, or read back from a store by `--from`. A consumer written
+  against a fresh run (`row.score`) used to fail only on resume, given a dict. The rows of
+  such a kind in `Run.rows` and the memory store are models now, where a dict handed over
+  used to stay a dict; on disk they are the schema's JSON, defaults included.
+- **The JSONL store writes nested values as JSON.** A model inside a dict row, a set, a
+  dataclass or a nested datetime was written as its `str()`, so jq, DuckDB, `load()` and reuse
+  all read the wrong value. Rows are now written with pydantic's `to_jsonable_python`; a row
+  holding anything it cannot write is refused with a `ContractError` naming where in the row
+  it is, before its ledger entry or anything else is written, and the record goes on.
+- **The reuse fingerprint covers every need a component is handed.** It held a component's
+  type and config, and an agent step's definition and runtime config, so a run from a record
+  reused old answers after `matrix.models` (or hardline's own tiers) pointed a name at another
+  model or endpoint, after the working directory changed, or after the agents changed under a
+  component that needs `agents`. It now digests each need: an agent step's agent and every
+  agent for another component that needs them, each by definition, runtime config and needs,
+  and what its runtime resolved (the `model` runtime's registry); `models`; `cwd` (the
+  process's when none was given). Fingerprints change shape, so a record written before this
+  release is not reused. Runtimes gain an optional `resolved` member for this.
+- **A cancelled agent session ends `cancelled`.** `matrix.agent.end` carried no `status` when
+  the session was cancelled, so its `invoke_agent` span ended without an error and the
+  duration metric had no `error.type`. It now says `status: cancelled`, and the otel observer
+  gives every ending that was cancelled (session, component, run) an `error.type`.
+- **`Retry` honours `retry_after_s=0`.** An error's own hint of `0` ("retry now") was read as
+  no hint, and the policy backed off instead (or took a different value from the error's
+  details).
+- **`process.start` keeps a pending cancellation.** Cancelled while a child was being started
+  whose start then failed (no such program), the caller got the start's error in place of
+  the cancellation.
+- **The mock runtime reports no cost.** It reported `cost_usd: 0.0`. A reported cost is
+  provenance, what a provider said, and a mock is not a provider, so it is now `None`.
+- **A run's record no longer says `completed` when the executor raised.** A schema validator
+  that raised something pydantic does not wrap (a `TypeError`) escaped the executor raw: the
+  other components were left running, releases ran under them, and `run.json` said
+  `completed`. Any error from checking or recording a component's rows is now a
+  `ContractError` that fails that component, and whatever else escapes the run marks it
+  `failed` before it reaches the caller.
+- **After a store fails, `ctx.provide` raises every time.** A component still running
+  after a failed append (under `isolate`, or within its grace) could hand over a row,
+  have the call return normally, and end `completed`, though the row was only in memory.
+  Every append after a failed write-through now raises `StoreError`.
+- **A reused component whose rows are refused ends `failed` and is not run again.** Under
+  `on_failure: isolate`, a component whose stored rows its kind's schema now refused was
+  recorded as failed and then run again, and so were the reused components after it. It now
+  ends `failed` (reason `from run <id>`, none of its rows recorded), a reused component that
+  depends on it is skipped, and the other reused components are still reused.
+- **An input row that cannot be copied is refused before the record opens**, as the other
+  input checks are. It used to open the run and leave a `completed` record with no
+  components.
 
 ### Security
 

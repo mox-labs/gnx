@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from matrix import (
     ComponentError,
@@ -219,6 +219,35 @@ async def test_rows_validate_against_the_kinds_registered_schema() -> None:
     assert (await Executor().run(good)).rows(SCORE) == (Score(value=2.0),)
     with pytest.raises(ContractError, match="input 'acme.v1.score'"):
         await Executor().run(wire({}, inputs=[SCORE], schemas={SCORE: Score}), {SCORE: {}})
+
+
+async def test_a_row_handed_over_that_its_schema_refuses_with_any_error_is_a_contract_error() -> (
+    None
+):
+    class Strict(BaseModel):
+        value: float
+
+        @field_validator("value")
+        @classmethod
+        def _finite(cls, value: float) -> float:
+            if value != value:
+                raise TypeError("not a number")
+            return value
+
+    raised: list[BaseException] = []
+
+    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+        try:
+            ctx.provide(SCORE, {"value": float("nan")})
+        except Exception as e:
+            raised.append(e)
+            raise
+
+    wiring = wire({"s": Step(body, provides=[SCORE])}, schemas={SCORE: Strict})
+    with pytest.raises(RunError) as e:
+        await Executor().run(wiring)
+    assert [type(r) for r in raised] == [ContractError] and "not a number" in str(raised[0])
+    assert e.value.cause_kind == "contract"
 
 
 async def test_a_failure_keeps_the_partial_run() -> None:

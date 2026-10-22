@@ -221,7 +221,8 @@ components.
 registered schema, appended to the Construct, and is durable in the run's store. It raises
 `ContractError` for a kind the component does not provide or a row that fails the schema, and
 `StoreError` when the store could not keep the row (the run then fails with kind `store`,
-whatever the component does with the exception).
+whatever the component does with the exception). Once the store has failed, every later
+`provide` in the run raises `StoreError` too, so no call returns for a row the record lacks.
 
 A name given to `emit`, `measure` or `span` is dotted lower-case with at least two segments,
 and not under `matrix.*`; anything else is a `ContractError`. After the component has ended
@@ -316,7 +317,7 @@ A component that failed is run again when its error matches `errors` (its kind,
 attempt handed over no rows (a second attempt would add to the record, not replace what is
 there). It waits `backoff_s * multiplier ** (n - 1)` after attempt `n`, or the
 `retry_after_s` the error reported (an `AgentRuntimeError` carries the backend's
-`Retry-After`), never more than `max_wait_s`. A wait ends early when the run stops. Each
+`Retry-After`; `0` means retry now), never more than `max_wait_s`. A wait ends early when the run stops. Each
 retry is a `matrix.component.retry` event, and `ComponentEnding.attempts` counts them. The
 field is `errors`, not `on`: YAML reads a bare `on` key as `true`.
 
@@ -345,14 +346,17 @@ async Executor.run(
 
 1. `inputs` must hold exactly the declared run inputs, or `ConfigError` lists a problem for
    each missing (`inputs.<kind>`, `missing_key`) and unknown (`unknown_key`) one. Each maps a kind to one row, or to a list or tuple of rows. Each row is
-   validated against its kind's schema, if one is registered (`ContractError` otherwise).
+   validated against its kind's schema, if one is registered, and copied: a row its schema
+   refuses, or one that cannot be copied, is a `ContractError`.
    A name in `limits.components` that is not in the wiring is a `ConfigError`
    (`limits.components.<name>`, `name_unknown`). A `reuse` whose components depend on one
    that is not reused is a `ConfigError`. All of this is checked before anything runs.
 2. With a `store`, the run's record is opened there. A run id that already exists is a
    `StoreError`, raised before anything runs. The inputs are then recorded, by `$input`,
-   and the rows of each reused component, by that component, which ends `reused`. When the
-   store's writer keeps events (the JSONL store writes `events.jsonl`), it is attached as one
+   and the rows of each reused component, by that component, which ends `reused`. A reused
+   component whose rows its kind's schema now refuses ends `failed` (reason `from run <id>`,
+   none of its rows recorded) and is not run again; a reused component that depends on it is
+   skipped, and `on_failure` decides the rest. When the store's writer keeps events (the JSONL store writes `events.jsonl`), it is attached as one
    more observer for the run.
 3. Scheduling is by readiness: a component starts when the providers of every kind it requires
    have finished, subject to `limits.concurrency`. It gets `Inputs` for those kinds, each row
@@ -361,7 +365,10 @@ async Executor.run(
 4. Rows a component hands over with `ctx.provide` are recorded then. What it returns is
    recorded when it ends: every returned row is checked first, and if one fails none is
    recorded. A row of an undeclared kind, a return value that is not a mapping, or a row that
-   fails its kind's schema is a `ContractError`.
+   fails its kind's schema (whatever its validator raises) is a `ContractError`. A row of a
+   kind with a schema is recorded as an instance of the schema, whether it was handed over as
+   one or as a dict; a row of a reused component is too, so its consumers get the type a fresh
+   run gives them. A row of a kind without a schema is recorded as given.
 5. A component that raises becomes a `ComponentError` (a `MatrixError` it raises keeps its own
    kind); a component past its deadline is a `ComponentError` saying so, with
    `details["reason"] == "timeout"`. A failure its retry policy covers is run again first.
@@ -372,14 +379,19 @@ async Executor.run(
 6. Stopping a component is one sequence, whatever the cause (`deadline`, `run_failed`,
    `cancelled`): `ctx.stopping` is set; the component has `grace_s` to return, and what it
    returns is recorded; then its task is cancelled; if it is still running `cleanup_s` later
-   it is abandoned and its record says `abandoned`. A component past its deadline is `failed`
-   even when it returned within the grace.
+   it is abandoned and its record says `abandoned`. A component that returns within the grace
+   ends `stopped`, with the stop's `reason`: what it returned may be partial, and it is never
+   reused. A component past its deadline is `failed` even when it returned within the grace.
+   One that had already returned when the stop was requested is `completed`.
 7. A store that cannot keep a row, or cannot finish the run, fails the run: `RunError` with
    kind `store`, whatever `on_failure` says. No row is appended to that record after the
-   failed one.
+   failed one, nor kept in the run's Construct: a later `ctx.provide` raises `StoreError`.
 8. When the run ends, every release registered with `ctx.defer` is called, last registered
    first, each bounded by `cleanup_s`, whatever the run's status. A synchronous release runs
-   on the event loop and is not bounded. Then the store's record is finished.
+   on the event loop and is not bounded. Then the store's record is finished. An error that
+   escapes the executor itself (a defect, or a store's error that is not a `StoreError`)
+   reaches the caller after the same steps, and the record says `failed`, never
+   `completed`.
 
 Cancelling the task that awaits `run` (directly, or through Ctrl-C or SIGTERM) stops every
 running component by the same sequence, skips the rest, calls the releases, and then raises
@@ -394,7 +406,7 @@ running component by the same sequence, skips the rest, calls the releases, and 
 | `status` | `"running" \| "completed" \| "failed" \| "cancelled"` | |
 | `started` / `ended` | `datetime` / `datetime \| None` | UTC |
 | `failures` | `list[ComponentFailure]` | `component`, `kind`, `message` per failed component. `component` is `$input` or `$store` when it was the record, not a component, that failed |
-| `components` | `dict[str, ComponentEnding]` | name to how it ended: `status` (`ComponentStatus`: `completed`, `failed`, `cancelled`, `skipped`, `reused`), `reason` when it was stopped (`deadline`, `run_failed`, `cancelled`), skipped (`upstream: <name>`, `policy: fast`, `cancelled`, `store failed`) or reused (`from run <id>`), `duration_ms` (`None` when it never started), `abandoned` when it ignored cancellation, and `attempts` |
+| `components` | `dict[str, ComponentEnding]` | name to how it ended: `status` (`ComponentStatus`: `completed`, `stopped`, `failed`, `cancelled`, `skipped`, `reused`), `reason` when it was stopped (`deadline`, `run_failed`, `cancelled`), skipped (`upstream: <name>`, `policy: fast`, `cancelled`, `store failed`), or reused or failed while being reused (`from run <id>`), `duration_ms` (`None` when it never started), `abandoned` when it ignored cancellation, and `attempts` |
 | `reused_from` | `str \| None` | the run whose rows this one reused |
 | `fingerprints` | `dict[str, str]` | name to a digest of what the component was built from, when the wiring knows it |
 | `releases` | `list[ReleaseOutcome]` | `component`, `status`, `error` per deferred release, in the order called; `status` is `released`, `failed` or `abandoned` |
@@ -412,8 +424,10 @@ tolerate one it does not know.
 
 `Reuse(run_id: str, rows: dict[str, dict[str, tuple[Any, ...]]])`: rows carried over from the
 run `run_id`, by component and kind. `Container.reuse(run_id)` builds it from a record: each
-component that completed there, was built from the same fingerprint, and whose providers are
-reused too. `Container.run(reuse_from=...)` and `matrix run --from` use it.
+component that completed there (`completed` or `reused`, never `stopped`; a `completed`
+ending that carries a stop's `reason` is read as `stopped`), was built from the same
+fingerprint, and whose providers are reused too. The fingerprint is a digest of the
+component's type, config and each need it is handed (`Container.wire` above). `Container.run(reuse_from=...)` and `matrix run --from` use it.
 
 ### `process`
 
@@ -426,7 +440,9 @@ directly; only the first call for a process signals. A child that moves itself t
 session is not reached.
 
 `await process.start(argv, **options) -> asyncio.subprocess.Process` starts `argv` in its
-own process group and defers nothing: ending it is the caller's, with `kill_group`. Use the
+own process group and defers nothing: ending it is the caller's, with `kill_group`. If the
+caller is cancelled while the child is being started, the child is killed and the caller gets
+the cancellation, even when the start itself failed. Use the
 pair when a component starts and stops a child for each repetition of its work, so the run's
 releases do not grow with the repetitions:
 
@@ -494,7 +510,10 @@ and is located by the run id.
 
 `JsonlConstructStore(root, *, fsync=False)` keeps a directory per run: `run.json`, one
 `<kind>.jsonl` per table whose lines are the rows, and `events.jsonl`. `fsync=True` flushes
-each row to the disk. `MemoryConstructStore()` keeps runs in a dict, rows as given. Both are
+each row to the disk. Each row is written as pydantic's `to_jsonable_python` makes it (nested
+models, dataclasses, sets, tuples, datetimes); a row holding anything else is refused with a
+`ContractError` naming where in the row, before anything is written for it, so the record
+goes on. `MemoryConstructStore()` keeps runs in a dict, rows as given. Both are
 registered at the `store` point (`matrix.v1.store.jsonl` with `root` and `fsync`,
 `matrix.v1.store.memory`), and `matrix.store` in config chooses one; a package adds its own
 by registering there.
@@ -542,8 +561,12 @@ The runtime-neutral record of one session. Frozen.
 | `check` | `(definition) -> None` | **Required.** Raises `ConfigError` for a definition the runtime cannot honour. A runtime that accepts everything implements it as a no-op |
 | `run` | `async (definition, task: str) -> AgentResponse` | Returns a response whose `stop` says why the session ended, or raises `AgentRuntimeError` with a `reason`. Never an empty normal response for a failed session |
 
-One member is optional, read with `getattr`: `warnings` (problems a reader of its config
-should see).
+Two members are optional, read with `getattr`: `warnings` (problems a reader of its config
+should see), and `resolved`, JSON data for what the runtime settled when it was built, beyond
+its own config, that decides how it answers. Composition digests `resolved` into the reuse
+fingerprint of every component that runs an agent on the runtime; the `model` runtime's is
+its registry (`default` and each model's row, without `api_key`), read from `matrix.models`
+or hardline's own tiers.
 
 A runtime that also logs what its `warnings` say logs it at WARNING on the logger named
 `RUNTIME_LOGGER` (`matrix.runtime`), once per process, so a caller that builds a runtime per
@@ -568,7 +591,7 @@ Registered at the `runtime` point. In config, `type:` takes the short name.
 |--------|----------|---------------|-------|-------|
 | `claude-sdk` | `matrix.v1.runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (`[]` is hermetic), `plugins` (relative `path` resolved against `cwd`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` | `cwd` | Extra `[claude]`. Accepts every definition. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call |
 | `model` | `matrix.v1.runtime.model` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. An agent's `model` is a hardline registry name; unset, `default_model`, then the registry's default. One call, no tool loop: `check` refuses a definition that declares tools. Reports tokens, no cost (`cost_usd` is `None`) |
-| `mock` | `matrix.v1.runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | Offline. Accepts every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports `cost_usd` 0.0. Records `calls`, each `(agent, task)` |
+| `mock` | `matrix.v1.runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | Offline. Accepts every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports no cost (`cost_usd` is `None`): no provider reported one. Records `calls`, each `(agent, task)` |
 
 Classes: `matrix.adapters._out.runtime.claude_sdk.ClaudeSdkRuntime`,
 `matrix.adapters._out.runtime.model.ModelAgentRuntime`,
@@ -793,7 +816,7 @@ shares a `span`. An agent called from inside a component reports that component'
 | `matrix.release.start` | new id / run id | |
 | `matrix.release.end` | same / run id | `status` (`released`, `failed`, `abandoned`), `error` |
 | `matrix.agent.start` | new id / the calling span | `agent`, `model`, `task` (the task as sent) |
-| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`; or `status="error"`, `error`, `reason`, `kind` |
+| `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`; or `status="error"`, `error`, `reason`, `kind`; or, when the session was cancelled, `status="cancelled"`, `reason="cancelled"` |
 | `matrix.tool.start` | new id / the agent's span | `agent`, `tool`, `call_id`; timed when the runtime saw the call start |
 | `matrix.tool.end` | same / the agent's span | `agent`, `tool`, `call_id`, `status` (`ok`, `error`), `duration_ms`; timed when the runtime saw its result |
 | `matrix.measure` | new id / the calling span | `name`, `value`, `unit`, `kind`, `attrs` |
@@ -882,10 +905,10 @@ own times (not when the observer received them):
 
 | Span | Kind | Attributes |
 |------|------|------------|
-| `invoke_workflow` (a run) | INTERNAL | `gen_ai.operation.name=invoke_workflow`, `matrix.run.id`, `matrix.status`, `matrix.rows`, `matrix.duration_ms`, `matrix.reused_from`; `error.type` when it failed |
-| `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.duration_ms`, `matrix.attempts`, `matrix.abandoned`; `matrix.kind` and `error.type` (the error's kind) when it failed. The conventions have no step |
+| `invoke_workflow` (a run) | INTERNAL | `gen_ai.operation.name=invoke_workflow`, `matrix.run.id`, `matrix.status`, `matrix.rows`, `matrix.duration_ms`, `matrix.reused_from`; `error.type` when it failed or was cancelled |
+| `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.duration_ms`, `matrix.attempts`, `matrix.abandoned`; `matrix.kind` and `error.type` (the error's kind, or the stop's reason for one cancelled) when it failed or was cancelled. The conventions have no step |
 | `matrix.release` | INTERNAL | `matrix.component`, `matrix.status`; `error.type` when it failed. With content: `matrix.error` |
-| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed. With content: `matrix.task`, `matrix.error` |
+| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed, and `error.type=cancelled` when the session was cancelled. With content: `matrix.task`, `matrix.error` |
 | `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`, `matrix.status`, `matrix.duration_ms`; `error.type=tool_error` when the tool reported an error |
 | a component's `ctx.span(name)` | INTERNAL | `matrix.component`; its number and boolean fields and its status under its root (`acme.rows`, `acme.status`, `acme.duration_ms`). With content: its string fields too |
 
@@ -1165,7 +1188,7 @@ the config names one.
 | `runtime(name)` | `AgentRuntime`; `NotFoundError` listing configured runtimes |
 | `bind(definition, runtime)` | a `BoundAgent` on the configured runtime named `runtime`, with the container's observers |
 | `needs()` | the shared needs: `agents`, `models`, `cwd`, plus `context` keys |
-| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas, each component's declared `effects` (an `agent-step` has its agent's runtime's) and its `fingerprint`. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
+| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas, each component's declared `effects` (an `agent-step` has its agent's runtime's) and its `fingerprint`: a digest of its type, its config and each need it is handed (an `agent-step`'s own agent, every agent for another component that needs `agents`, `models`, and `cwd`, the process's when none was given), where an agent counts by its definition, its runtime's config and needs, and the runtime's optional `resolved` (the `model` runtime's registry, from `matrix.models` or hardline's own tiers). A need a host adds through `context` is not in it, nor is the code. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
 | `executor(observers=())` | an `Executor` with the container's observers (and these), given `cancel_on_signals` |
 | `async run(inputs=None, *, run_id=None, reuse_from=None, observers=())` | runs the configured components in the configured store within the configured limits; `run_id` defaults to `<UTC time>-<4 hex digits>`. `reuse_from` takes that run's inputs and reuses what it can |
 | `reuse(run_id, wiring=None)` | the `Reuse` a run of `wiring` may take from the recorded run |

@@ -236,6 +236,88 @@ def test_top_level_models_reach_model_runtimes() -> None:
     assert runtime.models.registry.names() == ("q",)  # type: ignore[attr-defined]
 
 
+# --- the reuse fingerprint covers every need a component is handed ------------------------
+
+
+def _step_print(models: object = None, runtime: object = None, **context: object) -> str:
+    container = compose(
+        _config(
+            models=models,
+            runtimes={"m": runtime or {"type": "model"}},
+            agents={"a": {"runtime": "m", "system_prompt": "x"}},
+            components=[{"name": "s", "type": "matrix.v1.agent-step", "config": {"agent": "a"}}],
+            inputs=["matrix.v1.task"],
+        ),
+        registry=default_registry(discover=False),
+        context=context or None,
+    )
+    return container.wire().fingerprints["s"]
+
+
+def _row(model: str, base_url: str) -> dict[str, object]:
+    return {"backend": "openai-compat", "model": model, "base_url": base_url, "family": "q"}
+
+
+def test_an_agent_step_s_fingerprint_follows_matrix_models() -> None:
+    one = _step_print({"default": "x", "models": {"x": _row("m1", "http://a/v1")}})
+    two = _step_print({"default": "x", "models": {"x": _row("m2", "http://b/v1")}})
+    assert one != two
+    assert one == _step_print({"default": "x", "models": {"x": _row("m1", "http://a/v1")}})
+
+
+def test_an_agent_step_s_fingerprint_follows_the_tiers_hardline_discovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no ``matrix.models``, hardline reads its own tiers; they decide the model too."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tier = tmp_path / "tier.yaml"
+    monkeypatch.setenv("HARDLINE_CONFIG", str(tier))
+    tier.write_text(
+        "default: x\nmodels:\n  x: {backend: openai-compat, model: m1, family: q,"
+        " base_url: 'http://a/v1'}\n"
+    )
+    one = _step_print()
+    tier.write_text(
+        "default: x\nmodels:\n  x: {backend: openai-compat, model: m2, family: q,"
+        " base_url: 'http://b/v1'}\n"
+    )
+    assert _step_print() != one
+
+
+def test_an_agent_step_s_fingerprint_follows_the_working_directory_it_is_handed() -> None:
+    sdk = {"type": "claude-sdk"}
+    assert _step_print(runtime=sdk, cwd="/srv/a") != _step_print(runtime=sdk, cwd="/srv/b")
+
+
+def test_a_component_handed_the_agents_is_fingerprinted_by_them() -> None:
+    class UsesAgents:
+        requires = ("acme.v1.in",)
+        provides = ("acme.v1.out",)
+
+        def __init__(self, *, agents: object) -> None:
+            self.agents = agents
+
+        async def run(self, inputs: object, ctx: object) -> None:
+            return None
+
+    def fingerprint(prompt: str) -> str:
+        registry = default_registry(discover=False)
+        registry.register("component", "acme.v1.uses", UsesAgents, needs={"agents"})
+        container = compose(
+            _config(
+                runtimes={"m": {"type": "mock"}},
+                agents={"a": {"runtime": "m", "system_prompt": prompt}},
+                components=[{"name": "u", "type": "acme.v1.uses"}],
+                inputs=["acme.v1.in"],
+            ),
+            registry=registry,
+        )
+        return container.wire().fingerprints["u"]
+
+    assert fingerprint("judge strictly") != fingerprint("judge kindly")
+
+
 def test_extension_runtime_registers_by_entry_point(monkeypatch: pytest.MonkeyPatch) -> None:
     """A third party's runtime arrives the way matrix's own do, under its own namespace."""
 

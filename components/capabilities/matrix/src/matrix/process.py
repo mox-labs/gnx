@@ -16,6 +16,7 @@ close that window).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 import weakref
@@ -52,9 +53,11 @@ async def start(argv: Sequence[str], **options: Any) -> asyncio.subprocess.Proce
         return await asyncio.shield(starting)
     except asyncio.CancelledError:
         # Cancelled while the child was being started: it may exist already. Finish starting
-        # it so that it can be killed, then let the cancellation through.
-        process = await starting
-        await kill_group(process, grace_s=0)
+        # it so that it can be killed, then let the cancellation through. A start that failed
+        # left nothing to kill, and its error does not replace the cancellation.
+        with contextlib.suppress(Exception):
+            process = await starting
+            await kill_group(process, grace_s=0)
         raise
 
 

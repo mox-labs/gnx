@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -19,6 +20,7 @@ from matrix import (
     JsonlConstructStore,
     Limits,
     MatrixConfig,
+    MatrixError,
     MemoryConstructStore,
     RecordingObserver,
     ReleaseOutcome,
@@ -116,6 +118,18 @@ def test_a_reported_retry_after_is_the_wait_up_to_the_cap() -> None:
     assert policy.wait_s(1, hinted) == 4
     assert policy.wait_s(1, AgentRuntimeError("x", reason="rate_limited", retry_after_s=99)) == 10
     assert (policy.wait_s(1, plain), policy.wait_s(2, plain), policy.wait_s(5, plain)) == (1, 2, 10)
+
+    # A backend that says "retry now" is honoured, not read as "no hint", and an error's own
+    # hint wins over what its details say.
+    class BusyError(MatrixError):
+        kind = "transient"
+
+        def __init__(self, hint: float, **details: Any) -> None:
+            super().__init__("busy", **details)
+            self.retry_after_s = hint
+
+    assert policy.wait_s(1, BusyError(0)) == 0
+    assert policy.wait_s(1, BusyError(0, retry_after_s=5)) == 0
 
 
 async def test_the_wait_honours_retry_after() -> None:
@@ -370,11 +384,155 @@ async def test_a_failed_component_is_not_reused(tmp_path: Path) -> None:
     assert set(reuse.rows) == {"upper"}
 
 
+async def test_a_component_stopped_before_it_finished_is_not_reused(tmp_path: Path) -> None:
+    """Asked to stop, a component returns what it has: its record says ``stopped``, and a run
+    from that record runs it again instead of taking its partial rows as finished work."""
+    running = asyncio.Event()
+
+    class Partial:
+        requires = (TEXT,)
+        provides = (UPPER,)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            running.set()
+            await ctx.stopping.wait()
+            return {UPPER: ["partial"]}
+
+    class Fails:
+        requires = (TEXT,)
+        provides = ("acme.v1.other",)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> None:
+            await running.wait()
+            raise RuntimeError("kaput")
+
+    registry = default_registry(discover=False)
+    registry.register("component", "acme.v1.upper", Partial, effects=set())
+    registry.register("component", "acme.v1.fails", Fails, effects=set())
+    config = MatrixConfig.model_validate(
+        {
+            "inputs": [TEXT],
+            "store": {"type": "jsonl", "root": str(tmp_path)},
+            "components": [
+                {"name": "upper", "type": "acme.v1.upper"},
+                {"name": "fails", "type": "acme.v1.fails"},
+            ],
+        }
+    )
+    container = compose(config, registry=registry)
+    with pytest.raises(RunError):
+        await container.run({TEXT: ["a"]}, run_id="first")
+    ending = container.store.describe("first")["components"]["upper"]
+    assert ending["status"] == "stopped" and ending["reason"] == "run_failed"
+    assert container.reuse("first").rows == {}
+    # A record written before ``stopped`` existed says ``completed`` with the stop's reason.
+    record = tmp_path / "first" / "run.json"
+    record.write_text(record.read_text().replace('"stopped"', '"completed"'))
+    assert container.store.describe("first")["components"]["upper"]["status"] == "completed"
+    assert container.reuse("first").rows == {}
+
+
+async def test_reused_rows_reach_downstream_in_the_type_a_fresh_run_gives(tmp_path: Path) -> None:
+    """A kind with a schema is recorded as an instance of it, however it was handed over, so a
+    consumer sees a model on a fresh run and on a run that reuses the rows from the store."""
+    from pydantic import BaseModel
+
+    class Score(BaseModel):
+        score: int
+
+    seen: list[str] = []
+
+    class Make:
+        requires = (TEXT,)
+        provides = (UPPER,)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            return {UPPER: [Score(score=3), {"score": 4}]}
+
+    class Use:
+        requires = (UPPER,)
+        provides = (COUNT,)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            seen.extend(type(row).__name__ for row in inputs[UPPER])
+            return {COUNT: sum(row.score for row in inputs[UPPER])}
+
+    store = JsonlConstructStore(tmp_path)
+    wiring = wire({"make": Make(), "use": Use()}, inputs=[TEXT], schemas={UPPER: Score})
+    first = await Executor().run(wiring, {TEXT: "a"}, store=store, run_id="first")
+    stored = store.load("first")
+    reuse = Reuse(run_id="first", rows={"make": {UPPER: stored.rows(UPPER)}})
+    again = await Executor().run(wiring, {TEXT: "a"}, store=store, run_id="again", reuse=reuse)
+    assert seen == ["Score", "Score", "Score", "Score"]
+    assert first.rows(COUNT) == again.rows(COUNT) == (7,)
+    assert again.rows(UPPER) == first.rows(UPPER) == (Score(score=3), Score(score=4))
+
+
 async def test_reuse_takes_the_prior_inputs_and_refuses_new_ones(tmp_path: Path) -> None:
     config = _config(store={"type": "jsonl", "root": str(tmp_path)})
     await compose(config, registry=_registry()).run({TEXT: ["a"]}, run_id="first")
     with pytest.raises(ConfigError, match="takes that run's inputs"):
         await compose(config, registry=_registry()).run({TEXT: ["b"]}, reuse_from="first")
+
+
+async def test_rows_that_cannot_be_reused_fail_that_component_and_skip_its_dependents() -> None:
+    """Under ``isolate`` the rest of the run goes on: the component whose stored rows its kind
+    now refuses ends ``failed`` and is not run again, what depends on it is skipped, and an
+    independent reused component is still reused."""
+    from pydantic import BaseModel
+
+    class Row(BaseModel):
+        n: int
+
+    ran: list[str] = []
+
+    class Make:
+        requires = (TEXT,)
+        provides = (UPPER,)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            ran.append("make")
+            return {UPPER: {"n": 1}}
+
+    class Use:
+        requires = (UPPER,)
+        provides = (COUNT,)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            ran.append("use")
+            return {COUNT: 1}
+
+    class Free:
+        requires = (TEXT,)
+        provides = ("acme.v1.free",)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            ran.append("free")
+            return {"acme.v1.free": 1}
+
+    wiring = wire(
+        {"make": Make(), "use": Use(), "free": Free()}, inputs=[TEXT], schemas={UPPER: Row}
+    )
+    reuse = Reuse(
+        run_id="old",
+        rows={
+            "make": {UPPER: ({"n": 1}, {"n": "not a number"})},
+            "use": {COUNT: (2,)},
+            "free": {"acme.v1.free": (3,)},
+        },
+    )
+    with pytest.raises(RunError) as e:
+        await Executor().run(wiring, {TEXT: "a"}, reuse=reuse, limits=Limits(on_failure="isolate"))
+    run = e.value.run
+    assert ran == []
+    assert {name: c.status for name, c in run.components.items()} == {
+        "make": "failed",
+        "use": "skipped",
+        "free": "reused",
+    }
+    assert run.components["use"].reason == "upstream: make"
+    assert [(f.component, f.kind) for f in run.failures] == [("make", "contract")]
+    assert run.rows(UPPER) == () and run.rows(COUNT) == () and run.rows("acme.v1.free") == (3,)
 
 
 async def test_the_executor_refuses_reuse_that_would_not_be_sound() -> None:

@@ -32,7 +32,10 @@ Rows are append-only and the executor is their only writer. Components never rec
 Construct. A component gets `Inputs`: for each kind it requires, a tuple of that kind's rows,
 each its own deep copy. That is what makes `requires` the true data dependencies, and why a
 component that mutates what it read changes neither the record nor what another component
-sees. The record keeps its own copy of a row too, so a component that goes on to change an
+sees. A row of a kind with a registered schema is recorded as an instance of that schema,
+however it was handed over (a dict, or the JSON a store gives back for a reused row), so its
+consumers see one type on every run. A row of a kind without one is kept as given. The
+record keeps its own copy of a row too, so a component that goes on to change an
 object after handing it over does not change what was recorded. Rows must therefore be data
 that can be copied, not live handles.
 
@@ -99,16 +102,25 @@ each record above is there as its `document()`.
 
 Run inputs are recorded first, by `$input`, then the rows of any component reused from an
 earlier run, by that component, which ends `reused`. A component is reused only when it
-completed in that run, its fingerprint (its type and config, and for an agent step its
-agent's definition and runtime) is the same, and every component it depends on is reused
-too: so what it was given then is what it would be given now. Then each row is recorded when its component
+completed in that run (`completed` or `reused`; a `stopped` component's rows may be partial),
+its fingerprint is the same, and every component it depends on is reused too: so what it
+was given then is what it would be given now. The fingerprint digests the component's type
+and config and each need it is handed: for an agent step its agent, for another component
+that needs `agents` every agent, and `models` and `cwd` (the process's working directory
+when none was given). An agent counts by its definition, its runtime's config and needs, and
+what the runtime resolved when it was built (the model runtime's registry, whether from
+`matrix.models` or the tiers hardline discovered). Not in it: the code that runs, and a need a
+host adds through `compose(context=)`. A reused component whose
+rows its kind's schema now refuses ends `failed` and is not run again; what depends on it is
+skipped. Then each row is recorded when its component
 hands it over (`ctx.provide`) or, for what it returns, when it ends.
 
 When a component fails, the executor stops or skips the others as `Limits.on_failure` says,
 records each failure, calls the deferred releases, and raises `RunError`. `RunError.run` is
 the partial Run, with `status == "failed"`, and `RunError.construct` is its Construct. A
 cancelled run raises `RunCancelled` with the partial Run in the same way. A component that
-was stopped but returned within its grace has its rows recorded like any other.
+was asked to stop but returned within its grace has its rows recorded like any other, and
+ends `stopped`: it returned what it had, which may not be all of it.
 
 ## Keeping a run
 
@@ -122,7 +134,10 @@ The stores:
 
 - `MemoryConstructStore()` keeps runs in a dict, rows as given. For tests and single-process
   callers.
-- `JsonlConstructStore(root, fsync=False)` keeps one directory per run:
+- `JsonlConstructStore(root, fsync=False)` keeps one directory per run, each row as JSON:
+  models, dataclasses, sets, tuples and datetimes inside a row are written as pydantic writes
+  them, and a row holding anything else is refused with a `ContractError` that names where in
+  the row it is, before anything is written for it:
 
 ```
 <root>/<run_id>/run.json                {"schema": "matrix.v1.run", run_id, status, started,
@@ -171,9 +186,14 @@ The store contract:
   rewritten.
 - `append(kind, row)` is durable when it returns. A store that cannot append, or cannot
   finish, fails the run: `RunError` with kind `store`. After one failed append no row is
-  appended to that record; the store is still asked to finish it, as `failed`.
+  appended to that record, and none is kept in memory either: a later `ctx.provide` raises
+  `StoreError`. The store is still asked to finish the record, as `failed`.
 - `load` works on a run in any state. From the JSONL store rows come back as JSON data, not
-  as the Python objects that produced them (a pydantic model comes back as a dict).
+  as the Python objects that produced them (a pydantic model comes back as a dict). A run
+  that reuses them validates each into its kind's schema, as a fresh run does.
+- A store may refuse a row it cannot keep with a `ContractError`, only before writing anything
+  for it, its ledger entry included; the component that handed it over fails, and the record
+  goes on. Any other failure to append fails the run, as above.
 - `describe` returns `status` as recorded for a finished run. For one that never finished it
   counts the rows on disk, reports `torn`, and says `running`, or `interrupted` when the
   process that was writing it, on this host, no longer holds `writer.lock`. From another
