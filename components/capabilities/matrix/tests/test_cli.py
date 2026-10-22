@@ -310,15 +310,16 @@ def test_ctrl_c_is_one_envelope_of_kind_interrupted_and_exits_130(
     assert "error (interrupted):" in capsys.readouterr().err
 
 
-def test_telemetry_without_its_extra_is_a_config_error_with_a_fix(
+def test_telemetry_in_an_install_without_the_sdk_is_a_config_error_with_a_fix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: a missing ``matrix[otel]`` raised a bare ImportError, with no kind or fix."""
+    """Regression: a missing SDK raised a bare ImportError, with no kind or fix. matrix depends
+    on it, so an install without it is incomplete, and the fix says how to repair it."""
     import sys
 
     from matrix import configure_telemetry
 
-    monkeypatch.setitem(sys.modules, "opentelemetry.sdk", None)  # the SDK is the extra's
+    monkeypatch.setitem(sys.modules, "opentelemetry.sdk", None)
     with pytest.raises(ConfigError) as raised:
         configure_telemetry(console=True)
-    assert raised.value.kind == "config" and "matrix[otel]" in (raised.value.fix or "")
+    assert raised.value.kind == "config" and "--reinstall" in (raised.value.fix or "")

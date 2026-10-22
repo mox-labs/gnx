@@ -29,7 +29,7 @@ attempt made and the usage they reported. A reply cut at
 ``max_tokens``, refused or withheld is returned and said for what it is, as hardline returns
 it. hardline reports tokens, not dollars; bound a reply with ``max_tokens``.
 
-Type URL: ``matrix.v1.model-runtime.hardline``. Requires the ``models`` extra (hardline).
+Type URL: ``matrix.v1.model-runtime.hardline``.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from matrix.adapters._out.runtime.pydantic_ai import served_by
-from matrix.domain.errors import ConfigError, ModelRuntimeError, RuntimeReason, missing_extra
+from matrix.domain.errors import ConfigError, ModelRuntimeError, RuntimeReason, missing_dependency
 from matrix.domain.model_call import (
     CallAttempt,
     ModelCall,
@@ -102,8 +102,8 @@ class HardlineModelRuntime:
         try:
             from hardline import build_runtime
         except ImportError as e:
-            raise missing_extra(
-                "models", needed_by="the hardline model runtime", module="hardline"
+            raise missing_dependency(
+                needed_by="the hardline model runtime", module="hardline"
             ) from e
         runtime = (
             build_runtime(config=config.models, label="matrix.models")

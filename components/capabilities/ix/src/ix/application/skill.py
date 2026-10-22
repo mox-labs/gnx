@@ -84,13 +84,13 @@ REFERENCES: dict[str, str] = {
 #: What a runnable kind needs on the host beyond ix, by kind label. The tests hold each key
 #: to a kind this ix can run, and ``http-load`` to the program its adapter starts.
 PREREQUISITES: dict[str, str] = {
-    "agent-session": "runs on one of matrix's agent runtimes: `claude-sdk` needs `ix[claude]`, "
-    "the Claude Code CLI and its credentials; `pydantic-ai` needs a hardline model (its "
+    "agent-session": "runs on one of matrix's agent runtimes: `claude-sdk` needs the Claude "
+    "Code CLI and its credentials; `pydantic-ai` needs a hardline model (its "
     "`models` or matrix's) and makes every model call through hardline; `mock` needs nothing "
     "and calls no model. `ix plan` lists one that cannot start under `Runnable: no`",
-    "model-call": "runs on one of matrix's model runtimes: `hardline` needs `ix[models]` and a "
-    "hardline model; `mock` needs nothing and calls no model. `ix plan` lists a runtime that "
-    "cannot start, or a model it cannot resolve, under `Runnable: no`",
+    "model-call": "runs on one of matrix's model runtimes: `hardline` needs a hardline model; "
+    "`mock` needs nothing and calls no model. `ix plan` lists a runtime that cannot start, or "
+    "a model it cannot resolve, under `Runnable: no`",
     "function-test": "and `outcome` run Python in a child process with a time limit and no "
     "credentials in its environment; it is not a sandbox, so test code from a subject you "
     "would run yourself",
@@ -477,15 +477,13 @@ def _install(version: str, kinds: Kinds) -> str:
             "",
             "```bash",
             f'uv tool install "{source}"',
-            "# or, to run agent sessions on the claude-sdk agent runtime",
-            f'uv tool install "ix[claude] @ {source}"',
             f"ix --version      # ix, version {version}",
             "```",
             "",
             "ix is on no package index: it is installed from its repository at the release's "
-            "tag, and uv takes matrix, which ix runs on, from the same repository. The extras: "
-            "`claude` (the `claude-sdk` agent runtime), `models` (the `hardline` model "
-            "runtime), `otel` (export of spans over OTLP).",
+            "tag, and uv takes matrix, which ix runs on, from the same repository. Every agent "
+            "and model runtime comes with it (`claude-sdk`, `pydantic-ai`, `hardline`), and "
+            "the OpenTelemetry SDK that exports spans over OTLP: there are no extras.",
             "",
             "What the runnable kinds need on the host:",
             "",
@@ -1277,7 +1275,7 @@ input, never what is expected, and ix compares what came back, so printing passi
 or rewriting the cases fails. A session's working directory is a fresh temporary directory,
 removed after the trial; the agent's tools act on your machine as `permission_mode`
 allows. Telemetry: with `OTEL_EXPORTER_OTLP_ENDPOINT` set, ix exports `ix.plan`, `ix.run`,
-`ix.trial` and `ix.sensor` spans and matrix the sessions inside them (`ix[otel]`).
+`ix.trial` and `ix.sensor` spans and matrix the sessions inside them.
 """
 
 

@@ -40,7 +40,7 @@ PROBLEM_KINDS: dict[str, str] = {
 MATRIX_PROBLEM_KINDS: dict[str, str] = {
     "unprovided": "a component requires a kind that nothing provides and no input supplies",
     "cycle": "components wait on each other in a cycle",
-    "extra_missing": "something selected needs an optional dependency that is not installed",
+    "dependency_missing": "something selected needs a dependency the install lacks",
     "permissive": "a runtime grants an agent tools without per-call confirmation",
 }
 

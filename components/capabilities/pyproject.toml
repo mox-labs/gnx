@@ -36,10 +36,9 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.8",
     "types-PyYAML",  # gnx + harness parse YAML; strict mypy needs the stubs
-    "opentelemetry-sdk>=1.20",  # matrix's telemetry tests install an SDK provider
-    # The `claude` extra: matrix's SDK runtime is typechecked and tested here, and no other
-    # member brings the SDK in.
-    "matrix[claude]",
+    # The members, each with every dependency it has: no package has extras (Q13), so this
+    # group is where the test tools come from.
+    "matrix",
     "ix",
     "recon",
     "gnx",

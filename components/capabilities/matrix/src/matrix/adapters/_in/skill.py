@@ -5,15 +5,14 @@ references ``matrix --skill -r NAME`` prints, for detail the main text points to
 It teaches the protocol and the config, which are what a component author depends on, and
 names the registry only as far as registering takes. The frontmatter makes the printed text
 a valid ``SKILL.md`` as it stands. The exit table, the extension points, the forbidden kind
-segments, the problem kinds, the retry policy's fields and the extras are read from the
-code; the config keys, the tiers, the needs, the commands and the references are held to it
-by the tests, which also run every example.
+segments, the problem kinds and the retry policy's fields are read from the code; the config
+keys, the tiers, the needs, the commands and the references are held to it by the tests,
+which also run every example.
 """
 
 from __future__ import annotations
 
 import json
-from importlib.metadata import PackageNotFoundError, metadata
 
 from matrix.domain.agent_step import AGENT_RESPONSE
 from matrix.domain.errors import (
@@ -46,13 +45,6 @@ INSTALL = (
     f'# the library, in a project\nuv add "{REQUIREMENT}"\n'
     f'# the matrix command\nuv tool install "{SOURCE}"'
 )
-
-#: What each optional extra adds. The tests hold the keys to the package's extras.
-EXTRAS: dict[str, str] = {
-    "claude": "the `claude-sdk` agent runtime (Claude Agent SDK sessions)",
-    "models": "the `hardline` model runtime (one model call through hardline)",
-    "otel": "the OpenTelemetry SDK and OTLP exporters: export of spans and metrics",
-}
 
 #: The commands, in the order they are used; the last two are the reference.
 COMMANDS: tuple[tuple[str, str], ...] = (
@@ -210,14 +202,6 @@ def _keys(names: list[str] | tuple[str, ...]) -> str:
     return ", ".join(f"`{name}`" for name in names)
 
 
-def _extras() -> list[str]:
-    try:
-        declared = metadata("matrix").get_all("Provides-Extra") or []
-    except PackageNotFoundError:  # a source tree that was never installed
-        declared = list(EXTRAS)
-    return [extra for extra in declared if extra in EXTRAS]
-
-
 def _frontmatter(version: str) -> str:
     # JSON strings are YAML scalars, so the values need no YAML emitter to be quoted right.
     return "\n".join(
@@ -255,16 +239,15 @@ Do not use matrix:
 
 
 def _install(version: str) -> str:
-    extras = "\n".join(f"- `{name}`: {EXTRAS[name]}" for name in _extras())
     commands = f"{INSTALL}\nmatrix --version      # {version}"
     return f"""\
 ## Install and check
 
 {_fence("bash", commands)}
 
-Extras, as `matrix[<extra>]`:
-
-{extras}
+Every runtime and telemetry comes with it: the Claude Agent SDK (`claude-sdk`), hardline and
+pydantic-ai (`hardline`, `pydantic-ai`), and the OpenTelemetry SDK with its OTLP exporters,
+each imported only when what uses it is built. There are no extras.
 
 A script that imports matrix runs where matrix is installed: inside the project you added it
 to, `uv run python script.py`; outside any project, name it for that one run:
@@ -406,7 +389,7 @@ call models. Each takes `--json` and then prints one document with a `schema` fi
 stdout (`matrix.v1.config`, `matrix.v1.config-sources`, `matrix.v1.check`, `matrix.v1.plan`,
 `matrix.v1.run`, `matrix.v1.runs`, `matrix.v1.agents`, `matrix.v1.catalog`,
 `matrix.v1.extension`), with its
-`warnings` (a permissive runtime, telemetry asked for without its extra) inside it. `run`
+`warnings` (a permissive runtime, telemetry asked for in an install that lacks it) inside it. `run`
 reads each `--input` as JSON lines (`-` is standard input) and prints the run id and
 its record's files (`run.json`, a `<kind>.jsonl` per kind, `events.jsonl`); `matrix runs`
 lists the recorded runs; `--from RUN_ID` starts from one (`matrix --skill -r running`).
@@ -707,7 +690,7 @@ Agent runtimes (`matrix.agent_runtimes`):
 - `mock`: offline. A reply is the first of `responses` (keyed by the whole task as sent),
   `by_agent` (keyed by agent name), `default`; else the echo `mock:<agent>:<task>`, which
   shows each task as sent. `model` is recorded, never used.
-- `claude-sdk` (extra `claude`): Claude Agent SDK sessions with tools. Its config is all a
+- `claude-sdk`: Claude Agent SDK sessions with tools. Its config is all a
   session can be given: `permission_mode` (default `default`), `cwd`, `setting_sources`
   (`user`, `project`, `local`; `[]` is hermetic), `plugins` (`{{type: local, path}}`),
   `skills` (names, or `all`), `agents` (inline subagents: `description`, `prompt`, `tools`,
@@ -732,7 +715,7 @@ Model runtimes (`matrix.model_runtimes`):
 - `mock`: offline. A reply is the first of `responses` (keyed by the whole prompt as sent),
   `by_model` (keyed by model name), `default`; else the echo `mock:<model>:<prompt>`. Any
   model name is accepted.
-- `hardline` (extra `models`): one call through hardline, in any family it has a row for.
+- `hardline`: one call through hardline, in any family it has a row for.
   `model`: a hardline registry name (`matrix.models`, or hardline's own tiers); unset,
   `default_model`, then the registry's default. `max_tokens` bounds a reply; it reports no
   cost.
@@ -753,16 +736,17 @@ file. Events are telemetry: lossy by design (dropped when the bounded queue is f
 
 ## OpenTelemetry
 
-The OpenTelemetry API is a dependency; install the `otel` extra for the SDK and the OTLP
-exporters. Then the standard variables are enough: when `OTEL_EXPORTER_OTLP_ENDPOINT` (or
+The OpenTelemetry SDK and the OTLP exporters are installed with matrix, so the standard
+variables are enough: when `OTEL_EXPORTER_OTLP_ENDPOINT` (or
 its `_TRACES_` and `_METRICS_` forms) is set, or `OTEL_TRACES_EXPORTER` /
 `OTEL_METRICS_EXPORTER` names an exporter other than `none`, every run gets the `otel`
 observer and `matrix run` installs the SDK: exporters `otlp` (default) or `console`, OTLP
 over `OTEL_EXPORTER_OTLP_PROTOCOL` `http/protobuf` (default) or `grpc`, the resource from
 `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` (`service.name` is `matrix` unless they
-set it). `OTEL_SDK_DISABLED=true` turns it off. Asked for without the extra, nothing is
-exported and every document's `warnings` says so (`extra_missing`). From Python, call
-`matrix.configure_telemetry()` once, and `.shutdown()` on what it returns at the end.
+set it). `OTEL_SDK_DISABLED=true` turns it off. Asked for in an install that lacks them,
+nothing is exported and every document's `warnings` says so (`dependency_missing`). From
+Python, call `matrix.configure_telemetry()` once, and `.shutdown()` on what it returns at the
+end.
 
 No content leaves by default: no task, no error message, no string field of a component's
 `ctx.span`; `error.type` says what failed. `observers: [{type: otel, capture_content: true}]`

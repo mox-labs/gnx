@@ -11,6 +11,9 @@
 
 ### Changed
 
+- **No `dev` extra** (Q13). recon has no optional extras; the workspace's `dev` dependency
+  group carries the test tools.
+
 - **HTTP goes through httpx2**, Pydantic's maintained continuation of httpx, in place of httpx. Redirects, timeouts and the credential rule for a redirect behave as they did. TLS is verified against the operating system's trust store (httpx2's default, through `truststore`) rather than certifi's bundle. A request span's `error.type` for a client exception is `httpx2.<class>` (`httpx2.ConnectError`).
 
 - **The OpenTelemetry SDK and its OTLP exporters are installed with recon**; the `otel` extra is gone. The `OTEL_*` variables are enough to export, with nothing else to install. The library still installs no provider: a program that imports recon configures OpenTelemetry itself, or calls `recon.configure_telemetry()`.

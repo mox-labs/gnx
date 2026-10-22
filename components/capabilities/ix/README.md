@@ -14,8 +14,6 @@ runs, runs it one trial at a time and reports a verdict: `holds`, `fails` or
 ```bash
 # the ix command
 uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
-# the same, with the claude-sdk agent runtime for agent sessions
-uv tool install "ix[claude] @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
 # the library, in a project
 uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
 ```
@@ -23,9 +21,10 @@ uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=componen
 ix is installed from its repository at the release's tag. It is on no package index, and the
 project named `ix` on PyPI is another one. ix runs on matrix, a package of the same
 repository: installed from the git URL, uv clones the repository, finds the workspace it
-belongs to and takes matrix from there. The extras are `claude` (the `claude-sdk` agent
-runtime: Claude Agent SDK sessions), `models` (the `hardline` model runtime: one model call
-through hardline) and `otel` (export of spans over OTLP). A service experiment needs `k6` on `PATH`.
+belongs to and takes matrix from there. Every runtime comes with it: `claude-sdk` (Claude
+Agent SDK sessions), `pydantic-ai` (a pydantic-ai loop whose model calls hardline makes),
+`hardline` (one model call through hardline), and the OpenTelemetry SDK that exports spans
+over OTLP. There are no extras. A service experiment needs `k6` on `PATH`.
 
 ## The experiment model
 
@@ -185,8 +184,8 @@ Work in this order:
    into (`unobservable`): a skill whose `tools` leave out the tool that fires one (the
    runtime names it: claude-sdk's `Skill`), a tool-reading
    sensor on a `model-call` subject, files to collect that no tool can write. `Runnable` says
-   whether the runtime can start here (`claude-sdk` needs `ix[claude]`, the Claude Code CLI
-   and its credentials).
+   whether the runtime can start here (`claude-sdk` needs the Claude Code CLI and its
+   credentials).
 2. **Dry run.** Give the probe a `mock_response`, a reply whose grade you know, and run
    `ix run <path> --dry-run`: the file as written, with the session on the `mock` runtime
    and the real runtime's config (`runtime_options`, `plugins`) set aside (the report
@@ -641,8 +640,8 @@ the observers of a run, and the models a `hardline` model runtime is handed.
 ix makes spans through the OpenTelemetry API, under the instrumentation scope `ix`:
 `ix.plan`, `ix.run`, `ix.environment`, `ix.trial` and `ix.sensor`, with each reading as a
 `gen_ai.evaluation.result` event and a failure's reason as `error.type`. The agent sessions inside a trial are matrix's spans. The
-`ix` command installs the SDK from the standard `OTEL_*` variables when the `otel` extra is
-installed; set without it, every `--json` document carries a warning. A program that
+`ix` command installs the SDK, which comes with it, from the standard `OTEL_*` variables; in
+an install that lacks it, every `--json` document carries a warning instead. A program that
 imports ix configures OpenTelemetry itself, or calls `ix.configure_telemetry()`.
 
 The `evaluator` sensor reads a trial's spans in this process, from the SDK's tracer

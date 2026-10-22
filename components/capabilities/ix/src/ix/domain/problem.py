@@ -84,7 +84,9 @@ PROBLEM_KINDS: frozenset[str] = frozenset(
 
 #: matrix's own kinds, which a problem carried over from matrix (a run that could not be
 #: wired, a telemetry warning) may have. ``validate`` reports none of them.
-CARRIED_KINDS: frozenset[str] = frozenset({"unprovided", "cycle", "extra_missing", "permissive"})
+CARRIED_KINDS: frozenset[str] = frozenset(
+    {"unprovided", "cycle", "dependency_missing", "permissive"}
+)
 
 
 class Problem(Record):

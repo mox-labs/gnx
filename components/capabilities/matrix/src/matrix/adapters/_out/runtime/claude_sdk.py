@@ -36,7 +36,7 @@ option, so the spans the CLI exports are children of the session's ``invoke_agen
 no span current it hands nothing. The SDK lets an explicit ``env`` win over its own injection,
 so this does not depend on which SDK version does that.
 
-Type URL: ``matrix.v1.agent-runtime.claude-sdk``. Requires the ``claude`` extra.
+Type URL: ``matrix.v1.agent-runtime.claude-sdk``.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from matrix.domain.agent import AgentCapabilities, AgentResponse
-from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason, missing_extra
+from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason, missing_dependency
 from matrix.domain.ports._out.agent_runtime import RUNTIME_LOGGER
 from matrix.domain.problems import Problem, problem
 
@@ -201,8 +201,8 @@ class ClaudeSdkRuntime:
         try:
             import claude_agent_sdk  # noqa: F401
         except ImportError as e:
-            raise missing_extra(
-                "claude", needed_by="the claude-sdk runtime", module="claude_agent_sdk"
+            raise missing_dependency(
+                needed_by="the claude-sdk runtime", module="claude_agent_sdk"
             ) from e
         self._config = config or ClaudeSdkRuntimeConfig()
         self._trace_environment = trace_environment

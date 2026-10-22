@@ -133,13 +133,13 @@ class TestTheSkillIsASkill:
             assert lines and all(source in line for line in lines), (name, lines)
             assert "pip install" not in text, name
 
-    def test_the_extras_it_names_are_the_package_s(self) -> None:
+    def test_there_are_no_extras_to_name(self) -> None:
+        """Q13: ix and matrix bring every runtime and the OpenTelemetry SDK, so the package
+        declares no extra and the skill names none to install."""
         from importlib.metadata import metadata
 
-        declared = set(metadata("ix").get_all("Provides-Extra") or []) - {"dev"}
-        install = _skill().split("## Install and check", 1)[1].split("## Quick start", 1)[0]
-        (sentence,) = [line for line in install.splitlines() if "The extras:" in line]
-        assert set(re.findall(r"`([\w-]+)` \(", sentence)) == declared
+        assert not metadata("ix").get_all("Provides-Extra")
+        assert "ix[" not in _skill() and "there are no extras" in _skill()
 
     def test_what_an_agent_needs_to_act_is_within_the_first_5000_tokens(self) -> None:
         skill = _skill()

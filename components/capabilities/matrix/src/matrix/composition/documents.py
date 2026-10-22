@@ -124,7 +124,8 @@ class CheckReport(_Document):
     #: The configured components in the order they would run.
     components: list[str]
     sources: list[str]
-    #: What composed but a reader should know: a permissive runtime, export without its extra.
+    #: What composed but a reader should know: a permissive runtime, export the install
+    #: cannot do.
     warnings: list[Problem] = []
 
 

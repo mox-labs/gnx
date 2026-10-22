@@ -21,8 +21,8 @@ A model step checks its model name with its model runtime when :meth:`Container.
 it, so an unknown model fails there, with every other problem of the wiring.
 
 Nothing is called: composition makes no model call and no tool call. What a reader should
-know but that is not wrong (a permissive runtime, export asked for without its extra) is in
-:attr:`Container.warnings`.
+know but that is not wrong (a permissive runtime, export asked for in an install that cannot
+do it) is in :attr:`Container.warnings`.
 
 :meth:`Container.wire` then turns a list of ``{name, type, config}`` entries (the config's
 ``matrix.components``, or the caller's own) into components and wires them by kind, and
@@ -580,8 +580,8 @@ class _Problems:
         if error.problems:
             self.found += error.problems
             return
-        if "extra" in error.details:  # selected, but its optional dependency is missing
-            kind, got = "extra_missing", error.details.get("missing")
+        if "missing" in error.details:  # selected, but a dependency of it is not installed
+            kind, got = "dependency_missing", error.details.get("missing")
         kind = kind or ("name_unknown" if error.kind == "not_found" else "invalid_value")
         self.found.append(problem(where, kind, error.message, fix=error.fix, got=got))
 

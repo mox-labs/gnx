@@ -17,7 +17,7 @@ runtime that lets the agent use tools without asking) is said once: in the repor
 ``warnings``, and once on stderr without ``--json``.
 
 Telemetry is configured once per command from the standard ``OTEL_*`` variables; what it
-warns of (export asked for without matrix's ``otel`` extra) is in every ``--json``
+warns of (export asked for in an install that cannot do it) is in every ``--json``
 document's ``warnings``, and on stderr otherwise.
 """
 

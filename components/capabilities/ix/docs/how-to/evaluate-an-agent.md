@@ -10,11 +10,11 @@ the reply's text, your own graders, and a judge.
 ## What you need
 
 ```bash
-uv tool install "ix[claude] @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
 ```
 
-The `claude` extra brings the `claude-sdk` agent runtime, which runs each session through
-the Claude Agent SDK. It needs the Claude Code CLI and its credentials on this machine.
+ix comes with the `claude-sdk` agent runtime, which runs each session through the Claude
+Agent SDK. It needs the Claude Code CLI and its credentials on this machine.
 matrix's `mock` runtimes need neither: they give canned replies and call no model, and the
 dry run below puts every session on one.
 

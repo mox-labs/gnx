@@ -50,9 +50,6 @@ dependencies = [
     "jsonschema>=4.20",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8.0"]
-
 [project.urls]
 Repository = "https://github.com/mox-labs/gnx"
 Documentation = "https://mox-labs.github.io/gnx"

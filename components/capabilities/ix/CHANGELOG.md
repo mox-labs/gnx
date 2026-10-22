@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Removed (breaking): extras
+
+`claude`, `models`, `otel` and `dev` are gone (Q13). matrix, which ix depends on, brings every
+agent and model runtime and the OpenTelemetry SDK and OTLP exporters, so a plain install runs
+agent sessions on `claude-sdk` and exports spans. A requirement that names an extra
+(`ix[claude] @ ...`) now fails to resolve: drop the brackets. A warning matrix carries over for
+an install that lacks one is `dependency_missing` (was `extra_missing`).
+
 ### Added: pydantic-evals' evaluators as a sensor
 
 The `evaluator` sensor runs one of pydantic-evals' evaluators over each trial, named by

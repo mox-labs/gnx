@@ -17,6 +17,14 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Removed (breaking)
 
+- **Extras** (Q13). `claude`, `models`, `otel` and `dev` are gone: the Claude Agent SDK, the
+  OpenTelemetry SDK and both OTLP exporters are dependencies, as hardline and pydantic-ai
+  already were, each imported only when what uses it is built. A requirement that names an
+  extra (`matrix[otel] @ ...`) now fails to resolve: drop the brackets. An install that lacks
+  one of them (a broken environment) reports it as the problem kind `dependency_missing`
+  (was `extra_missing`), with a fix that reinstalls matrix; `missing_extra` and
+  `install_extra` in `matrix.domain.errors` are `missing_dependency` and `reinstall`. The
+  workspace's `dev` dependency group carries the test tools.
 - **Spend.** matrix cannot measure what a run costs: it sees only what each runtime reports,
   and the `model` runtime reports tokens, not dollars. So the spend ceiling and everything
   built on it are gone, and nothing replaces them:

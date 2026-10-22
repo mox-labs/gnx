@@ -2,9 +2,9 @@
 
 ``pyproject.toml`` declares ``[project.entry-points."matrix.extensions"] matrix = ...:register``,
 so :func:`~matrix.composition.container.load_extensions` finds the built-ins exactly as it
-finds a third party's: one discovery path, no special case. Optional dependencies are
-imported only when an entry is built, so registering costs nothing and a missing extra fails
-when used, saying what to install.
+finds a third party's: one discovery path, no special case. A runtime's or an observer's
+dependencies are imported only when an entry is built, so registering costs nothing, and an
+install that lacks one fails when it is used, saying how to repair it.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from matrix.domain.agent import AgentResponse
 from matrix.domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
 from matrix.domain.component import LEDGER
 from matrix.domain.construct import LedgerEntry
-from matrix.domain.errors import missing_extra
+from matrix.domain.errors import missing_dependency
 from matrix.domain.ids import type_url
 from matrix.domain.model_call import ModelCall
 from matrix.domain.model_step import MODEL_CALL, MODEL_STEP, PROMPT, ModelStep, ModelStepConfig
@@ -135,7 +135,7 @@ def _otel(config: OtelObserverConfig) -> OtelObserver:
     try:
         from matrix.adapters._out.observers.otel import OtelObserver
     except ImportError as e:  # the API is a dependency; a broken install still says what to do
-        raise missing_extra("otel", needed_by="the otel observer", module="opentelemetry") from e
+        raise missing_dependency(needed_by="the otel observer", module="opentelemetry") from e
     return OtelObserver(capture_content=config.capture_content)
 
 
@@ -247,8 +247,7 @@ def register(registry: Registry) -> None:
         _otel,
         config=OtelObserverConfig,
         summary="OpenTelemetry spans and metrics on the GenAI conventions, without content "
-        "unless capture_content; exported when the OTEL_* variables say where (requires "
-        "matrix[otel])",
+        "unless capture_content; exported when the OTEL_* variables say where",
     )
     registry.register(
         "observer",

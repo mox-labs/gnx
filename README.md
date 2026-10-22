@@ -56,7 +56,7 @@ uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=
 ```
 
 `ix` depends on `matrix`; installed from the git URL, uv takes it from the same repository.
-Each package's README has its extras and its library install line.
+Each package's README has its library install line. No package has extras: each brings every runtime and telemetry it uses.
 
 ## Stack placement
 

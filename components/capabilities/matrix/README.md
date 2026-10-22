@@ -32,12 +32,9 @@ uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.6.0#subdirectory=
 ```
 
 matrix is installed from its repository at the release's tag; it is not on a package index,
-and `pip install matrix` installs an unrelated project. hardline and pydantic-ai come with it,
-imported only when a runtime built on them is. The extras are `claude` (the Claude Agent SDK
-agent runtime), `models` (hardline, which is now installed with matrix anyway) and `otel` (the
-OpenTelemetry SDK and OTLP exporters). Add one the same way,
-`uv add "matrix[otel] @ git+https://github.com/mox-labs/gnx@matrix-v0.6.0#subdirectory=components/capabilities/matrix"`,
-or to an installed tool with `uv tool install --with "matrix[otel] @ git+..." <tool>`.
+and `pip install matrix` installs an unrelated project. Every runtime and telemetry comes
+with it: the Claude Agent SDK, hardline, pydantic-ai, and the OpenTelemetry SDK with its OTLP
+exporters, each imported only when what uses it is built. There are no extras.
 
 ## Components, wired by kind
 
@@ -212,12 +209,12 @@ metrics on the OpenTelemetry GenAI conventions: `invoke_workflow`, `invoke_agent
 `execute_tool`). Its spans are current in the task doing the work, so a span a library opens
 inside a component, an agent session or a model call nests under matrix's.
 
-For OpenTelemetry, install the `otel` extra and set the standard variables: an
+For OpenTelemetry, set the standard variables: an
 `OTEL_EXPORTER_OTLP_ENDPOINT`, or `OTEL_TRACES_EXPORTER=console`, is enough for `matrix run`
 to export. matrix as a library only uses the API and installs no provider: a program calls
 `matrix.configure_telemetry()` once (and `.shutdown()` on what it returns), or configures
-OpenTelemetry itself. Export asked for without the extra is a warning in every `--json`
-document, never silence. Spans carry no task, tool arguments, error message or component
+OpenTelemetry itself. Export asked for in an install that lacks the SDK is a warning in every
+`--json` document, never silence. Spans carry no task, tool arguments, error message or component
 text unless the config sets `observers: [{type: otel, capture_content: true}]`.
 
 ```python
