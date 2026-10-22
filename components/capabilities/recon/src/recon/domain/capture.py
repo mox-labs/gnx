@@ -1,7 +1,8 @@
 """The capture log port.
 
-A capture is one fetched response kept verbatim: an HTTP body, a command's stdout, or a
-result some other process obtained (an MCP tool call, via a Claude Code hook). Captures
+A capture is one fetched response kept verbatim: an HTTP body, a command's stdout, an MCP
+tool's or resource's result, or a result some other process obtained (an MCP tool call, via
+a Claude Code hook). Captures
 are appended to a log, ``captures.jsonl``, one JSON object per line, with each body stored
 content-addressed beside it under ``raw/<sha256>``. The line format is an interchange
 format other tools write to; it is specified by `recon --skill -r capture-format`.
@@ -64,7 +65,7 @@ def redact_query_params(url: str, names: Iterable[str], replacement: str = REDAC
     return urlunsplit(parts._replace(query=urlencode(pairs)))
 
 
-CaptureKind = Literal["http", "cli", "web", "external"]
+CaptureKind = Literal["http", "cli", "web", "mcp", "external"]
 
 
 class CaptureLog(Protocol):

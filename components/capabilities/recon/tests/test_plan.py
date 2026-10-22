@@ -111,7 +111,9 @@ class TestEveryProblemWithAPath:
         paths = _paths(plan)
         assert not plan.valid
         assert "unknown collector type 'ftp'" in paths["collectors.0.type"]
-        assert "api, capture, cli, web" in paths["collectors.0.type"], "names what is installed"
+        assert "api, capture, cli, mcp, web" in paths["collectors.0.type"], (
+            "names what is installed"
+        )
         assert "source 'nowhere' not in catalog" in paths["collectors.1.source"]
         assert "unknown transform $nope" in paths["collectors.2.normalize.t"]
         assert "collectors.3.method" in paths
@@ -640,8 +642,8 @@ class TestSourceKinds:
             "name_unknown",
             "git",
         )
-        assert problem.allowed == ("api", "local", "web")
-        assert "api, local, web" in problem.message
+        assert problem.allowed == ("api", "local", "mcp", "web")
+        assert "api, local, mcp, web" in problem.message
 
     def test_a_kind_an_installed_type_adds_plans(self, registry):
         from recon.domain.collector import CollectorType
