@@ -15,6 +15,7 @@ import httpx2
 import pytest
 
 from hardline import (
+    Endpoint,
     ModelSpec,
     RawCompletion,
     Request,
@@ -48,7 +49,7 @@ async def test_a_backend_that_answers_conforms_on_a_call() -> None:
 class _Good:
     structured_modes = frozenset({"prompt"})
 
-    async def complete(self, spec: ModelSpec, request: Request, api_key: str | None) -> Any:
+    async def complete(self, spec: Endpoint, request: Request, api_key: str | None) -> Any:
         return RawCompletion(text="ok", model=spec.model, finish_reason="stop")
 
 

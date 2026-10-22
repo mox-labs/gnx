@@ -28,8 +28,8 @@ from pydantic import BaseModel, ConfigDict
 from hardline.adapters._out._options import option_problems, read_options
 from hardline.domain.errors import BackendError, Reason
 from hardline.domain.types import (
+    Endpoint,
     FinishReason,
-    ModelSpec,
     RawCompletion,
     Request,
     ToolCall,
@@ -73,14 +73,14 @@ class MockBackend:
     structured_modes = frozenset({"prompt", "json_object", "json_schema"})
     supports_tools = True
 
-    def check(self, spec: ModelSpec) -> list[str]:
+    def check(self, spec: Endpoint) -> list[str]:
         return option_problems(_Options, spec)
 
     def __init__(self) -> None:
         self._cursor: dict[str, int] = {}
 
     async def complete(
-        self, spec: ModelSpec, request: Request, api_key: str | None
+        self, spec: Endpoint, request: Request, api_key: str | None
     ) -> RawCompletion:
         call = self._cursor.get(spec.name, 0) + 1  # this call's ordinal, before _pick counts it
         last_user = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
@@ -115,7 +115,7 @@ class MockBackend:
             request_id=f"mock-{spec.name}-{call}",
         )
 
-    def _pick(self, spec: ModelSpec, request: Request, last_user: str) -> str | _ScriptedToolCalls:
+    def _pick(self, spec: Endpoint, request: Request, last_user: str) -> str | _ScriptedToolCalls:
         opts = read_options(_Options, spec)
         if opts.script:
             i = self._cursor.get(spec.name, 0)

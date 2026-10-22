@@ -343,10 +343,14 @@ and two of hardline's: `shared_fate` (a warning) and `secret_unresolved`.
 ## Extend
 
 A backend is two members — a `structured_modes` frozenset that holds `prompt`, and an async
-`complete(spec, request, api_key) -> RawCompletion` — and one entry point. Three more are
+`complete(endpoint, request, api_key) -> RawCompletion` — and one entry point. An `Endpoint` is
+the registry row as a backend sees it: `name`, `backend`, `model`, `provider`, `base_url`,
+`proxy`, `timeout_s`, `structured`, `options`, and `has_key` (whether the row names a key). The
+runtime's retries, fallbacks and limits, the row's family and where its key lives are not in
+it; the key, resolved, is `api_key`. `ModelSpec.endpoint()` makes one. Four more members are
 optional:
 
-- `check(spec) -> Sequence[str]`: what is wrong with a row for this backend, each problem
+- `check(endpoint) -> Sequence[str]`: what is wrong with a row for this backend, each problem
   starting with its key (`options.region: ...`). The runtime calls it for every row when it is
   built, so a row that would fail its first call fails composition and `hardline check`.
 - `aclose()`: closes the connections opened in the running loop. A runtime's `aclose()` calls it.

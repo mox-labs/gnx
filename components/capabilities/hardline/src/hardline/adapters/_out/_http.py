@@ -44,7 +44,7 @@ from hardline.domain.errors import BackendError, ConfigError
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from hardline.domain.types import ModelSpec
+    from hardline.domain.types import Endpoint
 
 #: What carries a request: the network, or a test's ``httpx2.MockTransport``. A backend names it
 #: by this name, so httpx2 is named in this file alone.
@@ -73,11 +73,11 @@ def network_transport(proxy: str | None = None) -> httpx2.AsyncBaseTransport:
     )
 
 
-def client_timeout(spec: ModelSpec) -> httpx2.Timeout:
+def client_timeout(spec: Endpoint) -> httpx2.Timeout:
     return httpx2.Timeout(spec.timeout_s)
 
 
-def location_problems(spec: ModelSpec) -> list[str]:
+def location_problems(spec: Endpoint) -> list[str]:
     """``base_url: ...`` when the row's location is missing or not an http(s) URL."""
     if not spec.base_url:
         return [
@@ -122,7 +122,7 @@ class Http:
     async def aclose(self) -> None:
         await self._clients.aclose()
 
-    def _client(self, spec: ModelSpec, base_url: str) -> httpx2.AsyncClient:
+    def _client(self, spec: Endpoint, base_url: str) -> httpx2.AsyncClient:
         return self._clients.get(
             (base_url, spec.timeout_s, spec.proxy),
             lambda: httpx2.AsyncClient(
@@ -140,7 +140,7 @@ class Http:
 
     async def post(
         self,
-        spec: ModelSpec,
+        spec: Endpoint,
         path: str,
         body: dict[str, Any],
         headers: Mapping[str, str],
@@ -196,7 +196,7 @@ class Http:
         return data
 
 
-def _redirected(spec: ModelSpec, path: str, response: httpx2.Response) -> ConfigError:
+def _redirected(spec: Endpoint, path: str, response: httpx2.Response) -> ConfigError:
     """A 3xx: the row's location is wrong, so a config error whose fix says where to point it.
     When the new location ends with the path asked for, the base it implies is the fix."""
     key = f"models.{spec.name}.base_url"

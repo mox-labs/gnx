@@ -23,8 +23,8 @@ from hardline_helpers import DictSecrets
 from hardline import (
     BackendError,
     Completion,
+    Endpoint,
     ModelRuntime,
-    ModelSpec,
     RawCompletion,
     Request,
     build_runtime,
@@ -207,7 +207,7 @@ async def test_aclose_reaches_every_backend_that_holds_connections() -> None:
         closed = 0
 
         async def complete(
-            self, spec: ModelSpec, request: Request, api_key: str | None
+            self, spec: Endpoint, request: Request, api_key: str | None
         ) -> RawCompletion:
             raise NotImplementedError
 

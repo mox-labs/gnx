@@ -16,6 +16,7 @@ from hardline_helpers import DictSecrets
 from hardline import (
     BackendError,
     ConfigError,
+    Endpoint,
     Message,
     ModelBackend,
     ModelSpec,
@@ -34,11 +35,12 @@ if TYPE_CHECKING:
 LOCAL = "http://127.0.0.1:9/v1"
 
 
-def _spec(**kw: Any) -> ModelSpec:
+def _spec(**kw: Any) -> Endpoint:
+    """A registry row, as the runtime hands it to a backend."""
     base = {"name": "q", "backend": "openai-compat", "model": "m", "family": "qwen"}
     if kw.get("backend", base["backend"]) != "mock":
         base["base_url"] = LOCAL
-    return ModelSpec.model_validate({**base, **kw})
+    return ModelSpec.model_validate({**base, **kw}).endpoint()
 
 
 def _request(schema: dict[str, Any] | None = None) -> Request:

@@ -241,7 +241,7 @@ class ModelRuntime:
                 )
                 continue
             if isinstance(backend, CheckedBackend):
-                for found in backend.check(spec):
+                for found in backend.check(spec.endpoint()):
                     key, _, message = found.partition(": ")
                     problems.append(
                         Problem(path=f"{row}.{key}", kind="invalid_value", message=message)
@@ -666,7 +666,7 @@ class ModelRuntime:
     async def _attempt(self, spec: ModelSpec, request: Request) -> RawCompletion:
         backend = self._backends[spec.backend]
         api_key = self._secrets.resolve(spec.api_key) if spec.api_key else None
-        raw = await backend.complete(spec, request, api_key)
+        raw = await backend.complete(spec.endpoint(), request, api_key)
         if not isinstance(raw, RawCompletion):
             raise ContractError(
                 f"backend {spec.backend!r} returned {type(raw).__name__}, "

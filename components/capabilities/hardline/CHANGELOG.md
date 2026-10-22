@@ -30,6 +30,7 @@
 
 ### Changed (breaking)
 
+- **A backend is handed an `Endpoint`, not the whole `ModelSpec`.** `ModelBackend.complete(endpoint, request, api_key)` and `check(endpoint)` receive the registry row as a backend needs it (`name`, `backend`, `model`, `provider`, `base_url`, `proxy`, `timeout_s`, `structured`, `options`, and `has_key`), where every backend saw the runtime's retries, fallbacks and limits, the row's family and its key reference, and could come to depend on them. `ModelSpec.endpoint()` makes one; `answer_problems` still takes a row. New export: `Endpoint`.
 - **No provider SDK.** Both wire protocols are spoken directly over httpx2: `openai-compat` (chat completions) and `anthropic` (the Messages API). hardline depends on no provider SDK; the `openai` and `anthropic` packages are no longer installed with it.
 - **No `dev` extra.** hardline has no optional extras; the workspace's `dev` dependency group carries the test tools.
 - **A row's location comes from its config only.** With no `base_url`, the SDKs read `OPENAI_BASE_URL` or `ANTHROPIC_BASE_URL`, and the OpenAI client sent `OPENAI_ORG_ID` and `OPENAI_PROJECT_ID` as headers, so a row's key could go to a host no config named. Nothing reads them now. The composition root writes each backend's default (`https://api.openai.com/v1`, `https://api.anthropic.com`) into a row that names none, so `hardline models` and every row record where they send. A backend that serves one provider declares `default_base_url`.

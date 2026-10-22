@@ -56,7 +56,7 @@ from hardline.domain.types import AttemptFailed, FellBack, Problem, RawCompletio
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from hardline.domain.types import CallEvent, ModelSpec, Request
+    from hardline.domain.types import CallEvent, Endpoint, Request
 
 SCOPE = "hardline"
 
@@ -155,7 +155,7 @@ class TracedBackend:
         url = getattr(self._inner, "default_base_url", None)
         return url if isinstance(url, str) else None
 
-    def check(self, spec: ModelSpec) -> Sequence[str]:
+    def check(self, spec: Endpoint) -> Sequence[str]:
         check = getattr(self._inner, "check", None)
         return list(check(spec)) if callable(check) else []
 
@@ -165,7 +165,7 @@ class TracedBackend:
             await aclose()
 
     async def complete(
-        self, spec: ModelSpec, request: Request, api_key: str | None
+        self, spec: Endpoint, request: Request, api_key: str | None
     ) -> RawCompletion:
         common = {
             "gen_ai.operation.name": "chat",

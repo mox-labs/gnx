@@ -1,6 +1,6 @@
 """A backend's ``options``, read against the backend's own model.
 
-``ModelSpec.options`` is an open mapping because each backend reads different keys. Each
+A row's ``options`` is an open mapping because each backend reads different keys. Each
 backend therefore declares a pydantic model of the keys it reads, and both its ``check`` (at
 composition) and its call read the options through it, so a typo or a wrong value fails
 ``hardline check`` rather than the row's first call.
@@ -15,10 +15,10 @@ from pydantic import BaseModel, ValidationError
 from hardline.domain.errors import ConfigError
 
 if TYPE_CHECKING:
-    from hardline.domain.types import ModelSpec
+    from hardline.domain.types import Endpoint
 
 
-def option_problems(model: type[BaseModel], spec: ModelSpec) -> list[str]:
+def option_problems(model: type[BaseModel], spec: Endpoint) -> list[str]:
     """``options.<key>: <message>`` for each way ``spec.options`` fails ``model``."""
     try:
         model.model_validate(spec.options)
@@ -30,7 +30,7 @@ def option_problems(model: type[BaseModel], spec: ModelSpec) -> list[str]:
     return []
 
 
-def read_options[M: BaseModel](model: type[M], spec: ModelSpec) -> M:
+def read_options[M: BaseModel](model: type[M], spec: Endpoint) -> M:
     """``spec.options`` as ``model``, or a ConfigError naming the row and each bad key."""
     try:
         return model.model_validate(spec.options)

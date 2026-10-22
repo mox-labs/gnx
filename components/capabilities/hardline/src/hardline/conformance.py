@@ -36,8 +36,8 @@ def backend_problems(backend: object) -> list[str]:
 
     Required: ``structured_modes``, a frozenset of known modes that includes ``prompt`` (every
     backend serves the schema stated in an instruction; the runtime validates either way), and
-    an async ``complete(spec, request, api_key)``. Optional, and checked when present: a
-    callable ``check(spec)``, an async ``aclose()``, ``default_base_url``, an http(s) URL, and
+    an async ``complete(endpoint, request, api_key)``. Optional, and checked when present: a
+    callable ``check(endpoint)``, an async ``aclose()``, ``default_base_url``, an http(s) URL, and
     ``supports_tools``, a bool.
     """
     found: list[str] = []
@@ -55,10 +55,10 @@ def backend_problems(backend: object) -> list[str]:
         )
     complete = getattr(backend, "complete", None)
     if not inspect.iscoroutinefunction(complete):
-        found.append("complete: must be an async method complete(spec, request, api_key)")
+        found.append("complete: must be an async method complete(endpoint, request, api_key)")
     check = getattr(backend, "check", None)
     if check is not None and not callable(check):
-        found.append("check: present but not callable; check(spec) returns a row's problems")
+        found.append("check: present but not callable; check(endpoint) returns a row's problems")
     aclose = getattr(backend, "aclose", None)
     if aclose is not None and not inspect.iscoroutinefunction(aclose):
         found.append("aclose: present but not an async method")
@@ -76,8 +76,9 @@ def backend_problems(backend: object) -> list[str]:
 async def answer_problems(
     backend: object, spec: ModelSpec, api_key: str | None = None
 ) -> list[str]:
-    """What is wrong with one call of ``backend`` for ``spec``: its ``check`` must accept the
-    row, and ``complete`` must return a ``RawCompletion`` that says why the reply ended.
+    """What is wrong with one call of ``backend`` for the registry row ``spec``, handed to it as
+    ``spec.endpoint()``, as the runtime hands it: its ``check`` must accept the row, and
+    ``complete`` must return a ``RawCompletion`` that says why the reply ended.
 
     A reply with no ``finish_reason`` is a problem here though the port's type allows it: a
     caller can then never tell a whole answer from a cut one (``Completion.answered``).
@@ -87,11 +88,11 @@ async def answer_problems(
         return found
     check = getattr(backend, "check", None)
     if callable(check):
-        found.extend(f"check refused the row: {problem}" for problem in check(spec))
+        found.extend(f"check refused the row: {problem}" for problem in check(spec.endpoint()))
         if found:
             return found
     request = Request(messages=(Message(role="user", content="Say ok."),), max_tokens=16)
-    raw = await backend.complete(spec, request, api_key)  # type: ignore[attr-defined]
+    raw = await backend.complete(spec.endpoint(), request, api_key)  # type: ignore[attr-defined]
     if not isinstance(raw, RawCompletion):
         return [f"complete returned {type(raw).__name__}, not RawCompletion"]
     if raw.finish_reason is None:

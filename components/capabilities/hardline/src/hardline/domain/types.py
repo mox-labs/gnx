@@ -127,6 +127,34 @@ class CallLimits(BaseModel):
     tokens: int | None = Field(default=None, ge=1)
 
 
+class Endpoint(BaseModel):
+    """A registry row as a backend sees it: where one attempt is sent, and how.
+
+    It is what the ``ModelBackend`` port hands a backend, where the whole ``ModelSpec`` would
+    show it the runtime's policy (``retries``, ``fallbacks``, ``limits``), the row's ``family``
+    and where its key lives, none of which one attempt needs and any of which a backend could
+    come to depend on. The key itself is resolved by the runtime and handed to each call.
+    ``ModelSpec.endpoint()`` makes one.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The registry row's name, for messages and errors.
+    name: str = Field(pattern=_SLUG)
+    #: The backend's entry-point name, for messages and errors.
+    backend: str = Field(pattern=_SLUG)
+    model: str = Field(min_length=1)
+    provider: str | None = Field(default=None, pattern=_SLUG)
+    base_url: str | None = None
+    proxy: str | None = None
+    timeout_s: float = Field(default=120.0, gt=0.0)
+    structured: StructuredMode = "prompt"
+    options: dict[str, Any] = {}
+    #: Whether the row names a key reference. A backend that cannot run without a key says so
+    #: at composition; the reference itself stays with the runtime.
+    has_key: bool = False
+
+
 class ModelSpec(BaseModel):
     """One registry row: a model is configuration, not a class.
 
@@ -165,6 +193,22 @@ class ModelSpec(BaseModel):
     #: Bounds on a call that asks for this row, across its retries, fallbacks and repairs.
     limits: CallLimits = CallLimits()
     options: dict[str, Any] = {}
+
+    def endpoint(self) -> Endpoint:
+        """This row as a backend sees it: what one attempt needs, and nothing of the runtime's
+        policy or where the key lives."""
+        return Endpoint(
+            name=self.name,
+            backend=self.backend,
+            model=self.model,
+            provider=self.provider,
+            base_url=self.base_url,
+            proxy=self.proxy,
+            timeout_s=self.timeout_s,
+            structured=self.structured,
+            options=self.options,
+            has_key=self.api_key is not None,
+        )
 
     @field_validator("api_key")
     @classmethod

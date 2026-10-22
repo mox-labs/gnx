@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from hardline import (
     Completion,
     ConfigError,
+    Endpoint,
     Message,
     ModelSpec,
     RawCompletion,
@@ -67,8 +68,9 @@ class Wire:
         return httpx2.Response(200, json=self._body)
 
 
-def _spec(backend: str, base_url: str) -> ModelSpec:
-    return ModelSpec(name="q", backend=backend, model="m", family="x", base_url=base_url)
+def _spec(backend: str, base_url: str) -> Endpoint:
+    """A registry row, as the runtime hands it to a backend."""
+    return ModelSpec(name="q", backend=backend, model="m", family="x", base_url=base_url).endpoint()
 
 
 # --- the OpenAI chat-completions protocol --------------------------------------------------
@@ -304,7 +306,7 @@ class _Textual:
         self.sent: list[Request] = []
 
     async def complete(
-        self, spec: ModelSpec, request: Request, api_key: str | None
+        self, spec: Endpoint, request: Request, api_key: str | None
     ) -> RawCompletion:
         self.sent.append(request)
         return RawCompletion(text="t", model=spec.model, finish_reason="stop")
