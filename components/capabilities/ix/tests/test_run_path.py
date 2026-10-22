@@ -204,6 +204,40 @@ class TestTheRunStore:
             root.run(write_experiment(experiment()), exploratory=True)
 
 
+class TestAProcessSubjectsProgram:
+    def test_the_files_its_command_names_are_digested_and_an_edit_is_a_deviation(
+        self, write_experiment: Write
+    ) -> None:
+        """Regression: a process subject's command named its program and script by path,
+        and nothing digested them, so a registered run of an edited server was gated. Each
+        item of ``command`` that names a file, relative to ``cwd``, is now part of what was
+        tested; a program found on PATH and a plain argument are not files of the
+        experiment."""
+        data = experiment()
+        for subject in data["subjects"].values():
+            subject.update(command=["python3", "server.py", "--port", "1"], cwd="app")
+        file = write_experiment(data)
+        (file.parent / "app").mkdir()
+        (file.parent / "app" / "server.py").write_text("print('v1')\n")
+        root = Root(registry=fake_registry())
+        root.register(file)
+        report = root.run(file)
+        assert report.gated
+        named = {(c.entry, c.option, c.path, c.label) for c in report.contents}
+        assert named == {
+            (f"subjects.{name}", "command", "app/server.py", "file server.py")
+            for name in ("baseline", "candidate")
+        }
+
+        (file.parent / "app" / "server.py").write_text("print('v2')\n")
+        changed = root.deviations(file).deviations
+        assert {d.field for d in changed} >= {
+            "subjects.baseline.command[app/server.py]",
+            "subjects.candidate.command[app/server.py]",
+        }
+        assert not root.run(file).gated
+
+
 class TestWhereEachSettingCameFrom:
     def test_the_run_records_the_tier_that_set_each_setting_it_read(
         self, tmp_path: Path, write_experiment: Write

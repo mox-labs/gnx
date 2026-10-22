@@ -904,7 +904,9 @@ threshold, guardrails, control, repeats, seed, order, calibration, estimators, t
 and its parameters, the sensors), the digests of the probe set, the experiment and the
 plan, and the digest of each file and folder the subjects and sensors name: `skills`,
 `plugins` (each folder a `*` matches), `fixtures`, `definition`, `graders`, `rubric_file`,
-and any option a kind declares a `path` or `paths`.
+any option a kind declares a `path` or `paths`, and each item of a `command` (a process's
+`command`, relative to its `cwd`; a session's `setup`) that names a file: `[python3,
+server.py]` digests `server.py`.
 
 Digests are over meaning: a comment, key order or a default written out is not a change. A
 reworded `question` or `rationale` changes the experiment's digest and not the plan's. A

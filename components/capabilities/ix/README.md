@@ -345,7 +345,10 @@ threshold, guardrails, control, repeats, seed, order, calibration, estimators, t
 and its parameters, the sensors), with the digests of the probe set, the experiment and the
 plan, and the digest of each file and folder the subjects and sensors name: the skills,
 plugins (each folder a `*` matches), fixtures and agent `definition`, a sensor's `graders`
-or `rubric_file`, and any option a kind declares a `path` or `paths`.
+or `rubric_file`, and any option a kind declares a `path` or `paths`. A `command` (a
+`process` subject's, relative to its `cwd`; an agent session's `setup`) adds each item that
+names a file: `[python3, server.py]` digests `server.py`, and `["./proxy", --config,
+env/a.yaml]` the program and its config. A program found on PATH is not the experiment's.
 
 - What a skill, plugin or definition holds is what the verdict is about. An edit to one
   after registration is a deviation named by what changed (`skill review changed after

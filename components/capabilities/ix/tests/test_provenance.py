@@ -7,18 +7,19 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from ix.adapters._out.provenance import checkout, digest
+import pytest
+from pydantic import ValidationError
+
+from ix.adapters._out.provenance import checkout, contents, digest
 from ix.domain.experiment import Experiment
-from ix.domain.kind import check_options
+from ix.domain.kind import Kind, check_options
 from ix.domain.provenance import Content, Named, named_files
 from ix.domain.registration import Registration, deviations
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
     from ix.domain.kind import Kinds
 
@@ -92,6 +93,71 @@ class TestTheFilesAnExperimentNames:
         (problem,) = check_options(session, {"runtime": "mock", "skills": [{}]}, "s")
         assert (problem.path, problem.kind) == ("s.skills", "option_invalid")
         assert "a list of paths" in problem.message
+
+
+class TestTheFilesACommandNames:
+    def test_each_item_is_an_argument_relative_to_what_within_names(
+        self, builtin_kinds: Kinds, tmp_path: Path
+    ) -> None:
+        """The program and each argument are candidates, relative to ``cwd`` for a process
+        and to the experiment for a session's ``setup``; only those that name a file are
+        digested, never expanded, and a placeholder left unfilled is not a path."""
+        experiment = Experiment.model_validate(
+            {
+                "name": "commands",
+                "question": "Which is faster?",
+                "genre": "characterize",
+                "factors": {"port": [1, 2]},
+                "subjects": {
+                    "server": {
+                        "kind": "process",
+                        "command": ["./serve", "conf/*.yaml", "--port", "{port}", 8080],
+                        "cwd": "app",
+                    },
+                    "agent": {"kind": "agent-session", "runtime": "mock",
+                              "setup": ["python3", "seed.py"]},
+                },
+            }
+        )  # fmt: skip
+        named = named_files(experiment, builtin_kinds)
+        assert [(n.entry, n.option, n.path, n.noun, n.argument) for n in named] == [
+            ("subjects.server", "command", "app/serve", "program", True),
+            ("subjects.server", "command", "app/conf/*.yaml", "file", True),
+            ("subjects.server", "command", "app/--port", "file", True),
+            ("subjects.server", "command", "app/1", "file", True),
+            ("subjects.server", "command", "app/2", "file", True),
+            ("subjects.agent", "setup", "python3", "program", True),
+            ("subjects.agent", "setup", "seed.py", "file", True),
+        ]
+        _folder(tmp_path, {"app/serve": "#!/bin/sh\n", "app/conf/a.yaml": "x: 1\n",
+                           "seed.py": "print()\n"})  # fmt: skip
+        found = contents(named, str(tmp_path))
+        assert [(c.path, c.label) for c in found] == [
+            ("app/serve", "program serve"),
+            ("seed.py", "file seed.py"),
+        ]
+
+    def test_a_command_is_a_non_empty_list_of_text(self, builtin_kinds: Kinds) -> None:
+        process = builtin_kinds.get("subject", "process")
+        assert process is not None
+        for wrong in ([], "python3 server.py", [["nested"]], [True]):
+            options = {"command": wrong}
+            assert [p.kind for p in check_options(process, options, "subjects.s")] == [
+                "option_invalid"
+            ], wrong
+        assert check_options(process, {"command": ["./p", 80, 1.5, "{x}"]}, "subjects.s") == []
+
+    def test_within_names_an_option_and_only_a_command_has_one(self) -> None:
+        def kind(**option: Any) -> Kind:
+            return Kind.model_validate(
+                {"name": "acme.v1.subject.x", "summary": "x",
+                 "options": {"run": option, "dir": {"type": "string"}}}
+            )  # fmt: skip
+
+        assert kind(type="command", within="dir").options["run"].within == "dir"
+        for wrong in ({"type": "command", "within": "nowhere"}, {"type": "list", "within": "dir"}):
+            with pytest.raises(ValidationError, match="within"):
+                kind(**wrong)
 
 
 def test_a_registration_that_froze_no_contents_is_not_compared() -> None:

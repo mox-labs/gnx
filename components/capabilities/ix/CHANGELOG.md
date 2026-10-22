@@ -287,6 +287,14 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   holds each setting the run read (`ix.runs`, `matrix.observers`, `matrix.models`) with the
   config file that set it, `default`, or `given in code`; never the value. Before, only
   `matrix config --tool ix --sources` could say, and only for the config as it is now.
+- **A process subject's program is part of what was tested.** Its `command` named the
+  program and script by path, and nothing digested them, so a registered run of an edited
+  server was still gated. A new option type, `command` (a non-empty list of text, with
+  `within` naming the option its relative paths are relative to), digests each item that
+  names a file: `process`'s `command` (relative to `cwd`) and `agent-session`'s `setup`
+  (relative to the experiment) are now `command`s. An edit is a deviation (`file server.py
+  changed after registration`). A program found on PATH and an argument that names no file
+  are not digested, and `command: []` is refused at validate (it used to fail at preflight).
 
 ## 0.5.0 — 2026-10-19
 

@@ -69,8 +69,9 @@ YAML only and imports nothing.
 Probes not written inline are read from the `probes/` folder beside the experiment.
 `fixtures`, `skills`, `plugins`, `definition`, `graders` and `rubric_file` are read from
 where they point, relative to the experiment or absolute, as the user running ix, and so is
-any other option a kind declares a `path` or `paths`. `plan`, `register`, `deviations` and
-`run` read each of them, every file under a folder with links followed, to digest it. A
+any other option a kind declares a `path` or `paths`, and each item of a `command` (a
+`process` subject's `command`, an agent session's `setup`) that names a file. `plan`,
+`register`, `deviations` and `run` read each of them, every file under a folder with links followed, to digest it. A
 probe file's content goes into the probe set's digest; the plan prints probe ids and the
 digest, not the content. Of the files the subjects and sensors name, the registration and
 the run's record keep the path as written and the digest, never what the file holds. The registration is written beside the experiment file, under a name

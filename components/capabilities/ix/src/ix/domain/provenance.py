@@ -7,6 +7,13 @@ is what was tested, so its digest is frozen at registration and recorded with ea
 file is. An option holds files when its kind declares it a ``path`` or a list of
 ``paths``; :func:`named_files` lists them, and the composition root reads and digests them.
 
+A ``command`` (a program and its arguments) names files too, though not every item is one:
+``[python3, server.py, --port, "80"]`` runs the file ``server.py`` with the program
+``python3`` from PATH. Each item is relative to the directory the option's ``within`` names
+(a process's ``cwd``), and is digested when it names a file there: the program, when it is
+the experiment's (``./proxy``), and each file an argument names. A program found on PATH
+and an argument that names no file are not the experiment's.
+
 **The digest of a file** is the sha256 of its bytes. **The digest of a folder** is the
 sha256 of the sorted lines ``<path relative to the folder>\\0<digest of the file>\\n``,
 one for each file under it, links followed. Its contents and their relative paths count;
@@ -26,12 +33,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ix.domain.experiment import cells
-from ix.domain.kind import fill
+from ix.domain.kind import fill, placeholders
 from ix.domain.schema import Stored
 
 if TYPE_CHECKING:
     from ix.domain.experiment import Experiment
-    from ix.domain.kind import Kind, Kinds
+    from ix.domain.kind import Kind, Kinds, Option
 
 #: The option types whose values name files: one path, or a list of them.
 FILE_TYPES = frozenset({"path", "paths"})
@@ -44,12 +51,14 @@ UNDIGESTED = frozenset({".git", "__pycache__", ".DS_Store"})
 class Named:
     """A file or folder an option names: where the option is written (``subjects.agent``),
     the option (``skills``), the path as written (each ``{placeholder}`` filled for a cell),
-    and what one of the option's items is called (``skill``)."""
+    and what one of the option's items is called (``skill``). An item of a ``command`` is
+    an ``argument``: digested only when it names a file, and never expanded."""
 
     entry: str
     option: str
     path: str
     noun: str
+    argument: bool = False
 
 
 class Content(Stored):
@@ -101,11 +110,38 @@ def _paths(value: Any) -> list[str]:
     return found
 
 
+def _joined(directory: Any, item: str) -> str:
+    """``item`` relative to ``directory``, itself relative to the experiment; an absolute
+    item, or one in the experiment's own directory, as written."""
+    if item.startswith("/") or not isinstance(directory, str) or directory in ("", "."):
+        return item
+    return f"{directory.rstrip('/')}/{item.removeprefix('./')}"
+
+
+def _arguments(
+    entry: str, name: str, option: Option, written: list[Mapping[str, Any]]
+) -> list[Named]:
+    """Each item of a ``command`` option, as a path relative to the experiment."""
+    found: list[Named] = []
+    for options in written:
+        command = options.get(name)
+        if not isinstance(command, list | tuple):
+            continue
+        for index, item in enumerate(command):
+            if isinstance(item, str) and item and not placeholders(item):
+                path = _joined(options.get(option.within), item)
+                found.append(Named(entry, name, path, "program" if index == 0 else "file", True))
+    return found
+
+
 def _named(entry: str, kind: Kind | None, written: list[Mapping[str, Any]]) -> list[Named]:
     if kind is None:
         return []
     found: list[Named] = []
     for name, option in kind.options.items():
+        if option.type == "command":
+            found += _arguments(entry, name, option, written)
+            continue
         if option.type not in FILE_TYPES:
             continue
         noun = _noun(name, option.type == "paths")

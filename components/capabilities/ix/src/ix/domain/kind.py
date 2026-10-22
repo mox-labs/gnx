@@ -54,6 +54,7 @@ OptionType = Literal[
     "mapping",
     "path",
     "paths",
+    "command",
     "any",
 ]
 
@@ -173,6 +174,10 @@ class Option(Record):
     #: open (unlike ``allowed``, another value is accepted). A missing option's fix lists
     #: them, so an author picks one knowingly rather than inheriting a default.
     choices: dict[str, str] = {}
+    #: For a ``command``: the option that holds the directory its relative paths are
+    #: relative to (``cwd``), itself relative to the experiment. Absent: the experiment's
+    #: directory.
+    within: str = ""
     description: str = ""
 
 
@@ -220,6 +225,8 @@ class Kind(Record):
             unknown = sorted(set(option.required_when) - set(self.options))
             if unknown:
                 raise ValueError(f"{name} is required_when {unknown}, which are not options")
+            if option.within and (option.type != "command" or option.within not in self.options):
+                raise ValueError(f"{name} is within {option.within!r}: a command names an option")
         return self
 
     @property
@@ -271,9 +278,16 @@ def _fits(value: Any, option: Option) -> bool:
             ok = isinstance(value, str) and bool(value)
         case "paths":
             ok = isinstance(value, list | tuple) and all(map(_a_path, value))
+        case "command":
+            ok = isinstance(value, list | tuple) and bool(value) and all(map(_an_argument, value))
         case _:
             ok = True
     return ok and (not option.allowed or str(value) in option.allowed)
+
+
+def _an_argument(item: Any) -> bool:
+    """An item of a ``command``: a program or an argument, written as text or a number."""
+    return isinstance(item, str | int | float) and not isinstance(item, bool)
 
 
 def _a_path(item: Any) -> bool:
@@ -284,7 +298,10 @@ def _a_path(item: Any) -> bool:
 
 
 #: A type's name in a sentence, where it is not the name itself.
-_TYPE_WORDS = {"paths": "list of paths"}
+_TYPE_WORDS = {
+    "paths": "list of paths",
+    "command": "command: a program and its arguments, as a non-empty list of text",
+}
 
 _EXAMPLES = {
     "duration": ", such as 60s or 2m",

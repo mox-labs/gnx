@@ -632,8 +632,10 @@ class TestGenresAndKindsCommands:
         assert load["schema"] == "ix.v1.kind"
         assert load["options"]["duration"] == {
             "type": "duration", "required": True, "allowed": [], "required_when": {},
-            "choices": {}, "description": "how long the measured load lasts",
+            "choices": {}, "within": "", "description": "how long the measured load lasts",
         }  # fmt: skip
+        command = document["kinds"]["ix.v1.subject.process"]["options"]["command"]
+        assert (command["type"], command["within"]) == ("command", "cwd")
         runtime = document["kinds"]["ix.v1.subject.agent-session"]["options"]["runtime"]
         assert runtime["required"] and set(runtime["choices"]) == {"claude-sdk", "mock"}
         runtime = document["kinds"]["ix.v1.subject.model-call"]["options"]["runtime"]
