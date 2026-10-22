@@ -127,6 +127,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "extract_unresolved",
     "records_not_objects",
     "captures_unmatched",
+    # a table kept empty because the MCP tool or resource it reads answered with no content
+    "result_empty",
 )
 
 
@@ -254,7 +256,8 @@ class CollectionError(ReconError):
 class NoRecordsError(CollectionError):
     """A collector found nothing to keep, for a reason worth saying: an ``extract:`` that
     resolves to nothing in a response that is not empty, items that are not objects,
-    captures no filter kept. A source that had nothing says nothing; this is the other case.
+    captures no filter kept, a tool that answered with no content. A source that had nothing
+    says nothing; this is the other case.
 
     Raised before any record is yielded. The survey then keeps the table, empty, and warns
     with the message and ``fix`` as a ``problem_kind`` problem at ``collectors.<i>.<field>``;

@@ -14,7 +14,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from recon.application.captures import record_hook_payload
-from recon.application.plan import Plan, build_plan, plugin_warning
+from recon.application.plan import Plan, build_plan, fan_out, plugin_warning
 from recon.application.survey import EventCallback, Survey
 from recon.domain.archives import ARCHIVE_ID_FORMAT
 from recon.domain.deadline import Deadline
@@ -28,6 +28,7 @@ from recon.domain.documents import (
     PlanDocument,
     PlanWrites,
     QueryRows,
+    Required,
     StatusDocument,
     SurveyDocument,
     TableError,
@@ -151,10 +152,18 @@ class Recon:
     # --- plan and survey ----------------------------------------------------------------
 
     def plan(self, name: str, *, config: Path | None = None, replace: bool = False) -> PlanDocument:
-        """What a survey would do: every run with its effects, the files it would write.
-        Runs, fetches and writes nothing. Raises ConfigError listing every problem."""
+        """What a survey would do: every run with its effects, the files it would write, and
+        what the runs need of this host. Raises ConfigError listing every problem.
+
+        Writes nothing. Runs and fetches nothing either, unless a run's collector type
+        declares a ``preflight``: that type's collector is then built, asked what each of its
+        runs needs (an ``mcp`` type starts each stdio server a run names, and connects to each
+        remote one, to list its tools), and closed; ``preflight`` says what was done, and
+        ``requirements`` what was found."""
         _, plan, copy_to = self._prepare(name, config, replace)
         mission = self._missions.mission_dir(name)
+        assert plan.config is not None  # _prepare raises on an invalid plan
+        requirements, said, broken = self._preflight(mission, plan.config)
         return PlanDocument(
             mission=name,
             valid=plan.valid,
@@ -166,8 +175,53 @@ class Recon:
                 captures=bool(plan.config and plan.config.preserve_raw),
             ),
             problems=[p.document() for p in plan.problems],
-            warnings=[w.document() for w in plan.warnings],
+            warnings=[w.document() for w in plan.warnings + broken],
+            requirements=requirements,
+            runnable=all(required.holds for required in requirements),
+            preflight=said,
         )
+
+    def _preflight(
+        self, mission: Path, config: ReconConfig
+    ) -> tuple[list[Required], list[str], list[Problem]]:
+        """Ask the collector of each type that declares a preflight what each of its runs
+        needs: the requirements, each said once with the outputs that need it; what was done,
+        a sentence per type; and a warning for each type that could not be built or closed."""
+        types = {n: ct for n, ct in self._plugins.collector_types.items() if ct.preflight}
+        entries = [entry for entry in config.collectors if entry.type in types]
+        if not entries:
+            return [], [], []
+        said = [
+            f"{name}: {types[name].preflight}" for name in dict.fromkeys(e.type for e in entries)
+        ]
+        subset = config.model_copy(update={"collectors": entries})
+        built = self._build_collectors(
+            mission, subset, self._telemetry(None), Deadline(self._clock)
+        )
+        warnings = [plugin_warning(broken) for broken in built.failed]
+        merged: dict[tuple[str, bool, str, str], list[str]] = {}
+        catalog = {source.name: source for source in config.catalog}
+        try:
+            for entry in entries:
+                ask = built.requirements.get(entry.type)
+                if ask is None:
+                    continue
+                for source, output in fan_out(entry, catalog):
+                    target = (
+                        entry if output == entry.name else entry.model_copy(update={"name": output})
+                    )
+                    for found in ask(target, source):
+                        key = (found.need, found.holds, found.why, found.fix)
+                        needed_by = merged.setdefault(key, [])
+                        if output not in needed_by:
+                            needed_by.append(output)
+        finally:
+            warnings += [plugin_warning(broken) for broken in built.close()]
+        requirements = [
+            Required(need=need, holds=holds, why=why, fix=fix, needed_by=needed_by)
+            for (need, holds, why, fix), needed_by in merged.items()
+        ]
+        return requirements, said, warnings
 
     def survey(
         self,

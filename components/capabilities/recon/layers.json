@@ -53,12 +53,13 @@
     {
       "name": "collectors",
       "files": ["src/recon/adapters/_out/api_collector.py", "src/recon/adapters/_out/capture_collector.py",
-                "src/recon/adapters/_out/cli_collector.py", "src/recon/adapters/_out/web_collector.py"],
+                "src/recon/adapters/_out/cli_collector.py", "src/recon/adapters/_out/mcp_collector.py",
+                "src/recon/adapters/_out/web_collector.py"],
       "allow": ["*", "recon.domain", "recon.adapters._out.parsing",
                 "recon.adapters._out.user_agent", "recon.adapters._out.capture_files"],
       "forbid": ["yaml"],
       "why": {
-        "*": "each collector type's own technology: a child process for cli, nothing beyond the requester port for api and web",
+        "*": "each collector type's own technology: a child process for cli, the MCP client (fastmcp, the mcp SDK, jsonschema) for mcp, nothing beyond the requester port for api and web",
         "parsing, user_agent": "the shared helpers",
         "capture_files": "the capture collector reads the capture format through its one reader, so no second parser of the format exists"
       }
@@ -130,7 +131,11 @@
     {"name": "opentelemetry", "only": "src/recon/adapters/_out/otel_telemetry.py"},
     {"name": "markitdown", "only": "src/recon/adapters/_out/markitdown_converter.py"},
     {"name": "xmltodict", "only": "src/recon/adapters/_out/parsing.py"},
-    {"name": "rich_click", "only": "src/recon/adapters/_in/cli.py"}
+    {"name": "rich_click", "only": "src/recon/adapters/_in/cli.py"},
+    {"name": "fastmcp", "only": "src/recon/adapters/_out/mcp_collector.py"},
+    {"name": "mcp", "only": "src/recon/adapters/_out/mcp_collector.py"},
+    {"name": "mcp_types", "only": "src/recon/adapters/_out/mcp_collector.py"},
+    {"name": "jsonschema", "only": "src/recon/adapters/_out/mcp_collector.py"}
   ],
-  "single_importer_why": "one file per technology, each behind one port. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule"
+  "single_importer_why": "one file per technology, each behind one port; the MCP client is the mcp collector's alone, and it reaches httpx2 only through the SDK's own client. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule"
 }

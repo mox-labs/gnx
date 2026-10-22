@@ -45,7 +45,7 @@ def _survey(project: Path, clock: FixedClock, **extra: object) -> Path:
     archive, _ = run_survey(
         {**MISSION, **extra},
         project,
-        requester=lambda telemetry, deadline: requester,
+        requester=lambda telemetry, deadline, rate_limiter: requester,
         shell=shell,
         clock=clock,
     )

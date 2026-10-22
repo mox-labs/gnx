@@ -16,12 +16,19 @@ issues and pulls, and astral-sh/uv's releases, since cpython publishes none thro
 ``mcp-captures`` reads what a Claude Code hook captured, so its fixture is a ``PostToolUse``
 payload; none was recorded. Its ``tool_response`` is a list of MCP text content blocks, the
 shape the template's ``text`` column is written for.
+
+``mcp-server``'s fixture is a recording of the official filesystem server
+(``@modelcontextprotocol/server-filesystem`` 2026.8.31, over stdio, on 2026-10-22): the
+``directory_tree`` tool's input and output schemas and its answer for a small directory. The
+collector runs against ``tests/mcp_server.py --replay``, a stdio server that lists that tool
+and answers every call with that answer.
 """
 
 from __future__ import annotations
 
 import importlib.resources
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -31,13 +38,21 @@ import yaml
 from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.capture_collector import CaptureCollector
 from recon.adapters._out.capture_files import FilesystemCaptureLog
+from recon.adapters._out.mcp_collector import McpCollector
+from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.application.captures import record_hook_payload
+from recon.domain.collector import CollectorContext
+from recon.domain.deadline import Deadline
 from recon.domain.http import HttpResponse
 from recon.domain.models import CollectorEntry, SourceEntry
+from recon.domain.normalize import BUILTIN_TRANSFORMS
+from recon.domain.ratelimit import RateLimiter
+from recon.domain.telemetry import Telemetry
 from tests.recon_fakes import FixedClock
 
 FIXTURES = Path(__file__).parent / "fixtures" / "templates"
+REPLAY_SERVER = Path(__file__).parent / "mcp_server.py"
 
 #: What each template's ``{placeholder}``s held when its responses were recorded.
 RECORDED_WITH = {"github-audit": {"owner": "python", "repo": "cpython"}}
@@ -97,6 +112,8 @@ def _records(template: str, raw: dict[str, Any], fixture: Path, tmp_path: Path) 
             json.loads(fixture.read_text()),
         )
         return list(CaptureCollector(tmp_path).collect(entry, None))
+    if entry.type == "mcp":
+        return _replayed(entry, fixture, tmp_path)
     assert entry.type == "api", f"no fixture runner for a {entry.type} collector"
     [source] = [
         SourceEntry.model_validate(s) for s in config["catalog"] if s["name"] == entry.source
@@ -105,6 +122,30 @@ def _records(template: str, raw: dict[str, Any], fixture: Path, tmp_path: Path) 
     records = list(ApiCollector(requester, {}, DEFAULT_USER_AGENT).collect(entry, source))
     assert requester.urls, "the collector asked its source"
     return records
+
+
+def _replayed(entry: CollectorEntry, recording: Path, tmp_path: Path) -> list[Any]:
+    """The collector's records from a stdio server answering as the recorded one did."""
+    command = {"command": sys.executable, "args": [str(REPLAY_SERVER), "--replay", str(recording)]}
+    source = SourceEntry.model_validate({"name": entry.source, "type": "mcp", **command})
+    clock = SystemClock()
+    ctx = CollectorContext(
+        requester=None,  # type: ignore[arg-type]
+        converter=None,  # type: ignore[arg-type]
+        shell=None,  # type: ignore[arg-type]
+        telemetry=Telemetry([], clock),
+        deadline=Deadline(clock),
+        rate_limiter=RateLimiter(clock),
+        transforms=BUILTIN_TRANSFORMS,
+        mission_dir=tmp_path,
+        env={},
+        user_agent=DEFAULT_USER_AGENT,
+    )
+    collector = McpCollector(ctx)
+    try:
+        return list(collector.collect(entry, source))
+    finally:
+        collector.close()
 
 
 @pytest.mark.parametrize(("template", "entry"), _normalized())

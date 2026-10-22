@@ -51,9 +51,11 @@ EVENT_SCHEMA = "recon.v1.event"
 SURVEY = "recon.survey"  # recon.mission, recon.archive; at its end recon.tables, .failed, .records
 COLLECT = "recon.collect"  # recon.table, .collector, .collector.type, .source?; end: .records
 HTTP_REQUEST = "recon.http.request"  # the HTTP client span attributes, semconv v1.44.0
+MCP_CALL = "recon.mcp.call"  # mcp.method.name, gen_ai.tool.name?, recon.source
 QUERY = "recon.query"  # recon.mission, recon.archive; at its end recon.rows
 
-#: OpenTelemetry's span kinds that recon uses: ``client`` for an outgoing HTTP request.
+#: OpenTelemetry's span kinds that recon uses: ``client`` for an outgoing HTTP request or an
+#: MCP call.
 SpanKind = Literal["internal", "client"]
 
 AttributeValue = str | bool | int | float

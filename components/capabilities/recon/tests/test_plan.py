@@ -111,7 +111,9 @@ class TestEveryProblemWithAPath:
         paths = _paths(plan)
         assert not plan.valid
         assert "unknown collector type 'ftp'" in paths["collectors.0.type"]
-        assert "api, capture, cli, web" in paths["collectors.0.type"], "names what is installed"
+        assert "api, capture, cli, mcp, web" in paths["collectors.0.type"], (
+            "names what is installed"
+        )
         assert "source 'nowhere' not in catalog" in paths["collectors.1.source"]
         assert "unknown transform $nope" in paths["collectors.2.normalize.t"]
         assert "collectors.3.method" in paths
@@ -640,8 +642,8 @@ class TestSourceKinds:
             "name_unknown",
             "git",
         )
-        assert problem.allowed == ("api", "local", "web")
-        assert "api, local, web" in problem.message
+        assert problem.allowed == ("api", "local", "mcp", "web")
+        assert "api, local, mcp, web" in problem.message
 
     def test_a_kind_an_installed_type_adds_plans(self, registry):
         from recon.domain.collector import CollectorType
@@ -656,3 +658,72 @@ class TestSourceKinds:
         }
         plan = build_plan(raw, Plugins(types, registry.transforms, []), {})
         assert plan.valid, plan.problems
+
+    def test_a_key_no_kind_takes_is_unknown_and_a_url_is_needed(self, registry):
+        """A kind with no settings of its own takes the shared keys alone, and needs url:, as
+        before the source's own keys were opened."""
+        raw = {
+            "catalog": [{"name": "s", "type": "api", "command": "x"}],
+            "collectors": [{"name": "c", "type": "api", "source": "s", "endpoint": "/x"}],
+        }
+        problems = {p.path: p for p in _plan(raw, registry).problems}
+        assert set(problems) == {"catalog.0.command", "catalog.0.url"}
+        assert problems["catalog.0.command"].kind == "unknown_key"
+        assert "rate_limit" in problems["catalog.0.command"].allowed
+        assert problems["catalog.0.url"].kind == "missing_key"
+
+    def test_a_kind_with_settings_of_its_own_is_judged_by_its_type(self, registry):
+        """A type that adds a kind can give it keys of its own (``source_settings``), say what
+        it needs of the shared ones (``check_source``) and name the variables it reads
+        (``source_env``): the plan validates, checks and warns through each."""
+        from pydantic import BaseModel, ConfigDict
+
+        from recon.application.collectors import declared_env
+        from recon.domain.collector import CollectorType
+        from recon.domain.errors import Problem
+
+        class DbSource(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+            path: str
+            password: str = ""
+
+        types = dict(registry.collector_types)
+        types["sqlite"] = CollectorType(
+            create=lambda ctx: None,
+            effects=None,
+            source_kinds=frozenset({"sqlite"}),
+            source_settings=DbSource,
+            check_source=lambda src: (
+                []
+                if src.settings["path"].endswith(".db")
+                else [Problem("path", "not a database file", fix="name a .db file")]
+            ),
+            source_env=lambda src: (
+                {src.settings["password"].removeprefix("env:"): "password"}
+                if src.settings.get("password", "").startswith("env:")
+                else {}
+            ),
+        )
+        plugins = Plugins(types, registry.transforms, [])
+        raw = {
+            "catalog": [
+                {"name": "ok", "type": "sqlite", "path": "a.db", "password": "env:DB_PW"},
+                {"name": "bad", "type": "sqlite", "path": "a.txt", "pasword": "x"},
+                {"name": "odd", "type": "sqlite", "path": "b.txt"},
+            ],
+            "collectors": [{"name": "c", "type": "sqlite"}],
+        }
+        plan = build_plan(raw, plugins, {})
+        problems = {p.path: p for p in plan.problems}
+        assert set(problems) == {"catalog.1.pasword", "catalog.2.path"}
+        assert problems["catalog.1.pasword"].kind == "unknown_key"
+        assert {"path", "password", "url"} <= set(problems["catalog.1.pasword"].allowed)
+        assert problems["catalog.2.path"].message == "not a database file"
+        assert not plan.complete, "a source its schema refused may hide more"
+        [warning] = [w for w in plan.warnings if w.kind == "env_unset"]
+        assert (warning.path, warning.got) == ("catalog.0.password", "DB_PW")
+
+        ok = {"catalog": raw["catalog"][:1], "collectors": raw["collectors"]}
+        config = build_plan(ok, plugins, {"DB_PW": "x"}).config
+        assert config is not None
+        assert declared_env(config, types) == {"sqlite": {"DB_PW"}}

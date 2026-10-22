@@ -30,6 +30,7 @@ collector plugin does at run time.
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -322,10 +323,11 @@ class TestLibrarySurface:
 
 def test_importing_recon_loads_no_adapter_and_wires_nothing() -> None:
     """``import recon`` builds no root; building one imports neither httpx2 nor DuckDB nor
-    markitdown, so planning and status never load them."""
+    markitdown nor the MCP client, so planning and status never load them."""
     code = (
         "import sys, recon\n"
-        "heavy = {'httpx2', 'duckdb', 'markitdown', 'yaml'}\n"
+        "heavy = {'httpx2', 'duckdb', 'markitdown', 'yaml', 'fastmcp', 'mcp', 'mcp_types',\n"
+        "         'jsonschema'}\n"
         "print(sorted(m for m in sys.modules if m.split('.')[0] in heavy "
         "or m == 'recon.composition'))\n"
         "from recon.composition import root\n"
@@ -335,6 +337,52 @@ def test_importing_recon_loads_no_adapter_and_wires_nothing() -> None:
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == ["[]", "[]"]
+
+
+#: The MCP client and what only it imports.
+MCP_CLIENT = frozenset({"fastmcp", "mcp", "mcp_types", "jsonschema"})
+
+_PROBE = (
+    "import atexit, sys\n"
+    "atexit.register(lambda: print(sorted({m.split('.')[0] for m in sys.modules} & HEAVY),\n"
+    "                              file=open('loaded.txt', 'w')))\n"
+    "sys.argv = ['recon', *sys.argv[1:]]\n"
+    "from recon.adapters._in.cli import main\n"
+    "main()\n"
+)
+
+
+@pytest.mark.parametrize(
+    "argv", [["--help"], ["init", "m", "-t", "mcp-captures"], ["capture", "m"]], ids=" ".join
+)
+def test_the_command_line_and_the_hook_route_never_load_the_mcp_client(
+    argv: list[str], tmp_path: Path
+) -> None:
+    """The MCP client is a dependency of every install (no extras), so it must cost nothing
+    where it is not used: ``recon --help`` and ``recon capture``, which a hook runs on every
+    tool call, load none of it."""
+    if argv[0] == "capture":
+        init = [
+            sys.executable,
+            "-c",
+            _PROBE.replace("HEAVY", "set()"),
+            "init",
+            "m",
+            "-t",
+            "mcp-captures",
+        ]
+        subprocess.run(init, cwd=tmp_path, check=True, capture_output=True)
+    payload = {"tool_name": "mcp__x__y", "tool_input": {}, "hook_event_name": "PostToolUse",
+               "tool_response": [{"type": "text", "text": "{}"}]}  # fmt: skip
+    result = subprocess.run(
+        [sys.executable, "-c", _PROBE.replace("HEAVY", repr(set(MCP_CLIENT))), *argv],
+        cwd=tmp_path,
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "loaded.txt").read_text().strip() == "[]"
 
 
 # --- the map: every module in a layer, and each rule biting ---------------------------------
@@ -385,10 +433,10 @@ def test_a_reach_across_adapter_families_is_found(
 
 
 def test_a_file_no_layer_claims_leaves_the_tree_unjudged(tree: Path) -> None:
-    (tree / "src" / "recon" / "adapters" / "_out" / "mcp_collector.py").write_text("x = 1\n")
+    (tree / "src" / "recon" / "adapters" / "_out" / "sql_collector.py").write_text("x = 1\n")
     report = check(MAP, tree)
     assert report.errors == [
-        "src/recon/adapters/_out/mcp_collector.py is scanned but no layer claims it"
+        "src/recon/adapters/_out/sql_collector.py is scanned but no layer claims it"
     ]
     assert report.exit_code == 2
 

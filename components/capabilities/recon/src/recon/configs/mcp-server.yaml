@@ -1,0 +1,52 @@
+# MCP server — call a server's tools and read its resources; each answer becomes a table.
+#
+# Demonstrates:
+#   • an mcp source: a stdio server recon starts (command:, args:, env:), or a remote one
+#     (url:, with token: or headers_helper:)
+#   • an mcp collector: a tool: with its arguments:, or a resource:
+#   • result: text, for a server that puts its JSON in its text content
+#
+# Starting a stdio server runs the program named here, with your user's rights: the same
+# trust as a cli collector's command. A remote server gets its own credential only.
+#
+# This mission reads a directory tree through the official filesystem server
+# (@modelcontextprotocol/server-filesystem, pinned), which npx downloads on first use; the
+# server may read the directory it is given, here the one recon runs in.
+#
+# Usage:
+#   recon init files --template mcp-server
+#   recon survey files --dry-run     # starts the server, lists its tools, checks each call
+#   recon survey files
+#   recon query files "SELECT name, type FROM tree"
+
+catalog:
+  - name: files
+    type: mcp
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "."]
+    timeout: 120          # the first start downloads the package
+    # A server that needs a credential gets it by reference, never written here:
+    # env:
+    #   GITHUB_TOKEN: env:GITHUB_TOKEN
+
+  # A remote server:
+  # - name: remote
+  #   type: mcp
+  #   url: https://example.com/mcp
+  #   token: env:EXAMPLE_MCP_TOKEN    # sent as Authorization: Bearer; or file:PATH
+
+collectors:
+  - name: tree
+    type: mcp
+    source: files
+    tool: directory_tree
+    arguments:
+      path: "."
+      excludePatterns: [".git", "node_modules", ".recon"]
+    # The server declares an output schema of one string, which holds the same JSON as its
+    # text content: result: text reads that JSON.
+    result: text
+    normalize:
+      name: name
+      type: type
+      children: "children.*.name"

@@ -1,6 +1,6 @@
 # Capture log format — `recon.v1.capture`
 
-A capture is one fetched response kept verbatim: an HTTP body, a command's stdout, or a result another process obtained. recon appends captures to a **capture log**. A `capture` collector reads capture logs back and normalizes their bodies, so any tool that writes this format can hand data to recon without recon fetching it.
+A capture is one fetched response kept verbatim: an HTTP body, a command's stdout, an MCP tool's or resource's result, or a result another process obtained. recon appends captures to a **capture log**. A `capture` collector reads capture logs back and normalizes their bodies, so any tool that writes this format can hand data to recon without recon fetching it.
 
 This page is the interface. It is versioned by the `schema` field; anything not written here is not part of it.
 
@@ -49,7 +49,7 @@ Another tool may write either kind, or a log anywhere else that a `capture` coll
 | `id` | string | yes | Unique within the log. recon writes a uuid4 hex. |
 | `source` | string or null | no | Where it came from: a catalog source name, or an MCP server name. |
 | `collector` | string | yes | What produced it: the output name of a recon collector, or a tool name. |
-| `kind` | string | yes | `http`, `cli`, `web` or `external`. |
+| `kind` | string | yes | `http`, `cli`, `web`, `mcp` or `external`. |
 | `request` | object | no | What was asked. Kind-specific (below). |
 | `status` | integer or null | no | HTTP status for `http`/`web`, exit code for `cli`, null when there is none. |
 | `content_type` | string | no | MIME type of the body, without parameters. Decides how the body is parsed. |
@@ -68,6 +68,7 @@ Another tool may write either kind, or a log anywhere else that a `capture` coll
 | `http` | `method`, `url` (with an `auth.param` query value redacted), and `body` for a JSON request body |
 | `web` | `method`, `url` |
 | `cli` | `commands` (each substituted command, in order), `cwd`, `exit_codes` |
+| `mcp` | `server` (the stdio command line, or the remote's URL with user information redacted) and `tool` with `arguments`, or `resource`. The body is the whole result as JSON (`content`, `structuredContent`, `isError`; a resource's `contents`), with every credential value the source resolved (its token, its helper's headers, the variables given to a stdio server) replaced by `«redacted by recon»` |
 | `external` | the Claude Code hook payload minus `tool_response`: `tool_name`, `tool_input`, `tool_use_id`, `session_id`, `cwd`, `hook_event_name`, `mcp_server`, …, as given (a credential the tool took as an argument included) |
 
 ## Writing rules

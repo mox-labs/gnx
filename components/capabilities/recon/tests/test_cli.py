@@ -852,12 +852,19 @@ class TestTemplatesAndInit:
     def test_every_template_plans_clean_but_for_its_placeholders(self, project):
         """A scaffold must not hand out a broken config. The only problems a template may
         have are the placeholders it asks the user to fill — and those must be caught by
-        the plan, not discovered as a 404 against `/repos/{owner}/...`."""
+        the plan, not discovered as a 404 against `/repos/{owner}/...`.
+
+        The configs are what is checked, so no preflight runs: ``mcp-server``'s would start
+        npx, which downloads its server."""
+        plugins = load_plugins()
+        for name, ct in list(plugins.collector_types.items()):
+            plugins.collector_types[name] = replace(ct, preflight="")
+        over = root(plugins=plugins)
         placeholder_templates = set()
         for item in _doc(_invoke("templates", "--json"))["templates"]:
             name = item["name"]
             assert _invoke("init", name, "-t", name).exit_code == 0
-            result = _invoke("survey", name, "--dry-run", "--json")
+            result = _invoke("survey", name, "--dry-run", "--json", over=over)
             if result.exit_code == 0:
                 continue
             problems = _error(result)["problems"]

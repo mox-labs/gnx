@@ -31,10 +31,11 @@ QUIET = Telemetry([], SystemClock())
 
 #: Ports to build collectors over that reach nothing: no test here sends a request.
 PORTS = CollectorPorts(
-    requester=lambda telemetry, deadline: ScriptedRequester({}),
+    requester=lambda telemetry, deadline, rate_limiter: ScriptedRequester({}),
     converter=None,  # type: ignore[arg-type]
     shell=PopenRunner(),
     user_agent=DEFAULT_USER_AGENT,
+    clock=SystemClock(),
 )
 
 
