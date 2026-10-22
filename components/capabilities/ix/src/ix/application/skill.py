@@ -976,7 +976,9 @@ the margin. Choose the comparison for the claim to be made.
   show it.
 - **The A/A check.** Where the genre calibrates, the control also runs against itself. If
   it differs from itself, or the check cannot be made, the run is `inconclusive` and
-  `analysis.reason` says why, whatever the variants did. It never widens an interval.
+  `analysis.reason` says which, whatever the variants did. A control that reads the same
+  number in both samples of every block held still, and passes. It never widens an
+  interval.
 - **Intervals are printed unadjusted**, at 95%; `allowed` is the level a decision was held
   to (the full 0.05 for `holds`, Holm's share for `fails`).
 """

@@ -426,7 +426,8 @@ def ratio(numerator: Sequence[float], denominator: Sequence[float]) -> Span:
     """Fieller's interval for ``mean(numerator) / mean(denominator)``, the two measured in the
     same blocks: the ratios ``R`` for which the t test of the paired values
     ``numerator - R * denominator`` does not reject a mean of zero. Unbounded (``-inf, inf``)
-    at a level where the denominator's own mean is not distinguishable from zero."""
+    at a level where the denominator's own mean is not distinguishable from zero. Two or
+    more pairs, not all equal on both sides."""
     n = len(numerator)
     df = n - 1
     x = math.fsum(numerator) / n

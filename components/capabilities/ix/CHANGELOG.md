@@ -43,6 +43,16 @@
   threshold outside (0, 1) as `invalid_value`. A rate threshold written in percent
   (`90%`) is still `unit_mismatch`, and its fix now says the share (`0.9`), not "a bare
   number".
+- **A/A with a control that reads the same every time.** A deterministic control (a size,
+  a count, a fixed suite's score) read the same number in both samples, the check found no
+  spread, could not be made, and made the run inconclusive with the reason "the environment
+  did not hold still enough". Such a control held still: the check passes. One whose second
+  sample reads the same amount off in every block differs from itself. A check that cannot
+  be made now says that nothing shows the environment held still, not that it moved.
+- **"No spread" in a relative comparison.** It was tested as exact proportionality between
+  the two sides, which constant readings such as 0.7 and 0.3 miss in binary; Fieller's
+  interval then had zero width and decided at a level of 0. It is now zero variance: every
+  block reading the same number on both sides decides nothing, as documented.
 
 ### Kept
 

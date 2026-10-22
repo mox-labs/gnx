@@ -480,9 +480,11 @@ every verdict.
    are unadjusted.
 5. **The A/A check.** Under A/A calibration the control runs twice in every block, and its
    second sample is compared with its first by the same method, at 1% shared out over every
-   such check. A control that differs from itself, or a check that cannot be made, makes
-   the run inconclusive and says why: the environment did not hold still enough to compare
-   in. The check never changes an interval.
+   such check. A control that reads the same in both samples of every block held still,
+   and passes. A control that differs from itself makes the run inconclusive: the
+   environment did not hold still enough to compare in. So does a check that cannot be
+   made, since nothing then shows that it did. The report says which. The check never
+   changes an interval.
 6. A subject that failed a trial of a cell fails that cell. In a comparison, a control that
    failed one makes the cell inconclusive instead, whatever the variant did. A model-judged
    metric never decides. ix's analyses take no parameters: a genre that gives one is warned
@@ -506,7 +508,7 @@ latest run: a margin below it will rarely hold. For a pass rate held to a thresh
 passing cannot show it (30 trials can never show a rate above 0.9; 35 can).
 
 Known limits: fewer than 3 usable blocks on a side decide nothing (6 for a median); every
-trial reading the same number decides nothing; a one-sample t interval under-covers on
+trial reading the same number (on both sides, in a comparison) decides nothing; a one-sample t interval under-covers on
 strongly skewed per-trial numbers (a median is the remedy); a relative difference has no
 bounded interval when the control's mean is not distinguishable from zero; a difference of
 two rates does not use the pairing, so it is wider than it might be; a rate whose rare

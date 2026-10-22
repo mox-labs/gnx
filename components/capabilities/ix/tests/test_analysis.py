@@ -695,6 +695,59 @@ class TestCountsMediansAndTheCheck:
         (check,) = found.calibration
         assert check.stable is None and "could not be made" in check.reason
         assert found.outcome == "inconclusive" and "could not be made" in found.reason
+        assert "did not hold still" not in found.reason  # nothing showed that it did not
+
+    @staticmethod
+    def _steady_control(tables: Tables, control: float, calibration: float) -> Tables:
+        """Every trial of the control reads ``control``, and of its second sample
+        ``calibration``, with no wobble; the variant keeps what it measured."""
+        steady = {"control": control, "calibration": calibration}
+        tables.readings = [
+            reading.model_copy(update={"statistics": {"p99": steady[reading.role]}})
+            if reading.role in steady
+            else reading
+            for reading in tables.readings
+        ]
+        return tables
+
+    def test_a_control_that_reads_the_same_in_both_samples_is_stable(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: a deterministic control (a size, a count, a fixed suite's score) read
+        the same number in both samples, the check found "no spread", could not be made,
+        and made the run inconclusive, saying the environment did not hold still."""
+        tables = _compare(compare_data, vocabulary, comparison="superiority", margin=None)
+        tables.measure({"buffered": 100.0, "streaming": 90.0})
+        found = self._steady_control(tables, 100.0, 100.0).analyze()
+        (check,) = found.calibration
+        assert check.stable is True and check.difference == 0.0 and check.reason == ""
+        assert found.outcome == "holds" and found.reason == ""
+
+    def test_a_control_whose_second_sample_reads_steadily_higher_differs_from_itself(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        tables = _compare(compare_data, vocabulary, comparison="superiority", margin=None)
+        tables.measure({"buffered": 100.0, "streaming": 90.0})
+        found = self._steady_control(tables, 100.0, 110.0).analyze()
+        (check,) = found.calibration
+        assert check.stable is False and check.difference == pytest.approx(10.0)
+        assert found.outcome == "inconclusive" and "differs from its own" in found.reason
+
+    @pytest.mark.parametrize(("control", "variant"), [(0.3, 0.7), (1.0, 3.0), (0.7, 0.3)])
+    def test_constant_readings_decide_nothing_whatever_their_ratio(
+        self, control: float, variant: float, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: "no spread" was tested as exact proportionality, ``a == ratio * b``,
+        which 0.7 and 0.3 miss in binary; Fieller's interval then had zero width and the
+        decision was made at a level of 0."""
+        found = (
+            _compare(compare_data, vocabulary, comparison="superiority", margin=None)
+            .measure({"buffered": control, "streaming": variant}, wobble=0.0)
+            .analyze()
+        )
+        (decision,) = found.findings[0].decisions
+        assert decision.outcome == "inconclusive" and "no spread" in decision.reason
+        assert decision.decided_at is None and decision.interval is None
 
 
 def test_a_run_whose_every_block_read_the_same_gives_no_spread(
