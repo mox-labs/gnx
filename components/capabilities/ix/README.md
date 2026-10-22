@@ -497,7 +497,9 @@ What the simulations show, on normal data, at the genres' minimum of 5 blocks an
 default of 10 (10,000 runs each): the 95% interval of a difference covers 94.7% of the
 time at both; a variant worse by exactly the margin holds 2.5% of the time (nominal 2.5%);
 a mean exactly on a threshold holds 2.4% and 2.8%; a stable environment fails the A/A check
-1.1% and 1.0% of the time (stated 1%).
+1.1% and 1.0% of the time (stated 1%). An error rate exactly on its threshold, over 1,000 or
+10,000 requests a trial whose failures cluster within trials, holds 1.9% to 3.9% of the time
+(4,000 runs each).
 
 What follows for two subjects that do not differ: under `superiority` the verdict is
 **inconclusive** (nothing was shown either way); under `non-inferiority` it **holds** once
@@ -515,7 +517,8 @@ trial reading the same number (on both sides, in a comparison) decides nothing; 
 strongly skewed per-trial numbers (a median is the remedy); a relative difference has no
 bounded interval when the control's mean is not distinguishable from zero; a difference of
 two rates does not use the pairing, so it is wider than it might be; a rate whose rare
-events come in bursts concentrated in a few trials is under-covered; Wilson's one-sided
+events come in bursts concentrated in a few trials is under-covered, and on its threshold
+holds up to 3.9% of the time where 2.5% is stated; Wilson's one-sided
 error oscillates with the number of trials, up to 3.9% where 2.5% is stated; the A/A check
 sees a shift, not every kind of instability; the memory peak is sampled, so a spike
 between two samples is missed.
