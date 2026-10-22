@@ -126,11 +126,14 @@ lab:
 # one, and it carries every runtime and telemetry: a check that builds each runtime with the
 # OTEL_* variables set, and expects no warning, fails on one an install lacks.
 #
-#   hardline  `models` and `check` of a registry with a local and a hosted row
+#   hardline  `models` and `check` of a registry with a local and a hosted row; `complete` of
+#             a row on the mock backend, a real call through the runtime that calls no model
 #   matrix    `check` and `plan` of a config with a mock agent and an agent step; `check` of
-#             one with every runtime (claude-sdk, pydantic-ai, hardline), asked for OTLP export
+#             one with every runtime (claude-sdk, pydantic-ai, hardline), asked for OTLP export;
+#             a `run` of a model step on hardline's mock backend, read back from the store
 #   ix        `validate`, `plan` and a dry run of examples/harness-integrity; `plan` of an
-#             agent session on claude-sdk, asked for console export
+#             agent session on claude-sdk, asked for console export; an exploratory `run` of a
+#             model-call experiment on a hardline row of the mock backend
 #   recon     a survey of a cli collector, then a query of the timestamp it collected
 #   gnx, dao  `--help`: their commands read this repository
 #
@@ -157,6 +160,10 @@ capabilities-standalone:
         > hardline.yaml
       SMOKE_KEY=unused hardline models --json | expect '{m["name"] for m in d["models"]} == {"local", "hosted"}'
       SMOKE_KEY=unused hardline check --json | expect 'd["ok"]'
+      printf '%s\n' 'models:' '  echo: {backend: mock, model: m, family: mock, options: {default: hello}}' \
+        > hardline.yaml
+      hardline complete echo "Say hello." --json \
+        | expect 'd["text"] == "hello" and d["finish_reason"] == "stop" and d["backend"] == "mock"'
     }
     smoke_matrix() {
       printf '%s\n' 'matrix:' '  agent_runtimes: {offline: {type: mock}}' \
@@ -174,6 +181,17 @@ capabilities-standalone:
         > runtimes.yaml
       OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9 matrix check --only runtimes.yaml --json \
         | expect 'd["ok"] and d["warnings"] == [] and d["agent_runtimes"] == ["claude", "loop"]'
+      printf '%s\n' 'matrix:' '  model_runtimes: {calls: {type: hardline}}' \
+        '  models: {models: {echo: {backend: mock, model: m, family: mock, options: {default: hello}}}}' \
+        '  inputs: [smoke.v1.name]' '  components:' \
+        '    - {name: greet, type: matrix.v1.model-step,' \
+        '       config: {runtime: calls, model: echo, inputs: {name: smoke.v1.name}, prompt: "Greet {name}."}}' \
+        > model.yaml
+      echo '"Ada"' > names.jsonl
+      matrix run --only model.yaml --input smoke.v1.name=names.jsonl --json > run.json
+      expect 'd["status"] == "completed" and d["tables"]["matrix.v1.model-call"]["rows"] == 1' < run.json
+      # The row the step recorded, read back from the run's store.
+      expect '[json.loads(row)["text"] for row in open(d["location"] + "/matrix.v1.model-call.jsonl")] == ["hello"]' < run.json
     }
     smoke_ix() {
       cp -R "$examples/harness-integrity" .
@@ -188,6 +206,15 @@ capabilities-standalone:
         'primary: {metric: text_matched}' 'threshold: {op: ">=", value: 0.5}' > on-claude/experiment.yaml
       OTEL_TRACES_EXPORTER=console OTEL_METRICS_EXPORTER=none ix plan on-claude --json \
         | expect 'd["runnable"] and d["warnings"] == []'
+      printf '%s\n' 'models:' '  echo: {backend: mock, model: m, family: mock, options: {default: hello}}' \
+        > hardline.yaml
+      mkdir on-model
+      printf '%s\n' 'name: on-model' 'question: Does the model say hello?' 'genre: evaluate' \
+        'subjects:' '  it: {kind: model-call, runtime: hardline, model: echo}' \
+        'probes:' '  - {id: ask, kind: prompt, prompt: "Say hello."}' \
+        'sensors:' '  - {kind: text-match, contains: hello}' \
+        'primary: {metric: text_matched}' 'threshold: {op: ">=", value: 0.5}' > on-model/experiment.yaml
+      ix run on-model --exploratory --json | expect 'd["status"] == "completed" and d["simulated"] == "none" and [(e["metric"], e["value"]) for e in d["analysis"]["estimates"]] == [("text_matched", 1.0)]'
     }
     smoke_recon() {
       printf '%s\n' 'collectors:' '  - name: releases' '    type: cli' '    run: |' \
