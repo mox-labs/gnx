@@ -130,7 +130,8 @@ lab:
 #             one with every runtime (claude-sdk, pydantic-ai, hardline), asked for OTLP export
 #   ix        `validate`, `plan` and a dry run of examples/harness-integrity; `plan` of an
 #             agent session on claude-sdk, asked for console export
-#   recon     a survey of a cli collector, then a query of the timestamp it collected
+#   recon     a survey of a cli collector, then a query of the timestamp it collected, as
+#             a TIMESTAMP WITH TIME ZONE (which needs pytz)
 #   gnx, dao  `--help`: their commands read this repository
 #
 # ix depends on this repository's matrix, never PyPI's unrelated `matrix`: its venv is given
@@ -193,8 +194,10 @@ capabilities-standalone:
         "      echo '{\"tag\": \"v1\", \"published\": \"2026-03-15T18:42:31Z\"}'" > mission.yaml
       recon init smoke -c mission.yaml --json | expect 'd["outcome"] == "created"'
       recon survey smoke --json | expect 'd["status"] == "ok" and d["tables"][0]["records"] == 1'
-      recon query smoke "SELECT typeof(published) AS t FROM releases" --json \
-        | expect 'd["rows"] == [{"t": "TIMESTAMP"}]'
+      # A TIMESTAMP WITH TIME ZONE's value, which DuckDB returns through pytz: typeof()
+      # alone would pass without it.
+      recon query smoke "SELECT published::TIMESTAMPTZ AS t FROM releases" --json \
+        | expect 'd["rows"][0]["t"].startswith("2026-03-15T")'
     }
     smoke_gnx() { gnx --help >/dev/null; }
     smoke_dao() { dao --help >/dev/null; }
