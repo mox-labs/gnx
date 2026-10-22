@@ -134,7 +134,8 @@ refused by `ix validate` (`truth_unclaimed`), so a misspelt key does not pass si
 
 A probe's options go under `options:` in its file: `collect` (files the agent writes,
 read back and kept for grading), `feedback` (the tests a test-feedback loop shows),
-`mock_response` (the reply the `mock` runtime gives) and `timeout` (600s when absent).
+`mock_response` (the reply the `mock` runtime gives) and `timeout` (600s when absent; a
+session that runs past it fails the trial as the subject's, `overran`, never missing data).
 
 ## 4. The metric that decides
 

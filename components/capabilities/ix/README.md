@@ -397,7 +397,7 @@ nothing under `--json`); the report goes to stdout.
   `Runnable: no` beforehand; they depend on the host, so they do not stop `ix register`.
 - **Failures have an owner.** A trial the subject failed (it exited, it was not up in time,
   it answered no request successfully, it returned a different body; an agent session that
-  broke or was refused) counts against the subject. A trial the harness failed (k6 missing
+  broke, was refused or ran past its probe's `timeout`) counts against the subject. A trial the harness failed (k6 missing
   or broken, no request sent, a timeout, a stop request, an environment that went down, a
   model runtime that was unavailable, rate-limited or refused its credentials) is missing
   data. Latency, time to first byte and throughput count only the requests the subject

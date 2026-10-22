@@ -954,10 +954,11 @@ then the report (`ix.v1.report`) on stdout.
   {EXIT_CODES["simulated"]} (`simulated`), never {EXIT_CODES["ok"]}.
   `ix runs` lists each run as `gated`, `exploratory` or `dry`.
 - **Failures have an owner.** A trial the *subject* failed (it died, it was not up in
-  time) counts against the subject. A trial the *harness* failed (a tool broke, a timeout,
-  an environment that went down) is missing data; an environment that went down also ends
-  the run (exit {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be
-  taken. The report counts each. A subject too slow for an open model's rate is measured,
+  time, an agent session ran past its probe's `timeout`) counts against the subject. A
+  trial the *harness* failed (a tool broke, a timeout, an environment that went down) is
+  missing data; an environment that went down also ends the run (exit
+  {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be taken. The
+  report counts each. A subject too slow for an open model's rate is measured,
   not dropped.
 
 ## Reading a verdict
@@ -1016,7 +1017,8 @@ probes and a metric. What makes it one is the kinds.
   frontmatter key but `id`, `kind`, `options` and `effects` is the truth sensors read
   (it never reaches the agent). Probe options, under `options:` in a file: `collect`
   (files the agent writes, kept for grading), `feedback` (tests a test-feedback loop shows
-  the agent), `mock_response` (the reply the `mock` runtime gives), `timeout` (600s).
+  the agent), `mock_response` (the reply the `mock` runtime gives), `timeout` (600s): a
+  session that runs past it fails the trial as the subject's (`overran`).
   An option written beside the truth is truth, which the probe never sees: validate says
   so (`truth_unclaimed`) and shows where it goes. `probes/review-ask.md`:
 

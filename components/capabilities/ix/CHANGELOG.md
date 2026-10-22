@@ -60,6 +60,13 @@
   `exit-codes.json` asks), and the report, `ix runs` and `RunSummary` say it was not
   `gated` (`RunRecord.gated` and `RunRecord.stood_in` decide both). `--exploratory` and
   `--dry-run` still exit 0: no gate was asked for.
+- **An agent session that runs past its probe's `timeout` is the subject's failure**
+  (`overran`), not a harness timeout. As missing data, an agent that hung on its hard
+  probes had exactly those trials left out, and its pass rate was computed over the probes
+  it finished: hanging on one probe of two and passing the other held `>= 0.8`. A runtime's
+  own `timeout` reason (a provider that did not answer) stays the harness's; ix's harness
+  timeout is now a backstop 30 s past the session's limit, for a session that does not
+  stop when its time is up.
 
 ### Kept
 

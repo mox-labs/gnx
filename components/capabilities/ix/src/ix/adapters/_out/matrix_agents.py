@@ -36,8 +36,11 @@ puts the session on ``mock`` for a dry run, setting the SDK's options aside.
 **Whose failure.** A session the runtime could not run for reasons that are not the
 agent's (``unavailable``, ``rate_limited``, ``timeout``, ``auth``, ``incapable``: the port's
 infrastructure reasons) is the harness's; one that ran and broke, or that the model refused,
-is the subject's. A fixture that cannot be copied, or a setup command that fails, is the
-harness's: the apparatus failed, not the agent.
+is the subject's. So is one that runs past its probe's ``timeout`` (``overran``), as a
+subject not up in time is: the limit is the experiment's, set on the agent, and an agent
+that hangs on its hard probes must not have exactly those trials left out. A fixture that
+cannot be copied, or a setup command that fails, is the harness's: the apparatus failed,
+not the agent.
 """
 
 from __future__ import annotations
@@ -70,6 +73,10 @@ if TYPE_CHECKING:
 
 #: How long one session (every round of it) may take when the probe does not say.
 SESSION_TIMEOUT_S = 600.0
+
+#: How long past a session's own limit the run waits for the probe to give up, before it
+#: records a harness timeout: a session that does not stop when its time is up.
+BACKSTOP_S = 30.0
 
 #: How long a subject's ``setup`` command may take.
 SETUP_TIMEOUT_S = 300.0
@@ -648,7 +655,7 @@ class PromptProbe:
         self._sessions = sessions
 
     def budget_s(self, options: Mapping[str, Any]) -> float | None:
-        return seconds(options.get("timeout")) or SESSION_TIMEOUT_S
+        return _limit(options) + BACKSTOP_S
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """The probe as it is: a stand-in replies with its ``mock_response``."""
@@ -663,12 +670,21 @@ class PromptProbe:
         session = self._sessions[str(target.facets["agent"])]
         prompt = str(options["prompt"])
         canned = options.get("mock_response")
+        limit = _limit(options)
+        deadline = asyncio.timeout(limit)
         try:
-            rounds = await session.ask(
-                prompt,
-                canned=None if canned is None else str(canned),
-                feedback=options.get("feedback"),
-            )
+            async with deadline:
+                rounds = await session.ask(
+                    prompt,
+                    canned=None if canned is None else str(canned),
+                    feedback=options.get("feedback"),
+                )
+        except TimeoutError as error:
+            if not deadline.expired():
+                raise _owned(error) from error
+            raise SubjectError(
+                "overran", f"the session ran past its time limit of {limit:g}s"
+            ) from error
         except Exception as error:
             raise _owned(error) from error
         last = rounds[-1].response
@@ -700,6 +716,11 @@ class PromptProbe:
             "simulated": session.simulated,
         }
         return {"response": response, "usage": usage}
+
+
+def _limit(options: Mapping[str, Any]) -> float:
+    """How long one session (every round of it) may take: the probe's ``timeout``."""
+    return seconds(options.get("timeout")) or SESSION_TIMEOUT_S
 
 
 def _owned(error: BaseException) -> Exception:

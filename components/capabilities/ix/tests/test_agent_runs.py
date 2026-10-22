@@ -7,6 +7,7 @@ third party would register one: nothing here calls a model.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -319,6 +320,59 @@ class TestTheHarnessCannotHideTheAgent:
             ("subjects.agent.permission_mode", "option_inapplicable"),
         }
         assert all("remove 'permission_mode' and 'skills'" in p.fix for p in found.problems)
+
+
+class Hanging(Scripted):
+    """A runtime whose agent never finishes a task that asks for something hard, and
+    answers every other one at once."""
+
+    async def run(self, definition: matrix.AgentDefinition, task: str) -> matrix.AgentResponse:
+        if "hard" in task:
+            await asyncio.sleep(60)
+        return self.answer(task)
+
+
+class TestASessionThatOverrunsItsBudget:
+    def test_is_the_subjects_failure_not_missing_data(self, tmp_path: Path) -> None:
+        """Regression: a session that ran past its probe's ``timeout`` was a harness timeout,
+        so missing data: an agent that hung on its hard probes had exactly those trials
+        left out, and its pass rate was computed over the probes it finished. Here it hangs
+        on one probe of two and passes the other, and ``>= 0.8`` held."""
+        registry = matrix.default_registry(discover=False)
+        register(registry)
+
+        def build() -> Hanging:
+            runtime = Hanging()
+            runtime.answer = lambda task: matrix.AgentResponse(
+                content=task, num_turns=1, stop="completed", family="scripted", model="s-1"
+            )
+            return runtime
+
+        registry.register("runtime", "acme.v1.runtime.hanging", build, effects={"model"})
+        data = {
+            "name": "hangs",
+            "question": "Does the agent answer each question?",
+            "genre": "evaluate",
+            "subjects": {"agent": {"kind": "agent-session", "runtime": "acme.v1.runtime.hanging"}},
+            "probes": [
+                {"id": probe, "kind": "prompt", "prompt": f"An {probe} question: say ok.",
+                 "timeout": "50ms", "truth": {"contains": "ok"}}
+                for probe in ("easy", "hard")
+            ],
+            "primary": {"metric": "text_matched"},
+            "threshold": {"op": ">=", "value": 0.8},
+            "repeats": 20,
+        }  # fmt: skip
+        lab = tmp_path / "hangs"
+        lab.mkdir()
+        (lab / "experiment.yaml").write_text(yaml.safe_dump(data))
+        report = Root(registry=registry, settings=_settings()).run(lab, exploratory=True)
+        assert report.indication == "fails"
+        assert [(f.owner, f.reason, f.count) for f in report.analysis.failures] == [
+            ("subject", "overran", 20)
+        ]
+        (finding,) = report.analysis.findings
+        assert finding.reason == "the subject failed 20 of 40 trial(s)"
 
 
 class TestADryRun:
