@@ -84,6 +84,9 @@ collector type is *handed*; it is not a sandbox. A plugin is Python in recon's p
 can import `os`, and a `cli` command's child process inherits recon's whole environment
 (boundary 1).
 
+An archive's `meta.yaml` names each variable the mission declares, `set` or `unset`, so a
+reader can see which credentials a survey ran with; it never holds a value.
+
 ### 3. Remote responses → local files
 
 Collected records are attacker-influenced data by definition. recon writes them as JSONL

@@ -37,7 +37,7 @@ from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import PopenRunner
 from recon.adapters._out.duckdb_query import DuckdbQuery
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
-from recon.adapters._out.mission_files import MissionFiles, project_root
+from recon.adapters._out.mission_files import MissionFiles, find_project
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
@@ -163,7 +163,8 @@ def root(
             sinks.insert(0, archives.event_log(archive))
         return Telemetry(sinks, clock)
 
-    missions = MissionFiles(project.resolve() if project else project_root(Path.cwd()), clock)
+    found, found_by = (project.resolve(), "argument") if project else find_project(Path.cwd())
+    missions = MissionFiles(found, clock)
     return Recon(
         missions=missions,
         archives=archives,
@@ -176,6 +177,7 @@ def root(
         telemetry=telemetry,
         env=process_env,
         version=__version__,
+        root_found_by=found_by,
     )
 
 

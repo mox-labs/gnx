@@ -14,6 +14,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from recon.application.captures import record_hook_payload
+from recon.application.collectors import declared_env
 from recon.application.plan import Plan, build_plan, fan_out, plugin_warning
 from recon.application.survey import EventCallback, Survey
 from recon.domain.archives import ARCHIVE_ID_FORMAT
@@ -80,7 +81,11 @@ class Recon:
         telemetry: TelemetryFactory,
         env: Mapping[str, str],
         version: str,
+        root_found_by: str = "argument",
     ) -> None:
+        """``root_found_by`` is how the composition root found the project root:
+        ``argument`` (the caller named it), ``repository`` (the nearest ancestor holding
+        ``.git``) or ``working_directory``. Each survey records it."""
         self._missions = missions
         self._archives = archives
         self._query = query
@@ -90,6 +95,7 @@ class Recon:
         self._telemetry = telemetry
         self._env = env
         self._version = version
+        self._root_found_by = root_found_by
 
     # --- init ---------------------------------------------------------------------------
 
@@ -277,6 +283,7 @@ class Recon:
                     archive,
                     started=started,
                     config_sha256=hashlib.sha256(source.text).hexdigest(),
+                    resolved=self._resolved(plan.config),
                 )
             finally:
                 # Whatever the survey opened (a collector's session, the requester's
@@ -400,6 +407,15 @@ class Recon:
                 for t in meta["tables"]
             ],
         )
+
+    def _resolved(self, config: ReconConfig) -> dict[str, Any]:
+        """Where a survey's inputs came from: how the project root was found, and each
+        variable the mission declares, by name, ``set`` or ``unset``. Never a value."""
+        names = sorted(set().union(*declared_env(config, self._plugins.collector_types).values()))
+        return {
+            "root": self._root_found_by,
+            "env": {name: "set" if self._env.get(name) else "unset" for name in names},
+        }
 
     def query(self, name: str, sql: str, *, archive: str | None = None) -> QueryRows:
         """Run ``sql`` against the latest archive, or the one named. ``state`` says whether

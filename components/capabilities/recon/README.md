@@ -107,9 +107,11 @@ A survey in which any table failed still writes its archive (marked `.incomplete
 .recon/<mission>/archive/<timestamp>/
   <output>.jsonl       one table per collector × source; records exactly as normalized
   meta.yaml            format_version 2: recon version, config sha256, table_layout 1
-                       (this layout of the tables), and per table its type_url,
-                       records, status, seconds, error {kind, message, fix} (null for a
-                       table that succeeded)
+                       (this layout of the tables), resolved (how the project root was
+                       found: argument, repository or working_directory; each variable
+                       the mission declares, set or unset, never its value), and per
+                       table its type_url, records, status, seconds, error {kind,
+                       message, fix} (null for a table that succeeded)
   telemetry.jsonl      the survey's recon.v1.event lines (see Telemetry); not a table
   .incomplete          written first, removed once meta.yaml is written and every table
                        succeeded: a failed table, Ctrl-C, SIGTERM, a kill or a meta.yaml
