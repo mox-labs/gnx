@@ -262,7 +262,9 @@ defect included, is one line on stderr:
 `{"path", "kind", "message", "fix", "allowed", "got", "source"}`, with `source` the tier it came
 from. `details.reason` is the `BackendError` reason, with `retry_after` (the provider's hint in
 seconds) and `limit` (the one of the row's `limits` that stopped the call) when set. Without
-`--json`, stderr carries `hardline: error (<kind>): <message>` and the fix as prose.
+`--json`, stderr carries `hardline: error (<kind>): <message>` and the fix as prose, and what
+the library logs while the command runs (a broken backend plugin, say) as `hardline: warning:`
+lines; under `--json`, stderr holds the envelope and nothing else.
 
 | exit | `kind` | meaning | raised from |
 |---|---|---|---|

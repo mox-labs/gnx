@@ -12,7 +12,9 @@ exit code says what the caller's next move is, with the codes the capability CLI
 failure, a usage error and a defect included, is one line on stderr: the
 ``hardline.v1.error`` envelope those CLIs agree in ``error-envelope.json``,
 ``{"schema", "error": {"kind", "message", "fix", "complete", "problems", "details"}}``.
-Without it, stderr carries the same as prose. Data goes to stdout. Nothing prompts.
+Without it, stderr carries the same as prose, and what the library logs while a command runs as
+``hardline: warning:`` lines; under ``--json`` stderr holds the envelope alone. Data goes to
+stdout. Nothing prompts.
 """
 
 from __future__ import annotations
@@ -373,7 +375,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args
     try:
-        with _reported_here():
+        with _hardline_log(as_json):
             code = cli.main(args=args, prog_name="hardline", standalone_mode=False)
     except click.UsageError as e:
         return _report(_UsageError(e.format_message()), as_json)
@@ -388,22 +390,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     return code if isinstance(code, int) else EXIT_CODES["ok"]
 
 
-class _ReportedHere(logging.Filter):
-    """Drops a record the command reports itself: a registry warning (``check``'s ``warnings``)."""
+class _Warnings(logging.Handler):
+    """What the library logs while a command runs, said as ``hardline: warning:`` lines on
+    stderr. Under ``--json`` nothing is: stderr keeps to the one envelope a caller parses. A
+    registry warning the command reports itself (``check``'s ``warnings``) is not said twice."""
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        return not hasattr(record, "problem")
+    def __init__(self, as_json: bool) -> None:
+        super().__init__(logging.WARNING)
+        self._as_json = as_json
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not self._as_json and not hasattr(record, "problem"):
+            click.echo(f"hardline: warning: {record.getMessage()}", err=True)
 
 
 @contextmanager
-def _reported_here() -> Iterator[None]:
-    hardline_log = logging.getLogger("hardline")
-    reported = _ReportedHere()
-    hardline_log.addFilter(reported)
+def _hardline_log(as_json: bool) -> Iterator[None]:
+    log = logging.getLogger("hardline")
+    handler, propagate = _Warnings(as_json), log.propagate
+    log.addHandler(handler)
+    log.propagate = False
     try:
         yield
     finally:
-        hardline_log.removeFilter(reported)
+        log.removeHandler(handler)
+        log.propagate = propagate
 
 
 if __name__ == "__main__":

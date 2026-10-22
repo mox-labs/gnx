@@ -85,3 +85,29 @@ def test_the_cli_says_what_each_code_means_in_its_skill() -> None:
     skill = get_skill()
     for kind, code in EXIT_CODES.items():
         assert f"| {code} | `{kind}` |" in skill, kind
+
+
+def test_under_json_stderr_keeps_to_the_envelope(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A broken backend plugin no row names is logged as a warning when backends are found.
+    # Under --json that line would sit on stderr beside, or instead of, the one JSON line a
+    # caller parses; without --json it is said.
+    from importlib.metadata import entry_points
+
+    installed = list(entry_points(group="hardline.backends"))
+
+    class Broken:
+        name, value = "broken", "acme:Broken"
+
+        def load(self) -> Any:
+            raise ImportError("No module named 'acme'")
+
+    monkeypatch.setattr("hardline.composition.entry_points", lambda group: [*installed, Broken()])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "hardline.yaml").write_text("models:\n  q: {backend: mock, model: m, family: x}\n")
+    assert main(["models", "--json"]) == 0
+    assert capsys.readouterr().err == ""
+    assert main(["models"]) == 0
+    assert "broken" in capsys.readouterr().err
