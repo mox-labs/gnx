@@ -1,0 +1,43 @@
+{
+ "batchcomplete": "",
+ "continue": {
+  "sroffset": 3,
+  "continue": "-||"
+ },
+ "query": {
+  "searchinfo": {
+   "totalhits": 3551,
+   "suggestion": "turning machine",
+   "suggestionsnippet": "turning machine"
+  },
+  "search": [
+   {
+    "ns": 0,
+    "title": "Turing machine",
+    "pageid": 30403,
+    "size": 74571,
+    "wordcount": 9140,
+    "snippet": "Church&#039;s work intertwined with <span class=\"searchmatch\">Turing&#039;s</span> to form the basis for the Church–<span class=\"searchmatch\">Turing</span> thesis. This thesis states that <span class=\"searchmatch\">Turing</span> <span class=\"searchmatch\">machines</span>, lambda calculus, and other",
+    "timestamp": "2026-10-14T16:23:42Z"
+   },
+   {
+    "ns": 0,
+    "title": "Universal Turing machine",
+    "pageid": 71435,
+    "size": 22983,
+    "wordcount": 2987,
+    "snippet": "science, a universal <span class=\"searchmatch\">Turing</span> <span class=\"searchmatch\">machine</span> (UTM) is a <span class=\"searchmatch\">Turing</span> <span class=\"searchmatch\">machine</span> capable of computing any computable sequence, as described by Alan <span class=\"searchmatch\">Turing</span> in his seminal paper",
+    "timestamp": "2026-09-27T19:22:06Z"
+   },
+   {
+    "ns": 0,
+    "title": "Post–Turing machine",
+    "pageid": 3688147,
+    "size": 22542,
+    "wordcount": 2767,
+    "snippet": "&quot;Post–<span class=\"searchmatch\">Turing</span> program&quot; and &quot;Post–<span class=\"searchmatch\">Turing</span> <span class=\"searchmatch\">machine</span>&quot; were used by Martin Davis in 1973–1974 (Davis 1973, p. 69ff). Later in 1980, Davis used the name &quot;<span class=\"searchmatch\">Turing</span>–Post",
+    "timestamp": "2026-03-26T19:05:41Z"
+   }
+  ]
+ }
+}

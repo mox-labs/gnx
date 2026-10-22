@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/python/cpython/releases</id>
+  <link type="text/html" rel="alternate" href="https://github.com/python/cpython/releases"/>
+  <link type="application/atom+xml" rel="self" href="https://github.com/python/cpython/releases.atom"/>
+  <title>Release notes from cpython</title>
+  <updated>2026-10-21T05:55:12Z</updated>
+<entry>
+    <id>tag:github.com,2008:Repository/81598961/v3.15.1</id>
+    <updated>2026-10-21T05:55:12Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/python/cpython/releases/tag/v3.15.1"/>
+    <title>v3.15.1</title>
+    <content type="html">&lt;p&gt;Python 3.15.1&lt;/p&gt;</content>
+    <author>
+      <name>hugovk</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/1324225?s=60&amp;v=4"/>
+  </entry>
+<entry>
+    <id>tag:github.com,2008:Repository/81598961/v3.14.9</id>
+    <updated>2026-10-21T06:02:15Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/python/cpython/releases/tag/v3.14.9"/>
+    <title>v3.14.9</title>
+    <content type="html">&lt;p&gt;Python 3.14.9&lt;/p&gt;</content>
+    <author>
+      <name>hugovk</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/1324225?s=60&amp;v=4"/>
+  </entry>
+<entry>
+    <id>tag:github.com,2008:Repository/81598961/v3.13.17</id>
+    <updated>2026-10-21T13:48:20Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/python/cpython/releases/tag/v3.13.17"/>
+    <title>v3.13.17</title>
+    <content type="html">&lt;p&gt;Python 3.13.17&lt;/p&gt;</content>
+    <author>
+      <name>Yhg1s</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/3949752?s=60&amp;v=4"/>
+  </entry>
+</feed>

@@ -164,7 +164,7 @@ response_format: xml
 # "http://a9.com/-/spec/opensearch/1.1/" → "opensearch:" prefix
 ```
 
-`entry`, `author`, `link` and `category` are always lists, even with one element, so `author.*.name` works for a single author.
+`entry`, `author`, `link` and `category` are always lists, even with one element, so `author.*.name` works for a single author, and a path into one of them names its index: `link.0.@href`, `author.0.name` (`link.@href` resolves to nothing).
 
 Access XML attributes with `@` prefix: `"arxiv:primary_category.@term"`.
 
