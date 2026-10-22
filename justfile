@@ -10,7 +10,11 @@ set shell := ["bash", "-uc"]
 # Everything a commit must pass.
 check: docs-check secrets grammar payloads projection capabilities-lint
 
-# The CI gate (mirrors the hook; slow gates are added here as the CLI lands).
+# The hook's gates, the secret scan over all of history, and the slow ones. The capability
+# tests need k6 on PATH and a docker daemon with alpine:3.20 pulled; without them, the tests
+# that use them skip and the run fails.
+#
+# The CI gate: CI runs this recipe as it stands.
 ci: docs-check secrets-all grammar payloads projection recon-skill capabilities-test capabilities-lint capabilities-typecheck capabilities-standalone lab
 
 # `--project` not `--directory`: build reads ./components from the CWD, and

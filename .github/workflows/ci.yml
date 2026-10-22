@@ -7,16 +7,20 @@ on:
 
 # This repo's Actions policy is `allowed_actions: selected` with `sha_pinning_required`,
 # and the allowlist is vaani's — actions/*, dtolnay/rust-toolchain, the cargo-* family.
-# gnx needs just, uv, bun and gitleaks, none of which are on it. Every `uses:` must
+# gnx needs just, uv, bun, gitleaks and k6, none of which are on it. Every `uses:` must
 # therefore resolve to `actions/*`, pinned to a full commit SHA.
 #
 # So the toolchain installs from pinned release URLs with SHA256 verification instead.
 # That is a stronger position than an action reference, not a weaker one: the version and
 # the bytes are both fixed here, in a reviewed file, rather than behind a tag that can move.
 #
-# These four blocks are the intended body of a shared `mox-labs/ci/setup` composite action.
-# When that exists, this becomes one `uses:` and the pins live in one repo instead of
-# seventeen. Keep them in a shape that lifts cleanly.
+# These blocks are the intended body of a shared `mox-labs/ci/setup` composite action. When
+# that exists, this becomes one `uses:` and the pins live in one repo instead of in each.
+# Keep them in a shape that lifts cleanly.
+#
+# The gates themselves are the justfile's: the gate job installs the tools and runs
+# `just ci`, the recipe the pre-commit hook's `just check` is part of, so the two cannot
+# drift.
 
 permissions:
   contents: read
@@ -30,10 +34,20 @@ env:
   BUN_SHA256: "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f"
   GITLEAKS_VERSION: "8.30.1"
   GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  # ix's end-to-end CLI tests drive a real k6 against a real subject.
+  K6_VERSION: "1.8.1"
+  K6_SHA256: "b02cd649a0e391576909502e9b7760d3fb9e1fd14d179e3da18ee4a185f4c583"
+  # ix's live compose test starts this image and pulls nothing itself. Pinned by its index
+  # digest, then tagged with the name the test uses.
+  COMPOSE_TEST_IMAGE: "alpine:3.20"
+  COMPOSE_TEST_DIGEST: "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 
 jobs:
   gate:
     runs-on: ubuntu-latest
+    # A run takes minutes; a hang ends here, not at GitHub's six-hour limit. Each test is also
+    # bounded on its own (pytest-timeout).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -45,9 +59,9 @@ jobs:
         id: toolcache
         with:
           path: ~/.gnx-tools
-          key: gnx-tools-${{ runner.os }}-just${{ env.JUST_VERSION }}-uv${{ env.UV_VERSION }}-bun${{ env.BUN_VERSION }}-gitleaks${{ env.GITLEAKS_VERSION }}
+          key: gnx-tools-${{ runner.os }}-just${{ env.JUST_VERSION }}-uv${{ env.UV_VERSION }}-bun${{ env.BUN_VERSION }}-gitleaks${{ env.GITLEAKS_VERSION }}-k6${{ env.K6_VERSION }}
 
-      - name: toolchain (just, uv, bun, gitleaks — pinned + checksummed)
+      - name: toolchain (just, uv, bun, gitleaks, k6 — pinned + checksummed)
         run: |
           set -euo pipefail
           BIN="$HOME/.gnx-tools"
@@ -85,49 +99,35 @@ jobs:
             tar -xzf gitleaks.tar.gz gitleaks && mv gitleaks "$BIN/"
           fi
 
+          if [ ! -x "$BIN/k6" ]; then
+            fetch "https://github.com/grafana/k6/releases/download/v${K6_VERSION}/k6-v${K6_VERSION}-linux-amd64.tar.gz" \
+                  "$K6_SHA256" k6.tar.gz
+            tar -xzf k6.tar.gz --strip-components=1 "k6-v${K6_VERSION}-linux-amd64/k6" && mv k6 "$BIN/"
+          fi
+
           chmod +x "$BIN"/*
           echo "$BIN" >> "$GITHUB_PATH"
 
       - name: versions
-        run: just --version && uv --version && bun --version && gitleaks version
+        run: just --version && uv --version && bun --version && gitleaks version && k6 version
+
+      # The runner's docker, with its compose plugin, for ix's live compose test.
+      - name: docker compose and the compose test's image
+        run: |
+          set -euo pipefail
+          docker compose version
+          docker pull "alpine@${COMPOSE_TEST_DIGEST}"
+          docker tag "alpine@${COMPOSE_TEST_DIGEST}" "$COMPOSE_TEST_IMAGE"
 
       - name: install docsite deps
         run: cd docs/experience && bun install --frozen-lockfile
 
-      - name: docsite check (svelte-check + tsc)
-        run: just docs-check
-
-      # The gates `just ci` already declared but this workflow never ran. 407 tests and five
-      # --strict-clean packages are worth nothing if only a local pre-commit hook runs them.
-      - name: component grammar + payloads
-        run: just grammar payloads
-
-      - name: projection matches components/
-        run: just projection
-
-      - name: capability tests
-        run: just capabilities-test
-
-      - name: capability lint + typecheck
-        run: just capabilities-lint capabilities-typecheck
-
-      # Installs each capability ALONE, outside the workspace, from only its own
-      # declared dependencies — the `uv tool install` / `uvx` path. Every gate above
-      # runs inside the workspace, where the dev group supplies the union of all five
-      # packages' dependencies and an under-declared one cannot be seen.
-      - name: capability standalone install
-        run: just capabilities-standalone
-
-      # Every lab experiment validates and plans through the installed CLI, so its genres
-      # and kinds resolve through their entry points. Nothing is run here.
-      - name: lab experiments validate and plan
-        run: just lab
-
-      - name: secret scan (full history)
-        run: just secrets-all
+      - name: just ci
+        run: just ci
 
   commit-lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
