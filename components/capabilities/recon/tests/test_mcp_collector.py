@@ -568,7 +568,9 @@ def _replayed(project: Path, archive: Path, extract: str) -> list[dict[str, Any]
     from recon.domain.models import CollectorEntry
 
     log = str(archive / "captures.jsonl")
-    entry = CollectorEntry(name="again", type="capture", path=log, extract=extract)
+    entry = CollectorEntry.model_validate(
+        {"name": "again", "type": "capture", "path": log, "extract": extract}
+    )
     return list(CaptureCollector(project).collect(entry, None))
 
 
