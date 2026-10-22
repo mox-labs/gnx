@@ -1,12 +1,16 @@
 """MarkitdownConverter — DocumentConverter adapter using Microsoft's markitdown.
 
 Handles HTML, PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP, images (OCR),
-audio (transcription), YouTube URLs, and more. Installed via `markitdown[all]`
+audio (transcription), and more. Installed via `markitdown[all]`
 which pulls the format-specific plugins (pdfminer, python-docx, python-pptx,
 openpyxl, pillow, speechrecognition, yt-dlp, etc.).
 
 Lazy-imports markitdown so plain `import recon` stays fast, and builds it once per converter.
-A document is converted by the content type its server gave, not by a guess from its bytes.
+A document is converted by the content type its server gave, not by a guess from its bytes,
+and from its bytes alone: markitdown is not given a URL it would fetch more from by itself (a
+YouTube watch page's transcript), which would be a request outside the requester, its rate
+limit, ``max_bytes``, spans and capture log, whose failures markitdown prints on stdout. Such
+a page converts as the HTML page it is.
 A document markitdown cannot read is a CollectionError, never an empty string: an empty
 column reads as an empty document. Only markitdown's own errors and an unreadable file are
 classified; anything else is a defect and propagates as it is.
@@ -17,6 +21,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
 
 from recon.domain.converters import ConversionResult
 from recon.domain.errors import CollectionError
@@ -35,7 +40,7 @@ class MarkitdownConverter:
     def convert(self, content: bytes, content_type: str, url: str) -> ConversionResult:
         from markitdown import MarkItDownException, StreamInfo
 
-        info = StreamInfo(mimetype=content_type or None, url=url)
+        info = StreamInfo(mimetype=content_type or None, url=_url_markitdown_may_see(url))
         try:
             result = self._converter().convert_stream(io.BytesIO(content), stream_info=info)
         except MarkItDownException as exc:
@@ -55,6 +60,17 @@ class MarkitdownConverter:
 
             self._markitdown = MarkItDown()
         return self._markitdown
+
+
+#: The URLs for which markitdown fetches more by itself: a YouTube watch page, whose
+#: converter asks YouTube for the transcript. Matched as that converter matches them.
+_FETCHED_FROM = ("https://www.youtube.com/watch?",)
+
+
+def _url_markitdown_may_see(url: str) -> str | None:
+    """``url``, or None for one markitdown would fetch more from."""
+    as_matched = unquote(url).replace(r"\?", "?").replace(r"\=", "=")
+    return None if as_matched.startswith(_FETCHED_FROM) else url
 
 
 def markitdown_path(path: Any, *, roots: Sequence[Path] = (), base: Path | None = None) -> str:

@@ -412,6 +412,36 @@ class TestAConvertedDocument:
         assert as_text.text.strip() == "name,city\nAlice,Paris"
         assert "| name | city |" in as_csv.text
 
+    def test_a_youtube_page_is_converted_from_its_bytes_and_nothing_more_is_fetched(
+        self, monkeypatch, capsys
+    ):
+        """Regression: given a YouTube watch URL, markitdown fetched the video's transcript
+        itself, outside the requester (its rate limit, max_bytes, spans and capture log),
+        and printed its failures on stdout, where ``--json`` writes the document."""
+        from markitdown.converters import _youtube_converter
+
+        from recon.adapters._out.markitdown_converter import MarkitdownConverter
+
+        asked: list[str] = []
+
+        class Transcripts:
+            def list(self, video_id):
+                asked.append(video_id)
+                raise ConnectionError("no network in this test")
+
+            fetch = list
+
+        monkeypatch.setattr(_youtube_converter, "IS_YOUTUBE_TRANSCRIPT_CAPABLE", True)
+        monkeypatch.setattr(_youtube_converter, "YouTubeTranscriptApi", Transcripts, raising=False)
+        page = b"<html><head><title>A talk</title></head><body><p>About it</p></body></html>"
+        url = "https://www.youtube.com/watch?v=abc123"
+
+        result = MarkitdownConverter().convert(page, "text/html", url)
+
+        assert asked == []
+        assert capsys.readouterr().out == ""
+        assert result.title == "A talk" and "About it" in result.text
+
 
 class TestNestedRecords:
     """What a survey looks for in a table's one record: the list of records it holds."""

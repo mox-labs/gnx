@@ -90,6 +90,9 @@ a collected value. It reads only under the mission directory and the catalog's `
 sources (after resolving symlinks and `..`), and it never fetches a URL; either refusal
 fails the table with a config error (R-6).
 
+A `web` collector's page is converted from the bytes the requester fetched and nothing
+else: the converter is never given a URL it would fetch more from by itself (R-12).
+
 ### 4. Capture logs → the capture collector
 
 A capture log (`captures.jsonl`, format `recon.v1.capture`) may be written by tools other
@@ -297,6 +300,18 @@ reported as `url.full` is, with user information and `auth.param` `REDACTED`.
 
 Regression: `test_a_failure_exports_no_command_and_no_credential_in_a_url` in
 `recon/tests/test_telemetry.py`, which runs `recon survey` with an OTLP receiver.
+
+### R-12 — a YouTube page made markitdown fetch outside the requester (fixed)
+
+Given a YouTube watch URL, markitdown's YouTube converter asked YouTube for the video's
+transcript itself: a request outside the requester, its rate limit, `max_bytes`, spans and
+the capture log, the class of bypass R-6 closed for `$markitdown`. Its failures were printed
+on stdout, where `--json` writes the document. Fixed: the converter is given the page's
+bytes and content type, and no URL markitdown would fetch more from, so the page converts
+as the HTML it is. Its transcript is not collected.
+
+Regression: `test_a_youtube_page_is_converted_from_its_bytes_and_nothing_more_is_fetched` in
+`recon/tests/test_transforms.py`.
 
 ## Not covered
 

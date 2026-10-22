@@ -3,10 +3,11 @@
 HTTP is delegated to the injected Requester (shared rate-limited instance);
 conversion is delegated to the injected DocumentConverter (markitdown by
 default — handles HTML, PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP,
-images with OCR, audio transcription, YouTube).
+images with OCR, audio transcription). Everything it converts is what the
+Requester fetched: nothing more is fetched for a page.
 
 The collector is format-agnostic: same code path for a web page, a PDF
-URL, a DOCX download, or a YouTube transcript. Returns Iterator[dict] —
+URL or a DOCX download. Returns Iterator[dict] —
 yields one record, `{url, title, content, status_code, content_type}`, which a
 `normalize:` spec may reshape like any other.
 
