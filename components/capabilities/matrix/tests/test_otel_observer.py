@@ -628,3 +628,38 @@ async def test_content_leaves_on_a_span_only_when_asked_for() -> None:
     assert refused.attributes["error.type"] == "refused"
     assert spans["acme.fetch"].attributes["acme.url"] == f"https://user:{_SECRET}@host/x"
     assert _SECRET in str(spans["matrix.release"].status.description)
+
+
+async def test_the_span_names_are_the_pinned_ones() -> None:
+    """The span names a trace consumer relies on (W5.3): a run, a component, an agent
+    session, a timed tool call, a model step's call, a release and a component's own span."""
+    from matrix import PROMPT, AgentDefinition, BoundAgent, ModelStep, ModelStepConfig
+
+    agent = BoundAgent(AgentDefinition(name="rev"), _Session())
+
+    class Works:
+        requires: tuple[str, ...] = ()
+        provides = ("acme.v1.text",)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            ctx.defer(lambda: None)
+            async with ctx.span("acme.probe"):
+                return {"acme.v1.text": (await agent.run("go")).content}
+
+    step = ModelStep(ModelStepConfig(runtime="r"), model_runtimes={"r": _TracedModel()})
+    _EXPORTER.clear()
+    await Executor([_observer()]).run(
+        wire({"works": Works(), "rate": step}, inputs=[PROMPT]), {PROMPT: "hi"}
+    )
+    matrix_spans = {
+        s.name for s in _EXPORTER.get_finished_spans() if s.instrumentation_scope.name == "matrix"
+    }
+    assert matrix_spans == {
+        "invoke_workflow",
+        "matrix.component",
+        "invoke_agent rev",
+        "execute_tool Read",
+        "matrix.model",
+        "matrix.release",
+        "acme.probe",
+    }

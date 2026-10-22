@@ -109,6 +109,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Added
 
+- **The observable behaviours callers rely on are listed** (the design record, §16): the run
+  layout and its file and table names, `run.json`'s keys, every `matrix.*` event and the
+  fields it always carries, the span and metric names, and the exit kinds. Each is pinned by
+  a test or marked not contract, and the sixteen stated contracts no test held (mx-tests
+  finding 11) now each have one.
 - **An observer may have `around(event)`**, an optional member entered synchronously in the
   task doing the work, around each span of work matrix starts: a run, a component, a
   `ctx.span`, an agent session, a model step's call, a timed tool call and a deferred

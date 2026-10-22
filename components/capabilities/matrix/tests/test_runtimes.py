@@ -209,3 +209,36 @@ async def test_the_mock_model_holds_a_structured_reply_to_its_type() -> None:
     with pytest.raises(ModelRuntimeError, match="not a Review") as e:
         await MockModelRuntime().call(ModelRequest(prompt="x", output=Review))
     assert "one JSON document" in (e.value.fix or "")
+
+
+class _Raises:
+    """hardline's runtime, as the model runtime sees it, raising what it is given."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def complete(self, *args: object, **kwargs: object) -> object:
+        raise self._error
+
+
+async def test_on_the_run_path_a_rate_limit_keeps_its_hint_and_anything_else_fails() -> None:
+    """What ``call`` raises, not a private helper: hardline's ``retry_after`` reaches the
+    retry policy as ``retry_after_s``, and an exception hardline did not classify is the
+    port's ``failed``, never an unclassified one (mx-tests 11)."""
+    pytest.importorskip("hardline")
+    from hardline import BackendError
+
+    from matrix.adapters._out.runtime.model import HardlineModelRuntime
+
+    limited = BackendError("slow down", reason="rate_limit", retry_after=3.0)
+    with pytest.raises(ModelRuntimeError) as e:
+        await HardlineModelRuntime(_Raises(limited)).call(ModelRequest(prompt="x"))  # type: ignore[arg-type]
+    assert (e.value.reason, e.value.kind, e.value.retry_after_s) == (
+        "rate_limited",
+        "transient",
+        3.0,
+    )
+    with pytest.raises(ModelRuntimeError) as e:
+        await HardlineModelRuntime(_Raises(ValueError("odd"))).call(ModelRequest(prompt="x"))  # type: ignore[arg-type]
+    assert (e.value.reason, e.value.kind) == ("failed", "component")
+    assert isinstance(e.value.__cause__, ValueError)

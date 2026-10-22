@@ -673,3 +673,28 @@ async def test_the_cli_is_handed_the_trace_context_of_its_session(monkeypatch) -
 
     await runtime.run(_defn(), "no span is current here")
     assert "TRACEPARENT" not in captured["calls"][1]["options"].env
+
+
+async def test_the_fallback_model_reaches_the_sdk(fake_sdk) -> None:
+    await _runtime(fallback_model="haiku").run(_defn(model="sonnet"), "go")
+    options = fake_sdk["calls"][0]["options"]
+    assert (options.model, options.fallback_model) == ("sonnet", "haiku")
+
+
+async def test_the_runtime_never_touches_the_process_environment(monkeypatch) -> None:
+    """M-3 (fixed): the runtime used to pop ``CLAUDECODE`` from ``os.environ`` for a call,
+    so concurrent sessions raced on it. The SDK strips it from the child's own environment;
+    the process's is left as it was, during the session and after."""
+    import os
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    before = dict(os.environ)
+    seen: list[dict[str, str]] = []
+
+    async def fake_query(*, prompt, options=None, transport=None):
+        seen.append(dict(os.environ))
+        yield _result(result="ok")
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    await _runtime().run(_defn(), "go")
+    assert seen == [before] and dict(os.environ) == before

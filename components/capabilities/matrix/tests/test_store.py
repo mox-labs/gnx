@@ -632,9 +632,8 @@ def test_a_dead_writer_whose_pid_was_reused_still_reads_as_interrupted(tmp_path:
     assert JsonlConstructStore(runs).describe("killed")["status"] == "interrupted"
 
 
-def _killed_mid_write(tmp_path: Path) -> Path:
-    """A run killed while it was writing: three rows landed, then a fourth row's line and an
-    event's line were cut short, as a kill (or a full disk) leaves them. Returns the root."""
+def _killed(tmp_path: Path) -> Path:
+    """A run killed after three rows landed. Returns the root."""
     script = tmp_path / "killed.py"
     script.write_text(textwrap.dedent(_KILLED))
     runs = tmp_path / "runs"
@@ -649,6 +648,13 @@ def _killed_mid_write(tmp_path: Path) -> Path:
         assert proc.stdout.readline().strip() == "ready", proc.stderr and proc.stderr.read()
         proc.send_signal(signal.SIGKILL)
         proc.wait(timeout=60)
+    return runs
+
+
+def _killed_mid_write(tmp_path: Path) -> Path:
+    """A run killed while it was writing: three rows landed, then a fourth row's line and an
+    event's line were cut short, as a kill (or a full disk) leaves them. Returns the root."""
+    runs = _killed(tmp_path)
     directory = runs / "killed"
     with (directory / f"{TRIAL}.jsonl").open("a") as table:
         table.write('{"seq": 3, "se')
@@ -753,6 +759,9 @@ def test_with_fsync_the_run_directory_is_flushed_too(
     writer = JsonlConstructStore(tmp_path, fsync=True).open(run)
     assert True in flushed  # the directory, once its files exist
     flushed.clear()
+    writer.append(TRIAL, {"seq": 0})
+    assert flushed == [False]  # each row, flushed before append returns
+    flushed.clear()
     writer.finish(run)
     assert True in flushed  # and after run.json is renamed into place
 
@@ -790,3 +799,160 @@ def test_the_documented_readers_skip_a_line_cut_short_in_a_run_not_yet_finished(
             ["jq", "-cR", "fromjson? // empty", str(table)], capture_output=True, check=True
         )
         assert [json.loads(line)["seq"] for line in read.stdout.splitlines()] == [0, 1, 2]
+
+
+# --- the record's observable behaviours, each pinned (W5.3; mx-tests 11) ------------------
+
+
+def test_every_table_file_exists_from_the_start_even_with_no_rows(tmp_path: Path) -> None:
+    store = JsonlConstructStore(tmp_path)
+    run = Run(run_id="r", construct=Construct([TRIAL, READING]))
+    store.open(run)
+    for kind in (TRIAL, READING, LEDGER, SESSION):
+        assert (tmp_path / "r" / f"{kind}.jsonl").read_text() == "", kind
+    assert (tmp_path / "r" / "events.jsonl").exists() is False  # only once a run keeps events
+
+
+def test_run_json_is_only_ever_replaced_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reader sees the record as it was while running or the finished one, never a mixture:
+    ``run.json`` is written to a sibling and renamed into place, at open and at finish."""
+    from matrix.adapters._out.stores import jsonl
+
+    renamed: list[tuple[str, str]] = []
+    real = os.replace
+
+    def replace(source: Any, target: Any) -> None:
+        renamed.append((os.path.basename(source), os.path.basename(target)))
+        real(source, target)
+
+    monkeypatch.setattr(jsonl.os, "replace", replace)
+    run = Run(run_id="r", construct=Construct([TRIAL]))
+    JsonlConstructStore(tmp_path).open(run).finish(run)
+    assert renamed == [("run.json.tmp", "run.json")] * 2
+    assert sorted(p.name for p in (tmp_path / "r").glob("run.json*")) == ["run.json"]
+
+
+async def test_the_run_directory_holds_what_the_docs_say(tmp_path: Path) -> None:
+    """The layout a reader without matrix relies on (data-model.md): the file names, and the
+    keys of a finished ``run.json``."""
+
+    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+        return {TRIAL: {"seq": 0}}
+
+    store = JsonlConstructStore(tmp_path)
+    await Executor().run(wire({"trials": Step(trials, provides=[TRIAL])}), store=store, run_id="r")
+    names = sorted(p.name for p in (tmp_path / "r").iterdir())
+    assert names == sorted(
+        [
+            "run.json",
+            f"{TRIAL}.jsonl",
+            f"{SESSION}.jsonl",
+            f"{LEDGER}.jsonl",
+            "events.jsonl",
+            "writer.lock",
+        ]
+    )
+    recorded = json.loads((tmp_path / "r" / "run.json").read_text())
+    assert set(recorded) == {
+        "schema",
+        "run_id",
+        "status",
+        "started",
+        "ended",
+        "components",
+        "failures",
+        "releases",
+        "events_dropped",
+        "tables",
+    }
+    assert (recorded["schema"], recorded["status"]) == ("matrix.v1.run", "completed")
+    assert recorded["tables"][TRIAL] == {"file": f"{TRIAL}.jsonl", "rows": 1}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_dead_run_on_another_host_still_reads_running_and_is_left_alone(tmp_path: Path) -> None:
+    """matrix does not guess: a writer on another host cannot be told dead, so its record is
+    neither called ``interrupted`` nor finished."""
+    runs = _killed(tmp_path)
+    record_path = runs / "killed" / "run.json"
+    record = json.loads(record_path.read_text())
+    record["writer"]["host"] = "another-host"
+    record_path.write_text(json.dumps(record))
+    described = JsonlConstructStore(runs).describe("killed")
+    assert described["status"] == "running" and described["tables"][TRIAL]["rows"] == 3
+    assert json.loads(record_path.read_text())["status"] == "running"
+
+
+class _Finishes:
+    """A store that records what it was asked, and whose event sink records being closed."""
+
+    def __init__(self, fail_on_append: int | None = None) -> None:
+        self.calls: list[str] = []
+        self._fail_on = fail_on_append
+        self._appends = 0
+        self._inner = MemoryConstructStore()
+
+    def open(self, run: Any) -> Any:
+        self._writer = self._inner.open(run)
+        return self
+
+    def append(self, kind: str, row: Any) -> None:
+        self._appends += 1
+        if self._appends == self._fail_on:
+            raise OSError("no space left on device")
+        self._writer.append(kind, row)
+
+    def finish(self, run: Any) -> str:
+        self.calls.append(f"finish:{run.status}")
+        return str(self._writer.finish(run))
+
+    def events(self) -> Any:
+        store = self
+
+        class Sink:
+            def on_event(self, event: Any) -> None:
+                return None
+
+            def close(self) -> None:
+                store.calls.append("close events")
+
+        return Sink()
+
+    def load(self, run_id: str) -> Construct:
+        return self._inner.load(run_id)
+
+    def describe(self, run_id: str) -> dict[str, Any]:
+        return self._inner.describe(run_id)
+
+    def runs(self) -> list[str]:
+        return self._inner.runs()
+
+
+async def test_a_failed_append_still_finishes_the_record_failed_then_closes_its_events() -> None:
+    """After a failed append no row is appended, but the store is still asked to finish the
+    record, as ``failed``; the event sink is closed after that, once the events drained."""
+
+    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+        ctx.provide(TRIAL, {"seq": 0})
+
+    store = _Finishes(fail_on_append=2)  # the first row's ledger entry lands, the row does not
+    with pytest.raises(RunError):
+        await Executor().run(wire({"trials": Step(trials, provides=[TRIAL])}), store=store)
+    assert store.calls == ["finish:failed", "close events"]
+
+
+async def test_an_unsafe_run_id_is_refused_before_anything_runs(tmp_path: Path) -> None:
+    ran: list[str] = []
+
+    async def trials(inputs: Inputs, ctx: RunContext) -> Any:
+        ran.append("ran")
+
+    with pytest.raises(ConfigError, match="safe"):
+        await Executor().run(
+            wire({"trials": Step(trials, provides=[TRIAL])}),
+            store=JsonlConstructStore(tmp_path),
+            run_id="../outside",
+        )
+    assert ran == [] and list(tmp_path.iterdir()) == []

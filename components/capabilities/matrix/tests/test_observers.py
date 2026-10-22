@@ -61,6 +61,9 @@ async def test_the_jsonl_observer_writes_one_document_per_event(tmp_path: Path) 
         "matrix.run.end",
     ]
     assert {d["schema"] for d in lines} == {"matrix.v1.event"}
+    assert {frozenset(d) for d in lines} == {
+        frozenset({"schema", "name", "time", "run_id", "span", "parent", "component", "fields"})
+    }
     assert {d["run_id"] for d in lines} == {run.run_id}
     assert lines[-1]["fields"]["status"] == "completed"
 
