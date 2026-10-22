@@ -104,47 +104,90 @@ lab:
     uv --project components/capabilities run ix validate lab/catalog-routing
     uv --project components/capabilities run ix plan lab/catalog-routing
 
-# Every capability, installed ALONE from only its own declared dependencies —
-# the `uv tool install` / `uvx` path, which nothing else here exercises.
+# Every capability, built as the wheel a user installs and installed ALONE into a fresh venv
+# from only its own declared dependencies (the `uv tool install` / `uvx` path), then driven
+# through a real smoke test outside the repository.
 #
-# `just ci` runs inside the workspace, where the dev group installs all five
-# packages and the UNION of their dependencies. An under-declared dependency is
-# therefore invisible to every other gate: dao imported pydantic in its domain
-# layer and declared only click and rich, and every gate passed while
-# `uv tool install dao` died on import (fixed 2026-09-06).
+# `just ci` runs inside the workspace, where the dev group installs every package and the
+# UNION of their dependencies, and imports each from its checkout. So an under-declared
+# dependency, an entry point the wheel's metadata lacks, or a file the wheel leaves out is
+# invisible to every other gate. `--help` sees only what the CLI imports at start; a command
+# reaches what a user's first use does:
 #
-# The copy to a temp dir is load-bearing, not hygiene: uv discovers the workspace
-# from the package path and applies the root's [tool.uv.sources], so testing in
-# place resolves workspace-internal deps and gives a false pass.
+#   hardline  `models` and `check` of a registry with a local and a hosted row
+#   matrix    `check` and `plan` of a config with a mock agent and an agent step
+#   ix        `validate`, `plan` and a dry run of examples/harness-integrity
+#   recon     a survey of a cli collector, then a query of the timestamp it collected
+#   gnx, dao  `--help`: their commands read this repository
 #
-# This models the real distribution path — `uv tool install`/`uvx` against a
-# git+subdirectory URL — for every package with no workspace-internal dependency.
-# uv clones the whole repo to build a subdirectory, so it sees the workspace root
-# and its [tool.uv.sources]; what it does NOT do is widen a package's own declared
-# dependency set. Confirmed against origin/main: dao installed from a git URL failed
-# on pydantic exactly as the local install did.
+# ix depends on this repository's matrix, never PyPI's unrelated `matrix`: its venv is given
+# matrix's wheel beside its own, so that dependency is this repository's and ix's other
+# imports are still held to what ix declares. Each venv is Python 3.12, the floor the packages
+# declare, and HOME is a fresh directory, so no user config reaches a command.
 #
-# A package that depends on a workspace-internal one (`matrix`) cannot be in this
-# list: the repository resolves that dependency on every supported path because the
-# clone carries the workspace root, and severing the package from the repo — what
-# this recipe does on purpose — lets PyPI's unrelated `matrix` 3.0.0 fill the gap.
-# ix is the one package with such a dependency: its run path is matrix components. It is
-# checked with matrix copied beside it and named explicitly, so the gap is filled by this
-# repository's matrix and ix's other imports are still held to what ix declares.
+# Every capability installed alone from its wheel, then driven through a smoke test.
 capabilities-standalone:
     #!/usr/bin/env bash
     set -uo pipefail
     tmp="$(mktemp -d)"; trap 'rip "$tmp" 2>/dev/null || true' EXIT
+    examples="$PWD/components/capabilities/ix/examples"
+    packages=(hardline matrix ix recon gnx dao)
+    # expect EXPRESSION: the JSON document on stdin makes EXPRESSION (over `d`) true.
+    expect() { python -c 'import json, sys; d = json.load(sys.stdin); assert eval(sys.argv[1]), d' "$1"; }
+    smoke_hardline() {
+      printf '%s\n' 'default: local' 'models:' \
+        '  local: {backend: openai-compat, base_url: "http://127.0.0.1:9/v1", model: m, family: qwen}' \
+        '  hosted: {backend: anthropic, model: claude-haiku-4-5, family: claude, api_key: "env:SMOKE_KEY"}' \
+        > hardline.yaml
+      SMOKE_KEY=unused hardline models --json | expect '{m["name"] for m in d["models"]} == {"local", "hosted"}'
+      SMOKE_KEY=unused hardline check --json | expect 'd["ok"]'
+    }
+    smoke_matrix() {
+      printf '%s\n' 'matrix:' '  agent_runtimes: {offline: {type: mock}}' \
+        '  agents: {greeter: {runtime: offline, system_prompt: "Say hello."}}' \
+        '  inputs: [smoke.v1.name]' '  components:' \
+        '    - {name: greet, type: matrix.v1.agent-step,' \
+        '       config: {agent: greeter, inputs: {name: smoke.v1.name}, output: smoke.v1.greeting}}' \
+        > matrix.yaml
+      matrix check --only matrix.yaml --json | expect 'd["ok"]'
+      matrix plan --only matrix.yaml --json | expect 'd["ok"] and d["stages"] == [["greet"]]'
+    }
+    smoke_ix() {
+      cp -R "$examples/harness-integrity" .
+      ix validate harness-integrity --json | expect 'd["valid"]'
+      ix plan harness-integrity --json | expect 'd["runnable"]'
+      ix run harness-integrity --dry-run --json | expect 'd["status"] == "completed"'
+    }
+    smoke_recon() {
+      printf '%s\n' 'collectors:' '  - name: releases' '    type: cli' '    run: |' \
+        "      echo '{\"tag\": \"v1\", \"published\": \"2026-03-15T18:42:31Z\"}'" > mission.yaml
+      recon init smoke -c mission.yaml --json | expect 'd["outcome"] == "created"'
+      recon survey smoke --json | expect 'd["status"] == "ok" and d["tables"][0]["records"] == 1'
+      recon query smoke "SELECT typeof(published) AS t FROM releases" --json \
+        | expect 'd["rows"] == [{"t": "TIMESTAMP"}]'
+    }
+    smoke_gnx() { gnx --help >/dev/null; }
+    smoke_dao() { dao --help >/dev/null; }
+    for p in "${packages[@]}"; do
+      uv build --quiet --directory components/capabilities --package "$p" --wheel --out-dir "$tmp/dist" \
+        || { echo "  the $p wheel did not build"; exit 1; }
+    done
     fail=0
-    for p in hardline matrix ix recon gnx dao; do
-      cp -R components/capabilities/$p "$tmp/$p"
-      probe=("$p" --help)
-      with=(--with ./$p)
-      if [ "$p" = ix ]; then with=(--with ./matrix --with ./ix); fi
-      if ( cd "$tmp" && uv run --isolated --no-project --quiet "${with[@]}" "${probe[@]}" >/dev/null ); then
+    for p in "${packages[@]}"; do
+      work="$tmp/$p"; mkdir -p "$work/home"
+      wheels=("$tmp/dist/$p"-*.whl)
+      if [ "$p" = ix ]; then wheels+=("$tmp/dist"/matrix-*.whl); fi
+      # Not under `if`: there bash ignores the subshell's `set -e`, and a failed step goes on.
+      ( set -euo pipefail
+        uv venv --quiet --python 3.12 "$work/venv"
+        uv pip install --quiet --python "$work/venv/bin/python" "${wheels[@]}"
+        cd "$work"; export HOME="$work/home" PATH="$work/venv/bin:$PATH"
+        "smoke_$p" ) > "$work/log" 2>&1
+      if [ $? -eq 0 ]; then
         echo "  $p standalone OK"
       else
-        echo "  $p standalone FAIL — an import is not in [project.dependencies]"; fail=1
+        cat "$work/log"
+        echo "  $p standalone FAIL: installed alone from its wheel, it does not work (above)"; fail=1
       fi
     done
     exit $fail
