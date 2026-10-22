@@ -27,7 +27,12 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hardline.adapters._out.otel import OtelCallObserver, Telemetry, TracedBackend
+from hardline.adapters._out.otel import (
+    OtelCallObserver,
+    Telemetry,
+    TracedBackend,
+    configure_telemetry,
+)
 from hardline.adapters._out.secrets import EnvFileSecretResolver
 from hardline.adapters._out.yaml_source import MappingConfigSource, YamlConfigSource
 from hardline.domain.errors import ConfigError
@@ -265,6 +270,7 @@ __all__ = [
     "BACKEND_GROUP",
     "CONFIG_ENV",
     "build_runtime",
+    "configure_telemetry",
     "default_locations",
     "discover_backends",
     "discover_sources",

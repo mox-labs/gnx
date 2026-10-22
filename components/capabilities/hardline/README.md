@@ -238,8 +238,17 @@ that counts retries and fallbacks in OpenTelemetry, below, unless it is handed a
 
 `build_runtime` records OpenTelemetry on the GenAI semantic conventions (as read at
 `open-telemetry/semantic-conventions-genai` `9ffc7e0`, status Development), through the API
-only: nothing is recorded until the application installs an SDK, and hardline installs none.
+only: nothing is recorded until the application installs an SDK, and the library installs none.
 A host hands its own providers as `build_runtime(tracer_provider=..., meter_provider=...)`.
+
+The `hardline` command is an application, and installs the SDK from the standard `OTEL_*`
+variables, as `matrix` and `ix` do (`hardline.configure_telemetry()`, for another entry point of
+one's own): `OTEL_TRACES_EXPORTER` and `OTEL_METRICS_EXPORTER` (`otlp`, the default, or `console`
+on stderr), OTLP over `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf`, the default; `grpc` when
+its exporter is installed) to the endpoint the `OTEL_EXPORTER_OTLP_*` variables name, and
+`service.name` `hardline` unless `OTEL_SERVICE_NAME` says otherwise. With none of them set,
+nothing is installed. What it cannot install is a `hardline: warning:` line, and under `--json`
+one of `check`'s `warnings`.
 
 | signal | what | attributes |
 |---|---|---|
