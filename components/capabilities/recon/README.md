@@ -105,9 +105,10 @@ A survey in which any table failed still writes its archive (marked `.incomplete
 ```
 .recon/<mission>/archive/<timestamp>/
   <output>.jsonl       one table per collector × source; records exactly as normalized
-  meta.yaml            format_version 2: recon version, config sha256, and per table
-                       its type_url, records, status, seconds, error {kind, message,
-                       fix} (null for a table that succeeded)
+  meta.yaml            format_version 2: recon version, config sha256, table_layout 1
+                       (this layout of the tables), and per table its type_url,
+                       records, status, seconds, error {kind, message, fix} (null for a
+                       table that succeeded)
   telemetry.jsonl      the survey's recon.v1.event lines (see Telemetry); not a table
   .incomplete          written first, removed once meta.yaml is written and every table
                        succeeded: a failed table, Ctrl-C, SIGTERM, a kill or a meta.yaml
@@ -115,7 +116,7 @@ A survey in which any table failed still writes its archive (marked `.incomplete
   captures.jsonl, raw/ the capture log, when preserve_raw: true
 ```
 
-A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`), and read a `meta.yaml` from a newer recon for the fields they know. Only a directory named as a survey names its archive (`2026-04-01-143022-000000`) is an archive: another directory under `archive/` is left alone.
+A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`), and read a `meta.yaml` from a newer recon for the fields they know. Only a directory named as a survey names its archive (`2026-04-01-143022-000000`) is an archive: another directory under `archive/` is left alone. An archive whose `table_layout` this recon does not know (a newer recon wrote it) is refused by `query` with that number, rather than misread.
 
 ## Capture logs
 

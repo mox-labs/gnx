@@ -439,9 +439,7 @@ class TestPreserveRaw:
             assert (archive / "t.jsonl").exists()
             assert (archive / "captures.jsonl").exists()
 
-    def test_capture_log_is_not_a_query_table(self):
-        from recon.adapters._out.duckdb_query import DuckdbQuery
-
+    def test_capture_log_is_not_a_table(self):
         config = ReconConfig.model_validate(
             {"preserve_raw": True, "collectors": [{"name": "t", "type": "cli", "run": "true"}]}
         )
@@ -449,7 +447,7 @@ class TestPreserveRaw:
             mission = Path(tmp) / "m"
             mission.mkdir()
             archive, _ = run(config, _collectors(), mission)
-            assert DuckdbQuery().tables(archive) == ["t"]
+            assert [t.output for t in ArchiveFiles(FixedClock()).tables(archive)] == ["t"]
 
 
 class TestFailureKind:

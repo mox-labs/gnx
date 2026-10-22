@@ -274,7 +274,7 @@ def root(env: Mapping[str, str] | None = None, *, project: Path | None = None) -
     return Recon(
         missions=MissionFiles(project.resolve() if project else project_root(Path.cwd()), clock),
         archives=archives,
-        query=DuckdbQuery(),
+        query=DuckdbQuery(archives),
         clock=clock,
         plugins=plugins,
         build_collectors=partial(build_collectors, plugins, clock=clock, env=process_env),

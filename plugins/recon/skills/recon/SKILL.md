@@ -172,8 +172,9 @@ A spec maps each output column to a path into the record, optionally piped throu
   archive/<archive id>/            one per survey; the id is its start time, so ids sort; a
                                    directory not named so is not an archive
     <table>.jsonl                  one record per line
-    meta.yaml                      recon version, config sha256, times, and per table:
-                                   type_url, status, records, seconds, error {kind, message, fix}
+    meta.yaml                      recon version, config sha256, times, table_layout (1:
+                                   this layout of the tables), and per table: type_url,
+                                   status, records, seconds, error {kind, message, fix}
     telemetry.jsonl                the survey's recon.v1.event lines: a start and an end per
                                    span (survey, table, HTTP request); not a table
     .incomplete                    present unless the survey finished with every table: a table
@@ -182,7 +183,7 @@ A spec maps each output column to a path into the record, optionally piped throu
     captures.jsonl, raw/<sha256>   the capture log, with preserve_raw: true
 ```
 
-A table that collected nothing holds the one line `{"_empty": true}`, so DuckDB can read it; it is not a record, its view has no rows, and it counts as 0 records. When its collector has `normalize:`, the line keeps the spec's columns (`"_columns": [...]`) and the view has them, so a query of them runs on an empty table as it does on a full one; without `normalize:` the columns are not known and the view has only `_empty`. `query` reads the latest archive unless `--archive <archive id>` names another (`recon status <mission>` lists the ids), and reports `state: incomplete` for an incomplete archive, whose rows may be partial. SQL reads only files under the mission's `archive/` directory, so `read_json_auto('<that directory>/<archive id>/<table>.jsonl')` reaches an earlier archive for a diff; it loads no extension and reaches no network. A query runs SELECT statements only (`WITH`, `FROM`, `DESCRIBE` and `SUMMARIZE` among them); `COPY`, `ATTACH`, `CREATE` and the rest exit 10.
+A table that collected nothing holds the one line `{"_empty": true}`; it is not a record, its view has no rows, and it counts as 0 records. When its collector has `normalize:`, the line keeps the spec's columns (`"_columns": [...]`) and the view has them, so a query of them runs on an empty table as it does on a full one; without `normalize:` the columns are not known and the view has only `_empty`. `query` reads the latest archive unless `--archive <archive id>` names another (`recon status <mission>` lists the ids), and reports `state: incomplete` for an incomplete archive, whose rows may be partial. SQL reads only files under the mission's `archive/` directory, so `read_json_auto('<that directory>/<archive id>/<table>.jsonl')` reaches an earlier archive for a diff; it loads no extension and reaches no network. A query runs SELECT statements only (`WITH`, `FROM`, `DESCRIBE` and `SUMMARIZE` among them); `COPY`, `ATTACH`, `CREATE` and the rest exit 10.
 
 To cite a row, cite its line in one archive's file: each record is one line. Take the archive's `path` from `recon status <name> --json` (`missions[0].latest.path`, or an older archive's in `missions[0].history`; a query's document names its own as `archive`), then `SELECT ordinality AS line, title FROM read_json_auto('<path>/<table>.jsonl') WITH ORDINALITY` gives `<archive id>/<table>.jsonl` line `line` for each row. The number is the line in the file, counted before any `WHERE` or `ORDER BY`: it is not a rank and follows no sort. Read one file, not a glob across archives (`archive/*/<table>.jsonl`): a glob numbers the lines of all its files as one, and archives surveyed with different `normalize:` specs (one raw, one normalized) have different columns. A table's view leaves the number out, so `SELECT *` shows only the record.
 

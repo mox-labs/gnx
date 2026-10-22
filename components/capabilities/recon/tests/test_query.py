@@ -7,24 +7,33 @@ import sys
 from importlib.metadata import requires
 
 import pytest
+import yaml
 from packaging.requirements import Requirement
 
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.duckdb_query import SQL_DOCS, UNNEST_DOCS, DuckdbQuery
+from recon.domain.archives import StoredTable
 from recon.domain.errors import QueryError
 from tests.recon_fakes import FixedClock
 
+STORE = ArchiveFiles(FixedClock())
+
+
+def _query():
+    return DuckdbQuery(STORE)
+
 
 def execute(archive, sql):
-    rows = DuckdbQuery().execute(archive, sql)
+    rows = _query().execute(archive, sql)
     return rows.columns, rows.rows
 
 
-def _archive(tmp_path, tables: dict[str, list[dict]]):
-    archive = tmp_path / "m" / "archive" / "2026-01-01-000000-000000"
-    archive.mkdir(parents=True)
+def _archive(tmp_path, tables: dict[str, list[dict]], archive_id="2026-01-01-000000-000000"):
+    """An archive of mission ``m`` holding ``tables``, each written as a survey writes it: by
+    the store, a table with no records included."""
+    archive = STORE.create(tmp_path / "m", archive_id)
     for name, records in tables.items():
-        (archive / f"{name}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+        STORE.write_table(archive, name, (record for record in records))
     return archive
 
 
@@ -38,9 +47,7 @@ class TestConfinement:
     @pytest.fixture
     def archive(self, tmp_path):
         archive = _archive(tmp_path, {"t": [{"a": 1}]})
-        earlier = archive.parent / "2025-12-31-000000-000000"
-        earlier.mkdir()
-        (earlier / "t.jsonl").write_text(json.dumps({"a": 0}) + "\n")
+        _archive(tmp_path, {"t": [{"a": 0}]}, "2025-12-31-000000-000000")
         (tmp_path / "m" / "config.yaml").write_text("collectors: []  # mission-secret\n")
         (tmp_path / "private.txt").write_text("hunter2\n")
         return archive
@@ -188,10 +195,12 @@ class TestTimestamps:
         script = (
             "import sys; sys.modules['pytz'] = None\n"
             "from pathlib import Path\n"
+            "from recon.adapters._out.archive_files import ArchiveFiles\n"
             "from recon.adapters._out.duckdb_query import DuckdbQuery\n"
+            "from recon.adapters._out.system_clock import SystemClock\n"
             "from recon.domain.errors import QueryError\n"
             "try:\n"
-            "    DuckdbQuery().execute(Path(sys.argv[1]), sys.argv[2])\n"
+            "    DuckdbQuery(ArchiveFiles(SystemClock())).execute(Path(sys.argv[1]), sys.argv[2])\n"
             "except QueryError as error:\n"
             "    print(error.kind, error.fix, sep='\\n')\n"
         )
@@ -240,11 +249,10 @@ class TestTimestamps:
 
 
 class TestEmptyTable:
-    """An empty table's file holds one sentinel line so DuckDB can read it. The sentinel is
-    not a row: `count(*)` on an empty table is 0."""
+    """A table that collected nothing is a view with no rows: `count(*)` on it is 0."""
 
     def test_count_is_zero(self, tmp_path):
-        archive = _archive(tmp_path, {"nothing": [{"_empty": True}], "two": [{"a": 1}, {"a": 2}]})
+        archive = _archive(tmp_path, {"nothing": [], "two": [{"a": 1}, {"a": 2}]})
 
         assert execute(archive, "SELECT count(*) FROM nothing")[1] == [(0,)]
         assert execute(archive, "SELECT * FROM nothing")[1] == []
@@ -252,7 +260,7 @@ class TestEmptyTable:
 
     def test_the_documented_filter_still_runs(self, tmp_path):
         """Queries written against the sentinel keep working."""
-        archive = _archive(tmp_path, {"nothing": [{"_empty": True}]})
+        archive = _archive(tmp_path, {"nothing": []})
         sql = "SELECT count(*) FROM nothing WHERE NOT coalesce(_empty, false)"
         assert execute(archive, sql)[1] == [(0,)]
 
@@ -264,11 +272,8 @@ class TestEmptyTable:
         """Regression: an empty table's view had only ``_empty``, so a query that works on a
         full archive (``SELECT title FROM papers``) failed with a Binder Error on one whose
         source returned nothing. The store keeps the columns the collector's spec names."""
-        archive = tmp_path / "m" / "archive" / "2026-01-01-000000-000000"
-        archive.mkdir(parents=True)
-        ArchiveFiles(FixedClock()).write_table(
-            archive, "papers", (r for r in ()), columns=["title", "year"]
-        )
+        archive = STORE.create(tmp_path / "m", "2026-01-01-000000-000000")
+        STORE.write_table(archive, "papers", (r for r in ()), columns=["title", "year"])
 
         assert execute(archive, "SELECT title, year FROM papers WHERE year > 2020")[1] == []
         assert execute(archive, "SELECT count(*) FROM papers")[1] == [(0,)]
@@ -292,7 +297,7 @@ class TestOneUnreadableTable:
     def test_a_query_of_another_table_runs_and_warns_naming_the_table_why_and_the_fix(
         self, archive
     ):
-        rows = DuckdbQuery().execute(archive, "SELECT a FROM good ORDER BY a")
+        rows = _query().execute(archive, "SELECT a FROM good ORDER BY a")
 
         assert rows.rows == [(1,), (2,)]
         [warning] = rows.warnings
@@ -325,22 +330,21 @@ class TestOneUnreadableTable:
 
     def test_a_readable_archive_has_no_warning(self, tmp_path):
         archive = _archive(tmp_path, {"t": [{"a": 1}]})
-        assert DuckdbQuery().execute(archive, "SELECT a FROM t").warnings == []
+        assert _query().execute(archive, "SELECT a FROM t").warnings == []
 
     def test_the_survey_s_check_names_the_table_with_the_query_s_fix(self, archive):
         """Regression: a survey exited 0 with no warning; the first sign was a failed query.
         The survey asks this of its archive."""
-        [warning] = DuckdbQuery().unreadable(archive)
+        [warning] = _query().unreadable(archive)
 
         assert warning.kind == "table_unreadable" and warning.got == "oa_works"
         assert warning.message.startswith("table oa_works cannot be queried: ")
-        assert warning.fix == DuckdbQuery().execute(archive, "SELECT 1").warnings[0].fix
+        assert warning.fix == _query().execute(archive, "SELECT 1").warnings[0].fix
 
     def test_a_readable_archive_or_one_with_no_tables_has_nothing_unreadable(self, tmp_path):
-        assert DuckdbQuery().unreadable(_archive(tmp_path, {"t": [{"a": 1}]})) == []
-        empty = tmp_path / "n" / "archive" / "a"
-        empty.mkdir(parents=True)
-        assert DuckdbQuery().unreadable(empty) == []
+        assert _query().unreadable(_archive(tmp_path, {"t": [{"a": 1}]})) == []
+        empty = STORE.create(tmp_path / "n", "2026-01-01-000000-000000")
+        assert _query().unreadable(empty) == []
 
 
 class TestTheFixIsAboutWhatFailed:
@@ -394,9 +398,9 @@ class TestTheFixIsAboutWhatFailed:
         column "name" not found``, one archive raw and another normalized, and the fix said
         to query one of the tables."""
         raw = _archive(tmp_path, {"gh-repos": [{"full_name": "o/r", "stargazers_count": 3}]})
-        normalized = raw.parent / "2026-01-02-000000-000000"
-        normalized.mkdir()
-        (normalized / "gh-repos.jsonl").write_text(json.dumps({"name": "o/r", "stars": 3}) + "\n")
+        normalized = _archive(
+            tmp_path, {"gh-repos": [{"name": "o/r", "stars": 3}]}, "2026-01-02-000000-000000"
+        )
         glob = f"{raw.parent}/*/gh-repos.jsonl"
 
         fix = self._fix(
@@ -428,3 +432,61 @@ class TestRowCitation:
         assert execute(archive, sql)[1] == [(2, "y")]
         lines = (archive / "t.jsonl").read_text().splitlines()
         assert json.loads(lines[2 - 1]) == {"a": "y"}
+
+
+class TestTheStoreSaysWhatTheTablesAre:
+    """Regression: the query adapter read the store's files itself (every ``*.jsonl`` but the
+    logs, and the empty table's sentinel line), so how an archive is stored was known to two
+    adapters and changing it meant changing both. The query asks ``ArchiveStore``."""
+
+    class _Store:
+        """The one thing a query asks of a store: its tables."""
+
+        def __init__(self, tables):
+            self._tables = tables
+
+        def tables(self, archive):
+            return self._tables
+
+    def test_a_table_is_read_where_its_store_keeps_it(self, tmp_path):
+        archive = tmp_path / "m" / "archive" / "2026-01-01-000000-000000"
+        (archive / "data").mkdir(parents=True)
+        (archive / "data" / "p.ndjson").write_text(json.dumps({"title": "x"}) + "\n")
+        store = self._Store([StoredTable("papers", archive / "data" / "p.ndjson")])
+        assert DuckdbQuery(store).execute(archive, "SELECT title FROM papers").rows == [("x",)]
+
+    def test_a_table_the_store_says_is_empty_has_its_columns_and_no_rows(self, tmp_path):
+        archive = tmp_path / "m" / "archive" / "2026-01-01-000000-000000"
+        archive.mkdir(parents=True)
+        never_read = archive / "absent.ndjson"
+        store = self._Store([StoredTable("t", never_read, empty=True, columns=("title",))])
+        rows = DuckdbQuery(store).execute(archive, "SELECT title FROM t")
+        assert rows.columns == ["title"] and rows.rows == []
+
+    def test_the_store_lists_what_a_survey_wrote(self, tmp_path):
+        archive = _archive(tmp_path, {"oa-works": [{"a": 1}], "nothing": []})
+        STORE.capture_log(archive)  # a capture log and the event log are not tables
+        (archive / "telemetry.jsonl").write_text("{}\n")
+        assert STORE.tables(archive) == [
+            StoredTable("nothing", archive / "nothing.jsonl", empty=True),
+            StoredTable("oa-works", archive / "oa-works.jsonl"),
+        ]
+
+
+class TestTheTableLayoutIsVersioned:
+    """``meta.yaml`` names the layout of the archive's tables, as it names its own format, so
+    a reader of the files (the skill teaches reading them) and recon itself can tell."""
+
+    def test_meta_names_the_table_layout(self, tmp_path):
+        archive = _archive(tmp_path, {"t": [{"a": 1}]})
+        STORE.write_meta(archive, {"format_version": 2, "tables": []})
+        meta = yaml.safe_load((archive / "meta.yaml").read_text())
+        assert meta["table_layout"] == 1
+
+    def test_an_archive_in_a_layout_this_recon_does_not_know_is_refused_by_name(self, tmp_path):
+        archive = _archive(tmp_path, {"t": [{"a": 1}]})
+        (archive / "meta.yaml").write_text(yaml.safe_dump({"format_version": 2,
+                                                           "table_layout": 2}))  # fmt: skip
+        with pytest.raises(QueryError) as excinfo:
+            execute(archive, "SELECT a FROM t")
+        assert "table layout 2" in str(excinfo.value) and "upgrade recon" in excinfo.value.fix

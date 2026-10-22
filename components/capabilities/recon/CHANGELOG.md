@@ -8,7 +8,11 @@
 
 - **The OpenTelemetry SDK and its OTLP exporters are installed with recon**; the `otel` extra is gone. The `OTEL_*` variables are enough to export, with nothing else to install. The library still installs no provider: a program that imports recon configures OpenTelemetry itself, or calls `recon.configure_telemetry()`.
 
+- **`meta.yaml` names the layout of the archive's tables** (`table_layout: 1`), as it names its own format, and `query` refuses an archive in a layout it does not know rather than misreading it. An archive with no `table_layout` is in layout 1.
+
 ### Fixed
+
+- **The query engine reads the tables the archive store lists.** `DuckdbQuery` imported the archive adapter's file helpers and read its sentinel lines itself, so how an archive is stored was known to two adapters; it now asks `ArchiveStore.tables()`, which describes each table (its output name, its file, whether it is empty and the columns it keeps).
 
 - **recon's spans are current while its work runs, and requests carry their trace context.** recon built its OpenTelemetry spans from events and never made one current, so a span another library opened during a table (an instrumented HTTP client, a plugin's own) landed under the caller's span or in a trace of its own; and no request carried `traceparent`, so a server's spans could not join. A sink may now have an optional `around(event)`, entered for the work of each span (the OpenTelemetry sink makes its span current there), and `trace_headers(span)`, which the requester sends with each attempt.
 - **An event-log line can be found in the exported trace.** The event log counts span ids from 1 and OpenTelemetry's are random, with nothing tying them; each exported span now carries `recon.event.span`, its event-log id.
