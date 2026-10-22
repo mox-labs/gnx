@@ -48,6 +48,10 @@ without content (P1.1).
 **Connections.** hardline's connections belong to the event loop that opened them. Sessions in
 one loop share them, and they are closed when the last session running in that loop ends.
 
+**The model alone.** :func:`hardline_model` is the same ``Model`` for a caller that runs
+pydantic-ai itself: the ``hardline`` model runtime hands it out (``pydantic_ai_model``), so an
+evaluator's judge calls its model on a row its config names, and nothing else.
+
 ``pydantic_ai`` and ``hardline`` are imported inside the methods that use them, so importing
 matrix loads neither. Type URL: ``matrix.v1.agent-runtime.pydantic-ai``.
 """
@@ -63,7 +67,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from matrix.domain.agent import AgentResponse
+from matrix.domain.agent import AgentCapabilities, AgentResponse
 from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason
 from matrix.domain.problems import problem
 
@@ -102,6 +106,12 @@ class PydanticAiRuntimeConfig(BaseModel):
     tools: dict[str, str] = Field(default_factory=dict)
     temperature: float | None = Field(default=None, ge=0)
     max_tokens: int | None = Field(default=None, gt=0)
+
+    def capabilities(self) -> AgentCapabilities:
+        """A session loads no skill, from settings or its working directory: pydantic-ai has
+        none. It reads nothing of the machine beyond its config, so nothing keeps it out.
+        Whether its tools write files is the functions' own to say."""
+        return AgentCapabilities(settings_skills=False, project_skills=False)
 
 
 class PydanticAiRuntime:
@@ -219,7 +229,7 @@ class PydanticAiRuntime:
         from pydantic_ai.usage import UsageLimits
 
         model = _model_class()(
-            self._models, definition.model or self._config.default_model, _Session()
+            self._models, definition.model or self._config.default_model, _Session(), None
         )
         agent: Agent[None, str] = Agent(
             model,
@@ -278,6 +288,17 @@ class PydanticAiRuntime:
         if self._config.temperature is not None:
             settings["temperature"] = self._config.temperature
         return cast("ModelSettings", settings) if settings else None
+
+
+def hardline_model(
+    models: Hardline, row: str | None, *, settings: Mapping[str, Any] | None = None
+) -> _HardlineModel:
+    """pydantic-ai's ``Model`` over ``row`` of the hardline runtime ``models`` (None: its
+    default), each request one hardline call, for a caller that runs pydantic-ai itself.
+    ``settings`` are its default model settings (``max_tokens``, ``temperature``), which a
+    request's own override. Its ``aclose()`` closes the connections its calls opened in the
+    running event loop. Raises hardline's ``UnknownModelError`` for a row it cannot resolve."""
+    return _model_class()(models, row, _Session(), dict(settings or {}) or None)
 
 
 def _imported(name: str, reference: str) -> Callable[..., Any]:
@@ -440,7 +461,9 @@ _FINISH: dict[str, str] = {
 
 
 @cache
-def _model_class() -> Callable[[Hardline, str | None, _Session], _HardlineModel]:
+def _model_class() -> Callable[
+    [Hardline, str | None, _Session, dict[str, Any] | None], _HardlineModel
+]:
     """pydantic-ai's ``Model`` backed by a hardline runtime and one registry row: defined when
     a session first needs it, so importing this module imports no pydantic-ai."""
     from hardline import Message, ToolCall, ToolSpec
@@ -462,11 +485,21 @@ def _model_class() -> Callable[[Hardline, str | None, _Session], _HardlineModel]
         """One hardline registry row as a pydantic-ai model. Each response it gives is one
         hardline call; the call's Completion is kept on ``session``."""
 
-        def __init__(self, models: Hardline, row: str | None, session: _Session) -> None:
-            super().__init__()
+        def __init__(
+            self,
+            models: Hardline,
+            row: str | None,
+            session: _Session,
+            settings: dict[str, Any] | None,
+        ) -> None:
+            super().__init__(settings=cast("ModelSettings | None", settings))
             self._hardline = models
             self._row = models.registry.get(row).name
             self.session = session
+
+        async def aclose(self) -> None:
+            """Close the connections this model's calls opened in the running event loop."""
+            await self._hardline.aclose()
 
         @property
         def model_name(self) -> str:
@@ -572,7 +605,10 @@ def _model_class() -> Callable[[Hardline, str | None, _Session], _HardlineModel]
                 raise UserError(f"a hardline model cannot send a {type(part).__name__}")
         return turns
 
-    return cast("Callable[[Hardline, str | None, _Session], _HardlineModel]", HardlineModel)
+    return cast(
+        "Callable[[Hardline, str | None, _Session, dict[str, Any] | None], _HardlineModel]",
+        HardlineModel,
+    )
 
 
 def _arguments(call: ToolCallPart) -> str:
@@ -587,3 +623,5 @@ if TYPE_CHECKING:
 
     class _HardlineModel(Model):
         session: _Session
+
+        async def aclose(self) -> None: ...

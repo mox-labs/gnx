@@ -193,9 +193,11 @@ not 40: 60 sessions, each a call to a paid model on `claude-sdk`. A plan that ca
 why, with the fix: a runtime that cannot start, a file the subject names that is not there.
 
 `ix validate` also refuses a session its sensors could not see into (`unobservable`): a
-skill with no `Skill` tool among `tools`, skills a session's `setting_sources` would never
-read, files to `collect` that no tool may write. It does so whatever the agent runtime is
-called. Such a run would report a confident verdict about a harness that could not observe
+skill with no `Skill` tool among `tools`, skills a session would never load (claude-sdk with
+`setting_sources` that leave `project` out), files to `collect` that no tool may write. Whether
+a session loads its skills or can write is the runtime's to declare, as its options make it,
+so ix asks it and reads no option by name: the same review holds whatever the agent runtime
+is called. Such a run would report a confident verdict about a harness that could not observe
 the agent.
 
 ## 6. A dry run
@@ -461,10 +463,10 @@ The judge names its runtime with one of two options, and there is no default:
 - `model_runtime`: a matrix model runtime, one call per reading. `hardline` calls a model
   provider through hardline's registry; `mock` does not.
 - `agent_runtime`: a matrix agent runtime, a one-turn session with no tools per reading, in
-  a fresh temporary directory. `claude-sdk` calls a model provider; `mock` does not. A
-  runtime whose config takes `setting_sources` reads none unless the judge's
-  `runtime_options` name some, so a CLAUDE.md, a hook or your own settings where ix runs
-  cannot shape its scores.
+  a fresh temporary directory. `claude-sdk` calls a model provider; `mock` does not. It is
+  given the config its runtime declares keeps the machine out (claude-sdk's
+  `setting_sources: []`), under the judge's own `runtime_options`, so a CLAUDE.md, a hook or
+  your own settings where ix runs cannot shape its scores.
 
 `ix validate` refuses a judge that names neither, or both. What its runtime reported it
 cost, where it reports one, is kept in the reading's detail, beside the judge's runtime and
@@ -513,10 +515,11 @@ refuses a second (`name_taken`).
 `ArgumentCorrectness`, `MaxToolCalls`, `MaxModelRequests` and `HasMatchingSpan` read the
 spans matrix makes of the session: `execute_tool` for each tool call the runtime timed
 (`claude-sdk` does). The spans are captured from the OpenTelemetry SDK in ix's own process,
-so set the `OTEL_*` variables that ask for export (an `OTEL_EXPORTER_OTLP_ENDPOINT`, or
-`OTEL_TRACES_EXPORTER=console`): `ix` then installs the SDK, and matrix's `otel` observer is
-on the run. A tool call's arguments are on its span only when the observer captures content,
-which `ArgumentCorrectness` needs:
+and a run with such an evaluator keeps them there with nothing to set: it puts matrix's `otel`
+observer on the run, and uses the tracer provider installed (the one `ix` installs when the
+`OTEL_*` variables ask for export, which exports them too), or installs one with no exporter
+when there is none, so nothing leaves the process. A tool call's arguments are on its span
+only when the observer captures content, which `ArgumentCorrectness` needs:
 
 ```yaml
 # ./matrix.yaml
@@ -524,8 +527,10 @@ matrix:
   observers: [{type: otel, capture_content: true}]
 ```
 
-Without the spans the reading fails, and says which of the two is missing. pydantic-evals'
-own answer then, false or 0, would read as an agent that called no tool. The spans are kept
+Without the spans the reading fails, and says why (no OpenTelemetry SDK installed, or a
+session that reported nothing as spans). pydantic-evals' own answer then, false or 0, would
+read as an agent that called no tool. A judge's own model calls are made while the sensors
+read, after the trial's spans were kept, so they never count among the trial's. The spans are kept
 in each trial's interaction, so `ix report` reads them later without OpenTelemetry.
 
 **An evaluator that calls a model** (`LLMJudge`, `GEval`) is a judge: its metrics are
@@ -534,10 +539,11 @@ sensor's are. Its model comes from the matrix model runtime the sensor names wit
 `model_runtime` (and `model`, `runtime_options`), never from its `arguments`. It never comes
 from pydantic-evals' default model either, which would find a provider from the environment.
 `ix validate` refuses a judge evaluator that names no `model_runtime`, and a `model` among
-its arguments. A dry run judges it on pydantic-ai's `TestModel`, which calls no model. A real
-model runtime needs hardline's pydantic-ai model, which this release does not have yet:
-`ix plan` lists such a judge under `Runnable: no` and says so. Until then, score with the
-`judge` sensor.
+its arguments. A dry run judges it on pydantic-ai's `TestModel`, which calls no model. On a real
+model runtime the judge calls the pydantic-ai model that runtime gives: `hardline` gives one
+on the registry row `model` names (from `matrix.models` or `runtime_options.models`), each
+request a hardline call. A model runtime that gives none cannot judge: `ix plan` lists such a
+judge under `Runnable: no` and says so; score with the `judge` sensor there.
 
 ## A model call instead of a session
 

@@ -15,7 +15,13 @@ Not an agent runtime: no tool loop, no permissions, no trajectory. Those live on
 
 from importlib.metadata import PackageNotFoundError, version
 
-from hardline.composition import build_runtime, discover_backends, discover_sources, load_registry
+from hardline.composition import (
+    build_runtime,
+    configure_telemetry,
+    discover_backends,
+    discover_sources,
+    load_registry,
+)
 from hardline.conformance import answer_problems, backend_problems
 from hardline.domain.errors import (
     RETRYABLE,
@@ -105,6 +111,7 @@ __all__ = [
     "answer_problems",
     "backend_problems",
     "build_runtime",
+    "configure_telemetry",
     "discover_backends",
     "discover_sources",
     "get_skill",

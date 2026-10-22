@@ -242,3 +242,42 @@ async def test_on_the_run_path_a_rate_limit_keeps_its_hint_and_anything_else_fai
         await HardlineModelRuntime(_Raises(ValueError("odd"))).call(ModelRequest(prompt="x"))  # type: ignore[arg-type]
     assert (e.value.reason, e.value.kind) == ("failed", "component")
     assert isinstance(e.value.__cause__, ValueError)
+
+
+def test_an_agent_runtime_declares_what_its_sessions_do_as_data() -> None:
+    """W2.9: whether a session loads skills from settings or from its working directory,
+    whether its tools can write files, and the config that keeps it from reading the machine
+    it runs on, are the runtime's to declare (its config's ``capabilities()``, asked through
+    ``Entry.capabilities``), so a caller asks the runtime instead of reading option names it
+    would have to know."""
+    from matrix import AgentCapabilities, default_registry
+
+    registry = default_registry(discover=False)
+    claude = registry.entry("agent-runtime", "matrix.v1.agent-runtime.claude-sdk")
+    unset = claude.capabilities({})
+    assert unset is not None
+    # Unset, the CLI's own default decides, which the runtime does not claim to know.
+    assert (unset.settings_skills, unset.project_skills, unset.writes_files) == (None,) * 3
+    assert unset.hermetic == {"setting_sources": []}
+    assert unset.set_by == {
+        "settings_skills": "setting_sources",
+        "project_skills": "setting_sources",
+        "writes_files": "permission_mode",
+    }
+    hermetic = claude.capabilities({"setting_sources": []})
+    assert hermetic is not None
+    assert (hermetic.settings_skills, hermetic.project_skills) == (False, False)
+    user = claude.capabilities({"setting_sources": ["user"]})
+    assert user is not None and (user.settings_skills, user.project_skills) == (True, False)
+    planning = claude.capabilities({"permission_mode": "plan"})
+    assert planning is not None and planning.writes_files is False
+    editing = claude.capabilities({"permission_mode": "acceptEdits"})
+    assert editing is not None and editing.writes_files is None
+    # A config the runtime refuses has no answers: building it says why.
+    assert claude.capabilities({"permission_mode": "sometimes"}) is None
+    pydantic_ai = registry.entry("agent-runtime", "matrix.v1.agent-runtime.pydantic-ai")
+    assert pydantic_ai.capabilities({}) == AgentCapabilities(
+        settings_skills=False, project_skills=False
+    )
+    # The stand-in declares nothing: a dry run is reviewed as the session it stands in for.
+    assert registry.entry("agent-runtime", "matrix.v1.agent-runtime.mock").capabilities({}) is None

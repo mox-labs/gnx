@@ -37,6 +37,7 @@ from matrix import (
     default_registry,
 )
 from matrix.adapters._out.observers.otel import OtelObserver
+from matrix.adapters._out.runtime.model import HardlineModelRuntime, HardlineModelRuntimeConfig
 from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntime, PydanticAiRuntimeConfig
 
 #: Every word looked up, by every session in this module.
@@ -449,3 +450,25 @@ def test_importing_matrix_does_not_import_pydantic_ai() -> None:
         [sys.executable, "-c", script], capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stderr
+
+
+async def test_a_hardline_model_runtime_gives_a_pydantic_ai_model_on_a_row_it_names() -> None:
+    """W11.2b: a caller that runs pydantic-ai itself (ix's evaluator judge) asks a model
+    runtime for a pydantic-ai ``Model`` (``pydantic_ai_model``, optional on the port), so the
+    model comes from the runtime's config and nowhere else: its row, and its ``max_tokens`` and
+    ``temperature``. Each request is one hardline call; the connections close with ``aclose``."""
+    from pydantic_ai import Agent
+
+    runtime = HardlineModelRuntime(
+        _models("four"), HardlineModelRuntimeConfig(default_model="q", max_tokens=32)
+    )
+    model = runtime.pydantic_ai_model(None)
+    assert model.model_name == "q"
+    agent: Agent[None, str] = Agent(model)
+    agent.instrument = False
+    assert (await agent.run("What is 2 + 2?")).output == "four"
+    (call,) = model.session.calls
+    assert call.name == "q" and call.params is not None and call.params.max_tokens == 32
+    await model.aclose()
+    with pytest.raises(ConfigError, match="cannot resolve the model"):
+        runtime.pydantic_ai_model("unknown")

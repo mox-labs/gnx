@@ -49,7 +49,9 @@ models:
     api_key: file:~/.secrets/claude-api
 ```
 
-Fields: `backend`, `model`, `family` (required) · `base_url` · `proxy` (an http(s) proxy, no
+Fields: `backend`, `model`, `family` (required) · `provider` (who serves the row, as the GenAI
+conventions name providers: `openai`, `ollama`; what telemetry calls it, the backend's name when
+unset) · `base_url` · `proxy` (an http(s) proxy, no
 credentials in it) · `api_key` (`env:`/`file:` only) · `local` · `structured` (`prompt` |
 `json_object` | `json_schema`) · `max_tokens` · `temperature` · `timeout_s` · `retries` (transient failures only, default 2, full-jitter backoff, honours a
 provider's Retry-After) · `fallbacks` (distinct registry names tried once retries are spent) ·
@@ -236,12 +238,21 @@ that counts retries and fallbacks in OpenTelemetry, below, unless it is handed a
 
 `build_runtime` records OpenTelemetry on the GenAI semantic conventions (as read at
 `open-telemetry/semantic-conventions-genai` `9ffc7e0`, status Development), through the API
-only: nothing is recorded until the application installs an SDK, and hardline installs none.
+only: nothing is recorded until the application installs an SDK, and the library installs none.
 A host hands its own providers as `build_runtime(tracer_provider=..., meter_provider=...)`.
+
+The `hardline` command is an application, and installs the SDK from the standard `OTEL_*`
+variables, as `matrix` and `ix` do (`hardline.configure_telemetry()`, for another entry point of
+one's own): `OTEL_TRACES_EXPORTER` and `OTEL_METRICS_EXPORTER` (`otlp`, the default, or `console`
+on stderr), OTLP over `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf`, the default; `grpc` when
+its exporter is installed) to the endpoint the `OTEL_EXPORTER_OTLP_*` variables name, and
+`service.name` `hardline` unless `OTEL_SERVICE_NAME` says otherwise. With none of them set,
+nothing is installed. What it cannot install is a `hardline: warning:` line, and under `--json`
+one of `check`'s `warnings`.
 
 | signal | what | attributes |
 |---|---|---|
-| span `chat {model}`, kind CLIENT | one per backend call, under the caller's current span: a retry or a fallback is a sibling | `gen_ai.operation.name`, `gen_ai.provider.name` (the backend's name), `gen_ai.request.model`, `.max_tokens`, `.temperature`, `gen_ai.output.type` (`json` in a structured mode), `server.address`, `server.port`, `hardline.row`; on an answer `gen_ai.response.model`, `.id`, `.finish_reasons` (the provider's own) and `gen_ai.usage.*`; on a failure `error.type` (the `BackendError` reason) and status `ERROR` |
+| span `chat {model}`, kind CLIENT | one per backend call, under the caller's current span: a retry or a fallback is a sibling | `gen_ai.operation.name`, `gen_ai.provider.name` (the row's `provider`, else the backend's name), `gen_ai.request.model`, `.max_tokens`, `.temperature`, `gen_ai.output.type` (`json` in a structured mode), `server.address`, `server.port`, `hardline.row`; on an answer `gen_ai.response.model`, `.id`, `.finish_reasons` (the provider's own) and `gen_ai.usage.*`; on a failure `error.type` (the `BackendError` reason) and status `ERROR` |
 | `gen_ai.client.inference.duration` (s) | every backend call, failed ones included | operation, provider, request and response model, server, `error.type` |
 | `gen_ai.client.inference.usage.input_tokens`, `.output_tokens`, `.cache_read.input_tokens`, `.cache_write.input_tokens` | each strictly positive count a reply reports | the same, with `gen_ai.token.modality: text` |
 | `hardline.retries`, `hardline.fallbacks` | each retry, and each move down a fallback chain | `hardline.row`, `hardline.fallback`, `error.type` |

@@ -54,7 +54,7 @@ from .composition.documents import (
     plan_config,
 )
 from .composition.telemetry import Telemetry, configure_telemetry
-from .domain.agent import AgentDefinition, AgentResponse, BoundAgent
+from .domain.agent import AgentCapabilities, AgentDefinition, AgentResponse, BoundAgent
 from .domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
 from .domain.component import LEDGER, Component, Inputs, RunContext, Wiring, wire
 from .domain.config import (
@@ -110,7 +110,14 @@ from .domain.model_call import (
     RequestParams,
     TokenUsage,
 )
-from .domain.model_step import MODEL_CALL, MODEL_STEP, PROMPT, ModelStep, ModelStepConfig
+from .domain.model_step import (
+    MODEL_CALL,
+    MODEL_STEP,
+    PROMPT,
+    ModelStep,
+    ModelStepConfig,
+    call_model,
+)
 from .domain.observer import Event, EventPolicy, Observer, RecordingObserver
 from .domain.ports._out.agent_runtime import RUNTIME_LOGGER, Agent, AgentRuntime
 from .domain.ports._out.construct_store import ConstructStore, RunWriter
@@ -160,6 +167,7 @@ __all__ = [
     "TASK",
     "Accumulate",
     "Agent",
+    "AgentCapabilities",
     "AgentConfig",
     "AgentDefinition",
     "AgentResponse",
@@ -246,6 +254,7 @@ __all__ = [
     "__version__",
     "agent_session",
     "agent_runtime_type_url",
+    "call_model",
     "call_sent",
     "call_session",
     "cancel_on_signals",

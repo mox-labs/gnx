@@ -1,9 +1,10 @@
 """ix's own spans, through the OpenTelemetry API, under the instrumentation scope ``ix``.
 
-ix is a library: it creates spans through the API and never installs a provider, so they go
-wherever the application's provider sends them, and nowhere when there is none. The ``ix``
-command installs one from the standard ``OTEL_*`` variables through matrix
-(``matrix.configure_telemetry``); a program embedding ix configures OpenTelemetry itself.
+ix creates spans through the API, so they go wherever the application's provider sends them,
+and nowhere when there is none. The ``ix`` command installs one from the standard ``OTEL_*``
+variables through matrix (``matrix.configure_telemetry``); a program embedding ix configures
+OpenTelemetry itself. The one provider ix installs is for a run whose sensors read spans when
+none is installed (:func:`keep_spans`): it has no exporter, so the spans stay in the process.
 
 The spans are ix's work: ``ix.plan``, ``ix.run``, ``ix.environment``, ``ix.trial`` and
 ``ix.sensor``. The agent
@@ -98,3 +99,19 @@ class OtelTracer:
         child. An exception that leaves it marks it as an error."""
         with self._tracer.start_as_current_span(name, attributes=_plain(attributes)) as span:
             yield _Span(span)
+
+
+def keep_spans() -> None:
+    """Make the spans of this process readable inside it: the tracer provider installed is
+    used as it is, exporters and all; when there is none, one with no span processor is
+    installed, so a span is kept only by what attaches to it (a sensor's capture) and nothing
+    is exported. OpenTelemetry lets a process install one provider, so a program that installs
+    its own does so before a run. Without the SDK none can be: a reading of the spans then
+    says so."""
+    if hasattr(trace.get_tracer_provider(), "add_span_processor"):
+        return
+    try:
+        from opentelemetry.sdk.trace import TracerProvider
+    except ImportError:
+        return
+    trace.set_tracer_provider(TracerProvider())

@@ -8,6 +8,10 @@
 * **BoundAgent** pairs them. The runtime's ``check`` runs at binding, so a definition the
   runtime cannot honour fails at composition, before anything has spent a token.
 
+What a session on a runtime *does*, as its config sets it (whether it loads skills, whether
+its tools can write), is data the runtime declares (:class:`AgentCapabilities`), so a caller
+asks the runtime instead of reading its options by name.
+
 A runtime reports how a session *ended* (``AgentResponse.stop``: ``completed``, or the limit
 it reached) and raises :class:`~matrix.domain.errors.AgentRuntimeError` with a classified
 ``reason`` when the session *failed*. Content is never guaranteed, only a response or an error.
@@ -112,6 +116,32 @@ class AgentDefinition(BaseModel):
     @classmethod
     def _trimmed(cls, value: str) -> str:
         return value.strip()
+
+
+class AgentCapabilities(BaseModel):
+    """What sessions on an agent runtime do, as its config sets them: data the runtime
+    declares about itself, so a caller asks it instead of reading its options by name. A
+    runtime's config class declares them, as a method ``capabilities()`` returning one of
+    these, and :meth:`~matrix.domain.registry.Entry.capabilities` asks it of a config. Each
+    answer is None where the runtime does not say: a caller then assumes nothing."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Whether a session loads skills from settings (this machine's, the user's, the
+    #: project's), beyond those it is given as plugins.
+    settings_skills: bool | None = None
+    #: Whether a session loads the skills in its working directory (``.claude/skills``),
+    #: where a caller puts the skills it gives a session.
+    project_skills: bool | None = None
+    #: Whether a session's tools can write files.
+    writes_files: bool | None = None
+    #: Config that keeps a session from reading anything of the machine it runs on beyond
+    #: what it is given (its settings, memory files, hooks): what a caller lays under its own
+    #: config when a session must not be shaped by where it runs. Empty: nothing to add.
+    hermetic: dict[str, Any] = {}
+    #: The config key that decides each answer above, by the answer's name: where a caller
+    #: points someone who wants another answer. An answer no key changes is not in it.
+    set_by: dict[str, str] = {}
 
 
 class AgentResponse(BaseModel):

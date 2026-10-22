@@ -644,9 +644,11 @@ installed; set without it, every `--json` document carries a warning. A program 
 imports ix configures OpenTelemetry itself, or calls `ix.configure_telemetry()`.
 
 The `evaluator` sensor reads a trial's spans in this process, from the SDK's tracer
-provider, so an evaluator that reads spans (`ToolCorrectness`, `MaxToolCalls`) needs both:
-the SDK installed (the `OTEL_*` variables asking for export) and matrix's `otel` observer on
-the run, which is there whenever they ask, or when `matrix.observers` names it. A tool
+provider. A run with an evaluator that reads spans (`ToolCorrectness`, `MaxToolCalls`) puts
+matrix's `otel` observer on itself, and uses the tracer provider installed, exporters and
+all; when none is, it installs one with no exporter, so the spans stay in the process. That is
+the one provider ix installs; a program that installs its own does so before it runs an
+experiment, since OpenTelemetry lets a process install one. A tool
 call's arguments are on its span only with `capture_content`
 (`observers: [{type: otel, capture_content: true}]`), which `ArgumentCorrectness` reads.
 Without the spans its reading fails and says why; it never reads as an agent that called no

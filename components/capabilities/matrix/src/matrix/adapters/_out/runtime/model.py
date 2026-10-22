@@ -10,6 +10,10 @@ a step is built, so an unknown name is a ``config`` problem at composition, not 
 mid-run. With an ``output`` type the call is hardline's ``extract``: the schema is stated to
 the model, and a reply that does not fit is repaired within hardline's bound.
 
+A caller that runs pydantic-ai itself (an evaluator's judge) asks ``pydantic_ai_model(model)``
+for pydantic-ai's ``Model`` on a row this runtime resolves, with its ``max_tokens`` and
+``temperature``: the model a caller gets is the one this runtime's config names.
+
 The call's record carries hardline's whole record of it: why the reply ended
 (``finish_reason``, the provider's own value, and any refusal), the model that answered and
 its family and backend, ``fallback_from`` when a fallback answered, usage with cache tokens
@@ -120,6 +124,19 @@ class HardlineModelRuntime:
                 "or a hardline config tier",
                 got=model,
             ) from e
+
+    def pydantic_ai_model(self, model: str | None = None) -> Any:
+        """pydantic-ai's ``Model`` on the row ``model`` names (unset: ``default_model``, then
+        the registry's default), its requests made through this runtime's hardline with this
+        runtime's ``max_tokens`` and ``temperature`` as defaults. Its ``aclose()`` closes the
+        connections its calls opened in the running event loop. Raises ``ConfigError`` for a
+        name the registry does not resolve, as :meth:`check` does."""
+        from matrix.adapters._out.runtime.pydantic_ai import hardline_model
+
+        self.check(model)
+        given = {"max_tokens": self._config.max_tokens, "temperature": self._config.temperature}
+        settings = {key: value for key, value in given.items() if value is not None}
+        return hardline_model(self._runtime, model or self._config.default_model, settings=settings)
 
     async def call(self, request: ModelRequest) -> ModelCall:
         from hardline import HardlineError

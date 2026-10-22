@@ -120,6 +120,30 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Added
 
+- **What an agent runtime's sessions do is data it declares: `AgentCapabilities`.** Whether a
+  session loads skills from settings or from its working directory, whether its tools can
+  write files, the config that keeps it from reading the machine it runs on, and the config
+  key that decides each. A runtime's config class declares them (`capabilities()`), and
+  `Entry.capabilities(config)` asks. `claude-sdk` answers from `setting_sources` and
+  `permission_mode`, `pydantic-ai` declares that it loads no skills, the `mock` declares
+  nothing. A caller (ix) asks the runtime instead of reading Claude Code's option names
+  (W2.9).
+
+- **A model runtime may give pydantic-ai a `Model`: `pydantic_ai_model(model)`**, an optional
+  member of the port. The `hardline` runtime gives one on a row it resolves, each request a
+  hardline call with the runtime's `max_tokens` and `temperature` as defaults, and an `aclose()`
+  for its connections. It is how ix's evaluator judge gets its model from the model runtime the
+  experiment names, from config and nowhere else (W11.2b). The `Model` is the one the
+  `pydantic-ai` agent runtime already used; it now takes default settings.
+
+- **A model step's call path is public: `call_model(runtime, request, *, name, ...)`.** A
+  caller that calls a model runtime itself (ix's `model-call` trial and its judge) could record
+  the call's session row and nothing else, so its call was no `matrix.model` span and a model
+  runtime's own spans (hardline's `chat`) had no call span to nest under (W7.12). `call_model`
+  is the step's own path: the `matrix.model.start`/`.end` events, each observer's `around`
+  entered while the runtime works, and the session row whether the call replied, failed or was
+  cancelled. The model step now makes its call through it.
+
 - **A tool call's arguments, as content.** `matrix.tool.start` carries the call's input as
   JSON (`arguments`), and the `otel` observer exports it as `gen_ai.tool.call.arguments` on
   the `execute_tool` span only with `capture_content`, as the conventions make it opt-in.

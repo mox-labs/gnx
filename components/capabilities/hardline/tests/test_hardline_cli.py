@@ -7,6 +7,9 @@ shared by matrix, ix, recon and hardline; these are the two tests each of them h
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, get_args
 
@@ -120,3 +123,46 @@ def test_under_json_stderr_keeps_to_the_envelope(
     assert capsys.readouterr().err == ""
     assert main(["models"]) == 0
     assert "broken" in capsys.readouterr().err
+
+
+def _complete_in_a_process(tmp_path: Path, **otel: str) -> subprocess.CompletedProcess[str]:
+    """``hardline complete`` on a mock row, run as a command is, in a process of its own: the
+    SDK it installs is that process's, never the test run's. ``otel`` are the ``OTEL_*``
+    variables it is given; none of the caller's reach it."""
+    (tmp_path / "hardline.yaml").write_text("models:\n  q: {backend: mock, model: m, family: x}\n")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("OTEL_")}
+    env.update(HOME=str(tmp_path), **otel)
+    return subprocess.run(
+        [sys.executable, "-m", "hardline.adapters._in.cli", "complete", "q", "hi"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_the_command_exports_its_spans_as_the_otel_variables_ask(tmp_path: Path) -> None:
+    """W7.11: the command installs the OpenTelemetry SDK from the standard ``OTEL_*``
+    variables, as matrix's and ix's do (Q4). Before, ``hardline complete`` exported nothing
+    whatever they said: the library records through the API alone, and nothing installed an
+    SDK."""
+    done = _complete_in_a_process(
+        tmp_path, OTEL_TRACES_EXPORTER="console", OTEL_METRICS_EXPORTER="none"
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "mock:m:hi"
+    assert '"name": "chat m"' in done.stderr  # the console exporter, on stderr
+    assert '"service.name": "hardline"' in done.stderr
+
+
+def test_the_command_installs_nothing_when_no_variable_asks(tmp_path: Path) -> None:
+    done = _complete_in_a_process(tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "mock:m:hi" and done.stderr == ""
+
+
+def test_an_exporter_hardline_does_not_install_is_said_and_skipped(tmp_path: Path) -> None:
+    done = _complete_in_a_process(tmp_path, OTEL_TRACES_EXPORTER="zipkin")
+    assert done.returncode == 0, done.stderr
+    assert "hardline: warning: OTEL_TRACES_EXPORTER" in done.stderr and "zipkin" in done.stderr

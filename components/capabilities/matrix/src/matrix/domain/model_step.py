@@ -23,7 +23,9 @@ is not taken to have cut it, and the row keeps the None.
 
 The call is a span of work: ``matrix.model.start`` and ``.end`` (the model asked for, and the
 one that answered and why its reply ended), with each observer's ``around`` entered while the
-runtime works, so what the runtime opens inside it (hardline's spans) nests under it.
+runtime works, so what the runtime opens inside it (hardline's spans) nests under it. That path
+is public, :func:`call_model`, for a caller that calls a model runtime itself: its call is then
+the same span of work and the same session row as a step's.
 
 Both the prompt's placeholders and the model name are checked when the step is built: a
 typo, or a model the runtime cannot resolve, is a ``config`` problem at composition. A
@@ -62,14 +64,21 @@ from matrix.domain.observer import (
     emit,
     observing,
 )
-from matrix.domain.session import call_sent, call_session, record_cancelled, record_session
+from matrix.domain.session import (
+    Session,
+    call_sent,
+    call_session,
+    record_cancelled,
+    record_session,
+)
 from matrix.domain.template import check_template, json_document, render
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from matrix.domain.component import Inputs, RunContext
     from matrix.domain.model_call import ModelCall
+    from matrix.domain.observer import Observer
     from matrix.domain.ports._out.model_runtime import ModelRuntime
 
 MODEL_STEP = "matrix.v1.model-step"
@@ -169,82 +178,12 @@ class ModelStep:
         return rows
 
     async def _call(self, request: ModelRequest) -> ModelCall:
-        """One call on the runtime, as a span of work (``matrix.model.start`` and ``.end``,
-        whose span is current in this task while the runtime works), recorded in the
-        session table whether it replied or failed. The call returned points at its row."""
-        scope = CURRENT_SPAN.get()
-        run_id, parent, component = (
-            (scope.run_id, scope.span, scope.component) if scope else (None, None, None)
-        )
-        span = uuid.uuid4().hex
-        runtime = self._config.runtime
-        begun = Event(
-            MODEL_START,
-            span=span,
-            run_id=run_id,
-            parent=parent,
-            fields={"runtime": runtime, "model": request.model},
-            component=component,
-        )
-        await emit((), begun)
-        started = time.monotonic()
-        fields: dict[str, Any] = {"runtime": runtime}
-        with around(observing(), begun) as end:
-            try:
-                call = await self._runtime.call(request)
-            except asyncio.CancelledError as e:
-                fields.update(status="cancelled", reason="cancelled")
-                session = call_session(
-                    None,
-                    sent=call_sent(request),
-                    runtime=self._runtime_url,
-                    drives=self._drives,
-                    error=e,
-                )
-                record_cancelled(session)
-                raise
-            except Exception as e:
-                fields.update(status="failed", error=str(e), reason=getattr(e, "reason", None))
-                fields["kind"] = getattr(e, "kind", type(e).__name__)
-                self._record(request, e.call if isinstance(e, ModelRuntimeError) else None, e)
-                raise
-            else:
-                fields.update(
-                    status="completed",
-                    name=call.name,
-                    model=call.model,
-                    family=call.family,
-                    provider=call.provider,
-                    finish_reason=call.finish_reason,
-                )
-                return call.model_copy(update={"session": self._record(request, call)})
-            finally:
-                fields["duration_ms"] = int((time.monotonic() - started) * 1000)
-                ended = Event(
-                    MODEL_END,
-                    span=span,
-                    run_id=run_id,
-                    parent=parent,
-                    fields=fields,
-                    component=component,
-                )
-                end(ended)
-                await emit((), ended)
-
-    def _record(
-        self, request: ModelRequest, call: ModelCall | None, error: Exception | None = None
-    ) -> int | None:
-        """Record the call in the run's session table, whether its reply is whole, not whole,
-        or it failed (``error``, with what the runtime knew of the call); its row, or None
-        outside a run."""
-        return record_session(
-            call_session(
-                call,
-                sent=call_sent(request),
-                runtime=self._runtime_url,
-                drives=self._drives,
-                error=error,
-            )
+        return await call_model(
+            self._runtime,
+            request,
+            name=self._config.runtime,
+            runtime_url=self._runtime_url,
+            drives=self._drives,
         )
 
     def _whole(self, call: ModelCall) -> None:
@@ -288,6 +227,82 @@ class ModelStep:
                 "mock model runtime, make its reply that JSON; or drop `output`",
                 table=kind,
             ) from None
+
+
+async def call_model(
+    runtime: ModelRuntime,
+    request: ModelRequest,
+    *,
+    name: str,
+    runtime_url: str | None = None,
+    drives: tuple[str, ...] = (),
+    observers: Sequence[Observer] = (),
+) -> ModelCall:
+    """One call on ``runtime`` as a model step makes its own: a span of work
+    (``matrix.model.start`` and ``.end``, ``name`` the runtime's name as its caller knows it),
+    with each observer's ``around`` entered in this task while the runtime works, so what the
+    runtime opens inside it nests under it; and a row of the run's session table, whether it
+    replied, failed or was cancelled, under ``runtime_url`` with the distributions it
+    ``drives``. Inside a run the run's observers see it, and ``observers`` besides; outside one,
+    ``observers`` only, and nothing is recorded. The call returned points at its row
+    (``session``); a failure is raised as it stands. Whether the reply is a whole answer is the
+    caller's to judge."""
+    scope = CURRENT_SPAN.get()
+    run_id, parent, component = (
+        (scope.run_id, scope.span, scope.component) if scope else (None, None, None)
+    )
+    span = uuid.uuid4().hex
+    begun = Event(
+        MODEL_START,
+        span=span,
+        run_id=run_id,
+        parent=parent,
+        fields={"runtime": name, "model": request.model},
+        component=component,
+    )
+    await emit(observers, begun)
+    started = time.monotonic()
+    fields: dict[str, Any] = {"runtime": name}
+
+    def recorded(call: ModelCall | None, error: BaseException | None = None) -> Session:
+        return call_session(
+            call, sent=call_sent(request), runtime=runtime_url, drives=drives, error=error
+        )
+
+    with around(observing(observers), begun) as end:
+        try:
+            call = await runtime.call(request)
+        except asyncio.CancelledError as e:
+            fields.update(status="cancelled", reason="cancelled")
+            record_cancelled(recorded(None, e))
+            raise
+        except Exception as e:
+            fields.update(status="failed", error=str(e), reason=getattr(e, "reason", None))
+            fields["kind"] = getattr(e, "kind", type(e).__name__)
+            record_session(recorded(e.call if isinstance(e, ModelRuntimeError) else None, e))
+            raise
+        else:
+            fields.update(
+                status="completed",
+                name=call.name,
+                model=call.model,
+                family=call.family,
+                provider=call.provider,
+                finish_reason=call.finish_reason,
+            )
+            return call.model_copy(update={"session": record_session(recorded(call))})
+        finally:
+            fields["duration_ms"] = int((time.monotonic() - started) * 1000)
+            ended = Event(
+                MODEL_END,
+                span=span,
+                run_id=run_id,
+                parent=parent,
+                fields=fields,
+                component=component,
+            )
+            end(ended)
+            await emit(observers, ended)
 
 
 #: How much of a reply a contract error quotes.

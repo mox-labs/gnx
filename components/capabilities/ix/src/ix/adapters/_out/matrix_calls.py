@@ -15,8 +15,10 @@ as written, and its ``check`` resolves the subject's ``model`` before anything s
 runtime registered as a stand-in (``stand_in``: matrix's ``mock``) gives canned replies:
 its trials are marked ``simulated``.
 
-**What is recorded.** Each call is a row of the run's session table (``matrix.v1.session``),
-as a model step's is, failed or not: :func:`recorded_call`. The trial's interaction names it.
+**What is recorded.** Each call goes through matrix's own call path
+(:func:`matrix.call_model`), as a model step's does: a ``matrix.model`` span of work, under
+which the runtime's own spans nest, and a row of the run's session table
+(``matrix.v1.session``), failed or not. The trial's interaction names the row.
 
 **What is kept.** ``response`` holds the prompt, the reply's text, the validated ``value``
 when there is one, and the model's ``refusal``. ``usage`` holds what the runtime reported of
@@ -124,7 +126,9 @@ class Call:
         )
         url = matrix.model_runtime_type_url(self.options.runtime)
         drives = tuple(self.runtimes.drives(MODEL_RUNTIME, self.options.runtime))
-        call = await recorded_call(runtime, request, url=url, drives=drives)
+        call = await matrix.call_model(
+            runtime, request, name=self.options.runtime, runtime_url=url, drives=drives
+        )
         response: dict[str, Any] = {"prompt": prompt, "text": call.text, "refusal": call.refusal}
         if call.value is not None:
             response["value"] = call.value
@@ -142,31 +146,6 @@ class Call:
             "simulated": self.simulated,
         }
         return {"response": response, "usage": usage}
-
-
-async def recorded_call(
-    runtime: matrix.ModelRuntime,
-    request: matrix.ModelRequest,
-    *,
-    url: str,
-    drives: tuple[str, ...] = (),
-) -> matrix.ModelCall:
-    """One call on ``runtime`` (whose type URL is ``url``, and which drives the distributions
-    ``drives``), recorded as a row of the run's session table, as matrix's model step records
-    its own: whether it replied or failed, and for a failure what the runtime's error carried
-    of it. Outside a run nothing is recorded. The call returned points at its row
-    (``session``); a failure is raised as it stands."""
-    sent = matrix.call_sent(request)
-    try:
-        call: matrix.ModelCall = await runtime.call(request)
-    except Exception as error:
-        known = error.call if isinstance(error, matrix.ModelRuntimeError) else None
-        matrix.record_session(
-            matrix.call_session(known, sent=sent, runtime=url, drives=drives, error=error)
-        )
-        raise
-    row = matrix.record_session(matrix.call_session(call, sent=sent, runtime=url, drives=drives))
-    return call if row is None else call.model_copy(update={"session": row})
 
 
 def _options(subject: SubjectConfig) -> CallOptions:

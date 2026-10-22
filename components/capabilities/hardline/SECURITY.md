@@ -55,7 +55,9 @@ the prompt off-machine. **A registry file decides where your prompts go.** Revie
 ## Telemetry
 
 hardline records OpenTelemetry spans and metrics through the API, which sends nothing until the
-host application installs an SDK and an exporter. What it records carries no content: no
+host application installs an SDK and an exporter. The `hardline` command installs one only when
+the standard `OTEL_*` variables ask for export, and sends to the endpoint they name: whoever sets
+those variables chooses where a command's telemetry goes. What it records carries no content: no
 prompt, system prompt, reply, refusal or error message is an attribute, a span event or a
 span status, and a failed call's exception is not recorded on its span
 (`test_no_content_leaves_in_a_span`). What it does record says where calls went: the model id,

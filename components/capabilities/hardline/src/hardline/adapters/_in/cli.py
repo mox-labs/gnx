@@ -15,6 +15,11 @@ failure, a usage error and a defect included, is one line on stderr: the
 Without it, stderr carries the same as prose, and what the library logs while a command runs as
 ``hardline: warning:`` lines; under ``--json`` stderr holds the envelope alone. Data goes to
 stdout. Nothing prompts.
+
+Telemetry is installed once per command from the standard ``OTEL_*`` variables
+(:func:`hardline.configure_telemetry`), as the ``matrix`` and ``ix`` commands install theirs:
+with none set, nothing is. What it could not install is a ``hardline: warning:`` line, and, under
+``--json``, among ``check``'s ``warnings``.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ from hardline import (
     UnknownModelError,
     __version__,
     build_runtime,
+    configure_telemetry,
     discover_backends,
     discover_sources,
     get_skill,
@@ -276,7 +282,7 @@ def check(as_json: bool) -> None:
     # A row whose key reference does not resolve would fail on its first call; reporting
     # it here is what lets an agent take `check`'s exit 0 at its word.
     problems = runtime.secret_problems()
-    warnings = [w.model_dump(mode="json") for w in runtime.warnings]
+    warnings = [w.model_dump(mode="json") for w in (*runtime.warnings, *_TELEMETRY)]
     if not as_json:
         for warning in runtime.warnings:
             click.echo(f"warning: {warning.path}: {warning.message}", err=True)
@@ -370,10 +376,26 @@ def _not_answered(c: Completion) -> str:
     return f"the reply ended without a whole answer {reason}"
 
 
+#: What telemetry could not install when the command started: ``check --json`` reports it.
+_TELEMETRY: list[Problem] = []
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one command and return the exit code of its outcome."""
     args = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args
+    telemetry = configure_telemetry()
+    _TELEMETRY[:] = telemetry.warnings
+    if not as_json:
+        for warning in telemetry.warnings:
+            click.echo(f"hardline: warning: {warning.path}: {warning.message}", err=True)
+    try:
+        return _run(args, as_json)
+    finally:
+        telemetry.shutdown()
+
+
+def _run(args: list[str], as_json: bool) -> int:
     try:
         with _hardline_log(as_json):
             code = cli.main(args=args, prog_name="hardline", standalone_mode=False)

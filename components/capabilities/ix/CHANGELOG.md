@@ -26,6 +26,25 @@ not used. Record section 24 has the reasons.
   `Runnable: no` in the plan.
 - `pydantic-evals` is a dependency, imported only inside the sensor's adapter.
 
+### Added: a judge evaluator judges on a real model runtime
+
+A judge evaluator (`LLMJudge`, `GEval`) on a real model runtime was `Runnable: no`: the root
+had no pydantic-ai model to give it (W11.2b). It now judges on the pydantic-ai model the
+named matrix model runtime gives (matrix's `pydantic_ai_model`): on `hardline`, the registry
+row `model` names, each request a hardline call, from `matrix.models` or the sensor's
+`runtime_options` and from nowhere else. A model runtime that gives none is still
+`Runnable: no`, saying so. The judge's connections close when its reading ends.
+
+### Added: span evaluators read spans with nothing exported
+
+A span evaluator (`ToolCorrectness`, `MaxToolCalls`, ...) had spans only when the `OTEL_*`
+variables asked for export; with nothing set, each reading failed (W11.2b). A run whose
+sensors read spans now puts matrix's `otel` observer on itself and uses the tracer provider
+installed, exporters and all, or installs one with no exporter when there is none: the
+evaluator reads the trial's spans and nothing leaves the process. A sensor says it reads
+spans by being a `SpanReader` (new optional port). A program that installs its own provider
+does so before running an experiment. ix now depends on `opentelemetry-sdk`.
+
 ### Added: an agent session on matrix's `pydantic-ai` runtime
 
 An `agent-session` subject names matrix's second agent runtime, `runtime: pydantic-ai`, as it
@@ -68,6 +87,21 @@ subjects need several services. Record section 22 has the reasons.
   any trial (`unbound`), naming what it did bind.
 
 ### Fixed
+
+- **What a session does is asked of its runtime, not read from option names** (W2.9). The
+  session reviews read `setting_sources` and `permission_mode` under `runtime_options` by
+  name, and the judge pinned `setting_sources: []` on any runtime whose config took it:
+  Claude Code's meanings applied to any runtime with those keys. ix now asks the runtime
+  (matrix's `AgentCapabilities`): whether a session loads skills from settings or its working
+  directory, whether its tools can write, and what config keeps the machine out. claude-sdk
+  answers as before; the `pydantic-ai` runtime says it loads no skills, so skills given to
+  one of its sessions are `unobservable`. A problem names the option the runtime says
+  decides it.
+
+- **A model call ix makes is a `matrix.model` span** (W7.12). A `model-call` trial and a judge
+  on a model runtime recorded their session rows beside matrix's event path, so neither was a
+  span of matrix's work, and a model runtime's own spans (hardline's `chat`) had no call span
+  to nest under. Both now call through `matrix.call_model`, the model step's own path.
 
 - `environment.process` asks the process it started whether it is still up. It asked
   `os.kill(pid, 0)` of the stored pid, which read a pid the system had given to another

@@ -916,6 +916,8 @@ source = { editable = "hardline" }
 dependencies = [
     { name = "httpx2" },
     { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "rich-click" },
@@ -925,6 +927,8 @@ dependencies = [
 requires-dist = [
     { name = "httpx2", specifier = ">=2.10,<3" },
     { name = "opentelemetry-api", specifier = ">=1.27" },
+    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
+    { name = "opentelemetry-sdk", specifier = ">=1.27" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich-click", specifier = ">=1.8" },
@@ -1044,6 +1048,7 @@ dependencies = [
     { name = "httpx" },
     { name = "matrix" },
     { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
     { name = "pydantic" },
     { name = "pydantic-evals" },
     { name = "rich" },
@@ -1073,6 +1078,7 @@ requires-dist = [
     { name = "matrix", extras = ["models"], marker = "extra == 'models'", editable = "matrix" },
     { name = "matrix", extras = ["otel"], marker = "extra == 'otel'", editable = "matrix" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
+    { name = "opentelemetry-sdk", specifier = ">=1.20" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-evals", specifier = ">=2.59,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },

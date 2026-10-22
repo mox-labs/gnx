@@ -21,6 +21,7 @@ import matrix
 import pytest
 import yaml
 from click.testing import CliRunner
+from matrix.adapters._out.observers.otel import OtelObserver
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -703,6 +704,40 @@ class TestThirdPartyRuntimes:
                                                  "model": "two-2"})  # fmt: skip
         assert any("oneshot has no model 'two-2'" in r.why for r in root.plan(unknown).unmet)
 
+    def test_each_model_call_ix_makes_is_a_matrix_model_span_as_a_model_steps_is(
+        self, tmp_path: Path
+    ) -> None:
+        """W7.12: ix made its direct model calls (a ``model-call`` trial, a judge on a model
+        runtime) beside matrix's event path, so none was a ``matrix.model`` span and a model
+        runtime's own spans (hardline's ``chat``) had no call span to nest under. Each now
+        goes through matrix's public call path, as a model step's call does."""
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        registry = _third_parties()
+        spans = "acme.v1.observer.spans"
+        registry.register("observer", spans, lambda: OtelObserver(tracer_provider=provider))
+        settings = matrix.Config[IxSettings](
+            client=IxSettings(), matrix=matrix.MatrixConfig(observers=(spans,))
+        )
+        lab = _either(
+            tmp_path, {"kind": "model-call", "runtime": ONESHOT, "model": "one-1"},
+            sensors=[{"kind": "judge", "rubric": "Helpful.", "model_runtime": ONESHOT}],
+            metrics=["judged_score"],
+        )  # fmt: skip
+        report = Root(registry=registry, settings=settings).run(lab, exploratory=True)
+        assert report.status == "completed"
+        calls = [span for span in exporter.get_finished_spans() if span.name == "matrix.model"]
+        assert len(calls) == 20  # ten trials, and the judge's reading of each
+        for call in calls:
+            attributes = dict(call.attributes or {})
+            assert attributes["matrix.runtime"] == ONESHOT
+            assert attributes["matrix.status"] == "completed"
+            assert attributes["gen_ai.response.model"] == "one-1"
+            assert call.parent is not None  # under the component whose work made it
+        # Each is still a row of the session table, as before, and the rows name no fewer.
+        assert len(_session_rows(report)) == 20
+
     def test_an_agent_runtime_gets_the_session_reviews(self, tmp_path: Path) -> None:
         root = Root(registry=_third_parties(), settings=_settings())
         (tmp_path / "skills" / "review").mkdir(parents=True)
@@ -748,6 +783,95 @@ class TestThirdPartyRuntimes:
         on_a_session = judged(agent_runtime=SCRIPTED)
         assert on_a_session and {j["port"] for j in on_a_session} == {"agent-runtime"}
         assert {j["runtime"] for j in on_a_session} == {SCRIPTED}
+
+
+class SandboxConfig(BaseModel):
+    """A third party's agent runtime config. It takes an option of claude-sdk's name with a
+    meaning of its own (``setting_sources``: where it reads its sandbox's settings from,
+    nothing to do with skills), and says what its sessions do."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    read_only: bool = False
+    setting_sources: list[str] = []
+
+    def capabilities(self) -> matrix.AgentCapabilities:
+        return matrix.AgentCapabilities(
+            settings_skills=True,
+            project_skills=True,
+            writes_files=not self.read_only,
+            set_by={"writes_files": "read_only"},
+        )
+
+
+SANDBOXED = "acme.v1.agent-runtime.sandboxed"
+
+
+def _sandboxed() -> matrix.Registry:
+    """The third parties, and ``acme``'s sandboxed agent runtime, scripted as the rest."""
+    registry = _third_parties()
+
+    def build(config: SandboxConfig) -> Scripted:
+        runtime = Scripted()
+        runtime.answer = _fires()
+        return runtime
+
+    registry.register("agent-runtime", SANDBOXED, build, config=SandboxConfig)
+    return registry
+
+
+class TestCapabilitiesAreAsked:
+    """W2.9: ix read two of claude-sdk's option names under ``runtime_options``
+    (``setting_sources``, ``permission_mode``) to tell whether a session would load its skills
+    or could write files: Claude Code's knowledge inside ix, applied to any runtime given
+    those names. ix now asks the runtime, which declares it as data
+    (``matrix.AgentCapabilities``)."""
+
+    def _validated(
+        self, tmp_path: Path, subject: dict[str, Any], **changes: Any
+    ) -> set[tuple[str, str]]:
+        (tmp_path / "skills" / "review").mkdir(parents=True, exist_ok=True)
+        routing = any(sensor["kind"] == "activation" for sensor in changes.get("sensors", ()))
+        lab = _either(tmp_path, subject, routing=routing, **changes)
+        root = Root(registry=_sandboxed(), settings=_settings())
+        return {(p.path, p.kind) for p in root.validate(lab).problems}
+
+    def test_a_runtime_that_loads_its_skills_is_not_held_to_claude_sdks_option(
+        self, tmp_path: Path
+    ) -> None:
+        """``acme``'s ``setting_sources: []`` means something of its own, and it says its
+        sessions load their skills: nothing is wrong. Read by name, as before, it was
+        "skills that can never fire"."""
+        session = {"kind": "agent-session", "runtime": SANDBOXED, "skills": ["skills/review"],
+                   "runtime_options": {"setting_sources": []}}  # fmt: skip
+        assert self._validated(tmp_path, session, sensors=[{"kind": "activation"}]) == set()
+        bare = {"kind": "agent-session", "runtime": SANDBOXED,
+                "runtime_options": {"setting_sources": []}}  # fmt: skip
+        assert self._validated(tmp_path, bare, sensors=[{"kind": "activation"}]) == set()
+
+    def test_a_runtime_that_writes_nothing_leaves_nothing_to_collect(self, tmp_path: Path) -> None:
+        """``acme`` says a ``read_only`` session writes no file, and which option decides
+        it: files to collect from one are a problem at that option. Before, only claude-sdk's
+        ``permission_mode: plan`` was known to write nothing."""
+        collecting = [{"id": "fix", "kind": "prompt", "prompt": "Fix it.", "collect": ["a.py"],
+                       "truth": {"starts_with": "BANANA"}}]  # fmt: skip
+        session = {"kind": "agent-session", "runtime": SANDBOXED,
+                   "runtime_options": {"read_only": True}}  # fmt: skip
+        assert self._validated(tmp_path, session, probes=collecting) == {
+            ("subjects.it.runtime_options.read_only", "unobservable")
+        }
+        writable = {**session, "runtime_options": {"read_only": False}}
+        assert self._validated(tmp_path, writable, probes=collecting) == set()
+
+    def test_the_pydantic_ai_runtime_loads_no_skills_and_says_so(self, tmp_path: Path) -> None:
+        """pydantic-ai has no skills: skills given to a session on it can never fire, and an
+        activation sensor on it has none to see, whatever its options are called."""
+        session = {"kind": "agent-session", "runtime": "pydantic-ai"}
+        skilled = {**session, "skills": ["skills/review"]}
+        assert self._validated(tmp_path / "a", skilled) == {("subjects.it.skills", "unobservable")}
+        assert self._validated(tmp_path / "b", session, sensors=[{"kind": "activation"}]) == {
+            ("subjects.it.runtime", "unobservable")
+        }
 
 
 def lookup(word: str) -> str:

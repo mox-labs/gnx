@@ -486,7 +486,8 @@ Every other exported name is public but may still change in a minor release, sai
 changelog: the extension-author surface (`Entry`, `Extension`, `Failure`, `Loader`,
 `DocumentSource`, `Document`, `BesideFile`, `Accumulate`, `ConstructStore`, `RunWriter`,
 the stores, `Reuse`, the observers' types), the session table (`Session`, `SESSION`,
-`digest`, `agent_session`, `call_session`, `record_session`), the command's document records (`Catalog`,
+`digest`, `agent_session`, `call_sent`, `call_session`, `record_session`), the model step's
+call path (`call_model`), the command's document records (`Catalog`,
 `Plan`, ...) and telemetry (`configure_telemetry`, `Telemetry`). Names under
 `matrix.domain`, `matrix.adapters` and `matrix.composition` are internal.
 

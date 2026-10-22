@@ -141,6 +141,10 @@ class ModelSpec(BaseModel):
     backend: str = Field(pattern=_SLUG)
     model: str = Field(min_length=1)
     family: str = Field(pattern=_SLUG)
+    #: Who serves this row, as the GenAI conventions name providers (``openai``, ``ollama``,
+    #: ``gcp.gemini``): what telemetry calls it. ``None``: the backend's name stands in, which
+    #: for an OpenAI-compatible backend says the protocol, not which server answered.
+    provider: str | None = Field(default=None, pattern=_SLUG)
     base_url: str | None = None
     #: An http:// or https:// proxy every request of this row goes through. Nothing in the
     #: environment (``HTTPS_PROXY``) is read: a row with no ``proxy`` connects directly.

@@ -52,6 +52,7 @@ from matrix import (
     AgentDefinition,
     AgentResponse,
     AgentRuntime,
+    AgentCapabilities,
     RUNTIME_LOGGER,
     BoundAgent,
     AgentStep,
@@ -70,6 +71,7 @@ from matrix import (
     RegistryRow,
     ModelStep,
     ModelStepConfig,
+    call_model,
     MODEL_STEP,
     MODEL_CALL,
     PROMPT,
@@ -533,20 +535,19 @@ A fact the runtime did not report is `None`.
 | `record_session` | `(session) -> int \| None` | records it in the run of the component running in this task, durably and in ledger order; its row, or `None` outside a run. The rows that component hands over next name it |
 
 A `BoundAgent` and a model step record their sessions themselves, the failed ones included. A
-component that calls a `ModelRuntime` itself records its calls, failed or not:
+component that calls a `ModelRuntime` itself makes the call through `call_model` (see
+[`matrix.v1.model-step`](#matrixv1model-step)), which records it as a model step does, and makes
+it the same span of work:
 
 ```python
-from matrix import ModelRequest, ModelRuntimeError, call_sent, call_session, record_session
+from matrix import ModelRequest, call_model
 
 request = ModelRequest(prompt="Rate this.", model="haiku")
-sent = call_sent(request)
-try:
-    call = await runtime.call(request)
-except ModelRuntimeError as e:
-    record_session(call_session(e.call, sent=sent, error=e))
-    raise
-row = record_session(call_session(call, sent=sent))  # the row a reply can name
+call = await call_model(runtime, request, name="judge")  # call.session: the row it names
 ```
+
+`call_sent`, `call_session` and `record_session` are the parts `call_model` is made of, for a
+caller that records a call made some other way.
 
 ### `Ref` and `REF`
 
@@ -648,6 +649,24 @@ fingerprint of every component that runs an agent on the runtime; and `usage_cou
 name of what already counts the inference tokens of the runtime's model calls (`pydantic-ai`
 declares `hardline`). `BoundAgent` puts it on `matrix.agent.end`, and the `otel` observer then
 adds the session's tokens to no counter; its span and its session row keep them.
+
+**What its sessions do is data the runtime declares**, so a caller asks it instead of
+reading its options by name: the runtime's config class may define `capabilities(self) ->
+AgentCapabilities`, which `Entry.capabilities(config)` asks of a config. `AgentCapabilities`
+(frozen, unknown fields rejected) answers, each `None` where the runtime does not say:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `settings_skills` | `bool \| None` | a session loads skills from settings (this machine's, the user's, the project's), beyond those it is given as plugins |
+| `project_skills` | `bool \| None` | a session loads the skills in its working directory (`.claude/skills`) |
+| `writes_files` | `bool \| None` | a session's tools can write files |
+| `hermetic` | `dict[str, Any]` | config that keeps a session from reading the machine it runs on beyond what it is given, for a caller to lay under its own; `{}`: nothing to add |
+| `set_by` | `dict[str, str]` | the config key that decides each answer, by the answer's name |
+
+`claude-sdk` answers from `setting_sources` (unset: the CLI's own default, not claimed) and
+`permission_mode` (`plan` writes nothing), with `hermetic` `{setting_sources: []}`.
+`pydantic-ai` loads no skills, from anywhere, and needs nothing to keep the machine out. The
+`mock` declares nothing.
 
 A runtime that also logs what its `warnings` say logs it at WARNING on the logger named
 `RUNTIME_LOGGER` (`matrix.runtime`), once per process, so a caller that builds a runtime per
@@ -796,7 +815,12 @@ from `matrix.models` or hardline's own tiers, and is digested into the fingerpri
 component that calls it. A third, `aclose()`, is async and closes the connections the
 runtime's calls opened in the running event loop; a connection can be closed only in its own
 loop, so a model step defers it to the end of the run that made the calls. The runtime stays
-usable after it. The `hardline` runtime has it.
+usable after it. The `hardline` runtime has it. A fourth, `pydantic_ai_model(model=None)`, gives
+pydantic-ai's `Model` on a model name the runtime resolves (raising `ConfigError` as `check`
+does), its requests made as the runtime makes its own calls, for a caller that runs pydantic-ai
+itself, such as an evaluator's judge; the `Model` has an async `aclose()` for the connections its
+calls opened. The `hardline` runtime has it: the row's requests go through hardline with the
+runtime's `max_tokens` and `temperature` as defaults.
 
 ### Built-in model runtimes
 
@@ -805,7 +829,7 @@ takes the short name.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `hardline` | `matrix.v1.model-runtime.hardline` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. A request's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` resolves it. With `output`, the call is hardline's `extract`, which repairs a reply that does not fit within its bound. Carries hardline's whole record of the call: why it ended, the model that answered, `fallback_from`, usage with cache tokens, the request id, attempts, retries, latency, `params`, `attempt_log`, `turns_digest` and `row`. A reply cut short or refused is returned and said for what it is. Reports tokens, no cost. Has `aclose()` |
+| `hardline` | `matrix.v1.model-runtime.hardline` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. A request's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` resolves it. With `output`, the call is hardline's `extract`, which repairs a reply that does not fit within its bound. Carries hardline's whole record of the call: why it ended, the model that answered, `fallback_from`, usage with cache tokens, the request id, attempts, retries, latency, `params`, `attempt_log`, `turns_digest` and `row`. A reply cut short or refused is returned and said for what it is. Reports tokens, no cost. Has `aclose()` and `pydantic_ai_model()` |
 | `mock` | `matrix.v1.model-runtime.mock` | `responses` (the whole prompt as sent, to a reply), `by_model` (model name to a reply), `default` (reply for an unmatched prompt and model; `None` echoes `mock:<model>:<prompt>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Accepts every model name. Validates a reply against the request's `output` as a real runtime does. A call reports one attempt, no retries, no tokens, its latency and `finish_reason: stop`, and no cost. Records `calls`, each `(model, prompt)` |
 
 Classes: `matrix.adapters._out.runtime.model.HardlineModelRuntime`,
@@ -838,6 +862,12 @@ document, as an agent step's, and a reply with none is a `ContractError` quoting
 rendered as an agent step renders them. A model step emits no agent events: its call is a
 `matrix.model.start` / `matrix.model.end` pair, and the `otel` observer's `matrix.model`
 span, current while the runtime works.
+
+The step's call path is public, for a caller that calls a model runtime itself:
+
+| Name | Signature | Does |
+|------|-----------|------|
+| `call_model` | `async (runtime, request, *, name, runtime_url=None, drives=(), observers=()) -> ModelCall` | one call on `runtime`, as a model step makes its own: `matrix.model.start` and `.end` (`name` is the runtime's name, as the caller knows it), each observer's `around` entered in the calling task while the runtime works, and the call's row of `matrix.v1.session`, under `runtime_url` with what it `drives`, whether it replied, failed or was cancelled. Inside a run the run's observers see it, and `observers` besides; outside one, `observers` only, and no row is recorded. Returns the call pointing at its row (`session`); raises the runtime's error as it stands. It does not judge whether the reply is whole: that is the step's own |
 
 A reply that is not a whole answer is never provided: one with a `refusal`, a `finish_reason`
 other than `stop` and `None`, or empty `text`. The step raises `ModelRuntimeError`, reason
@@ -872,6 +902,9 @@ declare their own with `add_point`, named under their own root (ix declares `ix.
 | `drives` | `tuple[str, ...]` | the distributions it drives, by their installed names: `claude-sdk` drives `claude-agent-sdk`, `pydantic-ai` drives `pydantic-ai-slim` and `hardline`, the `hardline` model runtime `hardline`. What a record of the versions behind a run reads, rather than a table of runtime names. Default `()` |
 
 `entry.describe()` returns all of it as a JSON-ready dict, with `config` as a JSON schema.
+`entry.capabilities(config)` is what an agent runtime declares its sessions do when built
+with `config` (see `AgentRuntime`): `None` when it declares nothing, or when its config
+refuses `config`.
 
 `Failure(*, extension, origin, error)` records an extension that failed to load or a
 refused registration: `extension` is its entry point's name, `origin` its distribution.

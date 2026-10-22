@@ -166,6 +166,26 @@ async def test_hardline_counts_the_inference_tokens_and_times_each_call() -> Non
     assert all(d.count == 1 for d in durations)
 
 
+async def test_a_row_names_its_provider_and_without_one_the_backend_stands_in() -> None:
+    """W7.11: an OpenAI-compatible backend cannot tell which server answered, so a row may
+    name its provider (``ollama``, ``openai``) for ``gen_ai.provider.name``; a row that names
+    none is still told by its backend's name."""
+    otel = Telemetry()
+    rt = _runtime({"local": _row([REPLY], provider="ollama"), "q": _row([REPLY])}, otel)
+    await rt.complete("local", PROMPT)
+    await rt.complete("q", PROMPT)
+    named, unnamed = otel.finished()
+    assert dict(named.attributes or {})["gen_ai.provider.name"] == "ollama"
+    assert dict(unnamed.attributes or {})["gen_ai.provider.name"] == "mock"
+    by_row = {
+        point.attributes["gen_ai.provider.name"]
+        for point in otel.points("gen_ai.client.inference.duration")
+    }
+    assert by_row == {"ollama", "mock"}
+    tokens = otel.points("gen_ai.client.inference.usage.input_tokens")
+    assert {point.attributes["gen_ai.provider.name"] for point in tokens} == {"ollama", "mock"}
+
+
 async def test_a_call_that_fails_is_still_timed_and_raises_as_before() -> None:
     otel = Telemetry()
     rt = _runtime({"q": _row([{"error": "auth"}])}, otel)
