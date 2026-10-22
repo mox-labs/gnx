@@ -168,7 +168,8 @@ matrix.v1.agent-runtime.claude-sdk     ix.v1.sensor.activation     matrix.v1.age
 - `/` is not part of the grammar.
 - One of slick's component-kind names (`capability`, `skill`, `flow`, `agent`) is never a
   whole segment.
-- `slick.*` is reserved; `type_url` refuses to mint into it.
+- `slick.*` is reserved: `type_url` refuses to mint into it, and `check_type_url` (so the
+  registry) refuses it.
 - A URL matrix mints carries one version segment (`v1`, `v1alpha1`, `v2beta1`) after at least
   one namespace segment and before the resource.
 
@@ -179,7 +180,7 @@ what they are given to the grammar and to the version segment: a kind or an entr
 | Name | Signature | Behaviour |
 |------|-----------|-----------|
 | `is_type_url` | `(url: str) -> bool` | True if `url` is valid under the grammar |
-| `check_type_url` | `(url: str, *, where: str = "") -> str` | Returns `url`, or raises `ConfigError` saying why it is invalid, prefixed with `where` |
+| `check_type_url` | `(url: str, *, where: str = "") -> str` | Returns `url`, or raises `ConfigError` saying why it is invalid, prefixed with `where`. Refuses the `slick` namespace, and so does everything that checks a type URL (`parse_type_url`, the registry) |
 | `parse_type_url` | `(url: str, *, where: str = "") -> TypeUrl` | Splits at the version segment; `ConfigError` if there is none |
 | `type_url` | `(namespace: str, version: str \| int, resource: str) -> str` | Builds and validates; an `int` version becomes `v<N>`; refuses the `slick` namespace |
 | `TypeUrl` | `NamedTuple(namespace, version, resource)` | `str()` joins it back |
@@ -252,7 +253,9 @@ A name given to `emit`, `measure` or `span` is dotted lower-case with at least t
 and not under `matrix.*`; anything else is a `ContractError`. After the component has ended
 every one of these calls is ignored, and the first is reported as `matrix.component.late`. A
 `RunContext` built by hand (`RunContext("run", "name")`, for testing a component alone)
-accepts every call and does nothing with it.
+keeps nothing, but refuses what a run refuses: a bad event, measure or span name, a measure
+`kind` outside `gauge`, `counter`, `histogram`, or a value that is not a number, each a
+`ContractError`. So a component's unit test catches what the run would.
 
 ### `wire`
 
@@ -415,8 +418,11 @@ async Executor.run(
    kind `store`, whatever `on_failure` says. No row is appended to that record after the
    failed one, nor kept in the run's Construct: a later `ctx.provide` raises `StoreError`.
 8. When the run ends, every release registered with `ctx.defer` is called, last registered
-   first, each bounded by `cleanup_s`, whatever the run's status. A synchronous release runs
-   on the event loop and is not bounded. Then the store's record is finished. An error that
+   first, an async one bounded by `cleanup_s`, whatever the run's status. A synchronous
+   release runs on the event loop and is not bounded. A release that raises anything,
+   `SystemExit` included, is recorded as failed and the rest are still called; one that is
+   not an `Exception` is raised again once the record is finished. Then the store's record is
+   finished. An error that
    escapes the executor itself (a defect, or a store's error that is not a `StoreError`)
    reaches the caller after the same steps, and the record says `failed`, never
    `completed`.
@@ -1092,7 +1098,10 @@ instead of a "started" line; `NO_COLOR` and `TERM=dumb` are honoured.
 
 `matrix.v1.observer.jsonl`, config `path` (omitted or `-` for stderr; a file is appended to).
 One event document per line, flushed as written, so the stream can be followed while the run
-is going.
+is going. A file is opened, with its folders, when the first event arrives (building the
+observer touches nothing, so `matrix check` and `matrix plan` write nothing), and closed once a
+run's `matrix.run.end` is written; the next event opens it again. `closed` says whether it
+holds the file open; `close()` closes it now.
 
 ### The `otel` observer
 
@@ -1287,7 +1296,9 @@ about.
 
 Merge rules: mappings merge key by key, later tiers winning, so `agent_runtimes`,
 `model_runtimes` and `agents` hold every tier's entries; lists replace, except `matrix.definitions`, whose directories
-accumulate across tiers, each relative directory resolved against the file that declared it.
+accumulate across tiers, each relative directory resolved against the file that declared it,
+and a problem with one names the file that listed it. A tier that writes `definitions` as
+anything but a list is a `wrong_shape` problem at its file, not overwritten by the others.
 An agent defined in two of them is one `name_taken` problem at `matrix.definitions`, and an
 agent that would use it is not checked (`complete` false).
 

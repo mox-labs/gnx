@@ -75,3 +75,16 @@ def test_slick_namespace_is_reserved(root: str) -> None:
     with pytest.raises(ConfigError, match="reserved"):
         type_url(root, 1, "thing")
     assert type_url("slickers", 1, "x") == "slickers.v1.x"  # only the exact root is fenced
+
+
+def test_the_slick_namespace_is_refused_wherever_a_type_url_is_checked() -> None:
+    """``slick.*`` is reserved; only ``type_url()`` refused it, so ``check_type_url`` and
+    the registry took ``slick.v1.x`` (mx-src F25)."""
+    from matrix import ConfigError, Registry
+    from matrix.domain.ids import check_type_url, parse_type_url
+
+    for check in (check_type_url, parse_type_url):
+        with pytest.raises(ConfigError, match="reserved"):
+            check("slick.v1.capability-x")
+    with pytest.raises(ConfigError, match="reserved"):
+        Registry().register("component", "slick.v1.x", lambda: None)

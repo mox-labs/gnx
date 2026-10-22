@@ -216,6 +216,23 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   type URLs; any other point is its first declarer's. Another distribution that declares an
   owned point again, or gives it a port, is refused and quarantined whole. Any extension could
   declare another's point before.
+- **A context built by hand refuses what a run refuses** (mx-src F24): a bad event,
+  measure or span name, a measure kind outside the three, a value that is not a number. A
+  component's unit test could not catch a name the run would refuse.
+- **`check_type_url` refuses the `slick` namespace** (F25), and so the registry does; only
+  `type_url` did, though `slick.*` is reserved.
+- **The `jsonl` observer opens its file on the first event and closes it when a run ends**
+  (F18). Composing it created the file and its folders, so `matrix check` and `matrix plan`,
+  which call nothing, touched the filesystem, and nothing ever closed it.
+- **An accumulated config list keeps its files** (F22): a problem with an entry of
+  `matrix.definitions` names the file that listed it, a tier that wrote it as a string is a
+  `wrong_shape` problem instead of being silently overwritten by the other tiers, and an entry
+  that is a mapping no longer crashes the merge (`TypeError: unhashable type`).
+- **A release that raises a `BaseException` does not skip the releases still owed** (F17):
+  `SystemExit` from a synchronous release escaped, so later releases were never called and
+  the record never finished. It is recorded as failed, the rest are called, the record is
+  finished, and then it is raised. The docs that said every release is bounded by
+  `cleanup_s` now say a synchronous one is not.
 - **A killed run reads without matrix.** A cut-short last line broke `jq` (exit 5) and
   DuckDB (`Malformed JSON`), though matrix's own reader skipped it, and `interrupted` was
   only what `describe` computed: `run.json` said `running` for ever. Now the first matrix

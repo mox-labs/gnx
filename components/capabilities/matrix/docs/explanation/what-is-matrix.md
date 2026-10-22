@@ -119,7 +119,8 @@ stop a component, whatever the reason:
    component that swallows the cancellation is abandoned after `cleanup_s` and reported as
    such.
 4. **Deferred release.** At the end of the run, everything components handed to `ctx.defer`
-   is called, last registered first, each bounded by `cleanup_s`.
+   is called, last registered first: an async one bounded by `cleanup_s`, a synchronous
+   one run to its end, which the event loop cannot interrupt.
 
 The reasons are a component's own deadline (`Limits.deadline_s`, overridden per component by
 `Limits.components`), another component's failure, and cancellation of the run, which is also

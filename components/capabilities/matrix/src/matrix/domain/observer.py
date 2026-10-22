@@ -137,6 +137,18 @@ def check_event_name(name: str, *, what: str = "event") -> None:
         )
 
 
+def check_measure(name: str, value: Any, kind: str) -> None:
+    """Refuse a measurement a run would not record: a name :func:`check_event_name` refuses,
+    a ``kind`` that is not one of :data:`MEASURE_KINDS`, or a value that is not a number."""
+    check_event_name(name, what="measure")
+    if kind not in MEASURE_KINDS:
+        raise ContractError(
+            f"measure {name!r}: kind {kind!r} is not one of {', '.join(MEASURE_KINDS)}"
+        )
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ContractError(f"measure {name!r}: value must be a number, got {type(value).__name__}")
+
+
 @dataclass(frozen=True)
 class EventPolicy:
     """How much telemetry a run may hold, and how long it waits for observers at its end."""

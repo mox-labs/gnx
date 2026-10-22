@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from matrix.domain.errors import CompilationError, invalid
 from matrix.domain.ids import versioned_problem
+from matrix.domain.observer import check_event_name, check_measure
 from matrix.domain.problems import problem
 from matrix.domain.session import SESSION
 
@@ -72,7 +73,8 @@ class ContextHooks(Protocol):
 
 
 class _Detached:
-    """Hooks for a context built outside a run (a component under a unit test)."""
+    """Hooks for a context built outside a run (a component under a unit test). Nothing is
+    kept, but a name or a measurement the run would refuse is refused here too."""
 
     def defer(self, release: Release) -> None:
         return None
@@ -81,15 +83,16 @@ class _Detached:
         return None
 
     def emit(self, name: str, fields: dict[str, Any]) -> None:
-        return None
+        check_event_name(name)
 
     def measure(
         self, name: str, value: float, *, unit: str, kind: str, attrs: dict[str, Any]
     ) -> None:
-        return None
+        check_measure(name, value, kind)
 
     @asynccontextmanager
     async def span(self, name: str, fields: dict[str, Any]) -> AsyncIterator[None]:
+        check_event_name(name, what="span")
         yield
 
     def sessions(self) -> tuple[int, ...]:

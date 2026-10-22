@@ -331,6 +331,31 @@ def test_a_merged_problem_names_the_file_that_set_the_value(tmp_path: Path) -> N
     assert raised.value.details["sources"] == [str(low), str(high)]
 
 
+def test_a_problem_in_an_accumulated_list_names_the_file_that_set_it(tmp_path: Path) -> None:
+    """An accumulated field was taken out of the merge before origins were noted, so a
+    problem inside it had no file (mx-src F22)."""
+    low = _write(tmp_path, "low.yaml", "acme: {paths: [a]}\n")
+    high = _write(tmp_path, "high.yaml", "acme: {paths: [{not: a path}]}\n")
+    with pytest.raises(ConfigError) as raised:
+        Loader(FileSource()).merge({"acme": Settings}, [low, high])
+    (found,) = raised.value.problems
+    assert found.path == "acme.paths.1" and found.source == str(high)
+    assert raised.value.details["sources"] == [str(low), str(high)]
+
+
+def test_an_accumulated_field_of_the_wrong_shape_is_reported_not_dropped(
+    tmp_path: Path,
+) -> None:
+    """A tier that wrote an accumulated list as a string was overwritten by the other tiers'
+    list: its problem vanished, and the directory it named was silently ignored (F22)."""
+    low = _write(tmp_path, "low.yaml", "acme: {paths: agents}\n")
+    high = _write(tmp_path, "high.yaml", "acme: {paths: [b]}\n")
+    with pytest.raises(ConfigError) as raised:
+        Loader(FileSource()).merge({"acme": Settings}, [low, high])
+    (found,) = raised.value.problems
+    assert (found.path, found.kind, found.source) == ("acme.paths", "wrong_shape", str(low))
+
+
 def test_an_unreadable_tier_stops_the_merge_and_says_the_check_is_incomplete(
     tmp_path: Path,
 ) -> None:
