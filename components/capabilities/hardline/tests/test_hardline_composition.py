@@ -13,7 +13,7 @@ from hardline.adapters._in.cli import error_payload, main
 from hardline.adapters._out.secrets import EnvFileSecretResolver
 from hardline.adapters._out.yaml_source import MappingConfigSource, YamlConfigSource
 from hardline.composition import discover_backends, discover_sources, load_registry, merge_tiers
-from hardline.domain.structured import extract_json
+from hardline.domain.structured import extract_json, json_candidates
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -166,6 +166,17 @@ def test_extract_json(text: str, expected: str) -> None:
 def test_extract_json_none() -> None:
     with pytest.raises(ValueError, match="no JSON"):
         extract_json("no structure here")
+
+
+def test_extract_json_skips_bracketed_prose_that_is_not_json() -> None:
+    # F10: the first balanced pair was taken whether or not it parsed, so '{name}' won.
+    assert extract_json('Use the {name} field: {"ok": true}') == '{"ok": true}'
+
+
+def test_json_candidates_are_every_balanced_value_in_order() -> None:
+    # '[1]' is JSON, so only the schema can tell it from the answer: the runtime tries each.
+    assert json_candidates('Answer [1] below: {"ok": true}') == ["[1]", '{"ok": true}']
+    assert json_candidates('{"a": {"b": 1}} then {x}') == ['{"a": {"b": 1}}']
 
 
 # --- CLI -----------------------------------------------------------------------------

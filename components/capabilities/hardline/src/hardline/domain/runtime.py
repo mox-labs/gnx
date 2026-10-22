@@ -37,7 +37,7 @@ from hardline.domain.errors import (
     SecretError,
 )
 from hardline.domain.ports._out.backend import ClosableBackend
-from hardline.domain.structured import extract_json, retry_instruction, schema_instruction
+from hardline.domain.structured import json_candidates, retry_instruction, schema_instruction
 from hardline.domain.types import (
     Completion,
     Message,
@@ -83,6 +83,25 @@ def _as_messages(messages: Messages, system: str | None) -> tuple[Message, ...]:
     if not turns:
         raise ValueError("at least one message is required")
     return tuple(turns)
+
+
+def _validate[M: BaseModel](output: type[M], text: str) -> M:
+    """The first JSON candidate in ``text`` that validates as ``output``.
+
+    Bracketed prose can itself be JSON ("see [1]"), so each candidate is tried in turn. When
+    none validates, the error is the longest candidate's: the answer is usually the largest
+    value in the reply, and its error is the one worth showing the model.
+    """
+    candidates = json_candidates(text)
+    if not candidates:
+        raise ValueError("no JSON object or array found in the response")
+    errors: dict[str, ValidationError] = {}
+    for candidate in candidates:
+        try:
+            return output.model_validate_json(candidate)
+        except ValidationError as e:
+            errors[candidate] = e
+    raise errors[max(candidates, key=len)]
 
 
 class ModelRuntime:
@@ -235,7 +254,7 @@ class ModelRuntime:
             retries += answer.retries
             last_text = answer.raw.text
             try:
-                value = output.model_validate_json(extract_json(answer.raw.text))
+                value = _validate(output, answer.raw.text)
             except (ValueError, ValidationError) as e:
                 last_error = str(e)
                 turns.append(Message(role="assistant", content=answer.raw.text))

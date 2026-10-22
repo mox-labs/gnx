@@ -76,6 +76,24 @@ async def test_extract_validates_on_first_attempt() -> None:
     assert s.completion.attempts == 1
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        'Answer [1] below: {"supported": true, "reason": "r"}',
+        'Use the {reason} field: {"supported": true, "reason": "r"}',
+    ],
+)
+async def test_extract_finds_the_answer_after_bracketed_prose(reply: str) -> None:
+    # F10: the first bracketed span was taken as the answer and the valid one discarded, which
+    # cost a repair turn, or a SchemaError with no repairs allowed.
+    rt = mock_runtime(
+        {"q": {"backend": "mock", "model": "m", "family": "qwen", "options": {"default": reply}}},
+        schema_retries=0,
+    )
+    s = await rt.extract("q", "?", Verdict)
+    assert s.value == Verdict(supported=True, reason="r") and s.completion.attempts == 1
+
+
 async def test_planted_schema_failure_is_repaired_once() -> None:
     rt = mock_runtime(
         {

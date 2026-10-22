@@ -1,8 +1,10 @@
 """Pulling a JSON object out of model text. Pure string work, no I/O.
 
-Models wrap JSON in markdown fences, lead with a sentence, or trail an explanation. The
-extractor accepts the first balanced top-level object or array and nothing else; it does
-not repair JSON. Repair belongs to the retry, where the model is shown what failed.
+Models wrap JSON in markdown fences, lead with a sentence, or trail an explanation, and the
+prose may hold brackets of its own ("see [1]", "the {name} field"). So every balanced object
+or array that parses as JSON is a candidate, in the order it appears, and the runtime tries
+each against the schema. Nothing here repairs JSON. Repair belongs to the retry, where the
+model is shown what failed.
 """
 
 from __future__ import annotations
@@ -52,34 +54,67 @@ def retry_instruction(validation: str) -> str:
     )
 
 
-def extract_json(text: str) -> str:
-    """Return the JSON substring of ``text``. Raises ValueError when there is none."""
+def json_candidates(text: str) -> list[str]:
+    """Every balanced object or array in ``text`` that parses as JSON, in order of opening.
+
+    A fenced block, when there is one, is the only place looked. A candidate nested inside
+    another candidate is not listed again; one nested inside bracketed prose is.
+    """
     stripped = text.strip()
     fenced = _FENCE.search(stripped)
     if fenced:
         stripped = fenced.group(1).strip()
-    # Whichever bracket opens first is the value: '[{"a": 1}]' is an array, not an object.
-    candidates = [(stripped.find(o), o, c) for o, c in (("{", "}"), ("[", "]"))]
-    for start, opener, closer in sorted(c for c in candidates if c[0] != -1):
-        depth = 0
-        in_string = False
-        escaped = False
-        for i in range(start, len(stripped)):
-            ch = stripped[i]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif ch == "\\":
-                    escaped = True
-                elif ch == '"':
-                    in_string = False
-                continue
-            if ch == '"':
-                in_string = True
-            elif ch == opener:
-                depth += 1
-            elif ch == closer:
-                depth -= 1
-                if depth == 0:
-                    return stripped[start : i + 1]
-    raise ValueError("no JSON object or array found in the response")
+    found: list[str] = []
+    covered = 0  # the end of the last candidate found; openers before it are inside it
+    for start, ch in enumerate(stripped):
+        if start < covered or ch not in _CLOSERS:
+            continue
+        end = _balanced_end(stripped, start)
+        if end is None:
+            continue
+        candidate = stripped[start : end + 1]
+        try:
+            json.loads(candidate)
+        except ValueError:
+            continue
+        found.append(candidate)
+        covered = end + 1
+    return found
+
+
+def extract_json(text: str) -> str:
+    """The first JSON value in ``text`` (see ``json_candidates``). ValueError when there is none."""
+    candidates = json_candidates(text)
+    if not candidates:
+        raise ValueError("no JSON object or array found in the response")
+    return candidates[0]
+
+
+_CLOSERS = {"{": "}", "[": "]"}
+
+
+def _balanced_end(text: str, start: int) -> int | None:
+    """The index closing the bracket opened at ``start``, or None when it never closes."""
+    opener, closer = text[start], _CLOSERS[text[start]]
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
