@@ -7,7 +7,8 @@
 #
 # Wire the hook once (`recon --skill` shows it under Captures):
 #   .claude/settings.json → hooks.PostToolUse: matcher "mcp__.*",
-#   command: recon capture <mission>
+#   command: cd "$CLAUDE_PROJECT_DIR" && recon capture <mission>
+# (the cd makes recon find .recon/ at the project root, wherever the session has moved)
 # Every MCP tool call then appends one capture to
 # .recon/<mission>/captures/captures.jsonl.
 #

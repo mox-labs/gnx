@@ -2,9 +2,9 @@
 
 HTTP is delegated to the injected Requester (shared rate-limited instance);
 conversion is delegated to the injected DocumentConverter (markitdown by
-default — handles HTML, PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP,
-images with OCR, audio transcription). Everything it converts is what the
-Requester fetched: nothing more is fetched for a page.
+default — handles HTML, PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP and
+images; not audio). Everything it converts is what the Requester fetched:
+nothing more is fetched for a page, and nothing is sent anywhere.
 
 The collector is format-agnostic: same code path for a web page, a PDF
 URL or a DOCX download. Returns Iterator[dict] —
@@ -26,7 +26,7 @@ from recon.domain.collector import CollectorType
 from recon.domain.errors import Problem
 from recon.domain.http import reported_url
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
-from recon.domain.substitution import find_unresolved
+from recon.domain.substitution import find_unresolved, substitute
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -114,13 +114,14 @@ class WebCollector:
 def _url(entry: CollectorEntry, source: SourceEntry) -> str:
     url = source.url.rstrip("/")
     endpoint = _endpoint(entry)
-    return f"{url}{endpoint}" if endpoint else url
+    # A web collector fills no placeholder (the plan refuses one); an escaped brace is one.
+    return f"{url}{substitute(endpoint, {})}" if endpoint else url
 
 
 def _headers(source: SourceEntry, user_agent: str) -> dict[str, str]:
     return {
         "User-Agent": source.user_agent or user_agent,
-        # Any type: the converter handles PDF, DOCX, images and audio as well as HTML.
+        # Any type: the converter handles PDF, DOCX and images as well as HTML.
         "Accept": "*/*",
     }
 
@@ -162,6 +163,7 @@ collector_type = CollectorType(
     summary="HTTP GET → document converted to markdown → one record",
     settings=WebSettings,
     source_kinds=frozenset({"web"}),
+    accepts_kinds=frozenset({"api", "web"}),  # an HTTP endpoint, by either name
     requires_source=True,
     normalizes=True,
     check=_check,

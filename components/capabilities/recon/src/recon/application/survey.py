@@ -117,10 +117,13 @@ class Survey:
         *,
         started: datetime,
         config_sha256: str | None = None,
+        resolved: Mapping[str, Any] | None = None,
     ) -> list[TableOutcome]:
         """Run every table into ``archive``, a new one :meth:`ArchiveStore.create` made at
         ``started``, and write its ``meta.yaml``. Returns the tables, which also land in
-        ``meta.yaml`` under ``tables``."""
+        ``meta.yaml`` under ``tables``. ``resolved`` says where what the survey resolved came
+        from (how its project root was found, which declared variables were set), and is
+        written as given."""
         captures = self._archives.capture_log(archive) if config.preserve_raw else None
         tables: list[TableOutcome] = []
         what = f"the survey's deadline ({config.deadline:g}s)" if config.deadline else ""
@@ -135,6 +138,7 @@ class Survey:
             "started_at": started.isoformat(),
             "timestamp": self._clock.now().isoformat(),
             "preserve_raw": config.preserve_raw,
+            "resolved": dict(resolved or {}),
             "tables": [table.document() for table in tables],
         }
         try:

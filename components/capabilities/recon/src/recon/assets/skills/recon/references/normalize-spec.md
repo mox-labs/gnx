@@ -74,7 +74,7 @@ Transforms are extensions: each is registered under the entry-point group `recon
 | `$inverted_index` | `{"word": [pos, ...]}` | Reconstructed text | OpenAlex abstract format |
 | `$join` | `list` | `str` (comma-separated) | Flatten author lists to string |
 | `$first` | `list` | First element or `None` | Keep the first of a list-map |
-| `$markitdown` | Local file path string | Markdown text | Convert a PDF, DOCX, PPTX, XLSX, EPub, CSV, image or audio file a record names (markitdown) |
+| `$markitdown` | Local file path string | Markdown text | Convert a PDF, DOCX, PPTX, XLSX, EPub, CSV or image file a record names (markitdown; not audio) |
 
 A null or empty input gives an empty string (`$first`: `null`). A value of another type than the one a built-in takes (`$join` on a string, `$inverted_index` on a list, `$html2text` on an object) gives `null` for that record's field, as a path that does not resolve does: the rest of the record and the table are kept.
 

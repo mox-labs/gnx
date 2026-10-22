@@ -87,6 +87,18 @@ def test_an_exception_fails_its_span_and_goes_on(raised: BaseException, error_ty
     assert end.status == "error" and end.attributes["error.type"] == error_type
 
 
+def test_an_exception_s_span_message_is_its_class_and_quotes_nothing_of_it() -> None:
+    """An exception no caller described (a plugin's own, a defect) fails its span with its
+    class name alone: its text may hold a command or a URL's credentials, and the span's
+    message goes to the OTLP endpoint and the event log."""
+    sink = Recorded()
+    telemetry = Telemetry([sink], FixedClock())
+    with pytest.raises(RuntimeError), telemetry.span("recon.collect"):
+        raise RuntimeError("curl https://user:hunter2@api.example.test/x failed")
+    [end] = sink.ends("recon.collect")
+    assert end.message == "RuntimeError"
+
+
 def test_a_sink_that_raises_is_dropped_and_named_and_the_work_goes_on() -> None:
     class Broken:
         def on_event(self, event: Any) -> None:
@@ -697,3 +709,83 @@ def test_a_provider_the_program_installed_is_kept_signal_by_signal(
     installed = _installs(monkeypatch, meter=MeterProvider())
     assert export_from_env(env, "9.9") == []
     assert installed == ["traces"]
+
+
+# --- attributes a consumer reads -------------------------------------------------------------
+
+
+def test_a_body_over_max_bytes_fails_its_span_as_body_too_large(server: Any) -> None:
+    """``error.type`` on a request span is the status, the httpx2 class, or
+    ``body_too_large``: a consumer counts refusals by it."""
+    sink = Recorded()
+    port = server.server_address[1]
+    source = SourceEntry(name="s", url=f"http://127.0.0.1:{port}", max_bytes=1)
+    with pytest.raises(CollectionError):
+        _requester(sink).get(source, f"http://127.0.0.1:{port}/ok")
+    [end] = sink.ends("recon.http.request")
+    assert end.status == "error" and end.attributes["error.type"] == "body_too_large"
+
+
+def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
+    """``recon.query`` carries ``recon.rows``, the number of rows the query returned."""
+    from recon.adapters._out.archive_files import ArchiveFiles
+    from recon.adapters._out.duckdb_query import DuckdbQuery
+    from recon.adapters._out.mission_files import MissionFiles
+    from recon.application.use_cases import Recon
+    from recon.composition import load_plugins
+    from tests.recon_fakes import run_survey
+
+    run_survey(
+        {"collectors": [{"name": "t", "type": "cli", "run": 'printf \'{"a": 1}\\n{"a": 2}\\n\''}]},
+        tmp_path,
+    )
+    sink, clock = Recorded(), FixedClock()
+    archives = ArchiveFiles(clock)
+
+    def no_survey(*args: Any) -> Any:
+        raise AssertionError("a query builds no collector")
+
+    querying = Recon(
+        missions=MissionFiles(tmp_path, clock),
+        archives=archives,
+        query=DuckdbQuery(archives),
+        clock=clock,
+        plugins=load_plugins(),
+        build_collectors=no_survey,
+        telemetry=lambda archive: Telemetry([sink], clock),
+        env={},
+        version="0",
+    )
+    querying.query("m", "SELECT a FROM t")
+    [end] = sink.ends("recon.query")
+    assert end.attributes["recon.rows"] == 2
+
+
+def test_a_log_written_inside_recons_work_reads_recons_span_as_current() -> None:
+    """A log written while recon works (a plugin's own ``logging`` call) is joined to the
+    span recon has open: a log bridge stamps each record with the current span's context,
+    which inside recon's work is recon's span. Read here as a bridge reads it, through
+    ``trace.get_current_span()``, since the SDK's own logging handler is deprecated."""
+    import logging
+
+    from opentelemetry import trace
+
+    provider, exporter = _sdk()
+    stamped: list[tuple[int, int]] = []
+
+    class Bridge(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            context = trace.get_current_span().get_span_context()
+            stamped.append((context.trace_id, context.span_id))
+
+    logger = logging.getLogger("some.plugin")
+    bridge = Bridge()
+    logger.addHandler(bridge)
+    try:
+        telemetry = Telemetry([OtelEvents("9.9", tracer_provider=provider)], FixedClock())
+        with telemetry.span("recon.collect"):
+            logger.warning("a plugin speaks")
+    finally:
+        logger.removeHandler(bridge)
+    [span] = exporter.get_finished_spans()
+    assert stamped == [(span.get_span_context().trace_id, span.get_span_context().span_id)]

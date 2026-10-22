@@ -91,7 +91,7 @@ class ApiCollector:
             source,
             settings.method,
             url,
-            params={**settings.params, **self._auth_params(source)},
+            params={**_params(settings), **self._auth_params(source)},
             headers=self._build_headers(source),
             json_body=body,
         )
@@ -175,7 +175,7 @@ def _check(entry: CollectorEntry) -> list[Problem]:
                 fix="endpoint: /search (the path after the source's url)",
             )
         )
-    elif unresolved := _placeholders(substitute(settings.endpoint, settings.vars)):
+    elif unresolved := _placeholders(settings.endpoint, settings.vars):
         problems.append(
             Problem(
                 "endpoint",
@@ -196,7 +196,7 @@ def _check(entry: CollectorEntry) -> list[Problem]:
                 allowed=("json", "xml"),
             )
         )
-    if settings.body and (unresolved := _placeholders(substitute(settings.body, settings.vars))):
+    if settings.body and (unresolved := _placeholders(settings.body, settings.vars)):
         problems.append(
             Problem(
                 "body",
@@ -221,9 +221,15 @@ def _check(entry: CollectorEntry) -> list[Problem]:
     return problems
 
 
-def _placeholders(value: Any) -> str:
-    """The ``{name}`` placeholders left in ``value``, as written, or "" when none are."""
-    return ", ".join(f"{{{name}}}" for name in sorted(set(find_unresolved(value))))
+def _placeholders(value: Any, variables: Mapping[str, str] | None = None) -> str:
+    """The ``{name}`` placeholders in ``value`` that ``variables`` leaves unfilled, as
+    written, or "" when none are."""
+    return ", ".join(f"{{{name}}}" for name in sorted(set(find_unresolved(value, variables))))
+
+
+def _params(settings: ApiSettings) -> dict[str, str]:
+    """The query string as sent: each value as written, an escaped brace made one."""
+    return {key: substitute(value, {}) for key, value in settings.params.items()}
 
 
 def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
@@ -233,7 +239,7 @@ def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, An
     settings = _settings(entry)
     if source is None or not settings.endpoint:
         return {}
-    params = dict(settings.params)
+    params = _params(settings)
     if source.auth.param and source.auth.env:
         params[source.auth.param] = REDACTED
     url = _with_query(build_url(source.url, settings.endpoint, settings.vars), params)
@@ -264,6 +270,7 @@ collector_type = CollectorType(
     summary="HTTP API request → JSON/XML → records",
     settings=ApiSettings,
     source_kinds=frozenset({"api"}),
+    accepts_kinds=frozenset({"api", "web"}),  # an HTTP endpoint, by either name
     requires_source=True,
     normalizes=True,
     extracts=True,

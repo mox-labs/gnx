@@ -24,7 +24,8 @@ error from a glob that spans archives says the archives' columns can differ.
 The SQL is not trusted. Whoever writes it has usually just read the tables, and the tables
 are collected text, so the connection is confined before any SQL runs: it reads files only
 under the mission's ``archive/`` directory (every archive of the mission, which keeps
-cross-archive diffs working), installs and loads no extension, and reaches no network. DuckDB
+cross-archive diffs working), spills nothing to disk, installs and loads no extension, and
+reaches no network. DuckDB
 lets SQL write wherever it may read, so a query runs only SELECT statements (``WITH``,
 ``FROM``, ``DESCRIBE`` and ``SUMMARIZE`` are SELECTs to DuckDB): a ``COPY``, ``ATTACH``,
 ``CREATE`` or any other statement is refused before anything runs.
@@ -48,8 +49,11 @@ def _confine(conn: Any, readable: Path) -> None:
     """Restrict a fresh connection to reading under ``readable``. Order matters:
     ``allowed_directories`` can only be set while external access is still on, turning
     external access off cannot be undone, and the lock stops the extension settings from
-    being switched back."""
+    being switched back. Spilling to disk is off: DuckDB adds its temp directory (``.tmp/``
+    under the working directory) to the directories SQL may read, so a query could read
+    whatever is there; a query that would spill fails for memory instead."""
     root = str(readable).replace("'", "''")
+    conn.execute("SET temp_directory=''")
     conn.execute(f"SET allowed_directories=['{root}']")
     conn.execute("SET autoinstall_known_extensions=false")
     conn.execute("SET autoload_known_extensions=false")
@@ -243,6 +247,11 @@ def _fix(exc: Exception, archive: Path, tables: list[str], sql: str) -> str:
     required = _REQUIRED_MODULE.search(message)
     if required is not None:
         return _module_fix(required.group(1))
+    if isinstance(exc, duckdb.OutOfMemoryException):
+        return (
+            "the query needs more memory than DuckDB has, and a recon query never spills to "
+            "disk: select fewer columns or rows, or aggregate before joining"
+        )
     if isinstance(exc, duckdb.PermissionException):
         return (
             f"a query reads only files under {archive.parent}, loads no extension and makes "

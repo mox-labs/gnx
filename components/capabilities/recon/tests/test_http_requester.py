@@ -383,6 +383,66 @@ def test_every_send_draws_a_token_resends_included() -> None:
     assert limiter.drawn == 3
 
 
+class _SlowRedirects:
+    """The reviewer's chain: ``/0`` redirects to ``/1`` and so on to ``/6``, which answers;
+    the server takes 0.8 s over each hop, on the test's clock. Records each hop's path and
+    the read timeout it was sent with."""
+
+    def __init__(self, clock: FixedClock) -> None:
+        self.clock = clock
+        self.hops: list[tuple[str, float]] = []
+
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
+        self.hops.append((request.url.path, request.extensions["timeout"]["read"]))
+        self.clock.sleep(0.8)  # the server's time, passing on the test's clock
+        hop = int(request.url.path.strip("/"))
+        if hop < 6:
+            return httpx2.Response(302, headers={"location": f"/{hop + 1}"})
+        return httpx2.Response(200, json={"ok": 1})
+
+
+def test_a_redirect_chain_is_bounded_by_the_timeout_and_each_hop_draws_a_token() -> None:
+    """Regression: the send's budget was checked only as the body was read, and every hop
+    was sent with the whole per-phase timeout, so seven hops of 0.8 s each under
+    ``timeout: 1`` took 20.1 s across three sends; and only the first hop of a send drew a
+    token. Now each hop is checked against what is left of the send, is sent with only that
+    as its timeout, and draws a token."""
+    clock = FixedClock()
+    limiter = _CountingLimiter()
+    chain = _SlowRedirects(clock)
+    requester = HttpRequester(limiter, clock, transport=httpx2.MockTransport(chain))
+    source = SourceEntry(name="s", url="https://api.example.test", timeout=1)
+
+    with pytest.raises(CollectionError) as excinfo:
+        requester.request(source, "GET", "https://api.example.test/0")
+
+    assert excinfo.value.kind == "transient" and "timeout" in (excinfo.value.fix or "")
+    paths = [path for path, _timeout in chain.hops]
+    assert paths == ["/0", "/1"] * 3, "each send stops at the hop past its timeout"
+    first, second = chain.hops[0][1], chain.hops[1][1]
+    assert first == 1 and second == pytest.approx(0.2), "a hop is given what is left"
+    assert limiter.drawn == len(paths), "every hop draws a token"
+
+
+def test_a_redirect_chain_is_bounded_by_the_deadline() -> None:
+    clock = FixedClock()
+    deadline = Deadline(clock)
+    chain = _SlowRedirects(clock)
+    requester = HttpRequester(
+        RateLimiter(clock), clock, deadline=deadline, transport=httpx2.MockTransport(chain)
+    )
+    source = SourceEntry(name="s", url="https://api.example.test", timeout=30)
+
+    with (
+        deadline.bound(2, "the survey's deadline", "raise deadline:"),
+        pytest.raises(CollectionError) as excinfo,
+    ):
+        requester.request(source, "GET", "https://api.example.test/0")
+
+    assert "the survey's deadline passed" in str(excinfo.value)
+    assert [path for path, _timeout in chain.hops] == ["/0", "/1", "/2"]
+
+
 def test_a_retry_waits_on_the_clock_port() -> None:
     """Regression: tenacity slept on the real clock, so a test clock could not see a retry's
     backoff, and nothing that reads the clock port could bound it."""

@@ -74,7 +74,7 @@ def _ok_response(body_text: str, content_type: str = "application/json") -> Http
     )
 
 
-class TestExtract:
+class TestResolvePath:
     def test_dotted_path(self) -> None:
         data = {"feed": {"entry": [{"title": "test"}]}}
         assert resolve_path(data, "feed.entry") == [{"title": "test"}]
@@ -89,7 +89,7 @@ class TestExtract:
         assert resolve_path({"a": {"b": 1}}, "a.c") is None
 
 
-class TestEnsureList:
+class TestToRecords:
     def test_list_of_dicts(self) -> None:
         assert to_records([{"a": 1}, {"b": 2}], None) == [{"a": 1}, {"b": 2}]
 
@@ -427,3 +427,56 @@ class TestParamsAndVars:
         [problem] = build_plan(raw, load_plugins(), {}).problems
         assert (problem.path, problem.kind) == ("collectors.0.endpoint", "unresolved")
         assert "vars:" in problem.fix
+
+
+class TestALiteralBrace:
+    """Regression: there was no way to write a literal ``{word}`` where recon fills
+    placeholders, so a compact GraphQL body, ``{"query": "{viewer{login}}"}``, was refused as
+    ``unresolved {login}``. ``{{`` and ``}}`` are a literal brace, as in Python's format."""
+
+    def _plan(self, collector: dict[str, Any]) -> Any:
+        from recon.application.plan import build_plan
+        from recon.composition import load_plugins
+
+        raw = {
+            "catalog": [{"name": "s", "url": "https://x.test"}],
+            "collectors": [{"name": "c", "source": "s", **collector}],
+        }
+        return build_plan(raw, load_plugins(), {})
+
+    def test_an_escaped_brace_in_a_body_is_sent_as_one_brace(self) -> None:
+        body = {"query": "{viewer{{login}}}", "owner": "{owner}"}
+        collector = {"type": "api", "endpoint": "/graphql", "method": "POST", "body": body,
+                     "vars": {"owner": "o"}}  # fmt: skip
+        assert self._plan(collector).valid
+        sent = TestParamsAndVars()._sent(**{k: v for k, v in collector.items() if k != "type"})
+        assert sent["json_body"] == {"query": "{viewer{login}}", "owner": "o"}
+
+    def test_an_escaped_brace_in_an_endpoint_and_a_param_is_sent_as_one_brace(self) -> None:
+        collector = {"type": "api", "endpoint": "/r/{{id}}/{n}", "vars": {"n": "1"},
+                     "params": {"q": "{{x}}"}}  # fmt: skip
+        assert self._plan(collector).valid
+        sent = TestParamsAndVars()._sent(**{k: v for k, v in collector.items() if k != "type"})
+        assert sent["url"] == "https://x.test/r/{id}/1"
+        assert sent["params"] == {"q": "{x}"}
+
+    def test_a_web_endpoint_s_escaped_brace_is_fetched_as_one_brace(self) -> None:
+        from recon.adapters._out.web_collector import _url
+
+        assert self._plan({"type": "web", "endpoint": "/p/{{slug}}"}).valid
+        entry = CollectorEntry.model_validate(
+            {"name": "c", "type": "web", "source": "s", "endpoint": "/p/{{slug}}"}
+        )
+        assert _url(entry, SourceEntry(name="s", type="web", url="https://x.test")) == (
+            "https://x.test/p/{slug}"
+        )
+
+    def test_a_command_s_double_braces_are_its_own(self) -> None:
+        """A shell command's braces are the command's (``docker inspect --format
+        '{{.Name}}'``): in ``run:`` only ``{url}`` and ``{pattern}`` are recon's."""
+        from recon.adapters._out.cli_collector import _commands
+
+        entry = CollectorEntry.model_validate(
+            {"name": "c", "type": "cli", "run": "docker inspect -f '{{.Name}}' {{x}}"}
+        )
+        assert _commands(entry, None) == [(None, "docker inspect -f '{{.Name}}' {{x}}")]

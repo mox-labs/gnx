@@ -54,7 +54,7 @@ Six concrete capabilities follow from the one thesis.
 
 **Scheduled and offline execution.** Because recon is mechanical, it runs without Claude awake. Cron it. Run it overnight. A scheduled agent runs `recon survey` hourly and Claude reads the latest archive in the morning, reasoning about what's new. The collection loop and the reasoning loop can be decoupled.
 
-**Claude's inference stays focused.** No cycles burned on retry logic, rate-limit arithmetic, response parsing, pagination math, or authentication ceremony. The inference budget goes to thinking. This is the capability the other five rest on.
+**Claude's inference stays focused.** No cycles burned on retry logic, rate-limit arithmetic, response parsing, or authentication ceremony. The inference budget goes to thinking. This is the capability the other five rest on.
 
 ## When recon is the right tool
 

@@ -16,11 +16,12 @@ credentials included: recon cannot tell one from any other argument (SECURITY.md
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
     from pathlib import Path
 
     from recon.domain.documents import Capture
@@ -50,6 +51,28 @@ def redact_headers(headers: dict[str, str]) -> dict[str, str]:
     return {
         k: (REDACTED if k.lower() in SENSITIVE_RESPONSE_HEADERS else v) for k, v in headers.items()
     }
+
+
+#: A request header whose name holds one of these carries a credential (``Authorization``,
+#: ``X-Goog-Api-Key``, ``Private-Token``, ``Cookie``). Any other is metadata.
+_CREDENTIAL_NAME = re.compile(
+    r"auth|key|token|secret|cookie|session|signature|password|credential", re.IGNORECASE
+)
+
+
+def credential_values(headers: Mapping[str, str]) -> list[str]:
+    """The credentials among request ``headers`` recon sends, to redact wherever they appear:
+    the value of each header whose name says it carries one, and for a value with an auth
+    scheme in front (``Bearer t0k``), the credential alone too. A header whose name does not
+    (``X-Org``, ``Accept``) is not one, so its value stays in what is captured."""
+    found: list[str] = []
+    for name, value in headers.items():
+        if name.lower() in SENSITIVE_RESPONSE_HEADERS or _CREDENTIAL_NAME.search(name):
+            found.append(value)
+            _scheme, _space, credential = value.strip().partition(" ")
+            if credential.strip():
+                found.append(credential.strip())
+    return found
 
 
 def redact_query_params(url: str, names: Iterable[str], replacement: str = REDACTED) -> str:

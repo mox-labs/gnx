@@ -103,6 +103,13 @@ def _error(result: Result) -> dict[str, Any]:
 # --- survey ---------------------------------------------------------------------------
 
 
+def test_version_prints_the_installed_version() -> None:
+    """``recon --version`` is how a caller checks which recon it drives."""
+    result = _invoke("--version")
+    assert result.exit_code == 0
+    assert result.stdout.strip() == f"recon, version {recon.__version__}"
+
+
 class TestSurvey:
     def test_ok_json_document(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
@@ -530,7 +537,7 @@ class TestQuery:
         assert error["kind"] == "query"
         assert str(project / ".recon" / "m" / "archive") in error["fix"]
 
-    def test_bad_sql_exits_3_naming_the_tables(self, project: Path) -> None:
+    def test_bad_sql_exits_10_naming_the_tables(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
         _invoke("survey", "m")
         result = _invoke("query", "m", "SELECT * FROM nope", "--json")

@@ -203,6 +203,21 @@ class TestEveryProblemWithAPath:
         assert (problem.path, problem.kind) == ("collectors.0.name", "invalid_value")
         assert problem.got == name
 
+    @pytest.mark.parametrize("name", ["", ".", ".hidden", "-x"])
+    def test_an_output_name_must_start_with_a_letter_a_digit_or_underscore(
+        self, registry: Plugins, name: str
+    ) -> None:
+        """Regression: ``name: ""`` planned valid and wrote ``.jsonl``, a hidden file no
+        query lists, without a word."""
+        plan = _plan({"collectors": [{"name": name, "type": "cli", "run": "true"}]}, registry)
+        [problem] = plan.problems
+        assert (problem.path, problem.kind, problem.got) == (
+            "collectors.0.name",
+            "invalid_value",
+            name,
+        )
+        assert "start with a letter, a digit or _" in problem.message
+
     def test_a_source_name_that_makes_an_output_not_one_file_name_is_a_problem(
         self, registry: Plugins
     ) -> None:
@@ -307,7 +322,7 @@ class TestEveryProblemWithAPath:
         [
             {"type": "web", "endpoint": "/search?q=\\w{3}-\\d{2,4}"},
             {"type": "api", "endpoint": "/search", "params": {"q": "\\w{3}\\d{2,}"}},
-            {"type": "cli", "run": "rg --json '\\w{3}' ."},
+            {"type": "cli", "run": "rg --json '\\w{3}' .", "source": "here"},
         ],
         ids=["web", "api", "cli"],
     )
@@ -316,12 +331,26 @@ class TestEveryProblemWithAPath:
     ) -> None:
         plan = _plan(
             {
-                "catalog": [{"name": "s", "type": "web", "url": "https://s.example.test"}],
+                "catalog": [
+                    {"name": "s", "type": "web", "url": "https://s.example.test"},
+                    {"name": "here", "type": "local", "url": "/tmp"},
+                ],
                 "collectors": [{"name": "c", "source": "s", **collector}],
             },
             registry,
         )
         assert plan.valid, plan.problems
+
+    def test_url_in_a_command_with_no_source_to_fill_it_is_a_plan_problem(
+        self, registry: Plugins
+    ) -> None:
+        """Regression: ``{url}`` in a ``cli`` run with no source planned valid and failed only
+        when surveyed, though the plan knows the run has no source. A type checks each run
+        against its source (``CollectorType.check_run``)."""
+        plan = _plan({"collectors": [{"name": "c", "type": "cli", "run": "echo {url}"}]}, registry)
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.0.run", "unresolved")
+        assert "source:" in (problem.fix or "")
 
     def test_braces_a_command_owns_are_passed_as_written(self, registry: Plugins) -> None:
         """In ``run:`` recon fills ``{url}`` and ``{pattern}``; any other ``{...}`` is the
@@ -686,6 +715,46 @@ class TestSourceKinds:
         )
         assert problem.allowed == ("api", "local", "mcp", "web")
         assert "api, local, mcp, web" in problem.message
+
+    @pytest.mark.parametrize(
+        ("source", "collector", "kinds"),
+        [
+            # cli would run in recon's working directory, and survey `ok`
+            ({"type": "web", "url": "https://x.test"}, {"type": "cli", "run": "pwd"}, "local"),
+            # the API's URL would be used as an MCP server's
+            ({"type": "api", "url": "https://x.test"}, {"type": "mcp", "tool": "t"}, "mcp"),
+            ({"type": "local", "url": "/tmp"}, {"type": "api", "endpoint": "/x"}, "api, web"),
+            ({"type": "mcp", "command": "srv"}, {"type": "api", "endpoint": "/x"}, "api, web"),
+            ({"type": "mcp", "command": "srv"}, {"type": "web"}, "api, web"),
+        ],
+    )
+    def test_a_collector_pinned_to_a_source_of_a_kind_its_type_cannot_use_is_a_problem(
+        self, registry: Plugins, source: dict[str, Any], collector: dict[str, Any], kinds: str
+    ) -> None:
+        """Regression: nothing tied a collector type to the kinds of source it can use, so
+        each of these planned valid, and a ``cli`` pinned to a ``web`` source ran in recon's
+        working directory and surveyed ``ok``. Each type declares the kinds it accepts."""
+        raw = {
+            "catalog": [{"name": "s", **source}],
+            "collectors": [{"name": "c", "source": "s", **collector}],
+        }
+        [problem] = _plan(raw, registry).problems
+        assert (problem.path, problem.kind, problem.got) == (
+            "collectors.0.source",
+            "invalid_value",
+            "s",
+        )
+        assert f"uses a source of kind {kinds}" in problem.message
+        assert f"'s' is a {source['type']} source" in problem.message
+
+    def test_a_type_that_declares_no_kinds_takes_a_source_of_any(self, registry: Plugins) -> None:
+        """``capture`` keeps the captures a source's name filters, whatever its kind; a
+        plugin type that declares nothing is not judged."""
+        raw = {
+            "catalog": [{"name": "s", "type": "web", "url": "https://x.test"}],
+            "collectors": [{"name": "c", "type": "capture", "source": "s"}],
+        }
+        assert _plan(raw, registry).valid
 
     def test_a_kind_an_installed_type_adds_plans(self, registry: Plugins) -> None:
         from recon.domain.collector import CollectorType

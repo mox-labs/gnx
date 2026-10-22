@@ -101,11 +101,15 @@ class CollectorContext:
     ``deadline`` is the survey's: what is left of the survey's and the table's bounds in
     time (``remaining()``, ``limit(seconds)``, ``check()``), which a type that waits or runs
     a command keeps to, as the requester does. ``mission_dir`` anchors relative paths in a
-    config. ``user_agent`` is what an HTTP collector sends when its source sets none.
+    config. ``project_dir`` is the project root, against which a ``local`` source's relative
+    url resolves, and where a process the mission starts without naming a directory runs;
+    ``None`` in a context recon did not build, for the working directory.
+    ``user_agent`` is what an HTTP collector sends when its source sets none.
 
     ``env`` is not the process environment. It holds only the variables the mission
     declares for this type: the ``auth.env`` names of the catalog sources its collectors
-    run against. Reading any other name raises a config error that says where to declare it.
+    run against, and the variables their kinds read (``CollectorType.source_env``). Reading
+    any other name raises a config error that says where to declare it.
     """
 
     requester: Requester
@@ -118,9 +122,14 @@ class CollectorContext:
     mission_dir: Path
     env: Mapping[str, str]
     user_agent: str
+    project_dir: Path | None = None
 
 
 def _no_problems(entry: CollectorEntry) -> list[Problem]:
+    return []
+
+
+def _no_run_problems(entry: CollectorEntry, source: SourceEntry | None) -> list[Problem]:
     return []
 
 
@@ -148,6 +157,10 @@ class CollectorType:
       unknown. The type parses ``entry.settings`` with it.
     - ``source_kinds`` are the catalog source kinds (a source's ``type:``) the type adds to
       the ones installed; a source of any other kind is a plan problem.
+    - ``accepts_kinds`` are the source kinds a collector of the type can be pinned to; a
+      collector pinned to a source of another kind is a plan problem. ``None`` takes a
+      source of any kind (``capture``, which only filters by the source's name, and a type
+      that does not say).
     - ``source_settings`` is the schema (a pydantic model that forbids unknown keys) of the
       keys a source of one of ``source_kinds`` takes beyond the ones every source has: a
       source's other keys (``source.settings``) are validated against it at plan time.
@@ -173,6 +186,10 @@ class CollectorType:
     - ``check`` returns problems in an entry, with paths relative to it (``run``,
       ``endpoint``); the planner prefixes ``collectors.<i>.``. It is called only for an
       entry whose settings ``settings`` accepts. Pure: no I/O.
+    - ``check_run`` returns problems in one run of an entry against the source it runs
+      against (``None`` for a run with no source), for what ``check`` cannot see without
+      the catalog (a ``cli`` run's ``{url}`` with no source to fill it); paths are relative
+      to the entry, as ``check``'s are. Pure: no I/O.
     - ``describe`` returns what a planned run would do (the URL, the command) for a
       reviewer. Pure: no I/O, no network.
     - ``preflight`` says, in words, what a dry run does to check a run of the type (``starts
@@ -186,11 +203,15 @@ class CollectorType:
     summary: str = ""
     settings: type[BaseModel] | None = None
     source_kinds: frozenset[str] = frozenset()
+    accepts_kinds: frozenset[str] | None = None
     source_settings: type[BaseModel] | None = None
     requires_source: bool = False
     normalizes: bool = False
     extracts: bool = False
     check: Callable[[CollectorEntry], list[Problem]] = field(default=_no_problems)
+    check_run: Callable[[CollectorEntry, SourceEntry | None], list[Problem]] = field(
+        default=_no_run_problems
+    )
     describe: Callable[[CollectorEntry, SourceEntry | None], dict[str, Any]] = field(
         default=_no_description
     )

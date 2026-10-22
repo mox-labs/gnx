@@ -1,6 +1,6 @@
 {
   "language": "python",
-  "about": "recon's layers, checked by tests/test_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the reviewed map (scratch/review-2026-10-22/recon-layers.json v2, at 1580c81) and fitted to recon as it now is: application/collectors.py, the ArchiveStore's tables (so the query adapter no longer reads the store's files), deadlines, and httpx2 in place of httpx. recon keeps its ports in domain/ beside the model, so 'domain' is the four places' domain plus ports. 'why' keys are read by neither checker.",
+  "about": "recon's layers, checked by tests/test_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the layer map the 2026-10-22 review drew (its v2, at 1580c81) and fitted to recon as it now is: application/collectors.py, the ArchiveStore's tables (so the query adapter no longer reads the store's files), deadlines, and httpx2 in place of httpx. recon keeps its ports in domain/ beside the model, so 'domain' is the four places' domain plus ports. 'why' keys are read by neither checker.",
   "scan": ["src/recon/**/*.py"],
   "scan_why": "Every Python file in the package. Tests are out of scan: a test reaches adapters by design.",
   "layers": [
@@ -135,7 +135,8 @@
     {"name": "fastmcp", "only": "src/recon/adapters/_out/mcp_collector.py"},
     {"name": "mcp", "only": "src/recon/adapters/_out/mcp_collector.py"},
     {"name": "mcp_types", "only": "src/recon/adapters/_out/mcp_collector.py"},
-    {"name": "jsonschema", "only": "src/recon/adapters/_out/mcp_collector.py"}
+    {"name": "jsonschema", "only": "src/recon/adapters/_out/mcp_collector.py"},
+    {"name": "referencing", "only": "src/recon/adapters/_out/mcp_collector.py"}
   ],
   "single_importer_why": "one file per technology, each behind one port; the MCP client is the mcp collector's alone, and it reaches httpx2 only through the SDK's own client. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule"
 }

@@ -3,11 +3,12 @@
 import hashlib
 import inspect
 import json
+import math
 import tempfile
 import time
 from collections.abc import Generator, Iterator
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, ClassVar, NoReturn
 
 import pytest
 import yaml
@@ -139,18 +140,18 @@ class TestReconRun:
 
     def test_pinned_source_no_fan_out(self) -> None:
         """Collector with source= runs against that source only."""
-        config = ReconConfig.model_validate(
-            {
-                "catalog": [
-                    {"name": "s2", "url": "https://api.semanticscholar.org"},
-                    {"name": "arxiv", "url": "https://export.arxiv.org"},
-                ],
-                "collectors": [
-                    {"name": "test", "type": "cli", "run": "echo hello", "source": "s2"},
-                ],
-            }
-        )
         with tempfile.TemporaryDirectory() as tmp:
+            config = ReconConfig.model_validate(
+                {
+                    "catalog": [
+                        {"name": "s2", "type": "local", "url": tmp},
+                        {"name": "arxiv", "type": "local", "url": tmp},
+                    ],
+                    "collectors": [
+                        {"name": "test", "type": "cli", "run": "echo hello", "source": "s2"},
+                    ],
+                }
+            )
             mission = Path(tmp) / "m"
             mission.mkdir()
             archive, _ = run(config, mission, converter=_NoOpConverter())
@@ -886,10 +887,87 @@ class TestDeadlines:
         assert [(t.name, t.status) for t in tables] == [("slow", "error"), ("quick", "ok")]
         assert tables[0].error is not None
         assert "slow's deadline" in tables[0].error.message
+        assert (tables[0].error.fix or "").startswith("raise deadline:")
 
-    @pytest.mark.parametrize("value", [0, -1])
-    def test_a_deadline_must_be_positive(self, tmp_path: Path, value: int) -> None:
+    def test_the_next_step_after_a_transient_exit_names_the_deadline_first(self) -> None:
+        """Regression: exit 5's next step was "survey again later", but a deadline too short
+        for the work fails the same way on every retry: raising it comes first."""
+        from recon.domain.errors import EXIT_NEXT
+
+        assert EXIT_NEXT["transient"].startswith("raise the deadline:")
+
+    @pytest.mark.parametrize("value", [0, -1, math.nan, math.inf])
+    def test_a_deadline_must_be_a_positive_number_of_seconds(
+        self, tmp_path: Path, value: float
+    ) -> None:
+        """Regression: ``deadline: .nan`` passed the plan's ``<= 0`` check and then failed
+        building the config, as a raw ValidationError (exit 1, ``unknown``); ``.inf`` was
+        taken as a bound."""
         with pytest.raises(recon.ConfigError) as excinfo:
             run({"deadline": value, "collectors": [{"name": "c", "type": "cli", "run": "true"}]},
                 tmp_path)  # fmt: skip
         assert [p.path for p in excinfo.value.problems] == ["deadline"]
+
+    @pytest.mark.parametrize("value", [math.nan, math.inf])
+    def test_a_table_s_deadline_must_be_finite(self, tmp_path: Path, value: float) -> None:
+        collector = {"name": "c", "type": "cli", "run": "true", "deadline": value}
+        with pytest.raises(recon.ConfigError) as excinfo:
+            run({"collectors": [collector]}, tmp_path)
+        assert [p.path for p in excinfo.value.problems] == ["collectors.0.deadline"]
+
+
+class TestWhatASurveyResolved:
+    """Each survey's ``meta.yaml`` records where what it resolved came from: how the project
+    root was found, and which variables the mission declares were set, by name. A value is
+    never written."""
+
+    CONFIG: ClassVar[dict[str, Any]] = {
+        "catalog": [
+            {"name": "a", "url": "https://api.example.test", "auth": {"env": "A_KEY"}},
+            {"name": "b", "url": "https://api.example.test", "auth": {"env": "B_KEY"}},
+        ],
+        "collectors": [{"name": "q", "type": "api", "endpoint": "/q"}],
+    }
+
+    def _meta(self, tmp_path: Path, **kwargs: Any) -> tuple[dict[str, Any], str]:
+        requester = ScriptedRequester({"https://api.example.test/q": "[]"})
+        archive, _ = run(
+            self.CONFIG,
+            tmp_path,
+            requester=lambda telemetry, deadline, rate_limiter: requester,
+            **kwargs,
+        )
+        text = (archive / "meta.yaml").read_text()
+        meta: dict[str, Any] = yaml.safe_load(text)
+        return meta, text
+
+    def test_the_variables_declared_are_named_set_or_unset_and_never_given(
+        self, tmp_path: Path
+    ) -> None:
+        meta, text = self._meta(tmp_path, env={"A_KEY": "s3cret-value", "OTHER": "x"})
+        assert meta["resolved"]["env"] == {"A_KEY": "set", "B_KEY": "unset"}
+        assert "s3cret-value" not in text and "OTHER" not in text
+
+    def test_a_root_the_caller_named_is_recorded_as_given(self, tmp_path: Path) -> None:
+        meta, _text = self._meta(tmp_path)
+        assert meta["resolved"]["root"] == "argument"
+
+    @pytest.mark.parametrize(
+        ("git", "found_by"), [(True, "repository"), (False, "working_directory")]
+    )
+    def test_a_root_recon_found_says_how(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git: bool, found_by: str
+    ) -> None:
+        from recon.composition import root
+
+        project = tmp_path / "project"
+        (project / "src").mkdir(parents=True)
+        if git:
+            (project / ".git").mkdir()
+        monkeypatch.chdir(project / "src" if git else project)
+        mission = project / ".recon" / "m"
+        mission.mkdir(parents=True)
+        (mission / "config.yaml").write_text("collectors: [{name: c, type: cli, run: 'true'}]\n")
+        document = root({}).survey("m")
+        meta = yaml.safe_load((Path(document.archive) / "meta.yaml").read_text())
+        assert meta["resolved"]["root"] == found_by

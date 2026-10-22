@@ -284,6 +284,23 @@ def test_the_server_gets_its_env_references_and_the_capture_never_holds_them(
     assert "s3cret-value" not in body and "«redacted by recon»" in body
 
 
+def test_a_stdio_server_runs_in_the_project_root_wherever_recon_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a stdio server ran in recon's working directory, so the template's
+    filesystem server, given ".", read another tree when a survey was run from a
+    subdirectory. It runs in the project root, against which a ``local`` source's relative
+    url resolves too: the same directories wherever recon is run from."""
+    project = tmp_path / "project"
+    elsewhere = project / "src" / "deep"
+    elsewhere.mkdir(parents=True)
+    monkeypatch.chdir(elsewhere)
+    archive, [table] = _survey(project, [_call("who", "whoami")])
+    assert table.status == "ok", table.error
+    [row] = _rows(archive, "who")
+    assert Path(row["cwd"]).resolve() == project.resolve()
+
+
 # --- rate limit and telemetry ------------------------------------------------------------------
 
 
@@ -373,6 +390,54 @@ def test_the_dry_run_starts_the_server_and_checks_each_call_against_its_listing(
     assert ("the server of source 'fixture' offers the resource 'fixture://other'", False) in found
 
 
+@pytest.mark.parametrize(
+    ("input_schema", "why"),
+    [
+        ({"type": "object", "properties": {"q": {"type": "strng"}}}, "'strng' is not valid"),
+        (
+            {"type": "object", "properties": {"q": {"$ref": "https://example.invalid/s.json"}}},
+            "https://example.invalid/s.json",
+        ),
+        ({"type": "object", "properties": {"q": {"$ref": "#/nope"}}}, "/nope"),
+    ],
+)
+def test_a_tool_whose_input_schema_is_not_valid_json_schema_is_a_requirement_not_a_crash(
+    tmp_path: Path, input_schema: dict[str, Any], why: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the arguments were checked against a server's schema without checking the
+    schema, so a schema with an unknown type or an unresolvable ``$ref`` crashed the dry run
+    (exit 1, ``unknown``, "report this as a bug") and failed the survey's table as
+    ``run_failed`` with jsonschema's raw text. It is the server's defect, and the dry run says
+    so. And jsonschema fetched a ``$ref`` to another host itself, a request outside the
+    requester to wherever a server pointed it: a ``$ref`` is never fetched."""
+    looked_up: list[str] = []
+    lookup = socket.getaddrinfo
+
+    def recorded(host: Any, *args: Any, **kwargs: Any) -> Any:
+        looked_up.append(str(host))
+        return lookup(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", recorded)
+    recording = tmp_path / "recording.json"
+    result = {"content": [{"type": "text", "text": '[{"a": 1}]'}]}
+    recording.write_text(
+        json.dumps({"tool": "search", "input_schema": input_schema, "result": result})
+    )
+    source = {**STDIO, "args": [SERVER, "--replay", str(recording)]}
+    collectors = [_call("t", "search", arguments={"q": "x"})]
+
+    plan = _plan(tmp_path, collectors, source=source)
+    assert plan.valid and not plan.runnable
+    [refused] = [r for r in plan.requirements if not r.holds]
+    assert refused.need == "the input schema of 'search' (source 'fixture') is valid JSON Schema"
+    assert why in refused.why and refused.fix and refused.needed_by == ["t"]
+
+    _, [table] = _survey(tmp_path, collectors, source=source)
+    assert table.error is not None and table.error.kind == "config"
+    assert refused.need in table.error.message
+    assert "example.invalid" not in looked_up
+
+
 def test_a_dry_run_whose_server_cannot_start_says_so_and_stays_valid(tmp_path: Path) -> None:
     source = {**STDIO, "command": str(tmp_path / "no-such-server")}
     plan = _plan(tmp_path, [_call("a", "whoami")], source=source)
@@ -456,6 +521,33 @@ def test_a_headers_helper_gives_a_remote_its_headers(tmp_path: Path, remote: Any
     _, [table] = _survey(tmp_path, [_call("who", "whoami")], source=source)
     assert table.status == "ok", table.error
     assert seen.headers and all(h["x-api-key"] == "k3y" for h in seen.headers)
+
+
+def test_only_the_credentials_a_headers_helper_gives_are_redacted_in_a_capture(
+    tmp_path: Path, remote: Any
+) -> None:
+    """Regression: every value a headers_helper printed counted as a secret, so a header such
+    as ``X-Org: acme`` was replaced wherever ``acme`` appeared in a captured result, and the
+    capture (the evidence, and the source to normalize again from) silently differed from
+    the table. A header is a credential by its name; a bearer token is redacted alone too."""
+    _seen, url = remote
+    helper = tmp_path / "helper.sh"
+    given = {"Authorization": "Bearer t0k", "X-Goog-Api-Key": "g00g", "X-Org": "acme"}
+    helper.write_text(f"#!/bin/sh\necho '{json.dumps(given)}'\n")
+    helper.chmod(0o755)
+    source = {"name": "fixture", "type": "mcp", "url": url, "headers_helper": str(helper)}
+    query = "acme t0k g00g"
+    archive, [table] = _survey(
+        tmp_path,
+        [_call("papers", "search", arguments={"query": query}, extract="papers")],
+        source=source,
+        config={"preserve_raw": True},
+    )
+    assert table.status == "ok", table.error
+    [capture] = [json.loads(line) for line in (archive / "captures.jsonl").read_text().splitlines()]
+    body = (archive / capture["body"]).read_text()
+    assert "acme" in body, "a header that is not a credential is evidence, kept"
+    assert "t0k" not in body and "g00g" not in body
 
 
 def _mock(answer: Any) -> Any:

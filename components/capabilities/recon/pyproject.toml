@@ -46,8 +46,10 @@ dependencies = [
     # The `mcp` collector's client: the one pydantic-ai's MCPToolset wraps, on the MCP SDK v2
     # and httpx2. Imported only by that collector's adapter, and only when a survey uses it.
     "fastmcp-slim[client]>=4.1.3,<5",
-    # The `mcp` collector checks a run's arguments against its tool's input schema.
+    # The `mcp` collector checks a run's arguments against its tool's input schema, and
+    # resolves the schema's `$ref`s with a registry that retrieves nothing.
     "jsonschema>=4.20",
+    "referencing>=0.28",
 ]
 
 [project.urls]

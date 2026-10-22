@@ -11,7 +11,7 @@
 #
 # This mission reads a directory tree through the official filesystem server
 # (@modelcontextprotocol/server-filesystem, pinned), which npx downloads on first use; the
-# server may read the directory it is given, here the one recon runs in.
+# server may read the directory it is given, here the project root, where recon starts it.
 #
 # Usage:
 #   recon init files --template mcp-server

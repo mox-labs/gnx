@@ -184,14 +184,11 @@ class CliCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        run = _settings(entry).run
-        assert run is not None  # _check requires it, and the plan holds it
-        if source is None and "{url}" in run:
+        for problem in _check_run(entry, source):  # the plan's check, for a direct caller
             raise CollectionError(
-                f"collector {entry.name!r}: run: uses {{url}}, the source's url, and this run "
-                "has no source; nothing was run",
+                f"collector {entry.name!r}: {problem.message}; nothing was run",
                 kind="config",
-                fix="pin a catalog source with source:, or take {url} out of run:",
+                fix=problem.fix,
             )
 
         cwd = _cwd(source)
@@ -284,7 +281,7 @@ def _cwd(source: SourceEntry | None) -> Path | None:
 def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[str | None, str]]:
     """(pattern, substituted command) for each invocation the entry makes. recon fills
     ``{url}`` and ``{pattern}``; any other ``{...}`` is the command's own (cargo's
-    ``--format '{p}'``, a jq object) and is passed as written."""
+    ``--format '{p}'``, a jq object, docker's ``'{{.Name}}'``) and is passed as written."""
     settings = _settings(entry)
     if not settings.run:
         return []
@@ -293,11 +290,27 @@ def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[s
     out = []
     for pattern in patterns:
         cmd_vars = {**variables, "pattern": pattern} if pattern is not None else variables
-        out.append((pattern, substitute(settings.run, cmd_vars)))
+        out.append((pattern, substitute(settings.run, cmd_vars, escapes=False)))
     return out
 
 
 # --- Registration ---
+
+
+def _check_run(entry: CollectorEntry, source: SourceEntry | None) -> list[Problem]:
+    """``{url}`` is the source's url, so a run with no source cannot fill it."""
+    run = _settings(entry).run
+    if source is not None or not run or "{url}" not in run:
+        return []
+    return [
+        Problem(
+            "run",
+            "run: uses {url}, the source's url, and this run has no source",
+            kind="unresolved",
+            fix="pin a catalog source with source:, or take {url} out of run:",
+            got=run,
+        )
+    ]
 
 
 def _check(entry: CollectorEntry) -> list[Problem]:
@@ -339,7 +352,11 @@ collector_type = CollectorType(
     summary="shell command → stdout lines (JSON objects or text) → records",
     settings=CliSettings,
     source_kinds=frozenset({"local"}),
+    # A command runs in a local source's directory; any other source would leave it in
+    # recon's working directory.
+    accepts_kinds=frozenset({"local"}),
     normalizes=True,
     check=_check,
+    check_run=_check_run,
     describe=_describe,
 )

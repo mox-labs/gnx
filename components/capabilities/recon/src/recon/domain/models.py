@@ -81,7 +81,7 @@ class SourceEntry(BaseModel):
     ``max_bytes`` bounds one HTTP response body from this source, counted after any
     content-encoding is undone. A larger body fails the table instead of being buffered.
     ``timeout`` bounds, in seconds of wall time, one send of a request (from connecting to
-    its body's last byte) and a ``cli`` command.
+    its body's last byte, every redirect it follows included) and a ``cli`` command.
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
@@ -128,7 +128,7 @@ class CollectorEntry(BaseModel):
     type_url: str = DEFAULT_RECORDS_TYPE_URL
     extract: str | None = None
     normalize: dict[str, str] | None = None
-    deadline: float | None = Field(default=None, gt=0)
+    deadline: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
     @property
     def settings(self) -> dict[str, Any]:
@@ -167,4 +167,4 @@ class ReconConfig(BaseModel):
     catalog: list[SourceEntry] = []
     collectors: list[CollectorEntry]
     preserve_raw: bool = False
-    deadline: float | None = Field(default=None, gt=0)
+    deadline: float | None = Field(default=None, gt=0, allow_inf_nan=False)

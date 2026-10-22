@@ -136,7 +136,8 @@ Re-run on the same one-record sample:
 
 ```bash
 recon survey dep-releases
-cat .recon/dep-releases/archive/*/probe.jsonl | jq .
+latest=$(recon status dep-releases --json | jq -r '.missions[0].latest.path')
+jq . "$latest/probe.jsonl"
 ```
 
 ```json

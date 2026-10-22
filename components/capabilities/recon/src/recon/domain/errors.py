@@ -65,8 +65,8 @@ EXIT_MEANINGS: dict[str, str] = {
     "usage": "a bad command, flag or argument",
     "config": "the mission config or another input is invalid",
     "not_found": "no such mission, archive or template",
-    "transient": "every failed table failed transiently (HTTP 429, 5xx, network); the "
-    "archive is kept, marked incomplete",
+    "transient": "every failed table failed transiently (HTTP 429, 5xx, network, a "
+    "deadline); the archive is kept, marked incomplete",
     "auth": "a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete",
     "conflict": "init, or survey -c, would overwrite a different mission config",
     "run_failed": "a table failed, and not only on credentials or transiently, or the archive "
@@ -84,7 +84,8 @@ EXIT_NEXT: dict[str, str] = {
     "config": "fix each problem at its `path` as its `fix` says, then plan again; when "
     "`complete` is false, more problems may follow the fix",
     "not_found": "run the command the error's `fix` names",
-    "transient": "survey again later",
+    "transient": "raise the deadline: a table's error names, since a retry fails the same "
+    "way; else survey again later",
     "auth": "set the variable the failing source's auth.env names to a valid key, then "
     "survey again",
     "conflict": "add --replace to overwrite it, or choose another mission name",

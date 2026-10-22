@@ -84,6 +84,9 @@ collector type is *handed*; it is not a sandbox. A plugin is Python in recon's p
 can import `os`, and a `cli` command's child process inherits recon's whole environment
 (boundary 1).
 
+An archive's `meta.yaml` names each variable the mission declares, `set` or `unset`, so a
+reader can see which credentials a survey ran with; it never holds a value.
+
 ### 3. Remote responses → local files
 
 Collected records are attacker-influenced data by definition. recon writes them as JSONL
@@ -96,8 +99,18 @@ a collected value. It reads only under the mission directory and the catalog's `
 sources (after resolving symlinks and `..`), and it never fetches a URL; either refusal
 fails the table with a config error (R-6).
 
-A `web` collector's page is converted from the bytes the requester fetched and nothing
-else: the converter is never given a URL it would fetch more from by itself (R-12).
+A `web` collector's page, and the file `$markitdown` opens, are converted from their bytes
+and nothing else. recon builds markitdown with a named list of converters, audited for
+markitdown 0.1.5, and none of them reaches the network or starts a process: plain text,
+HTML, ZIP (each entry by the same list), RSS, Wikipedia and Bing result pages (parsed, not
+fetched), DOCX, XLSX, XLS, PPTX, images, notebooks, PDF, Outlook messages, EPub and CSV.
+Left out are the audio converter, which uploads the recording to Google's speech API
+(R-14); the YouTube converter, which asks YouTube for a transcript (R-12); the Azure
+Document Intelligence converter, which uploads the document; markitdown's plugins; and
+exiftool, which markitdown would run on images and audio. The image and PPTX converters
+call a model only when given a client, and recon gives none. A converter a later markitdown
+adds is not registered until it has been read and listed. Audio is therefore not converted:
+it fails the table, naming the document.
 
 ### 4. Capture logs → the capture collector
 
@@ -137,9 +150,12 @@ and URLs are refused (R-7). DuckDB lets SQL write wherever it may read, so a que
 statements DuckDB's parser types as SELECT; `COPY ... TO`, `ATTACH`, `CREATE`, `EXPORT` and
 every other statement are refused before any of the SQL runs (R-10).
 
-What this does **not** do: a large sort or join can still use DuckDB's spill directory
-(`.tmp/` under the working directory). And it does nothing about the text itself: a
-`content` column from the web is untrusted wherever it is read.
+Spilling to disk is off: DuckDB adds its spill directory (`.tmp/` under the working
+directory) to the directories SQL may read, so with it on a query could read whatever is
+there (R-15). A query that needs more memory than DuckDB has fails as a `query` error.
+
+What this does **not** do: anything about the text itself. A `content` column from the web
+is untrusted wherever it is read.
 
 ### 7. Telemetry → the archive's event log, and an OTLP endpoint
 
@@ -179,7 +195,9 @@ first. It is not given a shell, and not recon's environment: it gets the SDK's s
 (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) and the variables its `env:` gives,
 each written as is or as an `env:NAME` reference the mission declares. Its stderr goes to a
 temporary file; the end of it is quoted in a failed table's error, in `meta.yaml`. It is
-stopped when the survey (or the dry run) ends, however it ends.
+stopped when the survey (or the dry run) ends, however it ends. It runs in the project
+root, not recon's working directory, so a server given `.` reads the same tree wherever
+recon is run from.
 
 **A remote server receives its own credential only.** Its `token` (`env:NAME` or
 `file:PATH`, never the secret itself, which the plan refuses) is sent as `Authorization:
@@ -190,6 +208,13 @@ host and port, or http to https on the same host), so a token never leaves its o
 P1.2's rule (R-9) asks of an HTTP source (R-13). TLS is verified against the operating
 system's trust store. A server that signs in with OAuth through a browser is not a source:
 reach it through the hook route (boundary 5).
+
+**A server's schema is checked, never followed.** A tool's input schema is the server's
+text. recon checks it is valid JSON Schema before checking arguments against it, and
+resolves its `$ref`s within the schema alone: a `$ref` to another host is never fetched
+(jsonschema's default would fetch it itself, outside the requester). A schema that is not
+valid, or refers to what it does not hold, is a requirement that does not hold: the dry
+run lists it and the survey fails that table as `config`.
 
 **What a server returns may be private.** A tool reads what its server can reach (a
 repository, a mailbox, a drive), and its answer becomes the table, and with `preserve_raw`
@@ -354,8 +379,9 @@ Given a YouTube watch URL, markitdown's YouTube converter asked YouTube for the 
 transcript itself: a request outside the requester, its rate limit, `max_bytes`, spans and
 the capture log, the class of bypass R-6 closed for `$markitdown`. Its failures were printed
 on stdout, where `--json` writes the document. Fixed: the converter is given the page's
-bytes and content type, and no URL markitdown would fetch more from, so the page converts
-as the HTML it is. Its transcript is not collected.
+bytes and content type, and markitdown is built without its YouTube converter (boundary 3
+lists what it is built with), so the page converts as the HTML it is. Its transcript is not
+collected.
 
 Regression: `test_a_youtube_page_is_converted_from_its_bytes_and_nothing_more_is_fetched` in
 `recon/tests/test_transforms.py`.
@@ -373,6 +399,30 @@ Regression: `test_a_remotes_token_never_follows_a_redirect_off_its_origin`,
 `test_the_sdks_client_follows_no_redirect_itself` and
 `test_fastmcps_own_spans_which_carry_a_tools_error_text_are_not_made` in
 `recon/tests/test_mcp_collector.py`.
+
+### R-14 — audio was uploaded to Google's speech API (fixed)
+
+markitdown's audio converter transcribes a recording with `speech_recognition`'s
+`recognize_google`, which uploads the whole recording to Google. A `web` collector that
+fetched `audio/*`, and `$markitdown` on a local `.wav` or `.mp3` (or one inside a ZIP), sent
+it there: no requester, rate limit, span or capture, to a third party the mission never
+named. R-12 had closed the YouTube converter alone. Fixed: recon no longer builds markitdown
+with every built-in; it registers a named list of converters, audited for what they reach
+(boundary 3), and audio is not among them.
+
+Regression: `TestAudioIsNeverSentAnywhere` in `recon/tests/test_transforms.py`, which fakes
+the speech client and fails if it is called, and
+`test_markitdown_holds_only_the_converters_recon_audited`, which holds the list to the audit.
+
+### R-15 — a query could read DuckDB's spill directory (fixed)
+
+DuckDB adds its temp directory to `allowed_directories`, so with the default (`.tmp/`
+under the working directory) `SELECT content FROM read_text('.tmp/note.txt')` returned a
+file outside the archive, against boundary 6's "nothing else". Fixed: the connection sets
+`temp_directory` to empty before it is confined, so nothing spills and the archive is all
+a query can read.
+
+Regression: `test_duckdb_s_spill_directory_is_not_readable` in `recon/tests/test_query.py`.
 
 ## Not covered
 

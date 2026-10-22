@@ -19,7 +19,7 @@ catalog:
     timeout: 120
 ```
 
-It is started on the first table that uses it, serves every other table of the survey, and is stopped when the survey ends, however it ends. It runs in recon's working directory, with your user's rights, and with little of your environment: `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`, and what `env:` gives it. A credential it needs is named, never written:
+It is started on the first table that uses it, serves every other table of the survey, and is stopped when the survey ends, however it ends. It runs in the project root (the directory holding `.recon/`), wherever you run recon from, with your user's rights, and with little of your environment: `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`, and what `env:` gives it. A credential it needs is named, never written:
 
 ```yaml
     env:
@@ -110,7 +110,7 @@ Then write `normalize:` from what you saw, plan again, and survey. What a table 
 | JSON with nothing at `extract:` | is kept empty, with an `extract_unresolved` warning |
 | an empty list | is empty: the server had nothing |
 
-With `preserve_raw: true`, each answer is kept whole in the archive's capture log as an `mcp` capture, every credential the source resolved replaced by `«redacted by recon»`.
+With `preserve_raw: true`, each answer is kept whole in the archive's capture log as an `mcp` capture, every credential the source resolved replaced by `«redacted by recon»`: its token, the variables a stdio server is given by reference, and each header a `headers_helper` prints whose name says it carries a credential (`Authorization`, `X-Api-Key`, a name holding `key`, `token`, `auth`, `secret`, `cookie`, `session`, `signature`, `password` or `credential`). Name a custom credential header so; any other header's value is kept, since it is evidence.
 
 ## Before you run someone else's mission
 

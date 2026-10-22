@@ -2,8 +2,9 @@
 #
 # Demonstrates:
 #   • multi-source API collection with heterogeneous response shapes
-#   • cross-source normalization to a single common schema
-#     {name, version, description, source_url}
+#   • cross-source normalization to shared columns: name, version and source_url
+#     in every table; npm and crates.io add description and released_at, PyPI
+#     adds summary and license (what its metadata holds)
 #
 # Each collector fetches ONE package by name. To track multiple packages,
 # duplicate the collector block with a different endpoint. There is no

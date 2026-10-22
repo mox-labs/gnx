@@ -201,11 +201,13 @@ def build_collectors(
     config: ReconConfig,
     telemetry: Telemetry,
     deadline: Deadline,
+    *,
+    project: Path | None = None,
 ) -> SurveyCollectors:
     """One collector for each installed type ``config`` uses, sharing one Requester and the
     survey's ``telemetry``, and the types whose factory raised. Each factory is handed a
     ``ScopedEnv`` over ``env`` holding only the variables ``config`` declares for that type's
-    sources."""
+    sources, and ``project``, the project root."""
     transforms = confined_transforms(plugins.transforms, config, mission_dir)
     rate_limiter = RateLimiter(ports.clock)
     requester = ports.requester(telemetry, deadline, rate_limiter)
@@ -220,6 +222,7 @@ def build_collectors(
         mission_dir=mission_dir,
         env={},
         user_agent=ports.user_agent,
+        project_dir=project,
     )
     declared = declared_env(config, plugins.collector_types)
     built = SurveyCollectors({}, [])
