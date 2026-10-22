@@ -47,6 +47,22 @@
   fire, written as the expected name is.
 - **`tool-usage` compares `expected_command` whole**, ignoring case: `dig` no longer
   matches `digest`.
+- **`http-load` counts the requests a subject never answers.** A request still waiting
+  when the measured window closed was cut off and counted nowhere, and k6's 60s request
+  timeout never fired inside a typical window, so a server that hung on one request in
+  four read `error_rate` 0. Now every request sent in the window is waited for, past it if
+  need be, until it is answered or times out, and one k6 cut off anyway still counts as
+  sent and failed. The new option `timeout` sets how long a request may go unanswered
+  (k6's 60s when absent), and a trial's time budget grows by it.
+  - `error_rate` (and the facet's `error_rate`) also counts each arrival an open model
+    dropped, because every client was waiting on the subject: `(failed + dropped) /
+    (sent + dropped)`.
+  - A subject that answered nothing inside the window failed the trial (`no_answer`).
+    It was read as the harness sending nothing (`no_requests`), so the trial was left
+    out as missing data.
+  - Latency and time to first byte now include answers that came after the window
+    closed, to requests sent inside it; throughput still counts only the answers inside
+    the window.
 
 ## 0.5.0 — 2026-10-19
 

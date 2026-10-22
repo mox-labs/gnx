@@ -949,11 +949,13 @@ then the report (`ix.v1.report`) on stdout.
   report says `Dry run on mock replies` and gives neither a verdict nor an indication.
   `ix runs` lists each run as `gated`, `exploratory` or `dry`.
 - **Failures have an owner.** A trial the *subject* failed (it died, it was not up in
-  time) counts against the subject. A trial the *harness* failed (a tool broke, a timeout,
-  an environment that went down) is missing data; an environment that went down also ends
-  the run (exit {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be
-  taken. The report counts each. A subject too slow for an open model's rate is measured,
-  not dropped.
+  time, it answered no request inside the measured window) counts against the subject. A
+  trial the *harness* failed (a tool broke, a timeout, an environment that went down) is
+  missing data; an environment that went down also ends the run (exit
+  {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be taken. The
+  report counts each. A subject too slow for an open model's rate is measured, not
+  dropped. `error_rate` counts a request that failed, timed out (`http-load`'s
+  `timeout`, k6's 60s) or was never answered, and each arrival dropped, as an error.
 
 ## Reading a verdict
 

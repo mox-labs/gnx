@@ -258,9 +258,9 @@ A declaration is not an adapter. ix can **run** these:
 | subject | `process` | starts the command for each trial in its own process group, waits for `ready` to answer (or `url` to accept a connection), and kills the group after the trial |
 | subject | `http` | starts nothing: an endpoint that is already up, with optional `headers` and a bearer token read from `auth: env:NAME` |
 | subject | `agent-session` | a fresh session per trial on the matrix runtime its required `runtime` names (`claude-sdk` and `model` call a model provider; `mock` calls no model), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; a `loop` asks again for a self-review or with the tests that failed |
-| probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients) or `open` (an arrival `rate`); only the measured part is read |
+| probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients) or `open` (an arrival `rate`); only the measured part is read, and each request sent in it is waited for until it is answered or its `timeout` (k6's 60s) runs out |
 | probe | `prompt` | puts the prompt to the session and keeps the reply, every tool call, each round's transcript and the files named in `collect` |
-| sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests of those sent), from what the load probe recorded |
+| sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests and dropped arrivals, of those sent and dropped), from what the load probe recorded |
 | sensor | `memory` | `memory_peak`: the highest resident memory of the subject's process group, sampled with `ps` every `interval` while the probe runs |
 | sensor | `activation` | `activated_correctly`: the expected skill fired (a `Skill` tool call naming it whole: `review` is fired by `review` or `plugin:review`, never by `code-review-lite`), or nothing fired for a decoy |
 | sensor | `tool-usage` | `tool_used_correctly`, `tool_usage_score`: the agent used a tool with the expected command (the whole word, ignoring case: `dig` is not `digest`) and arguments, called by name or run through `Bash` |
@@ -391,15 +391,18 @@ nothing under `--json`); the report goes to stdout.
   that cannot start or cannot play the agent as written. `ix plan` lists them under
   `Runnable: no` beforehand; they depend on the host, so they do not stop `ix register`.
 - **Failures have an owner.** A trial the subject failed (it exited, it was not up in time,
-  it answered no request successfully, it returned a different body; an agent session that
+  it answered no request successfully within the measured time, it returned a different body; an agent session that
   broke or was refused) counts against the subject. A trial the harness failed (k6 missing
   or broken, no request sent, a timeout, a stop request, an environment that went down, a
   model runtime that was unavailable, rate-limited or refused its credentials) is missing
-  data. Latency, time to first byte and throughput count only the requests the subject
-  answered successfully within the measured time; `error_rate` counts the measured requests
-  that failed out of those sent. Under an open model, k6 starts every client before the
-  load, so an arrival it drops found every client waiting on the subject: the subject was
-  too slow for the rate, and the trial is measured with its `dropped` count. A sensor that
+  data. Every request sent in the measured time is waited for, past it if need be, until
+  it is answered or the probe's `timeout` (k6's 60s when absent) runs out. Latency and time
+  to first byte count the requests the subject answered successfully, and throughput only
+  those answered within the measured time. `error_rate` counts every request that failed,
+  timed out or was never answered, of those sent. Under an open model, k6 starts every
+  client before the load, so an arrival it drops found every client waiting on the
+  subject: the subject was too slow for the rate, so each drop counts in `error_rate` as
+  an error, and the trial is measured with its `dropped` count. A sensor that
   could not read is a reading with a failure. None of these stops a run, but a lost
   environment; the report counts each.
 
