@@ -107,6 +107,15 @@ def test_missing_file_secret(tmp_path: Path) -> None:
         EnvFileSecretResolver().resolve(f"file:{tmp_path / 'none'}")
 
 
+def test_a_file_secret_that_is_not_text_is_a_secret_error(tmp_path: Path) -> None:
+    # A key file that is not UTF-8 raised UnicodeDecodeError, which is not a HardlineError.
+    f = tmp_path / "key"
+    f.write_bytes(b"\xff\xfe\x00binary")
+    with pytest.raises(SecretError, match="not UTF-8 text") as e:
+        EnvFileSecretResolver().resolve(f"file:{f}")
+    assert "binary" not in str(e.value)
+
+
 def test_unknown_secret_scheme() -> None:
     with pytest.raises(SecretError, match="unknown scheme"):
         EnvFileSecretResolver().resolve("vault:x")
