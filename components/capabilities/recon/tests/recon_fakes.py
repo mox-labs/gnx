@@ -133,6 +133,17 @@ def plugins_with(**collectors: Collector) -> Plugins:
     return plugins
 
 
+def building(built: list[str], name: str) -> Callable[[CollectorContext], Collector]:
+    """A collector type's ``create`` that records ``name`` in ``built`` and then fails: for a
+    test of a run that must build no collector, which then sees what was built."""
+
+    def create(ctx: CollectorContext) -> Collector:
+        built.append(name)
+        raise AssertionError(f"a collector was built: {name!r}")
+
+    return create
+
+
 def _creating(collector: Collector) -> Callable[[CollectorContext], Collector]:
     def create(ctx: CollectorContext) -> Collector:
         return collector

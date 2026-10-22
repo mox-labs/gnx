@@ -17,7 +17,7 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx2
 import pytest
@@ -28,12 +28,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from recon.adapters._out.mcp_collector import McpCollector
 from recon.composition import load_plugins, root
 from tests.mcp_server import FIXTURE
-from tests.recon_fakes import FixedClock, run_survey
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from recon.domain.collector import Collector, CollectorContext
+from tests.recon_fakes import FixedClock, building, run_survey
 
 SERVER = str(Path(__file__).parent / "mcp_server.py")
 
@@ -391,16 +386,9 @@ def test_a_dry_run_builds_no_collector_whose_type_has_no_preflight(tmp_path: Pat
     built: list[str] = []
     plugins = load_plugins()
 
-    def building(name: str) -> Callable[[CollectorContext], Collector]:
-        def create(ctx: CollectorContext) -> Collector:
-            built.append(name)
-            raise AssertionError(f"a dry run built the collector {name!r}")
-
-        return create
-
     for name, ct in list(plugins.collector_types.items()):
         if name != "mcp":
-            plugins.collector_types[name] = replace(ct, create=building(name))
+            plugins.collector_types[name] = replace(ct, create=building(built, name))
     plan = _plan(
         tmp_path,
         [_call("good", "whoami"), {"name": "c", "type": "cli", "run": "true"}],
