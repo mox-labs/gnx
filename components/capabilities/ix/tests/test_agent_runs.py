@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 import ix
 from ix.adapters._in.cli import main
+from ix.adapters._out.matrix_agents import Loop
 from ix.adapters._out.otel_tracing import OtelTracer
 from ix.composition import Root
 from ix.composition.extension import register
@@ -1167,6 +1168,105 @@ class TestADryRun:
         assert f"none: {DRY_RUN}" in result.stdout
         assert "Findings on mock replies (the harness, not the agent)" in result.stdout
         assert "Indication" not in result.stdout
+
+
+class Listening(Scripted):
+    """A scripted runtime that keeps, for each session, the system prompt and the task it
+    was given, as the agent would read them."""
+
+    heard: list[tuple[str | None, str]]
+
+    async def run(self, definition: matrix.AgentDefinition, task: str) -> matrix.AgentResponse:
+        self.heard.append((definition.system_prompt, task))
+        return self.answer(task)
+
+
+def _listening(heard: list[tuple[str | None, str]]) -> matrix.Registry:
+    """``SCRIPTED`` as a :class:`Listening` runtime that appends to ``heard``."""
+    registry = matrix.default_registry(discover=False)
+    register(registry)
+
+    def build(config: ScriptedConfig) -> Listening:
+        runtime = Listening()
+        runtime.answer, runtime.heard = _fires(), heard
+        return runtime
+
+    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
+    return registry
+
+
+class TestAPromptReachesTheAgentAsWritten:
+    """Regression: every ``{{`` and ``}}`` in a subject's or a probe's options was un-doubled
+    before the agent saw it, so a prompt holding nested JSON or a template was sent altered,
+    while the registration digested the text as written, and nothing said so."""
+
+    SYSTEM = 'Answer as {"verdict": {"ok": true}} only; {{x}} is the factor, here {x}.'
+    PROMPT = (
+        'Return JSON like {"a": {"b": 1}} and keep the line {{ user.name }} as it is.\n'
+        "{% for item in items %}- {{ item }}{% endfor %}\n"
+        "Write {{x}} literally; the level is {x}."
+    )
+
+    def test_nested_json_and_a_template_arrive_byte_for_byte(self, tmp_path: Path) -> None:
+        data = {
+            "name": "as-written",
+            "question": "Does the prompt reach the agent as written?",
+            "genre": "evaluate",
+            "subjects": {
+                "agent": {"kind": "agent-session", "runtime": SCRIPTED,
+                          "system_prompt": self.SYSTEM},
+            },
+            "factors": {"x": ["one"]},
+            "probes": [
+                {"id": "ask", "kind": "prompt", "prompt": self.PROMPT,
+                 "truth": {"expectation": "must_trigger", "expected_skill": "review"}},
+            ],
+            "primary": {"metric": "activated_correctly"},
+            "threshold": {"op": ">=", "value": 0.5},
+            "repeats": 5,
+        }  # fmt: skip
+        lab = tmp_path / "as-written"
+        lab.mkdir()
+        (lab / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+        heard: list[tuple[str | None, str]] = []
+        root = Root(registry=_listening(heard), settings=_settings())
+        found = root.validate(lab)
+        assert found.valid and not found.problems, found.problems
+        root.run(lab, exploratory=True)
+        assert set(heard) == {
+            (
+                'Answer as {"verdict": {"ok": true}} only; {x} is the factor, here one.',
+                'Return JSON like {"a": {"b": 1}} and keep the line {{ user.name }} as it is.\n'
+                "{% for item in items %}- {{ item }}{% endfor %}\n"
+                "Write {x} literally; the level is one.",
+            )
+        }
+
+    def test_a_loops_doubled_placeholder_is_its_text_in_the_next_round(
+        self, tmp_path: Path
+    ) -> None:
+        """A loop's prompt is filled twice, with the cell's levels and then by the session
+        with the round's ``{response}``: ``{{response}}`` is un-doubled once, by the last."""
+        lab = _routing(
+            tmp_path,
+            subjects={
+                "catalog": {
+                    "kind": "agent-session",
+                    "runtime": SCRIPTED,
+                    "loop": {
+                        "strategy": "self-review",
+                        "rounds": 2,
+                        "prompt": 'You said {response}; quote {{response}} as {"k": {"v": 1}}.',
+                    },
+                }
+            },
+        )
+        heard: list[tuple[str | None, str]] = []
+        Root(registry=_listening(heard), settings=_settings()).run(lab, exploratory=True)
+        assert {task for _, task in heard[1::2]} == {
+            'You said ok; quote {response} as {"k": {"v": 1}}.'
+        }
+        assert Loop(strategy="self-review", until="{{done}} {}").until == "{done} {}"
 
 
 class TestATextCheck:

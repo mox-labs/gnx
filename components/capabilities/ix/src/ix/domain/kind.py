@@ -53,12 +53,13 @@ OptionType = Literal[
     "any",
 ]
 
-#: A placeholder, or a doubled brace, which is the brace itself: ``{{name}}`` is the text
-#: ``{name}``, as in Python's ``str.format``.
-_PLACEHOLDER = re.compile(r"\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_.-]*)\}")
+_NAME = r"[A-Za-z_][A-Za-z0-9_.-]*"
+#: A placeholder (group 2), or one doubled (group 1), which is its own text: ``{{name}}`` is
+#: ``{name}``. Every other brace, doubled or not, is text as written, so a prompt holding
+#: JSON (``{"a": {"b": 1}}``) or a template (``{{ user.name }}``) is sent as it was written.
+_PLACEHOLDER = re.compile(rf"\{{\{{({_NAME})\}}\}}|\{{({_NAME})\}}")
 #: A value that is one placeholder and nothing else: filled, it becomes the level itself.
-_WHOLE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.-]*)\}")
-_BRACES = {"{{": "{", "}}": "}"}
+_WHOLE = re.compile(rf"\{{({_NAME})\}}")
 _DURATION = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)\s*$")
 _SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
 _RATE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/\s*(s|m))?\s*$")
@@ -68,10 +69,10 @@ NOTE_PREFIX = "x-"
 
 
 def placeholders(value: Any) -> list[str]:
-    """Every ``{name}`` in the strings of ``value``, in order of appearance; a doubled brace
+    """Every ``{name}`` in the strings of ``value``, in order of appearance; a doubled one
     (``{{name}}``) is text, not one."""
     if isinstance(value, str):
-        return [name for name in _PLACEHOLDER.findall(value) if name]
+        return [name for _, name in _PLACEHOLDER.findall(value) if name]
     if isinstance(value, Mapping):
         return [name for item in value.values() for name in placeholders(item)]
     if isinstance(value, list | tuple):
@@ -79,37 +80,41 @@ def placeholders(value: Any) -> list[str]:
     return []
 
 
-def fill(value: Any, bound: Mapping[str, Any]) -> Any:
+def fill(value: Any, bound: Mapping[str, Any], *, escaped: bool = False) -> Any:
     """``value`` with each ``{name}`` that ``bound`` knows replaced by its level, in every
     string at any depth of mappings and lists. A string that is one placeholder and nothing
     else becomes the level itself, with its type (``"{t}"`` filled with 0.5 is 0.5); one
-    inside more text is written into it. A doubled brace becomes one brace; an unknown
-    name stays as written."""
+    inside more text is written into it. A doubled placeholder (``{{name}}``) becomes its
+    text (``{name}``), unless ``escaped`` keeps it doubled for a later filling; an unknown
+    name, and every other brace, stays as written."""
     if isinstance(value, str):
         whole = _WHOLE.fullmatch(value)
         if whole is not None and whole.group(1) in bound:
             return bound[whole.group(1)]
 
         def replaced(match: re.Match[str]) -> str:
-            name = match.group(1)
-            if name is None:
-                return _BRACES[match.group(0)]
+            text, name = match.group(1), match.group(2)
+            if text is not None:
+                return match.group(0) if escaped else f"{{{text}}}"
             return str(bound[name]) if name in bound else match.group(0)
 
         return _PLACEHOLDER.sub(replaced, value)
     if isinstance(value, Mapping):
-        return {key: fill(item, bound) for key, item in value.items()}
+        return {key: fill(item, bound, escaped=escaped) for key, item in value.items()}
     if isinstance(value, list | tuple):
-        return [fill(item, bound) for item in value]
+        return [fill(item, bound, escaped=escaped) for item in value]
     return value
 
 
 def per_cell(options: Mapping[str, Any], factors: Mapping[str, tuple[Level, ...]]) -> list[Any]:
-    """``options`` filled for each cell of ``factors``, as a trial in that cell has them;
-    each distinct filling once, in the order of the cells."""
+    """``options`` filled for each cell of ``factors``, as a trial in that cell has them
+    but with each doubled placeholder kept doubled: an adapter asked about them (a preflight,
+    a review) reads a placeholder that is left as one only a trial fills (an environment's
+    binding), and a literal ``{{name}}`` as text. Each distinct filling once, in the order
+    of the cells."""
     found: list[Any] = []
     for cell in cells(dict(factors)):
-        filled = fill(options, cell)
+        filled = fill(options, cell, escaped=True)
         if filled not in found:
             found.append(filled)
     return found

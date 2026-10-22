@@ -285,11 +285,33 @@ class TestOptions:
         assert fill(["{on}", "--size={size}", "x{r}"], bound) == [True, "--size=1MiB", "x2"]
         assert fill("{unknown}", bound) == "{unknown}"
 
-    def test_doubled_braces_are_a_literal_brace(self) -> None:
-        """``{{name}}`` is the text ``{name}``: no placeholder, and filled to one brace each."""
+    def test_a_doubled_placeholder_is_the_text_of_the_placeholder(self) -> None:
+        """``{{name}}``, where ``name`` is a placeholder's name, is the text ``{name}``: no
+        placeholder, and filled to that text whatever ``name`` is bound to."""
         assert placeholders("{{x}} and {y} and {{ z }}") == ["y"]
-        assert fill("f = {{a: {y}}}", {"y": 1, "a": 2}) == "f = {a: 1}"
         assert fill("{{y}}", {"y": 1}) == "{y}"
+        assert fill("{{y}} is {y}", {"y": 1}) == "{y} is 1"
+        assert fill(["{{db.url}}", {"k": "{{y}}"}], {"y": 1}) == ["{db.url}", {"k": "{y}"}]
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            'Return JSON like {"a": {"b": 1}} and nothing else.',
+            '{"outer": {"inner": {"deep": [1, {"x": 2}]}}}',
+            "{% for user in users %}Hello {{ user.name }}!{% endfor %}",
+            "{{ '{' }} and {{- name -}} and {{#if ok}}yes{{/if}}",
+            "f = {{a: 1}}",
+            "{{}} and }} and {{ and {",
+            "dict(a={'k': {'v': 1}})",
+        ],
+    )
+    def test_every_other_brace_is_left_as_written(self, written: str) -> None:
+        """Regression: every ``{{`` and ``}}`` was un-doubled, so nested JSON (``}}``) and a
+        template (``{{ user.name }}``) reached the agent altered. Only a doubled placeholder
+        is an escape; every other brace, doubled or not, is the text as written."""
+        bound = {"a": 9, "name": "N", "user.name": "U", "x": 3}
+        assert placeholders(written) == []
+        assert fill(written, bound) == written
 
     def test_a_kind_cannot_make_an_option_depend_on_one_it_does_not_take(self) -> None:
         declared = {
@@ -637,6 +659,40 @@ class TestRequirements:
         upstream = next(r for r in plan.requirements if r.needed_by == ("environment",))
         assert (upstream.need, upstream.holds) == ("'no-such-upstream' on PATH", False)
         assert not plan.runnable
+
+    @pytest.mark.parametrize(
+        "system_prompt", ["reply in plain text", "reply as {{json}}", 'reply as {"a": {"b": 1}}']
+    )
+    def test_a_literal_brace_leaves_the_preflight_on(
+        self, tmp_path: Path, system_prompt: str
+    ) -> None:
+        """Regression: the plan filled each cell's options un-doubling ``{{json}}`` into
+        ``{json}``, which the adapter read as a placeholder a trial fills, so it checked
+        nothing: the plan said runnable with no requirement, and the run started without the
+        fixture it names. A literal brace is text; the preflight still asks."""
+        data = {
+            "name": "brace",
+            "question": "Does a literal brace switch the preflight off?",
+            "genre": "evaluate",
+            "subjects": {
+                "canned": {"kind": "agent-session", "runtime": "mock",
+                           "system_prompt": system_prompt, "fixtures": ["no-such-folder"]},
+            },
+            "probes": [
+                {"id": "greet", "kind": "prompt", "prompt": "Greet me.",
+                 "mock_response": "BANANA, hello", "truth": {"starts_with": "BANANA"}},
+            ],
+            "primary": {"metric": "text_matched"},
+            "threshold": {"op": ">=", "value": 0.5},
+            "repeats": 5,
+        }  # fmt: skip
+        (tmp_path / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+        plan = ix.plan(tmp_path / "experiment.yaml")
+        assert not plan.runnable
+        (unmet,) = plan.unmet
+        assert "no-such-folder" in unmet.why and unmet.needed_by == ("subjects.canned",)
+        with pytest.raises(ix.ConfigError, match="no-such-folder"):
+            ix.run(tmp_path / "experiment.yaml", exploratory=True)
 
     def test_a_run_that_calls_a_model_needs_no_spend_and_takes_none(
         self, evaluate_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds

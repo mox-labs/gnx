@@ -769,7 +769,9 @@ whether it came from the experiment, the genre or ix.
   environment binds a service with: `{{<service>.url}}`, `.host`, `.port` (a `process`
   service's `url`, a `compose` service's published port). A loop's `prompt` fills
   `{{prompt}}`, `{{response}}`, `{{until}}` and `{{failures}}` itself. Anything else is
-  `unbound_placeholder`. `{{{{name}}}}` is the text `{{name}}`, for code in a prompt.
+  `unbound_placeholder`. `{{{{name}}}}` is the text `{{name}}`; every other brace is sent as
+  written, so JSON (`{{"a": {{"b": 1}}}}`) or a template (`{{{{ user.name }}}}`) in a prompt
+  reaches the agent unchanged.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the
   experiment, one file per probe (`.md`, `.yaml`): a markdown file's text is the prompt,
   and its frontmatter keys other than `id` (default: the file's name), `kind` (default

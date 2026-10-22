@@ -321,7 +321,8 @@ def register(registry):
   filled with the levels, the subject's options and its facets: a factor, an option every
   subject sets, or a facet every subject's kind offers (`{pid}`). A loop's `prompt` fills
   `{prompt}`, `{response}`, `{until}` and `{failures}` itself. `{{name}}` is the text
-  `{name}`;
+  `{name}`; every other brace is sent as written, so a prompt holding JSON
+  (`{"a": {"b": 1}}`) or a template (`{{ user.name }}`) reaches the agent unchanged;
 - **a model-judged metric never decides.** Whether a metric is judged is the sensor's
   declaration, not the author's. A judged metric is refused as `primary` and as a guardrail
   in every genre with a verdict (`judged_gate`); it can be reported under `metrics:`.

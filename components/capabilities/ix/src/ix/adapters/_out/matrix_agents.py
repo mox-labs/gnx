@@ -69,7 +69,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 import matrix
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ix.adapters._out.processes import startable
 from ix.adapters._out.python_checks import code_in, run_cases
@@ -213,6 +213,14 @@ class Loop(BaseModel):
     prompt: str | None = None
     #: Self-review stops when an answer contains this.
     until: str = VERIFIED
+
+    @field_validator("until")
+    @classmethod
+    def _as_text(cls, value: str) -> str:
+        """The loop's options keep each doubled placeholder for the round's filling (the
+        prompt's); ``until`` is not filled, so it is its text here."""
+        result: str = fill(value, {})
+        return result
 
 
 class SessionOptions(BaseModel):
