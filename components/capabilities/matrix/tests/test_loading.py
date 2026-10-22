@@ -298,7 +298,7 @@ def test_reads_every_real_agent_file_in_the_repo() -> None:
 
 
 def test_a_repository_whose_agent_glob_matches_nothing_fails(tmp_path: Path) -> None:
-    """Regression (matrix-tests 12): the test above skipped when its glob matched nothing, so
+    """Regression: the test above skipped when its glob matched nothing, so
     moving the agent files would have turned it off without a word."""
     _write(tmp_path, ".claude-plugin/marketplace.json", "{}")
     with pytest.raises(pytest.fail.Exception, match="matches nothing"):
@@ -351,7 +351,7 @@ def test_a_merged_problem_names_the_file_that_set_the_value(tmp_path: Path) -> N
 
 def test_a_problem_in_an_accumulated_list_names_the_file_that_set_it(tmp_path: Path) -> None:
     """An accumulated field was taken out of the merge before origins were noted, so a
-    problem inside it had no file (mx-src F22)."""
+    problem inside it had no file."""
     low = _write(tmp_path, "low.yaml", "acme: {paths: [a]}\n")
     high = _write(tmp_path, "high.yaml", "acme: {paths: [{not: a path}]}\n")
     with pytest.raises(ConfigError) as raised:
@@ -365,7 +365,7 @@ def test_an_accumulated_field_of_the_wrong_shape_is_reported_not_dropped(
     tmp_path: Path,
 ) -> None:
     """A tier that wrote an accumulated list as a string was overwritten by the other tiers'
-    list: its problem vanished, and the directory it named was silently ignored (F22)."""
+    list: its problem vanished, and the directory it named was silently ignored."""
     low = _write(tmp_path, "low.yaml", "acme: {paths: agents}\n")
     high = _write(tmp_path, "high.yaml", "acme: {paths: [b]}\n")
     with pytest.raises(ConfigError) as raised:

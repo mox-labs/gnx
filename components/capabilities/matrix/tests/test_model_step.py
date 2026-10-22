@@ -96,7 +96,7 @@ async def test_a_reply_without_json_breaks_the_declared_output() -> None:
 
 
 def test_an_unknown_model_is_refused_when_the_step_is_built() -> None:
-    """Regression (mx-src F12): with the model runtime, an unknown model name got through
+    """Regression: with the model runtime, an unknown model name got through
     compose, `matrix check` and `matrix plan`, then failed at run time as ``component``
     (exit 8). The step checks it with its runtime when it is built: ``config`` (exit 3)."""
     pytest.importorskip("hardline")

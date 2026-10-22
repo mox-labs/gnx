@@ -443,7 +443,7 @@ def test_matrix_imports_and_composes_without_importing_a_runtime_s_dependencies(
 
 def test_an_agent_step_s_fingerprint_follows_its_agent_s_definition_and_runtime() -> None:
     """The reuse fingerprint covers what an agent is and where it runs: its prompt, model and
-    tools, and its runtime's options (data-model.md; mx-tests 11)."""
+    tools, and its runtime's options (data-model.md)."""
 
     def printed(agent: Mapping[str, object], runtime: Mapping[str, object]) -> str:
         container = compose(

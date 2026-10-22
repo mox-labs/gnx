@@ -517,7 +517,7 @@ async def test_a_release_that_raises_a_base_exception_does_not_skip_the_releases
     tmp_path: Path,
 ) -> None:
     """A synchronous release that raised a ``BaseException`` escaped ``except Exception``, so
-    the releases still owed were never called and the record never finished (mx-src F17).
+    the releases still owed were never called and the record never finished.
     Every release is called, the record is finished, and then it is raised."""
     from matrix import JsonlConstructStore
 

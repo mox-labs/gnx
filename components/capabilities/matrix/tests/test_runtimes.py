@@ -86,7 +86,7 @@ def _hardline(**kw: object):  # type: ignore[no-untyped-def]
 
 
 async def test_a_call_carries_hardline_s_whole_record() -> None:
-    """Regression (mx-tests 4, W3.3): the model runtime stamped ``num_turns=1`` and
+    """Regression: the model runtime stamped ``num_turns=1`` and
     ``stop="completed"`` as constants, then kept only part of what hardline reported, so a
     truncation, a refusal or the provider's id could never show. A call now carries
     hardline's whole record: why the reply ended, what was sent and to which registry row,
@@ -170,7 +170,7 @@ async def test_a_structured_reply_is_validated_and_repaired_by_hardline() -> Non
 
 
 def test_an_unknown_model_is_refused_by_check_naming_the_known_ones() -> None:
-    """Regression (mx-src F12): an unknown name composed, checked and planned, and failed at
+    """Regression: an unknown name composed, checked and planned, and failed at
     run time as ``component``. ``check`` resolves it, as a ``config`` problem."""
     runtime = _hardline()
     with pytest.raises(ConfigError, match="no-such-model") as e:
@@ -291,7 +291,7 @@ class _Raises:
 async def test_on_the_run_path_a_rate_limit_keeps_its_hint_and_anything_else_fails() -> None:
     """What ``call`` raises, not a private helper: hardline's ``retry_after`` reaches the
     retry policy as ``retry_after_s``, and an exception hardline did not classify is the
-    port's ``failed``, never an unclassified one (mx-tests 11)."""
+    port's ``failed``, never an unclassified one."""
     pytest.importorskip("hardline")
     from hardline import BackendError
 

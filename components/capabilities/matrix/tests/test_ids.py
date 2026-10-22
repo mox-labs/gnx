@@ -79,7 +79,7 @@ def test_slick_namespace_is_reserved(root: str) -> None:
 
 def test_the_slick_namespace_is_refused_wherever_a_type_url_is_checked() -> None:
     """``slick.*`` is reserved; only ``type_url()`` refused it, so ``check_type_url`` and
-    the registry took ``slick.v1.x`` (mx-src F25)."""
+    the registry took ``slick.v1.x``."""
     from matrix import ConfigError, Registry
     from matrix.domain.ids import check_type_url, parse_type_url
 

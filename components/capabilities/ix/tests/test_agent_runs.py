@@ -1564,7 +1564,7 @@ class TestAPromptReachesTheAgentAsWritten:
 
 
 class TestTheLiveGuardIsOnIxsPath:
-    """ix-tests F12: the workspace guard replaces the calls where a session or a model call
+    """The workspace guard replaces the calls where a session or a model call
     reaches a provider, and its own check reads only that the names are replaced. These
     hold that a run through ix calls those very names, so the guard is in ix's path too. In
     case one ever is not, each first points the provider at a closed port, away from this

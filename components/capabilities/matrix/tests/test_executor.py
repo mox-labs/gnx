@@ -358,7 +358,7 @@ async def test_live_handles_cannot_be_rows() -> None:
 async def test_a_context_built_by_hand_refuses_the_names_a_run_refuses() -> None:
     """``emit``, ``measure`` and ``span`` raise ``ContractError`` for a bad name; a context
     built outside a run (a component's unit test) accepted any, so a test could not catch
-    what the run would refuse (mx-src F24)."""
+    what the run would refuse."""
     from matrix import ContractError
 
     ctx = RunContext("r", "c")

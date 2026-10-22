@@ -973,7 +973,7 @@ class TestABrokenExtension:
     def test_an_adapter_that_cannot_be_built_is_not_runnable_and_validate_says_why(
         self, write_experiment: Write
     ) -> None:
-        """Regression (ix-tests F2): an adapter whose ``needs`` nothing supplies was listed as
+        """Regression: an adapter whose ``needs`` nothing supplies was listed as
         runnable, ``validate`` said nothing and ``plan`` said runnable; only ``run`` refused."""
 
         def needs_a_client(*, s3_client: Any) -> Any:
@@ -1088,7 +1088,7 @@ class TestABrokenExtension:
     def test_an_adapter_not_of_its_ports_shape_is_refused_when_it_is_registered(
         self, write_experiment: Write
     ) -> None:
-        """Regression (ix-tests F1): a class with none of the Subject port's members was
+        """Regression: a class with none of the Subject port's members was
         registered, validated as runnable, and its run "completed" with every trial a harness
         failure (``AttributeError: ... no attribute 'reach'``)."""
 

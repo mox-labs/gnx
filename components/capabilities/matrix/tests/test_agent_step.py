@@ -330,8 +330,8 @@ def test_the_container_wires_the_components_its_config_lists() -> None:
 
 async def test_the_offline_agent_runtime_says_its_session_completed() -> None:
     """A response says why the session ended (agent_runtime.py: Guarantees). The mock's one
-    turn completes, a fact of the mock, so the test holds that value and not any truthy one
-    (mx-tests 4). A model call has no session to end: it is the model port's."""
+    turn completes, a fact of the mock, so the test holds that value and not any truthy one.
+    A model call has no session to end: it is the model port's."""
     box = compose(MatrixConfig.model_validate({"agent_runtimes": {"mock": {"type": "mock"}}}))
     response = await box.agent_runtime("mock").run(AgentDefinition(name="a", tools=()), "hi")
     assert (response.stop, response.num_turns) == ("completed", 1)
@@ -354,7 +354,7 @@ def test_an_unknown_reason_is_a_failure_not_a_crash() -> None:
 def test_a_task_template_is_checked_against_its_inputs_when_the_step_is_built(
     task: str, inputs: dict[str, str], said: str
 ) -> None:
-    """Regression (mx-src F13): a typo composed, wired and planned, and failed only when the
+    """Regression: a typo composed, wired and planned, and failed only when the
     run reached the step, after its upstream work."""
     with pytest.raises(ConfigError, match=said) as e:
         AgentStep(AgentStepConfig(agent="a", inputs=inputs, task=task), agents={"a": object()})  # type: ignore[dict-item]
