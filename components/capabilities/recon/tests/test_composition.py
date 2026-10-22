@@ -64,9 +64,10 @@ def build_collectors(
 
 
 def test_builtins_register_through_the_entry_point_groups() -> None:
-    """The installed package declares its own types and transforms like any plugin would."""
+    """The installed package declares its own types and transforms like any plugin would:
+    ``mcp`` among them, the type added after the others with no edit to the plan or survey."""
     registry = load_plugins()
-    assert {"api", "cli", "web", "capture"} <= set(registry.collector_types)
+    assert {"api", "cli", "web", "capture", "mcp"} <= set(registry.collector_types)
     assert {"html2text", "inverted_index", "join", "first", "markitdown"} <= set(
         registry.transforms
     )
