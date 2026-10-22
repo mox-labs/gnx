@@ -52,6 +52,7 @@ def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
 
 def test_the_envelope_is_the_agreed_shape() -> None:
     contract = _contract("error-envelope.json")
+    assert "hardline" in contract["description"], "the contract names the tools it binds"
     problem = Problem(path="models.q.famly", kind="unknown_key", message="m", source="cwd x")
     payload, code = error_payload(ConfigError("bad", problems=[problem]))
     assert code == 3 and list(payload) == list(contract["envelope"]) == ["schema", "error"]
