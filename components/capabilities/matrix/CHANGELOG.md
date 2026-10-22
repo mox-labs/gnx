@@ -211,6 +211,10 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Fixed
 
+- **A hardline that adds a request param no longer fails every model step.** The `hardline`
+  model runtime built its `RequestParams` from all of hardline's (`**params.model_dump()`),
+  which refuse a key they do not know, so hardline's new `params.tools` failed each step with
+  `extra_forbidden`. It maps them field by field, as the design record said it did.
 - **`run.json` says how many events were dropped** (`events_dropped`, also in
   `Run.document()`): the record is finished after the event queue has drained, so it counts
   them all. A reader of `events.jsonl` could not tell the file was incomplete, since the
