@@ -98,6 +98,7 @@ subjects need several services. Record section 22 has the reasons.
 
 ### Fixed
 
+- **No proxy variable reroutes a readiness probe.** A started program's `ready` URL was asked through an httpx client that read `HTTP_PROXY` and its kin, so with a proxy set and no `NO_PROXY` a probe of a program on 127.0.0.1 went to the proxy, and a program that was up was never seen to be. The probe is on httpx2, the workspace's one HTTP stack, with `trust_env` off; ix depends on `httpx2` in place of `httpx`.
 - **What a session does is asked of its runtime, not read from option names** (W2.9). The
   session reviews read `setting_sources` and `permission_mode` under `runtime_options` by
   name, and the judge pinned `setting_sources: []` on any runtime whose config took it:

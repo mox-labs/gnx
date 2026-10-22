@@ -23,8 +23,8 @@ from hardline_helpers import DictSecrets
 from hardline import (
     BackendError,
     Completion,
+    Endpoint,
     ModelRuntime,
-    ModelSpec,
     RawCompletion,
     Request,
     build_runtime,
@@ -207,7 +207,7 @@ async def test_aclose_reaches_every_backend_that_holds_connections() -> None:
         closed = 0
 
         async def complete(
-            self, spec: ModelSpec, request: Request, api_key: str | None
+            self, spec: Endpoint, request: Request, api_key: str | None
         ) -> RawCompletion:
             raise NotImplementedError
 
@@ -223,3 +223,25 @@ async def test_aclose_reaches_every_backend_that_holds_connections() -> None:
         pass
     await rt.aclose()
     assert pooled.closed == 2  # aclose() may be called again; the runtime stays usable
+
+
+async def test_an_https_proxy_is_verified_against_the_system_store_whatever_the_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # The TLS hop to an https:// proxy was given no SSL context, so httpcore2 built its own from
+    # SSL_CERT_FILE and SSL_CERT_DIR, whatever trust_env said: a variable chose what the proxy
+    # was trusted against. Here the variable names a file that is not there, which only a
+    # context read from the environment would open.
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "planted.pem"))
+
+    async def hang_up(_: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.close()
+
+    server = await asyncio.start_server(hang_up, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    async with server:
+        transport = _REAL_TRANSPORT(f"https://127.0.0.1:{port}")
+        async with httpx2.AsyncClient(transport=transport, trust_env=False) as client:
+            with pytest.raises(httpx2.ConnectError) as e:
+                await client.get("https://provider.invalid/v1")
+    assert "planted.pem" not in str(e.value)

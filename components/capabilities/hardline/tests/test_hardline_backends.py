@@ -16,6 +16,7 @@ from hardline_helpers import DictSecrets
 from hardline import (
     BackendError,
     ConfigError,
+    Endpoint,
     Message,
     ModelBackend,
     ModelSpec,
@@ -34,11 +35,12 @@ if TYPE_CHECKING:
 LOCAL = "http://127.0.0.1:9/v1"
 
 
-def _spec(**kw: Any) -> ModelSpec:
+def _spec(**kw: Any) -> Endpoint:
+    """A registry row, as the runtime hands it to a backend."""
     base = {"name": "q", "backend": "openai-compat", "model": "m", "family": "qwen"}
     if kw.get("backend", base["backend"]) != "mock":
         base["base_url"] = LOCAL
-    return ModelSpec.model_validate({**base, **kw})
+    return ModelSpec.model_validate({**base, **kw}).endpoint()
 
 
 def _request(schema: dict[str, Any] | None = None) -> Request:
@@ -104,7 +106,7 @@ def _message(*blocks: dict[str, Any], **extra: Any) -> dict[str, Any]:
 
 
 # The contract every installed backend meets is test_hardline_conformance.py's, run through the
-# helper hardline ships (W8.3).
+# helper hardline ships.
 
 
 async def test_mock_returns_the_declared_shape() -> None:
@@ -113,7 +115,7 @@ async def test_mock_returns_the_declared_shape() -> None:
 
 
 async def test_mock_says_which_turn_it_echoes_and_names_each_call() -> None:
-    # F12: the docstring said the echo was the last user message; it is the first. And the
+    # The docstring said the echo was the last user message; it is the first. And the
     # request id was whatever the call counter held after the reply was picked; it is now the
     # call's own ordinal, counted from 1, and says so.
     backend = MockBackend()
@@ -262,7 +264,95 @@ async def test_anthropic_refuses_without_a_key_reference(monkeypatch: pytest.Mon
     assert wire.requests == []
 
 
-# --- locations come from the row, never the environment (W7.1) -----------------------
+def _says_nothing(turn: dict[str, Any]) -> bool:
+    """A turn the Messages API refuses: a text block's ``text`` has a minimum length of 1."""
+    content = turn["content"]
+    if isinstance(content, str):
+        return not content.strip()
+    return not content or any(
+        b.get("type") == "text" and not str(b.get("text", "")).strip() for b in content
+    )
+
+
+def _messages_api(reply: dict[str, Any]) -> Wire:
+    """The Messages API as far as empty turns go: a request with a turn that says nothing is a
+    400 ``invalid_request_error``; any other is answered with ``reply``."""
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        if any(_says_nothing(turn) for turn in json.loads(request.content)["messages"]):
+            error = {"type": "invalid_request_error", "message": "text content blocks must be"}
+            return httpx2.Response(400, json={"type": "error", "error": error})
+        return httpx2.Response(200, json=reply)
+
+    return Wire(answer)
+
+
+@pytest.mark.parametrize(
+    ("backend", "wire"),
+    [
+        ("anthropic", _messages_api(_message(content=[], stop_reason="max_tokens"))),
+        ("openai-compat", _answer(_chat("", finish_reason="length"))),
+    ],
+)
+async def test_a_repair_after_an_empty_reply_sends_no_empty_assistant_turn(
+    backend: str, wire: Wire
+) -> None:
+    # An empty reply was echoed back as `{"role": "assistant", "content": ""}` ahead of the
+    # repair instruction. The Messages API refuses that turn, so the repair came back a 400
+    # (`bad_request`, exit 3) where the caller is owed a SchemaError.
+    from pydantic import BaseModel
+
+    from hardline import SchemaError
+
+    class Verdict(BaseModel):
+        ok: bool
+
+    backends: dict[str, ModelBackend] = {
+        "openai-compat": OpenAICompatBackend(wire.transport),
+        "anthropic": AnthropicBackend(wire.transport),
+    }
+    rt = build_runtime(
+        {
+            "models": {
+                "r": {"backend": backend, "model": "m", "family": "x", "base_url": LOCAL}
+                | ({"api_key": "env:K"} if backend == "anthropic" else {})
+            }
+        },
+        backends=backends,
+        secrets=DictSecrets({"env:K": "k"}),
+    )
+    with pytest.raises(SchemaError) as e:
+        await rt.extract("r", "hi", Verdict)
+    assert e.value.attempts == 2 and e.value.validation == "the reply was empty"
+    repair = json.loads(wire.requests[1].content)["messages"]
+    assert [turn["role"] for turn in repair] == ["user", "user", "user"]
+    assert "empty" in repair[-1]["content"]
+
+
+async def test_anthropic_leaves_out_an_assistant_turn_that_says_nothing() -> None:
+    # A caller's own conversation (pydantic-ai's, through matrix) can hold an empty assistant
+    # turn; the API refuses it, and leaving it out changes nothing the model is told. The two
+    # user turns either side are combined by the API into one.
+    wire = _messages_api(_message())
+    request = Request(
+        messages=(
+            Message(role="user", content="hi"),
+            Message(role="assistant", content=""),
+            Message(role="user", content="again"),
+            Message(role="assistant", content=" \n"),
+            Message(role="user", content="and again"),
+        ),
+        max_tokens=8,
+    )
+    await AnthropicBackend(wire.transport).complete(_spec(backend="anthropic"), request, "k")
+    assert wire.body["messages"] == [
+        {"role": "user", "content": "hi"},
+        {"role": "user", "content": "again"},
+        {"role": "user", "content": "and again"},
+    ]
+
+
+# --- locations come from the row, never the environment -----------------------
 
 _AMBIENT = {
     "OPENAI_BASE_URL": "http://evil.example/v1",
@@ -296,7 +386,7 @@ async def test_a_row_without_base_url_goes_to_its_backends_default_whatever_the_
     sent_to: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # F6: with no base_url the SDKs read OPENAI_BASE_URL / ANTHROPIC_BASE_URL, and the OpenAI
+    # With no base_url the SDKs read OPENAI_BASE_URL / ANTHROPIC_BASE_URL, and the OpenAI
     # client sent OPENAI_ORG_ID and OPENAI_PROJECT_ID as headers: a row's key went to a host
     # no config named.
     for name, value in _AMBIENT.items():
@@ -358,7 +448,7 @@ def test_a_backend_location_must_be_an_http_url() -> None:
         (503, "unavailable"),
         (504, "unavailable"),
         (529, "unavailable"),
-        # W6.1: no retry can change these. 501 says the server does not implement the request
+        # No retry can change these. 501 says the server does not implement the request
         # and 505 that it refuses the HTTP version: the row points somewhere that cannot serve it.
         (501, "bad_request"),
         (505, "bad_request"),
@@ -385,7 +475,7 @@ async def test_retry_after_header_is_read() -> None:
 
 async def test_a_redirect_is_reported_not_followed() -> None:
     # Following it would send the row's key to wherever the Location points. Changed requirement
-    # (W7.10): a redirect is the row's location to correct, so a config error (exit 3) whose fix
+    # A redirect is the row's location to correct, so a config error (exit 3) whose fix
     # names where to point it, not `unknown` (exit 1, "report a bug").
     moved = "https://127.0.0.1:9/v1/chat/completions"
     wire = Wire(lambda _: httpx2.Response(308, headers={"location": moved}))
@@ -405,7 +495,7 @@ async def test_a_redirect_elsewhere_names_the_location_in_its_fix() -> None:
     assert e.value.fix is not None and "http://elsewhere.example/" in e.value.fix
 
 
-# --- a proxy is named by the row, never taken from the environment (W7.10) -----------------
+# --- a proxy is named by the row, never taken from the environment -----------------
 
 
 @pytest.mark.parametrize("proxy", [None, "http://proxy.local:3128"])
@@ -433,7 +523,7 @@ async def test_a_backend_given_no_transport_reaches_the_workspace_guard(
     backend: Callable[[], ModelBackend], name: str, refused_live_calls: list[str]
 ) -> None:
     """The workspace guard refuses ``_http.network_transport``. This holds that a backend's
-    request is carried by that very name, so the guard is in its path (ix-tests F12): a backend
+    request is carried by that very name, so the guard is in its path: a backend
     that bound the transport some other way would reach the provider past it. The row points
     at a closed loopback port all the same."""
     with pytest.raises(AssertionError, match="a live model session"):
@@ -503,7 +593,7 @@ def test_each_built_in_has_a_timeout_of_its_rows_choosing() -> None:
     assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (90.0,) * 4
 
 
-# --- why a reply ended, and a refusal kept apart from an answer (W3.1) -----------------
+# --- why a reply ended, and a refusal kept apart from an answer -----------------
 
 
 @pytest.mark.parametrize(

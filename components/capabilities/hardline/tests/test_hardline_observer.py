@@ -1,4 +1,4 @@
-"""The logical call, observed: each attempt that failed, each fallback, and the answer (W4.4).
+"""The logical call, observed: each attempt that failed, each fallback, and the answer.
 
 Retries, fallbacks and schema repairs are known only to the runtime. A driven port in domain
 types (``CallObserver``) hands them to whoever the composition root chose, with no logging and

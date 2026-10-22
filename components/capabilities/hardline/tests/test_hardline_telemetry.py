@@ -1,4 +1,4 @@
-"""OpenTelemetry from hardline, on the GenAI semantic conventions (W4.4).
+"""OpenTelemetry from hardline, on the GenAI semantic conventions.
 
 One ``chat {model}`` span per backend call, with the ``gen_ai.client.inference.*`` duration
 and token metrics, so retries and fallbacks are sibling spans under the caller's own. hardline
@@ -167,7 +167,7 @@ async def test_hardline_counts_the_inference_tokens_and_times_each_call() -> Non
 
 
 async def test_a_row_names_its_provider_and_without_one_the_backend_stands_in() -> None:
-    """W7.11: an OpenAI-compatible backend cannot tell which server answered, so a row may
+    """An OpenAI-compatible backend cannot tell which server answered, so a row may
     name its provider (``ollama``, ``openai``) for ``gen_ai.provider.name``; a row that names
     none is still told by its backend's name."""
     otel = Telemetry()
@@ -200,7 +200,7 @@ async def test_a_call_that_fails_is_still_timed_and_raises_as_before() -> None:
 
 
 async def test_fallbacks_and_retries_are_counted_for_whoever_edits_the_registry() -> None:
-    # T31: a signal reaches the person who changes the system when a fallback succeeds.
+    # A signal reaches the person who changes the system when a fallback succeeds.
     otel = Telemetry()
     rt = _runtime(
         {"a": _row([{"error": "unavailable"}], retries=1, fallbacks=["b"]), "b": _row([REPLY])},

@@ -41,7 +41,7 @@ def _contract(name: str) -> dict[str, Any]:
 
 def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     """A kind the tools share exits with the agreed code; a kind of hardline's own takes a code
-    from 10 up; one kind to a code (W10.4). Before: rate_limit, timeout and unavailable all on
+    from 10 up; one kind to a code. Before: rate_limit, timeout and unavailable all on
     5, and bad_request on 3, beside config."""
     agreed = _contract("exit-codes.json")["kinds"]
     shared = set(agreed) & set(EXIT_CODES)
@@ -72,7 +72,7 @@ def test_the_envelope_is_the_agreed_shape() -> None:
 def test_a_defect_is_still_one_envelope_of_kind_unknown(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # W10.1: an exception hardline did not mean to raise escaped as a traceback, exit 1, with no
+    # An exception hardline did not mean to raise escaped as a traceback, exit 1, with no
     # JSON line under --json, though the help promised one for every failure.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -143,8 +143,8 @@ def _complete_in_a_process(tmp_path: Path, **otel: str) -> subprocess.CompletedP
 
 
 def test_the_command_exports_its_spans_as_the_otel_variables_ask(tmp_path: Path) -> None:
-    """W7.11: the command installs the OpenTelemetry SDK from the standard ``OTEL_*``
-    variables, as matrix's and ix's do (Q4). Before, ``hardline complete`` exported nothing
+    """The command installs the OpenTelemetry SDK from the standard ``OTEL_*``
+    variables, as matrix's and ix's do. Before, ``hardline complete`` exported nothing
     whatever they said: the library records through the API alone, and nothing installed an
     SDK."""
     done = _complete_in_a_process(

@@ -14,10 +14,10 @@ from hardline import (
     COMPLETION_TYPE_URL,
     ConfigError,
     ContractError,
+    Endpoint,
     Message,
     ModelRegistry,
     ModelRuntime,
-    ModelSpec,
     RawCompletion,
     Request,
     RequestParams,
@@ -51,6 +51,53 @@ async def test_completion_carries_family_usage_and_provenance() -> None:
 async def test_default_model_used_when_none_named() -> None:
     rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "qwen"}}, default="q")
     assert (await rt.complete(None, "x")).name == "q"
+
+
+async def test_a_backend_is_told_where_and_how_to_send_and_nothing_of_the_runtimes_policy() -> None:
+    # The whole registry row crossed the port, so every backend saw the runtime's retry,
+    # fallback and limit policy, the row's family, and where its key lives: a backend could
+    # come to depend on any of them. It is told what one attempt needs, and handed the key.
+    told: list[Endpoint] = []
+
+    class Spy(MockBackend):
+        def check(self, spec: Endpoint) -> list[str]:
+            told.append(spec)
+            return super().check(spec)
+
+        async def complete(
+            self, spec: Endpoint, request: Request, api_key: str | None
+        ) -> RawCompletion:
+            told.append(spec)
+            assert api_key == "k"
+            return await super().complete(spec, request, api_key)
+
+    row = {"backend": "mock", "model": "m", "family": "qwen", "api_key": "env:K"}
+    rt = build_runtime(
+        {
+            "models": {
+                "a": {**row, "retries": 3, "fallbacks": ["b"], "limits": {"attempts": 9}},
+                "b": row,
+            }
+        },
+        backends={"mock": Spy()},
+        secrets=DictSecrets({"env:K": "k"}),
+    )
+    await rt.complete("a", "hi")
+    assert told  # checked at composition, then called
+    for endpoint in told:
+        assert set(type(endpoint).model_fields) == {
+            "name",
+            "backend",
+            "model",
+            "provider",
+            "base_url",
+            "proxy",
+            "timeout_s",
+            "structured",
+            "options",
+            "has_key",
+        }
+        assert endpoint.has_key is True
 
 
 async def test_system_message_is_prepended() -> None:
@@ -94,7 +141,7 @@ async def test_extract_validates_on_first_attempt() -> None:
     ],
 )
 async def test_extract_finds_the_answer_after_bracketed_prose(reply: str) -> None:
-    # F10: the first bracketed span was taken as the answer and the valid one discarded, which
+    # The first bracketed span was taken as the answer and the valid one discarded, which
     # cost a repair turn, or a SchemaError with no repairs allowed.
     rt = mock_runtime(
         {"q": {"backend": "mock", "model": "m", "family": "qwen", "options": {"default": reply}}},
@@ -113,7 +160,7 @@ class Reported(MockBackend):
         self.sent: list[Request] = []
 
     async def complete(
-        self, spec: ModelSpec, request: Request, api_key: str | None
+        self, spec: Endpoint, request: Request, api_key: str | None
     ) -> RawCompletion:
         self.sent.append(request)
         raw = await super().complete(spec, request, api_key)
@@ -146,7 +193,7 @@ async def test_planted_schema_failure_is_repaired_once() -> None:
     s = await rt.extract("q", "?", Verdict)
     assert s.value.supported is False
     assert s.completion.attempts == 2
-    # F5: this asserted only `> 0`, which the answering attempt alone satisfies. Usage is the
+    # This asserted only `> 0`, which the answering attempt alone satisfies. Usage is the
     # sum of what both calls reported.
     first, second = backend.returned
     assert s.completion.usage == first.usage + second.usage
@@ -273,7 +320,7 @@ async def test_call_overrides_beat_row_defaults() -> None:
     assert seen == [(50, 0.2), (7, 0.0)]
 
 
-# --- the error contract: everything raised on purpose is a HardlineError (F3, F11) -------
+# --- the error contract: everything raised on purpose is a HardlineError -------
 
 
 @pytest.mark.parametrize(
@@ -326,7 +373,7 @@ async def test_a_completion_says_whether_it_is_a_whole_answer(
     assert c.refusal == options.get("refusal")
 
 
-# --- the call's whole record (W3.2) -------------------------------------------------------
+# --- the call's whole record -------------------------------------------------------
 
 
 def _sha256(turns: tuple[Message, ...]) -> str:
@@ -443,7 +490,7 @@ async def test_a_default_location_is_recorded_as_the_backends() -> None:
     }
 
 
-# --- who upgrades first (W10.2, D18) -------------------------------------------------------
+# --- who upgrades first -------------------------------------------------------
 
 
 async def test_a_completion_reads_back_its_own_json_and_refuses_keys_it_does_not_know() -> None:

@@ -1,6 +1,6 @@
 """The backend conformance helper: what a third-party author runs against an installed hardline.
 
-F13: the port's requirements were stated in a test in hardline's repository, which does not ship
+The port's requirements were stated in a test in hardline's repository, which does not ship
 in the wheel, and that test checked only that the members existed: not that ``complete`` is
 async, not that it returns the port's shape, and it required a ``prompt`` mode no document
 stated. ``hardline.backend_problems`` and ``hardline.answer_problems`` are those requirements,
@@ -15,6 +15,7 @@ import httpx2
 import pytest
 
 from hardline import (
+    Endpoint,
     ModelSpec,
     RawCompletion,
     Request,
@@ -48,7 +49,7 @@ async def test_a_backend_that_answers_conforms_on_a_call() -> None:
 class _Good:
     structured_modes = frozenset({"prompt"})
 
-    async def complete(self, spec: ModelSpec, request: Request, api_key: str | None) -> Any:
+    async def complete(self, spec: Endpoint, request: Request, api_key: str | None) -> Any:
         return RawCompletion(text="ok", model=spec.model, finish_reason="stop")
 
 

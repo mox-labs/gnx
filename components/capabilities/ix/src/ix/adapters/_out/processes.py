@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
-import httpx
+import httpx2
 
 from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement
@@ -71,11 +71,11 @@ def startable(program: str, *, base: str, cwd: str = ".") -> Requirement | None:
 
 async def answers(url: str) -> bool:
     """Whether an HTTP GET of ``url`` is answered now (any status below 500, a redirect
-    included)."""
+    included). No proxy variable reroutes it: the program asked is the one ix started."""
     try:
-        async with httpx.AsyncClient(timeout=2) as client:
+        async with httpx2.AsyncClient(timeout=2, trust_env=False) as client:
             response = await client.get(url)
-    except (httpx.HTTPError, httpx.InvalidURL):
+    except (httpx2.HTTPError, httpx2.InvalidURL):
         return False
     return response.status_code < 500
 

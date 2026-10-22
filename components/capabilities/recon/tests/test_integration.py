@@ -26,9 +26,14 @@ from recon.domain.ratelimit import RateLimiter
 from tests.recon_fakes import collector_entry
 from tests.recon_fakes import run_survey as run
 
-live = pytest.mark.skipif(
+_asked = pytest.mark.skipif(
     not os.environ.get("RECON_LIVE"), reason="calls live APIs; set RECON_LIVE=1 to run"
 )
+
+
+def live[T: type](tests: T) -> T:
+    """Calls live APIs: runs only when asked, and is let past the workspace's network guard."""
+    return pytest.mark.network(_asked(tests))
 
 
 def _requester() -> HttpRequester:

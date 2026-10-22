@@ -10,7 +10,8 @@
 [tool.uv.workspace]
 members = ["*"]
 # pytest writes __pycache__ beside conftest.py here, and it is no member. _testing holds
-# helpers the members' tests share (the layer check), and is no member either.
+# helpers the members' tests share (the layer check) and the tests of conftest.py's guard, and
+# is no member either.
 exclude = ["__pycache__", "_testing"]
 
 # uv 0.9+ REQUIRES an explicit source entry for a workspace-internal dependency.
@@ -36,7 +37,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.8",
     "types-PyYAML",  # gnx + harness parse YAML; strict mypy needs the stubs
-    # The members, each with every dependency it has: no package has extras (Q13), so this
+    # The members, each with every dependency it has: no package has extras, so this
     # group is where the test tools come from.
     "matrix",
     "ix",

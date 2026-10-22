@@ -49,9 +49,12 @@ from there, or through `just capabilities-test`:
 uv --project components/capabilities run pytest components/capabilities/ix/tests -q
 ```
 
-No test reaches a live model: `components/capabilities/conftest.py` refuses every call
-where an agent session or a model call would spend money, and fails the test that made it.
-Use matrix's `mock` runtime, or a fake, instead.
+No test reaches a live model, or any host but this machine:
+`components/capabilities/conftest.py` refuses every call where an agent session or a model call
+would spend money, every socket connection that is not to loopback, and a `k6` given a target
+that is not loopback, and fails the test that made it. Use matrix's `mock` runtime, a fake, or
+a server of the test's own on 127.0.0.1 instead. A test that calls third-party hosts on purpose
+is marked `network` and runs only when asked, as recon's live tests do (`just recon-live`).
 
 `just capabilities-test` lists every skip with its reason, and fails on a skip that
 conftest.py's `EXPECTED_SKIPS` does not name: a test that cannot run here is either made to

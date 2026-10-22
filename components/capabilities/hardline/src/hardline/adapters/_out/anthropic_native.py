@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from hardline.adapters._out._http import Http, location_problems
 from hardline.adapters._out._options import option_problems, read_options
 from hardline.domain.errors import BackendError, ConfigError
-from hardline.domain.types import ModelSpec, RawCompletion, Request, ToolCall, Usage
+from hardline.domain.types import Endpoint, RawCompletion, Request, ToolCall, Usage
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -94,18 +94,18 @@ class AnthropicBackend:
     def __init__(self, transport: Transport | None = None) -> None:
         self._http = Http(transport)
 
-    def check(self, spec: ModelSpec) -> list[str]:
+    def check(self, spec: Endpoint) -> list[str]:
         return (
             location_problems(spec)
             + option_problems(_Options, spec)
-            + ([] if spec.api_key else [_NO_KEY])
+            + ([] if spec.has_key else [_NO_KEY])
         )
 
     async def aclose(self) -> None:
         await self._http.aclose()
 
     async def complete(
-        self, spec: ModelSpec, request: Request, api_key: str | None
+        self, spec: Endpoint, request: Request, api_key: str | None
     ) -> RawCompletion:
         read_options(_Options, spec)
         if not api_key:
@@ -178,9 +178,13 @@ class AnthropicBackend:
 def _turns(messages: Sequence[Message]) -> list[dict[str, Any]]:
     """The conversation as the API takes it. A tool's result is a ``tool_result`` block of a
     user turn: the results answering one assistant turn are one user turn, and whatever the
-    caller says next joins them there, after them."""
+    caller says next joins them there, after them. An assistant turn that says nothing (no
+    text, no tool calls) is left out: the API refuses a text block with no text, and the user
+    turns either side of it are combined by the API into one."""
     turns: list[dict[str, Any]] = []
     for message in messages:
+        if message.role == "assistant" and not message.content.strip() and not message.tool_calls:
+            continue
         role = "assistant" if message.role == "assistant" else "user"
         last = turns[-1] if turns else None
         if role == "user" and last is not None and last["role"] == "user" and _results(last):

@@ -10,7 +10,8 @@ How httpx2 (2.10) is used, each choice checked against its source and recorded i
 
 * **No ambient configuration.** Clients and the transport are built with ``trust_env=False``,
   so no proxy variable (``HTTP_PROXY``, ``HTTPS_PROXY``, ``ALL_PROXY``) reroutes a request and
-  neither ``SSL_CERT_FILE`` nor ``SSL_CERT_DIR`` changes what it trusts.
+  neither ``SSL_CERT_FILE`` nor ``SSL_CERT_DIR`` changes what it trusts: the TLS hop to an
+  ``https://`` proxy is handed that context too, where httpcore2 would read both.
 * **TLS** is verified against the operating system's trust store, through ``truststore``,
   which httpx2 uses by default where httpx used certifi's bundle.
 * **Redirects are not followed** (httpx2's default, kept). A 3xx is a ``ConfigError`` whose fix
@@ -43,7 +44,7 @@ from hardline.domain.errors import BackendError, ConfigError
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from hardline.domain.types import ModelSpec
+    from hardline.domain.types import Endpoint
 
 #: What carries a request: the network, or a test's ``httpx2.MockTransport``. A backend names it
 #: by this name, so httpx2 is named in this file alone.
@@ -56,15 +57,27 @@ _DETAIL_CHARS = 500
 def network_transport(proxy: str | None = None) -> httpx2.AsyncBaseTransport:
     """The real network, through ``proxy`` when a row names one. The workspace's test guard
     refuses this call, so no test reaches a provider; a test hands a backend an
-    ``httpx2.MockTransport`` instead."""
-    return httpx2.AsyncHTTPTransport(trust_env=False, retries=0, proxy=proxy)
+    ``httpx2.MockTransport`` instead.
+
+    The TLS hop to an ``https://`` proxy gets the same context as the provider's: given none,
+    httpcore2 builds its own from ``SSL_CERT_FILE`` and ``SSL_CERT_DIR``, whatever
+    ``trust_env`` says."""
+    return httpx2.AsyncHTTPTransport(
+        trust_env=False,
+        retries=0,
+        proxy=(
+            None
+            if proxy is None
+            else httpx2.Proxy(proxy, ssl_context=httpx2.create_ssl_context(trust_env=False))
+        ),
+    )
 
 
-def client_timeout(spec: ModelSpec) -> httpx2.Timeout:
+def client_timeout(spec: Endpoint) -> httpx2.Timeout:
     return httpx2.Timeout(spec.timeout_s)
 
 
-def location_problems(spec: ModelSpec) -> list[str]:
+def location_problems(spec: Endpoint) -> list[str]:
     """``base_url: ...`` when the row's location is missing or not an http(s) URL."""
     if not spec.base_url:
         return [
@@ -109,7 +122,7 @@ class Http:
     async def aclose(self) -> None:
         await self._clients.aclose()
 
-    def _client(self, spec: ModelSpec, base_url: str) -> httpx2.AsyncClient:
+    def _client(self, spec: Endpoint, base_url: str) -> httpx2.AsyncClient:
         return self._clients.get(
             (base_url, spec.timeout_s, spec.proxy),
             lambda: httpx2.AsyncClient(
@@ -127,7 +140,7 @@ class Http:
 
     async def post(
         self,
-        spec: ModelSpec,
+        spec: Endpoint,
         path: str,
         body: dict[str, Any],
         headers: Mapping[str, str],
@@ -183,7 +196,7 @@ class Http:
         return data
 
 
-def _redirected(spec: ModelSpec, path: str, response: httpx2.Response) -> ConfigError:
+def _redirected(spec: Endpoint, path: str, response: httpx2.Response) -> ConfigError:
     """A 3xx: the row's location is wrong, so a config error whose fix says where to point it.
     When the new location ends with the path asked for, the base it implies is the fix."""
     key = f"models.{spec.name}.base_url"

@@ -39,7 +39,13 @@ from hardline.domain.errors import (
     SecretError,
 )
 from hardline.domain.ports._out.backend import CheckedBackend, ClosableBackend
-from hardline.domain.structured import json_candidates, retry_instruction, schema_instruction
+from hardline.domain.structured import (
+    EMPTY_REPLY,
+    empty_reply_instruction,
+    json_candidates,
+    retry_instruction,
+    schema_instruction,
+)
 from hardline.domain.types import (
     Answered,
     Attempt,
@@ -235,7 +241,7 @@ class ModelRuntime:
                 )
                 continue
             if isinstance(backend, CheckedBackend):
-                for found in backend.check(spec):
+                for found in backend.check(spec.endpoint()):
                     key, _, message = found.partition(": ")
                     problems.append(
                         Problem(path=f"{row}.{key}", kind="invalid_value", message=message)
@@ -449,9 +455,15 @@ class ModelRuntime:
             try:
                 value = _validate(output, answer.raw.text)
             except (ValueError, ValidationError) as e:
-                last_error = str(e)
-                turns.append(Message(role="assistant", content=answer.raw.text))
-                turns.append(Message(role="user", content=retry_instruction(last_error)))
+                if answer.raw.text.strip():
+                    last_error = str(e)
+                    turns.append(Message(role="assistant", content=answer.raw.text))
+                    turns.append(Message(role="user", content=retry_instruction(last_error)))
+                else:
+                    # An empty reply is not echoed back: it holds nothing to correct, and the
+                    # Messages API refuses an assistant turn that says nothing.
+                    last_error = EMPTY_REPLY
+                    turns.append(Message(role="user", content=empty_reply_instruction()))
                 continue
             completion = self._completion(
                 spec, answer, log, attempts=attempts, retries=retries, started=started
@@ -654,7 +666,7 @@ class ModelRuntime:
     async def _attempt(self, spec: ModelSpec, request: Request) -> RawCompletion:
         backend = self._backends[spec.backend]
         api_key = self._secrets.resolve(spec.api_key) if spec.api_key else None
-        raw = await backend.complete(spec, request, api_key)
+        raw = await backend.complete(spec.endpoint(), request, api_key)
         if not isinstance(raw, RawCompletion):
             raise ContractError(
                 f"backend {spec.backend!r} returned {type(raw).__name__}, "

@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from hardline.domain.ports._out.config_source import ConfigSource
     from hardline.domain.ports._out.observer import CallObserver
     from hardline.domain.ports._out.secrets import SecretResolver
-    from hardline.domain.types import ModelSpec, RawCompletion, Request
+    from hardline.domain.types import Endpoint, RawCompletion, Request
 
 TOOL = "hardline"
 BACKEND_GROUP = "hardline.backends"
@@ -71,11 +71,11 @@ class _Unusable:
     def __init__(self, problem: str) -> None:
         self._problem = problem
 
-    def check(self, spec: ModelSpec) -> list[str]:
+    def check(self, spec: Endpoint) -> list[str]:
         return [f"backend: {self._problem}"]
 
     async def complete(
-        self, spec: ModelSpec, request: Request, api_key: str | None
+        self, spec: Endpoint, request: Request, api_key: str | None
     ) -> RawCompletion:
         raise ConfigError(f"models.{spec.name}.backend: {self._problem}")
 

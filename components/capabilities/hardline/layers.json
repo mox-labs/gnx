@@ -1,6 +1,6 @@
 {
   "language": "python",
-  "about": "hardline's layers, checked by tests/test_hardline_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py). Adopted from the reviewed map (scratch/review-2026-10-22/hardline-layers.json, at 1580c81) and brought to hardline 0.2: digests in the domain, the HTTP helpers and telemetry among the adapters, httpx2 and OpenTelemetry each confined to one file, no provider SDK. The format is that of slick crafting-aces' layer-check.py. 'why' keys are read by neither.",
+  "about": "hardline's layers, checked by tests/test_hardline_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py). Adopted from the map an independent review drew of hardline at 1580c81, and brought to hardline 0.2: digests in the domain, the HTTP helpers and telemetry among the adapters, httpx2 and OpenTelemetry each confined to one file, no provider SDK. The format is that of slick crafting-aces' layer-check.py. 'why' keys are read by neither.",
   "scan": ["src/hardline/**/*.py"],
   "scan_why": "Every Python file in the package. Tests are out of scan: a test root reaches adapters (the mock, a recording observer) by design.",
   "layers": [

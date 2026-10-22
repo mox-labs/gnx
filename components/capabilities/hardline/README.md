@@ -7,8 +7,10 @@ the family that answered, what it cost, and how long it took.
 uvx --from "git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/hardline" hardline models
 ```
 
-hardline depends on pydantic, pyyaml and httpx2, and on no provider SDK: it speaks both wire
-protocols over HTTP itself.
+hardline depends on no provider SDK: it speaks both wire protocols over HTTP itself, on httpx2.
+Its other dependencies are pydantic, pyyaml, the OpenTelemetry API (the library records
+through it alone), and, for the `hardline` command, rich-click and the OpenTelemetry SDK with
+its OTLP exporter.
 
 ## What it is, and what it is not
 
@@ -59,7 +61,8 @@ provider's Retry-After) · `fallbacks` (distinct registry names tried once retri
 [Built-in backends](#built-in-backends)).
 
 **A call has its own bound.** One `extract` can make (schema repairs + 1) × the sum over its
-chain of (`retries` + 1) backend calls, each paid for in tokens and each up to `timeout_s` long.
+chain of (`retries` + 1) backend calls, each paid for in tokens; `timeout_s` bounds each phase of
+one (connecting, sending, each read), not the call as a whole.
 `limits` bounds the whole call, every retry, fallback and repair included, and is unset by
 default:
 
@@ -84,7 +87,7 @@ when the runtime is composed (`https://api.openai.com/v1`, `https://api.anthropi
 to decide it: not `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL` or `OPENAI_ORG_ID`, nor a proxy
 (`HTTPS_PROXY` and the like) or certificate variable (`SSL_CERT_FILE`). A row behind a proxy
 names it (`proxy: http://proxy.internal:3128`). TLS is verified against the operating system's
-trust store. A redirect is never followed, since following it would send the row's key along:
+trust store, the hop to an `https://` proxy included. A redirect is never followed, since following it would send the row's key along:
 it is a config error (exit 3) whose fix says where to point `base_url`.
 
 A bad row fails at composition, naming the file and the key path:
@@ -114,7 +117,8 @@ s.completion  # the Completion that produced it, attempts included
 
 `extract` states the schema in an instruction (and hands it to the provider when the row's
 `structured` mode allows), validates the reply, and on failure shows the model its own reply
-and the validation error once before raising `SchemaError`. The repair is sent to the row that
+and the validation error once before raising `SchemaError`; an empty reply, which has nothing to
+show, is followed by a turn saying it was empty instead. The repair is sent to the row that
 answered, never back to a row before it in the fallback chain that has just failed. Each JSON value in the reply is
 tried in turn, so bracketed prose before the answer ("see [1]") does not hide it. A provider's
 "structured" mode is an optimisation; validation here is the guarantee.
@@ -288,6 +292,10 @@ know, so it upgrades hardline before the program that writes the JSON does.
 | `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null}], "warnings": [problem]}` |
 | `complete --json` | the `Completion` without `raw`: `type_url, name, text, family, model, backend, local, usage, request_id, latency_ms, attempts, retries, fallback_from, finish_reason, native_finish_reason, refusal, tool_calls, params, attempt_log, turns_digest, row` |
 
+`complete --json` carries no hardline version: it is a `Completion`, and validates back into
+one, which a key of the CLI's own would break. A program that ledgers the version reads
+`hardline --version` (or `importlib.metadata.version("hardline")` in process).
+
 A `problem` is the record the capability CLIs share: `{"path", "kind", "message", "fix",
 "allowed", "got", "source"}`. `check` warns of a fallback that sends where its primary does
 (`shared_fate`: the same backend and `base_url`), since the server going down takes both; the
@@ -335,10 +343,14 @@ and two of hardline's: `shared_fate` (a warning) and `secret_unresolved`.
 ## Extend
 
 A backend is two members — a `structured_modes` frozenset that holds `prompt`, and an async
-`complete(spec, request, api_key) -> RawCompletion` — and one entry point. Three more are
+`complete(endpoint, request, api_key) -> RawCompletion` — and one entry point. An `Endpoint` is
+the registry row as a backend sees it: `name`, `backend`, `model`, `provider`, `base_url`,
+`proxy`, `timeout_s`, `structured`, `options`, and `has_key` (whether the row names a key). The
+runtime's retries, fallbacks and limits, the row's family and where its key lives are not in
+it; the key, resolved, is `api_key`. `ModelSpec.endpoint()` makes one. Four more members are
 optional:
 
-- `check(spec) -> Sequence[str]`: what is wrong with a row for this backend, each problem
+- `check(endpoint) -> Sequence[str]`: what is wrong with a row for this backend, each problem
   starting with its key (`options.region: ...`). The runtime calls it for every row when it is
   built, so a row that would fail its first call fails composition and `hardline check`.
 - `aclose()`: closes the connections opened in the running loop. A runtime's `aclose()` calls it.

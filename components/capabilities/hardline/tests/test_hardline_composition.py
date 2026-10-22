@@ -107,6 +107,15 @@ def test_missing_file_secret(tmp_path: Path) -> None:
         EnvFileSecretResolver().resolve(f"file:{tmp_path / 'none'}")
 
 
+def test_a_file_secret_that_is_not_text_is_a_secret_error(tmp_path: Path) -> None:
+    # A key file that is not UTF-8 raised UnicodeDecodeError, which is not a HardlineError.
+    f = tmp_path / "key"
+    f.write_bytes(b"\xff\xfe\x00binary")
+    with pytest.raises(SecretError, match="not UTF-8 text") as e:
+        EnvFileSecretResolver().resolve(f"file:{f}")
+    assert "binary" not in str(e.value)
+
+
 def test_unknown_secret_scheme() -> None:
     with pytest.raises(SecretError, match="unknown scheme"):
         EnvFileSecretResolver().resolve("vault:x")
@@ -135,7 +144,7 @@ def _with_entry_points(monkeypatch: pytest.MonkeyPatch, *extra: _EP) -> None:
 
 
 def test_the_built_in_backends_are_hardlines_own_entry_points() -> None:
-    # Q8: no hard-coded table. The built-ins are found the way a third party's are.
+    # No hard-coded table. The built-ins are found the way a third party's are.
     assert {ep.name for ep in _INSTALLED} >= {"openai-compat", "anthropic", "mock"}
 
 
@@ -162,7 +171,7 @@ def test_entry_point_backend_is_discovered(monkeypatch: pytest.MonkeyPatch) -> N
 def test_a_broken_backend_plugin_fails_only_the_rows_naming_it(
     plugin: _EP, problem: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # W6.3, F3: an ImportError in any installed plugin aborted composition for every row.
+    # An ImportError in any installed plugin aborted composition for every row.
     _with_entry_points(monkeypatch, plugin)
     rt = build_runtime({"models": {"q": {**_ROW, "backend": "mock"}}})
     assert rt.registry.names() == ("q",)
@@ -180,7 +189,7 @@ def test_an_entry_point_may_not_shadow_another(monkeypatch: pytest.MonkeyPatch) 
     assert rt.registry.names() == ("o",)
 
 
-# --- options and keys are checked when the runtime is composed (W7.4, F2) -------------
+# --- options and keys are checked when the runtime is composed -------------
 
 
 @pytest.mark.parametrize(
@@ -215,11 +224,11 @@ def test_cli_check_fails_a_keyless_anthropic_row_as_config(
     assert main(["complete", "h", "hi", "--json"]) == 3  # not 6: no provider was asked
 
 
-# --- tiers: where each was found is part of its name (W7.2) -----------------------------
+# --- tiers: where each was found is part of its name -----------------------------
 
 
 def test_explicit_env_tier_must_be_a_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    # F3: a directory passed the exists() check and raised IsADirectoryError when read.
+    # A directory passed the exists() check and raised IsADirectoryError when read.
     monkeypatch.setenv("HARDLINE_CONFIG", str(tmp_path))
     with pytest.raises(ConfigError, match="HARDLINE_CONFIG.*not a file"):
         discover_sources(tmp_path)
@@ -239,7 +248,7 @@ def test_each_discovered_tier_names_how_it_was_found(
 
 @pytest.mark.parametrize("content", [b"models: \xff\xfe", None])
 def test_an_unreadable_tier_is_a_config_error(content: bytes | None, tmp_path: Path) -> None:
-    # F3: a non-UTF-8 file raised UnicodeDecodeError, a directory IsADirectoryError.
+    # A non-UTF-8 file raised UnicodeDecodeError, a directory IsADirectoryError.
     path = tmp_path / "hardline.yaml"
     if content is None:
         path.mkdir()
@@ -271,7 +280,7 @@ def test_extract_json_none() -> None:
 
 
 def test_extract_json_skips_bracketed_prose_that_is_not_json() -> None:
-    # F10: the first balanced pair was taken whether or not it parsed, so '{name}' won.
+    # The first balanced pair was taken whether or not it parsed, so '{name}' won.
     assert extract_json('Use the {name} field: {"ok": true}') == '{"ok": true}'
 
 
@@ -321,9 +330,9 @@ def test_cli_error_exit_code(cli_config: Path, capsys: pytest.CaptureFixture[str
     assert "unknown model 'missing'" in capsys.readouterr().err
 
 
-# --- CLI: exit codes, JSON errors, check (agent-drivability F2/F3/F5) ----------------
+# --- CLI: exit codes, JSON errors, check ----------------
 #
-# Changed requirement (W10.4): a failure is the workspace's shared envelope,
+# Changed requirement: a failure is the workspace's shared envelope,
 # {"schema": "hardline.v1.error", "error": {kind, message, fix, complete, problems, details}},
 # with the agreed kinds: a transient failure is `transient` (exit 5) with its reason in
 # `details`, a malformed request `config`, and `fix` is always a next step.
@@ -391,7 +400,7 @@ def test_cli_backend_error_without_json_is_prose_with_same_code(
 ) -> None:
     _scripted_config(tmp_path, "auth")
     assert main(["complete", "s", "x"]) == 6
-    # Changed requirement (W10.4): the prose names the kind, as the envelope does.
+    # Changed requirement: the prose names the kind, as the envelope does.
     assert capsys.readouterr().err.startswith("hardline: error (auth): model 's' (mock): scripted")
 
 
@@ -415,7 +424,7 @@ def test_cli_invalid_config_is_exit_3(
     assert main(["models", "--json"]) == 3
     error = _error_line(capsys.readouterr().err)
     assert error["kind"] == "config" and "family" in error["message"]
-    # W10.4: each registry problem is a record, with the tier it came from.
+    # Each registry problem is a record, with the tier it came from.
     (problem,) = error["problems"]
     assert (problem["path"], problem["kind"]) == ("models.q.family", "missing_key")
     assert problem["source"] == f"cwd {tmp_path / 'hardline.yaml'}"
@@ -484,7 +493,7 @@ def test_cli_check_json_reports_per_row_and_never_the_value(
     assert main(["check", "--json"]) == 3
     out, err = capsys.readouterr()
     report = json.loads(out)
-    # Changed requirement (W6.2): the report also carries the registry's warnings.
+    # Changed requirement: the report also carries the registry's warnings.
     assert set(report) == {"ok", "tiers", "models", "warnings"} and report["ok"] is False
     rows = {row["name"]: row for row in report["models"]}
     assert rows["q"]["ok"] is True and rows["q"]["problem"] is None
@@ -519,7 +528,7 @@ def test_cli_check_json_ok(cli_config: Path, capsys: pytest.CaptureFixture[str])
 def test_cli_usage_errors_exit_2_with_the_envelope(
     argv: list[str], cli_config: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Changed requirement (W10.4): a usage error is an exit code, not argparse's SystemExit,
+    # Changed requirement: a usage error is an exit code, not argparse's SystemExit,
     # and under --json it is the envelope too, as every other error is.
     assert main([*argv, "--json"] if "--json" not in argv else argv) == 2
     out, err = capsys.readouterr()
@@ -600,7 +609,7 @@ def test_cli_complete_json_carries_why_the_reply_ended(
 def test_cli_check_reports_a_fallback_that_shares_its_primarys_fate(
     cli_config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # W6.2: a warning travels inside the --json document, and on stderr without it; the row is
+    # A warning travels inside the --json document, and on stderr without it; the row is
     # legal, so check still exits 0.
     local = {"backend": "openai-compat", "family": "x", "base_url": "http://127.0.0.1:8080/v1"}
     _write(

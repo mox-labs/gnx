@@ -161,7 +161,7 @@ async def test_extract_falls_back_and_sums_usage() -> None:
     s = await rt.extract("a", "judge this", Verdict)
     assert s.value.ok is True
     assert s.completion.family == "llama" and s.completion.fallback_from == "a"
-    # F5: this asserted only `> 0`. The failed call reported nothing, so the total is exactly
+    # This asserted only `> 0`. The failed call reported nothing, so the total is exactly
     # what b reported for '{"ok": true}' (two words in the mock's count).
     assert s.completion.usage.output_tokens == 2
     assert [(t.name, t.reason, t.usage is None) for t in s.completion.attempt_log] == [
@@ -171,7 +171,7 @@ async def test_extract_falls_back_and_sums_usage() -> None:
     assert s.completion.usage == s.completion.attempt_log[-1].usage
 
 
-# --- the attempt log: each row tried, and why it failed (W3.2) -----------------------------
+# --- the attempt log: each row tried, and why it failed -----------------------------
 
 
 async def test_the_attempt_log_names_each_row_tried_and_why() -> None:
@@ -227,7 +227,7 @@ async def test_a_schema_failure_carries_what_it_cost() -> None:
 
 
 async def test_a_schema_repair_goes_on_from_the_row_that_answered() -> None:
-    # W6.1: each schema attempt restarted the chain at the primary that had just failed, so a
+    # Each schema attempt restarted the chain at the primary that had just failed, so a
     # repair paid for the primary's failures again and could mix replies from two models.
     class Verdict(BaseModel):
         ok: bool
@@ -249,7 +249,7 @@ async def test_a_schema_repair_goes_on_from_the_row_that_answered() -> None:
 
 
 def test_a_repeated_fallback_is_refused() -> None:
-    # F11: `[b, b]` was accepted, so b was retried twice in full and the warning for the first
+    # `[b, b]` was accepted, so b was retried twice in full and the warning for the first
     # b was suppressed.
     with pytest.raises(ConfigError, match=r"models\.a\.fallbacks.*'b' more than once"):
         mock_runtime({"a": _row(["x"], fallbacks=["b", "b"]), "b": _row(["y"])})
@@ -263,7 +263,7 @@ def test_bad_fallbacks_fail_at_construction(fallbacks: list[str], problem: str) 
         mock_runtime({"a": _row(["x"], fallbacks=fallbacks)})
 
 
-# --- the logical call's own bound: attempts, wall time, tokens (W6.1) ----------------------
+# --- the logical call's own bound: attempts, wall time, tokens ----------------------
 
 
 async def test_limits_attempts_bounds_every_backend_call_the_call_makes() -> None:
@@ -383,7 +383,7 @@ def test_usage_sums_cache_tokens() -> None:
     assert (total.cache_read_tokens, total.cache_write_tokens) == (6, 2)
 
 
-# --- a fallback that shares its primary's fate (W6.2) ------------------------------------
+# --- a fallback that shares its primary's fate ------------------------------------
 
 
 def _located(**rows: dict[str, Any]) -> ModelRuntime:

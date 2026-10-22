@@ -54,6 +54,15 @@ def retry_instruction(validation: str) -> str:
     )
 
 
+#: Why an empty reply failed, as a SchemaError's ``validation`` says it.
+EMPTY_REPLY = "the reply was empty"
+
+
+def empty_reply_instruction() -> str:
+    """The repair for a reply with no text, which has nothing in it to show the model."""
+    return "Your reply was empty. Respond with only the JSON value the schema above describes."
+
+
 def json_candidates(text: str) -> list[str]:
     """Every balanced object or array in ``text`` that parses as JSON, in order of opening.
 

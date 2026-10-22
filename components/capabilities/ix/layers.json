@@ -69,7 +69,7 @@
       "allow": ["*", "ix.domain", "ix.adapters._out"],
       "forbid": ["matrix", "opentelemetry"],
       "why": {
-        "*": "one technology each: k6, ps, httpx, child Python, docker compose, git and file digests, the registration file, pydantic-evals",
+        "*": "one technology each: k6, ps, httpx2, child Python, docker compose, git and file digests, the registration file, pydantic-evals",
         "ix.domain": "the ports they implement and the types they speak in",
         "ix.adapters._out": "one adapter may build on another, a subject or the compose environment on the launcher's processes module; a deviation from the four places that test_layering allows on purpose",
         "forbid": "matrix and OpenTelemetry each have adapter files of their own"
@@ -136,7 +136,7 @@
   ],
   "single_importer": [
     {"name": "opentelemetry", "only": "src/ix/adapters/_out/otel_tracing.py"},
-    {"name": "httpx", "only": "src/ix/adapters/_out/processes.py"},
+    {"name": "httpx2", "only": "src/ix/adapters/_out/processes.py"},
     {"name": "rich_click", "only": "src/ix/adapters/_in/cli.py"},
     {"name": "pydantic_evals", "only": "src/ix/adapters/_out/evaluators.py"},
     {"name": "pydantic_ai", "only": "src/ix/adapters/_out/evaluators.py"}
