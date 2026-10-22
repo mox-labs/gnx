@@ -327,7 +327,7 @@ reasons, from §16 on.
   50 s; the interval and its level are unchanged.
 - **`validate` refuses a run too thin for any interval**: fewer than 3 blocks (repeats x
   probes) in a cell is `repeats_below_min` in a genre that decides, as a median's 6 already
-  were.
+  were. Repeats under the genre's own minimum are one problem with one fix, not two.
 - **`activation` compares skill names whole.** `code-review-lite` firing read as `review`
   firing. Now `expected_skill: review` is fired by `review` or `plugin:review` only, and
   `expected_skill: plugin:review` by `plugin:review` only. `fired` is the skill that did
