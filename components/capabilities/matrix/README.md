@@ -293,7 +293,7 @@ matrix:
   agent_runtimes:                        # sessions, with a loop and tools
     sdk:     {type: claude-sdk, permission_mode: default, setting_sources: []}
     loop:    {type: pydantic-ai, default_model: qwen3-8b,   # its calls go through hardline
-              tools: {lookup: acme.tools:lookup}}           # module:function, imported
+              tools: {lookup: acme.tools:lookup}}           # module:function
     offline: {type: mock}
   model_runtimes:                        # one model call each
     local:   {type: hardline}
@@ -342,7 +342,8 @@ downgraded.
 A session is pydantic-ai's agent loop, and every model call in it is a hardline call: the
 session runs on hardline's registry rows, with their retries, fallbacks, call limits, record
 and telemetry, in any model family hardline has a row for. The runtime's `tools` are Python
-functions named `module:function`, imported when the runtime is built; a function's typed
+functions named `module:function`: each module is found when the runtime is built, without
+running it, and imported when a session first offers the tool; a function's typed
 parameters and docstring are what the model is told of it. An agent's `tools` choose from them
 (unset: all of them; `[]`: none), and `max_turns` bounds its model calls: a session that
 reaches it ends with `stop: max_turns`. Its reply is the run's output; its session row names

@@ -71,7 +71,8 @@ RELEASE_START = "matrix.release.start"
 RELEASE_END = "matrix.release.end"  # status, error?
 AGENT_START = "matrix.agent.start"  # agent, model, task (as sent)
 AGENT_END = "matrix.agent.end"  # agent, status, tokens_*, cost_usd, model, family, provider,
-#   duration_ms, tool_calls; reason and error when it failed; status cancelled when cancelled
+#   duration_ms, tool_calls, usage_counted_by? (when the runtime declares it); reason, kind
+#   and error when it failed; status cancelled when cancelled
 MODEL_START = "matrix.model.start"  # runtime, model (as asked)
 MODEL_END = "matrix.model.end"  # runtime, status, name, model, family, provider, finish_reason,
 #   duration_ms; reason and error when it failed; status cancelled when cancelled. No usage:

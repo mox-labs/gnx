@@ -133,14 +133,17 @@ def test_a_reported_retry_after_is_the_wait_up_to_the_cap() -> None:
 
 
 async def test_the_wait_honours_retry_after() -> None:
+    """The wait is the error's hint, not the backoff, read from the retry event the run
+    emits rather than from the wall clock."""
     flaky = Flaky(times=1, retry_after_s=0.2)
-    started = time.monotonic()
-    await Executor().run(
+    seen = RecordingObserver()
+    await Executor([seen]).run(
         wire({"up": flaky}, inputs=[TEXT]),
         {TEXT: "a"},
         limits=Limits(retry=Retry(attempts=2, backoff_s=5, max_wait_s=1)),
     )
-    assert 0.15 < time.monotonic() - started < 2
+    (retry,) = [e for e in seen.events if e.name == "matrix.component.retry"]
+    assert retry.fields["wait_s"] == 0.2
 
 
 async def test_a_component_that_handed_over_rows_is_not_retried() -> None:

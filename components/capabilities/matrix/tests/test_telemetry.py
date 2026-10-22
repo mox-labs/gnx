@@ -4,6 +4,7 @@ SDK, and export asked for without what does it is a warning, never silence."""
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,37 @@ def test_an_application_installs_the_sdk_from_the_variables(
         assert clean == ["traces"]
     finally:
         installed.shutdown()
+
+
+def test_console_export_never_writes_on_the_task_whose_span_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Console spans were written by a SimpleSpanProcessor, so ending one wrote to stderr on
+    the task that ended it: the otel observer's ``around`` could block the work it wraps on
+    a full pipe (final review N5). Every exporter is batched, written from its own thread."""
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SpanExportResult
+
+    providers: list[Any] = []
+    monkeypatch.setattr(trace, "set_tracer_provider", providers.append)
+    writers: list[threading.Thread] = []
+
+    def export(self: Any, spans: Any) -> SpanExportResult:
+        writers.append(threading.current_thread())
+        return SpanExportResult.SUCCESS
+
+    monkeypatch.setattr(ConsoleSpanExporter, "export", export)
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "console")
+    monkeypatch.setenv("OTEL_METRICS_EXPORTER", "none")
+    installed = configure_telemetry()
+    try:
+        (provider,) = providers
+        with provider.get_tracer("test").start_as_current_span("work"):
+            pass
+        assert writers == []  # ending the span wrote nothing on this thread
+    finally:
+        installed.shutdown()  # flushes, from the processor's thread
+    assert writers and threading.current_thread() not in writers
 
 
 def test_disabled_means_nothing_even_when_asked(

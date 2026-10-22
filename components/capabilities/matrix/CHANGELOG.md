@@ -56,8 +56,8 @@ the `model` effect or none at all. Record section 17 has the reasons.
     `matrix.v1.agent-runtime.<name>` and `matrix.v1.model-runtime.<name>`.
     `runtime_type_url` and `RUNTIME_PREFIX` are `agent_runtime_type_url` and
     `model_runtime_type_url` (with `AGENT_RUNTIME_PREFIX`, `MODEL_RUNTIME_PREFIX`).
-  - The config key `matrix.runtimes` is two: `matrix.agent_runtimes` (`claude-sdk`, `mock`)
-    and `matrix.model_runtimes` (`hardline`, `mock`). A config that still writes `runtimes`
+  - The config key `matrix.runtimes` is two: `matrix.agent_runtimes` (`claude-sdk`,
+    `pydantic-ai`, `mock`) and `matrix.model_runtimes` (`hardline`, `mock`). A config that still writes `runtimes`
     is refused at that key. `agents.<name>.runtime` names an agent runtime; one that names a
     model runtime is refused, with the fix.
   - The `model` runtime is the `hardline` model runtime (`HardlineModelRuntime`, was
@@ -277,6 +277,21 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Fixed
 
+- **Console span export no longer writes on the task doing the work.** With
+  `OTEL_TRACES_EXPORTER=console` (or `configure_telemetry(console=True)`), spans went through a
+  `SimpleSpanProcessor`, so ending one wrote to stderr inside the `otel` observer's `around`,
+  where an observer must do no I/O that can wait; a full stderr pipe stalled the work. Every
+  span exporter is now batched, the console's included.
+- **A claude-sdk session's unreported usage is None, not 0.** A result without usage was
+  recorded as 0 input and 0 output tokens, and absent cache counts as 0, though a fact the
+  runtime did not report is None. Input tokens are the sum of what was reported.
+- **A malformed model registry is a config problem, exit 3.** hardline's own `ConfigError`
+  escaped the `hardline` model runtime and the `pydantic-ai` agent runtime, so a typo in
+  `matrix.models` exited 1 as kind `unknown`, telling the reader to report a bug in matrix.
+  Each problem is now reported at the key that was written (`matrix.models.models.m.family`,
+  or under the runtime's own `models`), once however many runtimes read it, with the file
+  that set it. Every problem a runtime's builder raises (a `tools.<name>` that does not
+  import) is placed under the runtime's key the same way.
 - **A model call names who served it.** `ModelCall.provider`, and the session row's, were set
   for hardline's `anthropic` backend alone, so a row served by ollama or any other
   OpenAI-compatible server said nobody served it. The `hardline` model runtime and the
@@ -330,7 +345,11 @@ the `model` effect or none at all. Record section 17 has the reasons.
   reader that finds a run's writer gone (on this host) finishes its record: each file's
   cut-short last line is moved aside to `<file>.torn`, and `run.json` is replaced with
   `status: interrupted`, the row counts and `torn`. `data-model.md` gives the `jq` and DuckDB
-  recipes for a run still going, and the tests run them.
+  recipes for a run still going, and the tests run them. Finishing the record is best-effort:
+  a reader who cannot write it (a read-only mount, another user's runs) logs that and reads
+  the run as `interrupted` from its whole lines, as before, so `describe`, `load` and
+  `--from` still work. The reader locks the run's directory, not the writer's lock file, so a
+  second reader meanwhile waits for it instead of reading the run as `running`.
 - **A write the disk cuts short is taken back** before the `StoreError`, so a live run's
   table never holds half a line.
 - **`runs()` skips a damaged record**, logging it on `matrix.store`. One unreadable
@@ -428,6 +447,14 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Security
 
+- **`matrix check` and `plan` run no tool's module.** The `pydantic-ai` runtime imported every
+  configured tool when it was built, so composing a config (`check`, `plan`, `agents`) ran
+  each tool's module and its packages while saying nothing was called; with the working
+  directory's config tiers, checking an untrusted checkout could run its code. Building the
+  runtime now only finds each module on the import path, without running it; a session
+  imports a tool when it first offers it. A module that cannot be found is still a config
+  problem when the runtime is built, every one listed at once; a function the module does not
+  hold fails the session that offers it as `incapable`.
 - **SECURITY.md names the working directory as an ambient route to a capability grant**
   (mx-src F31): every command, and every tool on matrix, reads `./matrix.yaml` and
   `./<tool>.yaml` from where it runs, so an untrusted checkout's config chooses permission

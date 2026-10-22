@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import sys
 import time
 from dataclasses import dataclass, field
 from functools import cache
@@ -71,9 +72,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from matrix.adapters._out.runtime._hardline import build, served_by
 from matrix.domain.agent import AgentCapabilities, AgentResponse
-from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason
-from matrix.domain.problems import problem
+from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason, invalid
+from matrix.domain.problems import Problem, problem
 from matrix.domain.session import digest
 
 if TYPE_CHECKING:
@@ -98,8 +100,9 @@ class PydanticAiRuntimeConfig(BaseModel):
     this is a capability grant: see the package's SECURITY.md). An agent's `model` on this
     runtime is a model name in the hardline registry (`models`, `matrix.models`, or hardline's
     own tiers); unset, `default_model`, then the registry's default. `tools` are the tools an
-    agent may be given, each a Python function named `module:function`, imported when the
-    runtime is built; an agent's `tools` choose from them (unset: all; `[]`: none). The row an
+    agent may be given, each a Python function named `module:function`: its module is found
+    when the runtime is built, without running it, and imported when a session first offers
+    the tool; an agent's `tools` choose from them (unset: all; `[]`: none). The row an
     agent runs on must be served by a hardline backend that can call tools when it is given
     any. `max_turns` bounds the model calls of a session. Calls report tokens, not cost."""
 
@@ -141,27 +144,28 @@ class PydanticAiRuntime:
     ) -> None:
         self._models = models
         self._config = config or PydanticAiRuntimeConfig()
-        named = {name: _imported(name, ref) for name, ref in self._config.tools.items()}
-        given = dict(tools or {})
-        clash = sorted(set(named) & set(given))
+        unfound = [
+            found
+            for name, ref in self._config.tools.items()
+            if (found := _unfound(name, ref)) is not None
+        ]
+        if unfound:
+            raise invalid("the pydantic-ai runtime's tools cannot be found", unfound)
+        #: Tool name → its function: those given in code, and each named one once a session
+        #: has imported it.
+        self._functions: dict[str, Callable[..., Any]] = dict(tools or {})
+        clash = sorted(set(self._config.tools) & set(self._functions))
         if clash:
             raise ConfigError(
                 f"tools.{clash[0]}: named in the runtime's config and given in code",
                 fix="give each tool one name, in one place",
             )
-        self._tools = {**named, **given}
+        self._tools = sorted({*self._config.tools, *self._functions})
         self._sessions: dict[asyncio.AbstractEventLoop, int] = {}
 
     @classmethod
     def from_config(cls, config: PydanticAiRuntimeConfig) -> PydanticAiRuntime:
-        from hardline import build_runtime
-
-        models = (
-            build_runtime(config=config.models, label="matrix.models")
-            if config.models is not None
-            else build_runtime()
-        )
-        return cls(models, config)
+        return cls(build(config.models, needed_by="the pydantic-ai agent runtime"), config)
 
     @property
     def config(self) -> PydanticAiRuntimeConfig:
@@ -174,7 +178,9 @@ class PydanticAiRuntime:
     @property
     def resolved(self) -> dict[str, Any]:
         """What decides how a session answers, beyond the config: the registry resolved, from
-        ``models`` or hardline's own tiers (keys left out), and each tool's function."""
+        ``models`` or hardline's own tiers (keys left out), and each tool's function, as the
+        config names it or, for one given in code, as ``module:qualname``. Nothing is
+        imported for it."""
         registry = self._models.registry
         return {
             "default": registry.default,
@@ -183,8 +189,9 @@ class PydanticAiRuntime:
                 for name in registry.names()
             },
             "tools": {
-                name: f"{function.__module__}:{function.__qualname__}"
-                for name, function in sorted(self._tools.items())
+                name: self._config.tools.get(name)
+                or f"{self._functions[name].__module__}:{self._functions[name].__qualname__}"
+                for name in self._tools
             },
         }
 
@@ -195,7 +202,7 @@ class PydanticAiRuntime:
 
         unknown = [name for name in definition.tools or () if name not in self._tools]
         if unknown:
-            known = ", ".join(sorted(self._tools)) or "(none)"
+            known = ", ".join(self._tools) or "(none)"
             raise ConfigError(
                 f"agent {definition.name!r} names tool {unknown[0]!r}, which the pydantic-ai "
                 "runtime does not have",
@@ -221,10 +228,25 @@ class PydanticAiRuntime:
                     f"agent {definition.name!r} is given tools, and {e}", fix=e.fix, got=model
                 ) from e
 
-    def _offered(self, definition: AgentDefinition) -> dict[str, Callable[..., Any]]:
-        if definition.tools is None:
-            return dict(self._tools)
-        return {name: self._tools[name] for name in definition.tools}
+    def _offered(self, definition: AgentDefinition) -> list[str]:
+        return list(self._tools) if definition.tools is None else list(definition.tools)
+
+    def _function(self, name: str, definition: AgentDefinition) -> Callable[..., Any]:
+        """The tool ``name``, imported the first time a session offers it. A named tool whose
+        module was found but does not import, or does not hold the function, fails the
+        session as ``incapable``: the runtime cannot honour its config."""
+        function = self._functions.get(name)
+        if function is None:
+            try:
+                function = self._functions[name] = _imported(name, self._config.tools[name])
+            except ConfigError as e:
+                raise AgentRuntimeError(
+                    f"agent {definition.name!r}: {e}",
+                    reason="incapable",
+                    fix=e.fix,
+                    agent=definition.name,
+                ) from e
+        return function
 
     async def aclose(self) -> None:
         """Close the connections hardline opened in the running event loop."""
@@ -238,6 +260,7 @@ class PydanticAiRuntime:
         from pydantic_ai import Agent, Tool, UsageLimitExceeded, capture_run_messages
         from pydantic_ai.usage import UsageLimits
 
+        offered = {name: self._function(name, definition) for name in self._offered(definition)}
         model = _model_class()(
             self._models, definition.model or self._config.default_model, _Session(), None
         )
@@ -245,9 +268,7 @@ class PydanticAiRuntime:
             model,
             instructions=definition.system_prompt or None,
             name=definition.name,
-            tools=[
-                Tool(function, name=name) for name, function in self._offered(definition).items()
-            ],
+            tools=[Tool(function, name=name) for name, function in offered.items()],
             model_settings=self._settings(),
         )
         agent.instrument = False  # see the module docstring: no content leaves by telemetry
@@ -316,11 +337,51 @@ def hardline_model(
     return _model_class()(models, row, _Session(record=record), dict(settings or {}) or None)
 
 
-def served_by(models: Hardline, completion: Completion) -> str:
-    """Who served ``completion``, as the GenAI conventions name providers: its registry row's
-    ``provider``, or else its backend's name, as hardline's own ``gen_ai.provider.name`` is. An
-    OpenAI-compatible backend cannot tell which server answered; the row's author can."""
-    return models.registry.get(completion.name).provider or completion.backend
+def _unfound(name: str, reference: str) -> Problem | None:
+    """The problem at ``tools.<name>`` when ``reference`` is not ``module:function`` or its
+    module cannot be found; None when it can. Nothing is imported to tell."""
+    module, _, attribute = reference.partition(":")
+    if not (module and attribute):
+        why = "is not `module:function`"
+    elif not _findable(module):
+        why = f"names module {module!r}, which cannot be found"
+    else:
+        return None
+    return problem(
+        f"tools.{name}",
+        "invalid_value",
+        f"{reference!r} {why}",
+        fix="name an importable function as `module:function`",
+        got=reference,
+    )
+
+
+def _findable(module: str) -> bool:
+    """Whether ``module`` can be found on the import path, without running it or the packages
+    it is in: each package is searched by the locations its spec names, not by importing it."""
+    path: Sequence[str] | None = None
+    parts = module.split(".")
+    for end in range(1, len(parts) + 1):
+        name = ".".join(parts[:end])
+        loaded = sys.modules.get(name)
+        if loaded is not None:  # already run: reading it runs nothing
+            path = getattr(loaded, "__path__", None)
+        else:
+            spec = next(
+                (
+                    found
+                    for finder in sys.meta_path
+                    if (find := getattr(finder, "find_spec", None)) is not None
+                    and (found := find(name, path)) is not None
+                ),
+                None,
+            )
+            if spec is None:
+                return False
+            path = spec.submodule_search_locations
+        if end < len(parts) and path is None:
+            return False  # a module, not a package: it holds no module
+    return True
 
 
 def _imported(name: str, reference: str) -> Callable[..., Any]:

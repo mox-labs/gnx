@@ -462,7 +462,7 @@ matrix:
     concurrency: 4                          # components at once; default: as wired
     deadline_s: 600                         # each component, from its start
     grace_s: 5                              # to return after a stop request
-    cleanup_s: 30                           # for a cancelled component, or one release
+    cleanup_s: 30                           # a cancelled component, or one async release
     on_failure: isolate                     # fast (default): stop all; isolate: dependents
     retry: {attempts: 3, backoff_s: 2, errors: [transient]}
     components:
@@ -579,7 +579,8 @@ jq -c '{status, reason, runtime, model, stop, usage}' .matrix/runs/RUN_ID/matrix
 
 A run killed mid-way keeps every row it had recorded. The first matrix command that reads
 it (`matrix runs` will) writes `interrupted` into its `run.json` and moves any cut-short last
-line aside to `<file>.torn`, so `jq` reads every file whole. Reading a run that is still
+line aside to `<file>.torn`, so `jq` reads every file whole; a reader without write access
+reads it as `interrupted` and changes nothing. Reading a run that is still
 going, skip a line cut short mid-write: `jq -cR 'fromjson? // empty' FILE`.
 
 ## Starting from a recorded run
@@ -703,8 +704,9 @@ Agent runtimes (`matrix.agent_runtimes`):
   `max_turns` (on the agent) bounds its turns.
 - `pydantic-ai`: a pydantic-ai agent loop whose every model call goes through hardline, in
   any family it has a row for. Options: `models` (a hardline registry; else `matrix.models`),
-  `default_model`, `tools` (name to `module:function`, a Python function imported when the
-  runtime is built), `temperature`, `max_tokens`. An agent's `tools` choose from the
+  `default_model`, `tools` (name to `module:function`, a Python function whose module is
+  found when the runtime is built and imported when a session first offers it),
+  `temperature`, `max_tokens`. An agent's `tools` choose from the
   runtime's (unset: all; `[]`: none); `max_turns` bounds its model calls (`stop: max_turns`).
   A tool it does not have, a model hardline cannot resolve, or tools on a row whose backend
   cannot call them is refused at binding. Its tokens are counted by hardline, once; it

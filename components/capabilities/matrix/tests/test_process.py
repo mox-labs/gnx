@@ -175,12 +175,27 @@ async def test_spawn_takes_anything_that_can_defer() -> None:
     assert process.returncode is not None
 
 
-async def test_a_child_being_started_when_the_caller_is_cancelled_does_not_survive() -> None:
+async def test_a_child_being_started_when_the_caller_is_cancelled_does_not_survive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The test said only that the caller saw the cancellation (mx-tests 8): it now finds the
+    child that was being started, and sees it gone."""
+    made: list[asyncio.subprocess.Process] = []
+    create = asyncio.create_subprocess_exec
+
+    async def recorded(*argv: Any, **options: Any) -> asyncio.subprocess.Process:
+        made.append(await create(*argv, **options))
+        return made[-1]
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recorded)
     task = asyncio.ensure_future(start([sys.executable, "-c", _GRANDCHILD]))
     await asyncio.sleep(0)  # the subprocess is being created
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    (child,) = made
+    assert child.returncode is not None  # killed and reaped before the cancellation went on
+    assert await _gone([child.pid])
 
 
 async def test_a_cancellation_during_a_start_that_fails_is_still_a_cancellation() -> None:

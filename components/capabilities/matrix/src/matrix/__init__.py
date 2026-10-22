@@ -145,7 +145,8 @@ except PackageNotFoundError:  # running from a source tree that was never instal
 def skill(reference: str | None = None) -> str:
     """The skill an agent reads: what matrix is for, the component protocol, writing and
     registering a component, the commands, and the errors and exit codes. ``reference`` names
-    one of its references instead (``config``, ``running``, ``telemetry``, ``loading``).
+    one of its references instead (``config``, ``agents``, ``running``, ``telemetry``,
+    ``loading``).
     Raises UsageError for a reference it does not have, listing those it has."""
     return _render_skill(__version__, reference)
 

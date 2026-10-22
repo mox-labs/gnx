@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from typing import Any
+
 import pytest
 from pydantic import BaseModel
 
@@ -177,18 +180,53 @@ def test_an_unknown_model_is_refused_by_check_naming_the_known_ones() -> None:
     runtime.check("h")
 
 
-def test_hardline_failures_keep_whose_problem_they_are() -> None:
-    pytest.importorskip("hardline")
-    from hardline import BackendError, SecretError, UnknownModelError
+@pytest.mark.parametrize(
+    ("row", "reason"),
+    [
+        ({"options": {"script": [{"error": "rate_limit"}]}}, "rate_limited"),
+        ({"options": {"script": [{"error": "auth"}]}}, "auth"),
+        ({"options": {"script": [{"error": "bad_request"}]}}, "incapable"),
+        ({"api_key": "env:MATRIX_TEST_UNSET_KEY"}, "auth"),
+        ({"backend": "broken"}, "failed"),
+    ],
+)
+async def test_hardline_failures_keep_whose_problem_they_are(
+    row: dict[str, object], reason: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each failure hardline reports reaches the step with the reason the port names, read
+    from the call that failed, not from a private mapping."""
+    from hardline import build_runtime
+    from hardline.adapters._out.mock import MockBackend
 
-    from matrix.adapters._out.runtime.model import _reason
+    from matrix.adapters._out.runtime.model import HardlineModelRuntime
 
-    assert _reason(BackendError("x", reason="rate_limit")) == "rate_limited"
-    assert _reason(BackendError("x", reason="auth")) == "auth"
-    assert _reason(BackendError("x", reason="bad_request")) == "incapable"
-    assert _reason(SecretError("x")) == "auth"
-    assert _reason(UnknownModelError("x")) == "incapable"
-    assert _reason(RuntimeError("x")) == "failed"
+    class Broken(MockBackend):
+        async def complete(self, spec: Any, request: Any, api_key: str | None) -> Any:
+            raise RuntimeError("not a failure hardline knows")
+
+    monkeypatch.delenv("MATRIX_TEST_UNSET_KEY", raising=False)
+    spec = {"backend": "mock", "model": "x-1", "family": "x", "retries": 0, **row}
+    models = build_runtime(
+        {"models": {"x": spec}}, backends={"mock": MockBackend(), "broken": Broken()}
+    )
+    with pytest.raises(ModelRuntimeError) as e:
+        await HardlineModelRuntime(models).call(ModelRequest(prompt="hi", model="x"))
+    assert e.value.reason == reason
+
+
+def test_a_runtime_handed_the_registry_still_says_when_hardline_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Moving a handed registry's problems to ``matrix.models`` must not cost an error that
+    has no problems its facts: a missing hardline is still ``dependency_missing``."""
+    monkeypatch.setitem(sys.modules, "hardline", None)  # importing it now fails
+    config = MatrixConfig.model_validate(
+        {"models": MODELS, "model_runtimes": {"h": {"type": "hardline"}}}
+    )
+    with pytest.raises(ConfigError) as raised:
+        compose(config, registry=default_registry(discover=False))
+    (found,) = raised.value.problems
+    assert (found.path, found.kind) == ("matrix.model_runtimes.h", "dependency_missing")
 
 
 async def test_a_failed_call_is_a_classified_model_runtime_error() -> None:

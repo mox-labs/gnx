@@ -14,8 +14,11 @@ session the agent may read and write files, run commands, and reach the network 
 the runtime's `permission_mode` and `cwd` and by the definition's `tools`.
 
 A `pydantic-ai` runtime runs an agent session in this process. Its tools are Python functions
-the runtime's config names (`tools: {name: module:function}`), imported when the runtime is
-built and called when the model asks: each runs with the whole authority of the process, and
+the runtime's config names (`tools: {name: module:function}`). Building the runtime (and so
+`compose`, `matrix check`, `plan` and `agents`) only locates each module on the import path,
+without running it or its packages; a module is imported, and so run, when a session first
+offers its tool, and the function is called when the model asks. Each runs with the whole
+authority of the process, and
 no permission mode stands between the model's request and the call. The model chooses the
 arguments; a function sees them validated against its own typed parameters, and nothing more.
 A definition's `tools` narrow the set (`[]` is none), never widen it. Every model call goes
@@ -33,8 +36,9 @@ registry; hardline's own security notes cover it.
 `compose` builds agent runtimes from `matrix.agent_runtimes.<name>` and model runtimes from
 `matrix.model_runtimes.<name>`, and binds agents from `matrix.agents.<name>`. Every authority-bearing value — `permission_mode`, `cwd`,
 `setting_sources`, `plugins`, `skills`, inline subagents (`agents`, each with its own prompt
-and tools), a `pydantic-ai` runtime's `tools` (each a module imported, and so run, when the
-runtime is built), a definition's `tools` — arrives from config: a `matrix:`
+and tools), a `pydantic-ai` runtime's `tools` (each a module imported, and so run, when a
+session first offers it; located, not run, when the runtime is built), a definition's
+`tools` — arrives from config: a `matrix:`
 section, an ix `experiment.yaml`, a markdown agent file.
 
 **A matrix config file, and every agent file in a `definitions` directory, is a capability

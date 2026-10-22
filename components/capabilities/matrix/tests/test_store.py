@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import threading
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -696,6 +697,65 @@ def test_a_killed_run_once_read_says_interrupted_on_disk_and_reads_without_matri
     assert JsonlConstructStore(runs).load("killed").rows(TRIAL) == tuple(
         {"seq": seq, "seed": 7} for seq in range(3)
     )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.skipif(os.name == "posix" and os.geteuid() == 0, reason="root writes anywhere")
+def test_a_dead_run_reads_as_interrupted_by_a_reader_who_cannot_write_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Finishing a dead run's record on read made reading it depend on writing it: on a
+    read-only mount, or another user's runs, ``describe`` and ``load`` raised StoreError, and
+    ``--from`` failed with them (final review N1). Finishing the record is best-effort: a
+    reader who cannot write reads it as it stands, ``interrupted``, from its whole lines."""
+    runs = _killed_mid_write(tmp_path)
+    directory = runs / "killed"
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    directory.chmod(0o500)
+    try:
+        with caplog.at_level("WARNING", logger="matrix.store"):
+            described = JsonlConstructStore(runs).describe("killed")
+            loaded = JsonlConstructStore(runs).load("killed")
+        after = {path.name: path.read_bytes() for path in directory.iterdir()}
+    finally:
+        directory.chmod(0o700)
+    assert described["status"] == "interrupted" and described["ended"] is None
+    assert described["tables"][TRIAL]["rows"] == 3 and described["torn"] == 0
+    assert loaded.rows(TRIAL) == tuple({"seq": seq, "seed": 7} for seq in range(3))
+    assert after == before  # nothing on disk was touched
+    assert any("killed" in r.getMessage() for r in caplog.records)
+    # Once a reader can write it, the record is finished as before.
+    assert JsonlConstructStore(runs).describe("killed") == described
+    assert json.loads((directory / "run.json").read_text())["status"] == "interrupted"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_second_reader_while_a_dead_run_is_being_finished_does_not_read_it_as_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reader finishing a dead run held the writer's lock, so a second reader in that
+    window took it for a live writer and reported ``running`` (final review N4). The second
+    reader waits for the first, then reads the record it finished."""
+    runs = _killed_mid_write(tmp_path)
+    module = sys.modules[JsonlConstructStore.__module__]
+    real = module._cut_torn_tail
+    seen: list[str] = []
+    second: list[threading.Thread] = []
+
+    def cut_while_another_reads(path: Path) -> int:
+        if not second:  # the first reader is mid-finish: a second one reads now
+            thread = threading.Thread(
+                target=lambda: seen.append(JsonlConstructStore(runs).describe("killed")["status"])
+            )
+            second.append(thread)
+            thread.start()
+            thread.join(timeout=0.5)  # a reader that does not wait has answered by now
+        return int(real(path))
+
+    monkeypatch.setattr(module, "_cut_torn_tail", cut_while_another_reads)
+    assert JsonlConstructStore(runs).describe("killed")["status"] == "interrupted"
+    second[0].join(timeout=10)
+    assert seen == ["interrupted"]
 
 
 def test_a_write_cut_short_leaves_no_torn_line_behind(

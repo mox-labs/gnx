@@ -577,8 +577,8 @@ class _Problems:
     def add(
         self, error: MatrixError, where: str, *, got: Any = None, kind: str | None = None
     ) -> None:
-        if error.problems:
-            self.found += error.problems
+        if error.problems:  # one problem read by several parts (`matrix.models`) is said once
+            self.found += [p for p in error.problems if p not in self.found]
             return
         if "missing" in error.details:  # selected, but a dependency of it is not installed
             kind, got = "dependency_missing", error.details.get("missing")
@@ -593,11 +593,14 @@ def build_runtimes(
     needs: Mapping[str, Any],
     *,
     where: str,
+    models_at: str = "",
     problems: _Problems | None = None,
 ) -> dict[str, Any]:
     """Each runtime in ``runtimes`` (an ``agent_runtimes`` or ``model_runtimes`` section),
     built at ``point`` (``agent-runtime`` or ``model-runtime``). ``where`` is the section's
-    key path. Raises ConfigError listing every problem unless ``problems`` collects them."""
+    key path; ``models_at`` is the key path of the ``models`` need, where a problem in the
+    registry a runtime was handed, not given in its own config, is reported. Raises
+    ConfigError listing every problem unless ``problems`` collects them."""
     found = problems or _Problems()
     prefix = AGENT_RUNTIME_PREFIX if point == AGENT_RUNTIME else MODEL_RUNTIME_PREFIX
     type_url_of = agent_runtime_type_url if point == AGENT_RUNTIME else model_runtime_type_url
@@ -618,13 +621,27 @@ def build_runtimes(
                 )
             )
             continue
+        options = spec.options()
         try:
-            built[name] = registry.create(point, url, spec.options(), needs=needs, where=at)
+            built[name] = registry.create(point, url, options, needs=needs, where=at)
         except MatrixError as e:
-            found.add(e, at)
+            handed = models_at and options.get("models") is None and needs.get("models")
+            found.add(_rerooted(e, f"{at}.models", models_at) if handed and e.problems else e, at)
     if problems is None and found.found:
         raise invalid(f"the {point}s cannot be built", found.found)
     return built
+
+
+def _rerooted(error: MatrixError, path: str, to: str) -> MatrixError:
+    """``error``'s problems, each at ``path`` (or under it) moved to ``to``: what
+    :meth:`_Problems.add` reads of an error that has problems."""
+    moved = [
+        p.model_copy(update={"path": to + p.path[len(path) :]})
+        if p.path == path or p.path.startswith(f"{path}.")
+        else p
+        for p in error.problems
+    ]
+    return MatrixError(error.message, fix=error.fix, problems=moved, complete=error.complete)
 
 
 def build_observers(
@@ -852,6 +869,7 @@ def compose(
         reg,
         shared,
         where=f"{source}.agent_runtimes",
+        models_at=f"{source}.models",
         problems=problems,
     )
     model_runtimes = build_runtimes(
@@ -860,6 +878,7 @@ def compose(
         reg,
         shared,
         where=f"{source}.model_runtimes",
+        models_at=f"{source}.models",
         problems=problems,
     )
     store = build_store(matrix, reg, source=source, problems=problems)

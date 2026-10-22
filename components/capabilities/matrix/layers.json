@@ -1,6 +1,6 @@
 {
   "language": "python",
-  "about": "matrix's layers, checked by tests/test_architecture.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the reviewed map (scratch/review-2026-10-22/matrix-layers.json, at 1580c81) and fitted to matrix as it now is: two runtime ports (an agent session and a model call), the session table, the template. matrix keeps its application services (Executor, BoundAgent, the agent and model steps, Loader) in the domain package; there is no application package. 'why' keys are read by neither checker.",
+  "about": "matrix's layers, checked by tests/test_architecture.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the map the 2026-10-22 review proposed (at 1580c81) and fitted to matrix as it now is: two runtime ports (an agent session and a model call), the session table, the template. matrix keeps its application services (Executor, BoundAgent, the agent and model steps, Loader) in the domain package; there is no application package. 'why' keys are read by neither checker.",
   "scan": ["src/matrix/**/*.py"],
   "scan_why": "Every Python file in the package. Tests are out of scan: a test reaches adapters by design.",
   "layers": [
@@ -63,15 +63,18 @@
     },
     {
       "name": "adapter_hardline",
-      "files": ["src/matrix/adapters/_out/runtime/model.py",
+      "files": ["src/matrix/adapters/_out/runtime/_hardline.py",
+                "src/matrix/adapters/_out/runtime/model.py",
                 "src/matrix/adapters/_out/runtime/pydantic_ai.py"],
-      "allow": ["*", "matrix.domain", "matrix.adapters._out.runtime.pydantic_ai"],
+      "allow": ["*", "matrix.domain", "matrix.adapters._out.runtime._hardline",
+                "matrix.adapters._out.runtime.pydantic_ai"],
       "forbid": ["opentelemetry"],
       "why": {
         "*": "hardline, and in pydantic_ai.py pydantic-ai, the agent framework whose model calls hardline makes (confined to that file by single_importer)",
         "matrix.domain": "the port each implements and the domain types it speaks in",
-        "matrix.adapters._out.runtime.pydantic_ai": "the hardline model runtime hands out the hardline-backed pydantic-ai Model that file defines (pydantic_ai_model, W11.2b), imported inside the method; pydantic_ai itself stays confined to that file",
-        "two files": "hardline is the technology of two runtimes, one per port: the model runtime (one call) and the pydantic-ai agent runtime (a session whose calls hardline makes). Like OpenTelemetry's two files, it is confined by 'forbid' in every other layer rather than by a single_importer rule, which names one file",
+        "matrix.adapters._out.runtime._hardline": "what the two runtimes share of hardline: building its runtime from a registry section (a registry it refuses is a matrix ConfigError) and naming who served a call. It is neither runtime, so neither reaches the other for it",
+        "matrix.adapters._out.runtime.pydantic_ai": "the hardline model runtime hands out the hardline-backed pydantic-ai Model that file defines (pydantic_ai_model, W11.2b), imported inside the method; pydantic_ai itself stays confined to that file, so the Model cannot move to _hardline.py",
+        "three files": "hardline is the technology of two runtimes, one per port, and the module they share: the model runtime (one call) and the pydantic-ai agent runtime (a session whose calls hardline makes). Like OpenTelemetry's two files, it is confined by 'forbid' in every other layer rather than by a single_importer rule, which names one file",
         "forbid opentelemetry": "hardline traces its own calls; the runtimes name no telemetry"
       }
     },

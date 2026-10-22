@@ -72,7 +72,7 @@ kinds. There is no way to wire a loop; work that must repeat is repeated by whoe
 wiring again, or inside one component.
 
 The result, a `Wiring`, is reusable: wire once, run many times with different inputs.
-`wiring.order()` shows one valid order of work, for a reader; the executor does not use it.
+`wiring.stages()` groups the components into the stages `matrix plan` prints, and `wiring.order()` lists them one stage after another: views for a reader; the executor does not use them.
 
 ### Running produces a Run
 

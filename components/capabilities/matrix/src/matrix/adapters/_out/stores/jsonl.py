@@ -32,9 +32,13 @@ moved aside to ``<file>.torn``, and ``run.json`` is replaced with ``status: inte
 each table's row count and ``torn``. From then on every file reads whole with ``jq`` or
 DuckDB, and ``interrupted`` is on disk. "Gone" is read from ``writer.lock``, which the writer
 holds an ``flock`` on from ``open`` until ``finish`` or its death, so a pid reused by another
-process cannot make a dead run read as running; the reader holds the same lock while it
-finishes the record, so two readers finish it once. A dead run on another host stays
-``running``: matrix does not guess.
+process cannot make a dead run read as running. The reader holds an ``flock`` on the run's
+directory while it finishes the record, so two readers finish it once, and a second reader
+waits for the first rather than read the run as running. Finishing the record is
+best-effort: a reader who cannot write it (a read-only mount, another user's runs) logs that
+on ``matrix.store`` and reads it as it stands, ``interrupted``, with each table's whole lines
+counted, leaving the files as they are. A dead run on another host stays ``running``: matrix
+does not guess.
 
 **Events** are telemetry kept beside the record: lossy by design (``run.json``'s
 ``events_dropped`` counts what is missing), flushed line by line, and never read back as data.
@@ -378,15 +382,13 @@ class JsonlConstructStore:
         if record.get("status") != "running":
             return record
         # Still running, here or on another host: say what is on disk now.
-        directory = self._dir(run_id)
-        for info in record["tables"].values():
-            info["rows"] = len(_lines(directory / info["file"]))
-        _count_torn(record)
+        _count_rows(record, self._dir(run_id))
         return record
 
     def _finished(self, run_id: str) -> dict[str, Any]:
         """The run's record, once it is finished: a run whose writer, on this host, is gone
-        is finished here as ``interrupted`` (see the module docstring)."""
+        is finished here as ``interrupted`` (see the module docstring). A reader who cannot
+        write the record reads it as it stands, ``interrupted``, and leaves it as it is."""
         record = self._record(run_id)
         writer = record.get("writer") or {}
         directory = self._dir(run_id)
@@ -396,16 +398,29 @@ class JsonlConstructStore:
             or _writer_alive(directory / _LOCK)
         ):
             return record
-        try:  # made again if someone removed it: a dead run is finished all the same
-            descriptor = os.open(directory / _LOCK, os.O_RDONLY | os.O_CREAT, 0o644)
-        except OSError as e:
-            raise StoreError(
-                f"could not lock the interrupted run {run_id!r} at {directory} to finish it: "
-                f"{type(e).__name__}: {e}",
-                run_id=run_id,
-            ) from e
         try:
-            # Only another reader finishing it can hold the lock now, and only briefly.
+            return self._finish_interrupted(run_id, directory)
+        except OSError as e:
+            logger.warning(
+                "read the interrupted run %r at %s as it stands; its record could not be "
+                "finished: %s: %s",
+                run_id,
+                directory,
+                type(e).__name__,
+                e,
+            )
+        record = self._record(run_id)
+        if record.get("status") == "running":
+            _count_rows(record, directory)
+            record["status"] = "interrupted"
+        return record
+
+    def _finish_interrupted(self, run_id: str, directory: Path) -> dict[str, Any]:
+        """Finish the record of a run whose writer is gone. Raises OSError when it cannot."""
+        # The run's directory is locked, not the writer's file, so a reader checking for a
+        # live writer meanwhile is not misled; it waits here for this one instead.
+        descriptor = os.open(directory, os.O_RDONLY)
+        try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
             record = self._record(run_id)
             if record.get("status") != "running":
@@ -418,12 +433,6 @@ class JsonlConstructStore:
             _replace(directory / "run.json", record, self._fsync)
             if self._fsync:
                 _flush_directory(directory)
-        except OSError as e:
-            raise StoreError(
-                f"could not finish the interrupted run {run_id!r} at {directory}: "
-                f"{type(e).__name__}: {e}",
-                run_id=run_id,
-            ) from e
         finally:
             os.close(descriptor)  # closing releases the lock
         return record
@@ -457,6 +466,13 @@ class JsonlConstructStore:
             except (StoreError, ConfigError) as e:
                 logger.warning("skipped %s, whose record is damaged: %s", path, e)
         return sorted(started, key=lambda name: (started[name], name))
+
+
+def _count_rows(record: dict[str, Any], directory: Path) -> None:
+    """Each table's rows as its whole lines on disk now, and ``torn`` from them."""
+    for info in record["tables"].values():
+        info["rows"] = len(_lines(directory / info["file"]))
+    _count_torn(record)
 
 
 def _count_torn(record: dict[str, Any]) -> None:

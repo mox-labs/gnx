@@ -348,15 +348,18 @@ def test_the_only_example_names_where_the_record_goes() -> None:
     assert "matrix run live.yaml --only --input" in matrix.skill("config")
 
 
-def test_nothing_sends_a_reader_to_the_events_for_a_fact() -> None:
+def test_nothing_sends_a_reader_to_the_events_for_a_fact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Events are lossy: the skill and ``matrix run`` sent readers to ``events.jsonl`` for a
     failed step's task (W5.2). No recipe reads them now, and each says they are lossy."""
-    from matrix.adapters._in.cli import _files
-
     text = "\n".join([matrix.skill(), *(matrix.skill(name) for name in REFERENCES)])
     assert not re.search(r"^jq .*events\.jsonl", text, re.M)
     assert "lossy" in matrix.skill("running") and "lossy" in matrix.skill("telemetry")
-    (events,) = [
-        line for line in _files({"acme.v1.x": {"file": "acme.v1.x.jsonl"}}) if "events" in line
-    ]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.delenv("MATRIX_CONFIG", raising=False)
+    (tmp_path / "matrix.yaml").write_text("matrix: {}\n")
+    assert main(["run"]) == 0
+    (events,) = [line for line in capsys.readouterr().out.splitlines() if "events" in line]
     assert "lossy" in events and "task" not in events
