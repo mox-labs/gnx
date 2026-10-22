@@ -939,7 +939,9 @@ def test_a_stop_request_ends_the_run_cleanly_and_the_partial_run_is_reportable(
 
     described = json.loads((location / "run.json").read_text())
     assert described["status"] == "cancelled"
-    assert described["components"]["trials"]["status"] == "completed"  # it returned in time
+    # It returned what it had when asked to stop: matrix records that as stopped, never completed,
+    # so a resumed run does not take the partial trials for finished work.
+    assert described["components"]["trials"]["status"] == "stopped"
     assert described["components"]["sense"]["status"] == "skipped"
     kept = _rows(str(location), schema.INTERACTION)
     assert 3 <= len(kept) < 15
