@@ -55,6 +55,24 @@ run's Construct, and a row of a kind it does not provide, or one that fails its 
 raises `ContractError`. This is a correctness boundary, not a trust boundary: a component is
 in-process Python and can reach anything the process can.
 
+### 4. Events → an OpenTelemetry endpoint
+
+When the `OTEL_*` variables ask for export, every run gets the `otel` observer, and its spans
+go to whatever endpoint the environment names. So what a span carries leaves the machine.
+
+By default a span carries no content: the GenAI conventions' attributes (agent, model,
+provider, token counts, tool name and call id), matrix's statuses, reasons, error kinds,
+counts, times and ids, and the numbers and booleans a component passes to `ctx.span`. It does
+not carry an agent's task, any error message (as an attribute or as the span's status
+description), or a component's string fields. `error.type` is always set on a failure.
+
+Content leaves only when the config asks: `observers: [{type: otel, capture_content: true}]`.
+That config is a grant to send prompts to the collector; review it like one. A `ctx.measure`'s
+attributes are exported as the component gives them.
+
+The local sinks are not filtered: the `jsonl` observer and a run's `events.jsonl` carry each
+task and error message as emitted.
+
 ## Findings
 
 ### M-1 — `permission_mode` defaulted to `bypassPermissions` (fixed 2026-08-17)
@@ -82,6 +100,16 @@ concurrent `claude-sdk` runs in one process raced on the variable. Closed: `clau
 itself, bisected against PyPI wheels) makes the mutation unnecessary, and the runtime no
 longer touches `os.environ` at all. Concurrent `claude-sdk` runs in one process are safe
 with that SDK version installed.
+
+### M-4 — every event field was a span attribute (fixed 2026-10-22)
+
+The `otel` observer copied every plain event field into span attributes: each agent's task as
+`matrix.task`, error messages as `matrix.error` and as the span's status description, and
+every field a component passed to `ctx.span`. Attached by the `OTEL_*` variables alone, it
+sent prompts to the collector with nothing in the config saying so. Fixed: span attributes
+come from an allowlist, and content needs `capture_content`. Regression tests:
+`test_otel_observer.py::test_no_content_leaves_on_a_span_by_default` and
+`::test_content_leaves_on_a_span_only_when_asked_for`.
 
 ## Not covered
 

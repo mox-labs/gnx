@@ -2,6 +2,20 @@
 
 All notable changes to matrix. Versions follow semver; before 1.0 a minor may break.
 
+## Unreleased
+
+### Security
+
+- **No content leaves through OpenTelemetry by default.** The `otel` observer exported every
+  event field as a span attribute, so each agent's task (`matrix.task`), error messages
+  (`matrix.error`, and the span's status description) and every field a component passed to
+  `ctx.span` went to whatever endpoint `OTEL_*` named. Span attributes now come from an
+  allowlist: the GenAI conventions' names, matrix's statuses, reasons, error kinds, counts,
+  times and ids, and a component's number and boolean span fields. `error.type` stays.
+  Content is exported only with the observer's new `capture_content` option
+  (`observers: [{type: otel, capture_content: true}]`), as the conventions ask. A
+  component's string span fields are dropped unless it is set.
+
 ## 0.6.0
 
 ### Added

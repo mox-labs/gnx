@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import pytest
@@ -214,3 +215,87 @@ async def test_a_failed_session_carries_its_error_type() -> None:
     failed = spans["invoke_agent hurried"]
     assert failed.attributes["error.type"] == "rate_limited"
     assert failed.status.status_code == trace.StatusCode.ERROR
+
+
+_SECRET = "SECRET"
+
+
+class _Refuses:
+    """A runtime whose error message carries what the task said."""
+
+    def check(self, definition: Any) -> None:
+        return None
+
+    async def run(self, definition: Any, task: str) -> Any:
+        from matrix import AgentRuntimeError
+
+        raise AgentRuntimeError(f"refused: {task}", reason="refused")
+
+
+class _Leaky:
+    """Content in every place a component can put it: a span's fields, an agent's task, an
+    agent's error, and a release's error."""
+
+    requires: tuple[str, ...] = ()
+    provides = ("acme.v1.text",)
+
+    def __init__(self, agent: Any, refuses: Any) -> None:
+        self.agent, self.refuses = agent, refuses
+
+    async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+        from matrix import AgentRuntimeError
+
+        def release() -> None:
+            raise RuntimeError(f"{_SECRET} release")
+
+        ctx.defer(release)
+        async with ctx.span(
+            "acme.fetch", url=f"https://user:{_SECRET}@host/x", tool=_SECRET, rows=3, cached=True
+        ):
+            await self.agent.run(f"{_SECRET} task")
+            with contextlib.suppress(AgentRuntimeError):
+                await self.refuses.run(f"{_SECRET} task")
+        return {"acme.v1.text": "x"}
+
+
+async def _leaky_run(observer: OtelObserver) -> dict[str, Any]:
+    from matrix import AgentDefinition, BoundAgent
+
+    agent = BoundAgent(AgentDefinition(name="rev"), _Session(), observers=[observer])
+    refuses = BoundAgent(AgentDefinition(name="shy"), _Refuses(), observers=[observer])
+    _EXPORTER.clear()
+    await Executor([observer]).run(wire({"leaky": _Leaky(agent, refuses)}))
+    return {s.name: s for s in _EXPORTER.get_finished_spans()}
+
+
+async def test_no_content_leaves_on_a_span_by_default() -> None:
+    spans = await _leaky_run(_observer())
+    leaked = {
+        (name, key)
+        for name, span in spans.items()
+        for key, value in {**span.attributes, "status": span.status.description}.items()
+        if _SECRET in str(value)
+    }
+    assert leaked == set()
+    fetch = spans["acme.fetch"]
+    # a component's numbers and booleans, and its span's own status, carry no content
+    assert fetch.attributes["acme.rows"] == 3
+    assert fetch.attributes["acme.cached"] is True
+    assert fetch.attributes["acme.status"] == "ok"
+    assert "gen_ai.tool.name" not in fetch.attributes  # a component's field is not a convention's
+    refused = spans["invoke_agent shy"]
+    assert refused.attributes["error.type"] == "refused"  # the type stays; its text does not
+    assert refused.status.status_code == trace.StatusCode.ERROR
+    assert spans["matrix.release"].attributes["error.type"] == "failed"
+
+
+async def test_content_leaves_on_a_span_only_when_asked_for() -> None:
+    observer = OtelObserver(tracer_provider=_PROVIDER, meter_provider=_METERS, capture_content=True)
+    spans = await _leaky_run(observer)
+    assert spans["invoke_agent rev"].attributes["matrix.task"] == f"{_SECRET} task"
+    refused = spans["invoke_agent shy"]
+    assert refused.attributes["matrix.error"] == f"refused: {_SECRET} task"
+    assert refused.status.description == f"refused: {_SECRET} task"
+    assert refused.attributes["error.type"] == "refused"
+    assert spans["acme.fetch"].attributes["acme.url"] == f"https://user:{_SECRET}@host/x"
+    assert _SECRET in str(spans["matrix.release"].status.description)

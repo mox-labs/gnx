@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from matrix.adapters._out.observers.jsonl import JsonlObserver, JsonlObserverConfig
 from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig
 from matrix.adapters._out.runtime.mock import MockRuntime, MockRuntimeConfig
@@ -75,12 +77,27 @@ def store_type_url(name: str) -> str:
     return name if "." in name else type_url("matrix", 1, f"store.{name}")
 
 
-def _otel() -> OtelObserver:
+# Here, not beside the observer, so that registering imports no OpenTelemetry.
+class OtelObserverConfig(BaseModel):
+    """The ``otel`` observer's options. Without any, spans carry no content."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    capture_content: bool = Field(
+        default=False,
+        description="Export content too: each agent's task (matrix.task), error messages "
+        "(matrix.error and the span's status) and a component's string ctx.span fields. Off "
+        "by default, as the GenAI semantic conventions ask; turning it on sends prompts to "
+        "the collector.",
+    )
+
+
+def _otel(config: OtelObserverConfig) -> OtelObserver:
     try:
         from matrix.adapters._out.observers.otel import OtelObserver
     except ImportError as e:  # the API is a dependency; a broken install still says what to do
         raise missing_extra("otel", needed_by="the otel observer", module="opentelemetry") from e
-    return OtelObserver()
+    return OtelObserver(capture_content=config.capture_content)
 
 
 def _console() -> ConsoleObserver:
@@ -144,9 +161,11 @@ def register(registry: Registry) -> None:
         "observer",
         observer_type_url("otel"),
         _otel,
+        config=OtelObserverConfig,
         effects={"network"},
-        summary="OpenTelemetry spans and metrics on the GenAI conventions; exported when the "
-        "OTEL_* variables say where (requires matrix[otel])",
+        summary="OpenTelemetry spans and metrics on the GenAI conventions, without content "
+        "unless capture_content; exported when the OTEL_* variables say where (requires "
+        "matrix[otel])",
     )
     registry.register(
         "observer",

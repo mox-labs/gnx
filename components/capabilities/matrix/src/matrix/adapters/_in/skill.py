@@ -295,7 +295,8 @@ need not import matrix. This runs as written:
 - **`ctx.defer(release)`** registers a sync or async release, called once when the run
   ends, last first, whether it completed, failed or was cancelled.
 - **`ctx.emit`, `ctx.measure`, `ctx.span`** are telemetry under your own namespace
-  (`acme.*`; `matrix.*` is matrix's). They are never part of the result.
+  (`acme.*`; `matrix.*` is matrix's). They are never part of the result. OpenTelemetry
+  gets only the numbers and booleans among a `ctx.span`'s fields: a string is content.
 - **Configuration** arrives when the component is built, never through `run`."""
 
 
@@ -670,6 +671,10 @@ over `OTEL_EXPORTER_OTLP_PROTOCOL` `http/protobuf` (default) or `grpc`, the reso
 set it). `OTEL_SDK_DISABLED=true` turns it off. Asked for without the extra, nothing is
 exported and every document's `warnings` says so (`extra_missing`). From Python, call
 `matrix.configure_telemetry()` once, and `.shutdown()` on what it returns at the end.
+
+No content leaves by default: no task, no error message, no string field of a component's
+`ctx.span`; `error.type` says what failed. `observers: [{type: otel, capture_content: true}]`
+exports them too, as `matrix.task`, `matrix.error` and `<root>.<field>`.
 
 ## What is emitted
 

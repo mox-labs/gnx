@@ -18,6 +18,15 @@ instrumentation scope ``matrix``:
   ``gen_ai.tool.call.id``;
 * a component's own ``ctx.span`` is a span of that name.
 
+**No content by default.** Span attributes come from an allowlist: the conventions' names
+above, and matrix's own fields that carry no content (statuses, reasons and error kinds,
+counts, times, ids). Of a component's span fields only numbers and booleans are exported,
+with the ``ok``/``error`` status of its ``ctx.span``. An agent's task, any error message
+(an attribute, or a span's status description) and a component's text fields are content:
+exported only when ``capture_content`` is set, as the conventions ask ("SHOULD NOT capture
+them by default, but SHOULD provide an option for users to opt in"). ``error.type`` is
+always set when something failed.
+
 **Metrics**, derived from the same events, so an event log replays into the numbers an
 exporter saw. The conventions' names where they define one: ``gen_ai.invoke_workflow.duration``,
 ``gen_ai.invoke_agent.duration``, ``gen_ai.invoke_agent.tool_calls``,
@@ -33,6 +42,8 @@ does nothing until an application installs an SDK: matrix as a library never ins
 ``matrix run`` does, from the ``OTEL_*`` variables, and an application calls
 :func:`matrix.configure_telemetry` (or configures OpenTelemetry itself). A caller may hand
 the observer its own ``tracer_provider`` and ``meter_provider`` instead of the global ones.
+
+Config: ``capture_content`` (default false).
 
 Type URL: ``matrix.v1.observer.otel``.
 """
@@ -50,7 +61,6 @@ from matrix.domain.observer import (
     AGENT_START,
     COMPONENT_END,
     COMPONENT_RETRY,
-    COMPONENT_START,
     EVENTS_DROPPED,
     MEASURE,
     RUN_END,
@@ -86,7 +96,10 @@ class OtelObserver:
         *,
         tracer_provider: trace.TracerProvider | None = None,
         meter_provider: metrics.MeterProvider | None = None,
+        capture_content: bool = False,
     ) -> None:
+        #: Whether content (tasks, error messages, a component's text fields) is exported.
+        self.capture_content = capture_content
         self._tracer = trace.get_tracer(SCOPE, _version(), tracer_provider=tracer_provider)
         self._open: dict[str, Any] = {}
         meter = metrics.get_meter(SCOPE, _version(), meter_provider=meter_provider)
@@ -123,7 +136,7 @@ class OtelObserver:
                 _span_name(event),
                 context=context,
                 kind=SpanKind.INTERNAL,
-                attributes=_attributes(event),
+                attributes=_attributes(event, content=self.capture_content),
                 start_time=_ns(event.time),
             )
         elif event.name.endswith(_END):
@@ -134,12 +147,13 @@ class OtelObserver:
         span = self._open.pop(event.span, None)
         if span is None:
             return  # an end with no start: a component skipped before it ran
-        for key, value in _attributes(event).items():
+        for key, value in _attributes(event, content=self.capture_content).items():
             span.set_attribute(key, value)
         error = _error_type(event)
         if error is not None:
             span.set_attribute("error.type", error)
-            span.set_status(StatusCode.ERROR, str(event.fields.get("error") or error))
+            message = event.fields.get("error") if self.capture_content else None
+            span.set_status(StatusCode.ERROR, str(message or error))
         span.end(end_time=_ns(event.time))
 
     def _record(self, event: Event) -> None:
@@ -247,7 +261,7 @@ def _span_name(event: Event) -> str:
     return event.name.removesuffix(_START)
 
 
-#: matrix's event fields under their conventions' names.
+#: matrix's agent and tool event fields under their conventions' names.
 _GENAI = {
     "agent": "gen_ai.agent.name",
     "tokens_input": "gen_ai.usage.input_tokens",
@@ -258,7 +272,38 @@ _GENAI = {
 }
 
 
-def _attributes(event: Event) -> dict[str, Any]:
+#: matrix's own fields that carry no content, exported as ``matrix.<key>``: statuses, reasons
+#: and error kinds, counts, times and the ids matrix made. ``task`` and ``error`` are content.
+_MATRIX = frozenset(
+    {
+        "status",
+        "reason",
+        "kind",
+        "abandoned",
+        "attempts",
+        "rows",
+        "duration_ms",
+        "reused_from",
+        "family",
+        "tool_calls",
+        "cost_usd",
+    }
+)
+#: The statuses matrix gives a component's ``ctx.span`` at its end.
+_SPAN_STATUSES = frozenset({"ok", "error"})
+
+
+def _no_content(root: str, key: str, value: Any) -> bool:
+    """Whether a field may leave without the opt-in: one of matrix's own listed above, or a
+    component's number, boolean, or ``ctx.span`` status. A string is content."""
+    if root == "matrix":
+        return key in _MATRIX
+    return not isinstance(value, str) or (key == "status" and value in _SPAN_STATUSES)
+
+
+def _attributes(event: Event, *, content: bool = False) -> dict[str, Any]:
+    """The span attributes for ``event``: the allowlist, or every plain field with
+    ``content``."""
     root = event.name.split(".", 1)[0]
     attributes: dict[str, Any] = {}
     if event.name in (RUN_START, RUN_END):
@@ -277,8 +322,8 @@ def _attributes(event: Event) -> dict[str, Any]:
             attributes["gen_ai.request.model"] = value
         elif event.name == AGENT_END and key == "model":
             attributes["gen_ai.response.model"] = value
-        elif key in _GENAI and event.name not in (RUN_START, RUN_END, COMPONENT_START):
+        elif key in _GENAI and event.name in (AGENT_START, AGENT_END, TOOL_START, TOOL_END):
             attributes[_GENAI[key]] = value
-        else:
+        elif content or _no_content(root, key, value):
             attributes[f"{root}.{key}"] = value
     return attributes
