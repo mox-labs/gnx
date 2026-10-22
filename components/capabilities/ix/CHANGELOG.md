@@ -89,6 +89,15 @@
   finite, and the analysis of such a row failed with a bare `math domain error`. Such a
   reading is now a `ValueError` when it is built, and a stored run holding one is a damaged
   record: `ix report` exits 3 (`config`) and names the file.
+- **An empty run says why it is inconclusive**: "no trial was carried out, so nothing was
+  measured", where the reason was empty.
+- **The median's interval is computed in linear time.** The sign test's tail was summed
+  again for every candidate order statistic, in big integers: one interval over 3,000
+  values took 50 s. It is summed once; the interval and its level are unchanged.
+- **`validate` refuses a run too thin for any interval.** It held a median to its 6 blocks
+  but no decision to the 3 every interval needs, so a third-party genre with `repeats.min`
+  1 validated and every decision of every run was then "too few". Fewer than 3 blocks
+  (repeats x probes) in a cell is `repeats_below_min` in a genre that decides.
 
 ### Kept
 

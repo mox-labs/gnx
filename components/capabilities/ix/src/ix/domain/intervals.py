@@ -282,13 +282,22 @@ def mean(values: Sequence[float]) -> Span:
 def median(values: Sequence[float]) -> Span:
     """The order-statistic interval for the median of ``values``: ``[x_(k), x_(n-k+1)]``
     with the largest ``k`` whose coverage ``1 - 2 P(B <= k - 1)`` is at least the level's.
-    Unbounded at a level fewer values cannot reach."""
+    Unbounded at a level fewer values cannot reach. The sign test's tails are summed once,
+    so an interval over thousands of values costs a pass over them."""
     ordered = sorted(values)
     n = len(ordered)
+    # 2 P(B <= k) for every k an interval can use, summed once: in integers, then divided.
+    half = (n + 1) // 2
+    tails: list[float] = []
+    count, total = 1, 0
+    for k in range(half):
+        total += count
+        tails.append(2 * total / (1 << n))
+        count = count * (n - k) // (k + 1)
 
     def at(alpha: float) -> Ends:
         k = 0
-        while k + 1 <= (n + 1) // 2 and 2 * sign_cdf(k, n) <= alpha:
+        while k < half and tails[k] <= alpha:
             k += 1
         if k == 0:
             return -math.inf, math.inf
@@ -296,9 +305,9 @@ def median(values: Sequence[float]) -> Span:
 
     def level(beyond: int) -> float:
         # The low end passes a bound once k exceeds the number of values not above it.
-        if beyond + 1 > (n + 1) // 2:
+        if beyond >= half:
             return math.inf
-        return 2 * sign_cdf(beyond, n)
+        return tails[beyond]
 
     return Span(
         at,

@@ -850,3 +850,31 @@ def test_a_rate_threshold_in_percent_is_told_to_be_a_share(
     (problem,) = _problems(evaluate_data, vocabulary)
     assert (problem.path, problem.kind) == ("threshold.value", "unit_mismatch")
     assert problem.fix == "state the threshold as a share: 0.9"
+
+
+_THIN = {
+    **_PARENT,
+    "name": "lab.v1.genre.thin",
+    "hypothesis_form": "{subject} meets {threshold} on {metric}",
+    "must_set": ["primary", "threshold"],
+    "design": {
+        "repeats": {"default": 2, "min": 1},
+        "order": "interleaved",
+        "calibration": "none",
+        "note": "fewer repeats than any interval needs",
+    },
+    "analysis": {"id": "ix.v1.analysis.evaluate"},
+    "verdict_form": "three-way",
+}
+
+
+def test_a_run_too_thin_for_any_interval_is_refused(
+    evaluate_data: dict[str, Any], write_experiment: Write
+) -> None:
+    """Regression: validate held a median to its 6 blocks but no decision to the 3 every
+    interval needs, so a genre with ``repeats.min`` 1 validated and every decision of every
+    run was then "too few"."""
+    thin = {**evaluate_data, "genre": "lab.v1.genre.thin", "repeats": 2}
+    assert _lab(write_experiment, thin, "genres", _THIN) == {("repeats", "repeats_below_min")}
+    enough = {**evaluate_data, "genre": "lab.v1.genre.thin", "repeats": 3}
+    assert ix.validate(write_experiment(enough)).problems == ()  # the same lab, its genres/

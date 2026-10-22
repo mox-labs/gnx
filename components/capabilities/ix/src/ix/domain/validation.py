@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from ix.domain import schema
-from ix.domain.analysis import ANALYSES, analysis_unsupported
+from ix.domain.analysis import ANALYSES, MIN_BLOCKS, analysis_unsupported
 from ix.domain.design import (
     assign_roles,
     kind_uses,
@@ -467,7 +467,11 @@ def _decidable(
                 got=given.text(),
             )
         )
-    if estimator == "median" and deciding.blocks is not None and deciding.blocks < MEDIAN_MIN:
+    if (
+        estimator == "median"
+        and deciding.blocks is not None
+        and MIN_BLOCKS <= deciding.blocks < MEDIAN_MIN
+    ):
         problems.append(
             problem(
                 "repeats",
@@ -493,6 +497,17 @@ def _decision(
         estimator=genre.design.estimator if genre else "mean",
         blocks=None if probes is None else repeats * len(probes.probes),
     )
+    if deciding.decides and deciding.blocks is not None and deciding.blocks < MIN_BLOCKS:
+        problems.append(
+            problem(
+                "repeats",
+                kind="repeats_below_min",
+                message=f"an interval needs {MIN_BLOCKS} blocks (repeats x probes) in a cell; "
+                f"this run would have {deciding.blocks}, so no decision could be made",
+                fix=f"raise repeats so repeats x probes is at least {MIN_BLOCKS}",
+                got=deciding.blocks,
+            )
+        )
     if experiment.primary is not None:
         problems += _reads(
             experiment.primary,

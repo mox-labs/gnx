@@ -257,7 +257,7 @@ class Analysis(Record):
     #: How many decisions Holm's procedure corrected together on the ``fails`` side.
     family: int = 0
     #: Holds only if every finding holds; fails if any fails; inconclusive, with ``reason``,
-    #: when the calibration check does not pass.
+    #: when the calibration check does not pass or no trial was carried out.
     outcome: Outcome | None = None
     reason: str = ""
     findings: tuple[Finding, ...] = ()
@@ -1034,6 +1034,8 @@ def analyze(
         )
     checks = _calibration(data, asked.checks)
     unsettled = _unsettled(checks)
+    if not findings:
+        unsettled = "no trial was carried out, so nothing was measured"
     return base.model_copy(
         update={
             "family": sum(1 for item in settled if item.level is not None),

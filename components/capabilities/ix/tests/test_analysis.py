@@ -8,6 +8,7 @@ their stated error rates by simulation.
 from __future__ import annotations
 
 import math
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -160,6 +161,21 @@ class TestTheNumbers:
     def test_a_median_needs_six_values_at_95_percent(self) -> None:
         assert intervals.median([1.0, 2.0, 3.0, 4.0, 5.0])(0.05) == (-math.inf, math.inf)
         assert intervals.median([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])(0.05) == (1.0, 6.0)
+
+    def test_a_median_interval_over_thousands_of_values_takes_linear_time(self) -> None:
+        """Regression: the sign test's tail was summed again for every ``k``, in big
+        integers, so one interval over 3000 values took 50 s. The interval and its level are
+        the same; only the cost changed."""
+        values = [float((i * 7919) % 3001) for i in range(3000)]
+        started = time.perf_counter()
+        span = intervals.median(values)
+        low, high = span(0.05)
+        level = span.above(1400.0)
+        assert time.perf_counter() - started < 2.0
+        ordered = sorted(values)
+        assert (low, high) == (ordered[1445], ordered[3000 - 1446])
+        beyond = sum(1 for value in values if value <= 1400.0)
+        assert level == pytest.approx(2 * intervals.sign_cdf(beyond, 3000), rel=1e-12)
 
     def test_the_estimators(self) -> None:
         values = [1.0, 2.0, 3.0, 10.0]
@@ -366,6 +382,16 @@ class TestFailuresAndThinData:
         decision = found.findings[0].decisions[0]
         assert found.outcome == "inconclusive" and decision.decided_at is None
         assert decision.reason == "too few usable blocks (2; 3 needed)"
+
+    def test_a_run_of_no_trials_says_why_it_is_inconclusive(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: with no trials there were no findings, and the analysis was
+        inconclusive with an empty reason."""
+        tables = _compare(compare_data, vocabulary)
+        found = analyze(tables.design, [], [], [])
+        assert found.outcome == "inconclusive" and found.findings == ()
+        assert found.reason == "no trial was carried out, so nothing was measured"
 
     def test_no_readings_at_all_is_inconclusive_not_an_error(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
