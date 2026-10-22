@@ -2,6 +2,8 @@
 
 An MCP tool call in Claude Code returns its result into the conversation, and then it is gone. A search through an MCP server, a list of issues, a page of query results: none of it can be queried later. This walkthrough keeps every MCP result as a capture and turns the captures into a table, with no second fetch.
 
+This is the route for what an agent's session reaches and recon cannot: a server behind an OAuth sign-in in a browser, or a call whose arguments the agent chooses as it goes. When recon can reach the server itself (a stdio server, or a remote one that takes a token or a header) and the calls are known in advance, an `mcp` collector makes the same calls on every survey: [collect from an MCP server](collect-from-an-mcp-server.md).
+
 Three parts do the work:
 
 1. A Claude Code **`PostToolUse` hook** fires after each MCP tool call and pipes the call's payload to `recon capture`.

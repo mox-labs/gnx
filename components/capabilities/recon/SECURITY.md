@@ -1,21 +1,26 @@
 # Security — recon
 
-recon collects from heterogeneous sources — HTTP APIs, local CLIs, web pages, capture logs
-— and normalises the results to JSONL. Two things make it worth reading before you run
-someone else's config: **a recon config runs shell commands**, and recon handles source
-credentials.
+recon collects from heterogeneous sources — HTTP APIs, local CLIs, web pages, MCP servers,
+capture logs — and normalises the results to JSONL. Two things make it worth reading before
+you run someone else's config: **a recon config runs programs** (shell commands, and the MCP
+servers it starts), and recon handles source credentials.
 
 Audience: anyone running `recon survey` against a config they did not write.
 
-**Read the plan first.** `recon survey <mission> --dry-run` validates the config and lists
-every run it would make — the exact substituted shell commands, the URLs, and each run's
-declared effects (network, subprocess, filesystem) — without fetching, executing or writing
-anything. Reviewing a config means reviewing that plan.
+**Read the config first, then the plan.** `recon survey <mission> --dry-run` validates the
+config and lists every run it would make — the exact substituted shell commands, the URLs,
+the MCP calls and each run's declared effects (network, subprocess, filesystem) — without
+writing anything. It fetches and executes nothing either, with one exception it names in the
+plan's `preflight`: for an `mcp` run it starts the stdio server the config names (and
+connects to a remote one) to list its tools. A config with an `mcp` source therefore runs
+its `command` at the dry run (boundary 8): read that key before planning someone else's
+config. Reviewing a config means reviewing it and that plan.
 
 ## Blast radius
 
-A survey may execute arbitrary shell commands, make outbound HTTP requests carrying your
-credentials, and write files under the mission directory (`.recon/<mission>/`).
+A survey may execute arbitrary shell commands, start the MCP servers its config names, make
+outbound HTTP requests carrying your credentials, and write files under the mission directory
+(`.recon/<mission>/`). A dry run may start those MCP servers too.
 
 ## Trust boundaries
 
@@ -71,7 +76,8 @@ it before anything is sent.
 
 A collector type is not handed the process environment. Its `env` holds only the
 variables the mission declares for it: the `auth.env` names of the catalog sources its
-collectors run against. A plugin type therefore sees the secrets the config granted its
+collectors run against, and the variables those sources name through their kind's own
+settings (an `mcp` source's `env:NAME` references). A plugin type therefore sees the secrets the config granted its
 sources and no others, and reading any other name fails the table with a config error
 that says where to declare it, rather than returning nothing (R-5). This scopes what a
 collector type is *handed*; it is not a sandbox. A plugin is Python in recon's process and
@@ -161,6 +167,42 @@ request also carries a W3C `traceparent` header naming its span, and `tracestate
 baggage the caller's context holds, so the source's server can join recon's trace. It
 learns a trace id and a span id, nothing of the mission. With no SDK, no such header is
 sent.
+
+### 8. Config → an MCP server (`mcp` collector)
+
+An `mcp` source names its server, and each of its two shapes is a boundary of its own.
+
+**A stdio server is a program the config runs.** `command` and `args` are started as a
+child process with your user's rights, at the dry run as at the survey: the same trust as
+a `cli` collector's `run:` (boundary 1), and with `npx -y` or `uvx`, a package it downloads
+first. It is not given a shell, and not recon's environment: it gets the SDK's short list
+(`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) and the variables its `env:` gives,
+each written as is or as an `env:NAME` reference the mission declares. Its stderr goes to a
+temporary file; the end of it is quoted in a failed table's error, in `meta.yaml`. It is
+stopped when the survey (or the dry run) ends, however it ends.
+
+**A remote server receives its own credential only.** Its `token` (`env:NAME` or
+`file:PATH`, never the secret itself, which the plan refuses) is sent as `Authorization:
+Bearer`, or its `headers_helper` command's headers are sent (a command, so boundary 1's
+trust again). They go to the server's `url` and nowhere else: the MCP SDK's client follows
+no redirect itself, and its transport follows one only within the server's origin (scheme,
+host and port, or http to https on the same host), so a token never leaves its origin, as
+P1.2's rule (R-9) asks of an HTTP source (R-13). TLS is verified against the operating
+system's trust store. A server that signs in with OAuth through a browser is not a source:
+reach it through the hook route (boundary 5).
+
+**What a server returns may be private.** A tool reads what its server can reach (a
+repository, a mailbox, a drive), and its answer becomes the table, and with `preserve_raw`
+the capture: an archive of an `mcp` mission deserves the care its server's data does. In a
+capture, every credential value the source resolved (its token, its helper's headers, the
+variables given to a stdio server) is replaced by the redaction marker wherever it appears
+in the result; a credential the tool returns of its own is in the table as returned.
+
+**Telemetry.** Each call is a `recon.mcp.call` span with the method, the tool's name and
+the source, never its arguments or its result. FastMCP's own spans are not made for recon's
+calls: a failed one carries the tool's error text as its status. The MCP SDK's spans (a
+method name and a request id) nest under recon's when an SDK is installed; a JSON-RPC error
+the server sends can be their status message.
 
 ## Findings
 
@@ -318,9 +360,24 @@ as the HTML it is. Its transcript is not collected.
 Regression: `test_a_youtube_page_is_converted_from_its_bytes_and_nothing_more_is_fetched` in
 `recon/tests/test_transforms.py`.
 
+### R-13 — an MCP server's credential could follow a redirect, or its error leave by OTLP (prevented)
+
+FastMCP passes `follow_redirects=True` to a client factory, and httpx2 drops only
+`Authorization` across origins, so a `headers_helper` key would have followed a redirect to
+another host; and FastMCP sets a failed tool call's span status to the tool's error text.
+Prevented before release: the collector's client is the SDK's own, which follows no
+redirect itself (the SDK's transport follows one only within the origin), and FastMCP's
+spans are suppressed for recon's calls.
+
+Regression: `test_a_remotes_token_never_follows_a_redirect_off_its_origin`,
+`test_the_sdks_client_follows_no_redirect_itself` and
+`test_fastmcps_own_spans_which_carry_a_tools_error_text_are_not_made` in
+`recon/tests/test_mcp_collector.py`.
+
 ## Not covered
 
-- No sandboxing of collector commands. See boundary 1.
+- No sandboxing of collector commands or of the MCP servers a config starts. See
+  boundaries 1 and 8.
 - No egress allowlist. A source may point anywhere.
 - No TLS pinning; recon uses the platform trust store.
 - Declared collector effects are not enforced.
