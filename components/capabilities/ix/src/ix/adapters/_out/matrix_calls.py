@@ -54,6 +54,7 @@ from ix.adapters._out.matrix_agents import (
     TOOL_USAGE,
     Runtimes,
     Sessions,
+    built,
 )
 from ix.domain.errors import IxError
 from ix.domain.ports import StoodIn
@@ -112,8 +113,9 @@ class Call:
         canned = options.get("mock_response")
         if self.simulated and canned is not None:
             config[CANNED] = str(canned)
-        runtime = self.runtimes.build(MODEL_RUNTIME, self.options.runtime, config)
-        runtime.check(self.options.model)
+        with built():
+            runtime = self.runtimes.build(MODEL_RUNTIME, self.options.runtime, config)
+            runtime.check(self.options.model)
         request = matrix.ModelRequest(
             prompt=prompt, model=self.options.model, system=self.options.system_prompt
         )

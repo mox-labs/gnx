@@ -387,6 +387,29 @@ class TestWhoseFailure:
         assert (failed.value.reason, str(failed.value)) == ("refused", "it broke")
 
 
+class TestAValueErrorIsToldBySource:
+    async def test_one_from_the_session_is_not_a_runtime_that_could_not_be_built(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: every ``ValueError`` inside a session's rounds read "the runtime
+        could not be built", though a runtime's own check of its reply raises one too."""
+        runtime = Scripted(ValueError("the reply is not the shape the runtime promised"))
+        with pytest.raises(HarnessError) as failed:
+            await _ask(Runtimes(runtime), {"prompt": "Go."}, base=tmp_path)
+        assert failed.value.reason == "error"
+        assert str(failed.value) == "ValueError: the reply is not the shape the runtime promised"
+
+    async def test_one_from_building_the_runtime_still_says_so(self, tmp_path: Path) -> None:
+        class Unbuildable(Runtimes):
+            def build(self, point: str, name: str, config: Any, *, cwd: Any = None) -> Any:
+                raise ValueError("permission_mode 'sometimes' is not one")
+
+        with pytest.raises(HarnessError) as failed:
+            await _ask(Unbuildable(Scripted(_reply())), {"prompt": "Go."}, base=tmp_path)
+        assert failed.value.reason == "runtime"
+        assert "could not be built" in str(failed.value)
+
+
 class TestPreflight:
     def _unstartable(self, tmp_path: Path, scripted: Scripted | None = None, **options: Any) -> Any:
         adapter = AgentSessionSubject(

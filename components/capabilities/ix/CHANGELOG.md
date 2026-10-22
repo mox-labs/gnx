@@ -325,6 +325,10 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
 - **An address whose port is not one is refused at validate.** A `process` subject's `url`
   or `ready` with a port out of range raised out of the readiness check, so every trial
   became a harness `error`. The subject now reviews them (`option_invalid`).
+- **A failure inside a session is told by its source.** Every `ValueError` in a session's
+  rounds, or a model call, read "the runtime could not be built", including a runtime's
+  own check of its reply. Only building and binding the runtime is that (`runtime`); any
+  other error is the harness's `error`, named by its type.
 
 ## 0.5.0 — 2026-10-19
 
