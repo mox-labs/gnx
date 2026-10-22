@@ -222,12 +222,8 @@ class Runs:
                     location=record.location,
                     experiment=record.manifest.experiment,
                     status=record.status,
-                    gated=record.manifest.gated,
-                    mode="dry"
-                    if record.manifest.dry_run
-                    else "gated"
-                    if record.manifest.gated
-                    else "exploratory",
+                    gated=record.gated,
+                    mode="dry" if record.stood_in else "gated" if record.gated else "exploratory",
                     started_at=record.manifest.started_at,
                     planned=len(record.trials),
                     carried_out=len(record.interactions),

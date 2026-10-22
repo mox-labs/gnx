@@ -298,6 +298,19 @@ class RunRecord:
     #: Each table's kind and the file that holds it, for a reader with ``jq`` or SQL.
     tables: Mapping[str, str] = field(default_factory=dict)
 
+    @property
+    def stood_in(self) -> bool:
+        """A stand-in answered: the run was a dry run, or a stand-in (a mock runtime) answered
+        any of its trials. Such a run measured the harness, not the subject."""
+        return self.manifest.dry_run or any(i.simulated for i in self.interactions)
+
+    @property
+    def gated(self) -> bool:
+        """Held to its registration, and measuring the subject: a run a gate may read. The
+        manifest's ``gated`` is written before any trial, so a stand-in found answering
+        afterwards ungates it here."""
+        return self.manifest.gated and not self.stood_in
+
 
 class BindingsRow(Stored):
     """What the environment provided: the one row of ``ix.v1.bindings``."""

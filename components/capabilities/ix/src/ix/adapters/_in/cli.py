@@ -578,7 +578,13 @@ def _print_outcome(report: ix.Report) -> None:
     for error in report.errors:
         _field("Failed", error)
     if report.registered_at:
-        held = "held to it" if report.gated else "exploratory: not held to it"
+        held = (
+            "held to it"
+            if report.gated
+            else "a stand-in answered, so not held to it"
+            if _stood_in(report) and not report.exploratory
+            else "exploratory: not held to it"
+        )
         _field("Registration", f"registered {report.registered_at}; {held}")
     else:
         _field("Registration", "none (exploratory)")
@@ -850,11 +856,12 @@ file's (never below the genre's minimum); a run that gives a verdict refuses it 
 runs only with `--exploratory` or `--dry-run` and keeps its runs under the current
 directory. The exit code
 is the verdict: {_CODE["ok"]} holds (or no verdict to give), {_CODE["fails"]} fails,
-{_CODE["inconclusive"]} inconclusive. Ctrl-C stops the trial in flight, releases what was
-started and exits {_CODE["run_interrupted"]} with the partial report; a run the harness could
-not finish exits {_CODE["run_failed"]}. Either way the record is kept and `ix report` reads
-it. Without --json the exit code, what it means and the next step follow the report on
-stderr."""
+{_CODE["inconclusive"]} inconclusive; a registered run a stand-in answered (`runtime: mock`
+written in) gives none and exits {_CODE["simulated"]}, never {_CODE["ok"]}. Ctrl-C stops the
+trial in flight, releases what was started and exits {_CODE["run_interrupted"]} with the
+partial report; a run the harness could not finish exits {_CODE["run_failed"]}. Either way
+the record is kept and `ix report` reads it. Without --json the exit code, what it means and
+the next step follow the report on stderr."""
 
 _REPORT_HELP = f"""Print the report of a run, computed again from its record. Runs nothing.
 
@@ -862,8 +869,9 @@ RUN is a run's directory (as `ix run` and `ix runs` print it), or an experiment 
 directory, meaning its latest run. Works on a run in any state: finished, stopped, failed,
 killed or still running. Exits as `ix run` would have: {_CODE["ok"]} holds (or no verdict to
 give), {_CODE["fails"]} fails, {_CODE["inconclusive"]} inconclusive, {_CODE["run_interrupted"]}
-for a run that was stopped or killed and {_CODE["run_failed"]} for one the harness could not
-finish; and {_CODE["running"]} for a run that is still running."""
+for a run that was stopped or killed, {_CODE["run_failed"]} for one the harness could not
+finish and {_CODE["simulated"]} for a registered run a stand-in answered; and
+{_CODE["running"]} for a run that is still running."""
 
 
 @main.command(epilog=EXIT_CODES, help=_RUN_HELP)

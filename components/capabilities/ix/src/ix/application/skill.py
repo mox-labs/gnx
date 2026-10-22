@@ -601,8 +601,9 @@ def _errors() -> str:
             "document as `warnings` (`ix.v1.validation`, `ix.v1.plan`).",
             "- Some outcomes are not failures, yet exit non-zero: an invalid experiment from "
             "`ix validate`, deviations found, and a run that fails, is inconclusive, was not "
-            "held to a registration it moved away from, stopped, could not finish or is still "
-            "running. Each prints its own document on stdout.",
+            "held to a registration it moved away from, was answered by a stand-in where a "
+            "gate was asked for, stopped, could not finish or is still running. Each prints its "
+            "own document on stdout.",
             "- Tolerate an error kind, a problem kind or a document field you do not know: "
             "each set grows. Refuse a `schema` whose major is not `v1`.",
             "",
@@ -948,7 +949,9 @@ then the report (`ix.v1.report`) on stdout.
   with every agent session on the `mock` runtime (`ix --skill -r agents`); a subject with
   no stand-in (a `process`) is refused. A run in which a stand-in answered any trial,
   this way or with `runtime: mock` written in, measured the harness, not the subject: the
-  report says `Dry run on mock replies` and gives neither a verdict nor an indication.
+  report says `Dry run on mock replies` and gives neither a verdict nor an indication, and
+  the run is not `gated`. A registered run with `runtime: mock` written in exits
+  {EXIT_CODES["simulated"]} (`simulated`), never {EXIT_CODES["ok"]}.
   `ix runs` lists each run as `gated`, `exploratory` or `dry`.
 - **Failures have an owner.** A trial the *subject* failed (it died, it was not up in
   time) counts against the subject. A trial the *harness* failed (a tool broke, a timeout,

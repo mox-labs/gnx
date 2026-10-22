@@ -365,7 +365,8 @@ nothing under `--json`); the report goes to stdout.
   `--exploratory` runs it anyway; that run gives no verdict, its report shows what it found
   as an *indication*, and it exits 0.
 - **The exit code is the verdict**: 0 holds, 10 fails, 11 inconclusive. After the report,
-  stderr says the code, what it means and the next step; `exit` in `--json`.
+  stderr says the code, what it means and the next step; `exit` in `--json`. A run with no
+  verdict exits 0 only when none was asked for (`--exploratory`, `--dry-run`).
 - **The report says what the evidence shows**, beside the verdict and without changing it:
   `Shows: build30's latency p50 is higher than build20's by 29.6% [26.2%, 33.1%]; lower is
   better, so build30 is worse` (`shows`).
@@ -383,7 +384,9 @@ nothing under `--json`); the report goes to stdout.
   with every agent session on the `mock` runtime; a subject with no stand-in (a `process`)
   is refused. A run in which the `mock` runtime answered any trial measured the harness,
   not the subject: the report says `Dry run on mock replies: checks the harness, not the
-  agent`, with neither a verdict nor an indication, nor a probe screen.
+  agent`, with neither a verdict nor an indication, nor a probe screen, and the run is not
+  `gated`. A registered run in which a stand-in answered (`runtime: mock` written in) exits
+  16 (`simulated`), never 0: a gate on the exit code cannot pass on it.
 - **Stopping.** Ctrl-C (or SIGTERM) stops the trial in flight, kills the process groups the
   run started, and exits 12 with the partial report. A run the harness could not finish (an
   environment that did not come up, or went down between trials) exits 8. `ix report` of a
@@ -608,8 +611,9 @@ the message. `"complete": false`, in a validation or an error, means checking st
 the file's shape: fix those problems and check again. Warnings travel inside the document
 (`warnings` in `ix.v1.validation` and `ix.v1.plan`). `ix validate` on an invalid file,
 `ix deviations` that finds any, and `ix run` or `ix report` of a run that fails, is
-inconclusive, was not held to a registration it moved away from, was stopped, could not
-finish or is still running are not failures: each prints its own document on stdout and
+inconclusive, was not held to a registration it moved away from, was answered by a stand-in
+where a gate was asked for, was stopped, could not finish or is still running are not
+failures: each prints its own document on stdout and
 exits non-zero. The envelope and the shared exit codes are every gnx capability's; ix's own
 kinds take 10 and up. `error.kind` is one of `unknown`, `usage`, `config`, `conflict`,
 `not_found`, `unregistered` or `interrupted`. `details` holds the wrong value (`value`) and
@@ -618,7 +622,7 @@ over.
 
 | Exit | Kind | Meaning |
 |------|------|---------|
-| 0 | `ok` | done; for validate, the experiment is valid; for run and report, the verdict holds or there is no verdict to give |
+| 0 | `ok` | done; for validate, the experiment is valid; for run and report, the verdict holds, or there is no verdict to give and none was asked for (exploratory or dry) |
 | 1 | `unknown` | a failure ix did not classify |
 | 2 | `usage` | a bad flag or argument |
 | 3 | `config` | the experiment is invalid, or it cannot be carried out here as written (a kind with no adapter, a subject that cannot start, an unsupported analysis): read the message and the fix |
@@ -631,6 +635,7 @@ over.
 | 13 | `running` | the run has not finished yet; report it again when it has |
 | 14 | `deviations` | the experiment differs from its registration (ix deviations); a run of it gave no gate result |
 | 15 | `unregistered` | ix run needs a registration, or --exploratory |
+| 16 | `simulated` | a stand-in (a mock runtime) answered a run held to its registration: it measured the harness, not the subject, and gives no gate result |
 | 130 | `interrupted` | the command itself was interrupted (Ctrl-C) before it finished: run it again |
 
 `run_interrupted` (12) is a run that was stopped and reported: `ix run` stopped by Ctrl-C

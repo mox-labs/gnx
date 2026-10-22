@@ -53,6 +53,13 @@
   the two sides, which constant readings such as 0.7 and 0.3 miss in binary; Fieller's
   interval then had zero width and decided at a level of 0. It is now zero variance: every
   block reading the same number on both sides decides nothing, as documented.
+- **A registered run a stand-in answered exits 16 (`simulated`), never 0.** An experiment
+  registered with `runtime: mock` written in ran held to its registration, gave no verdict
+  and exited 0, the code for `holds`, so a gate on the exit code passed a run that measured
+  nothing under test. It now exits with ix's own kind `simulated` (16, from 10 up as
+  `exit-codes.json` asks), and the report, `ix runs` and `RunSummary` say it was not
+  `gated` (`RunRecord.gated` and `RunRecord.stood_in` decide both). `--exploratory` and
+  `--dry-run` still exit 0: no gate was asked for.
 
 ### Kept
 

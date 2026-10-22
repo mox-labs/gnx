@@ -109,8 +109,8 @@ class Report(Record):
     #: When the run was too small for even every trial going the right way to show the
     #: threshold of a pass rate: why it could not hold, and how many trials it would take.
     best_case: str = ""
-    #: False for an exploratory run, and for one of an experiment that had changed since its
-    #: registration.
+    #: False for an exploratory run, for one of an experiment that had changed since its
+    #: registration, and for one a stand-in answered (a dry run, or a mock runtime).
     gated: bool
     #: True when the run was asked to be exploratory.
     exploratory: bool = False
@@ -164,6 +164,9 @@ class Report(Record):
         if not self.gated and self.deviations and not self.exploratory:
             # Not a gate result, and not one anybody asked to be ungated: never exit 0.
             return "deviations"
+        if self.simulated != "none" and not self.exploratory:
+            # Run as a gate, but a stand-in answered: it measured the harness. Never exit 0.
+            return "simulated"
         return "ok" if self.verdict in (None, "holds") else self.verdict
 
     @property
@@ -217,7 +220,7 @@ def report(
     simulated: Literal["none", "some", "all"] = (
         "none" if not stand_ins else "all" if stand_ins == len(record.interactions) else "some"
     )
-    stood_in = simulated != "none" or manifest.dry_run
+    stood_in = record.stood_in
     counts = TrialCounts(
         planned=len(record.trials),
         carried_out=len(record.interactions),
@@ -269,7 +272,7 @@ def report(
         verdict=verdict,
         no_verdict=why,
         indication=None if verdict is not None or stood_in else analysis.outcome,
-        gated=manifest.gated,
+        gated=record.gated,
         exploratory=manifest.exploratory,
         dry_run=manifest.dry_run,
         stood_in=manifest.stood_in,

@@ -152,6 +152,35 @@ class TestTheHarnessIntegrityCheck:
         # about whether the probe discriminates (tests/test_summaries.py holds the screen).
         assert report.screen == () and record.screen == ()
 
+    def test_a_registered_run_a_stand_in_answered_is_no_gate_and_never_exits_0(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: an experiment registered with ``runtime: mock`` written in ran held to
+        its registration, gave no verdict (a stand-in answered) and exited 0, the code that
+        says "holds": a gate reading the exit code passed a run in which nothing under test
+        was measured. It is not gated, and it exits ``simulated``."""
+        lab = tmp_path / "harness-integrity"
+        shutil.copytree(EXAMPLE, lab)
+        root = Root(settings=_settings())
+        root.register(lab)
+        report = root.run(lab)
+        assert report.simulated == "all" and report.verdict is None
+        assert report.gated is False and report.exit_kind == "simulated"
+        assert report.exit_code == ix.EXIT_CODES["simulated"] == 16
+        assert root.report(lab).exit_code == 16
+        (listed,) = root.runs(lab).runs
+        assert (listed.mode, listed.gated) == ("dry", False)
+
+    def test_a_dry_run_asked_for_is_no_gate_and_exits_0(self, tmp_path: Path) -> None:
+        """A dry run is asked for, as an exploratory run is: it gives no gate result and
+        none was wanted."""
+        lab = tmp_path / "harness-integrity"
+        shutil.copytree(EXAMPLE, lab)
+        root = Root(settings=_settings())
+        root.register(lab)
+        report = root.run(lab, dry_run=True)
+        assert report.gated is False and report.exit_code == 0
+
 
 def _rows(report: ix.Report, table: str) -> list[dict[str, Any]]:
     """The rows of one of a run's tables, as written."""
