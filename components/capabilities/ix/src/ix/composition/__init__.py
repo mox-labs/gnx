@@ -521,11 +521,7 @@ class Root:
         """The experiment judged against the vocabulary, and by the adapters it would run
         on: what only an adapter can tell is wrong is a problem too."""
         examined = use_cases.examine(
-            experiment,
-            vocabulary,
-            base=base,
-            source=source,
-            folder=self._folder(experiment, base),
+            experiment, vocabulary, source=source, folder=self._folder(experiment, base)
         )
         absolute = str(Path(base).resolve())
         return use_cases.reviewed(examined, vocabulary, self._built, base=absolute)

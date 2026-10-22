@@ -282,28 +282,28 @@ def count_trials(experiment: Experiment, design: Design, probes: int) -> Trials:
 def estimate_duration(
     experiment: Experiment, design: Design, kinds: Kinds, probes: ProbeSet
 ) -> Duration:
-    """Probe time over the whole run, from the durations probe kinds declare."""
-    shared = [set(subject.options) for subject in experiment.subjects.values()]
-    common = set.intersection(*shared) if shared else set()
-    first = next(iter(experiment.subjects.values()))
-    passes = len(design.roles) + (1 if design.calibration == "aa" and design.control else 0)
+    """Probe time over the whole run, from the durations probe kinds declare. A probe's
+    options are filled as each trial fills them: with the cell's levels and the options of
+    the subject whose turn it is."""
     total = 0.0
     for probe in probes.probes:
         kind = kinds.get("probe", probe.kind)
         if kind is None or not kind.duration:
             return Duration(seconds=None, basis=f"probe kind {probe.kind} declares no duration")
         for cell in cells(experiment.factors):
-            bound: dict[str, Any] = {name: first.options[name] for name in common} | cell
-            for option in kind.duration:
-                if option not in probe.options:
-                    continue
-                length = seconds(fill(probe.options[option], bound))
-                if length is None:
-                    return Duration(
-                        seconds=None,
-                        basis=f"{probe.id}: {option} is not a duration once filled in",
-                    )
-                total += length * design.repeats * passes
+            for subject, _ in run.turns(design):
+                options = experiment.subjects[subject].options
+                bound: dict[str, Any] = {**fill(options, cell), **cell}
+                for option in kind.duration:
+                    if option not in probe.options:
+                        continue
+                    length = seconds(fill(probe.options[option], bound))
+                    if length is None:
+                        return Duration(
+                            seconds=None,
+                            basis=f"{probe.id}: {option} is not a duration once filled in",
+                        )
+                    total += length * design.repeats
     trials = count_trials(experiment, design, len(probes.probes)).total
     return Duration(
         seconds=total, basis=f"{trials} trials, probe time only; setup and teardown add to it"

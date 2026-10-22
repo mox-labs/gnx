@@ -37,7 +37,7 @@ from pydantic import Field, ValidationError, computed_field
 
 from ix.domain import schema
 from ix.domain.analysis import Analysis, Decision, Finding, Outcome, analyze
-from ix.domain.design import Design
+from ix.domain.design import Design, metric_text
 from ix.domain.errors import EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT, ConfigError
 from ix.domain.genre import VerdictForm
 from ix.domain.plan import best_case
@@ -323,16 +323,10 @@ def _span(low: float, high: float, unit: str) -> str:
     return f"[{_amount(low, unit)}, {_amount(high, unit)}]"
 
 
-def _measure(decision: Decision) -> str:
-    """``latency p50``; a statistic of ``value`` or ``rate`` adds nothing and is left out."""
-    plain = decision.statistic in ("value", "rate")
-    return decision.metric if plain else f"{decision.metric} {decision.statistic}"
-
-
 def _against_control(subject: str, control: str, decision: Decision) -> str:
     assert decision.interval is not None and decision.difference is not None
     low, high, unit = decision.interval.low, decision.interval.high, decision.unit
-    measure = _measure(decision)
+    measure = metric_text(decision)
     if low <= 0 <= high:
         return (
             f"{subject}'s {measure} differs from {control}'s by {decision.difference:+.3g}"
@@ -355,7 +349,7 @@ def _against_threshold(subject: str, design: Design, decision: Decision) -> str:
     assert decision.interval is not None and decision.difference is not None
     threshold = design.threshold
     low, high, unit = decision.interval.low, decision.interval.high, decision.unit
-    said = f"{subject}'s {_measure(decision)} is {_amount(decision.difference, unit)} " + (
+    said = f"{subject}'s {metric_text(decision)} is {_amount(decision.difference, unit)} " + (
         _span(low, high, unit)
     )
     if threshold is None:

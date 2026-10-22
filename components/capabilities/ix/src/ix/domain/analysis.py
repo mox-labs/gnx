@@ -93,6 +93,7 @@ Limits:
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -270,12 +271,6 @@ class Analysis(Record):
 # --- the run's data ----------------------------------------------------------------------
 
 
-def _median(values: Sequence[float]) -> float:
-    ordered = sorted(values)
-    middle = len(ordered) // 2
-    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
-
-
 def _mean(values: Sequence[float]) -> float:
     return math.fsum(values) / len(values)
 
@@ -283,7 +278,7 @@ def _mean(values: Sequence[float]) -> float:
 _COMBINE: dict[str, Callable[[Sequence[float]], float]] = {
     "mean": _mean,
     "rate": _mean,
-    "median": _median,
+    "median": statistics.median,
     "min": min,
     "max": max,
 }
@@ -559,7 +554,7 @@ def _gap(
             return _Estimated(n, problem="the control read 0 in a block, so there is no "
                               "relative difference there")  # fmt: skip
         relative = [(a - b) / abs(b) * 100 for a, b in zip(mine, base, strict=True)]
-        return _numbers(relative, "median", _median(relative))
+        return _numbers(relative, "median", statistics.median(relative))
 
     control_mean = _mean(base)
     if control_mean == 0:
@@ -1105,7 +1100,7 @@ def spread(
         else:
             values = list(mine.values())
         if len(values) >= 2:
-            found.append((intervals.spread(values), len(values)))
+            found.append((intervals.sd(values), len(values)))
     if not found:
         return None
     sd, n = max(found)

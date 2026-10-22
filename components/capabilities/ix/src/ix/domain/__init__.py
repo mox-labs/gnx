@@ -75,6 +75,7 @@ from ix.domain.run import (
     SubjectError,
     Target,
     Trial,
+    TrialError,
 )
 from ix.domain.summaries import ConfusionTable, LabelScore, ProbeScreen
 
@@ -152,5 +153,6 @@ __all__ = [
     "Traced",
     "Trial",
     "TrialCounts",
+    "TrialError",
     "Trials",
 ]

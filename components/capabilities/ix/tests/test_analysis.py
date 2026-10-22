@@ -8,6 +8,7 @@ their stated error rates by simulation.
 from __future__ import annotations
 
 import math
+import statistics
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -22,7 +23,7 @@ from ix.domain.genre import AnalysisRef
 from ix.domain.run import Failure, Interaction, Reading, Trial, schedule
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from ix.application.experiments import Vocabulary
     from ix.domain.design import Design
@@ -35,7 +36,7 @@ class Tables:
     """A design, its schedule, and readings written by a rule."""
 
     def __init__(self, data: dict[str, Any], vocabulary: Vocabulary) -> None:
-        examined = examine(data, vocabulary, base=".")
+        examined = examine(data, vocabulary)
         assert examined.problems == (), examined.problems
         assert examined.experiment and examined.design and examined.probes
         self.design: Design = examined.design
@@ -183,11 +184,26 @@ class TestTheNumbers:
         beyond = sum(1 for value in values if value <= 1400.0)
         assert level == pytest.approx(2 * intervals.sign_cdf(beyond, 3000), rel=1e-12)
 
-    def test_the_estimators(self) -> None:
-        values = [1.0, 2.0, 3.0, 10.0]
-        assert stats._COMBINE["mean"](values) == 4.0
-        assert stats._COMBINE["median"](values) == 2.5 and stats._median([3.0, 1.0, 2.0]) == 2.0
-        assert stats._COMBINE["min"](values) == 1.0 and stats._COMBINE["max"](values) == 10.0
+    @pytest.mark.parametrize(
+        ("estimator", "combine"),
+        [("mean", statistics.fmean), ("median", statistics.median), ("min", min), ("max", max)],
+    )
+    def test_each_estimator_combines_a_subjects_trials(
+        self,
+        compare_data: dict[str, Any],
+        vocabulary: Vocabulary,
+        estimator: str,
+        combine: Callable[[list[float]], float],
+    ) -> None:
+        """Characterized, where a min or a max may be estimated since nothing is decided."""
+        data = {**compare_data, "genre": "characterize", "factors": {"rate": ["80/s"]}}
+        del data["subjects"]["buffered"], data["comparison"], data["margin"]
+        data["primary"]["estimator"] = estimator
+        tables = Tables(data, vocabulary).measure({"streaming": 110.0}, wobble=10.0)
+        (estimate,) = tables.analyze().estimates
+        numbers = [r.statistics["p99"] for r in tables.readings]
+        assert estimate.estimator == estimator and len(set(numbers)) > 1
+        assert estimate.value == pytest.approx(combine(numbers))
 
 
 class TestCompare:

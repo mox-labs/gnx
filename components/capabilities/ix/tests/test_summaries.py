@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 def _design(data: dict[str, Any], vocabulary: Vocabulary) -> Design:
-    examined = examine(data, vocabulary, base=".")
+    examined = examine(data, vocabulary)
     assert examined.design is not None, examined.problems
     return examined.design
 

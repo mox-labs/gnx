@@ -26,7 +26,7 @@ Pairs = set[tuple[str, str]]
 
 
 def _problems(data: dict[str, Any], vocabulary: Vocabulary) -> tuple[Problem, ...]:
-    return examine(data, vocabulary, base=".").problems
+    return examine(data, vocabulary).problems
 
 
 def _found(data: dict[str, Any], vocabulary: Vocabulary) -> Pairs:
@@ -43,7 +43,7 @@ def test_the_baselines_are_valid(
     compare_data: dict[str, Any], evaluate_data: dict[str, Any], vocabulary: Vocabulary
 ) -> None:
     for data in (compare_data, evaluate_data):
-        examined = examine(data, vocabulary, base=".")
+        examined = examine(data, vocabulary)
         assert examined.problems == () and examined.warnings == ()
         assert examined.complete and examined.design is not None
         assert validate(examined).valid
@@ -53,7 +53,7 @@ def test_an_invalid_experiment_has_no_design(
     compare_data: dict[str, Any], vocabulary: Vocabulary
 ) -> None:
     del compare_data["margin"]
-    examined = examine(compare_data, vocabulary, base=".")
+    examined = examine(compare_data, vocabulary)
     assert examined.problems and examined.design is None
 
 
@@ -348,7 +348,7 @@ def _kind_duplicate(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
 
 def _subjects_differ_in(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     c["subjects"]["streaming"]["ready"] = "http://127.0.0.1:9090/healthz"
-    return {(p.path, p.kind) for p in examine(c, v, base=".").warnings}
+    return {(p.path, p.kind) for p in examine(c, v).warnings}
 
 
 def _genre_rejected(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
@@ -363,7 +363,7 @@ def _kind_unimplemented(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     """Asked of a vocabulary that says what can run: everything but the memory sensor."""
     c["guardrails"] = [{"metric": "memory_peak", "margin": "5%"}]
     runs = frozenset(v.kinds.kinds) - {"ix.v1.sensor.memory"}
-    examined = examine(c, replace(v, adapters=runs), base=".")
+    examined = examine(c, replace(v, adapters=runs))
     assert examined.problems == ()
     return {(p.path, p.kind) for p in examined.warnings}
 

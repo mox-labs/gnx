@@ -14,7 +14,7 @@ probes meet. None is ``metric_unprovided``; two are ``metric_ambiguous``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import Field
 
@@ -592,7 +592,18 @@ def missing_adapters(
 # --- the hypothesis ----------------------------------------------------------------------
 
 
-def metric_text(ref: MetricRef | Guardrail) -> str:
+class Measured(Protocol):
+    """What names a measure: a metric and the statistic of it (a primary, a guardrail, a
+    decision)."""
+
+    @property
+    def metric(self) -> str: ...
+
+    @property
+    def statistic(self) -> str | None: ...
+
+
+def metric_text(ref: Measured) -> str:
     """``ttfb p99``; a statistic of ``value`` (a boolean or a scalar) or ``rate`` (a count)
     adds nothing and is left out."""
     plain = ref.statistic in (None, "value", "rate")

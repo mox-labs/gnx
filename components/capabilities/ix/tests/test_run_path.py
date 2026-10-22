@@ -770,7 +770,7 @@ class TestWhoseFailureAtTheEdges:
         root = Root(registry=fake_registry())
         file = write_experiment(experiment())
         examined = ix.application.experiments.examine(
-            yaml.safe_load(file.read_text()), root.vocabulary(file.parent), base=str(file.parent)
+            yaml.safe_load(file.read_text()), root.vocabulary(file.parent)
         )
         prepared = running.prepare(
             examined, root.vocabulary(file.parent), None, run="r", base=str(file.parent),
@@ -855,9 +855,7 @@ def test_a_trial_cancelled_mid_flight_by_matrix_still_releases_its_subject(
     root = Root(registry=fake_registry())
     file = write_experiment(experiment())
     vocabulary = root.vocabulary(file.parent)
-    examined = ix.application.experiments.examine(
-        yaml.safe_load(file.read_text()), vocabulary, base=str(file.parent)
-    )
+    examined = ix.application.experiments.examine(yaml.safe_load(file.read_text()), vocabulary)
     prepared = running.prepare(
         examined, vocabulary, None, run="r", base=str(file.parent), now="", version="",
         exploratory=True,

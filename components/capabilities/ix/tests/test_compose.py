@@ -514,7 +514,7 @@ def _manifest() -> Any:
     from ix.application.experiments import examine
 
     vocabulary = Root(registry=fake_registry()).vocabulary()
-    examined = examine(experiment(), vocabulary, base=".")
+    examined = examine(experiment(), vocabulary)
     return running.prepare(
         examined, vocabulary, None, run="r-1", base=".", now="", version="", exploratory=True
     ).manifest

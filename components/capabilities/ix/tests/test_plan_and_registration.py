@@ -31,7 +31,7 @@ Write = Any  # the write_experiment fixture
 
 
 def _plan(data: dict[str, Any], vocabulary: Vocabulary) -> Plan:
-    return make_plan(examine(data, vocabulary, base="."), vocabulary, None)
+    return make_plan(examine(data, vocabulary), vocabulary, None)
 
 
 def _record(file: Path) -> Path:
@@ -184,6 +184,18 @@ class TestPlanCounts:
         compare_data["probes"][0]["duration"] = "{length}"
         made = _plan(compare_data, vocabulary)
         assert made.duration.seconds == (30 + 120) * 10 * 3
+
+    def test_duration_reads_each_subjects_own_options(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: the probe's options were filled with the first subject's for every
+        turn, so a length one subject's option sets was counted at the first one's."""
+        compare_data["subjects"]["buffered"]["startup_timeout"] = "30s"
+        compare_data["subjects"]["streaming"]["startup_timeout"] = "2m"
+        compare_data["probes"][0]["duration"] = "{startup_timeout}"
+        made = _plan(compare_data, vocabulary)
+        # buffered as the control and again as its A/A sample, streaming once: 10 repeats.
+        assert made.duration.seconds == (30 + 120 + 30) * 10
 
     def test_duration_is_not_invented(
         self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
@@ -533,10 +545,10 @@ class TestDeviations:
         """Regression: values were compared only on paths both records held, so a margin
         that became none (``margin.value`` against ``margin``) was no deviation, and only
         the digests said that the plan changed."""
-        registered = examine(compare_data, vocabulary, base=".").design
+        registered = examine(compare_data, vocabulary).design
         changed = {**compare_data, "comparison": "superiority"}
         del changed["margin"]
-        now = examine(changed, vocabulary, base=".").design
+        now = examine(changed, vocabulary).design
         assert registered is not None and now is not None
         named = {
             d.field: d
@@ -632,7 +644,7 @@ class TestDeviations:
                 kinds=vocabulary.kinds,
             )
 
-        examined = examine(compare_data, vocabulary, base=".")
+        examined = examine(compare_data, vocabulary)
         stored = register(examined, vocabulary, None, location="r", now="t", version="v")
         cases = {
             "design.order": under(order="sequential"),
@@ -649,9 +661,7 @@ class TestDeviations:
             "design.report": under(report=("question",)),
         }
         for field, moved in cases.items():
-            found = find_deviations(
-                examine(compare_data, moved, base="."), moved, stored.registration
-            )
+            found = find_deviations(examine(compare_data, moved), moved, stored.registration)
             assert field in [d.field for d in found.deviations], field
 
     def test_checking_an_unregistered_experiment_is_not_found(
@@ -943,7 +953,7 @@ class TestSensitivity:
         from ix.domain.plan import sensitivity
 
         made = _plan(compare_data, vocabulary)
-        examined = examine(compare_data, vocabulary, base=".")
+        examined = examine(compare_data, vocabulary)
         assert examined.design is not None
         spread = Spread(run="r1", metric="ttfb", statistic="p99", unit="%", sd=2.0, n=10)
         found = sensitivity(examined.design, made.sensitivity.blocks, spread)
