@@ -74,6 +74,9 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
 
 ### Fixed
 
+- **A subject with a mapping option was never preflighted.** Any `{` in an option's text
+  read as a placeholder, so a session with `runtime_options` or a `loop` had its runtime
+  neither built nor checked before the run. Only a `{placeholder}` defers the check now.
 - **A count's threshold decision at many units per trial.** Over thousands of units the
   score test's level is exactly 0, and the decision stopped there instead of also reading
   the t test at Korn and Graubard's effective sample size. A count could then hold `< 0.2`

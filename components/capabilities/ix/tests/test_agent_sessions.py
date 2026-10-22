@@ -422,6 +422,20 @@ class TestPreflight:
         )
         assert said is not None and "no tools" in said
 
+    def test_the_runtime_is_built_at_the_agent_runtime_point_with_its_options(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: a subject with any mapping option (``runtime_options``, ``loop``)
+        read as filled per cell, since the mapping's text holds a brace, so its runtime was
+        never built or checked before the run."""
+        runtimes = Runtimes(Scripted(_reply()))
+        adapter = AgentSessionSubject(Sessions(), runtimes, MatrixLauncher())
+        subject = _subject(runtime_options={"permission_mode": "plan"})
+        assert adapter.unstartable(subject, base=str(tmp_path)) is None
+        assert runtimes.built == [
+            ("agent-runtime", "claude-sdk", {"permission_mode": "plan"}, None)
+        ]
+
 
 def _around(
     tmp_path: Path, *sensors: tuple[str, dict[str, Any]], probes: tuple[ProbeConfig, ...] = ()

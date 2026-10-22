@@ -632,7 +632,7 @@ class AgentSessionSubject:
             first = error.errors()[0]
             where = ".".join(str(part) for part in first["loc"])
             return f"{where}: {first['msg']}"
-        if any("{" in str(value) for value in subject.options.values()):
+        if any(placeholders(value) for value in subject.options.values()):
             return None  # filled per cell: told when the trial starts
         named = [*options.fixtures, *options.skills, *filter(None, [options.definition])]
         named += [p if isinstance(p, str) else str(p.get("path", "")) for p in options.plugins]
