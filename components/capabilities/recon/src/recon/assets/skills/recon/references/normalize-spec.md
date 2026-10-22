@@ -76,6 +76,8 @@ Transforms are extensions: each is registered under the entry-point group `recon
 | `$first` | `list` | First element or `None` | Keep the first of a list-map |
 | `$markitdown` | Local file path string | Markdown text | Convert a PDF, DOCX, PPTX, XLSX, EPub, CSV, image or audio file a record names (markitdown) |
 
+A null or empty input gives an empty string (`$first`: `null`). A value of another type than the one a built-in takes (`$join` on a string, `$inverted_index` on a list, `$html2text` on an object) gives `null` for that record's field, as a path that does not resolve does: the rest of the record and the table are kept.
+
 ### $html2text
 
 Strips HTML tags, scripts, styles. Preserves paragraph breaks. Uses stdlib `html.parser`.
@@ -114,7 +116,7 @@ match: "data.submatches.*.match.text|$first"    # rg --json: the first matched t
 # ["TODO", "FIXME"] → "TODO"
 ```
 
-On a string, `$first` returns its first character: apply it only to a list.
+On anything but a list, `$first` gives `null`.
 
 ### $markitdown
 

@@ -64,6 +64,45 @@ class TestFirst:
         assert first(None) is None
 
 
+class TestABuiltInGivenTheWrongTypeGivesNull:
+    """Regression: a built-in given a value of a type it does not take raised (``'list'
+    object has no attribute 'items'``), and one record failed the whole table as
+    ``unknown``. A field of an unexpected type is a field the record lacks: null, as an
+    unresolved path is, and the rest of the record and the table are kept."""
+
+    @pytest.mark.parametrize(
+        ("transform", "value"),
+        [
+            (html2text, ["<p>a</p>"]),
+            (html2text, {"p": "a"}),
+            (html2text, 42),
+            (inverted_index, ["the", "cat"]),
+            (inverted_index, "the cat"),
+            (inverted_index, {"the": 0, "cat": [1]}),
+            (inverted_index, {"the": ["0"]}),
+            (join, 5),
+            (join, "abc"),
+            (join, {"a": 1}),
+            (first, "abc"),
+            (first, {"a": 1}),
+            (first, 5),
+        ],
+    )
+    def test_the_field_is_null(self, transform, value):
+        assert transform(value) is None
+
+    def test_one_record_of_the_wrong_type_does_not_fail_the_others(self):
+        spec = {"id": "id", "abstract": "abstract_inverted_index|$inverted_index"}
+        records = [
+            {"id": 1, "abstract_inverted_index": {"a": [0], "cat": [1]}},
+            {"id": 2, "abstract_inverted_index": ["a", "cat"]},
+        ]
+        assert [apply_normalize(r, spec) for r in records] == [
+            {"id": 1, "abstract": "a cat"},
+            {"id": 2, "abstract": None},
+        ]
+
+
 class TestResolvePath:
     def test_direct(self):
         assert resolve_path({"title": "Test"}, "title") == "Test"

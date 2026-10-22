@@ -14,7 +14,9 @@ not fail a table. A list-map gives ``None`` when any item lacks the rest of the 
 ``*`` per path; a second is a config error, reported by :func:`spec_problems` before a run.
 
 Transforms are extensions registered under the entry-point group ``recon.transforms`` and
-looked up by name without the ``$``; the pure built-ins live here.
+looked up by name without the ``$``; the pure built-ins live here. A built-in given a value
+of a type it does not take gives ``None``, as a path that does not resolve does: one record
+whose field has an unexpected type must not fail a table.
 """
 
 from __future__ import annotations
@@ -251,34 +253,49 @@ class _TextExtractor(HTMLParser):
             self.parts.append(data)
 
 
-def html2text(html: str | None) -> str:
-    """The text of an HTML fragment: tags, scripts and styles removed, one line per block."""
-    if not html:
+def html2text(html: object) -> str | None:
+    """The text of an HTML fragment: tags, scripts and styles removed, one line per block;
+    None for a value that is not text."""
+    if html is None or html == "":
         return ""
+    if not isinstance(html, str):
+        return None
     parser = _TextExtractor()
     parser.feed(html)
     lines = "".join(parser.parts).splitlines()
     return "\n".join(line.strip() for line in lines if line.strip())
 
 
-def inverted_index(index: dict[str, list[int]] | None) -> str:
-    """The text an OpenAlex ``abstract_inverted_index`` encodes (word -> positions)."""
-    if not index:
+def inverted_index(index: object) -> str | None:
+    """The text an OpenAlex ``abstract_inverted_index`` encodes (word -> positions); None for
+    a value that is not an object of lists of positions."""
+    if index is None or index == {}:
         return ""
+    if not isinstance(index, dict) or not all(_positions(p) for p in index.values()):
+        return None
     placed = sorted((position, word) for word, positions in index.items() for position in positions)
     return " ".join(word for _, word in placed)
 
 
-def join(items: list[object] | None, separator: str = ", ") -> str:
-    if not items:
+def _positions(value: object) -> bool:
+    return isinstance(value, list) and all(type(item) is int for item in value)
+
+
+def join(items: object, separator: str = ", ") -> str | None:
+    """The items as text, separated; None for a value that is not a list."""
+    if items is None or items == []:
         return ""
+    if not isinstance(items, list):
+        return None
     return separator.join(str(item) for item in items)
 
 
-def first(items: list[object] | None) -> object | None:
-    if not items:
+def first(items: object) -> object | None:
+    """The first item of a list; None for an empty list or a value that is not one."""
+    if not isinstance(items, list) or not items:
         return None
-    return items[0]
+    item: object = items[0]
+    return item
 
 
 #: The pure built-ins. ``$markitdown`` is built in too, but it reads a file, so it is an
