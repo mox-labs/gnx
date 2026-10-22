@@ -55,16 +55,17 @@ def _cli(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, Any, str]
 # --- plan -------------------------------------------------------------------------------
 
 
-def test_plan_says_the_order_effects_agents_and_agent_calls_and_runs_nothing(
+def test_plan_says_the_order_agents_and_agent_calls_and_runs_nothing(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Changed requirement: the plan states no spend (spend was removed); the agent-call
-    counts it held are the plan's own."""
+    """Changed requirement: the plan states no spend (spend was removed), and no effects
+    (Q6: removed); the agent-call counts the spend record held are the plan's own."""
     code, plan, _ = _cli(capsys, "plan", "--json")
     assert code == 0 and plan["schema"] == "matrix.v1.plan"
     assert plan["inputs"] == ["acme.v1.diff"] and plan["stages"] == [["review"]]
     (review,) = plan["components"]
-    assert (review["agent"], review["runtime"], review["effects"]) == ("reviewer", "offline", [])
+    assert (review["agent"], review["runtime"]) == ("reviewer", "offline")
+    assert "effects" not in review and "effects" not in plan
     assert review["requires"] == ["acme.v1.diff"]
     assert plan["agents"] == [
         {"name": "reviewer", "runtime": "offline", "runtime_type": "mock", "model": "m1"}
@@ -89,7 +90,43 @@ def test_the_plan_counts_an_agent_call_for_each_attempt_on_claude_sdk(
     assert code == 0
     assert (plan["agent_calls_min"], plan["agent_calls_max"]) == (1, 3)
     (runtime,) = plan["agent_runtimes"]
-    assert "model" in runtime["effects"] and runtime["stand_in"] is False
+    assert runtime["stand_in"] is False
+
+
+class _Tally:
+    requires = ("acme.v1.review",)
+    provides = ("acme.v1.tally",)
+
+    async def run(self, inputs: Any, ctx: Any) -> None:
+        return None
+
+
+@pytest.mark.parametrize(("needs", "bounded"), [((), True), (("agents",), False)])
+def test_the_call_counts_are_open_only_for_a_component_handed_the_runtimes(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    needs: tuple[str, ...],
+    bounded: bool,
+) -> None:
+    """Changed requirement (Q6: effects are removed). Whether a component that is neither an
+    agent step nor a model step may make a session is read from its needs, which the
+    registry checks, not from a label: one handed matrix's agents or model runtimes may, so
+    the plan leaves the most calls open; one handed neither cannot reach a runtime."""
+    from matrix.composition import container
+
+    def registry(*, discover: bool = True) -> matrix.Registry:
+        found = matrix.default_registry(discover=False)
+        found.register("component", "acme.v1.tally", lambda **_: _Tally(), needs=set(needs))
+        return found
+
+    monkeypatch.setattr(container, "default_registry", registry)
+    (project / "matrix.yaml").write_text(CONFIG + "    - {name: tally, type: acme.v1.tally}\n")
+    code, plan, _ = _cli(capsys, "plan", "--json")
+    assert code == 0, plan
+    assert plan["agent_calls_min"] == 1
+    assert plan["agent_calls_max"] == (1 if bounded else None)
+    assert plan["model_calls_max"] == (0 if bounded else None)
 
 
 def test_plan_reports_every_problem_at_once(
@@ -380,7 +417,7 @@ class Slow:
 
 def registry(*, discover=True):
     found = matrix.default_registry(discover=False)
-    found.register("component", "acme.v1.slow", Slow, effects=set())
+    found.register("component", "acme.v1.slow", Slow)
     return found
 
 container.default_registry = registry

@@ -347,7 +347,6 @@ def register(registry):
         "acme.v1.scorer",
         Scorer,  # called as Scorer(validated_config, **needs)
         config=ScorerConfig,  # a pydantic model the config is validated against
-        effects=set(),  # what it may touch; None means unknown
         summary="Scores a diff by length",
         stability="experimental",
     )
@@ -368,7 +367,7 @@ default JSONL under `.matrix/runs`) and its `limits` (deadlines, concurrency, re
 Plan it, then run it:
 
 ```bash
-matrix plan --json                                  # order of work, effects, agents, calls; runs nothing
+matrix plan --json                                  # order of work, agents, calls; runs nothing
 matrix run --input acme.v1.diff=diffs.jsonl --json  # one JSON row a line; - is standard input
 matrix runs                                         # every recorded run: id, status, start, where
 matrix run --from 20261019T101500Z-3f2a             # its inputs, reusing what completed unchanged
@@ -378,7 +377,9 @@ matrix run live.yaml --only --input acme.v1.diff=diffs.jsonl  # recorded in its 
 
 `plan` composes and wires and reports every problem at once, each with its key path and the
 file that set it, and how many agent sessions and model calls a run makes
-(`agent_calls_min`, `agent_calls_max`, `model_calls_min`, `model_calls_max`). matrix states no cost and keeps no spending ceiling: a run's cost is not
+(`agent_calls_min`, `agent_calls_max`, `model_calls_min`, `model_calls_max`; a maximum is
+null when a component other than an agent or a model step needs `agents` or
+`model_runtimes`, and so may make sessions of its own). matrix states no cost and keeps no spending ceiling: a run's cost is not
 something it can measure, so it does not pretend to. `run` prints the run id, where the record is, and its
 files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as
 sent, a model step's the prompt), `matrix.v1.session.jsonl`, `matrix.v1.ledger.jsonl` and
@@ -423,7 +424,7 @@ same way.
 ```bash
 matrix --skill [-r NAME]                      # the skill an agent reads, or one of its references
 matrix catalog [--point P] [--json]           # every registered extension, and any that failed
-matrix describe TYPE_URL [--json]             # config schema, needs, effects, origin
+matrix describe TYPE_URL [--json]             # config schema, needs, origin
 matrix config [CONFIG]... [--sources] [--json]  # the merged config and the files it came from
 matrix check [CONFIG]... [--json]           # compose runtimes and agents, wire the components; call nothing
 matrix agents [CONFIG]... [--json]          # the agents a config defines

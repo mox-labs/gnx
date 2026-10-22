@@ -131,14 +131,17 @@ def test_entries_describe_themselves_for_agents() -> None:
         "agent-runtime", "matrix.v1.agent-runtime.claude-sdk"
     )
     described = entry.describe()
-    assert described["effects"] == ["filesystem", "model", "network", "subprocess"]
     assert described["needs"] == ["cwd"]
     assert "permission_mode" in described["config"]["properties"]
 
 
-def test_unknown_effects_stay_unknown() -> None:
+def test_an_entry_declares_no_effects() -> None:
+    """Changed requirement (Q6): effects were labels nothing checked, and are removed. What
+    an entry is handed is its ``needs``; what it needs of the host its owner checks."""
     entry = Registry().register("component", "acme.v1.x", build).entry("component", "acme.v1.x")
-    assert entry.effects is None and entry.describe()["effects"] is None
+    assert "effects" not in entry.describe()
+    with pytest.raises(TypeError):
+        Registry().register("component", "acme.v1.y", build, effects=set())  # type: ignore[call-arg]
 
 
 def test_an_extension_at_a_point_declared_later_is_retried(

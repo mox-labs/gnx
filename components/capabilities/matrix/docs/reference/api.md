@@ -262,7 +262,6 @@ wire(
     *,
     inputs: Iterable[str] = (),
     schemas: Mapping[str, type[BaseModel]] | None = None,
-    effects: Mapping[str, frozenset[str] | None] | None = None,
     fingerprints: Mapping[str, str] | None = None,
 ) -> Wiring
 ```
@@ -271,7 +270,6 @@ wire(
   that each carry a `name` attribute. A name matches `^[A-Za-z0-9][A-Za-z0-9._-]*$`.
 - `inputs` are the kinds the caller will supply to every run.
 - `schemas` maps kinds to the models their rows must validate against.
-- `effects` maps names to what each component declares it may touch (`None` for unknown).
 - `fingerprints` maps names to a digest of what each component was built from; a later run
   reuses a component's rows only when its digest is the same (`Container.wire` sets them).
 
@@ -305,11 +303,9 @@ Frozen and reusable.
 | `providers` | `Mapping[str, str]` | kind to the name of its one provider |
 | `depends` | `Mapping[str, tuple[str, ...]]` | name to the components it waits for |
 | `schemas` | `Mapping[str, type[BaseModel]]` | kind to the model its rows validate against |
-| `effects` | `Mapping[str, frozenset[str] \| None]` | name to declared effects; `None` is unknown |
 | `kinds` | `tuple[str, ...]` | every kind a run has a table for: inputs, then provided |
 | `order()` | `-> tuple[str, ...]` | the components in one valid order of work; a view, not the schedule |
 | `fingerprints` | `Mapping[str, str]` | name to a digest of what the component was built from, when the caller knows it |
-| `declared_effects()` | `-> frozenset[str] \| None` | every declared effect; `None` if any component's are unknown |
 
 ---
 
@@ -853,11 +849,10 @@ declare their own with `add_point`, named under their own root (ix declares `ix.
 | `build` | `Callable` | called as `build(validated_config, **needs)`, or `build(**needs)` when `config` is `None`. For `payload-type`, the model itself |
 | `config` | `type[BaseModel] \| None` | the model its settings validate against |
 | `needs` | `frozenset[str]` | shared things composition must hand it: `agents`, `model_runtimes`, `model_runtime_entries` (each composed model runtime's registry entry, by name), `schemas` (kind to its registered model), `models`, `cwd`, keys of `compose(context=...)`, and for a component `name`, its name in the run |
-| `effects` | `frozenset[str] \| None` | what it may touch: `network`, `subprocess`, `filesystem`, `model`. `None` is unknown, not none |
 | `summary` | `str` | |
 | `stability` | `"stable" \| "beta" \| "experimental"` | default `beta` |
 | `origin` | `str` | the distribution that registered it; `(direct)` for a direct call |
-| `stand_in` | `bool` | whether it stands in for the real thing (the mock runtimes): its answers are canned, not a model's. Declared, never inferred from `effects`. Default `False` |
+| `stand_in` | `bool` | whether it stands in for the real thing (the mock runtimes): its answers are canned, not a model's. Declared, never inferred. Default `False` |
 | `drives` | `tuple[str, ...]` | the distributions it drives, by their installed names: `claude-sdk` drives `claude-agent-sdk`, the `hardline` model runtime `hardline`. What a record of the versions behind a run reads, rather than a table of runtime names. Default `()` |
 
 `entry.describe()` returns all of it as a JSON-ready dict, with `config` as a JSON schema.
@@ -873,7 +868,7 @@ called with the registry, and anything it raises, importing included, quarantine
 | Method | Signature | Behaviour |
 |--------|-----------|-----------|
 | `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point; with `port`, a Protocol whatever is registered there must keep |
-| `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta", stand_in=False, drives=()) -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
+| `register` | `(point, type_url, build, *, config=None, needs=(), summary="", stability="beta", stand_in=False, drives=()) -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
 | `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the first line of the model's docstring |
 | `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
 | `entries` | `(point=None) -> list[Entry]` | Sorted by point, then type URL |
@@ -914,25 +909,25 @@ returned unchanged.
 
 Matrix's own entries:
 
-| Point | Type URL | Needs | Effects |
-|-------|----------|-------|---------|
-| `agent-runtime` | `matrix.v1.agent-runtime.claude-sdk` | `cwd` | `model`, `network`, `subprocess`, `filesystem` |
-| `agent-runtime` | `matrix.v1.agent-runtime.mock` (stand-in) | | none |
-| `model-runtime` | `matrix.v1.model-runtime.hardline` | `models` | `model`, `network` |
-| `model-runtime` | `matrix.v1.model-runtime.mock` (stand-in) | | none |
-| `component` | `matrix.v1.agent-step` | `agents` | unknown |
-| `component` | `matrix.v1.model-step` | `model_runtimes`, `schemas`, `model_runtime_entries` | unknown |
-| `payload-type` | `matrix.v1.agent-response` | | |
-| `payload-type` | `matrix.v1.model-call` | | |
-| `payload-type` | `matrix.v1.task` | | |
-| `payload-type` | `matrix.v1.prompt` | | |
-| `payload-type` | `matrix.v1.ledger` | | |
-| `payload-type` | `matrix.v1.ref` | | |
-| `observer` | `matrix.v1.observer.console` | | none |
-| `observer` | `matrix.v1.observer.jsonl` | | `filesystem` |
-| `observer` | `matrix.v1.observer.otel` | | `network` |
-| `store` | `matrix.v1.store.jsonl` | | `filesystem` |
-| `store` | `matrix.v1.store.memory` | | none |
+| Point | Type URL | Needs |
+|-------|----------|-------|
+| `agent-runtime` | `matrix.v1.agent-runtime.claude-sdk` | `cwd` |
+| `agent-runtime` | `matrix.v1.agent-runtime.mock` (stand-in) | |
+| `model-runtime` | `matrix.v1.model-runtime.hardline` | `models` |
+| `model-runtime` | `matrix.v1.model-runtime.mock` (stand-in) | |
+| `component` | `matrix.v1.agent-step` | `agents` |
+| `component` | `matrix.v1.model-step` | `model_runtimes`, `schemas`, `model_runtime_entries` |
+| `payload-type` | `matrix.v1.agent-response` | |
+| `payload-type` | `matrix.v1.model-call` | |
+| `payload-type` | `matrix.v1.task` | |
+| `payload-type` | `matrix.v1.prompt` | |
+| `payload-type` | `matrix.v1.ledger` | |
+| `payload-type` | `matrix.v1.ref` | |
+| `observer` | `matrix.v1.observer.console` | |
+| `observer` | `matrix.v1.observer.jsonl` | |
+| `observer` | `matrix.v1.observer.otel` | |
+| `store` | `matrix.v1.store.jsonl` | |
+| `store` | `matrix.v1.store.memory` | |
 
 A third-party extension:
 
@@ -977,7 +972,6 @@ def register(registry):
         "acme.v1.scorer",
         Scorer,
         config=ScorerConfig,
-        effects=set(),
         summary="Scores a diff by length",
         stability="experimental",
     )
@@ -1396,7 +1390,7 @@ the config names one.
 | `model_runtime(name)` | `ModelRuntime`; `NotFoundError` listing configured model runtimes |
 | `bind(definition, runtime)` | a `BoundAgent` on the configured agent runtime named `runtime`, with the container's observers |
 | `needs()` | the shared needs: `agents`, `model_runtimes`, `model_runtime_entries`, `schemas`, `models`, `cwd`, plus `context` keys |
-| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas, each component's declared `effects` (an `agent-step` has its agent's runtime's, a `model-step` its model runtime's) and its `fingerprint`: a digest of its type, its config and each need it is handed (an `agent-step`'s own agent, a `model-step`'s own model runtime, every agent or model runtime for another component that needs them, `models`, and `cwd`, the process's when none was given), where an agent counts by its definition, its runtime's config and needs, and the runtime's optional `resolved`, and a model runtime by its config, needs and `resolved` (the `hardline` runtime's registry, from `matrix.models` or hardline's own tiers). A need a host adds through `context` is not in it, nor are `schemas` or the code. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
+| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas and each component's `fingerprint`: a digest of its type, its config and each need it is handed (an `agent-step`'s own agent, a `model-step`'s own model runtime, every agent or model runtime for another component that needs them, `models`, and `cwd`, the process's when none was given), where an agent counts by its definition, its runtime's config and needs, and the runtime's optional `resolved`, and a model runtime by its config, needs and `resolved` (the `hardline` runtime's registry, from `matrix.models` or hardline's own tiers). A need a host adds through `context` is not in it, nor are `schemas` or the code. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
 | `executor(observers=())` | an `Executor` with the container's observers (and these), given `cancel_on_signals`, and a `trace` that reads OpenTelemetry's current span for each session row |
 | `async run(inputs=None, *, run_id=None, reuse_from=None, observers=())` | runs the configured components in the configured store within the configured limits; `run_id` defaults to `<UTC time>-<4 hex digits>`. `reuse_from` takes that run's inputs and reuses what it can |
 | `reuse(run_id, wiring=None)` | the `Reuse` a run of `wiring` may take from the recorded run |
@@ -1413,13 +1407,13 @@ tier; `UsageError` when there are none).
 
 | Function | Record (`schema`) | Raises |
 |----------|-------------------|--------|
-| `catalog(point=None, *, registry=None)` | `Catalog` (`matrix.v1.catalog`): `entries` (point, type_url, summary, stability, origin, needs, effects, stand_in, drives, configurable) and `failures` (extension, origin, error) | `UsageError` when `point` is not a declared point, with the points in `details["allowed"]` |
+| `catalog(point=None, *, registry=None)` | `Catalog` (`matrix.v1.catalog`): `entries` (point, type_url, summary, stability, origin, needs, stand_in, drives, configurable) and `failures` (extension, origin, error) | `UsageError` when `point` is not a declared point, with the points in `details["allowed"]` |
 | `describe_extension(type_url, *, registry=None)` | `Extensions` (`matrix.v1.extension`): one entry per point it is registered at, with its `config` JSON schema | `NotFoundError` listing the registered type URLs |
 | `config_sources(tool="matrix", config=None, *, only=False)` | `ConfigSources` (`matrix.v1.config-sources`): `sources`, lowest priority first | `ConfigError` |
 | `config_view(tool="matrix", config=None, *, only=False)` | `ConfigView` (`matrix.v1.config`): `tool`, `sources`, the merged `matrix` section | `ConfigError` |
 | `check_config(tool="matrix", config=None, *, only=False)` | `CheckReport` (`matrix.v1.check`): `ok`, `agent_runtimes`, `model_runtimes`, `agents`, `observers` (a count), `components` in one valid order of work, `sources`, `warnings` | what `compose` and `wire` raise; `complete` is false when the config did not compose and has components to wire |
 | `list_agents(tool="matrix", config=None, *, only=False)` | `Agents` (`matrix.v1.agents`): each agent's name, runtime, runtime_type, model, tools, description; `warnings` | what `compose` raises |
-| `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `effects`, `agent`, `runtime`, `model` (a model step's), `attempts`), `agents`, `agent_runtimes` and `model_runtimes` in use (each `name`, `type`, `effects`, `stand_in`), `effects`, `agent_calls_min` and `model_calls_min` (one per agent step, one per model step) and `agent_calls_max` and `model_calls_max` (one per attempt; null when a component that is neither may call a model), `store` (`type`, `location` with `RUN_ID` for the id), `limits` (what differs from the defaults), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
+| `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `agent`, `runtime`, `model` (a model step's), `attempts`), `agents`, `agent_runtimes` and `model_runtimes` in use (each `name`, `type`, `stand_in`), `agent_calls_min` and `model_calls_min` (one per agent step, one per model step) and `agent_calls_max` and `model_calls_max` (one per attempt; null when a component that is neither needs `agents` or `model_runtimes`, and so may make sessions of its own), `store` (`type`, `location` with `RUN_ID` for the id), `limits` (what differs from the defaults), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
 | `list_runs(tool="matrix", config=None, *, only=False)` | `Runs` (`matrix.v1.runs`): `store` (its type URL) and `runs`, oldest first, each `run_id`, `status` (`interrupted` for one whose writer is gone), `started`, `ended`, `location`. Builds only the store: runtimes and agents are not built | `ConfigError` when the store cannot be built, `StoreError` when it cannot be read |
 
 `registry` defaults to `default_registry()`.
@@ -1522,7 +1516,7 @@ Data goes to stdout, diagnostics to stderr. Nothing prompts.
 
 | Command | Output (`--json` schema) |
 |---------|--------------------------|
-| `matrix catalog [--point P]` | every registered entry (point, type URL, stability, summary, origin, needs, effects, whether configurable) and every failed extension (`matrix.v1.catalog`); a `--point` that is not a declared point is a `usage` error listing the points |
+| `matrix catalog [--point P]` | every registered entry (point, type URL, stability, summary, origin, needs, whether configurable) and every failed extension (`matrix.v1.catalog`); a `--point` that is not a declared point is a `usage` error listing the points |
 | `matrix describe TYPE_URL` | the full entry, including its config JSON schema (`matrix.v1.extension`); `not_found` if nothing is registered under it |
 | `matrix config [CONFIG]... [--sources]` | the merged `matrix` section and the files consulted (`matrix.v1.config`); with `--sources`, only the files (`matrix.v1.config-sources`) |
 | `matrix check [CONFIG]...` | composes runtimes and agents, wires the configured components, and reports what composed (`matrix.v1.check`) |

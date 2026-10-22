@@ -195,7 +195,7 @@ never had. A caller that can use either, as a judge can, names which port it wan
 Each port has its own registry point (`agent-runtime`, `model-runtime`) and its own config
 section (`agent_runtimes`, `model_runtimes`). An agent binds only to an agent runtime. The
 mocks of both declare `stand_in`, so a caller can tell canned answers from a model's without
-reading anything into a runtime's name or effects.
+reading anything into a runtime's name.
 
 ### An agent as a component
 
@@ -236,8 +236,6 @@ what a caller, human or agent, needs to decide whether to use it:
 - `needs`: shared things composition hands it (`agents`, `model_runtimes`, `schemas`,
   `models`, `cwd`, and for a component its own `name`), declared rather than guessed from
   field names;
-- `effects`: what it may touch (`network`, `subprocess`, `filesystem`, `model`). `None` means
-  unknown, which is never read as "none";
 - `stand_in`: whether it stands in for the real thing, as the mock runtimes do;
 - `summary`, `stability` and `origin` (the package that registered it).
 
@@ -258,11 +256,10 @@ both. Install order never decides.
 `{name, type, config}` entries (the config's `matrix.components`, or the caller's own), builds
 each through the registry, and wires them.
 
-Because entries declare their effects, a wiring can say what it may touch. `Container.wire`
-records each component's effects (an `agent-step` has its agent's runtime's, a `model-step`
-its model runtime's), and
-`Wiring.declared_effects()` is their union, or `None` when any component's effects are
-unknown.
+Because entries declare their needs, a plan can bound the sessions a run makes: only an
+agent step, a model step, or a component handed `agents` or `model_runtimes` can reach a
+runtime. An entry declares no effects: a label nothing checked said less than its needs do,
+and what an extension needs of the host is its own to check before it runs.
 
 ## Observers, not built-in tracing
 

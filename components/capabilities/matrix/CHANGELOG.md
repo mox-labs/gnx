@@ -4,6 +4,17 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ## Unreleased
 
+### Removed (breaking): effects
+
+Effects were labels nothing checked (Q6). Removed: `Entry.effects` and the `effects` argument
+of `Registry.register` (passing it is a `TypeError`, so an extension that still does is
+quarantined); `Wiring.effects`, `Wiring.declared_effects()` and the `effects` argument of
+`wire`; and the `effects` of `matrix.v1.catalog`, `matrix.v1.extension` and `matrix.v1.plan`
+(each component's, each runtime's and the run's), with the `effects:` column of `matrix plan`.
+The plan's `agent_calls_max` and `model_calls_max` are null when a component that is neither
+an agent step nor a model step needs `agents` or `model_runtimes`; before, when one declared
+the `model` effect or none at all. Record section 15 has the reasons.
+
 ### Removed (breaking)
 
 - **Spend.** matrix cannot measure what a run costs: it sees only what each runtime reports,

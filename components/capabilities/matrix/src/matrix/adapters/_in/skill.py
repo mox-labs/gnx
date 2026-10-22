@@ -59,12 +59,12 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("matrix config --sources", "the files the config is read from, lowest priority first"),
     ("matrix config", "the merged config"),
     ("matrix check", "compose runtimes and agents, wire the components; calls nothing"),
-    ("matrix plan", "the order of work, effects, agents, calls; every problem at once"),
+    ("matrix plan", "the order of work, agents, calls; every problem at once"),
     ("matrix run --input KIND=PATH", "run it; prints the run id and its record's files"),
     ("matrix runs", "the recorded runs, oldest first: id, status, start, where"),
     ("matrix agents", "the agents the config defines, with their runtimes"),
     ("matrix catalog [--point P]", "every registered extension, and any that failed to load"),
-    ("matrix describe TYPE_URL", "one extension: its config schema, needs and effects"),
+    ("matrix describe TYPE_URL", "one extension: its config schema and needs"),
 )
 
 #: The config tiers, lowest priority first. The tests hold them to ``discover_sources``.
@@ -167,7 +167,6 @@ def register(registry):
         "acme.v1.scorer",
         Scorer,  # called as Scorer(validated_config, **needs)
         config=ScorerConfig,
-        effects=set(),  # what it may touch; leave it out and the effects are unknown
         summary="Scores each diff by its length",
     )
 """
@@ -330,8 +329,6 @@ package's own namespace (`acme` owns `acme.*`):
 - `build` is called as `build(validated_config, **needs)`, or `build(**needs)` without a
   `config` model. The needs it may declare, with `needs={{...}}`:
 {needs}
-- `effects` says what it may touch; leave it out and the run's effects are unknown, never
-  read as none.
 - A runtime registers at `agent-runtime` or `model-runtime` and is held to that point's port
   (`check` and async `run`; `check` and async `call`) when it is registered and when it is
   built: one that lacks a member is a `config` error naming it. A mock declares
@@ -547,14 +544,14 @@ def _reference_running() -> str:
 ## Plan, then run
 
 `matrix plan [CONFIG] --json` composes, wires and reports, calling nothing:
-`stages` (what starts together), each component's `requires`, `provides`, `after`,
-`effects` and `attempts`, the `agents`, `agent_runtimes` and `model_runtimes` in use (each
-runtime's `stand_in` says whether its answers are canned), `effects` for the whole run (null
-when any is unknown, never read as none), `agent_calls_min` and `agent_calls_max`, and
+`stages` (what starts together), each component's `requires`, `provides`, `after` and
+`attempts`, the `agents`, `agent_runtimes` and `model_runtimes` in use (each runtime's
+`stand_in` says whether its answers are canned), `agent_calls_min` and `agent_calls_max`, and
 `model_calls_min` and `model_calls_max` (one per step at least, one per attempt at most; the
-maxima are null when a component that is neither an agent step nor a model step may call a
-model), the `store` and where a run would be recorded, and the `limits`. A problem anywhere
-is the error envelope with every problem.
+maxima are null when a component that is neither an agent step nor a model step needs
+`agents` or `model_runtimes`, and so may make sessions of its own), the `store` and where a
+run would be recorded, and the `limits`. A problem anywhere is the error envelope with every
+problem.
 
 `matrix run [CONFIG] --input KIND=PATH ... --json` runs it. Each `--input` file holds one
 JSON value a line, the rows of that run-input kind (`-` is standard input, once). It prints

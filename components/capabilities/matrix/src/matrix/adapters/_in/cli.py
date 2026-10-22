@@ -2,7 +2,7 @@
 
     matrix --skill [-r NAME]                the skill an agent reads, or one of its references
     matrix catalog [--point P] [--json]     every registered extension, and any that failed
-    matrix describe TYPE_URL [--json]       one extension: config schema, needs, effects
+    matrix describe TYPE_URL [--json]       one extension: config schema, needs
     matrix config [CONFIG]... [--sources]   the merged config a tool would see, and its files
     matrix check [CONFIG]... [--json]       compose runtimes and agents, wire the components
     matrix agents [CONFIG]... [--json]      the agents a config defines, with their runtimes
@@ -124,7 +124,7 @@ def catalog(point: str | None, as_json: bool) -> None:
 @click.argument("type_url")
 @_json_option
 def describe(type_url: str, as_json: bool) -> None:
-    """Show one extension's config schema, needs and effects."""
+    """Show one extension's config schema and needs."""
     found = matrix.describe_extension(type_url)
     text = "\n\n".join(json.dumps(e.document(), indent=2) for e in found.entries)
     _emit(found.document(), as_json, text)
@@ -182,22 +182,20 @@ def agents(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> Non
 @_only_option
 @_json_option
 def plan(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> None:
-    """Say what a run would do: the order of work, each component's effects, the agents and
-    runtimes in use, how many agent and model calls it makes, every problem at once. Runs
-    nothing."""
+    """Say what a run would do: the order of work, the agents and runtimes in use, how many
+    agent and model calls it makes, every problem at once. Runs nothing."""
     found = matrix.plan_config(tool, _locations(config), only=only)
     lines = [f"inputs: {', '.join(found.inputs) or '(none)'}"]
     for number, stage in enumerate(found.stages, start=1):
         lines.append(f"stage {number}: {', '.join(stage)}")
     for c in found.components:
-        effects = "unknown" if c.effects is None else ", ".join(c.effects) or "none"
         if c.agent:
             on = f" (agent {c.agent} on {c.runtime})"
         elif c.runtime:
             on = f" (model {c.model or 'default'} on {c.runtime})"
         else:
             on = ""
-        lines.append(f"  {c.name:<20} {c.type}{on}; effects: {effects}")
+        lines.append(f"  {c.name:<20} {c.type}{on}")
     for what, low, high in (
         ("agent", found.agent_calls_min, found.agent_calls_max),
         ("model", found.model_calls_min, found.model_calls_max),
