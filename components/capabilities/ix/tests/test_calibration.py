@@ -299,8 +299,11 @@ def test_a_stable_environment_rarely_fails_the_check() -> None:
 
 
 @pytest.mark.parametrize("trials", [10, 30, 60])
-def test_a_pass_rate_on_its_threshold_holds_no_more_often_than_stated(trials: int) -> None:
-    """Exact, not simulated: Wilson's one-sided error at the boundary, at 0.8 and 0.9."""
+def test_a_pass_rate_on_its_threshold_holds_at_most_4_percent_of_the_time(trials: int) -> None:
+    """Exact, not simulated: Wilson's one-sided error at the boundary, at 0.8 and 0.9. The
+    bound is 4%, not the stated 2.5%: Wilson's error oscillates with the number of trials,
+    up to 3.9% between 5 and 200, the record's named weakness. Changed name: it said "no
+    more often than stated" while allowing 1.5 points more."""
     for rate in (0.8, 0.9):
         assert wilson_false_holds(trials, rate) <= NOMINAL + 0.015
 
