@@ -182,7 +182,8 @@ read as a fact like its tokens; nothing limits a run by it.
 Work in this order:
 
 1. `ix validate` and `ix plan`. Validate also refuses a session its sensors could not see
-   into (`unobservable`): a skill with no `Skill` tool among its `tools`, a tool-reading
+   into (`unobservable`): a skill whose `tools` leave out the tool that fires one (the
+   runtime names it: claude-sdk's `Skill`), a tool-reading
    sensor on a `model-call` subject, files to collect that no tool can write. `Runnable` says
    whether the runtime can start here (`claude-sdk` needs `ix[claude]`, the Claude Code CLI
    and its credentials).
@@ -266,7 +267,7 @@ A declaration is not an adapter. ix can **run** these:
 | probe | `prompt` | puts the prompt to the session or the call and keeps the reply; for a session also every tool call, each round's transcript and the files named in `collect` |
 | sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests and dropped arrivals, of those sent and dropped), from what the load probe recorded |
 | sensor | `memory` | `memory_peak`: the highest resident memory of the subject's process group, sampled with `ps` every `interval` while the probe runs |
-| sensor | `activation` | `activated_correctly`: the expected skill fired (a `Skill` tool call naming it whole: `review` is fired by `review` or `plugin:review`, never by `code-review-lite`), or nothing fired for a decoy |
+| sensor | `activation` | `activated_correctly`: the expected skill fired (a call of the tool the session's runtime says fires a skill, claude-sdk's `Skill`, or of the sensor's `tool`, naming it whole: `review` is fired by `review` or `plugin:review`, never by `code-review-lite`), or nothing fired for a decoy |
 | sensor | `tool-usage` | `tool_used_correctly`, `tool_usage_score`: the agent used a tool with the expected command (the whole word, ignoring case: `dig` is not `digest`) and arguments, called by name or run through `Bash` |
 | sensor | `function-test` | `tests_passed`, `tests_pass_share`, `tests_score`: the truth's test cases run against the code in the reply, or a file the agent wrote, in a child process |
 | sensor | `outcome` | `outcome_score`, `outcome_passed`: the experiment's own grader functions, run in a child process; without one, the share of the truth's `expected_facts` the reply holds |

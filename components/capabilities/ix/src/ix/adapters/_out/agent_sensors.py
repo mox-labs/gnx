@@ -61,11 +61,13 @@ class _Reads:
 
 
 class ActivationSensor(_Reads):
-    """Whether the expected skill fired: a call of the ``Skill`` tool (option ``tool``) whose
-    ``skill`` names it. ``must_trigger`` passes when it fired, ``should_not_trigger`` when no
-    skill fired at all, ``acceptable`` always. Names are compared whole, never as parts:
-    ``expected_skill: review`` is fired by ``review`` or ``plugin:review``, and
-    ``expected_skill: plugin:review`` only by ``plugin:review``.
+    """Whether the expected skill fired: a call whose ``skill`` names it, of the tool through
+    which the session's agent runtime says a skill fires (the response's ``skill_tool``:
+    claude-sdk's ``Skill``), or of the tool the option ``tool`` names. A session whose runtime
+    names no such tool, and no option naming one, fired no skill. ``must_trigger`` passes when
+    it fired, ``should_not_trigger`` when no skill fired at all, ``acceptable`` always. Names
+    are compared whole, never as parts: ``expected_skill: review`` is fired by ``review`` or
+    ``plugin:review``, and ``expected_skill: plugin:review`` only by ``plugin:review``.
 
     Its detail is what a confusion table needs: ``expected`` (the skill, or ``none`` for a
     decoy) and ``fired`` (the skill that fired, written as the expected name is: without its
@@ -76,14 +78,15 @@ class ActivationSensor(_Reads):
     async def sense(
         self, interaction: Interaction, *, truth: Mapping[str, Any], options: Mapping[str, Any]
     ) -> Sensed:
-        tool = str(options.get("tool") or "Skill")
+        response = _response(interaction)
+        tool = options.get("tool") or response.get("skill_tool")
         expectation = _expectation(truth)
         expected = truth.get("expected_skill")
         expected = str(expected) if expected else None
         skills = [
             str((call.get("input") or {}).get("skill", ""))
-            for call in _response(interaction).get("tool_calls", [])
-            if call.get("name") == tool
+            for call in response.get("tool_calls", [])
+            if tool is not None and call.get("name") == tool
         ]
         qualified = expected is not None and ":" in expected
 

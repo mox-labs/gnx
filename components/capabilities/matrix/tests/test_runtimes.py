@@ -275,6 +275,7 @@ async def test_on_the_run_path_a_rate_limit_keeps_its_hint_and_anything_else_fai
 
 def test_an_agent_runtime_declares_what_its_sessions_do_as_data() -> None:
     """W2.9: whether a session loads skills from settings or from its working directory,
+    which tool fires a skill and where in its working directory its skills must be placed,
     whether its tools can write files, and the config that keeps it from reading the machine
     it runs on, are the runtime's to declare (its config's ``capabilities()``, asked through
     ``Entry.capabilities``), so a caller asks the runtime instead of reading option names it
@@ -288,6 +289,9 @@ def test_an_agent_runtime_declares_what_its_sessions_do_as_data() -> None:
     # Unset, the CLI's own default decides, which the runtime does not claim to know.
     assert (unset.settings_skills, unset.project_skills, unset.writes_files) == (None,) * 3
     assert unset.hermetic == {"setting_sources": []}
+    # Claude Code's answers, whatever the config: a skill fires through its Skill tool, and a
+    # session finds the skills it is given in its working directory's .claude/skills.
+    assert (unset.skill_tool, unset.skills_dir) == ("Skill", ".claude/skills")
     assert unset.set_by == {
         "settings_skills": "setting_sources",
         "project_skills": "setting_sources",
@@ -305,8 +309,9 @@ def test_an_agent_runtime_declares_what_its_sessions_do_as_data() -> None:
     # A config the runtime refuses has no answers: building it says why.
     assert claude.capabilities({"permission_mode": "sometimes"}) is None
     pydantic_ai = registry.entry("agent-runtime", "matrix.v1.agent-runtime.pydantic-ai")
+    # pydantic-ai loads no skills: no tool fires one, and nowhere is one placed.
     assert pydantic_ai.capabilities({}) == AgentCapabilities(
-        settings_skills=False, project_skills=False
+        settings_skills=False, project_skills=False, skill_tool=None, skills_dir=None
     )
     # The stand-in declares nothing: a dry run is reviewed as the session it stands in for.
     assert registry.entry("agent-runtime", "matrix.v1.agent-runtime.mock").capabilities({}) is None

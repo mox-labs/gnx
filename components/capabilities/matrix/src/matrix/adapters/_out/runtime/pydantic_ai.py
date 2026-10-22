@@ -118,8 +118,9 @@ class PydanticAiRuntimeConfig(BaseModel):
 
     def capabilities(self) -> AgentCapabilities:
         """A session loads no skill, from settings or its working directory: pydantic-ai has
-        none. It reads nothing of the machine beyond its config, so nothing keeps it out.
-        Whether its tools write files is the functions' own to say."""
+        none, so no tool fires one and nowhere is one placed. It reads nothing of the machine
+        beyond its config, so nothing keeps it out. Whether its tools write files is the
+        functions' own to say."""
         return AgentCapabilities(settings_skills=False, project_skills=False)
 
 

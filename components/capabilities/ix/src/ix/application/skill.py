@@ -1063,8 +1063,9 @@ probes and a metric. What makes it one is the kinds.
   its type URL. Left out, validate reports `option_missing`. The other options:
   `definition` (a Claude Code agent file: body is the system prompt), `model`,
   `system_prompt`, `tools` (`[]`: none), `max_turns`, `plugins` (folders, `*` allowed,
-  handed to the runtime as its `plugins`), `skills` (folders copied into the session's
-  `.claude/skills`, read as its `project` settings), `fixtures` (files and folders copied
+  handed to the runtime as its `plugins`), `skills` (folders copied to where the runtime
+  says a session finds its skills: claude-sdk's `.claude/skills`, read as its `project`
+  settings), `fixtures` (files and folders copied
   into the working directory first), `setup` (a command run there after them:
   `[python3, seed.py]`) and `runtime_options`: the runtime's own config, passed through as
   written. For `claude-sdk` that is `permission_mode`, `setting_sources` (`[]` keeps this
@@ -1116,7 +1117,8 @@ probes and a metric. What makes it one is the kinds.
   `judged_eval_passed` and `judged_eval_score` (`evaluator`, below).
 - **Validate checks that the sensors can see.** A setting that makes what a sensor reads
   impossible is `unobservable`, refused before any trial, whatever the runtime is called:
-  a skill with no `Skill` tool among `tools`, `skills` on a runtime that, as configured,
+  a skill whose `tools` leave out the tool the runtime says fires one (claude-sdk's
+  `Skill`), `skills` on a runtime that names no place for them or, as configured,
   loads none from the working directory (claude-sdk with `setting_sources` that leave
   `project` out), a `tool-usage` tool the session may not call, a session with no skill,
   plugin or setting to fire, files to `collect` with no tool to write them or on a runtime
@@ -1145,11 +1147,12 @@ A skill is a folder holding `SKILL.md`, beside the experiment:
 `SKILL.md` opens with frontmatter that has both keys: `name` (lowercase letters, digits
 and hyphens, the folder's name) and `description` (what the skill does and when to use
 it: the agent reads only this to decide whether to fire it). `skills:` copies each folder
-into the session's `.claude/skills`, which a session reads as its `project` settings:
+to where the runtime says a session finds its skills; for claude-sdk, the session's
+`.claude/skills`, which it reads as its `project` settings:
 `setting_sources: [project]` reads them and nothing else of this machine, since the
 working directory is the trial's own (`[]` would read none, and validate refuses it). A
-skill fires through the `Skill` tool, so `tools`, when you list them, must include
-`Skill`. `expected_skill` is the skill's `name`. Skills in a plugin come
+skill fires through the tool the runtime names, claude-sdk's `Skill`, so `tools`, when you
+list them, must include it. `expected_skill` is the skill's `name`. Skills in a plugin come
 with `plugins:` instead; `expected_skill: review` matches the plugin's `acme:review`, and
 `expected_skill: acme:review` names that plugin's skill only. A skill installed on this
 machine is read only when its settings source is listed (`setting_sources: [user]`), and

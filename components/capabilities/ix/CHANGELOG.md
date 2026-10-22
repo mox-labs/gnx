@@ -98,7 +98,13 @@ subjects need several services. Record section 22 has the reasons.
   directory, whether its tools can write, and what config keeps the machine out. claude-sdk
   answers as before; the `pydantic-ai` runtime says it loads no skills, so skills given to
   one of its sessions are `unobservable`. A problem names the option the runtime says
-  decides it.
+  decides it. ix also knew Claude Code's `Skill` tool and `.claude/skills`, for every runtime:
+  a session's skills now go where its runtime says (`skills_dir`), the `activation` sensor
+  reads calls of the tool the runtime says fires a skill (`skill_tool`, kept in the trial's
+  `response`; the sensor's `tool` option still overrides it), and validate holds `tools` to
+  that tool. Skills given to a session on a runtime that declares its sessions but names no
+  place for them are `unobservable`. A runtime that declares nothing has no skills placed and
+  none read as fired.
 
 - **A model call ix makes is a `matrix.model` span** (W7.12). A `model-call` trial and a judge
   on a model runtime recorded their session rows beside matrix's event path, so neither was a

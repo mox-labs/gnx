@@ -82,7 +82,8 @@ directory outside the experiment, removed when the trial ends. Its options:
 - `plugins`: plugin folders, relative to the experiment (a `*` matches several), handed to
   the runtime as its `plugins` with every path absolute. A runtime whose config takes none
   refuses them (`option_inapplicable`).
-- `skills`: skill folders, each copied into the session's `.claude/skills`.
+- `skills`: skill folders, each copied to where the runtime says a session finds its skills
+  (claude-sdk: the session's `.claude/skills`).
 - `fixtures`: files and folders copied into the working directory before the session
   starts; `setup`: a command run there after them, such as `[python3, seed.py]`.
 - `loop`: more rounds after the first. `{strategy: self-review, rounds: 2}` asks again with
@@ -193,7 +194,8 @@ not 40: 60 sessions, each a call to a paid model on `claude-sdk`. A plan that ca
 why, with the fix: a runtime that cannot start, a file the subject names that is not there.
 
 `ix validate` also refuses a session its sensors could not see into (`unobservable`): a
-skill with no `Skill` tool among `tools`, skills a session would never load (claude-sdk with
+skill whose `tools` leave out the tool the runtime says fires one (claude-sdk's `Skill`),
+skills a session would never load or that its runtime names no place for (claude-sdk with
 `setting_sources` that leave `project` out), files to `collect` that no tool may write. Whether
 a session loads its skills or can write is the runtime's to declare, as its options make it,
 so ix asks it and reads no option by name: the same review holds whatever the agent runtime
@@ -392,10 +394,12 @@ repeats: 20
 `SKILL.md` needs both frontmatter keys: `name` (lowercase letters, digits and hyphens, the
 folder's name, and the `expected_skill` the probes name) and `description` (what the skill
 does and when to use it: the agent decides whether to fire it from this alone). Each folder
-in `skills:` is copied into the session's `.claude/skills`, which a session reads as its
+in `skills:` is copied to where claude-sdk says a session finds its skills, the session's
+`.claude/skills`, which it reads as its
 `project` settings. `setting_sources: [project]` reads those and nothing else of this
 machine: the working directory is the trial's own. `ix validate` refuses `skills` with
-`setting_sources` that leave `project` out. A skill fires through the `Skill` tool: when
+`setting_sources` that leave `project` out. A claude-sdk session fires a skill through the
+`Skill` tool (the runtime says so; ix knows no tool of its own): when
 you list `tools`, list `Skill`, or `ix validate` refuses the experiment, since no run of it
 could see the skill fire.
 

@@ -3,7 +3,9 @@
 
 **A trial is one fresh session in a working directory of its own.** Reaching an
 ``agent-session`` subject makes a new temporary directory outside the experiment, copies the
-subject's ``fixtures`` and ``skills`` into it, runs its ``setup`` command there, and opens a
+subject's ``fixtures`` into it and its ``skills`` to where its runtime says a session finds
+them (``skills_dir``: claude-sdk's ``.claude/skills``), runs its ``setup`` command there, and
+opens a
 :class:`Session`: an agent definition and the runtime that will play it, nothing started yet.
 The target carries the session's handle (``respondent``) and its directory (``workdir``),
 never the session itself; the ``prompt`` probe looks it up by its handle in the
@@ -35,10 +37,12 @@ agent wrote is there for the next; tokens, turns and cost are added up over the 
 **What validation learns from it.** As a :class:`~ix.domain.ports.Review` the subject
 tells ``validate`` what only it knows: a runtime option the runtime does not declare,
 plugins for a runtime that mounts none, and a session that leaves its sensors nothing to
-observe (a skill that cannot fire because the activation sensor's tool is not among its
-``tools``, files to collect that no tool can write). Whether a session loads its skills or
-can write files is the runtime's to say, as its configured options make it
-(:class:`matrix.AgentCapabilities`): ix asks, and reads none of its options by name. As a
+observe (a skill that cannot fire because the tool that fires one is not among its
+``tools``, files to collect that no tool can write). Whether a session loads its skills, where
+they go, which tool fires one, and whether it can write files are the runtime's to say, as its
+configured options make it (:class:`matrix.AgentCapabilities`): ix asks, and reads none of its
+options by name and knows no runtime's tool or directory. A runtime that names no place for
+skills is given none, and one that names no skill tool has none read as fired. As a
 :class:`~ix.domain.ports.StandIn` it puts the session on ``mock`` for a dry run, setting the
 runtime's own options aside.
 
@@ -120,9 +124,6 @@ RUNTIME_CONFIG = ("runtime_options", PLUGINS)
 #: The facet a subject offers its session or call under: the handle a ``prompt`` probe
 #: looks it up by.
 RESPONDENT = "respondent"
-
-#: The tool through which a Claude Code session fires a skill.
-SKILL_TOOL = "Skill"
 
 #: The sensors whose readings rest on a tool call, by kind.
 ACTIVATION = "ix.v1.sensor.activation"
@@ -316,6 +317,8 @@ class Session:
     simulated: bool
     runtimes: Runtimes
     launcher: Launcher
+    #: What the runtime declares its sessions do, as configured; None when it declares nothing.
+    does: matrix.AgentCapabilities | None = None
 
     async def _round(self, task: str, canned: str | None) -> matrix.AgentResponse:
         config = _runtime_config(self.options, self.base, canned=canned if self.simulated else None)
@@ -379,9 +382,10 @@ class Session:
         self, prompt: str, options: Mapping[str, Any]
     ) -> Mapping[str, Mapping[str, Any]]:
         """``response`` (the prompt, the final text, every tool call, the transcript of
-        every round, how it stopped, the files collected) and ``usage`` (tokens, turns, tool
-        calls, duration and cost added over the rounds, the model and family that answered,
-        and whether a stand-in did)."""
+        every round, how it stopped, the files collected, and the tool through which the
+        runtime says a skill fires) and ``usage`` (tokens, turns, tool calls, duration and cost
+        added over the rounds, the model and family that answered, and whether a stand-in
+        did)."""
         canned = options.get("mock_response")
         rounds = await self.ask(
             prompt,
@@ -397,6 +401,7 @@ class Session:
             "tool_calls": calls,
             "transcript": _trace(rounds),
             "files": _collected(self.workdir, options.get("collect")),
+            "skill_tool": None if self.does is None else self.does.skill_tool,
         }
         # A count a runtime did not report adds nothing, as ix has always summed it.
         tokens_in = sum(r.response.tokens_input or 0 for r in rounds)
@@ -539,17 +544,19 @@ def _copy(source: Path, into: Path) -> None:
         shutil.copy2(source, target)
 
 
-def _seed(workdir: Path, options: SessionOptions, base: str) -> None:
-    """Copy the fixtures into the working directory, and the skills into its
-    ``.claude/skills``. Raises :class:`HarnessError` for one that is not there."""
-    skills = workdir / ".claude" / "skills"
+def _seed(workdir: Path, options: SessionOptions, base: str, skills_dir: str | None) -> None:
+    """Copy the fixtures into the working directory, and the skills into ``skills_dir`` under
+    it, where the runtime says a session finds them; nowhere when it names no place. Raises
+    :class:`HarnessError` for one that is not there."""
+    skills = None if skills_dir is None else workdir / skills_dir
     for listed, into in [(options.fixtures, workdir), (options.skills, skills)]:
         for path in listed:
             source = _within(base, path)
             if not source.exists():
                 raise HarnessError("fixture_missing", f"{path} is not at {source}")
-            into.mkdir(parents=True, exist_ok=True)
-            _copy(source, into)
+            if into is not None:
+                into.mkdir(parents=True, exist_ok=True)
+                _copy(source, into)
 
 
 def _undeclared(options: SessionOptions, takes: frozenset[str] | None, path: str) -> list[Problem]:
@@ -611,6 +618,7 @@ def _unobservable(
     sensors = {sensor.kind: sensor.options for sensor in around.sensors}
     activation = ACTIVATION in sensors
     tools, where = _tools(options, around.base)
+    declared = does is not None
     does = does or matrix.AgentCapabilities()
     url = matrix.agent_runtime_type_url(options.runtime)
     problems: list[Problem] = []
@@ -628,8 +636,13 @@ def _unobservable(
             f"; or change {key} under runtime_options (`matrix describe {url}` shows what it takes)"
         )
 
-    skill_tool = str((sensors.get(ACTIVATION) or {}).get("tool") or SKILL_TOOL)
-    if (activation or options.skills) and tools is not None and skill_tool not in tools:
+    skill_tool = (sensors.get(ACTIVATION) or {}).get("tool") or does.skill_tool
+    if (
+        (activation or options.skills)
+        and skill_tool is not None
+        and tools is not None
+        and skill_tool not in tools
+    ):
         observed = (
             "the activation sensor would read every must_trigger probe as not fired"
             if activation
@@ -656,10 +669,17 @@ def _unobservable(
         at, change = decided_by("project_skills", "skills")
         unobservable(
             at,
-            "the skills are copied into the session's .claude/skills, and agent runtime "
-            f"{options.runtime}, as configured, loads no skills from its working directory: "
-            "they can never fire",
+            f"the skills are given to the session, and agent runtime {options.runtime}, as "
+            "configured, loads no skills from its working directory: they can never fire",
             f"run the session on a runtime that loads them{change}",
+        )
+    elif options.skills and declared and does.skills_dir is None:
+        unobservable(
+            "skills",
+            f"agent runtime {options.runtime} names no place in a session's working directory "
+            "for the skills it is given (skills_dir), so they would not be placed and can "
+            "never fire",
+            "run the session on a runtime that names where its skills go, or give them as plugins",
         )
     used = str((sensors.get(TOOL_USAGE) or {}).get("tool") or "")
     if used and tools is not None and used not in tools and "Bash" not in tools:
@@ -762,9 +782,10 @@ class AgentSessionSubject:
             stand_in = self._runtimes.stand_in(AGENT_RUNTIME, options.runtime)
         except IxError as error:
             raise HarnessError("misconfigured", f"{name}: {error}") from error
+        does = self._runtimes.capabilities(AGENT_RUNTIME, options.runtime, options.runtime_options)
         workdir = Path(tempfile.mkdtemp(prefix="ix-trial-"))
         try:
-            _seed(workdir, options, base)
+            _seed(workdir, options, base, None if does is None else does.skills_dir)
             if options.setup:
                 await _setup(self._launcher, options.setup, workdir)
             session = Session(
@@ -777,6 +798,7 @@ class AgentSessionSubject:
                 simulated=stand_in,
                 runtimes=self._runtimes,
                 launcher=self._launcher,
+                does=does,
             )
             handle = self._sessions.open(session)
             try:

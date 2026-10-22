@@ -77,6 +77,8 @@ _LOGGED: set[str] = set()
 
 #: The tool through which a session uses a skill.
 SKILL_TOOL = "Skill"
+#: Where, under its working directory, a session finds skills as its ``project`` settings.
+SKILLS_DIR = ".claude/skills"
 
 FAMILY = "claude"
 #: ``gen_ai.provider.name``: the provider the SDK's sessions are served by.
@@ -165,12 +167,16 @@ class ClaudeSdkRuntimeConfig(BaseModel):
         """What a session does under this config. ``setting_sources`` decides which skills
         it loads: from settings when it lists any source, from its working directory's
         ``.claude/skills`` when it lists ``project``; unset, the CLI's own default decides,
-        which is not claimed. ``permission_mode: plan`` writes nothing. ``setting_sources:
-        []`` keeps this machine's settings, CLAUDE.md and hooks out."""
+        which is not claimed. Whatever the config, a skill fires through the ``Skill`` tool,
+        and the skills a session is given are placed in its ``.claude/skills``.
+        ``permission_mode: plan`` writes nothing. ``setting_sources: []`` keeps this
+        machine's settings, CLAUDE.md and hooks out."""
         sources = self.setting_sources
         return AgentCapabilities(
             settings_skills=None if sources is None else bool(sources),
             project_skills=None if sources is None else "project" in sources,
+            skill_tool=SKILL_TOOL,
+            skills_dir=SKILLS_DIR,
             writes_files=False if self.permission_mode == "plan" else None,
             hermetic={"setting_sources": []},
             set_by={

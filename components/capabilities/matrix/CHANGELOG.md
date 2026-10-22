@@ -121,11 +121,13 @@ the `model` effect or none at all. Record section 17 has the reasons.
 ### Added
 
 - **What an agent runtime's sessions do is data it declares: `AgentCapabilities`.** Whether a
-  session loads skills from settings or from its working directory, whether its tools can
-  write files, the config that keeps it from reading the machine it runs on, and the config
+  session loads skills from settings or from its working directory, which tool fires a skill
+  (`skill_tool`) and where a session's skills must be placed (`skills_dir`), whether its tools
+  can write files, the config that keeps it from reading the machine it runs on, and the config
   key that decides each. A runtime's config class declares them (`capabilities()`), and
   `Entry.capabilities(config)` asks. `claude-sdk` answers from `setting_sources` and
-  `permission_mode`, `pydantic-ai` declares that it loads no skills, the `mock` declares
+  `permission_mode`, and names `Skill` and `.claude/skills`; `pydantic-ai` declares that it
+  loads no skills, the `mock` declares
   nothing. A caller (ix) asks the runtime instead of reading Claude Code's option names
   (W2.9).
 

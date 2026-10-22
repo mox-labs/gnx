@@ -658,14 +658,18 @@ AgentCapabilities`, which `Entry.capabilities(config)` asks of a config. `AgentC
 | Field | Type | Meaning |
 |-------|------|---------|
 | `settings_skills` | `bool \| None` | a session loads skills from settings (this machine's, the user's, the project's), beyond those it is given as plugins |
-| `project_skills` | `bool \| None` | a session loads the skills in its working directory (`.claude/skills`) |
+| `project_skills` | `bool \| None` | a session loads the skills in its working directory (in `skills_dir`) |
+| `skill_tool` | `str \| None` | the tool a session calls to fire a skill: the call a caller reads to tell that one fired; `None` for a runtime that names none |
+| `skills_dir` | `str \| None` | where a caller places the skills it gives a session, relative to the session's working directory, each a folder holding its `SKILL.md`; `None` for a runtime that names no place |
 | `writes_files` | `bool \| None` | a session's tools can write files |
 | `hermetic` | `dict[str, Any]` | config that keeps a session from reading the machine it runs on beyond what it is given, for a caller to lay under its own; `{}`: nothing to add |
 | `set_by` | `dict[str, str]` | the config key that decides each answer, by the answer's name |
 
 `claude-sdk` answers from `setting_sources` (unset: the CLI's own default, not claimed) and
-`permission_mode` (`plan` writes nothing), with `hermetic` `{setting_sources: []}`.
-`pydantic-ai` loads no skills, from anywhere, and needs nothing to keep the machine out. The
+`permission_mode` (`plan` writes nothing), with `hermetic` `{setting_sources: []}`; whatever
+its config, a skill fires through `Skill` and a session's skills go in `.claude/skills`.
+`pydantic-ai` loads no skills, from anywhere (no `skill_tool`, no `skills_dir`), and needs
+nothing to keep the machine out. The
 `mock` declares nothing.
 
 A runtime that also logs what its `warnings` say logs it at WARNING on the logger named
