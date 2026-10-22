@@ -72,6 +72,11 @@
   rate. Like a boolean, it now resolves to `rate` (`source: ix`), from the one default the
   design, validation and the analysis share. A registration made before this release with
   a count it names no estimator for differs from its plan: amend it.
+- **A genre's hypothesis sentence is read as `str.format` reads it.** The check saw only
+  `{identifier}`, so a positional `{}` or a lone brace loaded, then raised a bare
+  `ValueError` from every validate and plan of every experiment that named the genre. Such
+  a genre file is now refused when it loads (`genre_invalid`); a literal brace is written
+  doubled.
 
 ### Kept
 

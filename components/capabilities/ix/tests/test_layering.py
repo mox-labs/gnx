@@ -41,6 +41,7 @@ PURE_STDLIB = frozenset(
         "math",
         "re",
         "statistics",
+        "string",
         "typing",
     }
 )

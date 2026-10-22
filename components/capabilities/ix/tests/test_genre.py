@@ -151,6 +151,24 @@ class TestGenreRecord:
         with pytest.raises(ValidationError, match="refers to"):
             Genre.model_validate(_genre(comparisons={"superiority": form}))
 
+    @pytest.mark.parametrize(
+        "form",
+        ["{variant} beats {control} {}", "{variant} beats {control", "{variant} beats }",
+         "{variant.upper} beats {control}", "{variant[0]} beats {control}"],
+    )  # fmt: skip
+    def test_a_hypothesis_ix_cannot_fill_is_refused_when_the_genre_loads(self, form: str) -> None:
+        """Regression: the check saw only ``{identifier}``, so a positional ``{}`` or a lone
+        brace loaded, then raised a bare ValueError from every validate and plan of every
+        experiment that named the genre."""
+        with pytest.raises(ValidationError, match="ix can fill|refers to"):
+            Genre.model_validate(_genre(comparisons={"superiority": form}))
+
+    def test_a_literal_brace_in_a_hypothesis_is_written_doubled(self) -> None:
+        genre = Genre.model_validate(
+            _genre(comparisons={"superiority": "{variant} beats {control} on {{a set}}"})
+        )
+        assert not genre.needs_margin("superiority")
+
     def test_a_comparison_needs_a_margin_exactly_when_its_sentence_states_one(self) -> None:
         genre = Genre.model_validate(_genre())
         assert not genre.needs_margin("superiority")
