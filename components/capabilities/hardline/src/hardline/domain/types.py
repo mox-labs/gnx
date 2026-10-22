@@ -4,8 +4,9 @@ Messages and an optional output schema go in; text (or a validated object) comes
 tagged with the family that answered, what it cost, and enough provenance to ledger.
 Stateless: the conversation belongs to the caller.
 
-Type URLs follow the matrix convention ``<namespace>.v<version>/<resource>`` (xDS
-TypedExtensionConfig), so a composition root can key on them.
+The one type URL, ``hardline.v1/completion``, follows the matrix convention
+``<namespace>.v<version>/<resource>`` (xDS TypedExtensionConfig). A backend is keyed by its
+entry-point name alone.
 """
 
 from __future__ import annotations
@@ -19,11 +20,6 @@ from hardline.domain.errors import Reason  # noqa: TC001 -- pydantic reads it at
 
 NAMESPACE = "hardline.v1"
 COMPLETION_TYPE_URL = f"{NAMESPACE}/completion"
-
-
-def backend_type_url(name: str) -> str:
-    """Registry key for a backend short name, e.g. ``openai-compat``."""
-    return f"{NAMESPACE}/backend.{name}"
 
 
 Role = Literal["system", "user", "assistant"]

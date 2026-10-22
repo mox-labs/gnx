@@ -31,6 +31,7 @@
 - **Backend options are checked when the runtime is composed.** A backend may define `check(spec)`, returning what is wrong with a row; the runtime calls it for every row. Each built-in backend reads its `options` through a model of its own and refuses any key it does not read, so `hardline check` fails a row that would fail its first call. A mock `script` naming an unknown error reason is refused there too.
 - **A keyless `anthropic` row is a config problem.** It used to pass `hardline check` and then fail its call as `auth` ("the provider rejected the key", exit 6) when no provider had been asked. It now fails composition, naming `models.<name>.api_key` (exit 3).
 - **Each discovered tier is named with how it was found**: `user <path>`, `cwd <path>`, `$HARDLINE_CONFIG <path>`, in errors, in `hardline check`, and in each row's record.
+- **`backend_type_url` is gone**, and with it `hardline.v1/backend.<name>`. The README called them registry keys, but registry rows and the composition root key on a backend's entry-point name, and nothing read them.
 - `merge_tiers` returns, per model, the tier that set each field (`{field: source}`), and `ModelRegistry.from_config` takes `origins` in that shape.
 
 ### Fixed

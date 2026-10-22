@@ -46,7 +46,6 @@ from hardline.domain.types import (
     RowRecord,
     Structured,
     Usage,
-    backend_type_url,
 )
 
 try:
@@ -83,7 +82,6 @@ __all__ = [
     "UnknownModelError",
     "Usage",
     "__version__",
-    "backend_type_url",
     "build_runtime",
     "discover_backends",
     "discover_sources",

@@ -227,5 +227,6 @@ A row's `retries` is the only retry policy: the HTTP transport retries nothing i
 
 ## Type URLs
 
-`hardline.v1/completion` (the `Completion` artifact) · `hardline.v1/backend.<name>` (registry
-keys) — the matrix convention `<namespace>.v<version>/<resource>`.
+`hardline.v1/completion`, the `Completion` artifact, in the matrix convention
+`<namespace>.v<version>/<resource>`. A backend has no type URL: a registry row names it by its
+entry-point name.
