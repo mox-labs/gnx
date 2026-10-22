@@ -664,7 +664,7 @@ class Root:
         )
         if outcome.outcome != "unchanged":
             opened.registration.write(outcome.registration.document())
-        return outcome
+        return outcome.model_copy(update={"warnings": opened.examined.warnings})
 
     def deviations(
         self,
@@ -818,8 +818,9 @@ class Root:
             opened.vocabulary.kinds,
         )
         running.check_startable(requirements)
+        warned = (*examined.warnings, *(c for c in cautions if c not in examined.warnings))
         manifest = prepared.manifest.model_copy(
-            update={"warnings": cautions, "provenance": self._provenance(directory)}
+            update={"warnings": warned, "provenance": self._provenance(directory)}
         )
         # A stop request (Ctrl-C, SIGTERM) arrives here as the cancellation it is, after
         # matrix stopped the trial in flight, released what was started and finished the

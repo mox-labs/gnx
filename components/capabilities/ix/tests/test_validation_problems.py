@@ -661,18 +661,39 @@ class TestPlaceholders:
         examined = examine(evaluate_data, vocabulary)
         assert examined.problems == ()
 
+    @pytest.mark.parametrize("written", ["{model}", "{{model}}"])
     def test_a_name_only_some_subjects_fill_is_refused_in_prompt_text(
-        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+        self, written: str, evaluate_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:
         """A prompt's ``{model}`` is filled for a subject that sets ``model`` and sent as
         written to one that does not: the subjects would be put different prompts, so it is
-        refused, as it is in any other option."""
+        refused, as it is in any other option. Regression: so is ``{{model}}``, which was the
+        text ``{model}`` for the one and sent doubled to the other, with no word."""
         agent = evaluate_data["subjects"]["catalog"]
         evaluate_data.update(genre="compare", comparison="superiority")
         evaluate_data["subjects"] = {"plain": dict(agent), "tuned": {**agent, "model": "m-2"}}
-        evaluate_data["probes"][0]["prompt"] = "Review this change as {model}."
+        evaluate_data["probes"][0]["prompt"] = f"Review this change as {written}."
         problems = [p for p in _problems(evaluate_data, vocabulary) if p.got == "model"]
         assert [(p.path, p.kind) for p in problems] == [("probes.0.prompt", "unbound_placeholder")]
+        assert "some subjects" in problems[0].message
+        evaluate_data["subjects"]["plain"]["model"] = "m-1"
+        assert _problems(evaluate_data, vocabulary) == ()
+
+    def test_a_typo_in_a_judges_rubric_is_warned_of(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """A rubric is prompt text no filling reaches: every ``{name}`` in it is sent to the
+        judge as written. A typo there is said, as it is in a prompt; a factor's name too,
+        since the rubric does not take its level."""
+        evaluate_data["factors"] = {"size": ["small", "large"]}
+        evaluate_data["sensors"] = [
+            {"kind": "judge", "model_runtime": "mock", "rubric": "Score the {sise} change."}
+        ]
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = [w for w in examined.warnings if w.kind == "unbound_placeholder"]
+        assert (warned.path, warned.got) == ("sensors.0.rubric", "sise")
+        assert "sent as written" in warned.message
 
     def test_a_subject_options_placeholder_must_be_a_factor(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary

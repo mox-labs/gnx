@@ -33,7 +33,7 @@ from ix.domain.analysis import ANALYSES, analysis_unsupported
 from ix.domain.design import Design, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError
 from ix.domain.experiment import Experiment, ProbeConfig, SubjectConfig
-from ix.domain.kind import fill, placed, placeholders
+from ix.domain.kind import fill_options, placed, placeholders
 from ix.domain.ports import Liveness, Recorded, Sensed, StandIn, Traced
 from ix.domain.registration import deviations
 from ix.domain.run import (
@@ -427,14 +427,9 @@ class _Adapters:
 
 
 def _filled(subject: SubjectConfig, values: Mapping[str, Any], kit: Kit) -> dict[str, Any]:
-    """A subject's options filled with ``values``. In an option the adapter fills again
-    itself (its kind ``binds`` placeholders: a loop's ``{response}``), each doubled one of
-    those names stays doubled, so that it is un-doubled once, by the adapter's filling."""
-    kind = kit.kinds.get(schema.url("subject", subject.kind))
-    again = {name: option.binds for name, option in kind.options.items()} if kind else {}
-    return {
-        key: fill(value, values, later=again.get(key, ())) for key, value in subject.options.items()
-    }
+    """A subject's options filled with ``values``, each escape as its kind's options say
+    (:func:`~ix.domain.kind.fill_options`)."""
+    return fill_options(subject.options, values, kit.kinds.get(schema.url("subject", subject.kind)))
 
 
 def _adapters(trial: Trial, setup: Setup, kit: Kit) -> _Adapters:
@@ -492,7 +487,8 @@ async def invoke(
     filled = subject.model_copy(
         update={"options": _filled(subject, {**services, **trial.cell}, kit)}
     )
-    probe_options = setup.probes[trial.probe].options
+    probe = setup.probes[trial.probe]
+    probe_kind = kit.kinds.get(schema.url("probe", probe.kind))
     observations: dict[str, dict[str, Any]] = {}
     watching: dict[str, dict[str, Any]] = {}
     failure: Failure | None = None
@@ -513,7 +509,11 @@ async def invoke(
         known = {**services, **filled.options, **target.facets, **trial.cell}
         try:
             observations = await _apply(
-                adapters.probe, fill(probe_options, known), target, trial.seed, scope
+                adapters.probe,
+                fill_options(probe.options, known, probe_kind),
+                target,
+                trial.seed,
+                scope,
             )
         except Exception as error:
             failure = _failure(error)

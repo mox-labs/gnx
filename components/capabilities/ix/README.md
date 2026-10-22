@@ -324,14 +324,18 @@ def register(registry):
   filled with the levels, the subject's options and its facets: a factor, an option every
   subject sets, or a facet every subject's kind offers (`{pid}`). A loop's `prompt` fills
   `{prompt}`, `{response}`, `{until}` and `{failures}` itself. In prompt text, an option
-  its kind declares `text: true` (a probe's `prompt`, a `system_prompt`, a `loop`), a name
-  nothing fills is sent as written and is a warning, not a problem, so a prompt can hold
-  code (`print(f"{user}")`); the warning names the placeholder a typo is likely to be
-  (`{sise}` for the factor `size`). A name a probe takes from some subjects and not others
-  is refused there too, since the subjects would be put different prompts. `{{name}}`, where `name` would be filled there, is the text `{name}`;
-  every other brace is sent as written, so a prompt holding JSON (`{"a": {"b": 1}}`) or a
-  template (`{{ user.name }}`, or `{{user}}` where nothing fills `user`) reaches the agent
-  unchanged;
+  its kind declares `text: true` (a probe's `prompt`, a `system_prompt`, a `loop`, a
+  judge's `rubric`), a name nothing fills is sent as written and is a warning, not a
+  problem, so a prompt can hold code (`print(f"{user}")`); the warning names the
+  placeholder a typo is likely to be (`{sise}` for the factor `size`), and `validate`,
+  `plan`, `register` and `run` each print it, and a run's record keeps it. Nothing fills a
+  sensor's options, so every `{name}` in a rubric is such a warning. A name a probe takes
+  from some subjects and not others is refused, written `{name}` or `{{name}}`, since the
+  subjects would be put different prompts. In prompt text `{{name}}`, where `name` is
+  filled there, is the text `{name}`, and every other brace is sent as written, so a
+  prompt holding JSON (`{"a": {"b": 1}}`) or a template (`{{ user.name }}`, or `{{user}}`
+  where nothing fills `user`) reaches the agent unchanged. In any other option `{{name}}`
+  is always the text `{name}`: `setup: [sh, -c, 'echo ${{HOME}}']` runs `echo ${HOME}`;
 - **a model-judged metric never decides.** Whether a metric is judged is the sensor's
   declaration, not the author's. A judged metric is refused as `primary` and as a guardrail
   in every genre with a verdict (`judged_gate`); it can be reported under `metrics:`.

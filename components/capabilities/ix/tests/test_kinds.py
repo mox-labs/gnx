@@ -763,6 +763,33 @@ class TestRequirements:
         with pytest.raises(ix.ConfigError, match="no-such-folder"):
             ix.run(tmp_path / "experiment.yaml", exploratory=True)
 
+    def test_an_escaped_factor_leaves_the_preflight_on(self, tmp_path: Path) -> None:
+        """Each cell's options reach the preflight with every escape kept doubled: in a
+        command, ``{{size}}``, where ``size`` is a factor, is text, not a placeholder a trial
+        fills, so the program the command names is still checked."""
+        data = {
+            "name": "escaped",
+            "question": "Does an escaped factor switch the preflight off?",
+            "genre": "evaluate",
+            "factors": {"size": ["small"]},
+            "subjects": {
+                "canned": {"kind": "agent-session", "runtime": "mock",
+                           "setup": ["no-such-program-anywhere", "{{size}}"]},
+            },
+            "probes": [
+                {"id": "greet", "kind": "prompt", "prompt": "Greet me.",
+                 "mock_response": "BANANA, hello", "truth": {"starts_with": "BANANA"}},
+            ],
+            "primary": {"metric": "text_matched"},
+            "threshold": {"op": ">=", "value": 0.5},
+            "repeats": 5,
+        }  # fmt: skip
+        (tmp_path / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+        plan = ix.plan(tmp_path / "experiment.yaml")
+        assert not plan.runnable
+        (unmet,) = plan.unmet
+        assert "no-such-program-anywhere" in unmet.need
+
     def test_a_run_that_calls_a_model_needs_no_spend_and_takes_none(
         self, evaluate_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
     ) -> None:

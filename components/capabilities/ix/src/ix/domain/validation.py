@@ -33,7 +33,7 @@ from ix.domain.design import (
 from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment, default_estimator
 from ix.domain.genre import CONTROL
 from ix.domain.intervals import MEDIAN_MIN
-from ix.domain.kind import NOTE_PREFIX, binding_names, placeholders
+from ix.domain.kind import NOTE_PREFIX, binding_names, escapes, placeholders
 from ix.domain.problem import Problem, Validation, from_validation_error, problem
 
 if TYPE_CHECKING:
@@ -555,15 +555,23 @@ def _unbound(
 ) -> tuple[list[Problem], list[Problem]]:
     """The problems and the warnings for each ``{name}`` in ``value`` that is not ``bound``.
     In prompt text (``text``), a name nothing fills anywhere (not in ``filled_somewhere``)
-    is sent as written, so it is a warning: a prompt may hold code (``f"{user}"``). Every
-    other is a problem. Each names the bound name it is likely a typo for, if one is near."""
+    is sent as written, so it is a warning: a prompt may hold code (``f"{user}"``). A name
+    some subjects fill and others do not is a problem, doubled (``{{name}}``) or not, since
+    the subjects would be put different prompts. Every other is a problem. Each names the
+    bound name it is likely a typo for, if one is near."""
     problems: list[Problem] = []
     warnings: list[Problem] = []
+    if text:
+        for name in sorted(set(escapes(value)) & set(filled_somewhere) - set(bound)):
+            problems.append(_filled_by_some(path, f"{{{{{name}}}}}", name, bound))
     for name in sorted(set(placeholders(value)) - set(bound)):
+        if name in filled_somewhere:
+            problems.append(_filled_by_some(path, f"{{{name}}}", name, bound))
+            continue
         near = difflib.get_close_matches(name, bound, n=1)
         likely = f"; did you mean {{{near[0]}}}?" if near else ""
         rewrite = f"write {{{near[0]}}}, or " if near else ""
-        if text and name not in filled_somewhere:
+        if text:
             warnings.append(
                 problem(
                     path,
@@ -589,6 +597,20 @@ def _unbound(
     return problems, warnings
 
 
+def _filled_by_some(path: str, written: str, name: str, bound: Sequence[str]) -> Problem:
+    """The problem with ``written``, a placeholder or its escape, where some subjects fill
+    ``name`` and others do not: each would be put a different prompt."""
+    return problem(
+        path,
+        kind="unbound_placeholder",
+        message=f"{written} is filled for some subjects and not for others, so they would be "
+        "put different prompts",
+        fix=f"set {name!r} on every subject or on none, or declare factors: {{{name}: [...]}}",
+        allowed=tuple(bound),
+        got=name,
+    )
+
+
 def _placeholders(
     experiment: Experiment, kinds: Kinds, probes: ProbeSet | None
 ) -> tuple[list[Problem], list[Problem]]:
@@ -603,8 +625,10 @@ def _placeholders(
 
     The problems, and the warnings: in an option its kind declares prompt text (``text``),
     a name nothing fills is sent as written, and is a warning. A name a probe's option
-    takes from some subjects and not others is a problem there too: the subjects would be
-    put different prompts."""
+    takes from some subjects and not others is a problem there too, doubled or not: the
+    subjects would be put different prompts. Nothing fills a sensor's options, so each
+    ``{name}`` in a sensor's prompt text (a judge's ``rubric``) is sent as written, and is
+    a warning."""
     factors = sorted(experiment.factors)
     environment = experiment.environment
     declared = kinds.get("environment", environment.kind)
@@ -662,6 +686,20 @@ def _placeholders(
                 filled_somewhere=somewhere,
             )
             problems += found
+            warnings += cautions
+    for index, sensor in enumerate(experiment.sensors):
+        kind = kinds.get("sensor", sensor.kind)
+        for key, value in sensor.options.items():
+            option = kind.options.get(key) if kind else None
+            if option is None or not option.text:
+                continue
+            _, cautions = _unbound(
+                f"sensors.{index}.{key}",
+                value,
+                (),
+                "write the text as it is to be sent: nothing fills a sensor's options",
+                text=True,
+            )
             warnings += cautions
     return problems, warnings
 
