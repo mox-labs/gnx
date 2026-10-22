@@ -1,4 +1,4 @@
-"""What a verdict rests on beyond the experiment's document (W3.6): the digest rule for a file
+"""What a verdict rests on beyond the experiment's document: the digest rule for a file
 or a folder, and which options name files. The run path that freezes, records and compares
 the digests is held in ``test_agent_runs.py::TestAVerdictIsTiedToWhatItJudged``."""
 

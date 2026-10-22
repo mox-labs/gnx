@@ -1300,7 +1300,7 @@ class TestWhatCannotRun:
         assert LOG == [] and not (file.parent / RUNS_DIRECTORY).exists()
 
     def test_what_ix_can_run_is_listed_with_the_kinds(self) -> None:
-        """Changed requirement (W8.7): ``compose`` has an adapter. (W11.2): so does
+        """Changed requirement: ``compose`` has an adapter, and so does
         ``evaluator``, pydantic-evals' evaluators."""
         kinds = ix.kinds()
         runnable = {schema.short(name) for name in kinds.runnable}

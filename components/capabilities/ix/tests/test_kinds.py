@@ -128,8 +128,8 @@ class TestBuiltInKinds:
                 assert option.description, f"{kind.label}.{name}"
 
     def test_a_kind_declares_no_effects(self, builtin_kinds: Kinds) -> None:
-        """Changed requirement (Q6): effects were labels nothing checked, and are removed. A
-        kind file that still declares them is refused, so its author is told."""
+        """Changed requirement (owner ruling 2026-10-22): effects were labels nothing checked, and
+        are removed. A kind file that still declares them is refused, so its author is told."""
         for kind in builtin_kinds.kinds.values():
             assert "effects" not in kind.document(), kind.name
         with pytest.raises(ValidationError):
@@ -662,8 +662,8 @@ class TestRequirements:
     def test_an_entry_writes_no_effects(
         self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
     ) -> None:
-        """Changed requirement (Q6): an author could add effects beside a kind; nothing
-        checked them. Now ``effects:`` is an option the kind does not take."""
+        """Changed requirement (owner ruling 2026-10-22): an author could add effects beside a
+        kind; nothing checked them. Now ``effects:`` is an option the kind does not take."""
         compare_data["subjects"]["buffered"]["effects"] = ["binds 127.0.0.1:8080"]
         found = _found(compare_data, builtin_genres, builtin_kinds)
         assert ("subjects.buffered.effects", "option_unknown") in found
@@ -675,9 +675,9 @@ class TestRequirements:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Q6: in place of effects, the plan says what each adapter needs of this host, once
-        however many entries need it, and whether it holds now. One that does not makes the
-        plan not runnable, with why and the fix; the host is in no digest."""
+        """Owner ruling 2026-10-22: in place of effects, the plan says what each adapter needs of
+        this host, once however many entries need it, and whether it holds now. One that does not
+        makes the plan not runnable, with why and the fix; the host is in no digest."""
         tools = tmp_path / "bin"
         tools.mkdir()
         monkeypatch.setenv("PATH", str(tools))

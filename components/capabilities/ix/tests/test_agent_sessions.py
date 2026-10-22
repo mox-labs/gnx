@@ -752,7 +752,7 @@ class TestActivation:
         assert found.detail["skills_called"] == called
 
     async def test_the_tool_is_the_one_the_runtime_names_or_else_the_options(self) -> None:
-        """W2.9: the sensor knew Claude Code's ``Skill`` tool, and read its calls on any
+        """Regression: the sensor knew Claude Code's ``Skill`` tool, and read its calls on any
         runtime. It now reads the tool the session's runtime names (the response's
         ``skill_tool``), or the one its ``tool`` option names; with neither, no call is a
         skill firing."""
