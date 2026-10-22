@@ -84,6 +84,11 @@
 - **A rate of part arrivals is refused, not rounded.** `2.5/s` ran as 2/s and `0.6/s` as
   1/s, with no notice. A `rate` is a whole number of arrivals per second or per minute
   (`option_invalid`, whose fix says `2.5/s` is `150/m`).
+- **A reading outside its shape's domain is refused where it is made.** `Reading` accepted
+  a boolean of 2, negative events, more events than units and a statistic that is not
+  finite, and the analysis of such a row failed with a bare `math domain error`. Such a
+  reading is now a `ValueError` when it is built, and a stored run holding one is a damaged
+  record: `ix report` exits 3 (`config`) and names the file.
 
 ### Kept
 

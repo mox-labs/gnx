@@ -48,7 +48,7 @@ from ix.domain import schema
 from ix.domain.kind import Metric
 from ix.domain.ports import Liveness, Preflight
 from ix.domain.report import report as build_report
-from ix.domain.run import CALIBRATION, HarnessError, Interaction, Target
+from ix.domain.run import CALIBRATION, HarnessError, Interaction, Reading, Target
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -334,6 +334,50 @@ class TestWhoseFailure:
         ] == [("candidate", "subject", "exited")]
         assert report.trials.subject_failures == 1 and report.trials.harness_failures == 0
         assert report.analysis.findings[0].outcome == "fails"
+
+
+class TestAReadingOutsideItsShapesDomain:
+    """Regression: ``Reading`` accepted a boolean of 2, negative events, more events than
+    units and a statistic that is not finite, and the analysis of such a row failed with a
+    bare ``math domain error``. A row like that is refused where it is made, and a stored
+    run holding one is a damaged record."""
+
+    @pytest.mark.parametrize(
+        ("shape", "fields"),
+        [("boolean", {"value": 2.0}), ("boolean", {"value": -1.0}),
+         ("scalar", {"value": float("nan")}),
+         ("count", {"statistics": {"events": -5.0, "units": 100.0}}),
+         ("count", {"statistics": {"events": 150.0, "units": 100.0}}),
+         ("count", {"statistics": {"events": 1.5, "units": 100.0}}),
+         ("count", {"statistics": {"events": float("nan"), "units": 100.0}}),
+         ("histogram", {"statistics": {"p99": float("inf")}})],
+    )  # fmt: skip
+    def test_is_refused(self, shape: Shape, fields: dict[str, Any]) -> None:
+        with pytest.raises(ValueError, match="outside"):
+            Reading(seq=0, subject="a", role="r", sensor="s", metric="m", shape=shape, **fields)
+
+    @pytest.mark.parametrize(
+        ("shape", "fields"),
+        [("boolean", {"value": True}), ("boolean", {"value": 0.0}),
+         ("scalar", {"value": -3.5}), ("count", {"statistics": {"events": 0.0, "units": 1.0}}),
+         ("histogram", {"statistics": {"p99": 12.0}}), ("count", {})],
+    )  # fmt: skip
+    def test_one_inside_it_is_read(self, shape: Shape, fields: dict[str, Any]) -> None:
+        Reading(seq=0, subject="a", role="r", sensor="s", metric="m", shape=shape, **fields)
+
+    def test_a_stored_run_holding_one_is_a_damaged_record(
+        self, root: Root, write_experiment: Write
+    ) -> None:
+        file = write_experiment(experiment(variant_ms=55.0))
+        root.register(file)
+        report = root.run(file)
+        readings = Path(report.location, f"{schema.READING}.jsonl")
+        rows = [json.loads(line) for line in readings.read_text().splitlines()]
+        rows[0]["statistics"] = {"p50": float("inf")}
+        readings.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        with pytest.raises(ix.ConfigError, match="a reading ix never writes") as refused:
+            root.report(report.location)
+        assert refused.value.exit_code == 3 and "damaged" in (refused.value.fix or "")
 
 
 class TestAReadingOfTheWrongShape:
