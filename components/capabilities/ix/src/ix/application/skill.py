@@ -1116,10 +1116,13 @@ probes and a metric. What makes it one is the kinds.
   `judged_eval_passed` and `judged_eval_score` (`evaluator`, below).
 - **Validate checks that the sensors can see.** A setting that makes what a sensor reads
   impossible is `unobservable`, refused before any trial, whatever the runtime is called:
-  a skill with no `Skill` tool among `tools`, `skills` with `setting_sources` that leave
-  `project` out, a `tool-usage` tool the session may not call, a session with no skill,
-  plugin or setting to fire, files to `collect` with no tool to write them or in `plan`
-  mode, and `activation` or `tool-usage` on a `model-call` subject.
+  a skill with no `Skill` tool among `tools`, `skills` on a runtime that, as configured,
+  loads none from the working directory (claude-sdk with `setting_sources` that leave
+  `project` out), a `tool-usage` tool the session may not call, a session with no skill,
+  plugin or setting to fire, files to `collect` with no tool to write them or on a runtime
+  that writes none (claude-sdk in `plan` mode), and `activation` or `tool-usage` on a
+  `model-call` subject. What a runtime's sessions do is the runtime's to declare, so the
+  same holds for any agent runtime that says so.
 - **Conditions to compare are subjects** under `compare`: one changed option each (a
   `system_prompt`, a `definition` file, a `model`, a `loop`). A `loop` adds rounds:
   `{{strategy: self-review, rounds: 3}}` asks again with the previous answer until it
@@ -1208,10 +1211,10 @@ are judged: they are reported and **never decide** a verdict. `repeats: 3` asks 
 times per reply: `judge_agreement` is how often it agreed with itself. Two flags are
 printed whenever a trial raises one: `judge_inconsistent` (its repeats split on pass or
 fail) and `judge_in_family` (the judge is of the subject's model family; judge with
-another). On an agent runtime the judge runs in a fresh temporary directory and, where the
-runtime's config takes `setting_sources`, reads no settings unless its `runtime_options`
-name some, so what is where ix runs (a CLAUDE.md, your settings, hooks) does not shape
-its scores.
+another). On an agent runtime the judge runs in a fresh temporary directory, given the
+config its runtime declares keeps the machine out (claude-sdk's `setting_sources: []`)
+under its own `runtime_options`, so what is where ix runs (a CLAUDE.md, your settings,
+hooks) does not shape its scores.
 
 ## pydantic-evals' evaluators
 

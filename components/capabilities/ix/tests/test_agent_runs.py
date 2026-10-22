@@ -785,6 +785,95 @@ class TestThirdPartyRuntimes:
         assert {j["runtime"] for j in on_a_session} == {SCRIPTED}
 
 
+class SandboxConfig(BaseModel):
+    """A third party's agent runtime config. It takes an option of claude-sdk's name with a
+    meaning of its own (``setting_sources``: where it reads its sandbox's settings from,
+    nothing to do with skills), and says what its sessions do."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    read_only: bool = False
+    setting_sources: list[str] = []
+
+    def capabilities(self) -> matrix.AgentCapabilities:
+        return matrix.AgentCapabilities(
+            settings_skills=True,
+            project_skills=True,
+            writes_files=not self.read_only,
+            set_by={"writes_files": "read_only"},
+        )
+
+
+SANDBOXED = "acme.v1.agent-runtime.sandboxed"
+
+
+def _sandboxed() -> matrix.Registry:
+    """The third parties, and ``acme``'s sandboxed agent runtime, scripted as the rest."""
+    registry = _third_parties()
+
+    def build(config: SandboxConfig) -> Scripted:
+        runtime = Scripted()
+        runtime.answer = _fires()
+        return runtime
+
+    registry.register("agent-runtime", SANDBOXED, build, config=SandboxConfig)
+    return registry
+
+
+class TestCapabilitiesAreAsked:
+    """W2.9: ix read two of claude-sdk's option names under ``runtime_options``
+    (``setting_sources``, ``permission_mode``) to tell whether a session would load its skills
+    or could write files: Claude Code's knowledge inside ix, applied to any runtime given
+    those names. ix now asks the runtime, which declares it as data
+    (``matrix.AgentCapabilities``)."""
+
+    def _validated(
+        self, tmp_path: Path, subject: dict[str, Any], **changes: Any
+    ) -> set[tuple[str, str]]:
+        (tmp_path / "skills" / "review").mkdir(parents=True, exist_ok=True)
+        routing = any(sensor["kind"] == "activation" for sensor in changes.get("sensors", ()))
+        lab = _either(tmp_path, subject, routing=routing, **changes)
+        root = Root(registry=_sandboxed(), settings=_settings())
+        return {(p.path, p.kind) for p in root.validate(lab).problems}
+
+    def test_a_runtime_that_loads_its_skills_is_not_held_to_claude_sdks_option(
+        self, tmp_path: Path
+    ) -> None:
+        """``acme``'s ``setting_sources: []`` means something of its own, and it says its
+        sessions load their skills: nothing is wrong. Read by name, as before, it was
+        "skills that can never fire"."""
+        session = {"kind": "agent-session", "runtime": SANDBOXED, "skills": ["skills/review"],
+                   "runtime_options": {"setting_sources": []}}  # fmt: skip
+        assert self._validated(tmp_path, session, sensors=[{"kind": "activation"}]) == set()
+        bare = {"kind": "agent-session", "runtime": SANDBOXED,
+                "runtime_options": {"setting_sources": []}}  # fmt: skip
+        assert self._validated(tmp_path, bare, sensors=[{"kind": "activation"}]) == set()
+
+    def test_a_runtime_that_writes_nothing_leaves_nothing_to_collect(self, tmp_path: Path) -> None:
+        """``acme`` says a ``read_only`` session writes no file, and which option decides
+        it: files to collect from one are a problem at that option. Before, only claude-sdk's
+        ``permission_mode: plan`` was known to write nothing."""
+        collecting = [{"id": "fix", "kind": "prompt", "prompt": "Fix it.", "collect": ["a.py"],
+                       "truth": {"starts_with": "BANANA"}}]  # fmt: skip
+        session = {"kind": "agent-session", "runtime": SANDBOXED,
+                   "runtime_options": {"read_only": True}}  # fmt: skip
+        assert self._validated(tmp_path, session, probes=collecting) == {
+            ("subjects.it.runtime_options.read_only", "unobservable")
+        }
+        writable = {**session, "runtime_options": {"read_only": False}}
+        assert self._validated(tmp_path, writable, probes=collecting) == set()
+
+    def test_the_pydantic_ai_runtime_loads_no_skills_and_says_so(self, tmp_path: Path) -> None:
+        """pydantic-ai has no skills: skills given to a session on it can never fire, and an
+        activation sensor on it has none to see, whatever its options are called."""
+        session = {"kind": "agent-session", "runtime": "pydantic-ai"}
+        skilled = {**session, "skills": ["skills/review"]}
+        assert self._validated(tmp_path / "a", skilled) == {("subjects.it.skills", "unobservable")}
+        assert self._validated(tmp_path / "b", session, sensors=[{"kind": "activation"}]) == {
+            ("subjects.it.runtime", "unobservable")
+        }
+
+
 def lookup(word: str) -> str:
     """Find a word in the dictionary: the tool the pydantic-ai session below calls."""
     return {"banana": "a long yellow fruit"}.get(word, "not found")

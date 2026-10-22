@@ -12,7 +12,7 @@ options:
       mock: a canned reply; calls no model
   agent_runtime:
     type: string
-    description: "the matrix agent runtime the judge runs on, a one-turn session with no tools per reading, in a fresh temporary directory; a runtime whose config takes setting_sources reads none unless runtime_options names some. Give this or model_runtime, not both"
+    description: "the matrix agent runtime the judge runs on, a one-turn session with no tools per reading, in a fresh temporary directory; given the config its runtime declares keeps the machine out (claude-sdk: setting_sources: []) under its own runtime_options. Give this or model_runtime, not both"
     choices:
       claude-sdk: a one-turn Claude Agent SDK session; calls a model provider
       mock: a canned reply; calls no model

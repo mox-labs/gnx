@@ -193,9 +193,11 @@ not 40: 60 sessions, each a call to a paid model on `claude-sdk`. A plan that ca
 why, with the fix: a runtime that cannot start, a file the subject names that is not there.
 
 `ix validate` also refuses a session its sensors could not see into (`unobservable`): a
-skill with no `Skill` tool among `tools`, skills a session's `setting_sources` would never
-read, files to `collect` that no tool may write. It does so whatever the agent runtime is
-called. Such a run would report a confident verdict about a harness that could not observe
+skill with no `Skill` tool among `tools`, skills a session would never load (claude-sdk with
+`setting_sources` that leave `project` out), files to `collect` that no tool may write. Whether
+a session loads its skills or can write is the runtime's to declare, as its options make it,
+so ix asks it and reads no option by name: the same review holds whatever the agent runtime
+is called. Such a run would report a confident verdict about a harness that could not observe
 the agent.
 
 ## 6. A dry run
@@ -461,10 +463,10 @@ The judge names its runtime with one of two options, and there is no default:
 - `model_runtime`: a matrix model runtime, one call per reading. `hardline` calls a model
   provider through hardline's registry; `mock` does not.
 - `agent_runtime`: a matrix agent runtime, a one-turn session with no tools per reading, in
-  a fresh temporary directory. `claude-sdk` calls a model provider; `mock` does not. A
-  runtime whose config takes `setting_sources` reads none unless the judge's
-  `runtime_options` name some, so a CLAUDE.md, a hook or your own settings where ix runs
-  cannot shape its scores.
+  a fresh temporary directory. `claude-sdk` calls a model provider; `mock` does not. It is
+  given the config its runtime declares keeps the machine out (claude-sdk's
+  `setting_sources: []`), under the judge's own `runtime_options`, so a CLAUDE.md, a hook or
+  your own settings where ix runs cannot shape its scores.
 
 `ix validate` refuses a judge that names neither, or both. What its runtime reported it
 cost, where it reports one, is kept in the reading's detail, beside the judge's runtime and

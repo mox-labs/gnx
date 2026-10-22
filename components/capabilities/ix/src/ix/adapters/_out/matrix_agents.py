@@ -36,8 +36,11 @@ agent wrote is there for the next; tokens, turns and cost are added up over the 
 tells ``validate`` what only it knows: a runtime option the runtime does not declare,
 plugins for a runtime that mounts none, and a session that leaves its sensors nothing to
 observe (a skill that cannot fire because the activation sensor's tool is not among its
-``tools``, files to collect that no tool can write). As a :class:`~ix.domain.ports.StandIn`
-it puts the session on ``mock`` for a dry run, setting the runtime's own options aside.
+``tools``, files to collect that no tool can write). Whether a session loads its skills or
+can write files is the runtime's to say, as its configured options make it
+(:class:`matrix.AgentCapabilities`): ix asks, and reads none of its options by name. As a
+:class:`~ix.domain.ports.StandIn` it puts the session on ``mock`` for a dry run, setting the
+runtime's own options aside.
 
 **Whose failure.** A session the runtime could not run for reasons that are not the
 agent's (``unavailable``, ``rate_limited``, ``timeout``, ``auth``, ``incapable``: the port's
@@ -168,6 +171,15 @@ class Runtimes(Protocol):
         its registration declares, with its installed version (``not installed`` for one
         that is not); none for a runtime that declares none. Raises as :meth:`build` does
         for an unknown name."""
+        ...
+
+    def capabilities(
+        self, point: Point, name: str, config: Mapping[str, Any]
+    ) -> matrix.AgentCapabilities | None:
+        """What sessions on the runtime do when it is built with ``config``, as the runtime
+        declares (whether they load skills, whether their tools can write): None for one that
+        declares nothing, a config it refuses, or a name nothing registered there. Asks
+        nothing of the host."""
         ...
 
 
@@ -588,19 +600,33 @@ def _tools(options: SessionOptions, base: str) -> tuple[tuple[str, ...] | None, 
     return (None if loaded.tools is None else tuple(loaded.tools)), "definition"
 
 
-def _unobservable(options: SessionOptions, around: Surroundings) -> list[Problem]:
+def _unobservable(
+    options: SessionOptions, around: Surroundings, does: matrix.AgentCapabilities | None
+) -> list[Problem]:
     """A session written so that what the sensors read can never happen: a run of it would
-    report a confident verdict on a harness that could not see the agent."""
+    report a confident verdict on a harness that could not see the agent. ``does`` is what
+    the runtime declares its sessions do, as configured; an answer it does not give (or no
+    declaration) is assumed nothing of."""
     path = around.path
     sensors = {sensor.kind: sensor.options for sensor in around.sensors}
     activation = ACTIVATION in sensors
     tools, where = _tools(options, around.base)
-    given = options.runtime_options
-    sources = given.get("setting_sources")
+    does = does or matrix.AgentCapabilities()
+    url = matrix.agent_runtime_type_url(options.runtime)
     problems: list[Problem] = []
 
     def unobservable(key: str, message: str, fix: str) -> None:
         problems.append(problem(f"{path}.{key}", kind="unobservable", message=message, fix=fix))
+
+    def decided_by(answer: str, otherwise: str) -> tuple[str, str]:
+        """Where a problem with the runtime's ``answer`` is, and how to change it: the
+        option the runtime says decides it, or ``otherwise`` when it names none."""
+        key = does.set_by.get(answer)
+        if key is None:
+            return otherwise, ""
+        return f"runtime_options.{key}", (
+            f"; or change {key} under runtime_options (`matrix describe {url}` shows what it takes)"
+        )
 
     skill_tool = str((sensors.get(ACTIVATION) or {}).get("tool") or SKILL_TOOL)
     if (activation or options.skills) and tools is not None and skill_tool not in tools:
@@ -616,22 +642,24 @@ def _unobservable(options: SessionOptions, around: Surroundings) -> list[Problem
             f"add {skill_tool} to tools: [{', '.join([*tools, skill_tool])}], or leave "
             "'tools' out for every tool",
         )
-    if activation and not options.skills and not options.plugins and sources == []:
+    if activation and not options.skills and not options.plugins and does.settings_skills is False:
+        at, change = decided_by("settings_skills", "runtime")
         unobservable(
-            "runtime_options.setting_sources",
-            "the session reads no settings and is given no skills or plugins, so there is "
-            "no skill for the activation sensor to see fire",
+            at,
+            f"agent runtime {options.runtime}, as configured, loads no skills from settings, "
+            "and the session is given no skills or plugins, so there is no skill for the "
+            "activation sensor to see fire",
             "give the skills under test (skills: [<folder holding SKILL.md>] or plugins: "
-            "[<plugin folder>]), or the settings that hold them (setting_sources: [project])",
+            f"[<plugin folder>]){change}",
         )
-    if options.skills and isinstance(sources, list) and "project" not in sources:
+    if options.skills and does.project_skills is False:
+        at, change = decided_by("project_skills", "skills")
         unobservable(
-            "runtime_options.setting_sources",
-            "the skills are copied into the session's .claude/skills, which a session reads "
-            f"as its project settings, and setting_sources {sources} leaves project out: "
+            at,
+            "the skills are copied into the session's .claude/skills, and agent runtime "
+            f"{options.runtime}, as configured, loads no skills from its working directory: "
             "they can never fire",
-            f"add project: setting_sources: [{', '.join(map(str, [*sources, 'project']))}]; "
-            "the working directory is the trial's own, so nothing else is read with it",
+            f"run the session on a runtime that loads them{change}",
         )
     used = str((sensors.get(TOOL_USAGE) or {}).get("tool") or "")
     if used and tools is not None and used not in tools and "Bash" not in tools:
@@ -642,15 +670,17 @@ def _unobservable(options: SessionOptions, around: Surroundings) -> list[Problem
             f"add {used} (or Bash) to tools, or leave 'tools' out for every tool",
         )
     collecting = [at for at, probe in around.probes if probe.options.get("collect")]
-    planning = given.get("permission_mode") == "plan"
-    if collecting and (tools == () or planning):
-        cannot = "may call no tool" if tools == () else "runs in plan mode, which writes nothing"
+    if collecting and (tools == () or does.writes_files is False):
+        if tools == ():
+            at, cannot, change = where, "may call no tool", ""
+        else:
+            at, change = decided_by("writes_files", "runtime")
+            cannot = f"runs on agent runtime {options.runtime}, which as configured writes no file"
         unobservable(
-            where if tools == () else "runtime_options.permission_mode",
+            at,
             f"{', '.join(collecting)} collect files the agent writes, and the session "
             f"{cannot}: nothing would be collected",
-            "let the session write: give it the tools that write files (Write, Edit, Bash) "
-            "and a permission_mode that allows them (acceptEdits, bypassPermissions)",
+            f"let the session write: give it tools that write files{change}",
         )
     return problems
 
@@ -675,7 +705,8 @@ class AgentSessionSubject:
         except ValidationError:
             return []
         takes = self._runtimes.takes(AGENT_RUNTIME, parsed.runtime)
-        return [*_undeclared(parsed, takes, around.path), *_unobservable(parsed, around)]
+        does = self._runtimes.capabilities(AGENT_RUNTIME, parsed.runtime, parsed.runtime_options)
+        return [*_undeclared(parsed, takes, around.path), *_unobservable(parsed, around, does)]
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """The session on ``mock``: what would be the real runtime's config (its

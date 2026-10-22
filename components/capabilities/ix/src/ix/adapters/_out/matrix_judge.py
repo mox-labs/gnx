@@ -21,10 +21,11 @@ is no adapter between the ports:
 * ``model_runtime`` (``hardline``, ``mock``, or any model runtime installed): each reading
   is one model call, the rubric's task as its prompt.
 * ``agent_runtime`` (``claude-sdk``, ``mock``, or any agent runtime installed): each reading
-  is a one-turn session with no tools, in a fresh temporary directory, removed after. A
-  runtime whose config declares ``setting_sources`` is given ``[]`` unless the judge's
-  ``runtime_options`` name some, so a CLAUDE.md, a hook or a user's settings where ix happens
-  to run cannot shape its scores.
+  is a one-turn session with no tools, in a fresh temporary directory, removed after. It is
+  given the config the runtime declares keeps a session from reading the machine it runs on
+  (``hermetic`` of its :class:`matrix.AgentCapabilities`; claude-sdk's is
+  ``setting_sources: []``), under the judge's own ``runtime_options``, so a CLAUDE.md, a
+  hook or a user's settings where ix happens to run cannot shape its scores.
 
 What its runtime reported it cost, where it reports one, is kept beside its runtime and model
 in the readings' ``detail``, a fact about the judge that nothing adds up. Each of its calls or
@@ -65,9 +66,6 @@ if TYPE_CHECKING:
 
 #: The judge's two options, each naming a runtime at one of matrix's points.
 PORTS: dict[str, Point] = {"model_runtime": MODEL_RUNTIME, "agent_runtime": AGENT_RUNTIME}
-
-#: The agent runtime config key that says which ambient settings a session reads.
-SETTING_SOURCES = "setting_sources"
 
 #: What a judge standing in on ``mock`` replies to every task or prompt.
 STAND_IN_REPLY = '{"score": 0.5, "reason": "dry run: no model judged this reply"}'
@@ -236,8 +234,9 @@ class JudgeSensor:
         definition = matrix.AgentDefinition(
             name="judge", system_prompt=SYSTEM, model=model, tools=(), max_turns=1
         )
-        if SETTING_SOURCES in (self._runtimes.takes(AGENT_RUNTIME, name) or ()):
-            config = {SETTING_SOURCES: [], **config}
+        does = self._runtimes.capabilities(AGENT_RUNTIME, name, config)
+        if does is not None:  # what keeps the machine out, under the judge's own options
+            config = {**does.hermetic, **config}
         with tempfile.TemporaryDirectory(prefix="ix-judge-") as workdir:
             runtime = self._runtimes.build(AGENT_RUNTIME, name, config, cwd=workdir)
             url = matrix.agent_runtime_type_url(name)

@@ -254,6 +254,15 @@ class _Runtimes:
     def drives(self, point: Point, name: str) -> dict[str, str]:
         return {driven: installed(driven) for driven in self._entry(point, name).drives}
 
+    def capabilities(
+        self, point: Point, name: str, config: Mapping[str, Any]
+    ) -> matrix.AgentCapabilities | None:
+        try:
+            entry = self._entry(point, name)
+        except IxError:
+            return None
+        return entry.capabilities(config)
+
 
 class _JudgeModels:
     """Where a pydantic-evals judge evaluator's model comes from: the pydantic-ai ``Model``
