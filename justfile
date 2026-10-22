@@ -47,11 +47,14 @@ payloads:
         python {{justfile_directory()}}/harness/validate_payload.py \
         {{justfile_directory()}}/components/agents {{justfile_directory()}}/components/skills
 
+# The workspace's own Python (the tests' shared helpers in _testing, and conftest.py) is
+# linted and formatted with the packages.
+#
 # Lint the capability packages (the puma/x.uma house set: + B, SIM, TC) and check their
 # formatting, the Python blocks in their Markdown included.
 capabilities-lint:
-    uv --directory components/capabilities run ruff check hardline matrix ix recon dao gnx
-    uv --directory components/capabilities run ruff format --check hardline matrix ix recon dao gnx
+    uv --directory components/capabilities run ruff check hardline matrix ix recon dao gnx _testing conftest.py
+    uv --directory components/capabilities run ruff format --check hardline matrix ix recon dao gnx _testing conftest.py
 
 # Typecheck each capability FROM ITS OWN DIRECTORY. mypy resolves config from the
 # invocation rootdir, so running it from the workspace root silently applies the root
@@ -63,7 +66,8 @@ capabilities-lint:
 # the second list: a test's stand-in that drifts from the port it stands for is then a type
 # error, not a test that passes against a shape the code no longer has. matrix's and recon's
 # tests are not annotated yet. Each list is the gate, not a wish: adding a package to it is
-# how it stays clean.
+# how it stays clean. MYPYPATH is the workspace, where the tests' shared helpers (_testing)
+# live; the workspace's own Python (those helpers and conftest.py) is checked from there.
 #
 # Typecheck every capability package under mypy --strict, and the tests that are typed.
 capabilities-typecheck:
@@ -74,8 +78,9 @@ capabilities-typecheck:
       paths=(src/$p)
       case " hardline ix dao " in *" $p "*) paths+=(tests) ;; esac
       ( cd components/capabilities/$p && \
-        ../.venv/bin/mypy --strict "${paths[@]}" ) || fail=1
+        MYPYPATH=.. ../.venv/bin/mypy --strict "${paths[@]}" ) || fail=1
     done
+    ( cd components/capabilities && .venv/bin/mypy --strict _testing conftest.py ) || fail=1
     exit $fail
 
 # Every package's but the gnx CLI's, which has none. A skip components/capabilities/conftest.py
