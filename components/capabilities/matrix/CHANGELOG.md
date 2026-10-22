@@ -369,6 +369,15 @@ the `model` effect or none at all. Record section 17 has the reasons.
   (`observers: [{type: otel, capture_content: true}]`), as the conventions ask. A
   component's string span fields are dropped unless it is set.
 
+### Checks
+
+- `layers.json` runs on every test run (`tests/test_architecture.py`), with full coverage: a
+  file no layer claims, or a layer whose file moved, fails the suite. Relative imports are
+  judged like absolute ones, OpenTelemetry is held to the `otel` observer and the root's
+  telemetry module, and each rule of the map has a planted violation that must be found.
+- The type URL check finds a slash-form type URL of any version and a split on `/` outside
+  `matrix.domain.ids`, where it searched for `.v1/` alone.
+
 ## 0.6.0
 
 ### Added

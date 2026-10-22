@@ -417,6 +417,15 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   the events and their fields, the span names and the exit kinds as contract, each pinned
   by a test, and span attributes, the conventions' names and the human text as not.
 
+### Checks
+
+- `layers.json` maps every module to a layer and runs on every test run: a new module no layer
+  claims fails the suite, and each rule of the map has a planted violation that must be found.
+- The registry scan finds a registry call whatever its receiver is called, with the verbs read
+  from matrix's `Registry`.
+- docker is named by the compose environment alone, and matrix's process groups are reached by
+  the launcher alone.
+
 ## 0.5.0 — 2026-10-19
 
 ix runs agent evaluations as well as service comparisons, and the statistics behind a
