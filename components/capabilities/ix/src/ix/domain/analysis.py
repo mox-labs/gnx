@@ -574,7 +574,7 @@ _JUDGED = "judged by a model: it never decides"
 
 
 @dataclass(frozen=True, eq=False)
-class _Pending:
+class Pending:
     """A decision before the family is settled: what it would be, and the smallest level at
     which it would be made. ``level`` is None only for a decision outside the family (judged
     by a model), and ``math.inf`` when no level makes it or it could not be computed."""
@@ -584,7 +584,7 @@ class _Pending:
     level: float | None = None
 
 
-def _settle(pending: Sequence[_Pending]) -> dict[_Pending, Decision]:
+def settle_family(pending: Sequence[Pending]) -> dict[Pending, Decision]:
     """Each decision as the family allows it. ``holds`` is read at the full level (the
     verdict needs every decision to hold); ``fails`` by Holm's step-down procedure over the
     whole family (the verdict needs only one to fail): in order of level, the decision at
@@ -594,12 +594,12 @@ def _settle(pending: Sequence[_Pending]) -> dict[_Pending, Decision]:
     size = len(family)
     settled = {item: item.decision for item in pending}
 
-    def fails_level(item: _Pending) -> float:
+    def fails_level(item: Pending) -> float:
         return item.level if item.candidate == "fails" and item.level is not None else math.inf
 
     #: For each decision whose candidate is ``fails``: its Holm level, and whether the
     #: step-down reached it before stopping.
-    holm: dict[_Pending, tuple[float, bool]] = {}
+    holm: dict[Pending, tuple[float, bool]] = {}
     going = True
     for index, item in enumerate(sorted(family, key=fails_level)):
         step = _ALPHA / (size - index)
@@ -645,7 +645,7 @@ def _threshold_levels(threshold: Threshold, span: Span) -> tuple[float, float]:
 
 def _against_threshold(
     data: _Data, who: _SubjectInCell, measure: _Measure, threshold: Threshold
-) -> _Pending:
+) -> Pending:
     metric = measure.metric
     own = _own(data, who, measure)
     decision = Decision(
@@ -662,13 +662,13 @@ def _against_threshold(
         n=own.n,
     )
     if metric.judged:
-        return _Pending(decision.model_copy(update={"reason": _JUDGED}))
+        return Pending(decision.model_copy(update={"reason": _JUDGED}))
     if own.span is None:
         reason = own.problem or _too_few(own.n, MIN_BLOCKS)
-        return _Pending(decision.model_copy(update={"reason": reason}), level=math.inf)
+        return Pending(decision.model_copy(update={"reason": reason}), level=math.inf)
     low, high = own.span(_ALPHA)
     candidate, level = _nearer(*_threshold_levels(threshold, own.span))
-    return _Pending(
+    return Pending(
         decision.model_copy(update={"interval": Interval(low=low, high=high)}), candidate, level
     )
 
@@ -709,7 +709,7 @@ def _against_control(
     *,
     form: Form,
     margin: Margin | None,
-) -> _Pending:
+) -> Pending:
     metric = measure.metric
     basis = _basis(measure, margin)
     decision = Decision(
@@ -723,11 +723,11 @@ def _against_control(
         better=metric.direction,
     )
 
-    def undecided(reason: str, **update: object) -> _Pending:
-        return _Pending(decision.model_copy(update={"reason": reason, **update}), level=math.inf)
+    def undecided(reason: str, **update: object) -> Pending:
+        return Pending(decision.model_copy(update={"reason": reason, **update}), level=math.inf)
 
     if metric.judged:
-        return _Pending(decision.model_copy(update={"reason": _JUDGED}))
+        return Pending(decision.model_copy(update={"reason": _JUDGED}))
     if metric.direction not in ("higher", "lower"):
         return undecided("the metric has no better direction")
     if form != "superiority" and margin is None:
@@ -741,7 +741,7 @@ def _against_control(
     gain = gap.span if metric.direction == "higher" else gap.span.negated()
     limit = margin.value if margin is not None else 0.0
     candidate, level = _nearer(*_comparison_levels(form, limit, gain))
-    return _Pending(
+    return Pending(
         decision.model_copy(update={**measured, "interval": Interval(low=low, high=high)}),
         candidate,
         level,
@@ -933,11 +933,11 @@ class _Asked:
 
 def _decisions(
     data: _Data, who: _SubjectInCell, primary: _Measure, asked: _Asked
-) -> tuple[_Pending, ...]:
+) -> tuple[Pending, ...]:
     """Every decision a subject's finding in one cell depends on, before the family is
     settled."""
     design = data.design
-    found: list[_Pending] = []
+    found: list[Pending] = []
 
     def compare(measure: _Measure, form: Form, margin: Margin | None) -> None:
         if design.calibration == "aa":
@@ -1013,7 +1013,7 @@ def analyze(
     drafts = [
         (who, _decisions(data, who, primary, asked), _forced(data, who)) for who in _decided(data)
     ]
-    settled = _settle([item for _, pending, _ in drafts for item in pending])
+    settled = settle_family([item for _, pending, _ in drafts for item in pending])
     findings: list[Finding] = []
     for who, pending, forced in drafts:
         decisions = tuple(settled[item] for item in pending)

@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -31,15 +32,25 @@ import ix
 from ix.adapters._in.cli import main
 from ix.adapters._out.matrix_agents import Loop
 from ix.adapters._out.otel_tracing import OtelTracer
-from ix.composition import Root
+from ix.composition import Root, using
 from ix.composition.extension import register
 from ix.composition.settings import IxSettings
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 PACKAGE = Path(__file__).resolve().parents[1]
 EXAMPLE = PACKAGE / "examples" / "harness-integrity"
+
+
+#: The ``commands_on`` fixture: run the ``ix`` command (and the library functions) on a root.
+type CommandsOn = Callable[[Root], Root]
+
+
+@pytest.fixture
+def commands_on() -> Iterator[CommandsOn]:
+    with ExitStack() as stack:
+        yield lambda root: stack.enter_context(using(root))
 
 
 def _settings(**fields: Any) -> matrix.Config[IxSettings]:
@@ -575,12 +586,10 @@ class TestAVerdictIsTiedToWhatItJudged:
         assert by_url[SCRIPTED].drives == {}
 
     def test_report_and_runs_show_the_subjects_digests_and_commit(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, commands_on: CommandsOn
     ) -> None:
-        import ix.composition
-
         root = Root(registry=_mounting(), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         lab = _subject_lab(tmp_path)
         commit = _committed(lab)
         report = root.run(lab, exploratory=True)
@@ -1382,13 +1391,11 @@ class TestATextCheck:
 
 class TestThePlan:
     def test_a_threshold_out_of_reach_is_said_once(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, commands_on: CommandsOn
     ) -> None:
         """Regression: plan printed the "This run cannot hold" line twice."""
-        import ix.composition
-
         root = Root(registry=_registry(_fires()), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         lab = _routing(tmp_path, threshold={"op": ">=", "value": 0.9})
         runner = CliRunner(env={"COLUMNS": "80"})
         for _ in range(2):  # before any run, and with an earlier run's spread
@@ -1403,12 +1410,10 @@ class TestTheRunsList:
     """Regression: ``ix runs`` gave a run's id and path, and nothing it found."""
 
     def test_each_run_says_how_it_stood_and_what_it_found(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, commands_on: CommandsOn
     ) -> None:
-        import ix.composition
-
         root = Root(registry=_registry(_fires()), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         lab = _routing(tmp_path)
         root.register(lab)
         gated = root.run(lab)
@@ -1757,8 +1762,11 @@ class TestTelemetry:
         exporter = InMemorySpanExporter()
         provider = TracerProvider()
         provider.add_span_processor(SimpleSpanProcessor(exporter))
-        root = Root(registry=_registry(_fires()), settings=_settings())
-        root._tracer = OtelTracer("test", tracer_provider=provider)
+        root = Root(
+            registry=_registry(_fires()),
+            settings=_settings(),
+            tracer=OtelTracer("test", tracer_provider=provider),
+        )
         lab = _routing(tmp_path, repeats=5)
         root.plan(lab)
         report = root.run(lab, exploratory=True)
@@ -1910,14 +1918,12 @@ class TestTheSecondDrive:
     """Regressions from a second agent driving ix and matrix from ``--skill`` alone."""
 
     def test_a_verdict_is_followed_by_its_exit_code_and_next_step(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, commands_on: CommandsOn
     ) -> None:
         """The run's exit code was learned only through ``ix report``: nothing printed it,
         or a next step, after a run that did not hold."""
-        import ix.composition
-
         root = Root(registry=_registry(_fires()), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         lab = _routing(tmp_path)
         root.register(lab)
         runner = CliRunner(env={"COLUMNS": "200"})
@@ -1935,11 +1941,10 @@ class TestTheSecondDrive:
         assert again.exit_code == 11 and "Exit 11 (inconclusive)" in again.stderr
 
     def test_the_report_says_what_the_evidence_shows_in_plain_words(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, commands_on: CommandsOn
     ) -> None:
         """The plan said "build30 is better than build20 on latency p50", the verdict was
         fails, and nothing said build30 was slower."""
-        import ix.composition
         from ix.domain import Decision, Finding, Interval
         from ix.domain.report import shows
 
@@ -1968,7 +1973,7 @@ class TestTheSecondDrive:
         assert "the interval holds 0, so the run does not show which is higher" in said
 
         root = Root(registry=_registry(_fires()), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         report = root.run(lab, exploratory=True)
         (said,) = report.shows
         assert said.startswith("catalog's activated_correctly is 0.667 [")
@@ -2022,14 +2027,12 @@ class TestTheSecondDrive:
         assert "Best case:    This run cannot hold: with 20 trials" in shown.stdout
 
     def test_a_runtime_warning_is_said_once_per_run(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, commands_on: CommandsOn, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The claude-sdk runtime's bypassPermissions warning was printed once per trial:
         twenty times in a pilot of twenty."""
-        import ix.composition
-
         root = Root(registry=_cautious_registry(_fires()), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         lab = _routing(tmp_path)
         with caplog.at_level("WARNING"):
             report = root.run(lab, exploratory=True)

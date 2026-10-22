@@ -79,7 +79,7 @@ from ix.domain.experiment import Experiment
 from ix.domain.genre import Genres, genres
 from ix.domain.kind import KIND_FAMILIES, Kinds, kinds, per_cell
 from ix.domain.plan import required
-from ix.domain.ports import Preflight, SpanReader
+from ix.domain.ports import Preflight, SpanReader, Traced
 from ix.domain.problem import InvalidExperimentError
 from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
 from ix.domain.report import Report, Runs
@@ -320,7 +320,8 @@ class Root:
     :func:`root` is the default, over every installed ``matrix.extensions`` entry point.
     ``settings`` replaces what matrix's config tiers hold. ``run_store`` is the type URL of
     the store runs are kept in, built at matrix's ``store`` point: one whose config takes
-    ``root``, the directory a run's directory is made in."""
+    ``root``, the directory a run's directory is made in. ``tracer`` makes the spans of ix's
+    own work; by default they go through the OpenTelemetry provider installed."""
 
     def __init__(
         self,
@@ -333,6 +334,7 @@ class Root:
         clock: Callable[[], str] = _now,
         run_id: Callable[[str], str] = _run_id,
         run_store: str = RUN_STORE,
+        tracer: Traced | None = None,
     ) -> None:
         self._genre_files = genre_files or GenreFiles()
         self._kind_files = kind_files or KindFiles()
@@ -342,7 +344,7 @@ class Root:
         self._clock = clock
         self._run_id = run_id
         self._run_store = run_store
-        self._tracer = OtelTracer(version)
+        self._tracer: Traced = OtelTracer(version) if tracer is None else tracer
         self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix.models)
         self._supplies = {
             LAUNCHER: MatrixLauncher(),
@@ -981,9 +983,23 @@ _DEFAULT: Root | None = None
 
 
 def root() -> Root:
-    """The default wiring: the installed genres and kinds, every adapter in
+    """The root the library functions and the ``ix`` command run on: the one :func:`using`
+    chose, or else the default wiring: the installed genres and kinds, every adapter in
     matrix's registry, and the registration file beside the experiment."""
     global _DEFAULT  # noqa: PLW0603
     if _DEFAULT is None:
         _DEFAULT = Root()
     return _DEFAULT
+
+
+@contextmanager
+def using(chosen: Root) -> Iterator[Root]:
+    """Run the library functions and the ``ix`` command on ``chosen`` while the block runs
+    (a program's own registry, a test's scripted runtimes), and on the root they ran on
+    before once it ends."""
+    global _DEFAULT  # noqa: PLW0603
+    before, _DEFAULT = _DEFAULT, chosen
+    try:
+        yield chosen
+    finally:
+        _DEFAULT = before

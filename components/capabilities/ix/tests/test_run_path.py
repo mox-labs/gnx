@@ -585,7 +585,7 @@ class TestAReadingOfTheWrongShape:
     @pytest.mark.parametrize("given", [[1.0, 2.0], {"p99": None}, {"p99": "fast"}, {"p99": True}])
     def test_a_distribution_that_is_not_one_is_the_sensors_shape_failure(self, given: Any) -> None:
         latency = Metric(name="latency", unit="ms", direction="lower", shape="histogram")
-        reading = running._reading(self._INTERACTION, "ix.v1.sensor.test", latency, given)
+        reading = running.as_reading(self._INTERACTION, "ix.v1.sensor.test", latency, given)
         assert reading.failure is not None
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "shape")
         assert reading.statistics == {}
@@ -594,7 +594,7 @@ class TestAReadingOfTheWrongShape:
     def test_a_scalar_that_is_not_finite_is_the_sensors_failure(self, given: float) -> None:
         """Recorded as a value it would be dropped by the analysis without a word."""
         throughput = Metric(name="throughput", unit="1/s", direction="higher", shape="scalar")
-        reading = running._reading(self._INTERACTION, "s", throughput, given)
+        reading = running.as_reading(self._INTERACTION, "s", throughput, given)
         assert reading.failure is not None and reading.value is None
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "not_finite")
 
@@ -608,7 +608,7 @@ class TestAReadingOfTheWrongShape:
         """Regression: a NaN statistic was a ``shape`` failure, where a NaN scalar is
         ``not_finite``."""
         latency = Metric(name="latency", unit="ms", direction="lower", shape=shape)
-        reading = running._reading(self._INTERACTION, "s", latency, given)
+        reading = running.as_reading(self._INTERACTION, "s", latency, given)
         assert reading.failure is not None and reading.statistics == {}
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "not_finite")
 
@@ -618,7 +618,7 @@ class TestAReadingOfTheWrongShape:
     def test_a_scalar_int_too_large_for_a_float_is_not_finite(self, given: int) -> None:
         """Regression: ``float()`` raised OverflowError out of the run."""
         throughput = Metric(name="throughput", unit="1/s", direction="higher", shape="scalar")
-        reading = running._reading(self._INTERACTION, "s", throughput, given)
+        reading = running.as_reading(self._INTERACTION, "s", throughput, given)
         assert reading.failure is not None and reading.value is None
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "not_finite")
         assert "too large for a float" in reading.failure.message
@@ -632,7 +632,7 @@ class TestAReadingOfTheWrongShape:
     ) -> None:
         """Regression: ``float()`` raised OverflowError out of the run."""
         latency = Metric(name="latency", unit="ms", direction="lower", shape=shape)
-        reading = running._reading(self._INTERACTION, "s", latency, given)
+        reading = running.as_reading(self._INTERACTION, "s", latency, given)
         assert reading.failure is not None and reading.statistics == {}
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "not_finite")
         assert "p99=" in reading.failure.message
@@ -649,7 +649,7 @@ class TestAReadingOfTheWrongShape:
         """Regression: ``float()`` raised OverflowError out of the sense step, failing the
         run's sensing where one reading was meant to fail."""
         share = Metric(name="tests_pass_share", unit="ratio", direction="higher", shape="count")
-        reading = running._reading(self._INTERACTION, "s", share, given)
+        reading = running.as_reading(self._INTERACTION, "s", share, given)
         assert reading.failure is not None and reading.statistics == {}
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "shape")
 
@@ -670,13 +670,13 @@ class TestAReadingOfTheWrongShape:
             async def sense(self, interaction: Any, *, truth: Any, options: Any) -> Any:
                 return given
 
-        measured = await running._measure(Odd(), self._INTERACTION, {}, {})
+        measured = await running.measure(Odd(), self._INTERACTION, {}, {})
         assert isinstance(measured, Failure)
         assert (measured.owner, measured.reason) == ("sensor", "shape")
 
     def test_a_distribution_of_numbers_is_read(self) -> None:
         latency = Metric(name="latency", unit="ms", direction="lower", shape="histogram")
-        reading = running._reading(self._INTERACTION, "s", latency, {"p50": 3, "p99": 7.5})
+        reading = running.as_reading(self._INTERACTION, "s", latency, {"p50": 3, "p99": 7.5})
         assert reading.failure is None and reading.statistics == {"p50": 3.0, "p99": 7.5}
 
 

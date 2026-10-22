@@ -704,7 +704,7 @@ def _counted(measured: object) -> dict[str, float] | None:
     return {"events": float(events), "units": float(units)}
 
 
-def _reading(
+def as_reading(
     interaction: Interaction,
     sensor: str,
     metric: Metric,
@@ -769,7 +769,7 @@ def _reading(
     )
 
 
-async def _measure(
+async def measure(
     sensor: Sensor, interaction: Interaction, truth: Mapping[str, Any], options: Mapping[str, Any]
 ) -> Sensed | Failure:
     """What a sensor gives for one interaction, or the failure it raised. Anything but a
@@ -837,7 +837,7 @@ async def sense(
                 **{"ix.trial.seq": interaction.seq, "ix.subject": interaction.subject},
             ) as span:
                 before = _recorded(scope)
-                measured = await _measure(kit.sensors[selected.kind], interaction, truth, options)
+                measured = await measure(kit.sensors[selected.kind], interaction, truth, options)
                 sessions = _since(before, scope)
                 for name in selected.metrics:
                     metric = setup.design.metric(name)
@@ -846,7 +846,7 @@ async def sense(
                     given = measured if isinstance(measured, Failure) else measured.values.get(name)
                     detail = {} if isinstance(measured, Failure) else measured.detail
                     _evaluated(span, name, given)
-                    reading = _reading(interaction, selected.kind, metric, given, detail)
+                    reading = as_reading(interaction, selected.kind, metric, given, detail)
                     readings.append(reading.model_copy(update={"sessions": sessions}))
     if scope is not None:
         scope.emit(SENSE_END, readings=len(readings), interactions=len(interactions))

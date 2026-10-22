@@ -701,6 +701,10 @@ call it from synchronous code; `on_event=` receives progress events, which are t
 Importing `ix` loads no host runtime: matrix is imported when a function is first called.
 Only ix's composition root and its `matrix_*` adapters name matrix.
 
+A program that wires its own adapters builds an `ix.composition.Root` over its own registry
+(`Root(registry=...)`; `tracer=` takes where ix's spans go), and `with
+ix.composition.using(root):` runs the library functions and the `ix` command on it.
+
 ### What a caller may rely on
 
 Before 1.0 a minor release may change anything, said in the changelog. Beyond the declared
