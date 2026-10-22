@@ -257,11 +257,7 @@ def _install(
     )
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import (
-        BatchSpanProcessor,
-        ConsoleSpanExporter,
-        SimpleSpanProcessor,
-    )
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
     attributes: dict[str, str] = {}
     named = os.environ.get("OTEL_SERVICE_NAME") or "service.name=" in os.environ.get(
@@ -277,13 +273,15 @@ def _install(
     if plan["traces"]:
         tracer_provider = TracerProvider(resource=resource)
         for name in sorted(plan["traces"]):
-            if name == "console":
-                # stderr: stdout is the command's own document
-                console = ConsoleSpanExporter(out=sys.stderr)
-                tracer_provider.add_span_processor(SimpleSpanProcessor(console))
-            else:
-                exporter = _otlp("traces", endpoint)
-                tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
+            # Batched, the console too: an exporter writes from the processor's thread, never
+            # on the task whose span ends, so the otel observer's `around` does no I/O that
+            # can wait. The console writes to stderr: stdout is the command's own document.
+            exporter = (
+                ConsoleSpanExporter(out=sys.stderr)
+                if name == "console"
+                else _otlp("traces", endpoint)
+            )
+            tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
             installed.append(f"traces:{name}")
         trace.set_tracer_provider(tracer_provider)
         providers.append(tracer_provider)

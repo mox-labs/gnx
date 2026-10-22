@@ -277,6 +277,11 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Fixed
 
+- **Console span export no longer writes on the task doing the work.** With
+  `OTEL_TRACES_EXPORTER=console` (or `configure_telemetry(console=True)`), spans went through a
+  `SimpleSpanProcessor`, so ending one wrote to stderr inside the `otel` observer's `around`,
+  where an observer must do no I/O that can wait; a full stderr pipe stalled the work. Every
+  span exporter is now batched, the console's included.
 - **A claude-sdk session's unreported usage is None, not 0.** A result without usage was
   recorded as 0 input and 0 output tokens, and absent cache counts as 0, though a fact the
   runtime did not report is None. Input tokens are the sum of what was reported.
