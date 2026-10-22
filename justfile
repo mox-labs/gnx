@@ -85,8 +85,9 @@ capabilities-typecheck:
 
 # Every package's but the gnx CLI's, which has none, and the workspace guard's own (_testing).
 # A skip components/capabilities/conftest.py does not expect fails the run, and every test is
-# bounded in time (pytest-timeout). No test reaches a live model or any host but this machine:
-# conftest.py refuses it.
+# bounded in time (pytest-timeout). conftest.py refuses a live model session, a socket or a name
+# lookup in the test process to any host but this machine, and k6 started against one; its
+# docstring lists the routes it does not see (a child process other than k6, among them).
 #
 # The capability packages' tests, each skip listed with its reason.
 capabilities-test:

@@ -53,6 +53,35 @@ def test_a_socket_may_connect_to_loopback_and_nowhere_else(refused_live_calls: l
     _refused(refused_live_calls, REMOTE)
 
 
+def test_a_datagram_may_go_to_loopback_and_nowhere_else(refused_live_calls: list[str]) -> None:
+    """Regression: a UDP ``sendto`` was not seen, so a datagram left the machine unrefused."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.sendto(b"x", ("127.0.0.1", 9))
+    assert refused_live_calls == []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        with pytest.raises(AssertionError, match="loopback"):
+            sock.sendto(b"x", (REMOTE, 9))
+        _refused(refused_live_calls, REMOTE)
+        with pytest.raises(AssertionError, match="loopback"):
+            sock.sendto(b"x", 0, (REMOTE, 9))
+        _refused(refused_live_calls, REMOTE)
+
+
+def test_a_name_other_than_localhost_is_not_looked_up(refused_live_calls: list[str]) -> None:
+    """Regression: ``getaddrinfo("example.com")`` resolved, so a lookup left the machine. A
+    name other than ``localhost`` is refused before it is looked up; an address needs no
+    lookup, and connecting to it is the socket guard's to refuse."""
+    assert socket.getaddrinfo("localhost", 80)
+    assert socket.getaddrinfo(REMOTE, 80)
+    assert refused_live_calls == []
+    with pytest.raises(AssertionError, match="loopback"):
+        socket.getaddrinfo("example.com", 443)
+    _refused(refused_live_calls, "example.com")
+    with pytest.raises(AssertionError, match="loopback"):
+        socket.gethostbyname("example.com")
+    _refused(refused_live_calls, "example.com")
+
+
 async def test_an_httpx2_client_outside_hardlines_transport_is_refused(
     refused_live_calls: list[str],
 ) -> None:

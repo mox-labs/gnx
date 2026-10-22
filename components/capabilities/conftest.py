@@ -1,5 +1,6 @@
-"""The capabilities workspace's guard: no test in any package runs a live model session, or
-reaches any host but this machine.
+"""The capabilities workspace's guard: no test in any package runs a live model session, and
+the test process itself reaches no host but this machine. What it does not cover is listed
+below; it is a guard against the routes the suites take, not a sandbox.
 
 A live session spends money and needs credentials, so no test opens one. The guard refuses
 each call where a session reaches a model, beneath every runtime and backend that makes it:
@@ -15,26 +16,39 @@ A test that fakes one of these is untouched: a fake SDK module, or a backend han
 ``MockTransport``, is not the object refused. Refusing the runtimes' own ``run`` instead would
 refuse matrix's tests of those runtimes, which run them over fakes.
 
-Beneath those, the network itself: a socket may connect to loopback alone (``127.0.0.0/8``,
-``::1``, ``localhost``, the unspecified address) or a Unix socket. That refuses every other
-route out of the test process whatever client takes it: pydantic-ai's provider clients (httpx
-or httpx2), fastmcp's remote transport, recon's requester, and any HTTP client a dependency
+Beneath those, the test process's own sockets: a socket may connect, or send a datagram, to
+loopback alone (``127.0.0.0/8``, ``::1``, ``localhost``, the unspecified address) or a Unix
+socket, and a name other than ``localhost`` is not looked up (``getaddrinfo``,
+``gethostbyname``), since the lookup itself leaves the machine. That refuses every
+in-process route out whatever client takes it: pydantic-ai's provider clients (httpx or
+httpx2), fastmcp's remote transport, recon's requester, and any HTTP client a dependency
 brings later. A load tool is a process of its own, which no socket guard reaches, so starting
-``k6`` is refused when a URL or address it is given, in its arguments or in the environment
-its caller added, is not loopback. A test that reaches third-party hosts on purpose (recon's
-live tests, run by ``just recon-live``) is marked ``network``, and only the socket guard lets
-it by.
+``k6`` directly (``k6`` the program of a ``Popen``) is refused when a URL or address it is
+given, in its arguments or in the environment its caller added, is not loopback. A test that
+reaches third-party hosts on purpose (recon's live tests, run by ``just recon-live``) is
+marked ``network``, and only the socket and lookup guard lets it by.
 
 A refused call raises, and the code under test may catch that and carry on (ix records it
 as a trial the harness failed). So the test also fails at teardown whenever a call was
 refused, whatever it caught.
 
 The guard replaces module and class attributes, so it holds only for code that looks those
-names up when it calls them. The socket guard sees ``socket.socket``'s ``connect`` and
-``connect_ex``, through which asyncio, ssl and every pure-Python client connect; a C extension
-that opens its own sockets is not seen, and neither is a URL in a file ``k6`` reads. A test that
-proves a call site does so reaches the guard on purpose: it reads ``refused_live_calls`` and
-clears what it expected to find there (``_testing/test_guard.py`` does, for each route).
+names up when it calls them. The socket guard sees ``socket.socket``'s ``connect``,
+``connect_ex`` and ``sendto``, through which asyncio, ssl and every pure-Python client
+connect, and ``socket``'s lookups. It does not see, and so does not refuse:
+
+* any child process other than ``k6`` started directly: ``uv``, ``pip``, ``git``, ``curl``,
+  a child ``python``, a docker container. Each reaches the network as it likes;
+* ``k6`` started another way: through a shell (``shell=True``, ``sh -c``), through
+  ``/usr/bin/env k6``, with its target in an environment variable the caller did not add
+  (one set beforehand, then inherited), or in ``-e KEY=host:port``, or in a file it reads;
+* ``_socket.socket`` used directly, a socket's ``sendmsg``, ``gethostbyaddr``, and any C
+  extension that opens its own sockets or resolves names itself.
+
+No test takes any of these routes today; a new test that needs one is reviewed for it. A test
+that proves a call site reaches the guard does so on purpose: it reads
+``refused_live_calls`` and clears what it expected to find there (``_testing/test_guard.py``
+does, for each route).
 
 It also holds the suites' one skip gate. Under ``--strict-skips`` (``just capabilities-test``,
 and so CI) a skip whose reason is not in ``EXPECTED_SKIPS`` fails the run: a gate test that
@@ -104,6 +118,15 @@ def loopback(host: str | None) -> bool:
     return address.is_loopback or address.is_unspecified
 
 
+def _address(host: str) -> bool:
+    """Whether ``host`` is an address, which needs no lookup, rather than a name."""
+    try:
+        ipaddress.ip_address(host.split("%")[0])
+    except ValueError:
+        return False
+    return True
+
+
 def _remote_targets(argv: Any, env: Any) -> list[str]:
     """The URLs and addresses a process is given, in its arguments and in the environment
     its caller added to this one's, that are not loopback."""
@@ -128,17 +151,40 @@ def _guard_the_network(
         refused.append(where)
         return AssertionError(f"a test reached {where}: only loopback is allowed")
 
+    def check(sock: socket.socket, address: Any) -> None:
+        if sock.family in (socket.AF_INET, socket.AF_INET6) and not loopback(address[0]):
+            raise refuse(f"{address[0]}:{address[1]}")
+
     def checked(original: Any) -> Any:
         def connect(self: socket.socket, address: Any) -> Any:
-            if self.family in (socket.AF_INET, socket.AF_INET6) and not loopback(address[0]):
-                raise refuse(f"{address[0]}:{address[1]}")
+            check(self, address)
             return original(self, address)
 
         return connect
 
+    def sent(original: Any) -> Any:
+        # sendto(data, address) or sendto(data, flags, address): the address is last.
+        def sendto(self: socket.socket, data: Any, *rest: Any) -> Any:
+            check(self, rest[-1])
+            return original(self, data, *rest)
+
+        return sendto
+
+    def looked_up(original: Any) -> Any:
+        def lookup(host: Any, *rest: Any, **options: Any) -> Any:
+            name = os.fsdecode(host) if isinstance(host, str | bytes) else host
+            if name is not None and not loopback(name) and not _address(name):
+                raise refuse(f"a lookup of {name}")
+            return original(host, *rest, **options)
+
+        return lookup
+
     if sockets:
         for name in ("connect", "connect_ex"):
             monkeypatch.setattr(socket.socket, name, checked(getattr(socket.socket, name)))
+        monkeypatch.setattr(socket.socket, "sendto", sent(socket.socket.sendto))
+        for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex"):
+            monkeypatch.setattr(socket, name, looked_up(getattr(socket, name)))
 
     started = subprocess.Popen.__init__
 
