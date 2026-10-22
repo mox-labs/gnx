@@ -1,6 +1,6 @@
 [project]
 name = "matrix"
-version = "0.6.0"
+version = "0.7.0"
 description = "Components wired by kind, a durable record of every run, and agents composed from config"
 readme = "README.md"
 requires-python = ">=3.12"

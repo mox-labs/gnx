@@ -10,7 +10,7 @@ the reply's text, your own graders, and a judge.
 ## What you need
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.6.0#subdirectory=components/capabilities/ix"
 ```
 
 ix comes with the `claude-sdk` agent runtime, which runs each session through the Claude
