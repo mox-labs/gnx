@@ -70,6 +70,9 @@
   returned or raised, on a channel of its own with a per-run token; ix compares with the
   truth. A returned value is compared as JSON carries it (an integer- or float-like value
   as its number); one JSON cannot carry fails its case with its `repr`.
+- **`text-match` refuses an empty list.** `contains: []` or `excludes: []` passed validate
+  and then checked for the literal text `[]`. It is now `option_invalid` at validate, and a
+  sensor failure if it reaches a trial.
 
 ## 0.5.0 — 2026-10-19
 

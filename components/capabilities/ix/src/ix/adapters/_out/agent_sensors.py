@@ -333,12 +333,12 @@ def _texts(value: Any) -> list[str] | None:
 def _check_problem(name: str, value: Any, path: str) -> Problem | None:
     """What is wrong with one check as written; None when nothing is."""
     if name in ("contains", "excludes"):
-        if _texts(value) is None:
+        if not _texts(value):
             return problem(
                 path,
                 kind="option_invalid",
-                message=f"{name} is a text or a list of texts; got {value!r}",
-                fix=f"{name}: BANANA, or {name}: [BANANA, split]",
+                message=f"{name} is a text or a list of one or more texts; got {value!r}",
+                fix=f"{name}: BANANA, or {name}: [BANANA, split]; or leave {name} out",
             )
         return None
     if not isinstance(value, str):
@@ -427,7 +427,13 @@ class TextMatchSensor(_Reads):
 
         passed: dict[str, bool] = {}
         for name, value in checks.items():
-            texts = [fold(item) for item in _texts(value) or [str(value)]]
+            given = _texts(value)
+            if not given:
+                raise ValueError(
+                    f"text-match's {name} for probe {interaction.probe} is {value!r}, not a "
+                    "text or a list of one or more texts"
+                )
+            texts = [fold(item) for item in given]
             match name:
                 case "starts_with":
                     passed[name] = fold(text).startswith(texts[0])

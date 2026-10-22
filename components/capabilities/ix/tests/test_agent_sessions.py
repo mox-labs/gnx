@@ -759,6 +759,22 @@ class TestTextMatch:
         both = await _sense(TextMatchSensor(), reply, {"starts_with": "BANANA"}, contains="pie")
         assert both.values == {"text_matched": False} and both.detail["failed"] == ["contains"]
 
+    @pytest.mark.parametrize("name", ["contains", "excludes"])
+    async def test_an_empty_list_of_texts_is_a_check_written_wrong(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        """Regression: ``contains: []`` and ``excludes: []`` passed validate, and then each
+        checked for the literal text ``"[]"``."""
+        probe = ProbeConfig(id="a", kind="prompt", truth={name: []})
+        around = Surroundings(path="sensors.0", base=str(tmp_path), probes=(("probes.0", probe),))
+        found = {(p.path, p.kind) for p in TextMatchSensor().review({name: []}, around)}
+        assert found == {
+            (f"sensors.0.{name}", "option_invalid"),
+            (f"probes.0.truth.{name}", "option_invalid"),
+        }
+        with pytest.raises(ValueError, match=f"{name} for probe ask"):
+            await _sense(TextMatchSensor(), _interaction({"text": "[]"}), {name: []})
+
     async def test_no_check_at_all_is_the_sensors_failure(self) -> None:
         with pytest.raises(ValueError, match="no check for probe ask"):
             await _sense(TextMatchSensor(), _interaction({"text": "x"}), {})
