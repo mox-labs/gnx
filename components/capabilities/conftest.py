@@ -18,15 +18,15 @@ refuse matrix's tests of those runtimes, which run them over fakes.
 
 Beneath those, the test process's own sockets: a socket may connect, or send a datagram, to
 loopback alone (``127.0.0.0/8``, ``::1``, ``localhost``, the unspecified address) or a Unix
-socket, and a name other than ``localhost`` is not looked up (``getaddrinfo``,
-``gethostbyname``), since the lookup itself leaves the machine. That refuses every
-in-process route out whatever client takes it: pydantic-ai's provider clients (httpx or
-httpx2), fastmcp's remote transport, recon's requester, and any HTTP client a dependency
-brings later. A load tool is a process of its own, which no socket guard reaches, so starting
-``k6`` directly (``k6`` the program of a ``Popen``) is refused when a URL or address it is
-given, in its arguments or in the environment its caller added, is not loopback. A test that
-reaches third-party hosts on purpose (recon's live tests, run by ``just recon-live``) is
-marked ``network``, and only the socket and lookup guard lets it by.
+socket, and a name other than ``localhost`` is not looked up (``socket.getaddrinfo``,
+``gethostbyname`` and ``gethostbyname_ex``), since the lookup itself leaves the machine.
+That refuses every in-process route out whatever client takes it: pydantic-ai's provider
+clients (httpx or httpx2), fastmcp's remote transport, recon's requester, and any HTTP
+client a dependency brings later. A load tool is a process of its own, which no socket guard
+reaches, so starting ``k6`` directly (``k6`` the program of a ``Popen``) is refused when a
+URL or address it is given, in its arguments or in the environment its caller added, is not
+loopback. A test that reaches third-party hosts on purpose (recon's live tests, run by
+``just recon-live``) is marked ``network``, and only the socket and lookup guard lets it by.
 
 A refused call raises, and the code under test may catch that and carry on (ix records it
 as a trial the harness failed). So the test also fails at teardown whenever a call was
@@ -35,17 +35,26 @@ refused, whatever it caught.
 The guard replaces module and class attributes, so it holds only for code that looks those
 names up when it calls them. The socket guard sees ``socket.socket``'s ``connect``,
 ``connect_ex`` and ``sendto``, through which asyncio, ssl and every pure-Python client
-connect, and ``socket``'s lookups. It does not see, and so does not refuse:
+connect, and ``socket``'s three forward lookups above. It does not see, and so does not
+refuse:
 
 * any child process other than ``k6`` started directly: ``uv``, ``pip``, ``git``, ``curl``,
   a child ``python``, a docker container. Each reaches the network as it likes;
 * ``k6`` started another way: through a shell (``shell=True``, ``sh -c``), through
   ``/usr/bin/env k6``, with its target in an environment variable the caller did not add
   (one set beforehand, then inherited), or in ``-e KEY=host:port``, or in a file it reads;
-* ``_socket.socket`` used directly, a socket's ``sendmsg``, ``gethostbyaddr``, and any C
-  extension that opens its own sockets or resolves names itself.
+* ``_socket.socket`` and ``_socket.getaddrinfo`` used directly, and a socket's ``sendmsg``;
+* the reverse lookups ``gethostbyaddr`` and ``getnameinfo``, which leave the machine too
+  (``getfqdn`` goes through ``gethostbyaddr``);
+* any C extension that opens its own sockets or resolves names itself.
 
-No test takes any of these routes today; a new test that needs one is reviewed for it. A test
+The suites do take the first route: they start child processes of their own, ``python``
+(the CLIs, and servers on loopback), shells and ``cat``, ``git init``, ``jq``, ``pgrep``,
+docker (a compose project with ``pull_policy: never``, published on ``127.0.0.1``), and ix's
+CLI, which starts ``k6`` against a loopback subject. None of them reaches a host other than
+this one: their calls were read for it, and each child runs mock rows, local files or
+loopback targets. No test takes the other routes. A new test that starts a child, or takes
+any route above, is reviewed for it. A test
 that proves a call site reaches the guard does so on purpose: it reads
 ``refused_live_calls`` and clears what it expected to find there (``_testing/test_guard.py``
 does, for each route).
