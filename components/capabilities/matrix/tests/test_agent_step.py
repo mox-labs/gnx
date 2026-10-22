@@ -24,7 +24,6 @@ from matrix import (
     RunError,
     compose,
 )
-from matrix.adapters._out.runtime.claude_sdk import _http_reason
 from matrix.adapters._out.runtime.mock import MockAgentRuntime, MockAgentRuntimeConfig
 
 DIFF = "acme.v1.diff"
@@ -259,22 +258,6 @@ def test_runtime_failures_carry_whose_problem_they_are(
     error = AgentRuntimeError("x", reason=reason)
     assert (error.kind, error.retryable) == (kind, retryable)
     assert error.payload()["error"]["details"]["reason"] == reason
-
-
-@pytest.mark.parametrize(
-    ("status", "reason"),
-    [
-        (429, "rate_limited"),
-        (401, "auth"),
-        (403, "auth"),
-        (529, "unavailable"),
-        (504, "timeout"),
-        (400, "failed"),
-        (None, "failed"),
-    ],
-)
-def test_sdk_http_statuses_map_to_reasons(status: Any, reason: str) -> None:
-    assert _http_reason(status) == reason
 
 
 async def test_an_agent_called_by_a_component_reports_as_its_child() -> None:

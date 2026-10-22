@@ -147,7 +147,6 @@ async def test_a_session_reaches_the_workspace_guard(
 
 
 class TestClaudeSdkRuntime:
-    @pytest.mark.anyio
     async def test_run_returns_agent_response(self, fake_sdk: _Captured) -> None:
         response = await _runtime().run(_defn(system_prompt="You are helpful."), "hello")
 
@@ -158,7 +157,6 @@ class TestClaudeSdkRuntime:
         assert (response.duration_ms, response.cost_usd, response.num_turns) == (100, 0.01, 1)
         assert response.family == "claude"
 
-    @pytest.mark.anyio
     async def test_run_captures_tool_calls(self, fake_sdk_with_tools: _Captured) -> None:
         response = await _runtime().run(_defn(system_prompt="test"), "write evals")
 
@@ -172,7 +170,6 @@ class TestClaudeSdkRuntime:
         assert (response.duration_ms, response.cost_usd) == (250, 0.05)
         assert (response.tokens_input, response.tokens_output, response.num_turns) == (100, 80, 2)
 
-    @pytest.mark.anyio
     async def test_definition_and_deployment_reach_the_sdk(self, fake_sdk: _Captured) -> None:
         runtime = _runtime(plugins=[{"type": "local", "path": "/p"}], setting_sources=[])
         await runtime.run(
@@ -187,7 +184,6 @@ class TestClaudeSdkRuntime:
         assert opts.plugins == [{"type": "local", "path": "/p"}]
         assert opts.setting_sources == []
 
-    @pytest.mark.anyio
     async def test_empty_prompt(self, fake_sdk: _Captured) -> None:
         assert (await _runtime().run(_defn(), "")).content == "echo: "
 
@@ -395,6 +391,29 @@ class TestSessionEnding:
             await _runtime().run(_defn(), "hi")
 
 
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (429, "rate_limited"),
+        (401, "auth"),
+        (403, "auth"),
+        (529, "unavailable"),
+        (504, "timeout"),
+        (400, "failed"),
+        (None, "failed"),
+    ],
+)
+async def test_a_failed_session_s_http_status_is_its_reason(
+    status: int | None, reason: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from matrix import AgentRuntimeError
+
+    _install(monkeypatch, _result(subtype="success", is_error=True, api_error_status=status))
+    with pytest.raises(AgentRuntimeError) as raised:
+        await _runtime().run(_defn(), "hi")
+    assert raised.value.reason == reason
+
+
 async def test_usage_the_result_does_not_report_is_none_not_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -410,7 +429,6 @@ async def test_usage_the_result_does_not_report_is_none_not_zero(
     assert (response.cache_read_tokens, response.cache_write_tokens) == (None, None)
 
 
-@pytest.mark.anyio
 async def test_a_tool_call_is_timed_from_its_request_to_its_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

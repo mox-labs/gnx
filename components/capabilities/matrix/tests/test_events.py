@@ -51,6 +51,10 @@ class Stuck:
         await asyncio.Event().wait()
 
 
+async def _value() -> str:
+    return "v"
+
+
 async def test_an_observer_that_never_returns_cannot_stall_the_run() -> None:
     stuck = Stuck()
     ran: list[str] = []
@@ -65,8 +69,11 @@ async def test_an_observer_that_never_returns_cannot_stall_the_run() -> None:
         run = await executor.run(wire({"a": Step(body, provides=OUT)}))
     assert run.status == "completed" and ran == ["component"]
     assert run.rows(OUT) == ("v",)
-    # run.start is in the observer's hands for good; everything after it went undelivered.
-    assert run.events_dropped == 5
+    # run.start is in the observer's hands for good, never delivered, and nothing after it
+    # was: every event is counted, as many as the same run emits to an observer that returns.
+    seen = RecordingObserver()
+    await Executor([seen]).run(wire({"a": Step(lambda ctx: _value(), provides=OUT)}))
+    assert run.events_dropped == len(seen.events) > 1
 
 
 async def test_a_full_queue_drops_and_counts_and_every_event_is_delivered_or_counted() -> None:
