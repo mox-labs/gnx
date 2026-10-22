@@ -246,20 +246,35 @@ that row's `problem` (never the value), and exits 3. Its report is printed befor
 
 ### Exit codes and errors
 
-Shared with ix. A failure under `--json` is one line on stderr,
-`{"error": {"kind", "message", "retryable", "retry_after", "fix"}}`; without `--json` the same
-message is prose. `retry_after` is the provider's hint in seconds, or `null`. `fix` is a next
-step that can succeed, or `null`.
+The codes and the error envelope are those the capability CLIs agree, in the workspace's
+`exit-codes.json` and `error-envelope.json`. With `--json`, every failure, a usage error and a
+defect included, is one line on stderr:
 
-| exit | meaning | `kind` | raised from |
+```json
+{"schema": "hardline.v1.error",
+ "error": {"kind": "transient", "message": "...", "fix": "...", "complete": true,
+           "problems": [], "details": {"reason": "rate_limit", "retry_after": 7.0}}}
+```
+
+`fix` is always a next step that can succeed. `problems` holds one record per bad key, as
+`{"path", "kind", "message", "fix", "allowed", "got", "source"}`, with `source` the tier it came
+from. `details.reason` is the `BackendError` reason, with `retry_after` (the provider's hint in
+seconds) and `limit` (the one of the row's `limits` that stopped the call) when set. Without
+`--json`, stderr carries `hardline: error (<kind>): <message>` and the fix as prose.
+
+| exit | `kind` | meaning | raised from |
 |---|---|---|---|
-| 0 | success | — | — |
-| 1 | failure not otherwise classified | `unknown` | `BackendError(reason="unknown")`, `ContractError`, `SchemaError` |
-| 2 | usage error (bad flags or arguments) | — | argparse |
-| 3 | config: change the input | `config`, `bad_request` | `ConfigError` (a row its backend cannot serve, a broken backend plugin the row names, a bad call argument), `UnknownModelError`, `SecretError`, `BackendError(reason="bad_request")` |
-| 4 | not found | `not_found` | reserved; hardline raises none today |
-| 5 | transient: retrying later may succeed | `rate_limit`, `timeout`, `unavailable` | `BackendError` with `retryable` true |
-| 6 | auth: the provider rejected the key | `auth` | `BackendError(reason="auth")` |
+| 0 | `ok` | success | — |
+| 1 | `unknown` | a failure hardline did not classify | `BackendError(reason="unknown")`, `ContractError`, `SchemaError`, and any exception it did not mean to raise |
+| 2 | `usage` | bad flags or arguments | the command line |
+| 3 | `config` | change the input | `ConfigError` (a row its backend cannot serve, a broken backend plugin the row names, a bad call argument, a redirect), `UnknownModelError`, `SecretError`, `BackendError(reason="bad_request")` |
+| 5 | `transient` | retrying later may succeed | `BackendError` with `retryable` true: `rate_limit`, `timeout`, `unavailable` |
+| 6 | `auth` | the provider rejected the key | `BackendError(reason="auth")` |
+| 130 | `interrupted` | Ctrl-C before the command finished | — |
+
+`hardline` has no kind of its own, so no code from 10 up. Problem kinds are the shared ones
+(`yaml_syntax`, `wrong_shape`, `unknown_key`, `missing_key`, `invalid_value`, `name_unknown`)
+and two of hardline's: `shared_fate` (a warning) and `secret_unresolved`.
 
 ## Extend
 

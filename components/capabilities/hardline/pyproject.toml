@@ -19,6 +19,8 @@ dependencies = [
     # The API only: it records nothing until an application installs an SDK. 1.27 for the
     # histogram's explicit_bucket_boundaries_advisory.
     "opentelemetry-api>=1.27",
+    # The CLI, on the workspace's one stack (Q9).
+    "rich-click>=1.8",
 ]
 
 [project.scripts]

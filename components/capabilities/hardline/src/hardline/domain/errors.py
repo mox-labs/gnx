@@ -10,7 +10,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from hardline.domain.types import Attempt, Limit, Usage
+    from collections.abc import Sequence
+
+    from hardline.domain.types import Attempt, Limit, Problem, Usage
 
 #: Why a provider call failed, in terms a caller can act on (cf. Google AIP-193's
 #: machine-readable reason). The first three are transient: the same call may succeed later.
@@ -19,10 +21,19 @@ RETRYABLE: frozenset[str] = frozenset({"rate_limit", "timeout", "unavailable"})
 
 
 class HardlineError(Exception):
-    """Base class for every error hardline raises deliberately."""
+    """Base class for every error hardline raises deliberately.
 
-    #: The next step that can succeed, when this error knows one more exact than its kind's.
-    fix: str | None = None
+    ``fix`` is the next step that can succeed, when the error knows one more exact than its
+    kind's; ``problems`` lists each thing wrong, by key path, when there is more than a message
+    to say (a registry with three bad rows is one error with three problems).
+    """
+
+    def __init__(
+        self, message: str, *, fix: str | None = None, problems: Sequence[Problem] = ()
+    ) -> None:
+        super().__init__(message)
+        self.fix = fix
+        self.problems: tuple[Problem, ...] = tuple(problems)
 
 
 class ConfigError(HardlineError):
@@ -31,10 +42,6 @@ class ConfigError(HardlineError):
     The message always names the source (file or mapping) and the key path, so a typo in
     YAML is fixed by reading the error, not by reading this package.
     """
-
-    def __init__(self, message: str, *, fix: str | None = None) -> None:
-        super().__init__(message)
-        self.fix = fix
 
 
 class UnknownModelError(HardlineError, KeyError):

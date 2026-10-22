@@ -1,173 +1,253 @@
-"""hardline CLI — list, check, and call configured models.
+"""``hardline``: list, check, and call configured models.
 
-Standard library only (argparse): the CLI is a thin driving adapter over the composition
-root and should not add dependencies of its own.
+    hardline models [--json]                          the registry (* = default)
+    hardline check [--json]                           validate tiers, backends and secrets
+    hardline complete MODEL PROMPT [--json] [...]     call a model, print its text
+    hardline --skill                                  the text an agent reads
 
-Its callers are mostly agents, so a failure is classified, not just described. The exit
-code says what the caller's next move is; the scheme is shared with ix:
-
-    0  success
-    1  failure not otherwise classified
-    2  usage error (bad flags or arguments; argparse's own)
-    3  config error: invalid config, unknown model name, unset secret reference, a
-       request the provider rejected as malformed — the caller must change its input
-    4  not found: a named thing does not exist (reserved; hardline raises none today)
-    5  transient: rate limit, timeout, unavailable — retrying later may succeed
-    6  auth: the provider rejected the key
-
-With ``--json`` a failure is also written to stderr as one JSON line,
-``{"error": {"kind", "message", "retryable", "retry_after", "fix"}}``; without it, stderr
-carries the same message as prose. Every non-zero exit under ``--json`` has that line.
+A thin driving adapter: it reaches hardline through ``hardline.__all__`` alone, and names no
+adapter. Its callers are mostly agents, so a failure is classified, not just described: the
+exit code says what the caller's next move is, with the codes the capability CLIs agree in
+``components/capabilities/exit-codes.json`` (:data:`EXIT_CODES`). With ``--json``, every
+failure, a usage error and a defect included, is one line on stderr: the
+``hardline.v1.error`` envelope those CLIs agree in ``error-envelope.json``,
+``{"schema", "error": {"kind", "message", "fix", "complete", "problems", "details"}}``.
+Without it, stderr carries the same as prose. Data goes to stdout. Nothing prompts.
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import logging
+import math
 import sys
+import traceback
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Literal
 
-from hardline.composition import (
-    build_runtime,
-    discover_backends,
-    discover_sources,
-    load_registry,
-)
-from hardline.domain.errors import (
+import rich_click as click
+
+from hardline import (
     BackendError,
     ConfigError,
     HardlineError,
+    Problem,
     SecretError,
     UnknownModelError,
+    __version__,
+    build_runtime,
+    discover_backends,
+    discover_sources,
+    get_skill,
+    load_registry,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    from hardline.domain.types import Completion
+    from hardline import Completion
 
+ErrorKind = Literal["unknown", "usage", "config", "transient", "auth", "interrupted"]
 
-EXIT_OK = 0
-EXIT_FAILURE = 1
-EXIT_USAGE = 2
-EXIT_CONFIG = 3
-EXIT_NOT_FOUND = 4
-EXIT_TRANSIENT = 5
-EXIT_AUTH = 6
+#: The exit code of success and of each kind a command exits with: the codes the capability
+#: CLIs agree. hardline has no kind of its own, so every kind is an agreed one.
+EXIT_CODES: dict[str, int] = {
+    "ok": 0,
+    "unknown": 1,
+    "usage": 2,
+    "config": 3,
+    "transient": 5,
+    "auth": 6,
+    "interrupted": 130,
+}
 
-ErrorKind = Literal[
-    "config", "not_found", "rate_limit", "timeout", "unavailable", "auth", "bad_request", "unknown"
-]
+#: What each kind in :data:`EXIT_CODES` means.
+EXIT_MEANINGS: dict[str, str] = {
+    "ok": "done",
+    "unknown": "a failure hardline did not classify: a bug in hardline or in a backend, or a "
+    "reply it cannot read",
+    "usage": "a bad command, flag or argument",
+    "config": "the input must change: a registry row, a model name, a secret reference, a call "
+    "argument, or a request the provider rejected as malformed (details.reason: bad_request)",
+    "transient": "rate-limited, timed out or unavailable (details.reason), after the row's "
+    "retries and fallbacks, or its limits",
+    "auth": "the provider rejected the key",
+    "interrupted": "the command was interrupted (Ctrl-C) before it finished",
+}
 
-# Each fix is a step that can succeed from the state the error describes. A hint that
-# would itself fail is worse than none, so a kind with no reliable next step gets null.
-_FIX_CONFIG = "correct the file and key the message names, then run `hardline check`"
+#: What to do next on each kind in :data:`EXIT_CODES`: a step that can succeed from there.
+EXIT_NEXT: dict[str, str] = {
+    "ok": "use the output",
+    "unknown": "report it as a bug in hardline, or in the backend the message names, with the "
+    "command that raised it",
+    "usage": "correct the command; `hardline --help` lists the commands, `hardline <command> "
+    "--help` their options",
+    "config": "correct the file and key the message names (each in `error.problems`), then run "
+    "`hardline check`",
+    "transient": "retry later, after details.retry_after seconds when it is set",
+    "auth": "replace the key the model's api_key reference names",
+    "interrupted": "run the command again",
+}
+
+#: The problem kinds hardline writes: those the CLIs share, and its own.
+PROBLEM_KINDS = frozenset(
+    {
+        "yaml_syntax",
+        "wrong_shape",
+        "unknown_key",
+        "missing_key",
+        "invalid_value",
+        "name_unknown",
+        # hardline's own
+        "shared_fate",  # a fallback that sends where its primary does (a warning)
+        "secret_unresolved",  # an api_key reference whose variable or file is not there
+    }
+)
+
+# Each fix is a step that can succeed from the state the error describes.
 _FIX_UNKNOWN_MODEL = "run `hardline models` for the registry names, then call one of them"
 _FIX_SECRET = (
     "set the environment variable or create the file the reference names, then run `hardline check`"
 )
-_FIX_TRANSIENT = "retry later; this model's retries and fallbacks are already spent"
+_FIX_BAD_REQUEST = (
+    "the provider rejected the request: check the row's model id and options, and any "
+    "--max-tokens/--temperature passed"
+)
 
-#: BackendError.reason -> (exit code, fix). A malformed request is input the caller changes.
-_BACKEND: dict[str, tuple[int, str | None]] = {
-    "rate_limit": (EXIT_TRANSIENT, _FIX_TRANSIENT),
-    "timeout": (EXIT_TRANSIENT, _FIX_TRANSIENT),
-    "unavailable": (EXIT_TRANSIENT, _FIX_TRANSIENT),
-    "auth": (
-        EXIT_AUTH,
-        "the provider rejected the key: replace the key the model's api_key reference names",
-    ),
-    "bad_request": (
-        EXIT_CONFIG,
-        "the provider rejected the request: check the row's model id and options, "
-        "and any --max-tokens/--temperature passed",
-    ),
-    "unknown": (EXIT_FAILURE, None),
+#: BackendError.reason -> kind. The reason itself travels in details.
+_BACKEND_KIND: dict[str, ErrorKind] = {
+    "rate_limit": "transient",
+    "timeout": "transient",
+    "unavailable": "transient",
+    "auth": "auth",
+    "bad_request": "config",
+    "unknown": "unknown",
 }
 
-_EXAMPLES = """examples:
-  hardline models                                  list the registry (* = default)
-  hardline complete qwen3-8b "Summarise: ..."      call a model, print its text
-  git diff | hardline complete haiku - --system "Review this diff" --json
-  hardline check                                   validate tiers, backends and secrets
-
-exit codes:
-  0 success · 1 unclassified failure · 2 usage · 3 config (fix the input)
-  4 not found · 5 transient (retry later) · 6 auth
-  with --json, a failure is one JSON line on stderr:
-  {"error": {"kind", "message", "retryable", "retry_after", "fix"}}
-"""
+# rich-click rewraps an epilog's lines; a blank line between them keeps each on its own.
+_EPILOG = "Exit codes:\n\n" + "\n\n".join(
+    f"{code}  {kind}: {EXIT_MEANINGS[kind]}. Next: {EXIT_NEXT[kind]}"
+    for kind, code in EXIT_CODES.items()
+)
 
 
-def _classify(e: HardlineError) -> tuple[ErrorKind, int, str | None]:
-    """An error's kind, exit code and next step."""
+class _UsageError(HardlineError):
+    """A command was given a flag or an argument it does not take."""
+
+
+class _InterruptError(HardlineError):
+    """The command was interrupted before it finished."""
+
+
+def _kind(e: HardlineError) -> ErrorKind:
     if isinstance(e, BackendError):
-        code, fix = _BACKEND[e.reason]
-        return e.reason, code, fix
-    if isinstance(e, UnknownModelError):
-        return "config", EXIT_CONFIG, _FIX_UNKNOWN_MODEL
-    if isinstance(e, SecretError):
-        return "config", EXIT_CONFIG, _FIX_SECRET
-    if isinstance(e, ConfigError):
-        return "config", EXIT_CONFIG, _FIX_CONFIG
+        return _BACKEND_KIND[e.reason]
+    if isinstance(e, ConfigError | UnknownModelError | SecretError):
+        return "config"
+    if isinstance(e, _UsageError):
+        return "usage"
+    if isinstance(e, _InterruptError):
+        return "interrupted"
     # ContractError (a backend broke the port) and SchemaError: nothing the caller can fix.
-    return "unknown", EXIT_FAILURE, None
+    return "unknown"
+
+
+def _fix(e: HardlineError, kind: ErrorKind) -> str:
+    if e.fix:
+        return e.fix
+    if isinstance(e, UnknownModelError):
+        return _FIX_UNKNOWN_MODEL
+    if isinstance(e, SecretError):
+        return _FIX_SECRET
+    if isinstance(e, BackendError) and e.reason == "bad_request":
+        return _FIX_BAD_REQUEST
+    return EXIT_NEXT[kind]
 
 
 def error_payload(e: HardlineError) -> tuple[dict[str, Any], int]:
-    """The ``{"error": {...}}`` object for ``e`` and the exit code that goes with it."""
-    kind, code, fix = _classify(e)
-    fix = e.fix or fix
-    backend = e if isinstance(e, BackendError) else None
-    error = {
+    """The ``hardline.v1.error`` envelope for ``e``, and the exit code that goes with it."""
+    kind = _kind(e)
+    details: dict[str, Any] = {}
+    if isinstance(e, BackendError):
+        details["reason"] = e.reason
+        if e.retry_after is not None:
+            details["retry_after"] = e.retry_after
+        if e.limit is not None:
+            details["limit"] = e.limit
+    body = {
         "kind": kind,
         "message": str(e),
-        "retryable": backend.retryable if backend else False,
-        "retry_after": backend.retry_after if backend else None,
-        "fix": fix,
+        "fix": _fix(e, kind),
+        "complete": True,
+        "problems": [problem.model_dump(mode="json") for problem in e.problems],
+        "details": details,
     }
-    return {"error": error}, code
+    return {"schema": "hardline.v1.error", "error": body}, EXIT_CODES[kind]
 
 
-def _non_negative_float(text: str) -> float:
-    # The same bound as ModelSpec.temperature (ge=0), enforced before a call is spent.
-    try:
-        value = float(text)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
-    if not value >= 0:  # also rejects nan
-        raise argparse.ArgumentTypeError(f"{text!r} must be >= 0")
+def _report(e: HardlineError, as_json: bool) -> int:
+    payload, code = error_payload(e)
+    if as_json:
+        click.echo(json.dumps(payload), err=True)
+        return code
+    error = payload["error"]
+    click.echo(f"hardline: error ({error['kind']}): {error['message']}", err=True)
+    click.echo(f"hardline: fix: {error['fix']}", err=True)
+    return code
+
+
+def _positive_int(ctx: click.Context, param: click.Parameter, value: int | None) -> int | None:
+    # The same bound as ModelSpec.max_tokens (gt=0), enforced before a call is spent.
+    if value is not None and value <= 0:
+        raise click.BadParameter(f"{value} must be > 0")
     return value
 
 
-def _positive_int(text: str) -> int:
-    # The same bound as ModelSpec.max_tokens (gt=0).
-    try:
-        value = int(text)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"{text!r} is not an integer") from None
-    if value <= 0:
-        raise argparse.ArgumentTypeError(f"{text!r} must be > 0")
+def _non_negative(ctx: click.Context, param: click.Parameter, value: float | None) -> float | None:
+    # The same bound as ModelSpec.temperature (ge=0); nan is refused too.
+    if value is not None and (math.isnan(value) or value < 0):
+        raise click.BadParameter(f"{value} must be >= 0")
     return value
 
 
-def _cmd_models(args: argparse.Namespace) -> int:
+_json_option = click.option("--json", "as_json", is_flag=True, help="machine-readable output")
+
+
+@click.group(
+    invoke_without_command=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+    epilog=_EPILOG,
+)
+@click.version_option(__version__, prog_name="hardline")
+@click.option("--skill", is_flag=True, help="Print the skill text for agents, then exit")
+@click.pass_context
+def cli(ctx: click.Context, skill: bool) -> None:
+    """One port for every model family. Models are registry rows, not code."""
+    if skill:
+        click.echo(get_skill())
+        ctx.exit()
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+@cli.command()
+@_json_option
+def models(as_json: bool) -> None:
+    """List the configured models (* = the default)."""
     registry = load_registry(discover_sources(), discover_backends())
-    if args.json:
+    if as_json:
         hidden = {"api_key", "options"}
         listing = [spec.model_dump(mode="json", exclude=hidden) for spec in registry]
-        print(json.dumps({"default": registry.default, "models": listing}, indent=2))
-        return 0
+        click.echo(json.dumps({"default": registry.default, "models": listing}, indent=2))
+        return
     if not len(registry):
-        print(
+        click.echo(
             "no models configured — looked in ~/.hardline/config.yaml, ./hardline.yaml, "
             "$HARDLINE_CONFIG",
-            file=sys.stderr,
+            err=True,
         )
-        return 0
+        return
     rows = [("NAME", "FAMILY", "BACKEND", "LOCAL", "MODEL")]
     for spec in registry:
         marker = " *" if spec.name == registry.default else ""
@@ -176,27 +256,29 @@ def _cmd_models(args: argparse.Namespace) -> int:
         )
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for row in rows:
-        print("  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip())
+        click.echo("  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip())
     if registry.default:
-        print("\n* default")
-    return 0
+        click.echo("\n* default")
 
 
-def _cmd_check(args: argparse.Namespace) -> int:
+@cli.command()
+@_json_option
+def check(as_json: bool) -> None:
+    """Validate the config tiers against the installed backends, and resolve every secret."""
     sources = discover_sources()
     tiers = [{"source": source.describe(), "present": bool(source.read())} for source in sources]
-    if not args.json:
+    if not as_json:
         for tier in tiers:
-            print(f"tier: {tier['source']}{'' if tier['present'] else '  (absent/empty)'}")
+            click.echo(f"tier: {tier['source']}{'' if tier['present'] else '  (absent/empty)'}")
     runtime = build_runtime(sources=sources)
     # A row whose key reference does not resolve would fail on its first call; reporting
     # it here is what lets an agent take `check`'s exit 0 at its word.
     problems = runtime.secret_problems()
     warnings = [w.model_dump(mode="json") for w in runtime.warnings]
-    if not args.json:
+    if not as_json:
         for warning in runtime.warnings:
-            print(f"warning: {warning.path}: {warning.message}", file=sys.stderr)
-    if args.json:
+            click.echo(f"warning: {warning.path}: {warning.message}", err=True)
+    if as_json:
         rows = [
             {
                 "name": spec.name,
@@ -208,38 +290,66 @@ def _cmd_check(args: argparse.Namespace) -> int:
             for spec in runtime.registry
         ]
         report = {"ok": not problems, "tiers": tiers, "models": rows, "warnings": warnings}
-        print(json.dumps(report, indent=2))
+        click.echo(json.dumps(report, indent=2))
     if problems:
         raise SecretError(
             f"{len(problems)} model(s) have an api_key reference that does not resolve:\n"
-            + "\n".join(f"  models.{name}.api_key: {msg}" for name, msg in problems.items())
+            + "\n".join(f"  models.{name}.api_key: {msg}" for name, msg in problems.items()),
+            problems=[
+                Problem(path=f"models.{name}.api_key", kind="secret_unresolved", message=msg)
+                for name, msg in problems.items()
+            ],
         )
-    if not args.json:
-        print(
+    if not as_json:
+        click.echo(
             f"ok: {len(runtime.registry)} model(s) valid against installed backends; "
             "every secret reference resolves"
         )
-    return 0
 
 
-async def _complete(args: argparse.Namespace) -> int:
-    prompt = sys.stdin.read() if args.prompt == "-" else args.prompt
-    async with build_runtime() as runtime:
-        completion = await runtime.complete(
-            args.model,
-            prompt,
-            system=args.system,
-            max_tokens=args.max_tokens,
-            temperature=args.temperature,
-        )
-    if args.json:
-        print(completion.model_dump_json(indent=2, exclude={"raw"}))
-        return 0
-    print(completion.text)
+@cli.command()
+@click.argument("model")
+@click.argument("prompt")
+@click.option("--system", default=None, help="a system prompt")
+@click.option("--max-tokens", type=int, default=None, callback=_positive_int, help="> 0")
+@click.option("--temperature", type=float, default=None, callback=_non_negative, help=">= 0")
+@_json_option
+def complete(
+    model: str,
+    prompt: str,
+    system: str | None,
+    max_tokens: int | None,
+    temperature: float | None,
+    as_json: bool,
+) -> None:
+    """Call MODEL (a registry name; '' for the default) with PROMPT ('-' reads stdin).
+
+    Prints the text; with --json, the Completion and its record. A reply that is not a whole
+    answer (cut at max_tokens, refused, withheld, empty) is printed with a note on stderr, and
+    exits 0.
+    """
+    text = sys.stdin.read() if prompt == "-" else prompt
+    completion = asyncio.run(_complete(model or None, text, system, max_tokens, temperature))
+    if as_json:
+        click.echo(completion.model_dump_json(indent=2, exclude={"raw"}))
+        return
+    click.echo(completion.text)
     if not completion.answered:
         # Printed alone, a cut-off or refused reply would read as the model's answer.
-        print(f"hardline: {_not_answered(completion)}", file=sys.stderr)
-    return 0
+        click.echo(f"hardline: {_not_answered(completion)}", err=True)
+
+
+async def _complete(
+    model: str | None,
+    prompt: str,
+    system: str | None,
+    max_tokens: int | None,
+    temperature: float | None,
+) -> Completion:
+    async with build_runtime() as runtime:
+        return await runtime.complete(
+            model, prompt, system=system, max_tokens=max_tokens, temperature=temperature
+        )
 
 
 def _not_answered(c: Completion) -> str:
@@ -258,62 +368,24 @@ def _not_answered(c: Completion) -> str:
     return f"the reply ended without a whole answer {reason}"
 
 
-def _parser() -> argparse.ArgumentParser:
-    from hardline import __version__
-
-    parser = argparse.ArgumentParser(
-        prog="hardline",
-        description="One port for every model family. Models are registry rows, not code.",
-        epilog=_EXAMPLES,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--version", action="version", version=f"hardline {__version__}")
-    parser.add_argument("--skill", action="store_true", help="print the skill text for agents")
-    sub = parser.add_subparsers(dest="command")
-
-    models = sub.add_parser("models", help="list configured models")
-    models.add_argument("--json", action="store_true", help="print the registry as JSON")
-    models.set_defaults(func=_cmd_models)
-    check = sub.add_parser(
-        "check", help="validate config tiers against installed backends, and resolve secrets"
-    )
-    check.add_argument("--json", action="store_true", help="print the per-model report as JSON")
-    check.set_defaults(func=_cmd_check)
-    complete = sub.add_parser("complete", help="call a model and print its text")
-    complete.add_argument("model", help="registry name; '' uses the default")
-    complete.add_argument("prompt", help="the prompt, or '-' to read stdin")
-    complete.add_argument("--system", default=None)
-    complete.add_argument("--max-tokens", type=_positive_int, default=None, help="> 0")
-    complete.add_argument("--temperature", type=_non_negative_float, default=None, help=">= 0")
-    complete.add_argument("--json", action="store_true", help="print the Completion as JSON")
-    complete.set_defaults(func=lambda a: asyncio.run(_complete(a)))
-    return parser
-
-
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = _parser()
-    args = parser.parse_args(argv)
-    if args.skill:
-        from hardline.skill import get_skill
-
-        print(get_skill())
-        return EXIT_OK
-    if not getattr(args, "func", None):
-        parser.print_help()
-        return EXIT_USAGE
-    if getattr(args, "model", None) == "":
-        args.model = None
+    """Run one command and return the exit code of its outcome."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    as_json = "--json" in args
     try:
         with _reported_here():
-            code: int = args.func(args)
+            code = cli.main(args=args, prog_name="hardline", standalone_mode=False)
+    except click.UsageError as e:
+        return _report(_UsageError(e.format_message()), as_json)
+    except click.Abort:  # click's form of Ctrl-C
+        return _report(_InterruptError("interrupted before the command finished"), as_json)
     except HardlineError as e:
-        payload, code = error_payload(e)
-        if getattr(args, "json", False):
-            print(json.dumps(payload), file=sys.stderr)
-        else:
-            print(f"hardline: {e}", file=sys.stderr)
-        return code
-    return code
+        return _report(e, as_json)
+    except Exception as e:  # a defect: still one envelope, so a caller parses one shape
+        if not as_json:
+            traceback.print_exc()
+        return _report(HardlineError(f"{type(e).__name__}: {e}"), as_json)
+    return code if isinstance(code, int) else EXIT_CODES["ok"]
 
 
 class _ReportedHere(logging.Filter):

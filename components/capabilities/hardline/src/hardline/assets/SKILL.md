@@ -50,19 +50,24 @@ beside it; the exit is still 0.
 
 ## When a command fails
 
-The exit code is the next move. Pass `--json` and stderr carries one JSON line,
-`{"error": {"kind", "message", "retryable", "retry_after", "fix"}}`; `fix` is a step that can
-succeed, or `null` when there is none.
+The exit code is the next move. Pass `--json` and every failure, a usage error included, is one
+JSON line on stderr: the envelope matrix, ix and recon print too,
+`{"schema": "hardline.v1.error", "error": {"kind", "message", "fix", "complete", "problems",
+"details"}}`. `fix` is always a step that can succeed. `problems` lists each bad registry key
+(`path`, `kind`, `message`, `source`: the tier it came from). `details.reason` says why a
+provider call failed (`rate_limit`, `timeout`, `unavailable`, `auth`, `bad_request`, `unknown`),
+with `details.retry_after` when the provider gave one and `details.limit` when the row's
+`limits` stopped the call.
 
 | exit | kind | do this |
 |---|---|---|
-| 0 | — | use the output |
+| 0 | `ok` | use the output |
 | 1 | `unknown` | report the message; do not retry blindly |
-| 2 | — | usage: fix the flags (`hardline <command> --help`) |
-| 3 | `config`, `bad_request` | change the input: the model name, the registry row (its options, `base_url`, `api_key`), the secret. A redirect lands here: `fix` names the `base_url` to set |
-| 4 | `not_found` | reserved; hardline raises none today |
-| 5 | `rate_limit`, `timeout`, `unavailable` | retry later, after `retry_after` seconds if set |
+| 2 | `usage` | fix the flags (`hardline <command> --help`) |
+| 3 | `config` | change the input: the model name, the registry row (its options, `base_url`, `api_key`), the secret, or a request the provider rejected (`details.reason: bad_request`). A redirect lands here: `fix` names the `base_url` to set |
+| 5 | `transient` | retry later, after `details.retry_after` seconds if set |
 | 6 | `auth` | stop and tell the operator the key was rejected |
+| 130 | `interrupted` | run the command again |
 
 The runtime has already spent the row's retries and fallbacks, or reached its `limits`, before
 exit 5, so an immediate retry is unlikely to help.

@@ -188,33 +188,59 @@ class ModelRuntime:
         rng: random.Random | None = None,
         observer: CallObserver | None = None,
     ) -> None:
-        problems = []
+        problems: list[Problem] = []
         for spec in registry:
+            row = f"models.{spec.name}"
             for fallback in spec.fallbacks:
                 if fallback == spec.name or fallback not in registry:
+                    itself = fallback == spec.name
                     problems.append(
-                        f"  models.{spec.name}.fallbacks: {fallback!r} is "
-                        + ("the model itself" if fallback == spec.name else "not in the registry")
-                        + f". Known: {', '.join(registry.names())}"
+                        Problem(
+                            path=f"{row}.fallbacks",
+                            kind="invalid_value" if itself else "name_unknown",
+                            message=f"{fallback!r} is "
+                            + ("the model itself" if itself else "not in the registry")
+                            + f". Known: {', '.join(registry.names())}",
+                            allowed=() if itself else registry.names(),
+                            got=fallback,
+                        )
                     )
             backend = backends.get(spec.backend)
             if backend is None:
                 problems.append(
-                    f"  models.{spec.name}.backend: {spec.backend!r} is not an installed "
-                    f"backend. Installed: {', '.join(sorted(backends)) or '(none)'}"
+                    Problem(
+                        path=f"{row}.backend",
+                        kind="name_unknown",
+                        message=f"{spec.backend!r} is not an installed backend. "
+                        f"Installed: {', '.join(sorted(backends)) or '(none)'}",
+                        allowed=tuple(sorted(backends)),
+                        got=spec.backend,
+                    )
                 )
                 continue
             if isinstance(backend, CheckedBackend):
-                problems.extend(f"  models.{spec.name}.{found}" for found in backend.check(spec))
-            if spec.structured not in backend.structured_modes:
+                for found in backend.check(spec):
+                    key, _, message = found.partition(": ")
+                    problems.append(
+                        Problem(path=f"{row}.{key}", kind="invalid_value", message=message)
+                    )
+            supported = backend.structured_modes
+            if spec.structured not in supported:
                 problems.append(
-                    f"  models.{spec.name}.structured: {spec.structured!r} is not supported "
-                    f"by backend {spec.backend!r}. Supported: "
-                    f"{', '.join(sorted(backend.structured_modes))}"
+                    Problem(
+                        path=f"{row}.structured",
+                        kind="invalid_value",
+                        message=f"{spec.structured!r} is not supported by backend "
+                        f"{spec.backend!r}. Supported: {', '.join(sorted(supported))}",
+                        allowed=tuple(sorted(supported)),
+                        got=spec.structured,
+                    )
                 )
         if problems:
             raise ConfigError(
-                "model registry does not match installed backends:\n" + "\n".join(problems)
+                "model registry does not match installed backends:\n"
+                + "\n".join(f"  {p.path}: {p.message}" for p in problems),
+                problems=problems,
             )
         if schema_retries < 0:
             raise ConfigError(f"schema_retries must be >= 0, got {schema_retries}")

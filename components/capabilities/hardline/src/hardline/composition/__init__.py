@@ -32,8 +32,9 @@ from hardline.adapters._out.secrets import EnvFileSecretResolver
 from hardline.adapters._out.yaml_source import MappingConfigSource, YamlConfigSource
 from hardline.domain.errors import ConfigError
 from hardline.domain.ports._out.backend import ModelBackend
-from hardline.domain.registry import ModelRegistry
+from hardline.domain.registry import ModelRegistry, models_not_a_mapping, unknown_keys
 from hardline.domain.runtime import ModelRuntime
+from hardline.domain.types import Problem
 
 if TYPE_CHECKING:
     import random
@@ -164,18 +165,25 @@ def merge_tiers(
             continue
         unknown = set(data) - {"default", "models"}
         if unknown:
-            raise ConfigError(
-                f"{source.describe()}: unknown top-level key(s) {sorted(unknown)}. "
-                "Legal: ['default', 'models']"
-            )
+            raise unknown_keys(unknown, source.describe())
         if "default" in data:
             default = data["default"]
         models = data.get("models") or {}
         if not isinstance(models, Mapping):
-            raise ConfigError(f"{source.describe()}: 'models' must be a mapping of name -> spec")
+            raise models_not_a_mapping(source.describe())
         for name, row in models.items():
             if not isinstance(row, Mapping):
-                raise ConfigError(f"{source.describe()}: models.{name}: must be a mapping")
+                raise ConfigError(
+                    f"{source.describe()}: models.{name}: must be a mapping",
+                    problems=[
+                        Problem(
+                            path=f"models.{name}",
+                            kind="wrong_shape",
+                            message="must be a mapping",
+                            source=source.describe(),
+                        )
+                    ],
+                )
             merged_models[str(name)] = {**merged_models.get(str(name), {}), **row}
             fields = origins.setdefault(str(name), {})
             for field in row:

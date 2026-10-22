@@ -322,8 +322,13 @@ def test_cli_error_exit_code(cli_config: Path, capsys: pytest.CaptureFixture[str
 
 
 # --- CLI: exit codes, JSON errors, check (agent-drivability F2/F3/F5) ----------------
+#
+# Changed requirement (W10.4): a failure is the workspace's shared envelope,
+# {"schema": "hardline.v1.error", "error": {kind, message, fix, complete, problems, details}},
+# with the agreed kinds: a transient failure is `transient` (exit 5) with its reason in
+# `details`, a malformed request `config`, and `fix` is always a next step.
 
-_ERROR_KEYS = {"kind", "message", "retryable", "retry_after", "fix"}
+_ERROR_KEYS = ["kind", "message", "fix", "complete", "problems", "details"]
 
 
 def _scripted_config(tmp_path: Path, reason: str) -> None:
@@ -347,25 +352,27 @@ def _error_line(err: str) -> dict[str, Any]:
     lines = err.strip().splitlines()
     assert len(lines) == 1, f"expected one JSON line on stderr, got: {err!r}"
     payload: dict[str, Any] = json.loads(lines[0])
-    assert set(payload) == {"error"} and set(payload["error"]) == _ERROR_KEYS
-    return payload["error"]
+    assert list(payload) == ["schema", "error"] and payload["schema"] == "hardline.v1.error"
+    error: dict[str, Any] = payload["error"]
+    assert list(error) == _ERROR_KEYS and error["message"] and error["fix"]
+    return error
 
 
 @pytest.mark.parametrize(
-    ("reason", "code", "retryable"),
+    ("reason", "code", "kind"),
     [
-        ("rate_limit", 5, True),
-        ("timeout", 5, True),
-        ("unavailable", 5, True),
-        ("auth", 6, False),
-        ("bad_request", 3, False),
-        ("unknown", 1, False),
+        ("rate_limit", 5, "transient"),
+        ("timeout", 5, "transient"),
+        ("unavailable", 5, "transient"),
+        ("auth", 6, "auth"),
+        ("bad_request", 3, "config"),
+        ("unknown", 1, "unknown"),
     ],
 )
 def test_cli_backend_reason_sets_exit_code_and_json_error(
     reason: str,
     code: int,
-    retryable: bool,
+    kind: str,
     cli_config: Path,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -375,10 +382,8 @@ def test_cli_backend_reason_sets_exit_code_and_json_error(
     out, err = capsys.readouterr()
     assert out == ""
     error = _error_line(err)
-    assert error["kind"] == reason
-    assert error["retryable"] is retryable
-    assert error["retry_after"] is None
-    assert (error["fix"] is None) == (reason == "unknown")
+    assert error["kind"] == kind and error["details"]["reason"] == reason
+    assert "retry_after" not in error["details"]
 
 
 def test_cli_backend_error_without_json_is_prose_with_same_code(
@@ -386,13 +391,14 @@ def test_cli_backend_error_without_json_is_prose_with_same_code(
 ) -> None:
     _scripted_config(tmp_path, "auth")
     assert main(["complete", "s", "x"]) == 6
-    assert capsys.readouterr().err.startswith("hardline: model 's' (mock): scripted auth")
+    # Changed requirement (W10.4): the prose names the kind, as the envelope does.
+    assert capsys.readouterr().err.startswith("hardline: error (auth): model 's' (mock): scripted")
 
 
 def test_error_payload_carries_retry_after() -> None:
     payload, code = error_payload(BackendError("slow down", reason="rate_limit", retry_after=7.0))
-    assert code == 5
-    assert payload["error"]["retry_after"] == 7.0 and payload["error"]["retryable"] is True
+    assert code == 5 and payload["error"]["kind"] == "transient"
+    assert payload["error"]["details"] == {"reason": "rate_limit", "retry_after": 7.0}
 
 
 def test_cli_unknown_model_json_error(cli_config: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -409,6 +415,31 @@ def test_cli_invalid_config_is_exit_3(
     assert main(["models", "--json"]) == 3
     error = _error_line(capsys.readouterr().err)
     assert error["kind"] == "config" and "family" in error["message"]
+    # W10.4: each registry problem is a record, with the tier it came from.
+    (problem,) = error["problems"]
+    assert (problem["path"], problem["kind"]) == ("models.q.family", "missing_key")
+    assert problem["source"] == f"cwd {tmp_path / 'hardline.yaml'}"
+
+
+def test_cli_lists_every_registry_problem_as_a_record(
+    cli_config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(
+        tmp_path / "hardline.yaml",
+        {
+            "default": "nope",
+            "models": {
+                "q": {"backend": "mock", "model": "m", "family": "x", "famly": "y"},
+                "r": {"backend": "mock", "model": "m", "family": "x", "max_tokens": 0},
+            },
+        },
+    )
+    assert main(["check", "--json"]) == 3
+    error = _error_line(capsys.readouterr().err)
+    found = {(p["path"], p["kind"]) for p in error["problems"]}
+    assert found == {("models.q.famly", "unknown_key"), ("models.r.max_tokens", "invalid_value")}
+    bad = next(p for p in error["problems"] if p["path"] == "models.r.max_tokens")
+    assert bad["got"] == 0
 
 
 def _secret_config(tmp_path: Path) -> None:
@@ -481,26 +512,32 @@ def test_cli_check_json_ok(cli_config: Path, capsys: pytest.CaptureFixture[str])
         ["complete", "", "x", "--temperature", "-1"],
         ["complete", "", "x", "--temperature", "nan"],
         ["complete", "", "x", "--max-tokens", "0"],
+        ["complete", "--json"],  # missing arguments
+        ["nonsense", "--json"],
     ],
 )
-def test_cli_numeric_bounds_are_usage_errors(
+def test_cli_usage_errors_exit_2_with_the_envelope(
     argv: list[str], cli_config: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    with pytest.raises(SystemExit) as exc:
-        main(argv)
-    assert exc.value.code == 2
-    assert capsys.readouterr().out == ""
+    # Changed requirement (W10.4): a usage error is an exit code, not argparse's SystemExit,
+    # and under --json it is the envelope too, as every other error is.
+    assert main([*argv, "--json"] if "--json" not in argv else argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _error_line(err)["kind"] == "usage"
 
 
 def test_cli_temperature_zero_is_accepted(cli_config: Path) -> None:
     assert main(["complete", "", "x", "--temperature", "0"]) == 0
 
 
-def test_cli_help_lists_exit_codes(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit):
-        main(["--help"])
-    out = capsys.readouterr().out
-    assert "exit codes:" in out and "5 transient" in out and "6 auth" in out
+def test_cli_help_lists_every_exit_code(capsys: pytest.CaptureFixture[str]) -> None:
+    from hardline.adapters._in.cli import EXIT_CODES
+
+    assert main(["-h"]) == 0
+    text = capsys.readouterr().out
+    for kind, code in EXIT_CODES.items():
+        assert f"{code}  {kind}:" in text, kind
 
 
 def test_cli_skill(capsys: pytest.CaptureFixture[str]) -> None:
