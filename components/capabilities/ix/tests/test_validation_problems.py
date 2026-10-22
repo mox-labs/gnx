@@ -640,6 +640,15 @@ class TestPlaceholders:
         )  # fmt: skip
         assert "{size}" in warned.message and "{size}" in warned.fix
 
+    def test_a_canned_reply_may_hold_braces_as_a_prompt_may(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """A stand-in's canned reply is free text as a prompt is: code in it, such as an
+        f-string, is no placeholder to refuse."""
+        evaluate_data["probes"][0]["mock_response"] = 'print(f"{user}")'
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+
     def test_a_name_only_some_subjects_fill_is_refused_in_prompt_text(
         self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:

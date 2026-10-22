@@ -358,6 +358,7 @@ class TestOptions:
             ("agent-session", "loop"),
             ("model-call", "system_prompt"),
             ("prompt", "prompt"),
+            ("prompt", "mock_response"),
             ("judge", "rubric"),
         }
 
