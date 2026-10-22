@@ -330,7 +330,11 @@ the `model` effect or none at all. Record section 17 has the reasons.
   reader that finds a run's writer gone (on this host) finishes its record: each file's
   cut-short last line is moved aside to `<file>.torn`, and `run.json` is replaced with
   `status: interrupted`, the row counts and `torn`. `data-model.md` gives the `jq` and DuckDB
-  recipes for a run still going, and the tests run them.
+  recipes for a run still going, and the tests run them. Finishing the record is best-effort:
+  a reader who cannot write it (a read-only mount, another user's runs) logs that and reads
+  the run as `interrupted` from its whole lines, as before, so `describe`, `load` and
+  `--from` still work. The reader locks the run's directory, not the writer's lock file, so a
+  second reader meanwhile waits for it instead of reading the run as `running`.
 - **A write the disk cuts short is taken back** before the `StoreError`, so a live run's
   table never holds half a line.
 - **`runs()` skips a damaged record**, logging it on `matrix.store`. One unreadable

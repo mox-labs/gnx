@@ -275,9 +275,12 @@ every command that reads a run) finishes it: each file's cut-short last line, if
 is moved aside to `<file>.torn`, and `run.json` is replaced with `status: interrupted`, the
 row count of each table and `torn`. From then on `interrupted` is on disk and every file
 reads whole with `jq` or DuckDB. "Gone" is read from `writer.lock`, which the writer holds an
-`flock` on while it lives, and the reader holds it while it finishes the record, so it is
-finished once. Only a run on this host can be told dead; one written on another host stays
-`running`.
+`flock` on while it lives. The reader holds an `flock` on the run's directory while it
+finishes the record, so it is finished once, and a second reader waits for it. A reader that
+cannot write the record (a read-only mount, another user's runs) reads it as it stands,
+`interrupted`, from each file's whole lines, logs on `matrix.store` that it could not finish
+it, and leaves it for a reader that can. Only a run on this host can be told dead; one
+written on another host stays `running`.
 
 **Reading a run that is still going**, or one no matrix reader has finished yet, a file's
 last line may be cut short. Read it so that line is skipped. With `jq`:
@@ -315,8 +318,9 @@ construct.torn  # () unless the run was cut off between two writes
 
 The store contract:
 
-- `open` on a run id that already exists is a `StoreError`: a record is never reopened or
-  rewritten.
+- `open` on a run id that already exists is a `StoreError`: a run is never reopened or
+  written again. The one change made to a record after its run is the JSONL store finishing
+  a killed run's record as `interrupted`, above.
 - `append(kind, row)` is durable when it returns. A store that cannot append, or cannot
   finish, fails the run: `RunError` with kind `store`. After one failed append no row is
   appended to that record, and none is kept in memory either: a later `ctx.provide` raises
@@ -330,7 +334,7 @@ The store contract:
 - `describe` returns `status` as recorded for a finished run. For one that is still going it
   counts the rows on disk, reports `torn`, and says `running`. One whose writer, on this
   host, no longer holds `writer.lock` is finished as `interrupted` (above) and returned as
-  finished. From another host a dead run still reads `running`: matrix does not guess.
+  finished, or, when the record cannot be written, returned as `interrupted` and left as it is. From another host a dead run still reads `running`: matrix does not guess.
 - `runs()` skips a directory whose `run.json` cannot be read, and logs it on
   `matrix.store`, so one damaged record does not hide the rest.
 - A missing run is a `NotFoundError` naming the runs that exist.

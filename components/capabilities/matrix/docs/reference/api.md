@@ -580,7 +580,9 @@ renamed in. A write the disk cuts short is taken back before the `StoreError`. A
 writer, on this host, is gone is finished by the first `describe` or `load` that finds it so:
 each file's cut-short last line moved aside to `<file>.torn`, and `run.json` replaced with
 `status: interrupted`, the row counts and `torn`, so `interrupted` is on disk and every file
-reads whole without matrix (`data-model.md`, "Keeping a run"). Each row is written as pydantic's `to_jsonable_python` makes it (nested
+reads whole without matrix (`data-model.md`, "Keeping a run"). A reader that cannot write the
+record reads it as `interrupted` all the same, from each file's whole lines, and leaves it as
+it is. Each row is written as pydantic's `to_jsonable_python` makes it (nested
 models, dataclasses, sets, tuples, datetimes); a row holding anything else is refused with a
 `ContractError` naming where in the row, before anything is written for it, so the record
 goes on. `MemoryConstructStore()` keeps runs in a dict, rows as given. Both are
