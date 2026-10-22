@@ -205,8 +205,10 @@ def _blocks(message: Message) -> list[dict[str, Any]]:
         if message.is_error:
             result["is_error"] = True
         return [result]
+    # A text of whitespace alone is left out, as a turn that says nothing is: the API refuses
+    # a text block with no text, and the tool calls beside it are the turn.
     blocks: list[dict[str, Any]] = (
-        [{"type": "text", "text": message.content}] if message.content else []
+        [{"type": "text", "text": message.content}] if message.content.strip() else []
     )
     for call in message.tool_calls:
         blocks.append({"type": "tool_use", "id": call.id, "name": call.name, "input": _input(call)})
