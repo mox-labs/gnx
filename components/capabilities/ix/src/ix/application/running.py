@@ -9,9 +9,11 @@ A failed trial never raises out of :func:`invoke` and never stops the run: it is
 interaction carrying a failure with an owner (see :mod:`ix.domain.run`).
 
 **Spans.** When the scope is :class:`~ix.domain.ports.Traced`, each trial is a span
-``ix.trial`` and each sensor reading one interaction a span ``ix.sensor``, with the GenAI
-conventions' ``gen_ai.evaluation.*`` attributes on a ``gen_ai.evaluation.result`` event per
-metric. The agent sessions inside a trial are matrix's own spans.
+``ix.trial`` and each sensor reading one
+interaction a span ``ix.sensor``, which records each metric it read
+(:meth:`~ix.domain.ports.Span.evaluated`) and a trial's failure
+(:meth:`~ix.domain.ports.Span.failed`). Which telemetry convention names them is the
+tracer's to say. The agent sessions inside a trial are matrix's own spans.
 """
 
 from __future__ import annotations
@@ -94,7 +96,17 @@ class _Quiet:
     def set(self, **attributes: Any) -> None:
         return None
 
-    def event(self, name: str, /, **attributes: Any) -> None:
+    def failed(self, reason: str) -> None:
+        return None
+
+    def evaluated(
+        self,
+        metric: str,
+        *,
+        score: float | None = None,
+        label: str | None = None,
+        failure: str | None = None,
+    ) -> None:
         return None
 
 
@@ -569,6 +581,8 @@ async def carry_out(
                     }
                 )
             span.set(**_trial_outcome(interaction))
+            if interaction.failure is not None:
+                span.failed(interaction.failure.reason)
         land(interaction)
         done += 1
         scope.emit(
@@ -588,7 +602,6 @@ async def carry_out(
 def _trial_outcome(interaction: Interaction) -> dict[str, Any]:
     found: dict[str, Any] = {"ix.trial.simulated": interaction.simulated}
     if interaction.failure is not None:
-        found["error.type"] = interaction.failure.reason
         found["ix.failure.owner"] = interaction.failure.owner
     return found
 
@@ -721,16 +734,16 @@ async def _measure(
 
 
 def _evaluated(span: Span, metric: str, measured: Measured | Failure | None) -> None:
-    """One ``gen_ai.evaluation.result`` event: the metric's name, and its score as a number
-    or a pass/fail label."""
-    about: dict[str, Any] = {"gen_ai.evaluation.name": metric}
+    """One metric read, on the sensor's span: its score as a number or a pass/fail label,
+    or why there is none."""
     if isinstance(measured, bool):
-        about["gen_ai.evaluation.score.label"] = "pass" if measured else "fail"
+        span.evaluated(metric, label="pass" if measured else "fail")
     elif _number(measured) and math.isfinite(_as_float(measured)):
-        about["gen_ai.evaluation.score.value"] = _as_float(measured)
+        span.evaluated(metric, score=_as_float(measured))
     elif isinstance(measured, Failure):
-        about["error.type"] = measured.reason
-    span.event("gen_ai.evaluation.result", **about)
+        span.evaluated(metric, failure=measured.reason)
+    else:
+        span.evaluated(metric)
 
 
 async def sense(

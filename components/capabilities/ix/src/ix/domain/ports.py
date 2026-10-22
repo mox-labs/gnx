@@ -87,8 +87,20 @@ class Span(Protocol):
         """Add attributes, as known by the time the work ends."""
         ...
 
-    def event(self, name: str, /, **attributes: Any) -> None:
-        """Record that something happened inside the span."""
+    def failed(self, reason: str) -> None:
+        """Say that the work ended in a failure, and its reason (``timeout``, ``exited``)."""
+        ...
+
+    def evaluated(
+        self,
+        metric: str,
+        *,
+        score: float | None = None,
+        label: str | None = None,
+        failure: str | None = None,
+    ) -> None:
+        """Record one metric read inside the span: its score as a number, or a pass/fail
+        ``label``, or the reason no value could be read (``failure``)."""
         ...
 
 

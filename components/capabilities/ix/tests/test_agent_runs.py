@@ -1125,6 +1125,30 @@ class TestTelemetry:
         trials = {f"{span.context.span_id:016x}" for span in spans if span.name == "ix.trial"}
         assert {row["span_id"] for row in sessions} <= trials
 
+    def test_the_tracer_speaks_the_conventions_the_run_path_does_not(self) -> None:
+        """A failure is ``error.type``; a metric read is a ``gen_ai.evaluation.result``
+        event, scored by value or label, or carrying why it could not be read."""
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        with OtelTracer("test", tracer_provider=provider).trace("ix.sensor") as span:
+            span.failed("timeout")
+            span.evaluated("latency", score=0.5)
+            span.evaluated("fired", label="pass")
+            span.evaluated("judged", failure="shape")
+            span.evaluated("missing")
+        (finished,) = exporter.get_finished_spans()
+        assert (finished.attributes or {})["error.type"] == "timeout"
+        assert [(e.name, dict(e.attributes or {})) for e in finished.events] == [
+            ("gen_ai.evaluation.result",
+             {"gen_ai.evaluation.name": "latency", "gen_ai.evaluation.score.value": 0.5}),
+            ("gen_ai.evaluation.result",
+             {"gen_ai.evaluation.name": "fired", "gen_ai.evaluation.score.label": "pass"}),
+            ("gen_ai.evaluation.result",
+             {"gen_ai.evaluation.name": "judged", "error.type": "shape"}),
+            ("gen_ai.evaluation.result", {"gen_ai.evaluation.name": "missing"}),
+        ]  # fmt: skip
+
     def test_a_telemetry_warning_travels_in_every_json_document(
         self, compare_data: dict[str, Any], write_experiment: Any
     ) -> None:

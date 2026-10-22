@@ -253,6 +253,11 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   construct either, so it would have passed over one. It now uses a tag that creates a file
   under an unsafe loader (and checks that it does), for a genre file, a kind file and the
   experiment file. SECURITY.md cites only these.
+- **The telemetry conventions are named in the tracer only.** The run path wrote the GenAI
+  conventions' `gen_ai.evaluation.*` names and `error.type` itself; it now says
+  `Span.evaluated` and `Span.failed`, and `otel_tracing.py` names them. The spans are
+  unchanged. A third-party `Traced` scope's spans implement the two methods in place of
+  `event`.
 
 ## 0.5.0 — 2026-10-19
 

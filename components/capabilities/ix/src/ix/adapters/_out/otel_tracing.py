@@ -7,11 +7,15 @@ command installs one from the standard ``OTEL_*`` variables through matrix
 
 The spans are ix's work: ``ix.plan``, ``ix.run``, ``ix.trial`` and ``ix.sensor``. The agent
 sessions inside a trial are matrix's (``invoke_agent``, ``execute_tool``), and matrix's
-``invoke_workflow`` for the run sits under ``ix.run``. A sensor's readings are
-``gen_ai.evaluation.result`` events with the GenAI conventions' ``gen_ai.evaluation.name``,
-``gen_ai.evaluation.score.value`` and ``gen_ai.evaluation.score.label``, as read from
-``opentelemetry-semantic-conventions`` 0.65b0 on 2026-10-19 (moved since to the GenAI
-conventions' own repository, status Development).
+``invoke_workflow`` for the run sits under ``ix.run``.
+
+**The conventions are named here and nowhere else.** A metric a sensor read
+(:meth:`_Span.evaluated`) is a ``gen_ai.evaluation.result`` event with the GenAI
+conventions' ``gen_ai.evaluation.name``, ``gen_ai.evaluation.score.value`` and
+``gen_ai.evaluation.score.label``, as read from ``opentelemetry-semantic-conventions``
+0.65b0 on 2026-10-19 (moved since to the GenAI conventions' own repository, status
+Development); a failure's reason (:meth:`_Span.failed`, and a metric that could not be read)
+is the general conventions' ``error.type``. When the conventions move, this file does.
 """
 
 from __future__ import annotations
@@ -25,6 +29,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 SCOPE = "ix"
+
+#: The GenAI conventions' event for one evaluation, and its attributes.
+EVALUATION = "gen_ai.evaluation.result"
+EVALUATION_NAME = "gen_ai.evaluation.name"
+SCORE_VALUE = "gen_ai.evaluation.score.value"
+SCORE_LABEL = "gen_ai.evaluation.score.label"
+#: The general conventions' attribute for the kind of a failure.
+ERROR_TYPE = "error.type"
 
 
 def _plain(attributes: dict[str, Any]) -> dict[str, Any]:
@@ -50,8 +62,24 @@ class _Span:
     def set(self, **attributes: Any) -> None:
         self._span.set_attributes(_plain(attributes))
 
-    def event(self, name: str, /, **attributes: Any) -> None:
-        self._span.add_event(name, _plain(attributes))
+    def failed(self, reason: str) -> None:
+        self._span.set_attribute(ERROR_TYPE, reason)
+
+    def evaluated(
+        self,
+        metric: str,
+        *,
+        score: float | None = None,
+        label: str | None = None,
+        failure: str | None = None,
+    ) -> None:
+        attributes = {
+            EVALUATION_NAME: metric,
+            SCORE_VALUE: score,
+            SCORE_LABEL: label,
+            ERROR_TYPE: failure,
+        }
+        self._span.add_event(EVALUATION, _plain(attributes))
 
 
 class OtelTracer:

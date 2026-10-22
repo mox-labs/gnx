@@ -333,6 +333,32 @@ def test_the_domain_names_no_genre_and_no_kind() -> None:
                 assert not (words & names), f"{file.name}: {node.value!r}"
 
 
+#: The OpenTelemetry conventions' own names: ``gen_ai.*`` and ``error.type``.
+CONVENTION_NAMES = ("gen_ai.", "error.type")
+
+
+def test_the_inner_layers_name_no_telemetry_convention() -> None:
+    """The GenAI conventions are Development status and have moved once: what they call a
+    reading's score lives in the adapter that speaks them, so a rename edits one file and
+    no use case (docstrings aside)."""
+    for file in [*_files("domain"), *_files("application")]:
+        tree = ast.parse(file.read_text(encoding="utf-8"))
+        docstrings = {
+            id(node.value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+        }
+        named = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+            and node.value.startswith(CONVENTION_NAMES)
+        ]
+        assert named == [], file.relative_to(SRC).as_posix()
+
+
 def test_every_type_reachable_from_a_public_result_is_exported_from_ix_domain() -> None:
     """Audit N6: a caller holding a report reaches ``analysis.findings[].decisions[]
     .interval``; each such type has one public name, in ``ix.domain``. The check walks the
