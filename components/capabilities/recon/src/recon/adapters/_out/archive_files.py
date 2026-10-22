@@ -24,13 +24,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.event_log import EventLog
-from recon.domain.archives import EVENT_LOG_NAME
+from recon.domain.archives import ARCHIVE_ID_FORMAT, EVENT_LOG_NAME
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
 
@@ -118,7 +119,7 @@ class ArchiveFiles:
         archive = mission_dir / "archive"
         if not archive.is_dir():
             return []
-        return sorted(d for d in archive.iterdir() if d.is_dir())
+        return sorted(d for d in archive.iterdir() if d.is_dir() and _is_archive_id(d.name))
 
     def is_incomplete(self, archive: Path) -> bool:
         return (archive / INCOMPLETE_MARKER).exists()
@@ -141,6 +142,15 @@ class ArchiveFiles:
                 ],
             }
         return {**raw, "tables": [t for t in raw.get("tables") or [] if isinstance(t, dict)]}
+
+
+def _is_archive_id(name: str) -> bool:
+    """Whether ``name`` is one a survey gives its archive: a stray ``notes/`` is not."""
+    try:
+        datetime.strptime(name, ARCHIVE_ID_FORMAT)
+    except ValueError:
+        return False
+    return True
 
 
 def table_files(archive: Path) -> list[Path]:

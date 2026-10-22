@@ -595,6 +595,60 @@ class TestAnUnreadableTable:
         assert error["details"]["table"] == "oa_works"
 
 
+class TestWhatCountsAsAnArchive:
+    def test_a_directory_not_named_as_a_survey_names_one_is_not_an_archive(self, project):
+        """Regression: any directory under ``archive/`` was an archive, so a stray
+        ``notes/`` sorted after the timestamps, became the latest, and every query failed
+        with "no tables"."""
+        _mission(project, "m", OK_CONFIG)
+        assert _invoke("survey", "m").exit_code == 0
+        (project / ".recon" / "m" / "archive" / "notes").mkdir()
+
+        [mission] = _doc(_invoke("status", "m", "--json"))["missions"]
+        assert mission["archives"] == 1
+        assert [a["id"] for a in mission["history"]] != ["notes"]
+        result = _invoke("query", "m", "SELECT a FROM hello ORDER BY a", "--json")
+        assert result.exit_code == 0, result.stderr
+        assert _doc(result)["rows"] == [{"a": 1}, {"a": 2}]
+
+    def test_a_newer_meta_yaml_is_read_for_what_this_recon_knows(self, project):
+        """Regression: ``meta.yaml`` from a newer recon, with a field this one does not know
+        in a table's error, made ``status`` fail as a defect (exit 1)."""
+        mission = _mission(project, "m", OK_CONFIG)
+        archive = mission / "archive" / "2027-01-01-000000-000000"
+        archive.mkdir(parents=True)
+        (archive / "t.jsonl").write_text('{"a": 1}\n')
+        (archive / ".incomplete").write_text("")
+        (archive / "meta.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "format_version": 3,
+                    "recon_version": "9.0.0",
+                    "lineage": {"parent": "x"},
+                    "tables": [
+                        {
+                            "name": "t",
+                            "status": "error",
+                            "records": 0,
+                            "attempts": 2,
+                            "error": {
+                                "kind": "rate_limited",
+                                "message": "slow down",
+                                "fix": None,
+                                "retry_after": 30,
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+        result = _invoke("status", "m", "--json")
+        assert result.exit_code == 0, result.stderr
+        [table] = _doc(result)["missions"][0]["latest"]["tables"]
+        assert table["error"] == {"kind": "rate_limited", "message": "slow down", "fix": None}
+        assert _doc(result)["missions"][0]["latest"]["format_version"] == 3
+
+
 class TestArchiveHistory:
     def test_status_of_one_mission_lists_every_archive_with_its_time_and_outcome(self, project):
         """Regression: ``recon status`` said "Archives 3" and gave no id to query."""

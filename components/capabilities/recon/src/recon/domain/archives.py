@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 #: The ``format_version`` of the ``meta.yaml`` a survey writes.
 META_FORMAT_VERSION = 2
 
+#: An archive's name: when the survey started, to the microsecond, so names sort by time. A
+#: directory under ``archive/`` that is not named so is not an archive.
+ARCHIVE_ID_FORMAT = "%Y-%m-%d-%H%M%S-%f"
+
 #: The survey's ``recon.v1.event`` lines, beside ``meta.yaml``; never a table.
 EVENT_LOG_NAME = "telemetry.jsonl"
 
@@ -72,11 +76,13 @@ class ArchiveStore(Protocol):
         ...
 
     def archives(self, mission_dir: Path) -> list[Path]:
-        """The mission's archives, oldest first."""
+        """The mission's archives, oldest first: its directories named by
+        :data:`ARCHIVE_ID_FORMAT`, and no other."""
         ...
 
     def read_meta(self, archive: Path) -> dict[str, Any]:
-        """``meta.yaml`` in the current format, whichever format it was written in;
+        """``meta.yaml`` in the current format, whichever format it was written in; one
+        from a newer recon as written, for the reader to take the fields it knows.
         ``format_version`` is None when it is missing or unreadable."""
         ...
 

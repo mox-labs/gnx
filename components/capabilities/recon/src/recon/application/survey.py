@@ -58,9 +58,6 @@ if TYPE_CHECKING:
 #: "archive_warning", ...}``. The survey prints nothing itself.
 EventCallback = Callable[[dict[str, Any]], None]
 
-#: An archive's name: when the survey started, to the microsecond, so names sort by time.
-ARCHIVE_ID_FORMAT = "%Y-%m-%d-%H%M%S-%f"
-
 
 class CollectorError(CollectionError):
     """A collector's exception, tagged with the entry and source it came from.

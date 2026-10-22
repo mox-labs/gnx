@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 from recon.application.captures import record_hook_payload
 from recon.application.plan import Plan, build_plan, plugin_warning
-from recon.application.survey import ARCHIVE_ID_FORMAT, EventCallback, Survey
+from recon.application.survey import EventCallback, Survey
+from recon.domain.archives import ARCHIVE_ID_FORMAT
 from recon.domain.documents import (
     ArchiveStatus,
     BrokenPluginInfo,
@@ -329,7 +330,7 @@ class Recon:
                     type_url=t.get("type_url"),
                     status=t.get("status"),
                     records=t.get("records"),
-                    error=TableError.model_validate(t["error"]) if t.get("error") else None,
+                    error=_table_error(t.get("error")),
                 )
                 for t in meta["tables"]
             ],
@@ -407,6 +408,19 @@ def _unique(columns: list[str]) -> list[str]:
         taken.add(column)
         unique.append(column)
     return unique
+
+
+def _table_error(error: Any) -> TableError | None:
+    """A table's error as ``meta.yaml`` holds it, read for the fields this recon knows: one
+    a newer recon wrote may carry more, and is not refused for them."""
+    if not isinstance(error, dict):
+        return None
+    fix = error.get("fix")
+    return TableError(
+        kind=str(error.get("kind", "unknown")),
+        message=str(error.get("message", "")),
+        fix=fix if isinstance(fix, str) else None,
+    )
 
 
 def _text(value: Any) -> str | None:

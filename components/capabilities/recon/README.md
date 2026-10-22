@@ -115,7 +115,7 @@ A survey in which any table failed still writes its archive (marked `.incomplete
   captures.jsonl, raw/ the capture log, when preserve_raw: true
 ```
 
-A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`).
+A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`), and read a `meta.yaml` from a newer recon for the fields they know. Only a directory named as a survey names its archive (`2026-04-01-143022-000000`) is an archive: another directory under `archive/` is left alone.
 
 ## Capture logs
 

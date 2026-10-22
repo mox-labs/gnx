@@ -169,7 +169,8 @@ A spec maps each output column to a path into the record, optionally piped throu
 .recon/<mission>/                  under the git root, or the working directory outside a repository
   config.yaml
   captures/captures.jsonl          the log recon capture appends to
-  archive/<archive id>/            one per survey; the id is its start time, so ids sort
+  archive/<archive id>/            one per survey; the id is its start time, so ids sort; a
+                                   directory not named so is not an archive
     <table>.jsonl                  one record per line
     meta.yaml                      recon version, config sha256, times, and per table:
                                    type_url, status, records, seconds, error {kind, message, fix}
