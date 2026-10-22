@@ -1128,9 +1128,7 @@ class TestJudge:
                 self, point: str, name: str, config: Mapping[str, Any], *, cwd: str | None = None
             ) -> Any:
                 built = real.build(point, name, config, cwd=cwd)  # type: ignore[arg-type]
-                self.sdk = built.options(
-                    matrix.AgentDefinition(name="judge", system_prompt="", tools=())
-                )
+                self.sdk = built.options(matrix.AgentDefinition(name="judge", tools=()))
                 return super().build(point, name, config, cwd=cwd)
 
             def takes(self, point: str, name: str) -> frozenset[str] | None:

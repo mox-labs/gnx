@@ -336,7 +336,7 @@ async def test_every_event_matrix_emits_carries_its_pinned_fields() -> None:
             call |= {"started": "2026-10-22T10:00:00+00:00", "ended": "2026-10-22T10:00:01+00:00"}
             return AgentResponse(content="ok", tool_calls=(call,))
 
-    agent = BoundAgent(AgentDefinition(name="rev", system_prompt=""), Tools())
+    agent = BoundAgent(AgentDefinition(name="rev"), Tools())
     kept: list[Any] = []
     tries: list[int] = []
 

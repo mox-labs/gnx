@@ -162,9 +162,7 @@ async def test_a_library_span_nests_under_the_matrix_span_whose_work_opened_it()
     from matrix import AgentDefinition, BoundAgent
 
     observer = _observer()
-    agent = BoundAgent(
-        AgentDefinition(name="rev", system_prompt=""), _Traced(), observers=[observer]
-    )
+    agent = BoundAgent(AgentDefinition(name="rev"), _Traced(), observers=[observer])
     _EXPORTER.clear()
     await Executor([observer]).run(wire({"lib": _UsesLibraries(agent)}))
     spans = {s.name: s for s in _EXPORTER.get_finished_spans()}
@@ -365,9 +363,7 @@ async def test_a_session_row_names_the_span_of_its_session() -> None:
     from matrix.composition.telemetry import current_trace
 
     observer = _observer()
-    agent = BoundAgent(
-        AgentDefinition(name="rev", system_prompt=""), _Session(), observers=[observer]
-    )
+    agent = BoundAgent(AgentDefinition(name="rev"), _Session(), observers=[observer])
     _EXPORTER.clear()
     run = await Executor([observer], trace=current_trace).run(wire({"ask": _Asks(agent)}))
     (row,) = run.rows("matrix.v1.session")
@@ -525,9 +521,7 @@ async def test_input_tokens_are_counted_once_with_the_cache_inside_them() -> Non
 
     reader = InMemoryMetricReader()
     observer = _observer(reader)
-    agent = BoundAgent(
-        AgentDefinition(name="cached", system_prompt=""), _Cached(), observers=[observer]
-    )
+    agent = BoundAgent(AgentDefinition(name="cached"), _Cached(), observers=[observer])
     _EXPORTER.clear()
     await Executor([observer]).run(wire({"ask": _Asks(agent)}))
     (counted,) = _points(reader)["gen_ai.client.inference.usage.input_tokens"]
@@ -540,9 +534,7 @@ async def test_a_failed_session_carries_its_error_type() -> None:
     from matrix import AgentDefinition, BoundAgent, RunError
 
     observer = _observer()
-    agent = BoundAgent(
-        AgentDefinition(name="hurried", system_prompt=""), _Fails(), observers=[observer]
-    )
+    agent = BoundAgent(AgentDefinition(name="hurried"), _Fails(), observers=[observer])
     _EXPORTER.clear()
     with pytest.raises(RunError):
         await Executor([observer]).run(wire({"ask": _Asks(agent)}))
@@ -568,9 +560,7 @@ async def test_a_cancelled_session_ends_cancelled_and_its_span_carries_an_error_
             await asyncio.Event().wait()
 
     observer, recorder = _observer(), RecordingObserver()
-    agent = BoundAgent(
-        AgentDefinition(name="slow", system_prompt=""), Slow(), observers=[observer, recorder]
-    )
+    agent = BoundAgent(AgentDefinition(name="slow"), Slow(), observers=[observer, recorder])
     _EXPORTER.clear()
     session = asyncio.ensure_future(agent.run("task"))
     await started.wait()
@@ -629,10 +619,8 @@ async def _leaky_run(observer: OtelObserver) -> dict[str, Any]:
     from matrix import AgentDefinition, BoundAgent
 
     tools = _Session({"pattern": f"{_SECRET} pattern"})
-    agent = BoundAgent(AgentDefinition(name="rev", system_prompt=""), tools, observers=[observer])
-    refuses = BoundAgent(
-        AgentDefinition(name="shy", system_prompt=""), _Refuses(), observers=[observer]
-    )
+    agent = BoundAgent(AgentDefinition(name="rev"), tools, observers=[observer])
+    refuses = BoundAgent(AgentDefinition(name="shy"), _Refuses(), observers=[observer])
     _EXPORTER.clear()
     await Executor([observer]).run(wire({"leaky": _Leaky(agent, refuses)}))
     return {s.name: s for s in _EXPORTER.get_finished_spans()}
@@ -681,7 +669,7 @@ async def test_the_span_names_are_the_pinned_ones() -> None:
     session, a timed tool call, a model step's call, a release and a component's own span."""
     from matrix import PROMPT, AgentDefinition, BoundAgent, ModelStep, ModelStepConfig
 
-    agent = BoundAgent(AgentDefinition(name="rev", system_prompt=""), _Session())
+    agent = BoundAgent(AgentDefinition(name="rev"), _Session())
 
     class Works:
         requires: tuple[str, ...] = ()

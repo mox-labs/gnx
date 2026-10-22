@@ -75,7 +75,7 @@ class AgentDefinition(BaseModel):
     name: str = Field(pattern=_SLUG)
     description: str = ""
     #: The text after a definition file's frontmatter (``body``), or given by name.
-    system_prompt: str = Field("", validation_alias=AliasChoices("system_prompt", "body"))
+    system_prompt: str = Field(default="", validation_alias=AliasChoices("system_prompt", "body"))
     #: Interpreted by the runtime: an alias or model id for the Claude Agent SDK.
     #: ``None`` = the runtime's default.
     model: str | None = None

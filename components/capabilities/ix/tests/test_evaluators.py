@@ -160,7 +160,7 @@ async def _watched_run(
         tracer_provider=provider, meter_provider=MeterProvider(), capture_content=capture_content
     )
     agent = matrix.BoundAgent(
-        matrix.AgentDefinition(name="coder", system_prompt=""), Scripted(), observers=[observer]
+        matrix.AgentDefinition(name="coder"), Scripted(), observers=[observer]
     )
     async with _sensor().watch(Target(subject="agent"), {}) as seen:
         if run:
