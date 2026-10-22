@@ -5,7 +5,7 @@ options:
   evaluator: {type: string, required: true, description: "the pydantic-evals evaluator, by its name: Equals, EqualsExpected, Contains, IsInstance, MaxDuration, HasMatchingSpan, ToolCorrectness, TrajectoryMatch, ArgumentCorrectness, MaxToolCalls and MaxModelRequests call no model; LLMJudge and GEval call one"}
   arguments: {type: mapping, description: "the evaluator's own arguments, by name, as pydantic-evals documents them: {value: Paris} for Contains, {expected_tools: [Read, Grep]} for ToolCorrectness. A judge's model is never one of them"}
   result: {type: string, description: "the one result to read, by its name, when the evaluator gives more than one score; every assertion it gives is read when absent"}
-  model_runtime: {type: string, description: "for an evaluator that calls a model (LLMJudge, GEval): the matrix model runtime its model comes from, one call per reading. There is no default, and pydantic-evals' own default model is never used, so a model provider is never called implicitly"}
+  model_runtime: {type: string, description: "for an evaluator that calls a model (LLMJudge, GEval): the matrix model runtime its model comes from, as the pydantic-ai model that runtime gives (hardline: the registry row `model` names). There is no default, and pydantic-evals' own default model is never used, so a model provider is never called implicitly"}
   model: {type: string, description: "the model such an evaluator calls, as its model runtime names it"}
   runtime_options: {type: mapping, description: "the model runtime's own config, passed through as written"}
 needs: [response]

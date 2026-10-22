@@ -35,7 +35,11 @@ options name (``model_runtime``, ``model``, ``runtime_options``), never from the
 arguments and never from pydantic-evals' default (``openai:gpt-5.2``), which would resolve a
 provider from the environment: validate refuses a judge evaluator that names no runtime, and
 one whose arguments name a model. A runtime that is a stand-in (``mock``) gives pydantic-ai's
-``TestModel``, which calls no model; any other is asked of the root's :class:`JudgeModels`.
+``TestModel``, which calls no model; any other is asked of the root's :class:`JudgeModels`,
+which gives the pydantic-ai ``Model`` that runtime offers (``hardline``'s makes each request a
+hardline call). The connections its calls opened are closed when the reading ends, in the
+loop that opened them. Its calls are hardline's ``chat`` spans and counters, made while the
+sensor reads, after the trial's spans were kept: they never join the tree an evaluator reads.
 
 pydantic-evals is imported here and nowhere else, and only when a reading, a review or a
 watch needs it, so ix starts as fast without it.
@@ -478,9 +482,25 @@ class EvaluatorSensor:
         cls = _evaluator_class(options)
         judge = _calls_a_model(cls)
         arguments = _arguments(options)
+        model = self._judge_model(options) if judge else None
         if judge:
-            arguments["model"] = self._judge_model(options)
-        evaluator = cls(**arguments)
+            arguments["model"] = model
+        try:
+            return await self._read(cls(**arguments), interaction, truth, options, judged=judge)
+        finally:
+            close = getattr(model, "aclose", None)
+            if callable(close):  # the connections its calls opened, in this loop
+                await close()
+
+    async def _read(
+        self,
+        evaluator: Evaluator[Any, Any, Any],
+        interaction: Interaction,
+        truth: Mapping[str, Any],
+        options: Mapping[str, Any],
+        *,
+        judged: bool,
+    ) -> Sensed:
         response = interaction.observations["response"]
         seen = interaction.watched.get(KIND, {})
         spans = _tree(seen)
@@ -506,8 +526,11 @@ class EvaluatorSensor:
         if not results:
             raise ValueError(f"{name} gave no result for probe {interaction.probe}")
         result = options.get("result")
-        values = _values(results, judged=judge, result=None if result is None else str(result))
-        detail: dict[str, Any] = {"evaluator": cls.get_serialization_name(), "results": results}
+        values = _values(results, judged=judged, result=None if result is None else str(result))
+        detail: dict[str, Any] = {
+            "evaluator": evaluator.get_serialization_name(),
+            "results": results,
+        }
         if read is not None:
             detail["spans"] = read
         return Sensed(values=values, detail=detail)

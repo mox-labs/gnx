@@ -255,27 +255,29 @@ class _Runtimes:
 
 
 class _JudgeModels:
-    """Where a pydantic-evals judge evaluator's model comes from: a pydantic-ai ``Model``
-    making its calls through the matrix model runtime the experiment names, so the judge's
-    calls go where every other model call of ix goes, under the same config, and never to
-    pydantic-evals' default model.
-
-    That ``Model`` is hardline's to give (W11.1), and this ix has none yet. Until it does,
-    asking for one checks that the model runtime builds and then says so: a judge evaluator
-    is ``Runnable: no`` in the plan, with this reason, and nothing is called. A stand-in
-    runtime (``mock``) needs none of this: the sensor judges on pydantic-ai's ``TestModel``."""
+    """Where a pydantic-evals judge evaluator's model comes from: the pydantic-ai ``Model``
+    the matrix model runtime the experiment names gives (its optional
+    ``pydantic_ai_model``), built from the experiment's ``runtime_options`` and matrix's
+    ``models``, so the judge's calls go where every other model call of ix goes, under the
+    same config, and never to pydantic-evals' default model. A runtime that gives none cannot
+    judge: the plan says so, and nothing is called. A stand-in runtime (``mock``) needs none
+    of this: the sensor judges on pydantic-ai's ``TestModel``."""
 
     def __init__(self, runtimes: _Runtimes) -> None:
         self._runtimes = runtimes
 
     def model(self, runtime: str, model: str | None, config: Mapping[str, Any]) -> Any:
-        self._runtimes.build(MODEL_RUNTIME, runtime, config)
-        raise ConfigError(
-            f"a pydantic-evals judge calls its model through a pydantic-ai Model over the "
-            f"model runtime {runtime!r}, and this ix has none to give it yet",
-            fix="score the reply with the judge sensor (kind: judge, model_runtime: "
-            f"{runtime}), or dry-run this one on model_runtime: mock",
-        )
+        built = self._runtimes.build(MODEL_RUNTIME, runtime, config)
+        give = getattr(built, "pydantic_ai_model", None)
+        if not callable(give):
+            raise ConfigError(
+                f"model runtime {runtime!r} gives no pydantic-ai Model, which a pydantic-evals "
+                "judge calls its model through",
+                fix="name a model runtime that gives one (hardline; a third party's that "
+                "defines pydantic_ai_model), or score the reply with the judge sensor "
+                f"(kind: judge, model_runtime: {runtime})",
+            )
+        return give(model)
 
 
 @dataclass(frozen=True)

@@ -26,6 +26,15 @@ not used. Record section 24 has the reasons.
   `Runnable: no` in the plan.
 - `pydantic-evals` is a dependency, imported only inside the sensor's adapter.
 
+### Added: a judge evaluator judges on a real model runtime
+
+A judge evaluator (`LLMJudge`, `GEval`) on a real model runtime was `Runnable: no`: the root
+had no pydantic-ai model to give it (W11.2b). It now judges on the pydantic-ai model the
+named matrix model runtime gives (matrix's `pydantic_ai_model`): on `hardline`, the registry
+row `model` names, each request a hardline call, from `matrix.models` or the sensor's
+`runtime_options` and from nowhere else. A model runtime that gives none is still
+`Runnable: no`, saying so. The judge's connections close when its reading ends.
+
 ### Added: an agent session on matrix's `pydantic-ai` runtime
 
 An `agent-session` subject names matrix's second agent runtime, `runtime: pydantic-ai`, as it

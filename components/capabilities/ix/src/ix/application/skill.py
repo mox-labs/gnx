@@ -1242,8 +1242,9 @@ are in the reading's detail. One `evaluator` entry per experiment: a second is
   `model_runtime` names (with `model`, `runtime_options`), never from `arguments` and never
   from pydantic-evals' default; validate refuses one with no `model_runtime`
   (`option_missing`) or a `model` in its arguments. A dry run judges on pydantic-ai's
-  `TestModel`, which calls no model. A real runtime needs hardline's pydantic-ai model,
-  which this release lacks: `ix plan` says `Runnable: no`. Use `judge` meanwhile.
+  `TestModel`, which calls no model. On `hardline` it judges on the registry row `model`
+  names, each request a hardline call; a model runtime that gives no pydantic-ai model is
+  `Runnable: no` in `ix plan`, and the `judge` sensor scores there.
 
 ## Reading the report
 

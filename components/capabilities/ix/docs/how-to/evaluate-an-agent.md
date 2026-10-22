@@ -534,10 +534,11 @@ sensor's are. Its model comes from the matrix model runtime the sensor names wit
 `model_runtime` (and `model`, `runtime_options`), never from its `arguments`. It never comes
 from pydantic-evals' default model either, which would find a provider from the environment.
 `ix validate` refuses a judge evaluator that names no `model_runtime`, and a `model` among
-its arguments. A dry run judges it on pydantic-ai's `TestModel`, which calls no model. A real
-model runtime needs hardline's pydantic-ai model, which this release does not have yet:
-`ix plan` lists such a judge under `Runnable: no` and says so. Until then, score with the
-`judge` sensor.
+its arguments. A dry run judges it on pydantic-ai's `TestModel`, which calls no model. On a real
+model runtime the judge calls the pydantic-ai model that runtime gives: `hardline` gives one
+on the registry row `model` names (from `matrix.models` or `runtime_options.models`), each
+request a hardline call. A model runtime that gives none cannot judge: `ix plan` lists such a
+judge under `Runnable: no` and says so; score with the `judge` sensor there.
 
 ## A model call instead of a session
 

@@ -513,11 +513,61 @@ class TestValidate:
 
 
 class TestPlanAndRun:
-    def test_a_judge_on_a_real_model_runtime_cannot_run_yet_and_the_plan_says_why(
+    def test_a_judge_judges_on_a_hardline_row_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """W11.2b. Before, the root had no pydantic-ai Model over a model runtime to give, so a
+        judge evaluator on a real runtime was ``Runnable: no``. Now it judges on the matrix
+        model runtime it names, here ``hardline`` with a mock row, configured as every model
+        is (``matrix.models``): the plan says it can run, and each reading is the row's grade,
+        given as pydantic-ai's output tool call, through hardline. Offline: the row is
+        hardline's mock, and pydantic-evals' own default model fails the test if asked."""
+
+        def refuse(*args: Any, **kwargs: Any) -> Any:
+            pytest.fail("pydantic-evals' default judge model was used")
+
+        monkeypatch.setattr(llm_as_a_judge, "_default_model", FunctionModel(refuse))
+        grade = {"reason": "It says it fixed main.", "pass": True, "score": 1.0}
+        row = {
+            "backend": "mock", "model": "grader-1", "family": "mockjudge",
+            "options": {"script": [{"tool_calls": [
+                {"name": "final_result", "arguments": json.dumps(grade)}
+            ]}]},
+        }  # fmt: skip
+        settings = matrix.Config[IxSettings](
+            client=IxSettings(),
+            matrix=matrix.MatrixConfig(models={"models": {"grader": row}}),
+        )
+        lab = _experiment(
+            tmp_path,
+            primary={"metric": "text_matched"},
+            metrics=["judged_eval_passed"],
+            sensors=[{"kind": "evaluator", "evaluator": "LLMJudge",
+                      "arguments": {"rubric": "Says it fixed main."},
+                      "model_runtime": "hardline", "model": "grader"},
+                     {"kind": "text-match", "contains": "Fixed"}],
+        )  # fmt: skip
+        root = Root(registry=_registry(), settings=settings)
+        plan = root.plan(lab)
+        (judge,) = [r for r in plan.requirements if "LLMJudge" in r.need]
+        assert judge.holds, judge.why
+        report = root.run(lab, exploratory=True)
+        judged = [
+            json.loads(line)
+            for line in Path(report.tables["ix.v1.reading"]).read_text().splitlines()
+            if '"judged_eval_passed"' in line
+        ]
+        assert len(judged) == 5
+        assert all(r["failure"] is None and r["value"] is True for r in judged)
+        (result,) = judged[0]["detail"]["results"].values()
+        assert result["reason"] == "It says it fixed main."
+
+    def test_a_model_runtime_that_gives_no_pydantic_ai_model_cannot_judge(
         self, tmp_path: Path
     ) -> None:
-        """The root has no pydantic-ai Model over a model runtime to give (hardline's, W11.1):
-        the judge is Runnable: no, and nothing is called."""
+        """A judge evaluator needs a pydantic-ai Model over its model runtime; a runtime that
+        offers none (``pydantic_ai_model``) is ``Runnable: no``, saying so, and nothing is
+        called."""
         lab = _experiment(
             tmp_path,
             primary={"metric": "text_matched"},
@@ -529,7 +579,8 @@ class TestPlanAndRun:
         )  # fmt: skip
         plan = Root(registry=_registry(), settings=_settings()).plan(lab)
         (judge,) = [r for r in plan.requirements if "LLMJudge" in r.need]
-        assert not judge.holds and "has none to give it yet" in judge.why
+        assert not judge.holds and "gives no pydantic-ai Model" in judge.why
+        assert "pydantic_ai_model" in judge.fix
         assert judge.needed_by == ("sensors.0",)
 
     def test_a_run_reads_tool_calls_from_each_trials_spans(
