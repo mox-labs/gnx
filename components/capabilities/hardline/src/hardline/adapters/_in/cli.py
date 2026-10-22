@@ -25,7 +25,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Literal
 
 from hardline.composition import (
@@ -43,7 +45,7 @@ from hardline.domain.errors import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
     from hardline.domain.types import Completion
 
@@ -189,6 +191,10 @@ def _cmd_check(args: argparse.Namespace) -> int:
     # A row whose key reference does not resolve would fail on its first call; reporting
     # it here is what lets an agent take `check`'s exit 0 at its word.
     problems = runtime.secret_problems()
+    warnings = [w.model_dump(mode="json") for w in runtime.warnings]
+    if not args.json:
+        for warning in runtime.warnings:
+            print(f"warning: {warning.path}: {warning.message}", file=sys.stderr)
     if args.json:
         rows = [
             {
@@ -200,7 +206,8 @@ def _cmd_check(args: argparse.Namespace) -> int:
             }
             for spec in runtime.registry
         ]
-        print(json.dumps({"ok": not problems, "tiers": tiers, "models": rows}, indent=2))
+        report = {"ok": not problems, "tiers": tiers, "models": rows, "warnings": warnings}
+        print(json.dumps(report, indent=2))
     if problems:
         raise SecretError(
             f"{len(problems)} model(s) have an api_key reference that does not resolve:\n"
@@ -296,7 +303,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if getattr(args, "model", None) == "":
         args.model = None
     try:
-        code: int = args.func(args)
+        with _reported_here():
+            code: int = args.func(args)
     except HardlineError as e:
         payload, code = error_payload(e)
         if getattr(args, "json", False):
@@ -305,6 +313,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"hardline: {e}", file=sys.stderr)
         return code
     return code
+
+
+class _ReportedHere(logging.Filter):
+    """Drops a record the command reports itself: a registry warning (``check``'s ``warnings``)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not hasattr(record, "problem")
+
+
+@contextmanager
+def _reported_here() -> Iterator[None]:
+    hardline_log = logging.getLogger("hardline")
+    reported = _ReportedHere()
+    hardline_log.addFilter(reported)
+    try:
+        yield
+    finally:
+        hardline_log.removeFilter(reported)
 
 
 if __name__ == "__main__":

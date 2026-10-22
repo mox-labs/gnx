@@ -45,6 +45,7 @@ from hardline.domain.types import (
     Completion,
     Message,
     ModelSpec,
+    Problem,
     RawCompletion,
     Request,
     RequestParams,
@@ -105,6 +106,32 @@ def _as_messages(messages: Messages, system: str | None) -> tuple[Message, ...]:
     if not turns:
         raise ConfigError("at least one message is required")
     return tuple(turns)
+
+
+def _shared_fate(registry: ModelRegistry) -> list[Problem]:
+    """A warning for each fallback that sends where its primary sends: the same backend and
+    the same ``base_url``. When that server is down, the fallback fails with its primary, so it
+    guards against a failing model, not against the server going down. Rows with no location
+    (the mock) share no server."""
+    found = []
+    for spec in registry:
+        for name in spec.fallbacks:
+            fallback = registry.get(name)
+            if (fallback.backend, fallback.base_url) == (spec.backend, spec.base_url) and (
+                spec.base_url is not None
+            ):
+                found.append(
+                    Problem(
+                        path=f"models.{spec.name}.fallbacks",
+                        kind="shared_fate",
+                        message=f"fallback {name!r} sends where {spec.name!r} does "
+                        f"({spec.backend} → {spec.base_url}): when that server is down, both fail",
+                        fix="name a fallback on another server or backend, or keep this one "
+                        "knowing it guards against a failing model only",
+                        got=name,
+                    )
+                )
+    return found
 
 
 def _check_overrides(max_tokens: int | None, temperature: float | None) -> None:
@@ -178,6 +205,10 @@ class ModelRuntime:
             )
         if schema_retries < 0:
             raise ConfigError(f"schema_retries must be >= 0, got {schema_retries}")
+        self._warnings = tuple(_shared_fate(registry))
+        for warning in self._warnings:
+            # ``problem`` lets a host that reports ``warnings`` itself (the CLI) drop the record.
+            logger.warning("%s: %s", warning.path, warning.message, extra={"problem": warning})
         self._registry = registry
         self._backends = dict(backends)
         self._secrets = secrets
@@ -189,6 +220,12 @@ class ModelRuntime:
     @property
     def registry(self) -> ModelRegistry:
         return self._registry
+
+    @property
+    def warnings(self) -> tuple[Problem, ...]:
+        """What is legal in the registry but likely not what was meant: each fallback that
+        shares its primary's server (``shared_fate``)."""
+        return self._warnings
 
     async def aclose(self) -> None:
         """Close the connections the backends opened in the running event loop.

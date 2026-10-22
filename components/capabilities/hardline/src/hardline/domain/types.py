@@ -291,6 +291,27 @@ class Completion(BaseModel):
         return self.finish_reason == "stop" and self.refusal is None and bool(self.text)
 
 
+class Problem(BaseModel):
+    """One thing wrong with a configuration, or worth a warning about it.
+
+    The problem record the capability CLIs share (``components/capabilities/error-envelope.json``
+    in the workspace): ``path`` is the offending key, dotted from the document root
+    (``models.a.fallbacks``); ``kind`` is a kind the tools share (``unknown_key``,
+    ``invalid_value``, ...) or one of hardline's own (``shared_fate``); ``source`` is the tier
+    the key came from, when known.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str
+    kind: str
+    message: str
+    fix: str | None = None
+    allowed: tuple[str, ...] = ()
+    got: str | int | float | bool | None = None
+    source: str | None = None
+
+
 @dataclass(frozen=True)
 class Structured[T: BaseModel]:
     """A validated object plus the completion that produced it."""

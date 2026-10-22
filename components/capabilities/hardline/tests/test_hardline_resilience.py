@@ -17,7 +17,8 @@ import pytest
 from hardline_helpers import mock_runtime
 from pydantic import BaseModel
 
-from hardline import BackendError, ConfigError, SchemaError, Usage, build_runtime
+from hardline import BackendError, ConfigError, ModelRuntime, SchemaError, Usage, build_runtime
+from hardline.adapters._out.openai_compat import OpenAICompatBackend
 
 
 class Sleeps:
@@ -379,3 +380,57 @@ def test_usage_sums_cache_tokens() -> None:
         input_tokens=1, cache_read_tokens=1
     )
     assert (total.cache_read_tokens, total.cache_write_tokens) == (6, 2)
+
+
+# --- a fallback that shares its primary's fate (W6.2) ------------------------------------
+
+
+def _located(**rows: dict[str, Any]) -> ModelRuntime:
+    models = {
+        name: {"backend": "openai-compat", "model": "m", "family": "x", **row}
+        for name, row in rows.items()
+    }
+    return build_runtime({"models": models}, backends={"openai-compat": OpenAICompatBackend()})
+
+
+def test_a_fallback_on_the_same_server_as_its_primary_is_warned_of() -> None:
+    # Before: construction checked only that a fallback existed and was not the row itself, so a
+    # fallback on the same local server was taken for protection when the server going down
+    # takes both.
+    local = "http://127.0.0.1:8080/v1"
+    rt = _located(a={"base_url": local, "fallbacks": ["b"]}, b={"base_url": local, "model": "n"})
+    (warning,) = rt.warnings
+    assert (warning.path, warning.kind) == ("models.a.fallbacks", "shared_fate")
+    assert "'b'" in warning.message and local in warning.message and warning.fix
+
+
+@pytest.mark.parametrize(
+    "fallback",
+    [
+        {"base_url": "http://127.0.0.1:8081/v1"},  # another server
+        {"backend": "mock", "options": {}},  # another backend, with no location at all
+    ],
+)
+def test_a_fallback_elsewhere_is_not_warned_of(fallback: dict[str, Any]) -> None:
+    from hardline.adapters._out.mock import MockBackend
+
+    models = {
+        "a": {
+            "backend": "openai-compat",
+            "model": "m",
+            "family": "x",
+            "base_url": "http://127.0.0.1:8080/v1",
+            "fallbacks": ["b"],
+        },
+        "b": {"backend": "openai-compat", "model": "m", "family": "x", **fallback},
+    }
+    rt = build_runtime(
+        {"models": models},
+        backends={"openai-compat": OpenAICompatBackend(), "mock": MockBackend()},
+    )
+    assert rt.warnings == ()
+
+
+def test_mock_rows_share_no_server() -> None:
+    rt = mock_runtime({"a": _row(["x"], fallbacks=["b"]), "b": _row(["y"])})
+    assert rt.warnings == ()

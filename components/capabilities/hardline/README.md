@@ -186,8 +186,14 @@ added, none removed or renamed without a version bump.
 | command | stdout JSON |
 |---|---|
 | `models --json` | `{"default": str\|null, "models": [ModelSpec without api_key, options]}`, each row's `base_url` filled |
-| `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null}]}` |
+| `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null}], "warnings": [problem]}` |
 | `complete --json` | the `Completion` without `raw`: `type_url, name, text, family, model, backend, local, usage, request_id, latency_ms, attempts, retries, fallback_from, finish_reason, native_finish_reason, refusal, params, attempt_log, turns_digest, row` |
+
+A `problem` is the record the capability CLIs share: `{"path", "kind", "message", "fix",
+"allowed", "got", "source"}`. `check` warns of a fallback that sends where its primary does
+(`shared_fate`: the same backend and `base_url`), since the server going down takes both; the
+row is legal, so `check` still exits 0. A library caller reads the same list as
+`runtime.warnings`, and each is logged once on the `hardline` logger when the runtime is built.
 
 `check` resolves each row's `api_key` reference and reports one that is unset or unreadable as
 that row's `problem` (never the value), and exits 3. Its report is printed before the exit, so

@@ -19,6 +19,8 @@
 
 - **A call has its own bound: `limits`.** A row may set `limits: {attempts, seconds, tokens}`, which bound a call that asks for it across every retry, fallback and schema repair: backend calls, wall time from the call's start (a running attempt is cut when it passes, and a wait for a retry that would pass it is not started), and tokens reported. Each is unset by default. A call a limit stops raises the error it would have raised, with `limit` naming the bound; the message names the setting (`limits.attempts=4`). New export: `CallLimits`.
 
+- **A fallback that shares its primary's fate is warned of.** A fallback on the same backend and `base_url` as its row fails with it when that server is down. `ModelRuntime.warnings` lists each as a `Problem` of kind `shared_fate`, the runtime logs it once when built, and `hardline check` prints it (`warnings` in `check --json`). New export: `Problem`.
+
 ### Changed (breaking)
 
 - **No provider SDK.** Both wire protocols are spoken directly over httpx2: `openai-compat` (chat completions) and `anthropic` (the Messages API). hardline depends on pydantic, pyyaml and httpx2 only; the `openai` and `anthropic` packages are no longer installed with it.

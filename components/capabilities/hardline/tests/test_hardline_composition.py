@@ -453,7 +453,8 @@ def test_cli_check_json_reports_per_row_and_never_the_value(
     assert main(["check", "--json"]) == 3
     out, err = capsys.readouterr()
     report = json.loads(out)
-    assert set(report) == {"ok", "tiers", "models"} and report["ok"] is False
+    # Changed requirement (W6.2): the report also carries the registry's warnings.
+    assert set(report) == {"ok", "tiers", "models", "warnings"} and report["ok"] is False
     rows = {row["name"]: row for row in report["models"]}
     assert rows["q"]["ok"] is True and rows["q"]["problem"] is None
     assert rows["g"]["ok"] is False and "HL_TEST_MISSING_KEY" in rows["g"]["problem"]
@@ -557,3 +558,29 @@ def test_cli_complete_json_carries_why_the_reply_ended(
         "stop",
         None,
     )
+
+
+def test_cli_check_reports_a_fallback_that_shares_its_primarys_fate(
+    cli_config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # W6.2: a warning travels inside the --json document, and on stderr without it; the row is
+    # legal, so check still exits 0.
+    local = {"backend": "openai-compat", "family": "x", "base_url": "http://127.0.0.1:8080/v1"}
+    _write(
+        tmp_path / "hardline.yaml",
+        {
+            "models": {
+                "a": {**local, "model": "m", "fallbacks": ["b"]},
+                "b": {**local, "model": "n"},
+            }
+        },
+    )
+    assert main(["check", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert [(w["path"], w["kind"]) for w in report["warnings"]] == [
+        ("models.a.fallbacks", "shared_fate")
+    ]
+    assert main(["check"]) == 0
+    err = capsys.readouterr().err
+    assert err.count("fallback 'b'") == 1  # said once, not again by the log
+    assert "warning: models.a.fallbacks: fallback 'b'" in err
