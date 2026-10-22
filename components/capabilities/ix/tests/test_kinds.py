@@ -55,6 +55,7 @@ EXPECTED = {
         "tool-usage",
         "outcome",
         "text-match",
+        "evaluator",
     },  # fmt: skip
     "environment": {"none", "process", "compose"},
 }
@@ -155,6 +156,8 @@ class TestBuiltInKinds:
         }
         assert {name for name, is_judged in judged.items() if is_judged} == {
             "judged_score", "judged_pass", "judge_agreement", "judge_inconsistent",
+            # a pydantic-evals evaluator that calls a model (LLMJudge, GEval)
+            "judged_eval_passed", "judged_eval_score",
         }  # fmt: skip
         assert judged["activated_correctly"] is False and judged["ttfb"] is False
         activation = builtin_kinds.get("sensor", "activation")

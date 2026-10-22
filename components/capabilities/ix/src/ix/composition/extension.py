@@ -5,7 +5,8 @@ adapter registers at its family's point under the type URL of the kind it carrie
 (``ix.v1.subject.process``), and declares what it needs built in: :data:`LAUNCHER`, for one
 that starts processes; :data:`RUNTIMES`, for one that runs an agent or makes a model call on
 matrix's runtimes; :data:`SESSIONS`, for a subject and a probe that share an agent session or
-a model call by its handle.
+a model call by its handle; :data:`JUDGE_MODELS`, for one whose model is a pydantic-ai
+``Model`` over a matrix model runtime (a pydantic-evals judge).
 
 A third party adds an adapter for its own kind the same way, from its own entry point.
 """
@@ -25,6 +26,7 @@ from ix.adapters._out.agent_sensors import (
 )
 from ix.adapters._out.compose import ComposeEnvironment
 from ix.adapters._out.environments import NoEnvironment, ProcessEnvironment
+from ix.adapters._out.evaluators import EvaluatorSensor
 from ix.adapters._out.k6_load import K6Load
 from ix.adapters._out.matrix_agents import AgentSessionSubject, PromptProbe
 from ix.adapters._out.matrix_calls import ModelCallSubject
@@ -62,6 +64,9 @@ RUNTIMES = "runtimes"
 #: The need of the adapters that share an agent session or a model call: the table of what
 #: is open, by handle.
 SESSIONS = "sessions"
+#: The need of an adapter whose model is a pydantic-ai ``Model`` making its calls through a
+#: matrix model runtime: a :class:`~ix.adapters._out.evaluators.JudgeModels`.
+JUDGE_MODELS = "judge_models"
 
 
 def register_run_path(registry: Registry) -> None:
@@ -101,6 +106,8 @@ def register(registry: Registry) -> None:
         ("sensor", "usage", UsageSensor, "What a session consumed and how it ended", set()),
         ("sensor", "judge", JudgeSensor, "A model scores against a rubric; never decides",
          {RUNTIMES}),
+        ("sensor", "evaluator", EvaluatorSensor, "A pydantic-evals evaluator reads the trial",
+         {RUNTIMES, JUDGE_MODELS}),
         ("environment", "none", NoEnvironment, "Nothing to bring up", set()),
         ("environment", "process", ProcessEnvironment, "Programs started for the run", {LAUNCHER}),
         ("environment", "compose", ComposeEnvironment, "A docker compose project up for the run",

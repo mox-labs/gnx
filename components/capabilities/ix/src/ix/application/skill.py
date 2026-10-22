@@ -349,6 +349,26 @@ primary: {metric: text_matched}
 comparison: superiority
 metrics: [cost]
 """,
+    "evaluator": """\
+name: reads-before-answering
+question: Does the agent find total() and read it before it answers?
+genre: evaluate
+subjects:
+  agent: {kind: agent-session, runtime: claude-sdk, tools: [Read, Grep], max_turns: 4}
+probes:
+  - id: where-is-total
+    kind: prompt
+    prompt: Where is total() defined, and what does it return for an empty list?
+    mock_response: total() is in app.py and returns 0 for an empty list.
+    truth: {contains: app.py}
+sensors:
+  - kind: evaluator
+    evaluator: ToolCorrectness
+    arguments: {expected_tools: [Grep, Read], allow_extra: true}
+primary: {metric: eval_passed}
+threshold: {op: ">=", value: 0.7}
+metrics: [text_matched]
+""",
 }
 
 #: The first line of a YAML block that shows the shape of the file rather than a file.
@@ -1090,7 +1110,9 @@ probes and a metric. What makes it one is the kinds.
   every probe; options `ignore_case`, `strip`), `tokens_total`, `tokens_input`,
   `tokens_output`, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, `hit_limit`
   (`usage`: what the runtime did not report is left out, so a model call has no `turns`),
-  and the judged `judged_score` and `judged_pass` (`judge`, option `rubric`).
+  the judged `judged_score` and `judged_pass` (`judge`, option `rubric`), and
+  pydantic-evals' evaluators: `eval_passed`, `eval_score`, and the judged
+  `judged_eval_passed` and `judged_eval_score` (`evaluator`, below).
 - **Validate checks that the sensors can see.** A setting that makes what a sensor reads
   impossible is `unobservable`, refused before any trial, whatever the runtime is called:
   a skill with no `Skill` tool among `tools`, `skills` with `setting_sources` that leave
@@ -1189,6 +1211,38 @@ another). On an agent runtime the judge runs in a fresh temporary directory and,
 runtime's config takes `setting_sources`, reads no settings unless its `runtime_options`
 name some, so what is where ix runs (a CLAUDE.md, your settings, hooks) does not shape
 its scores.
+
+## pydantic-evals' evaluators
+
+`evaluator` runs one of pydantic-evals' evaluators over each trial; ix keeps the loop
+(`Dataset.evaluate` is not used). Name it with `evaluator` and give its `arguments` as
+pydantic-evals documents them. It reads the reply as `output`, the prompt as `inputs`, the
+probe's truth `expected_output` and `metadata`, how long the probe took, and the spans that
+ended in the trial. Every assertion it gives held is `eval_passed`; its score is
+`eval_score` (`result` names one when it gives several); labels and each result's reason
+are in the reading's detail. One `evaluator` entry per experiment: a second is
+`name_taken`.
+
+{_yaml(AGENT_EXAMPLES["evaluator"])}
+
+- **Reading the reply**: `Equals`, `EqualsExpected` (the truth's `expected_output`),
+  `Contains`, `IsInstance`, `MaxDuration`.
+- **Reading the spans**: `ToolCorrectness`, `TrajectoryMatch` (an `eval_score`),
+  `ArgumentCorrectness`, `MaxToolCalls`, `MaxModelRequests`, `HasMatchingSpan`, on matrix's
+  `execute_tool` span of each tool call the runtime timed (`claude-sdk` does). They are
+  captured from the OpenTelemetry SDK in ix's process, so set `OTEL_TRACES_EXPORTER` or an
+  `OTEL_EXPORTER_OTLP_ENDPOINT`: ix then installs the SDK and matrix's `otel` observer is on
+  the run. `ArgumentCorrectness` also needs `observers: [{{type: otel, capture_content:
+  true}}]` under `matrix:` in the settings, since a call's arguments are content. Without
+  the spans the reading fails and says why; it never reads as no tool called. A dry run on
+  `mock` has no tool calls to read.
+- **Calling a model**: `LLMJudge` and `GEval` give `judged_eval_passed` and
+  `judged_eval_score`, which never decide. Their model comes from the matrix model runtime
+  `model_runtime` names (with `model`, `runtime_options`), never from `arguments` and never
+  from pydantic-evals' default; validate refuses one with no `model_runtime`
+  (`option_missing`) or a `model` in its arguments. A dry run judges on pydantic-ai's
+  `TestModel`, which calls no model. A real runtime needs hardline's pydantic-ai model,
+  which this release lacks: `ix plan` says `Runnable: no`. Use `judge` meanwhile.
 
 ## Reading the report
 

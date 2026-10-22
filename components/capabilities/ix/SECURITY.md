@@ -42,7 +42,13 @@ each `function-test` reading, each `outcome` reading and each round of a `test-f
 loop. And it **sends**: HTTP requests from k6 to each probe's `target`; readiness checks to
 `ready` and `url`; each prompt, and what the session does, to the model provider of the
 session's or the call's runtime; each reply and its rubric to the judge's model provider;
-and spans to an OpenTelemetry endpoint when the `OTEL_*` variables name one.
+for a pydantic-evals judge evaluator (`LLMJudge`, `GEval`), each reply and its rubric or
+criteria, with the prompt when its `include_input` is set and the probe's `expected_output`
+when its `include_expected_output` is, to the model provider of the model runtime the
+sensor's `model_runtime` names, and never to pydantic-evals' default model (an `evaluator`
+sensor whose arguments name a `model` is refused by `ix validate`); and spans to an
+OpenTelemetry endpoint when the `OTEL_*` variables name one. The `evaluator` sensor's other
+evaluators send nothing: they read what the run recorded.
 
 ## Trust boundaries
 
@@ -202,6 +208,9 @@ or the keys hardline's registry names); ix neither reads nor stores them.
 path and digest of each file the subjects, sensors and environment name, the commit and the installed
 versions, every measurement, and for an agent trial the prompt, the reply, every tool call with its input
 (the commands a session ran included), each round's transcript and the files collected.
+With an `evaluator` sensor it also holds every span that ended in each trial, with its
+attributes: a tool call's arguments among them when matrix's `otel` observer captures
+content.
 Keep it out of version control if any of that is private. A record is plain files: it can be
 edited, and `ix report` reports what the files say.
 

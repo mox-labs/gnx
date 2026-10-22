@@ -1033,7 +1033,7 @@ both are `None`.
 | `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`; or `status="error"`, `error`, `reason`, `kind`; or, when the session was cancelled, `status="cancelled"`, `reason="cancelled"` |
 | `matrix.model.start` | new id / the calling span | `runtime` (the step's model runtime), `model` (as asked; `None` for the runtime's default) |
 | `matrix.model.end` | same / the calling span | `runtime`, `duration_ms`, then `status="completed"`, `name`, `model`, `family`, `provider`, `finish_reason` (the model that answered); or `status="failed"`, `error`, `reason`, `kind`; or `status="cancelled"`, `reason="cancelled"`. No usage: the session row holds it |
-| `matrix.tool.start` | new id / the agent's span | `agent`, `tool`, `call_id`; timed when the runtime saw the call start |
+| `matrix.tool.start` | new id / the agent's span | `agent`, `tool`, `call_id`, `arguments` (the call's input as JSON, when the runtime reported one: content); timed when the runtime saw the call start |
 | `matrix.tool.end` | same / the agent's span | `agent`, `tool`, `call_id`, `status` (`ok`, `error`), `duration_ms`; timed when the runtime saw its result |
 | `matrix.measure` | new id / the calling span | `name`, `value`, `unit`, `kind`, `attrs` |
 | `matrix.events.dropped` | new id / none | `count` |
@@ -1119,8 +1119,9 @@ attach takes the default.
   (`acme.rows`), and the `ok`/`error` status matrix gives the span at its end
   (`acme.status`). A string can hold anything, so a component's string field is content.
 
-Content is an agent's `task`, any `error` message, and a component's string fields. It
-leaves only with `capture_content`, as `matrix.task`, `matrix.error` and `<root>.<field>`;
+Content is an agent's `task`, a tool call's `arguments`, any `error` message, and a
+component's string fields. It leaves only with `capture_content`, as `matrix.task`,
+`gen_ai.tool.call.arguments`, `matrix.error` and `<root>.<field>`;
 and only then is an error's message a span's status description, which is otherwise its
 `error.type`. `error.type` is set on every failure either way. The GenAI conventions ask
 for exactly this: instrumentations "SHOULD NOT capture them by default, but SHOULD provide
@@ -1153,7 +1154,7 @@ with `ctx.emit` opens no span, whatever its name ends with.
 | `matrix.release` | INTERNAL | `matrix.component`, `matrix.status`; `error.type` when it failed. With content: `matrix.error` |
 | `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed, and `error.type=cancelled` when the session was cancelled. With content: `matrix.task`, `matrix.error` |
 | `matrix.model` (a model step's call) | INTERNAL | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `matrix.component`, `matrix.runtime`, `matrix.name` (the registry row that answered), `matrix.family`, `matrix.finish_reason`, `matrix.status`, `matrix.duration_ms`; `matrix.reason`, `matrix.kind` and `error.type` when it failed or was cancelled. With content: `matrix.error`. The conventions have no operation for one logical call, which may span retries and fallbacks; it carries no usage, since each attempt's inference span is the model runtime's own and nests under it |
-| `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`, `matrix.status`, `matrix.duration_ms`; `error.type=tool_error` when the tool reported an error |
+| `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`, `matrix.status`, `matrix.duration_ms`; `error.type=tool_error`, and the status ERROR, when the tool reported an error. With content: `gen_ai.tool.call.arguments`, the call's arguments as a JSON object |
 | a component's `ctx.span(name)` | INTERNAL | `matrix.component`; its number and boolean fields and its status under its root (`acme.rows`, `acme.status`, `acme.duration_ms`). With content: its string fields too |
 
 Metrics, derived from the same events, so an event log replays into the numbers an exporter

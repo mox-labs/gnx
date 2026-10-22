@@ -80,8 +80,8 @@ go to whatever endpoint the environment names. So what a span carries leaves the
 By default a span carries no content: the GenAI conventions' attributes (agent, model,
 provider, token counts, tool name and call id), matrix's statuses, reasons, error kinds,
 counts, times and ids, and the numbers and booleans a component passes to `ctx.span`. It does
-not carry an agent's task, any error message (as an attribute or as the span's status
-description), or a component's string fields. `error.type` is always set on a failure.
+not carry an agent's task, a tool call's arguments, any error message (as an attribute or as
+the span's status description), or a component's string fields. `error.type` is always set on a failure.
 
 Content leaves only when the config asks: `observers: [{type: otel, capture_content: true}]`.
 That config is a grant to send prompts to the collector; review it like one. A `ctx.measure`'s

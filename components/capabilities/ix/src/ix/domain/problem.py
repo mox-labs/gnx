@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 #: know: the set grows. The first eight are the kinds every capability shares
 #: (``components/capabilities/error-envelope.json``): ``name_unknown`` is a genre, kind,
 #: subject or parent genre named and not defined, ``name_taken`` a genre, kind or probe id
-#: defined twice; the rest are ix's.
+#: defined twice, or a sensor kind listed twice; the rest are ix's.
 PROBLEM_KINDS: frozenset[str] = frozenset(
     {
         # shared: the file as a document, and names

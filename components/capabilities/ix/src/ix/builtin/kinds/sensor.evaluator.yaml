@@ -1,0 +1,17 @@
+schema: ix.v1.kind
+name: ix.v1.sensor.evaluator
+summary: "One of pydantic-evals' evaluators reads the trial: the reply, the probe's expected output, how long the probe took, and the spans of the session's tool calls."
+options:
+  evaluator: {type: string, required: true, description: "the pydantic-evals evaluator, by its name: Equals, EqualsExpected, Contains, IsInstance, MaxDuration, HasMatchingSpan, ToolCorrectness, TrajectoryMatch, ArgumentCorrectness, MaxToolCalls and MaxModelRequests call no model; LLMJudge and GEval call one"}
+  arguments: {type: mapping, description: "the evaluator's own arguments, by name, as pydantic-evals documents them: {value: Paris} for Contains, {expected_tools: [Read, Grep]} for ToolCorrectness. A judge's model is never one of them"}
+  result: {type: string, description: "the one result to read, by its name, when the evaluator gives more than one score; every assertion it gives is read when absent"}
+  model_runtime: {type: string, description: "for an evaluator that calls a model (LLMJudge, GEval): the matrix model runtime its model comes from, one call per reading. There is no default, and pydantic-evals' own default model is never used, so a model provider is never called implicitly"}
+  model: {type: string, description: "the model such an evaluator calls, as its model runtime names it"}
+  runtime_options: {type: mapping, description: "the model runtime's own config, passed through as written"}
+needs: [response]
+truth: [expected_output, metadata]
+metrics:
+  - {name: eval_passed, direction: higher, shape: boolean, description: "every assertion an evaluator that calls no model gave held: ToolCorrectness, MaxToolCalls, Equals, Contains and the other pass/fail evaluators"}
+  - {name: eval_score, direction: higher, shape: scalar, description: "the score an evaluator that calls no model gave, on its own scale: TrajectoryMatch's F1 from 0 to 1"}
+  - {name: judged_eval_passed, direction: higher, shape: boolean, judged: true, description: "every assertion an evaluator that calls a model gave held: LLMJudge's pass"}
+  - {name: judged_eval_score, direction: higher, shape: scalar, judged: true, description: "the score an evaluator that calls a model gave, on its own scale: GEval's, LLMJudge's when it is asked for one"}

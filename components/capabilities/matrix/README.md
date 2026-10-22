@@ -215,8 +215,8 @@ For OpenTelemetry, install the `otel` extra and set the standard variables: an
 to export. matrix as a library only uses the API and installs no provider: a program calls
 `matrix.configure_telemetry()` once (and `.shutdown()` on what it returns), or configures
 OpenTelemetry itself. Export asked for without the extra is a warning in every `--json`
-document, never silence. Spans carry no task, error message or component text unless the
-config sets `observers: [{type: otel, capture_content: true}]`.
+document, never silence. Spans carry no task, tool arguments, error message or component
+text unless the config sets `observers: [{type: otel, capture_content: true}]`.
 
 ```python
 from matrix import Executor, default_registry

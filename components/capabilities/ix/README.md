@@ -251,7 +251,7 @@ judges them. `ix kinds` lists them.
 |---|---|
 | subject | `process`, `http`, `agent-session`, `model-call` |
 | probe | `http-load`, `prompt`, `inspect-task` |
-| sensor | `timing`, `memory`, `activation`, `tool-usage`, `function-test`, `outcome`, `text-match`, `usage`, `judge` |
+| sensor | `timing`, `memory`, `activation`, `tool-usage`, `function-test`, `outcome`, `text-match`, `usage`, `judge`, `evaluator` |
 | environment | `none`, `process`, `compose` |
 
 A declaration is not an adapter. ix can **run** these:
@@ -273,6 +273,7 @@ A declaration is not an adapter. ix can **run** these:
 | sensor | `text-match` | `text_matched`: the reply starts or ends with, equals, contains, excludes or matches (a regular expression) what the probe's truth or the sensor's options say; no code of your own |
 | sensor | `usage` | tokens, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, and `hit_limit`, as the runtime reported them; what it did not report (a model call's cost or turns) is left out |
 | sensor | `judge` | a model scores the reply against a rubric, by one call on the model runtime `model_runtime` names or a one-turn session on the agent runtime `agent_runtime` names; its metrics are reported and never decide |
+| sensor | `evaluator` | one of pydantic-evals' evaluators, named by `evaluator` with its `arguments`, reads the trial: the reply, the probe's truth `expected_output` and `metadata`, how long the probe took, and the spans that ended in the trial (matrix's `execute_tool` spans, for `ToolCorrectness`, `TrajectoryMatch`, `MaxToolCalls`). Its assertions are `eval_passed` and its score `eval_score`; an evaluator that calls a model (`LLMJudge`, `GEval`) gives `judged_eval_passed` and `judged_eval_score`, on the model its `model_runtime` gives, never pydantic-evals' default. ix keeps the loop: `Dataset.evaluate` is not used |
 | environment | `none`, `process` | nothing; or programs started before the trials and stopped when the run ends, each bound with where it listens (`{<service>.url}`, `.host`, `.port`), which a subject's or a probe's options name |
 | environment | `compose` | a docker compose project brought up once for the run (`docker compose up -d --wait`, healthchecks included) and down after it (`down -v --remove-orphans`, deferred before `up`, so a stack that came up in part still comes down); each running service bound with its first published port (`{web.url}`) and the image id it runs, in the run's bindings row; a service found stopped or unhealthy after a trial fails the run. Without `project`, the project is named for the run, and a stack a killed run left is swept; a `project` written that already has containers is refused |
 
@@ -641,6 +642,15 @@ ix makes spans through the OpenTelemetry API, under the instrumentation scope `i
 `ix` command installs the SDK from the standard `OTEL_*` variables when the `otel` extra is
 installed; set without it, every `--json` document carries a warning. A program that
 imports ix configures OpenTelemetry itself, or calls `ix.configure_telemetry()`.
+
+The `evaluator` sensor reads a trial's spans in this process, from the SDK's tracer
+provider, so an evaluator that reads spans (`ToolCorrectness`, `MaxToolCalls`) needs both:
+the SDK installed (the `OTEL_*` variables asking for export) and matrix's `otel` observer on
+the run, which is there whenever they ask, or when `matrix.observers` names it. A tool
+call's arguments are on its span only with `capture_content`
+(`observers: [{type: otel, capture_content: true}]`), which `ArgumentCorrectness` reads.
+Without the spans its reading fails and says why; it never reads as an agent that called no
+tool.
 
 ## Library
 

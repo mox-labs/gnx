@@ -60,7 +60,8 @@
       "name": "adapters_out",
       "files": ["src/ix/adapters/__init__.py", "src/ix/adapters/_out/__init__.py",
                 "src/ix/adapters/_out/agent_sensors.py", "src/ix/adapters/_out/compose.py",
-                "src/ix/adapters/_out/environments.py", "src/ix/adapters/_out/k6_load.py",
+                "src/ix/adapters/_out/environments.py", "src/ix/adapters/_out/evaluators.py",
+                "src/ix/adapters/_out/k6_load.py",
                 "src/ix/adapters/_out/processes.py", "src/ix/adapters/_out/provenance.py",
                 "src/ix/adapters/_out/python_checks.py",
                 "src/ix/adapters/_out/registration_file.py", "src/ix/adapters/_out/sensors.py",
@@ -68,7 +69,7 @@
       "allow": ["*", "ix.domain", "ix.adapters._out"],
       "forbid": ["matrix", "opentelemetry"],
       "why": {
-        "*": "one technology each: k6, ps, httpx, child Python, docker compose, git and file digests, the registration file",
+        "*": "one technology each: k6, ps, httpx, child Python, docker compose, git and file digests, the registration file, pydantic-evals",
         "ix.domain": "the ports they implement and the types they speak in",
         "ix.adapters._out": "one adapter may build on another, a subject or the compose environment on the launcher's processes module; a deviation from the four places that test_layering allows on purpose",
         "forbid": "matrix and OpenTelemetry each have adapter files of their own"
@@ -136,7 +137,9 @@
   "single_importer": [
     {"name": "opentelemetry", "only": "src/ix/adapters/_out/otel_tracing.py"},
     {"name": "httpx", "only": "src/ix/adapters/_out/processes.py"},
-    {"name": "rich_click", "only": "src/ix/adapters/_in/cli.py"}
+    {"name": "rich_click", "only": "src/ix/adapters/_in/cli.py"},
+    {"name": "pydantic_evals", "only": "src/ix/adapters/_out/evaluators.py"},
+    {"name": "pydantic_ai", "only": "src/ix/adapters/_out/evaluators.py"}
   ],
-  "single_importer_why": "one file per technology: the OpenTelemetry API (the command installs a provider through matrix), the readiness probe's HTTP client, the command line. docker and the launcher cannot be held here: docker is a program named in a string, and the launcher's technology is reached as 'from matrix import process', which an import check reads as 'matrix'. test_layering holds both"
+  "single_importer_why": "one file per technology: the OpenTelemetry API (the command installs a provider through matrix), the readiness probe's HTTP client, the command line, pydantic-evals' evaluators and the pydantic-ai model a dry-run judge evaluator stands in on (both imported inside the adapter's functions, so ix starts without them). docker and the launcher cannot be held here: docker is a program named in a string, and the launcher's technology is reached as 'from matrix import process', which an import check reads as 'matrix'. test_layering holds both"
 }

@@ -120,6 +120,10 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Added
 
+- **A tool call's arguments, as content.** `matrix.tool.start` carries the call's input as
+  JSON (`arguments`), and the `otel` observer exports it as `gen_ai.tool.call.arguments` on
+  the `execute_tool` span only with `capture_content`, as the conventions make it opt-in.
+  It is what span-reading evaluators such as pydantic-evals' `ArgumentCorrectness` read.
 - **The observable behaviours callers rely on are listed** (the design record, §16): the run
   layout and its file and table names, `run.json`'s keys, every `matrix.*` event and the
   fields it always carries, the span and metric names, and the exit kinds. Each is pinned by
