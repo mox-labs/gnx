@@ -58,7 +58,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict
 
-from recon.domain.capture import REDACTED
+from recon.domain.capture import REDACTED, credential_values
 from recon.domain.collector import CollectorType, Requirement
 from recon.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem
 from recon.domain.http import REDACTED as REPORTED_REDACTED
@@ -341,7 +341,7 @@ class McpCollector:
         if settings.headers_helper is not None:
             given = self._helper_headers(settings.headers_helper, source)
             headers.update(given)
-            server.secrets.extend(given.values())
+            server.secrets.extend(credential_values(given))
         return headers
 
     def _resolve(self, written: str, where: str) -> str | None:

@@ -506,6 +506,33 @@ def test_a_headers_helper_gives_a_remote_its_headers(tmp_path: Path, remote: Any
     assert seen.headers and all(h["x-api-key"] == "k3y" for h in seen.headers)
 
 
+def test_only_the_credentials_a_headers_helper_gives_are_redacted_in_a_capture(
+    tmp_path: Path, remote: Any
+) -> None:
+    """Regression: every value a headers_helper printed counted as a secret, so a header such
+    as ``X-Org: acme`` was replaced wherever ``acme`` appeared in a captured result, and the
+    capture (the evidence, and the source to normalize again from) silently differed from
+    the table. A header is a credential by its name; a bearer token is redacted alone too."""
+    _seen, url = remote
+    helper = tmp_path / "helper.sh"
+    given = {"Authorization": "Bearer t0k", "X-Goog-Api-Key": "g00g", "X-Org": "acme"}
+    helper.write_text(f"#!/bin/sh\necho '{json.dumps(given)}'\n")
+    helper.chmod(0o755)
+    source = {"name": "fixture", "type": "mcp", "url": url, "headers_helper": str(helper)}
+    query = "acme t0k g00g"
+    archive, [table] = _survey(
+        tmp_path,
+        [_call("papers", "search", arguments={"query": query}, extract="papers")],
+        source=source,
+        config={"preserve_raw": True},
+    )
+    assert table.status == "ok", table.error
+    [capture] = [json.loads(line) for line in (archive / "captures.jsonl").read_text().splitlines()]
+    body = (archive / capture["body"]).read_text()
+    assert "acme" in body, "a header that is not a credential is evidence, kept"
+    assert "t0k" not in body and "g00g" not in body
+
+
 def _mock(answer: Any) -> Any:
     """The mcp type over a client whose every request ``answer`` answers."""
 
