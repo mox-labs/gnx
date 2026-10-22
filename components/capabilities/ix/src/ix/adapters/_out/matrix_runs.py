@@ -33,7 +33,7 @@ from ix.domain.report import RunSummary
 from ix.domain.run import Interaction, Reading, RunManifest, RunRecord, RunStatus, Trial
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from matrix import ConstructStore, Event, MatrixConfig, Registry
 
@@ -219,26 +219,28 @@ class Runs:
             },
         )
 
-    def summaries(self) -> list[RunSummary]:
-        """Every experiment run under the root, oldest first. A directory that is not one
-        is left out."""
-        found: list[RunSummary] = []
-        for run in self.ids():
+    def records(self, *, latest_first: bool = False) -> Iterator[RunRecord]:
+        """Every experiment run under the root, oldest first (or latest first), each read
+        once and when asked. A directory that is not one is left out."""
+        ids = self.ids()
+        for run in reversed(ids) if latest_first else ids:
             try:
-                record = self.record(run)
+                yield self.record(run)
             except IxError:
                 continue
-            found.append(
-                RunSummary(
-                    run=run,
-                    location=record.location,
-                    experiment=record.manifest.experiment,
-                    status=record.status,
-                    gated=record.gated,
-                    mode="dry" if record.stood_in else "gated" if record.gated else "exploratory",
-                    started_at=record.manifest.started_at,
-                    planned=len(record.trials),
-                    carried_out=len(record.interactions),
-                )
-            )
-        return found
+
+    @staticmethod
+    def summary(record: RunRecord) -> RunSummary:
+        """What a list of runs can say of ``record`` without reporting it: its id, state
+        and counts."""
+        return RunSummary(
+            run=record.run,
+            location=record.location,
+            experiment=record.manifest.experiment,
+            status=record.status,
+            gated=record.gated,
+            mode="dry" if record.stood_in else "gated" if record.gated else "exploratory",
+            started_at=record.manifest.started_at,
+            planned=len(record.trials),
+            carried_out=len(record.interactions),
+        )

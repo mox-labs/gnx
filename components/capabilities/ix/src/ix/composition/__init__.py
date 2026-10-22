@@ -92,6 +92,7 @@ if TYPE_CHECKING:
     from ix.domain.plan import Plan
     from ix.domain.problem import Problem, Validation
     from ix.domain.registration import Deviations, Registered, Registration
+    from ix.domain.report import RunSummary
     from ix.domain.run import Reading, RunRecord
 
 try:
@@ -558,9 +559,9 @@ class Root:
     def _earlier(self, base: str, experiment: str) -> Iterator[RunRecord]:
         """The runs of ``experiment`` kept beside it, latest first, each read when asked."""
         records = self._records(str(Path(base).resolve()))
-        for summary in reversed(records.summaries()):
-            if summary.experiment == experiment and summary.status == "completed":
-                yield records.record(summary.run)
+        for record in records.records(latest_first=True):
+            if record.manifest.experiment == experiment and record.status == "completed":
+                yield record
 
     def register(
         self,
@@ -750,10 +751,9 @@ class Root:
                     tracer=self._tracer,
                 )
             )
-        return self._report(records, manifest.run)
+        return self._report(records.record(manifest.run))
 
-    def _report(self, records: RunRecords, run: str) -> Report:
-        record = records.record(run)
+    def _report(self, record: RunRecord) -> Report:
         readings, unread = self._derived_readings(record)
         return build_report(record, readings=readings, unread=unread)
 
@@ -807,33 +807,62 @@ class Root:
         """The report of a run: ``target`` is a run's directory, or an experiment (its file
         or directory), meaning its latest run."""
         records, run, experiment = self._locate(target)
-        if run is None:
-            found = [s for s in records.summaries() if not experiment or s.experiment == experiment]
-            if not found:
-                raise NotFoundError(
-                    f"{os.fspath(target)} has no runs in {records.root}",
-                    fix=f"ix run {os.fspath(target)}",
-                    details={"path": os.fspath(target)},
-                )
-            run = found[-1].run
-        return self._report(records, run)
+        if run is not None:
+            return self._report(records.record(run))
+        for record in records.records(latest_first=True):
+            if not experiment or record.manifest.experiment == experiment:
+                return self._report(record)
+        raise NotFoundError(
+            f"{os.fspath(target)} has no runs in {records.root}",
+            fix=f"ix run {os.fspath(target)}",
+            details={"path": os.fspath(target)},
+        )
 
     def runs(self, target: PathLike | None = None) -> Runs:
         """The runs kept beside an experiment, oldest first. ``target`` is the experiment
-        (its file or directory); with none, the current directory's runs of any experiment."""
-        if target is None:
-            records, experiment = self._records(os.getcwd()), ""
-        else:
+        (its file or directory); with none, every experiment's runs under the current
+        directory (each ``.ix/runs`` below it), or under the settings' ``runs``."""
+        if target is not None:
             records, _, experiment = self._locate(target)
-        found = []
-        for listed in records.summaries():
-            if experiment and listed.experiment != experiment:
+            return Runs(location=records.root, runs=tuple(self._listed(records, experiment)))
+        here = str(Path.cwd().resolve())
+        kept = self._settings().client.runs
+        places = [kept] if kept else _runs_under(here)
+        found = [
+            listed
+            for place in places
+            for listed in self._listed(RunRecords(place, self._store(place)), "")
+        ]
+        found.sort(key=lambda listed: (listed.started_at, listed.run))
+        return Runs(location=kept or here, runs=tuple(found))
+
+    def _listed(self, records: RunRecords, experiment: str) -> Iterator[RunSummary]:
+        """Each run in ``records`` of ``experiment`` (of any, when empty), oldest first,
+        each read once."""
+        for record in records.records():
+            if experiment and record.manifest.experiment != experiment:
                 continue
             try:
-                found.append(summarize(build_report(records.record(listed.run))))
+                yield summarize(build_report(record))
             except IxError:
-                found.append(listed)  # written by another ix: its id, state and counts only
-        return Runs(location=records.root, runs=tuple(found))
+                yield RunRecords.summary(record)  # another ix's: its id, state and counts
+
+
+def _runs_under(directory: str) -> list[str]:
+    """Every ``.ix/runs`` directory at or below ``directory``, in path order. A hidden
+    directory other than ``.ix``, and ``node_modules``, are not entered."""
+    found: list[str] = []
+    for at, folders, _ in os.walk(directory):
+        if os.path.basename(at) == ".ix":
+            if "runs" in folders:
+                found.append(os.path.join(at, "runs"))
+            folders[:] = []
+            continue
+        folders[:] = sorted(
+            name for name in folders
+            if name == ".ix" or not (name.startswith(".") or name == "node_modules")
+        )  # fmt: skip
+    return found
 
 
 _DEFAULT: Root | None = None

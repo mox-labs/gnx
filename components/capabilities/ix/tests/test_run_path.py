@@ -238,6 +238,53 @@ class TestAProcessSubjectsProgram:
         assert not root.run(file).gated
 
 
+class _CountingStore(JsonlConstructStore):
+    """matrix's JSONL store, counting the runs it loads."""
+
+    loaded: ClassVar[list[str]] = []
+
+    def load(self, run_id: str) -> Any:
+        _CountingStore.loaded.append(run_id)
+        return super().load(run_id)
+
+    @classmethod
+    def from_config(cls, config: JsonlStoreConfig) -> JsonlConstructStore:
+        return cls(config.root)
+
+
+class TestListingRuns:
+    def test_each_run_is_read_once(self, write_experiment: Write) -> None:
+        """Regression: listing read every record in full to summarize it, then again to
+        report it; a plan and a report of an experiment did the same to find its runs."""
+        registry = fake_registry()
+        url = "acme.v1.store.counting"
+        registry.register("store", url, _CountingStore.from_config, config=JsonlStoreConfig)
+        root = Root(registry=registry, run_store=url)
+        file = write_experiment(experiment())
+        runs = [root.run(file, exploratory=True).run for _ in range(2)]
+        _CountingStore.loaded.clear()
+        assert sorted(r.run for r in root.runs(file).runs) == sorted(runs)
+        assert sorted(_CountingStore.loaded) == sorted(runs)
+        _CountingStore.loaded.clear()
+        latest = root.report(file).run
+        assert _CountingStore.loaded == [latest]
+
+    def test_with_no_path_every_experiments_runs_under_the_directory(
+        self, write_experiment: Write, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: with no path ``ix runs`` read only ``./.ix/runs``, though its help
+        says every experiment's runs under the current directory: at a repository's root
+        after ``ix run lab/static`` it said there were none."""
+        root = Root(registry=fake_registry())
+        one = write_experiment(experiment(), "lab/one")
+        two = write_experiment(experiment(name="other"), "lab/two")
+        ran = [root.run(file, exploratory=True).run for file in (one, two)]
+        monkeypatch.chdir(one.parents[1])
+        listed = root.runs()
+        assert sorted(r.run for r in listed.runs) == sorted(ran)
+        assert listed.location == str(one.parents[1].resolve())
+
+
 class TestWhereEachSettingCameFrom:
     def test_the_run_records_the_tier_that_set_each_setting_it_read(
         self, tmp_path: Path, write_experiment: Write

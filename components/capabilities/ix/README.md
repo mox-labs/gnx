@@ -59,7 +59,8 @@ verdict. A run exits 0 when the verdict holds, 10 when it fails and 11 when it i
 inconclusive.
 
 The other commands: `ix deviations <path>` (what changed since registration; exit 14 when
-anything did), `ix runs <path>` (each run kept beside the experiment: when it started,
+anything did), `ix runs [path]` (each run kept beside the experiment, or with no path every
+experiment's runs under the current directory: when it started,
 whether it was gated, exploratory or a dry run, the commit it ran from, its verdict or
 indication, its trials),
 `ix genres` and

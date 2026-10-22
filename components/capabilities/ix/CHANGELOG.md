@@ -331,6 +331,14 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   other error is the harness's `error`, named by its type.
 - **`ix run`'s progress bar stops however the run ends.** Only an ix error stopped it, so a
   defect or a Ctrl-C outside the run printed over a live display.
+- **`ix runs` with no path lists what its help says.** It read only `./.ix/runs`, so at a
+  repository's root after `ix run lab/static` it said there were no runs. It now lists every
+  experiment's runs under the current directory (each `.ix/runs` below it; hidden folders
+  and `node_modules` are not entered), or those under the settings' `runs`.
+- **Each run is read once.** Listing runs read every record in full to summarize it and
+  then again to report it, and `ix plan` and `ix report <experiment>` did the same to find
+  an experiment's runs. Each record is now read once, latest first where only the latest
+  is wanted.
 
 ## 0.5.0 — 2026-10-19
 
