@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from matrix.domain.model_call import FinishReason  # noqa: TC001 -- pydantic reads it
 from matrix.domain.observer import (
     AGENT_END,
     AGENT_START,
@@ -32,6 +33,7 @@ from matrix.domain.observer import (
     Event,
     emit,
 )
+from matrix.domain.session import agent_session, digest, record_session
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -108,38 +110,93 @@ class AgentDefinition(BaseModel):
 
 
 class AgentResponse(BaseModel):
-    """The runtime-neutral record of one agent session."""
+    """The runtime-neutral record of one agent session: what a runtime returns.
+
+    On a reply row an agent step provides, the facts the session row holds are moved there:
+    the row keeps the reply and what a consumer acts on (``content``, ``transcript``,
+    ``tool_calls``, ``stop``, ``finish_reason``, ``family``, ``task``) and ``session``, the
+    position of its row in ``matrix.v1.session``; every field the session row holds is None
+    (:meth:`as_reply`). A fact the runtime did not report is None, never a constant.
+    """
 
     model_config = ConfigDict(frozen=True)
 
+    #: The session's reply: its final result, not every turn's text.
     content: str = ""
+    #: What the agent wrote, turn by turn: each of its text blocks, in order.
+    transcript: tuple[str, ...] = ()
     #: ``{name, input}`` per tool call, as plain dicts. A runtime that sees calls happen adds
     #: ``id``, ``started`` and ``ended`` (ISO times) and ``error`` (bool), and matrix reports
     #: each such call as an ``execute_tool`` span.
     tool_calls: tuple[dict[str, Any], ...] = ()
-    tokens_input: int = 0
-    tokens_output: int = 0
-    duration_ms: int = 0
-    cost_usd: float | None = None
-    num_turns: int = 0
-    #: The model family that answered (``claude``, ``qwen``, ``gemini``), stamped by the
-    #: runtime.
-    family: str | None = None
-    #: Who served it, as the GenAI conventions name providers (``anthropic``, ``openai``,
-    #: ``gcp.gemini``), when the runtime knows.
-    provider: str | None = None
-    #: The model id or registry name that answered, when the runtime knows it.
-    model: str | None = None
     #: Why the session ended: ``completed``, or the limit reached (``max_turns``,
     #: ``max_budget_usd``). A limit is not a failure; a failure raises instead.
     stop: str | None = None
+    #: Why the session's last reply ended, in the model call's vocabulary (``stop``,
+    #: ``length``, ``refusal``, ...); None when the runtime does not say.
+    finish_reason: FinishReason | None = None
+    #: The model family that answered (``claude``, ``qwen``, ``gemini``), stamped by the
+    #: runtime.
+    family: str | None = None
     #: The task the agent was given, as sent: an ``agent-step`` records it here, after
     #: substituting its inputs. None when the caller did not record it.
     task: str | None = None
+    #: The position of this session's row in the run's ``matrix.v1.session`` table, when a
+    #: run recorded it: the run that ran the session, which for a reused row is the one
+    #: ``reused_from`` names. None outside a run.
+    session: int | None = None
+    #: Every input token the session read, those served from and written to the prompt
+    #: cache included; ``cache_read_tokens`` and ``cache_write_tokens`` say how many of them.
+    tokens_input: int | None = None
+    tokens_output: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    duration_ms: int | None = None
+    #: The cost the runtime reported, when it reports one: a fact of the session.
+    cost_usd: float | None = None
+    num_turns: int | None = None
+    #: Who served it, as the GenAI conventions name providers (``anthropic``, ``openai``,
+    #: ``gcp.gemini``), when the runtime knows.
+    provider: str | None = None
+    #: The model id or registry name that answered, when the runtime knows it: not the one
+    #: the definition asked for.
+    model: str | None = None
+    #: The provider's own value for why the last reply ended, verbatim.
+    native_finish_reason: str | None = None
+    #: The runtime's id for the session, when it gives one.
+    session_id: str | None = None
+
+    def as_reply(self) -> AgentResponse:
+        """This response as a reply row: with ``session`` set, the facts its session row
+        holds are moved off. Without it nothing else holds them, and they stay."""
+        if self.session is None:
+            return self
+        return self.model_copy(update=dict.fromkeys(_SESSION_FACTS))
+
+
+#: The facts of an agent session its session row holds, and a reply row does not repeat.
+_SESSION_FACTS = (
+    "tokens_input",
+    "tokens_output",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "duration_ms",
+    "cost_usd",
+    "num_turns",
+    "provider",
+    "model",
+    "native_finish_reason",
+    "session_id",
+)
 
 
 class BoundAgent:
-    """A definition bound to a runtime: what a component calls."""
+    """A definition bound to a runtime: what a component calls.
+
+    Inside a run, each session it runs is recorded in the run's ``matrix.v1.session`` table,
+    with ``runtime_url`` (the runtime's type URL) and ``drives`` (its registry entry's) when
+    the binder knows them, and the response it returns points at that row (``session``).
+    """
 
     def __init__(
         self,
@@ -147,11 +204,15 @@ class BoundAgent:
         runtime: AgentRuntime,
         *,
         observers: Sequence[Observer] = (),
+        runtime_url: str | None = None,
+        drives: tuple[str, ...] = (),
     ) -> None:
         runtime.check(definition)  # refuse here, at binding, not mid-run
         self._definition = definition
         self._runtime = runtime
         self._observers = tuple(observers)
+        self._runtime_url = runtime_url
+        self._drives = tuple(drives)
 
     @property
     def name(self) -> str:
@@ -168,7 +229,7 @@ class BoundAgent:
     async def run(self, task: str) -> AgentResponse:
         """Run the definition on the runtime. Emits ``matrix.agent.start`` (with the task as
         sent) and ``.end``, and a ``matrix.tool.start``/``.end`` pair for each tool call the
-        runtime timed."""
+        runtime timed. Inside a run, records the session (see the class docstring)."""
         span = uuid.uuid4().hex
         name = self._definition.name
         scope = CURRENT_SPAN.get()
@@ -210,7 +271,7 @@ class BoundAgent:
             )
             for call in response.tool_calls:
                 await self._tool(call, span, run_id, component)
-            return response
+            return self._recorded(response, task)
         finally:
             fields["duration_ms"] = int((time.monotonic() - started) * 1000)
             ended = Event(
@@ -222,6 +283,21 @@ class BoundAgent:
                 component=component,
             )
             await emit(self._observers, ended)
+
+    def _recorded(self, response: AgentResponse, task: str) -> AgentResponse:
+        """``response``, pointing at its session row once the run it is part of records it."""
+        definition = self._definition
+        sent = digest({"definition": definition.model_dump(mode="json"), "task": task})
+        row = record_session(
+            agent_session(
+                response,
+                agent=definition.name,
+                sent=sent,
+                runtime=self._runtime_url,
+                drives=self._drives,
+            )
+        )
+        return response if row is None else response.model_copy(update={"session": row})
 
     async def _tool(
         self, call: dict[str, Any], parent: str, run_id: str | None, component: str | None

@@ -17,6 +17,7 @@ from pydantic import BaseModel, field_validator
 from matrix import (
     LEDGER,
     REF,
+    SESSION,
     ConfigError,
     Construct,
     ContractError,
@@ -110,6 +111,7 @@ async def test_a_finished_run_reads_back_with_rows_ledger_and_status(tmp_path: P
         SEED: {"file": f"{SEED}.jsonl", "rows": 1},
         READING: {"file": f"{READING}.jsonl", "rows": 2},
         TRIAL: {"file": f"{TRIAL}.jsonl", "rows": 2},
+        SESSION: {"file": f"{SESSION}.jsonl", "rows": 0},  # every run has one, as a ledger
         LEDGER: {"file": f"{LEDGER}.jsonl", "rows": 5},
     }
     loaded = store.load(run.run_id)
@@ -293,7 +295,7 @@ async def test_the_memory_store_keeps_the_same_record() -> None:
     assert loaded.rows(TRIAL) == ({"seq": 0}, {"seq": 1}) and loaded.ledger == run.construct.ledger
     described = store.describe(run.run_id)
     assert described["status"] == "completed"
-    assert described["tables"] == {TRIAL: {"rows": 2}, LEDGER: {"rows": 2}}
+    assert described["tables"] == {TRIAL: {"rows": 2}, SESSION: {"rows": 0}, LEDGER: {"rows": 2}}
     assert store.runs() == [run.run_id]
     with pytest.raises(NotFoundError, match="Runs: "):
         store.load("nope")

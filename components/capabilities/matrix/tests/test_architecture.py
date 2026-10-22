@@ -19,8 +19,8 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "matrix"
 ALLOWED_THIRD_PARTY = {"pydantic"}
 
 #: What the domain may take from the standard library: computation (a template's placeholders
-#: are read with ``string.Formatter``), plus the asyncio
-#: scheduling, clock, run ids and log records the executor needs to run components.
+#: are read with ``string.Formatter``, a session's request digested with ``hashlib``), plus
+#: the asyncio scheduling, clock, run ids and log records the executor needs to run components.
 DOMAIN_STDLIB = frozenset(
     {
         "__future__",
@@ -31,6 +31,7 @@ DOMAIN_STDLIB = frozenset(
         "copy",
         "dataclasses",
         "datetime",
+        "hashlib",
         "inspect",
         "json",
         "logging",

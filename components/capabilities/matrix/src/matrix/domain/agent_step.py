@@ -4,12 +4,13 @@ What it requires and provides comes from its config, so the wiring knows nothing
 agents:
 
 * it **requires** the kinds its ``inputs`` name, and renders their rows into the task;
-* it **provides** the agent's reply, an :class:`AgentResponse` carrying the task as sent,
-  under the kind ``response`` names; and, when ``output`` names a kind, the JSON the agent
-  returned as one row of that kind, which the executor validates against the kind's schema
-  like any other row. The reply must then be one JSON document, alone or in a fenced
-  ```` ```json ```` block, so the agent's prompt or task must ask for it. An agent that does
-  not return parseable JSON broke its contract, and the run says so.
+* it **provides** the agent's reply, an :class:`AgentResponse` carrying the task as sent and
+  pointing at its session's row in ``matrix.v1.session``, under the kind ``response`` names;
+  and, when ``output`` names a kind, the JSON the agent returned as one row of that kind,
+  which the executor validates against the kind's schema like any other row. The reply must
+  then be one JSON document, alone or in a fenced ```` ```json ```` block, so the agent's
+  prompt or task must ask for it. An agent that does not return parseable JSON broke its
+  contract, and the run says so.
 
 A kind has one provider, so two agent steps in one run each name their own ``response``:
 the default, ``matrix.v1.agent-response``, serves one.
@@ -108,7 +109,7 @@ class AgentStep:
         task = self.render(inputs)
         response: AgentResponse = await self._agent.run(task)
         response = response.model_copy(update={"task": task})
-        rows: dict[str, Any] = {self._config.response: response}
+        rows: dict[str, Any] = {self._config.response: response.as_reply()}
         if self._config.output is not None:
             # One row, whatever its shape: a JSON array the agent returned is not several.
             rows[self._config.output] = (

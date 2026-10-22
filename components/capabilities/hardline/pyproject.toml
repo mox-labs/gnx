@@ -1,6 +1,6 @@
 [project]
 name = "hardline"
-version = "0.1.0"
+version = "0.2.0"
 description = "Model runtime — one port for every model family: messages in, text or a validated object out, tagged with the family that answered"
 requires-python = ">=3.12"
 license = "MIT"

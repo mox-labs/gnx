@@ -15,20 +15,22 @@ also on every response an agent step records (``AgentResponse.task``) and in the
 first of ``responses`` keyed by the whole prompt as sent, ``by_model`` keyed by the model
 name, ``default``, or else the echo ``mock:<model>:<prompt>``; ``calls`` keeps each
 ``(model, prompt)``. A request with an ``output`` type gets the reply validated against it,
-as a real model runtime does.
+as a real model runtime does. A call records what is true of a canned reply: one attempt, no
+retries, no tokens, the time it took, and the reply as whole (``finish_reason: stop``).
 
 Neither reports a cost: a reported cost is what a provider said, and a mock is not one.
 """
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from matrix.domain.agent import AgentResponse
 from matrix.domain.errors import ModelRuntimeError
-from matrix.domain.model_call import ModelCall
+from matrix.domain.model_call import ModelCall, TokenUsage
 from matrix.domain.template import json_document
 
 if TYPE_CHECKING:
@@ -86,7 +88,8 @@ class MockModelRuntimeConfig(BaseModel):
     prompt as sent (after a model step fills its placeholders); `by_model`, keyed by the model
     name a step asks for; `default`; else the echo `mock:<model>:<prompt>`. Any model name is
     accepted. A step whose `output` kind has a schema needs a reply of that shape, as JSON. A
-    call reports no cost and no finish reason: no provider reported one."""
+    call reports no cost (no provider reported one), no tokens, and its reply as whole
+    (`finish_reason: stop`): the reply is exactly what was configured."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -108,6 +111,7 @@ class MockModelRuntime:
         """Every model name can be mocked."""
 
     async def call(self, request: ModelRequest) -> ModelCall:
+        started = time.monotonic()
         self.calls.append((request.model, request.prompt))
         config = self._config
         text = config.responses.get(request.prompt)
@@ -134,9 +138,13 @@ class MockModelRuntime:
         return ModelCall(
             text=text,
             value=value,
+            finish_reason="stop",
             name=request.model,
             model=request.model,
             family=config.family,
             backend="mock",
+            usage=TokenUsage(),
             attempts=1,
+            retries=0,
+            latency_ms=int((time.monotonic() - started) * 1000),
         )

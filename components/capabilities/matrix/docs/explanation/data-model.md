@@ -1,7 +1,7 @@
 # The data model
 
 A run's rows live in a **Construct**: one typed table per kind, plus a **ledger** of every row
-in the order it landed. The Construct belongs to a **Run**, the observed record of one
+in the order it landed and a **session table** of every agent session and model call. The Construct belongs to a **Run**, the observed record of one
 execution. A **ConstructStore** keeps the record as it is made.
 
 ---
@@ -18,7 +18,7 @@ construct = run.construct
 
 construct.rows("demo.v1.shout")  # the rows, in the order they landed; () if none
 construct.last("demo.v1.shout")  # the most recent row; NotFoundError if there is none
-construct.kinds()  # every table: the run's kinds, then matrix.v1.ledger
+construct.kinds()  # every table: the run's kinds, matrix.v1.session, then matrix.v1.ledger
 construct.ledger  # every row's LedgerEntry, in the order rows were appended
 construct.provenance("demo.v1.shout")  # the ledger entries for that kind's rows, in row order
 construct.torn  # entries whose row never landed; () for a live run
@@ -51,6 +51,7 @@ other table has exactly one entry in it:
 | `row` | `int` | the row's 0-based position in that table |
 | `component` | `str` | the component that handed it over, or `$input` for a run input |
 | `time` | `datetime` | UTC |
+| `sessions` | `tuple[int, ...]` | the rows of `matrix.v1.session` behind it: the sessions its component ran since its previous hand-over; empty for a run input, a reused row, a session row, and a row no session produced |
 
 `construct.rows("matrix.v1.ledger")` is the same thing as `construct.ledger`. No component
 may provide or require the ledger's kind.
@@ -78,6 +79,81 @@ with their table) is damaged, and a `StoreError`.
 
 Order across kinds (`seq`) is the order rows arrived, which depends on scheduling when
 components run side by side. Order within one kind is its provider's.
+
+### The session table
+
+A reply is a sample, so the record says which model gave it and how. Every run has a table of
+kind `matrix.v1.session` with one row, a `Session`, per agent session or model call that a
+component ran: whatever ran it inside the run (a `BoundAgent`, a model step) records it, through
+the Construct like any row, durable and in ledger order, under its component's name. Like the
+ledger it is matrix's own: no component provides or requires it. Outside a run nothing records
+a session.
+
+| Field | Meaning |
+|-------|---------|
+| `port` | `agent-runtime` (a session) or `model-runtime` (one call) |
+| `runtime`, `drives` | the runtime's type URL and the distributions it drives, when the caller knew them |
+| `agent` | the agent's name, for a session |
+| `name`, `model`, `family`, `provider`, `backend` | the model that answered: its registry name (a model call), the provider's id, its family, who served it |
+| `stop` | how an agent session ended: `completed`, or the limit reached |
+| `finish_reason`, `native_finish_reason`, `refusal` | why the (last) reply ended, in one vocabulary and as the provider said it; what the model said when it refused |
+| `usage` | `input_tokens` (every token read, the cache's included), `output_tokens`, `cache_read_tokens`, `cache_write_tokens` |
+| `cost_usd` | the cost the provider reported, never limited or estimated |
+| `duration_ms`, `turns` | how long it took; an agent session's turns (a model call has none) |
+| `session_id`, `request_id` | the runtime's id for a session, the provider's for a call |
+| `trace_id`, `span_id` | the OpenTelemetry trace and span the session ended in, as hex, when one was current; matrix mints no id |
+| `fallback_from`, `attempts`, `retries`, `attempt_log`, `params`, `turns_digest`, `row` | for a model call: the model asked for when a fallback answered, every attempt, what was sent and the registry row that answered |
+| `sent` | `sha256:<hex>` over canonical JSON (keys sorted, no whitespace, UTF-8) of what matrix sent the runtime: for a session `{"definition": ..., "task": ...}`, for a call `{"prompt", "system", "model", "output"}` with the output's JSON schema. Equal digests, equal requests |
+
+A fact the runtime did not report is null, never a constant.
+
+**A reply row points at its session row.** The `AgentResponse` an agent step provides, and the
+`ModelCall` a model step provides, keep the reply and what a consumer acts on (`content` or
+`text`, `transcript`, `tool_calls`, `stop`, `finish_reason`, `family`, the task or prompt as
+sent) and `session`: the position of the session's row in `matrix.v1.session`. Every field the
+session row holds is null on the reply row. A row reused from an earlier run keeps its
+`session`, a row of the session table of the run that ran it: follow `reused_from` in
+`run.json` until a run whose component did not end `reused`. Its ledger entry in the reusing run
+names no session, since none ran there.
+
+**The ledger names the sessions behind every row.** A component's sessions are named by the
+entries of the rows it hands over next (`ctx.provide`, or what it returns), so a step's reply
+and its `output` row both name the session that produced them. A session whose component
+failed before it handed anything over is in the table under that component's name, and named
+by no entry: a model step whose reply was refused or cut short is one.
+
+**Reading it without matrix.** Three files join a board row to the sessions behind it: the
+kind's table, the ledger, and the session table. A row's identity is its position in its file,
+so read each with `WITH ORDINALITY`, which numbers the lines in order. In DuckDB, with `RUN` the
+run's directory and `KIND` the board row's kind:
+
+<!-- session-join -->
+```sql
+WITH board AS (
+    SELECT ordinality - 1 AS row, json AS reply
+    FROM read_ndjson_objects('RUN/KIND.jsonl') WITH ORDINALITY
+),
+behind AS (
+    SELECT row, unnest(sessions) AS session
+    FROM read_json_auto('RUN/matrix.v1.ledger.jsonl')
+    WHERE kind = 'KIND'
+),
+sessions AS (
+    SELECT ordinality - 1 AS session, runtime, family, finish_reason, attempts
+    FROM read_json_auto('RUN/matrix.v1.session.jsonl') WITH ORDINALITY
+)
+SELECT board.row, board.reply, runtime, family, finish_reason, attempts
+FROM board JOIN behind USING (row) JOIN sessions USING (session)
+ORDER BY board.row;
+```
+
+matrix's tests run this query against a recorded run. With `jq`, the session rows a kind's
+first row names:
+
+```sh
+jq -c 'select(.kind == "KIND" and .row == 0) | .sessions[]' RUN/matrix.v1.ledger.jsonl \
+  | while read -r n; do sed -n "$((n + 1))p" RUN/matrix.v1.session.jsonl; done
+```
 
 ## Run
 
@@ -145,7 +221,9 @@ The stores:
                                          ended, components, failures, releases,
                                          "tables": {kind: {"file", "rows"}}}
 <root>/<run_id>/<kind>.jsonl            one row per line: the typed record itself
-<root>/<run_id>/matrix.v1.ledger.jsonl  one line per row landed: seq, kind, row, component, time
+<root>/<run_id>/matrix.v1.session.jsonl one line per agent session or model call (a Session)
+<root>/<run_id>/matrix.v1.ledger.jsonl  one line per row landed: seq, kind, row, component, time,
+                                         sessions
 <root>/<run_id>/events.jsonl            the run's events, one matrix.v1.event a line (telemetry)
 <root>/<run_id>/writer.lock             held (flock) by the writing process while it lives
 ```
@@ -155,8 +233,8 @@ table without matrix installed. An agent step's reply rows are `AgentResponse`s 
 the task as sent (`task`) beside the reply (`content`), and each `matrix.agent.start` event
 carries it too, so a step that failed before its reply was recorded still shows what it was
 asked. A model step's reply rows are `ModelCall`s: the prompt as sent (`prompt`), the reply
-(`text`, and `value` for a structured one) and the model that answered, its usage, request
-id, attempts and latency. `matrix run` prints these files when the run ends; `matrix runs` lists the runs.
+(`text`, and `value` for a structured one) and why it ended (`finish_reason`). Both point at
+their session row (`session`), which holds the model that answered, its usage and ids. `matrix run` prints these files when the run ends; `matrix runs` lists the runs.
 
 **While a run is going**, `run.json` says `running`, names the process writing it
 (`writer`: pid and host) and lists each table's file; every table file exists. Each row is one `write` of one whole line to a file opened for

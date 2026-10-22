@@ -101,7 +101,15 @@ from .domain.executor import (
 )
 from .domain.ids import TypeUrl, check_type_url, is_type_url, parse_type_url, type_url
 from .domain.loading import Accumulate, BesideFile, Loader
-from .domain.model_call import ModelCall, ModelRequest, TokenUsage
+from .domain.model_call import (
+    CallAttempt,
+    FinishReason,
+    ModelCall,
+    ModelRequest,
+    RegistryRow,
+    RequestParams,
+    TokenUsage,
+)
 from .domain.model_step import MODEL_CALL, MODEL_STEP, PROMPT, ModelStep, ModelStepConfig
 from .domain.observer import Event, EventPolicy, Observer, RecordingObserver
 from .domain.ports._out.agent_runtime import RUNTIME_LOGGER, Agent, AgentRuntime
@@ -111,6 +119,14 @@ from .domain.ports._out.model_runtime import ModelRuntime
 from .domain.problems import Problem
 from .domain.ref import REF, Ref
 from .domain.registry import Entry, Extension, Failure, Registry
+from .domain.session import (
+    SESSION,
+    Session,
+    agent_session,
+    call_session,
+    digest,
+    record_session,
+)
 
 try:
     __version__ = version("matrix")
@@ -139,6 +155,7 @@ __all__ = [
     "PROMPT",
     "REF",
     "RUNTIME_LOGGER",
+    "SESSION",
     "TASK",
     "Accumulate",
     "Agent",
@@ -152,6 +169,7 @@ __all__ = [
     "Agents",
     "BesideFile",
     "BoundAgent",
+    "CallAttempt",
     "Catalog",
     "CheckReport",
     "CompilationError",
@@ -180,6 +198,7 @@ __all__ = [
     "Extension",
     "Extensions",
     "Failure",
+    "FinishReason",
     "Inputs",
     "JsonlConstructStore",
     "LedgerEntry",
@@ -202,7 +221,9 @@ __all__ = [
     "RecordingObserver",
     "Ref",
     "Registry",
+    "RegistryRow",
     "ReleaseOutcome",
+    "RequestParams",
     "Retry",
     "Reuse",
     "Run",
@@ -213,6 +234,7 @@ __all__ = [
     "Runs",
     "RuntimeConfig",
     "RuntimeReason",
+    "Session",
     "StoreConfig",
     "StoreError",
     "Telemetry",
@@ -221,7 +243,9 @@ __all__ = [
     "UsageError",
     "Wiring",
     "__version__",
+    "agent_session",
     "agent_runtime_type_url",
+    "call_session",
     "cancel_on_signals",
     "catalog",
     "check_config",
@@ -232,6 +256,7 @@ __all__ = [
     "configure_telemetry",
     "default_registry",
     "describe_extension",
+    "digest",
     "discover_sources",
     "is_type_url",
     "list_agents",
@@ -245,6 +270,7 @@ __all__ = [
     "parse_type_url",
     "plan_config",
     "process",
+    "record_session",
     "skill",
     "store_type_url",
     "type_url",

@@ -66,16 +66,81 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   already returned when the stop was requested is `completed`, with no reason. A consumer
   that reads component endings must tolerate the new state, as the vocabulary is open.
 
+- **A model step fails on a reply that is not a whole answer**, where it would have
+  provided it: a refusal, a reply cut at `max_tokens`, withheld by the provider, ended to ask
+  for a tool or for a reason no one named, or empty. It raises `ModelRuntimeError`, reason
+  `refused` (a refusal, `content_filter`) or `failed`, kind `component`, naming the
+  `finish_reason` with a fix for it. A runtime that does not say why its reply ended
+  (`finish_reason: null`) is not taken to have cut it.
+- **A reply row keeps the reply; its session's facts move to the session table.** The
+  `AgentResponse` an agent step provides and the `ModelCall` a model step provides keep the
+  reply and what a consumer acts on (`content` or `text`, `transcript`, `tool_calls`, `stop`,
+  `finish_reason`, `refusal`, `family`, the task or prompt as sent) and point at their row of
+  `matrix.v1.session` (`session`); every fact that row holds is `null` on the reply row
+  (`as_reply()`). What a runtime returns, and so what `BoundAgent.run` and a direct
+  `ModelRuntime.call` give a caller, still carries every fact.
+- `AgentResponse.tokens_input`, `tokens_output`, `duration_ms` and `num_turns` default to
+  `None`, where they defaulted to 0: a constant is not a fact.
+- Every run has a `matrix.v1.session` table, as it has a ledger: `Construct.kinds()`, the
+  stores' `tables` and a run directory list it, with no rows when no session ran.
+- The model step needs `model_runtime_entries` (each composed model runtime's registry entry),
+  for its session rows.
+- **The `claude-sdk` runtime's reply is the session's result.** `content` joined every text
+  block of every turn and ignored the SDK's `ResultMessage.result`, so an agent that thought
+  aloud and then answered in JSON broke its step's `output`. `content` is the result now (empty
+  when the session stopped at a limit, which has none), and every text block is the new
+  `transcript`.
+- **`tokens_input` counts the prompt cache's tokens.** It was Anthropic's `input_tokens`,
+  which leaves out the tokens read from and written to the cache: under Claude Code's caching,
+  12 where the session read 90,000. It is their sum now, and `cache_read_tokens` and
+  `cache_write_tokens` say how many of each.
+- **`AgentResponse.model` is the model that answered**, as the SDK's `model_usage` names it
+  (the one that wrote the final reply, when it names several), not the definition's `model`,
+  which was the model asked for and `None` when the CLI's default answered.
+- `ModelCall.usage`, `attempts`, `retries` and `latency_ms` default to `None`, where they
+  defaulted to zeros and `attempts=1`: a constant is not a fact. The `mock` model runtime
+  reports what is true of a canned reply: one attempt, no retries, zero tokens, its latency,
+  and `finish_reason: stop`.
+
 ### Added
 
 - **`matrix.v1.model-step`**: one model call as a component. It names a model runtime and a
   model, renders its `prompt` from its `inputs`, and provides a `ModelCall` (the prompt as
-  sent, the reply, the model that answered, usage with cache tokens, request id, attempts,
-  retries, `fallback_from`, latency; `finish_reason` and `refusal` stay null until the
-  runtime reports them) and, with `output`, the reply as a row of that kind: asked for as the
-  kind's registered schema when there is one. New names: `ModelRuntime`, `ModelRequest`,
-  `ModelCall`, `TokenUsage`, `ModelRuntimeError`, `ModelStep`, `ModelStepConfig`,
-  `MODEL_STEP`, `MODEL_CALL`, `PROMPT`; the needs `model_runtimes` and `schemas`.
+  sent, the reply, and the call's record, below) and, with `output`, the reply as a row of
+  that kind: asked for as the kind's registered schema when there is one. New names:
+  `ModelRuntime`, `ModelRequest`, `ModelCall`, `TokenUsage`, `ModelRuntimeError`,
+  `ModelStep`, `ModelStepConfig`, `MODEL_STEP`, `MODEL_CALL`, `PROMPT`; the needs
+  `model_runtimes` and `schemas`.
+- **A `ModelCall` carries the call's whole record**, as hardline 0.2 reports it: why the reply
+  ended (`finish_reason`: `stop`, `length`, `content_filter`, `refusal`, `tool_call`,
+  `other`; with `native_finish_reason`, the provider's own value, and `refusal`, what the
+  model said when it refused), the model that answered and `fallback_from`, usage with cache
+  tokens summed over every attempt, `request_id`, `attempts`, `retries`, latency, `params`
+  (what was sent: `max_tokens`, `temperature`, how a structure was asked for),
+  `attempt_log` (every backend call, with why each failed), `turns_digest` and `row` (the
+  registry row that answered: its digest and the tier that set each field). New names:
+  `FinishReason`, `RequestParams`, `CallAttempt`, `RegistryRow`.
+- **The session table, `matrix.v1.session`**: one row per agent session or model call a
+  component runs inside a run, written through the Construct like any row, durably and in
+  ledger order. A row holds the runtime's type URL and what it drives, the model that
+  answered, how it stopped and why its reply ended, usage, the reported cost, the runtime's
+  ids and the OpenTelemetry trace and span the session ended in (`Container.executor()` reads
+  them; matrix mints none), fallback and attempts, and `sent`, a digest of what was sent. A
+  `BoundAgent` and a model step record their own; a component that calls a model runtime
+  itself records with `record_session(call_session(...))`. `LedgerEntry.sessions` names the
+  session rows behind each row: those its component ran since its previous hand-over.
+  `data-model.md` joins a board row to its sessions in DuckDB, and the tests run that query.
+  New names: `Session`, `SESSION`, `digest`, `agent_session`, `call_session`,
+  `record_session`; `BoundAgent(runtime_url=, drives=)`, `Executor(trace=)`.
+- `AgentResponse` gains `transcript`, `cache_read_tokens`, `cache_write_tokens`,
+  `finish_reason` and `native_finish_reason` (the SDK's `stop_reason`, read in the model
+  call's vocabulary) and `session_id`, which the `claude-sdk` runtime fills.
+- **`drives`** on a registry entry: the distributions it drives, by their installed names,
+  declared at registration (`register(..., drives=("claude-agent-sdk",))`) and shown by
+  `matrix catalog --json` and `matrix describe`. `claude-sdk` drives `claude-agent-sdk`, the
+  `hardline` model runtime `hardline`. A tool that records the versions behind a run reads it,
+  rather than keeping a table of runtime names. Optional: an entry that does not say drives
+  nothing it declares.
 - **`stand_in`** on a registry entry, declared at registration (`register(..., stand_in=True)`)
   and shown by `matrix catalog`, `matrix describe` and the plan's runtimes. Both mocks
   declare it, so a caller can tell canned answers from a model's without inferring it from
@@ -83,6 +148,16 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **The `claude-sdk` runtime closes the SDK's message stream** however reading it ends
+  (`aclosing`), where closing it, and so the CLI process, was left to the garbage collector.
+  Its error mapping is now tested: a missing CLI is `incapable`, a timeout `timeout`, and an
+  SDK error after the result arrived is logged with the result kept.
+- **A model step closes its runtime's connections.** hardline keeps one client per event loop
+  and can close it only in that loop, and nothing called its `aclose()`: every run left its
+  connections open, and the next loop to use the runtime logged that they had been. A model
+  step now defers its runtime's `aclose()` (an optional `ModelRuntime` member, which the
+  `hardline` runtime has) to the end of the run that made the calls, in that run's loop. The
+  `models` extra now requires `hardline>=0.2,<0.3`.
 - **A runtime that does not keep its port is refused, by name.** A third party's runtime that
   built something else made composition raise a bare `AttributeError` (the `unknown` defect,
   exit 1), and one with `check` but no `run` composed and failed only when an agent ran on it.

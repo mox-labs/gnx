@@ -13,6 +13,7 @@ from matrix import (
     ModelRequest,
     ModelRuntime,
     ModelRuntimeError,
+    RequestParams,
     TokenUsage,
 )
 from matrix.adapters._out.runtime.mock import (
@@ -41,6 +42,18 @@ MODELS = {
             "family": "qwen",
             "options": {"script": ["not json", '{"verdict": "ship"}']},
         },
+        "cut": {
+            "backend": "mock",
+            "model": "cut-1",
+            "family": "qwen",
+            "options": {"default": "The answer is", "finish_reason": "length"},
+        },
+        "no": {
+            "backend": "mock",
+            "model": "no-1",
+            "family": "qwen",
+            "options": {"default": "I can't help.", "refusal": "I can't help."},
+        },
     },
 }
 
@@ -62,11 +75,12 @@ def _hardline(**kw: object):  # type: ignore[no-untyped-def]
 # --- the hardline model runtime ------------------------------------------------------------
 
 
-async def test_a_call_records_the_model_that_answered_as_hardline_reported_it() -> None:
-    """Regression (mx-tests 4): the model runtime stamped ``num_turns=1`` and
-    ``stop="completed"`` as constants, and ``model`` was the registry name, so a truncation,
-    a refusal or the provider's id could never show. A call now carries what hardline
-    reported, and a fact it does not report is None."""
+async def test_a_call_carries_hardline_s_whole_record() -> None:
+    """Regression (mx-tests 4, W3.3): the model runtime stamped ``num_turns=1`` and
+    ``stop="completed"`` as constants, then kept only part of what hardline reported, so a
+    truncation, a refusal or the provider's id could never show. A call now carries
+    hardline's whole record: why the reply ended, what was sent and to which registry row,
+    every attempt, and the usage summed over them."""
     runtime = _hardline()
     assert isinstance(runtime, ModelRuntime)
     call = await runtime.call(ModelRequest(prompt="hello", system="be brief"))
@@ -74,8 +88,28 @@ async def test_a_call_records_the_model_that_answered_as_hardline_reported_it() 
     assert (call.name, call.model, call.family, call.backend) == ("q", "qwen-8b", "qwen", "mock")
     assert call.usage == TokenUsage(input_tokens=3, output_tokens=1)
     assert (call.request_id, call.attempts, call.retries) == ("mock-q-1", 1, 0)
-    assert (call.fallback_from, call.finish_reason, call.refusal) == (None, None, None)
+    assert (call.finish_reason, call.native_finish_reason, call.refusal) == ("stop", "stop", None)
+    assert call.fallback_from is None
+    assert call.params == RequestParams(max_tokens=1024, temperature=None, structured=None)
+    (attempt,) = call.attempt_log or ()
+    assert (attempt.name, attempt.reason, attempt.usage) == ("q", None, call.usage)
+    assert call.turns_digest is not None and call.turns_digest.startswith("sha256:")
+    assert call.row is not None and call.row.digest.startswith("sha256:")
+    assert call.row.rungs["model"] == "matrix.models"
     assert not hasattr(call, "num_turns") and not hasattr(call, "stop")
+
+
+async def test_a_reply_that_is_not_a_whole_answer_says_why() -> None:
+    """A reply cut at max_tokens, or a refusal, is reported for what it is (hardline's
+    promise), never as a finished answer."""
+    cut = await _hardline().call(ModelRequest(prompt="x", model="cut"))
+    assert (cut.text, cut.finish_reason, cut.native_finish_reason) == (
+        "The answer is",
+        "length",
+        "length",
+    )
+    refused = await _hardline().call(ModelRequest(prompt="x", model="no"))
+    assert (refused.finish_reason, refused.refusal) == ("refusal", "I can't help.")
 
 
 async def test_a_fallback_is_recorded_as_the_model_that_answered() -> None:
@@ -86,6 +120,10 @@ async def test_a_fallback_is_recorded_as_the_model_that_answered() -> None:
         "claude",
         "down",
     )
+    assert [(a.name, a.reason) for a in call.attempt_log or ()] == [
+        ("down", "unavailable"),
+        ("h", None),
+    ]
 
 
 async def test_the_default_model_is_the_runtime_s_then_the_registry_s() -> None:

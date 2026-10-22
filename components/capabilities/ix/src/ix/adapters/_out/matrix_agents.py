@@ -369,8 +369,9 @@ class Session:
             "transcript": _trace(rounds),
             "files": _collected(self.workdir, options.get("collect")),
         }
-        tokens_in = sum(r.response.tokens_input for r in rounds)
-        tokens_out = sum(r.response.tokens_output for r in rounds)
+        # A count a runtime did not report adds nothing, as ix has always summed it.
+        tokens_in = sum(r.response.tokens_input or 0 for r in rounds)
+        tokens_out = sum(r.response.tokens_output or 0 for r in rounds)
         usage = {
             "runtime": matrix.agent_runtime_type_url(self.runtime),
             "model": last.model,
@@ -380,9 +381,9 @@ class Session:
             "tokens_output": tokens_out,
             "tokens_total": tokens_in + tokens_out,
             "cost_usd": _cost(rounds),
-            "turns": sum(r.response.num_turns for r in rounds),
+            "turns": sum(r.response.num_turns or 0 for r in rounds),
             "tool_calls": len(calls),
-            "duration_ms": sum(r.response.duration_ms for r in rounds),
+            "duration_ms": sum(r.response.duration_ms or 0 for r in rounds),
             "rounds": len(rounds),
             "stop": last.stop,
             "simulated": self.simulated,

@@ -41,7 +41,11 @@ def _install(monkeypatch, *messages, echo=False):
 
     async def fake_query(*, prompt, options=None, transport=None):
         captured["calls"].append({"prompt": prompt, "options": options})
-        echoed = [_assistant(sdk.TextBlock(f"echo: {prompt}")), _result()] if echo else []
+        echoed = (
+            [_assistant(sdk.TextBlock(f"echo: {prompt}")), _result(result=f"echo: {prompt}")]
+            if echo
+            else []
+        )
         for message in echoed or messages:
             yield message
 
@@ -69,6 +73,7 @@ def fake_sdk_with_tools(monkeypatch):
             total_cost_usd=0.05,
             usage={"input_tokens": 100, "output_tokens": 80},
             num_turns=2,
+            result="Let me help with that.",
         ),
     )
 
@@ -276,11 +281,9 @@ class TestSessionEnding:
             _result(subtype="error_max_budget_usd", is_error=True, total_cost_usd=0.5),
         )
         response = await _runtime(max_budget_usd=0.5).run(_defn(), "hi")
-        assert (response.stop, response.cost_usd, response.content) == (
-            "max_budget_usd",
-            0.5,
-            "partial",
-        )
+        assert (response.stop, response.cost_usd) == ("max_budget_usd", 0.5)
+        # A session stopped at a limit has no result: what it said is in its transcript.
+        assert (response.content, response.transcript) == ("", ("partial",))
 
     async def test_an_api_error_names_the_status(self, monkeypatch):
         from matrix import AgentRuntimeError
@@ -437,3 +440,178 @@ def test_an_option_the_installed_sdk_lacks_is_refused_at_binding(monkeypatch) ->
         matrix.BoundAgent(_defn(), _runtime(skills=["review"]))
     assert "upgrade" in (e.value.fix or "")
     matrix.BoundAgent(_defn(), _runtime())
+
+
+# --- what a session reports of itself (W3.4) ----------------------------------------------
+
+
+async def test_the_reply_is_the_session_s_result_and_its_transcript_is_kept_apart(
+    monkeypatch,
+) -> None:
+    """Regression (mx-src F9): ``content`` glued every assistant text block of every turn
+    together and ignored the result, so a multi-turn agent whose final answer was bare JSON
+    replied ``'Let me read the diff.{"score": 4}'`` and its step's ``output`` failed."""
+    from matrix import AGENT_STEP, Inputs, RunContext
+    from matrix.domain.agent_step import AgentStep, AgentStepConfig
+
+    _install(
+        monkeypatch,
+        _assistant(
+            sdk.TextBlock("Let me read the diff."),
+            sdk.ToolUseBlock(id="toolu_1", name="Read", input={"path": "d"}),
+        ),
+        sdk.UserMessage(content=[sdk.ToolResultBlock(tool_use_id="toolu_1")]),
+        _assistant(sdk.TextBlock('{"score": 4}')),
+        _result(num_turns=2, result='{"score": 4}'),
+    )
+    agent = matrix.BoundAgent(_defn(), _runtime())
+    response = await agent.run("review")
+    assert response.content == '{"score": 4}'
+    assert response.transcript == ("Let me read the diff.", '{"score": 4}')
+    step = AgentStep(AgentStepConfig(agent="a", output="acme.v1.score"), agents={"a": agent})
+    out = await step.run(Inputs({matrix.TASK: ("review",)}), RunContext("r", AGENT_STEP))
+    assert out["acme.v1.score"] == ({"score": 4},)
+
+
+def _usage(model: str, output: int) -> dict:
+    return {
+        "inputTokens": 1,
+        "outputTokens": output,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.0,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000,
+    }
+
+
+async def test_the_model_recorded_is_the_one_that_answered_not_the_one_asked_for(
+    monkeypatch,
+) -> None:
+    """Regression (review area 3): ``model`` was the definition's, the model *asked for*,
+    and None when the CLI's default answered. It is the model the SDK says answered
+    (``model_usage``); when several took part, the one that wrote the final reply."""
+    _install(
+        monkeypatch,
+        sdk.AssistantMessage(content=[sdk.TextBlock("done")], model="claude-sonnet-4-5-x"),
+        _result(result="done", model_usage={"claude-sonnet-4-5-x": _usage("s", 9)}),
+    )
+    assert (await _runtime().run(_defn(model="sonnet"), "go")).model == "claude-sonnet-4-5-x"
+    _install(
+        monkeypatch,
+        sdk.AssistantMessage(content=[sdk.TextBlock("done")], model="claude-opus-4-1-x"),
+        _result(
+            result="done",
+            model_usage={
+                "claude-haiku-4-5-x": _usage("h", 40),  # the CLI's own small calls
+                "claude-opus-4-1-x": _usage("o", 9),
+            },
+        ),
+    )
+    assert (await _runtime().run(_defn(model="opus"), "go")).model == "claude-opus-4-1-x"
+    _install(monkeypatch, _result(result="done"))
+    assert (await _runtime().run(_defn(model="opus"), "go")).model is None  # nobody said
+
+
+async def test_the_session_id_why_it_stopped_and_the_cache_tokens_are_kept(monkeypatch) -> None:
+    """Regression (mx-src F10): ``tokens_input`` was ``usage["input_tokens"]`` alone, which
+    for Anthropic excludes the tokens read from and written to the prompt cache: 12 against
+    90,000 in the probe. It counts every input token now, and the cache's are kept beside
+    it. The session id and the last reply's stop reason were dropped."""
+    _install(
+        monkeypatch,
+        _result(
+            result="ok",
+            session_id="sess-9",
+            stop_reason="max_tokens",
+            usage={
+                "input_tokens": 12,
+                "cache_read_input_tokens": 90000,
+                "cache_creation_input_tokens": 300,
+                "output_tokens": 5,
+            },
+        ),
+    )
+    response = await _runtime().run(_defn(), "go")
+    assert response.session_id == "sess-9"
+    assert (response.finish_reason, response.native_finish_reason) == ("length", "max_tokens")
+    assert (response.tokens_input, response.tokens_output) == (90312, 5)
+    assert (response.cache_read_tokens, response.cache_write_tokens) == (90000, 300)
+
+
+@pytest.mark.parametrize(
+    ("native", "finish"),
+    [
+        ("end_turn", "stop"),
+        ("stop_sequence", "stop"),
+        ("max_tokens", "length"),
+        ("refusal", "refusal"),
+        ("tool_use", "tool_call"),
+        ("pause_turn", "other"),
+        (None, None),
+    ],
+)
+async def test_the_sdk_s_stop_reason_is_read_in_one_vocabulary(monkeypatch, native, finish):
+    _install(monkeypatch, _result(result="ok", stop_reason=native))
+    response = await _runtime().run(_defn(), "go")
+    assert (response.finish_reason, response.native_finish_reason) == (finish, native)
+
+
+async def test_the_stream_is_closed_when_reading_it_stops_early(monkeypatch) -> None:
+    """Regression (mx-src F30): the SDK's ``query()`` generator was read without
+    ``aclosing``, so when reading stopped before its end, closing it (and with it the CLI)
+    was left to asyncio's garbage-collection hook, some time later."""
+    closed: list[bool] = []
+
+    class Unreadable:
+        @property
+        def content(self):
+            raise RuntimeError("a message the runtime cannot read")
+
+    async def fake_query(*, prompt, options=None, transport=None):
+        try:
+            yield Unreadable()
+            yield _result(result="never read")
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    with pytest.raises(matrix.AgentRuntimeError, match="a message the runtime cannot read"):
+        await _runtime().run(_defn(), "go")
+    assert closed == [True]
+
+
+async def test_a_missing_cli_is_incapable_and_a_timeout_is_transient(monkeypatch) -> None:
+    """The error mapping the runtime promises (mx-tests 11): no test held it."""
+
+    def failing(error):
+        async def fake_query(*, prompt, options=None, transport=None):
+            raise error
+            yield  # an async generator, as the SDK's query is
+
+        return fake_query
+
+    monkeypatch.setattr(sdk, "query", failing(sdk.CLINotFoundError("no claude")))
+    with pytest.raises(matrix.AgentRuntimeError) as e:
+        await _runtime().run(_defn(), "go")
+    assert (e.value.reason, e.value.kind) == ("incapable", "config")
+    assert "npm install" in (e.value.fix or "")
+    monkeypatch.setattr(sdk, "query", failing(TimeoutError("slow")))
+    with pytest.raises(matrix.AgentRuntimeError) as e:
+        await _runtime().run(_defn(), "go")
+    assert (e.value.reason, e.value.kind, e.value.retryable) == ("timeout", "transient", True)
+
+
+async def test_an_sdk_error_after_the_result_is_logged_and_the_result_kept(
+    monkeypatch, caplog
+) -> None:
+    async def fake_query(*, prompt, options=None, transport=None):
+        yield _result(result="the answer")
+        raise sdk.CLIConnectionError("the CLI went away while closing")
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    with caplog.at_level("DEBUG", logger="matrix.adapters._out.runtime.claude_sdk"):
+        response = await _runtime().run(_defn(), "go")
+    assert (response.content, response.stop) == ("the answer", "completed")
+    assert any("went away" in r.getMessage() for r in caplog.records)

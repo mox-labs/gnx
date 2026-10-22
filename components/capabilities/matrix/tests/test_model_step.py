@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -16,6 +18,7 @@ from matrix import (
     Inputs,
     MatrixConfig,
     ModelCall,
+    ModelRuntimeError,
     ModelStep,
     ModelStepConfig,
     NotFoundError,
@@ -176,3 +179,102 @@ def test_a_model_step_s_fingerprint_follows_its_runtime_s_config() -> None:
     two = container(reply="b").wire(_step({}), inputs=[PROMPT]).fingerprints["rate"]
     assert one != two
     assert one == container(reply="a").wire(_step({}), inputs=[PROMPT]).fingerprints["rate"]
+
+
+def test_a_model_step_closes_its_runtime_s_connections_in_the_loop_that_made_them(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Regression (W6.8): hardline keeps a model client per event loop and can close it only
+    in that loop, while it runs. Nothing in matrix called hardline's ``aclose()``, so each
+    run left its clients open, and the next loop to use the runtime logged that the last one
+    had ended with them open. A model step now closes its runtime's connections when the run
+    that made the calls ends, in that run's loop."""
+    hardline = pytest.importorskip("hardline")
+    httpx2 = pytest.importorskip("httpx2")
+    from hardline.adapters._out.openai_compat import OpenAICompatBackend
+
+    from matrix import Executor, wire
+    from matrix.adapters._out.runtime.model import HardlineModelRuntime
+
+    def reply(request: Any) -> Any:
+        return httpx2.Response(
+            200,
+            json={
+                "id": "r-1",
+                "model": "q-1",
+                "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+
+    row = {"backend": "openai-compat", "model": "q-1", "family": "q", "base_url": "http://q/v1"}
+    runtime = HardlineModelRuntime(
+        hardline.build_runtime(
+            config={"default": "q", "models": {"q": row}},
+            backends={"openai-compat": OpenAICompatBackend(transport=httpx2.MockTransport(reply))},
+        )
+    )
+    step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": runtime})
+    wiring = wire({"rate": step}, inputs=[PROMPT])
+    caplog.set_level(logging.WARNING, logger="hardline")
+    for _ in range(2):  # two event loops, as two `asyncio.run`s of a host make
+        run = asyncio.run(Executor().run(wiring, {PROMPT: "rate it"}))
+        assert run.rows(MODEL_CALL)[0].text == "ok"
+    assert not [r for r in caplog.records if "left open" in r.getMessage()]
+
+
+class _Replies:
+    """A model runtime that answers every call with one record, as given."""
+
+    def __init__(self, call: ModelCall) -> None:
+        self._call = call
+
+    def check(self, model: str | None) -> None:
+        pass
+
+    async def call(self, request: Any) -> ModelCall:
+        return self._call
+
+
+@pytest.mark.parametrize(
+    ("reply", "reason", "said", "fix"),
+    [
+        (
+            ModelCall(text="The answer is", finish_reason="length"),
+            "failed",
+            "cut off at max_tokens",
+            "max_tokens",
+        ),
+        (
+            ModelCall(text="I can't help.", finish_reason="refusal", refusal="I can't help."),
+            "refused",
+            'refused: "I can\'t help."',
+            "prompt",
+        ),
+        (ModelCall(text="", finish_reason="content_filter"), "refused", "withheld", "prompt"),
+        (ModelCall(text="", finish_reason="stop"), "failed", "empty", "prompt"),
+        (ModelCall(text="{}", finish_reason="tool_call"), "failed", "asked for a tool", "tool"),
+    ],
+)
+async def test_a_reply_that_is_not_a_whole_answer_fails_the_step_saying_why(
+    reply: ModelCall, reason: str, said: str, fix: str
+) -> None:
+    """W3.3: a reply cut at max_tokens, refused, withheld or empty never stands on the board
+    as an answer, for a consumer to take as one. The step fails with the runtime's
+    ``refused`` or ``failed`` reason and says which."""
+    step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": _Replies(reply)})
+    with pytest.raises(ModelRuntimeError) as e:
+        await step.run(Inputs({PROMPT: ("rate it",)}), RunContext("r", "rate"))
+    assert e.value.reason == reason and e.value.kind == "component"
+    assert said in str(e.value) and fix in (e.value.fix or "")
+    assert e.value.details["finish_reason"] == reply.finish_reason
+
+
+async def test_a_whole_answer_or_one_whose_runtime_does_not_say_is_the_reply() -> None:
+    """A runtime that reports no finish reason (``None``) is not taken to have cut the
+    reply; the row keeps the ``None`` for a reader to see."""
+    for finish in ("stop", None):
+        runtime = _Replies(ModelCall(text="4", finish_reason=finish))
+        step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": runtime})
+        out = await step.run(Inputs({PROMPT: ("rate it",)}), RunContext("r", "rate"))
+        assert (out[MODEL_CALL].text, out[MODEL_CALL].finish_reason) == ("4", finish)

@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from matrix.domain.errors import CompilationError, invalid
 from matrix.domain.ids import versioned_problem
 from matrix.domain.problems import problem
+from matrix.domain.session import SESSION
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -515,12 +516,13 @@ def _check_kind(kind: Any, where: str, problems: list[Problem]) -> bool:
             )
         )
         return False
-    if kind == LEDGER:
+    if kind in (LEDGER, SESSION):
+        what = "provenance table" if kind == LEDGER else "table of agent sessions and model calls"
         problems.append(
             problem(
                 where,
                 "invalid_value",
-                f"{LEDGER!r} is the run's own provenance table",
+                f"{kind!r} is the run's own {what}",
                 fix="name a kind of your own",
                 got=kind,
             )

@@ -60,7 +60,7 @@ It raises one `CompilationError` listing every problem it found, so a broken set
 components is fixed in one pass rather than one error at a time:
 
 1. every kind is a versioned type URL (`<namespace>.v<N>.<resource>`), and none is
-   `matrix.v1.ledger`, the run's own provenance table;
+   `matrix.v1.ledger` or `matrix.v1.session`, the run's own tables;
 2. every required kind is provided by some component or is a run input;
 3. no kind has two providers, and a run input has none;
 4. no component requires a kind it provides;
@@ -180,11 +180,12 @@ One call to one model (a triage, an extraction, a judge) has no loop, no tools a
 so it is not played on an agent runtime. It has its own port, `ModelRuntime`, with two calls:
 `check(model)`, which resolves the model name when a step is built, so an unknown one is a
 `config` problem before anything runs; and `call(request)`, which returns a `ModelCall`. The
-record carries what the runtime reports of the call that answered: the model that answered
-(a fallback may make it differ from the one asked for, and `fallback_from` says so), usage
-with cache tokens, the request id, attempts, retries and latency. A fact the runtime does not
-report stays empty rather than being filled with a constant: a call has no `num_turns`, and
-its `finish_reason` and `refusal` are empty until hardline reports them.
+record carries what the runtime reports of the call: why the reply ended (`finish_reason`,
+the provider's own value, and any `refusal`), the model that answered (a fallback may make it
+differ from the one asked for, and `fallback_from` says so), usage with cache tokens, the
+request id, attempts, retries and latency, what was sent, every attempt made and the
+registry row that answered. A fact the runtime does not report stays empty rather than being
+filled with a constant: a call has no `num_turns`.
 
 The two ports are separate because their contracts differ. A runtime that makes one call
 cannot honour a definition with tools; behind one port its `check` would refuse what another
@@ -211,7 +212,18 @@ are checked against its inputs when the step is built.
 renders its prompt from its inputs, and provides the `ModelCall`, with the prompt as sent,
 under its `response` kind. With an `output` kind that has a registered schema, it asks the
 runtime for that structure, which hardline validates and repairs; the row is the validated
-reply.
+reply. A reply cut at `max_tokens`, refused, withheld or empty is not provided at all: the step
+fails, saying which. A component downstream takes whatever row it is given as an answer, and
+nothing in the wiring could tell it otherwise.
+
+A reply is a sample, so the record keeps where each one came from. Every agent session and
+model call a component runs inside a run is a row of `matrix.v1.session`: the runtime, the
+model that answered (not the one asked for), why it stopped, its usage, the runtime's ids and
+the OpenTelemetry trace and span it ended in, any fallback and attempt, and a digest of what
+was sent. A step's reply row keeps what a consumer acts on (the reply, how it ended, the
+family) and points at that row; the ledger entry of each row a component hands over names the
+sessions behind it. So a reply is no longer a mix of an answer and its provenance, and a new
+fact about sessions is a field of the session row, not a change to every reply.
 
 ## One registry for every extension
 

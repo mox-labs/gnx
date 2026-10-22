@@ -134,7 +134,13 @@ themselves (readable with `jq` or DuckDB without matrix), and the `writer.lock` 
 holds while it lives. Provenance is one more table,
 the ledger (`matrix.v1.ledger`): which component handed each row over, when, and in what
 order. A ledger entry is written before its row, so a kill can leave an entry with no row but
-never a row nothing accounts for; a reader reports such an entry as torn.
+never a row nothing accounts for; a reader reports such an entry as torn. Every agent session
+and model call a component runs is a row of one more table, `matrix.v1.session`: the
+runtime, the model that answered, why it stopped, usage, ids (the runtime's, and the
+OpenTelemetry trace and span it ended in), fallback and attempts, and a digest of what was
+sent. A step's reply row points at it (`session`), and the ledger entry of every row a
+component hands over names the sessions behind it. `docs/explanation/data-model.md` joins the
+three in DuckDB.
 
 A store that cannot keep the record fails the run (error kind `store`). A value too large to
 be a row (a sample series, a capture) stays where it is and the row carries a
@@ -309,8 +315,11 @@ default (`matrix.v1.agent-response`, `matrix.v1.model-call`) serves one step. An
 with `output` needs the reply to be one JSON document, so say so in the agent's prompt or the
 task; a model step asks its runtime for the kind's registered schema when there is one. An
 agent's `model` is its runtime's to read: on `claude-sdk` an alias (`haiku`, `sonnet`,
-`opus`) or a full model id. A model step's `model` is a hardline registry name, checked when
-the step is built. The `mock` runtimes are stand-ins (`stand_in` in the catalog and the
+`opus`) or a full model id, and the reply records the model that answered, which may not be
+the one asked for. An agent's reply is its session's final result; what it wrote along the
+way is the reply's `transcript`. A model step's `model` is a hardline registry name, checked when
+the step is built. A model step never provides a reply that is not a whole answer: one cut at
+`max_tokens`, refused, withheld or empty fails the step, naming its `finish_reason`. The `mock` runtimes are stand-ins (`stand_in` in the catalog and the
 plan); the agent one replies by the whole task as sent (`responses`), then by agent name
 (`by_agent`), then `default` (`matrix --skill -r agents` has the detail).
 
@@ -371,8 +380,9 @@ file that set it, and how many agent sessions and model calls a run makes
 (`agent_calls_min`, `agent_calls_max`, `model_calls_min`, `model_calls_max`). matrix states no cost and keeps no spending ceiling: a run's cost is not
 something it can measure, so it does not pretend to. `run` prints the run id, where the record is, and its
 files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as
-sent, a model step's the prompt), `matrix.v1.ledger.jsonl` and `events.jsonl`. Each reply row keeps its tokens, and the cost
-the runtime reported when it reported one (`cost_usd`), as facts of that session. From
+sent, a model step's the prompt), `matrix.v1.session.jsonl`, `matrix.v1.ledger.jsonl` and
+`events.jsonl`. Each session row keeps its tokens, and the cost the runtime reported when it
+reported one (`cost_usd`), as facts of that session. From
 Python it is `compose(load_config()).run(inputs)`, and
 `plan_config(tool="matrix", config=None, *, only=False)` the plan: the first argument is the
 tool, a path goes in `config`.
@@ -449,7 +459,8 @@ changes only by addition, with a changelog entry, is:
 Every other exported name is public but may still change in a minor release, said in the
 changelog: the extension-author surface (`Entry`, `Extension`, `Failure`, `Loader`,
 `DocumentSource`, `Document`, `BesideFile`, `Accumulate`, `ConstructStore`, `RunWriter`,
-the stores, `Reuse`, the observers' types), the command's document records (`Catalog`,
+the stores, `Reuse`, the observers' types), the session table (`Session`, `SESSION`,
+`digest`, `agent_session`, `call_session`, `record_session`), the command's document records (`Catalog`,
 `Plan`, ...) and telemetry (`configure_telemetry`, `Telemetry`). Names under
 `matrix.domain`, `matrix.adapters` and `matrix.composition` are internal.
 
