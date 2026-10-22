@@ -887,6 +887,14 @@ class TestDeadlines:
         assert [(t.name, t.status) for t in tables] == [("slow", "error"), ("quick", "ok")]
         assert tables[0].error is not None
         assert "slow's deadline" in tables[0].error.message
+        assert (tables[0].error.fix or "").startswith("raise deadline:")
+
+    def test_the_next_step_after_a_transient_exit_names_the_deadline_first(self) -> None:
+        """Regression: exit 5's next step was "survey again later", but a deadline too short
+        for the work fails the same way on every retry: raising it comes first."""
+        from recon.domain.errors import EXIT_NEXT
+
+        assert EXIT_NEXT["transient"].startswith("raise the deadline:")
 
     @pytest.mark.parametrize("value", [0, -1, math.nan, math.inf])
     def test_a_deadline_must_be_a_positive_number_of_seconds(
