@@ -311,6 +311,17 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   - A loop's `rounds` may be 1: the first answer alone, so a sweep can start from no loop.
   A probe file whose prompt holds a `{name}` meant as text is now refused until it is
   written `{{name}}`.
+- **A registration is written whole or not at all.** It was written in place, so a crash
+  mid-write left a file the next read refused as not JSON. It is now written beside the
+  record and moved over it.
+- **A reworded note leaves the plan alone.** An `x-` note beside a subject's or a probe's
+  options was inside the plan's digest, so rewording one moved the plan and made a
+  registered experiment deviate. Notes are now outside the plan and the probe set digests,
+  as the question and descriptions are; they stay in the experiment's own digest.
+- **A margin or threshold removed or added is named.** Design values were compared only on
+  paths both records held, so a margin that became none (`margin.value` against
+  `margin`) was no deviation, and only the digests said the plan changed. It is now
+  `design.margin changed after registration`, with both values.
 
 ## 0.5.0 — 2026-10-19
 

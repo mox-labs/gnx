@@ -170,27 +170,53 @@ def _leaves(value: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
     return flat
 
 
+def _ancestors(path: str) -> list[str]:
+    """``a.b.c`` gives ``a`` and ``a.b``."""
+    parts = path.split(".")
+    return [".".join(parts[:end]) for end in range(1, len(parts))]
+
+
+def _at(value: Mapping[str, Any], path: str) -> Any:
+    """What ``value`` holds at the dotted ``path``; None where it holds nothing."""
+    held: Any = value
+    for part in path.split("."):
+        if not isinstance(held, Mapping):
+            return None
+        held = held.get(part)
+    return held
+
+
 def deviations(registered: Registration, current: Registration) -> tuple[Deviation, ...]:
     """Every frozen value in which ``current`` differs from ``registered``.
 
     Design values are compared path by path over the paths both records hold, so a value an
-    older record never stored is not a deviation. Then the three digests, then each file
-    and folder the subjects and sensors name, by what it is (``skill review changed after
-    registration``).
+    older record never stored is not a deviation; a mapping on one side that is a value on
+    the other (a margin removed: ``margin.value`` against ``margin: null``) is compared
+    whole, at its own path. Then the three digests, then each file and folder the subjects
+    and sensors name, by what it is (``skill review changed after registration``).
     """
     found: list[Deviation] = []
-    was = _leaves({k: v for k, v in registered.design.items() if k not in _NOT_COMPARED})
-    now = _leaves({k: v for k, v in current.design.items() if k not in _NOT_COMPARED})
-    for path, value in was.items():
-        if path in now and now[path] != value:
-            found.append(
-                Deviation(
-                    field=f"design.{path}",
-                    registered=value,
-                    current=now[path],
-                    message=f"{path} changed after registration",
-                )
+    before = {k: v for k, v in registered.design.items() if k not in _NOT_COMPARED}
+    after = {k: v for k, v in current.design.items() if k not in _NOT_COMPARED}
+    was, now = _leaves(before), _leaves(after)
+    changed = {path for path in was.keys() & now.keys() if was[path] != now[path]}
+    # A path one side holds below a value the other holds: the whole mapping became that
+    # value, or the value became a mapping.
+    changed |= {
+        ancestor
+        for path in was.keys() ^ now.keys()
+        for ancestor in _ancestors(path)
+        if ancestor in was or ancestor in now
+    }
+    for path in sorted(changed, key=list((*was, *now)).index):
+        found.append(
+            Deviation(
+                field=f"design.{path}",
+                registered=_at(before, path),
+                current=_at(after, path),
+                message=f"{path} changed after registration",
             )
+        )
     for field, what in _DIGESTS.items():
         before, after = getattr(registered, field), getattr(current, field)
         if before and after and before != after:
