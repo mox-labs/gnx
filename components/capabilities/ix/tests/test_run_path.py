@@ -637,9 +637,6 @@ class _Held:
 
 
 class _HeldSubject:
-    def unstartable(self, subject: Any, *, base: str) -> str | None:
-        return None
-
     def reach(self, name: str, subject: Any, *, base: str) -> _Held:
         return _Held(name)
 
@@ -905,12 +902,9 @@ class TestWhatCannotRun:
         self, compare_data: dict[str, Any], write_experiment: Write
     ) -> None:
         file = write_experiment(compare_data)  # its subjects run ./proxy, which is not there
-        unstartable = ix.plan(file).unstartable
-        assert [reason.split(":")[0] for reason in unstartable] == [
-            "subjects.buffered",
-            "subjects.streaming",
-        ]
-        assert all("'./proxy' is not an executable file" in reason for reason in unstartable)
+        proxy = next(r for r in ix.plan(file).unmet if r.need == "'./proxy' is an executable file")
+        assert proxy.needed_by == ("subjects.buffered", "subjects.streaming")
+        assert "'./proxy' is not an executable file" in proxy.why
         assert ix.register(file).outcome == "created"
         with pytest.raises(ix.ConfigError, match="cannot start"):
             ix.run(file)
@@ -1178,9 +1172,6 @@ def test_an_extension_adds_an_adapter_for_its_own_kind_without_an_edit_to_ix(
     family, under the kind's type URL. ix lists it as runnable and runs it."""
 
     class Echo:
-        def unstartable(self, subject: Any, *, base: str) -> str | None:
-            return None
-
         @asynccontextmanager
         async def reach(self, name: str, subject: Any, *, base: str) -> AsyncIterator[Target]:
             yield Target(subject=name, facets={"url": "http://echo", "env": {}})

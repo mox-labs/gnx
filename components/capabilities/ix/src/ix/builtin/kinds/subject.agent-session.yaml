@@ -20,5 +20,4 @@ options:
   setup: {type: list, description: "a command run in the working directory after the fixtures are copied, before the session: [python3, seed.py]"}
   loop: {type: mapping, description: "more rounds after the first: {strategy: self-review | test-feedback, rounds, prompt, until}"}
   runtime_options: {type: mapping, description: "the runtime's own config, passed through as written and checked by the runtime (claude-sdk: permission_mode, setting_sources, fallback_model, max_budget_usd, agents); `matrix describe matrix.v1.agent-runtime.<name>` lists a runtime's"}
-effects: [tools, process, filesystem]
 offers: [respondent, workdir]

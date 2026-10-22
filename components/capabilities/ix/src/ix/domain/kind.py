@@ -1,13 +1,20 @@
 """Kinds: what a subject, a probe, a sensor or an environment of a given kind is, as data.
 
-A kind's declaration says which options it takes (their types, which are required), what
-using it does to the world (``effects``), which facets it ``offers`` and which it ``needs``,
-and, for a sensor, the metrics it provides (with whether a model judges them) and the probe
-truth it reads. ``validate`` holds an experiment to these declarations and ``plan`` reports
-their effects, so neither depends on the author asserting them.
+A kind's declaration says which options it takes (their types, which are required), which
+facets it ``offers`` and which it ``needs``, and, for a sensor, the metrics it provides (with
+whether a model judges them) and the probe truth it reads. ``validate`` holds an experiment
+to these declarations, so it does not depend on the author asserting them.
 
 A declaration starts nothing and measures nothing: the adapter registered under the kind's
-type URL does.
+type URL does. What carrying a kind out needs of the host (a program, a daemon, a variable)
+is the adapter's to check (:class:`~ix.domain.ports.Preflight`), not the declaration's to
+claim.
+
+**The families are closed** (:data:`KIND_FAMILIES`). Each has its own place in a run: the
+environment is brought up once, a subject is reached for each trial, a probe applied to it,
+a sensor reads what it left behind. A new family would need a new place in that loop and in
+the schedule, the record and the analysis, which a declaration cannot give it; a new kind of
+an existing family needs only its file and its adapter.
 
 **Facets** are how kinds fit together without knowing each other. A subject kind offers how
 it can be reached (``url``, ``pid``, ``agent``); a probe kind needs some of those and offers
@@ -28,20 +35,8 @@ from ix.domain.experiment import Direction, Name, Shape
 from ix.domain.problem import Problem, from_validation_error, problem
 from ix.domain.schema import DeclarationFile, Record
 
+#: The families of kind, in the order a run uses them; closed (see the module docstring).
 KIND_FAMILIES: tuple[str, ...] = ("subject", "probe", "sensor", "environment")
-
-EffectName = Literal["process", "network", "tools", "code", "containers", "filesystem"]
-
-#: What using a kind can do to the world. A closed set, so that a plan can be read at a
-#: glance: each effect it lists is one of these, said in the same words.
-EFFECTS: dict[EffectName, str] = {
-    "process": "starts a process on this machine",
-    "network": "sends requests over the network",
-    "tools": "lets a model call tools",
-    "code": "executes generated code",
-    "containers": "starts containers",
-    "filesystem": "writes files outside the run's own record",
-}
 
 OptionType = Literal[
     "string",
@@ -182,7 +177,6 @@ class Kind(Record):
     name: str
     summary: str = Field(min_length=1)
     options: dict[Name, Option] = {}
-    effects: tuple[EffectName, ...] = ()
     offers: tuple[str, ...] = ()
     needs: tuple[str, ...] = ()
     #: Sensors only: the metrics this sensor provides.

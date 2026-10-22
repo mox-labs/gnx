@@ -161,9 +161,7 @@ def _sense(*, ix_kit: Kit) -> SenseComponent:
     return SenseComponent(ix_kit)
 
 
-#: The three components by type URL: how each is built and what it does. Their effects are
-#: whatever the kinds of the experiment being run declare, so none is declared: unknown,
-#: never "none".
+#: The three components by type URL: how each is built and what it does.
 COMPONENTS: dict[str, tuple[Callable[..., object], str]] = {
     ENVIRONMENT: (
         _environment,

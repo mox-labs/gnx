@@ -43,9 +43,6 @@ class FakeSubject:
     def __init__(self) -> None:
         self.reached = 0
 
-    def unstartable(self, subject: SubjectConfig, *, base: str) -> str | None:
-        return None
-
     @asynccontextmanager
     async def reach(self, name: str, subject: SubjectConfig, *, base: str) -> AsyncIterator[Target]:
         env = {str(k): str(v) for k, v in (subject.options.get("env") or {}).items()}

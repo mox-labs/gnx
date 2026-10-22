@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from ix.adapters._out.processes import answers, is_up, wait_ready
+from ix.adapters._out.processes import answers, is_up, startable, wait_ready
 from ix.adapters._out.subjects import STARTUP_TIMEOUT_S
 from ix.domain.kind import seconds
 from ix.domain.run import HarnessError
@@ -16,7 +17,7 @@ from ix.domain.run import HarnessError
 if TYPE_CHECKING:
     from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import EnvironmentConfig
-    from ix.domain.ports import Scope
+    from ix.domain.ports import Requirement, Scope
     from ix.domain.run import Bindings
 
 
@@ -41,6 +42,18 @@ class ProcessEnvironment:
 
     def __init__(self, launcher: Launcher) -> None:
         self._launcher = launcher
+
+    def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
+        """That each service's program can be started here."""
+        services = options.get("services")
+        found: list[Requirement] = []
+        for service in services.values() if isinstance(services, Mapping) else ():
+            command = service.get("command") if isinstance(service, Mapping) else None
+            if isinstance(command, list | tuple) and command:
+                program = startable(str(command[0]), base=base, cwd=str(service.get("cwd") or "."))
+                if program is not None:
+                    found.append(program)
+        return found
 
     async def up(self, environment: EnvironmentConfig, *, base: str, scope: Scope) -> Bindings:
         bindings: Bindings = {}

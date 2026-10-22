@@ -8,18 +8,18 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ix.adapters._out.processes import is_up, wait_ready
+from ix.adapters._out.processes import is_up, startable, wait_ready
 from ix.domain.kind import placeholders, seconds
+from ix.domain.ports import Requirement
 from ix.domain.run import HarnessError, SubjectError, Target
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
     from ix.adapters._out.processes import Launcher
     from ix.domain.experiment import SubjectConfig
@@ -57,19 +57,13 @@ class ProcessSubject:
     def __init__(self, launcher: Launcher) -> None:
         self._launcher = launcher
 
-    def unstartable(self, subject: SubjectConfig, *, base: str) -> str | None:
-        options = subject.options
-        program, cwd = str(options["command"][0]), str(options.get("cwd") or ".")
-        if placeholders([program, cwd]):
-            return None
-        if Path(program).name != program:
-            found = Path(base, cwd, program)
-            if found.is_file() and os.access(found, os.X_OK):
-                return None
-            return f"{program!r} is not an executable file at {found}"
-        if shutil.which(program) is None:
-            return f"{program!r} is not on PATH"
-        return None
+    def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
+        """That its program can be started here."""
+        command = options.get("command")
+        if not isinstance(command, list | tuple) or not command:
+            return []  # the kind's declaration reports it
+        found = startable(str(command[0]), base=base, cwd=str(options.get("cwd") or "."))
+        return [] if found is None else [found]
 
     @asynccontextmanager
     async def reach(self, name: str, subject: SubjectConfig, *, base: str) -> AsyncIterator[Target]:
@@ -155,15 +149,32 @@ class HttpSubject:
     run starts.
     """
 
-    def unstartable(self, subject: SubjectConfig, *, base: str) -> str | None:
-        auth = subject.options.get("auth")
+    def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
+        """That the variable ``auth`` names is set. Neither the token nor what ``auth``
+        holds when it is not of the form ``env:NAME`` is repeated: it may be a token."""
+        auth = options.get("auth")
         if not auth or placeholders(auth):
-            return None
-        try:
-            _token(str(auth))
-        except HarnessError as error:
-            return str(error)
-        return None
+            return []
+        scheme, _, variable = str(auth).partition(":")
+        if scheme != "env" or not variable:
+            return [
+                Requirement(
+                    need="auth names the variable that holds a bearer token",
+                    holds=False,
+                    why="auth is not of the form env:<NAME>",
+                    fix="write auth: env:<NAME>, the variable that holds a token; never the "
+                    "token itself",
+                )
+            ]
+        held = bool(os.environ.get(variable))
+        return [
+            Requirement(
+                need=f"variable {variable} is set (auth)",
+                holds=held,
+                why="" if held else f"auth names {variable}, which is not set",
+                fix="" if held else f"set {variable} to the bearer token",
+            )
+        ]
 
     @asynccontextmanager
     async def reach(self, name: str, subject: SubjectConfig, *, base: str) -> AsyncIterator[Target]:

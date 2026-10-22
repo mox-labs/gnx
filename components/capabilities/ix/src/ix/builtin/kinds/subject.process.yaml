@@ -8,5 +8,4 @@ options:
   cwd: {type: string, description: "the directory to start it in, relative to the experiment"}
   env: {type: mapping, description: environment variables to add}
   startup_timeout: {type: duration, description: how long to wait for ready; 30s when absent}
-effects: [process]
 offers: [pid, url]

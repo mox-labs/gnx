@@ -19,7 +19,7 @@ from ix.domain.analysis import Spread, spread
 from ix.domain.design import select_sensors
 from ix.domain.errors import ConfigError, NotFoundError
 from ix.domain.experiment import PROBES_FOLDER, Experiment, ProbeConfig, ProbeSet, probe_set
-from ix.domain.plan import Plan, RegistrationStatus, plan, sensitivity
+from ix.domain.plan import Plan, RegistrationStatus, Required, plan, sensitivity
 from ix.domain.ports import Review, Surroundings
 from ix.domain.problem import InvalidExperimentError, Problem, Validation, problem
 from ix.domain.registration import (
@@ -348,12 +348,12 @@ def make_plan(
     stored: Registration | None,
     *,
     location: str = "",
-    unstartable: tuple[str, ...] = (),
+    requirements: tuple[Required, ...] = (),
     earlier: Iterable[RunRecord] = (),
 ) -> Plan:
-    """What a run would do, where the experiment stands against its registration, the
-    ``unstartable`` subjects the host found, and, from the ``earlier`` runs of the
-    experiment (latest first), how small an effect it can detect."""
+    """What a run would do, where the experiment stands against its registration, what it
+    ``requirements`` of this host (each with whether it holds here), and, from the
+    ``earlier`` runs of the experiment (latest first), how small an effect it can detect."""
     made, current = standing(examined, vocabulary, now="", version="")
     checked = valid(examined, "planned")
     blocks = checked.design.repeats * len(checked.probes.probes)
@@ -368,7 +368,7 @@ def make_plan(
     return made.model_copy(
         update={
             "registration": status,
-            "unstartable": unstartable,
+            "requirements": requirements,
             "sensitivity": sensed,
             "warnings": examined.warnings,
         }

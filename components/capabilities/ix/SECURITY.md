@@ -69,13 +69,15 @@ derived from the file's own name.
 
 ### 4. A declaration is a claim, not a control
 
-A kind declares its effects (`process`, `network`, `tools`, `code`, `containers`,
-`filesystem`) and the plan reports them. That is a statement by whoever wrote the kind file,
-and ix has no code that enforces it. Two properties limit how it can mislead:
+A kind declares its options, facets and metrics. That is a statement by whoever wrote the
+kind file, and what a kind does to the host is not among its claims: kinds declare no
+effects. What a plan lists under `Requires` is what each adapter checked of this host (a
+program on PATH, a daemon, a variable), not what the run may touch. One property limits how
+a declaration can mislead:
 
-- an experiment can add effects to what a kind declares and cannot remove one;
-- two files declaring the same kind are both refused, so a lab's `kinds/` directory cannot
-  quietly redeclare a built-in kind with fewer effects, or a sensor's metric as not judged.
+- a file that does not own a kind's namespace cannot redeclare it, and two files alike are
+  both refused, so a lab's `kinds/` directory cannot quietly redeclare a built-in kind, or a
+  sensor's metric as not judged.
 
 A third-party kind package is trusted to describe itself honestly, as in boundary 2.
 
@@ -90,8 +92,9 @@ version control, where an edit to the record is itself a visible change.
 `ix run` executes the `command` of every `process` subject and environment service, and an
 agent subject's `setup`, with the user's environment and privileges, in the directory the
 experiment names. **Running an experiment you did not write is running its author's
-commands.** Nothing is sandboxed. `ix plan` shows what a run would start (`Effects:`)
-without starting it; read the plan, and the file, before running someone else's.
+commands.** Nothing is sandboxed. `ix plan` shows the programs a run would start
+(`Requires:`) without starting them; read the plan, and the file, before running someone
+else's.
 
 What ix does to bound it:
 

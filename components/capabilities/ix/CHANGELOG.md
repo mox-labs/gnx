@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Changed (breaking): requirements in place of effects
+
+Effects were labels nothing checked (Q6). Record section 20 has the reasons.
+
+- **Removed**: `effects` in kind files (a kind file that still declares them is refused),
+  `effects:` beside an experiment's subject, probe, sensor or environment (now an option the
+  kind does not take), `Plan.effects` and `Effect`, `EffectName` and `EFFECTS`, and the
+  `effects` column of `ix kinds`.
+- **Every adapter may say what it needs of this host.** `Preflight` was the subjects'
+  alone (`unstartable`); it is now `requirements(options, *, base)`, optional for any
+  adapter, each `Requirement` with `need`, `holds`, `why` and `fix`. `process`, `http`,
+  `agent-session` and `model-call` check what they checked before; `http-load` checks `k6`
+  on PATH, `environment.process` each service's program, and `judge` its runtime.
+- **The plan lists them.** `Plan.requirements` (each `need`, `holds`, `why`, `fix` and the
+  entries that need it) replaces `Plan.unstartable`; `ix plan` prints them under
+  `Requires:`, and those that do not hold under `Runnable: no` with the fix. `ix run` refuses
+  to start while one does not hold.
+- **Registrations change digest.** The plan digest no longer covers effects, so every
+  experiment registered before this release shows a `plan_digest` deviation and its next
+  run is ungated: amend the registration (`ix register <path> --amend --reason "effects
+  removed"`) to gate it again.
+
 ### Changed: an adapter is held to its port, and one that cannot be built cannot run
 
 - **The kind ports are checked at registration.** `Subject`, `Probe`, `Sensor` and

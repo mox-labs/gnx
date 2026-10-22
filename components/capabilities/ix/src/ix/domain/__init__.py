@@ -37,10 +37,10 @@ from ix.domain.genre import AnalysisRef, GenreDesign, Repeats, Role
 from ix.domain.kind import Confusion, Metric, Option
 from ix.domain.plan import (
     Duration,
-    Effect,
     OrderPlan,
     PlannedProbes,
     RegistrationStatus,
+    Required,
     Sensitivity,
     Trials,
 )
@@ -51,6 +51,7 @@ from ix.domain.ports import (
     Measured,
     Preflight,
     Probe,
+    Requirement,
     Review,
     Scope,
     Sensed,
@@ -89,7 +90,6 @@ __all__ = [
     "Decision",
     "Deviation",
     "Duration",
-    "Effect",
     "Environment",
     "EnvironmentConfig",
     "Estimate",
@@ -124,6 +124,8 @@ __all__ = [
     "Registration",
     "RegistrationStatus",
     "Repeats",
+    "Required",
+    "Requirement",
     "Review",
     "Role",
     "RoleAssignment",

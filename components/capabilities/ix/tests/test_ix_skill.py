@@ -250,7 +250,8 @@ class TestEveryClaimHolds:
         directory.mkdir()
         (directory / "experiment.yaml").write_text(QUICK_START)
         plan = ix.plan(directory)
-        assert plan.genre == "evaluate" and plan.unstartable == () and plan.unimplemented == ()
+        assert plan.genre == "evaluate" and plan.unimplemented == ()
+        assert {r.need for r in plan.requirements} == {"'python3' on PATH", "'k6' on PATH"}
         assert set(yaml.safe_load(QUICK_START)) == {"name", "question", "genre", "subjects",
                                                     "probes", "primary", "threshold"}  # fmt: skip
 

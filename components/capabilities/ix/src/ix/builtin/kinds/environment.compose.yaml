@@ -5,4 +5,3 @@ options:
   file: {type: string, required: true, description: the compose file}
   project: {type: string, description: the project name}
   services: {type: list, description: the services to bring up; all of them when absent}
-effects: [containers, process]

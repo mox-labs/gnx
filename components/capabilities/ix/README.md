@@ -45,14 +45,14 @@ through hardline) and `otel` (export of spans over OTLP). A service experiment n
 
 ```bash
 ix validate <path>     # every problem at once, nothing run; exits 3 when the file is invalid
-ix plan <path>         # the decision, the trials, the effects; runs nothing
+ix plan <path>         # the decision, the trials, what it needs here; runs nothing
 ix register <path>     # freeze the design beside the file, before any run
 ix run <path>          # carry it out; the exit code is the verdict
 ix report <path>       # the latest run's report again, computed from its record
 ```
 
-`validate` and `plan` run nothing. Read the plan before you register: its `Trials` and
-`Effects` are what a run will do. Register before you run: the registration is what the
+`validate` and `plan` run nothing. Read the plan before you register: its `Trials` are what
+a run will do, and `Requires` what it needs of this host, each with whether it holds here. Register before you run: the registration is what the
 verdict is held to, so a margin cannot move once the numbers are in. `ix run` refuses an
 experiment that is not registered (exit 15); `--exploratory` runs it anyway and gives no
 verdict. A run exits 0 when the verdict holds, 10 when it fails and 11 when it is
@@ -113,8 +113,8 @@ Verdict:      holds / fails / inconclusive
 ...
 Trials:       2 subjects x 1 cell x 1 probe x 10 repeats = 20, + 10 A/A = 30
 Duration:     about 2m (30 trials, probe time only; setup and teardown add to it)
-Effects:      process: starts a process on this machine  (subjects.baseline, subjects.candidate, probes.0)
-              network: sends requests over the network  (probes.0)
+Requires:     yes  'python3' on PATH  (subjects.baseline, subjects.candidate)
+              yes  'k6' on PATH  (probes.0)
 Registration: none
 ```
 
@@ -242,8 +242,8 @@ or `max` as its estimator.
 ## Kinds
 
 A subject, a probe, a sensor and the environment each name a **kind**. A kind is declared as
-data, the way a genre is: its options (with types, and which are required), its effects, the
-facets it offers and needs, and for a sensor the metrics it provides and whether a model
+data, the way a genre is: its options (with types, and which are required), the facets it
+offers and needs, and for a sensor the metrics it provides and whether a model
 judges them. `ix kinds` lists them.
 
 | family | kinds |
@@ -412,11 +412,14 @@ nothing under `--json`); the report goes to stdout.
   run started, and exits 12 with the partial report. A run the harness could not finish (an
   environment that did not come up, or went down between trials) exits 8. `ix report` of a
   run still being written exits 13.
-- **Refused before it starts**: a subject command that is not there, an `auth` variable
-  that is not set, a file an agent subject names that is not there, an agent runtime that
-  cannot start or cannot play the agent as written, and a model runtime that cannot start
-  or cannot resolve the subject's model. `ix plan` lists them under
-  `Runnable: no` beforehand; they depend on the host, so they do not stop `ix register`.
+- **Refused before it starts**: whatever an entry needs of this host that does not hold
+  here. Each adapter checks its own (a `preflight`): a program that is not there (a
+  subject's or a service's command, `k6` for `http-load`), an `auth` variable that is not
+  set, a file an agent subject names that is not there, an agent runtime that cannot start
+  or cannot play the agent as written, a model runtime (a subject's or a judge's) that
+  cannot start or cannot resolve the model. `ix plan` lists every requirement under
+  `Requires` with whether it holds, and those that do not under `Runnable: no` with the
+  fix; they depend on the host, so they do not stop `ix register`.
 - **Failures have an owner.** A trial the subject failed (it exited, it was not up in time,
   it answered no request successfully within the measured time, it returned a different body; an agent session that
   broke, was refused or ran past its probe's `timeout`) counts against the subject. A trial the harness failed (k6 missing

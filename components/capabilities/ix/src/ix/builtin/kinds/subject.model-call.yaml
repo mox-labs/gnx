@@ -12,5 +12,4 @@ options:
   model: {type: string, description: "the model the runtime resolves (a hardline registry name); the runtime's default when absent"}
   system_prompt: {type: string, description: the system prompt}
   runtime_options: {type: mapping, description: "the runtime's own config, passed through as written and checked by the runtime (hardline: temperature, max_tokens, default_model, models); `matrix describe matrix.v1.model-runtime.<name>` lists a runtime's"}
-effects: [network]
 offers: [respondent]

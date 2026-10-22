@@ -210,18 +210,16 @@ class SubjectConfig(Record):
     """One subject as the experiment configures it: the subject kind it is (a registered
     type) and that kind's options. The configuration under test.
 
-    ``effects`` adds to what the kind declares it does; it can remove nothing.
     """
 
     kind: str = Field(min_length=1)
     description: str = ""
-    effects: tuple[str, ...] = ()
     options: dict[str, Any] = {}
 
     @model_validator(mode="before")
     @classmethod
     def _options(cls, data: Any) -> Any:
-        return _fold(data, frozenset({"kind", "description", "effects", "options"}))
+        return _fold(data, frozenset({"kind", "description", "options"}))
 
 
 class ProbeConfig(Record):
@@ -234,14 +232,13 @@ class ProbeConfig(Record):
 
     id: str = ""
     kind: str = Field(min_length=1)
-    effects: tuple[str, ...] = ()
     truth: dict[str, Any] = {}
     options: dict[str, Any] = {}
 
     @model_validator(mode="before")
     @classmethod
     def _options(cls, data: Any) -> Any:
-        return _fold(data, frozenset({"id", "kind", "effects", "truth", "options"}))
+        return _fold(data, frozenset({"id", "kind", "truth", "options"}))
 
 
 #: Where probes are read from when the experiment writes none inline: this folder beside the
@@ -252,7 +249,7 @@ PROBES_FOLDER = "probes"
 PROBE_SUFFIXES = (".md", ".yaml", ".yml")
 
 #: The keys a probe file uses for the probe itself; every other key is the probe's truth.
-_PROBE_KEYS = frozenset({"id", "kind", "effects", "truth", "options", "body", "prompt"})
+_PROBE_KEYS = frozenset({"id", "kind", "truth", "options", "body", "prompt"})
 
 
 class ProbeFile(Record):
@@ -260,15 +257,14 @@ class ProbeFile(Record):
     frontmatter, then the prompt) or a YAML file.
 
     The text after a markdown file's frontmatter, its ``body``, is the ``prompt``. ``id``
-    (default: the file's name without its suffix), ``kind`` (default ``prompt``), ``effects``
-    and ``options`` are the probe's own; every other key is its truth, beside any written
+    (default: the file's name without its suffix), ``kind`` (default ``prompt``) and
+    ``options`` are the probe's own; every other key is its truth, beside any written
     under ``truth:``. A ``prompt`` probe's text is its ``prompt`` option even when empty, so
     validation can say it is missing.
     """
 
     id: str = ""
     kind: str = Field(default="prompt", min_length=1)
-    effects: tuple[str, ...] = ()
     truth: dict[str, Any] = {}
     options: dict[str, Any] = {}
     prompt: str | None = Field(default=None, alias="body")
@@ -290,9 +286,7 @@ class ProbeFile(Record):
         options = dict(self.options)
         if self.prompt is not None and (self.prompt.strip() or self.kind == "prompt"):
             options["prompt"] = self.prompt
-        return ProbeConfig(
-            id=self.id, kind=self.kind, effects=self.effects, truth=self.truth, options=options
-        )
+        return ProbeConfig(id=self.id, kind=self.kind, truth=self.truth, options=options)
 
 
 class SensorConfig(Record):
@@ -300,13 +294,12 @@ class SensorConfig(Record):
     give it options, or to say which of two sensors provides a metric both could."""
 
     kind: str = Field(min_length=1)
-    effects: tuple[str, ...] = ()
     options: dict[str, Any] = {}
 
     @model_validator(mode="before")
     @classmethod
     def _options(cls, data: Any) -> Any:
-        return _fold(data, frozenset({"kind", "effects", "options"}))
+        return _fold(data, frozenset({"kind", "options"}))
 
 
 class EnvironmentConfig(Record):
@@ -314,13 +307,12 @@ class EnvironmentConfig(Record):
     environment kind (a registered type) and its options."""
 
     kind: str = Field(default="none", min_length=1)
-    effects: tuple[str, ...] = ()
     options: dict[str, Any] = {}
 
     @model_validator(mode="before")
     @classmethod
     def _options(cls, data: Any) -> Any:
-        return _fold(data, frozenset({"kind", "effects", "options"}))
+        return _fold(data, frozenset({"kind", "options"}))
 
 
 def _shape_slip(error_type: str, message: str) -> PydanticCustomError:

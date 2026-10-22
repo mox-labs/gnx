@@ -12,7 +12,6 @@ options:
   method: {type: string, description: the HTTP method}
   headers: {type: mapping, description: headers sent with every request}
   verify_body: {type: string, allowed: [sha256], description: every response body must have the digest of the first one fetched}
-effects: [process, network]
 needs: [url]
 offers: [load]
 duration: [warmup, duration]

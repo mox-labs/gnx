@@ -189,7 +189,7 @@ def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     \b
     ix --skill                  the skill an agent reads; ix --skill -r NAME a reference
     ix validate lab/proxy       every problem at once, nothing run
-    ix plan lab/proxy           the decision, the trials, the effects
+    ix plan lab/proxy           the decision, the trials, what it needs here
     ix register lab/proxy       freeze the design before a run
     ix deviations lab/proxy     what changed since registration
     ix run lab/proxy            carry it out; the exit code is the verdict
@@ -315,19 +315,16 @@ def _print_plan_work(plan: ix.Plan) -> None:
 
 
 def _print_plan_cost(plan: ix.Plan) -> None:
-    by_effect: dict[tuple[str, str], list[str]] = {}
-    for effect in plan.effects:
-        by_effect.setdefault((effect.effect, effect.detail), []).append(effect.source)
     lines = [
-        f"{name}{': ' + detail if detail else ''}  ({', '.join(sources)})"
-        for (name, detail), sources in by_effect.items()
+        f"{'yes' if required.holds else 'NO '}  {required.need}  ({', '.join(required.needed_by)})"
+        for required in plan.requirements
     ]
-    _field("Effects", *(lines or ["none"]))
+    _field("Requires", *(lines or ["nothing of this host that an adapter checks"]))
     _field("Registration", plan.registration.text())
     _field("Sensitivity", plan.sensitivity.text)
     blockers = [
         *(f"this ix has no adapter for {kind}" for kind in plan.unimplemented),
-        *(f"cannot start on this host: {reason}" for reason in plan.unstartable),
+        *(f"not on this host: {required.text()}" for required in plan.unmet),
     ]
     if not plan.runnable:
         _field("Runnable", "no", *blockers)
@@ -374,8 +371,9 @@ def plan(path: str, as_json: bool) -> None:
 
     States the question, the hypothesis rendered from the genre, the guardrails and the form
     of the verdict; then the subjects with their roles, the trials with their arithmetic, the
-    estimated duration, the effects and where the experiment stands against its
-    registration. The plan's digest changes when a value a run would use changes.
+    estimated duration, what the run needs of this host with whether each holds here, and
+    where the experiment stands against its registration. The plan's digest changes when a
+    value a run would use changes.
 
     PATH is the experiment file, a directory that holds experiment.yaml, or - for standard
     input (which has no registration).
@@ -1028,8 +1026,8 @@ def genres(lab: str | None, as_json: bool) -> None:
 def kinds(lab: str | None, as_json: bool) -> None:
     """List the subject kinds, probe kinds, sensors and environment kinds.
 
-    Each kind declares its options (required ones marked *), the facets it needs and offers,
-    its effects and, for a sensor, the metrics it provides. `runs` says whether this ix has
+    Each kind declares its options (required ones marked *), the facets it needs and offers
+    and, for a sensor, the metrics it provides. `runs` says whether this ix has
     an adapter for the kind: one without can be validated, planned and registered, not run.
     """
     try:
@@ -1048,7 +1046,6 @@ def kinds(lab: str | None, as_json: bool) -> None:
         table.add_column("kind", no_wrap=True)
         table.add_column("options (* required)", overflow="fold", min_width=widest)
         table.add_column("needs > offers")
-        table.add_column("effects")
         table.add_column("runs", no_wrap=True)
         tables[family] = table
     metrics = Table(title="Metrics", title_justify="left")
@@ -1065,7 +1062,6 @@ def kinds(lab: str | None, as_json: bool) -> None:
             escape(label),
             escape(options or "-"),
             escape(facets),
-            escape("\n".join(kind.effects) or "-"),
             "yes" if kind.name in found.runnable else "no",
         )
         for metric in kind.metrics:

@@ -6,7 +6,7 @@ measurements instead of assertions.
 
 ```
 ix validate lab/catalog-routing      # every problem at once, nothing run
-ix plan lab/catalog-routing          # the decision, the trials, the effects
+ix plan lab/catalog-routing          # the decision, the trials, what it needs here
 ix register lab/catalog-routing      # freeze the design before a run
 ix run lab/catalog-routing           # real agent sessions: this calls a paid model
 ```

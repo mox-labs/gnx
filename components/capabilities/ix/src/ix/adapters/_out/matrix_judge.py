@@ -45,10 +45,15 @@ from typing import TYPE_CHECKING, Any
 
 import matrix
 
-from ix.adapters._out.matrix_agents import AGENT_RUNTIME, MODEL_RUNTIME, STAND_IN
+from ix.adapters._out.matrix_agents import (
+    AGENT_RUNTIME,
+    MODEL_RUNTIME,
+    STAND_IN,
+    runtime_requirement,
+)
 from ix.adapters._out.matrix_calls import recorded_call
 from ix.domain.kind import placeholders
-from ix.domain.ports import Sensed, StoodIn
+from ix.domain.ports import Requirement, Sensed, StoodIn
 from ix.domain.problem import Problem, problem
 
 if TYPE_CHECKING:
@@ -128,7 +133,8 @@ class JudgeSensor:
 
     Options: ``rubric`` or ``rubric_file``; ``model_runtime`` or ``agent_runtime`` (one is
     required), ``model``, ``runtime_options``; ``repeats`` (1); ``pass_at`` (0.5). A
-    :class:`~ix.domain.ports.Review` and a :class:`~ix.domain.ports.StandIn`."""
+    :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` (its runtime
+    builds and can judge) and a :class:`~ix.domain.ports.StandIn`."""
 
     def __init__(self, runtimes: Runtimes) -> None:
         self._runtimes = runtimes
@@ -164,6 +170,31 @@ class JudgeSensor:
                 "canned, calls no model)",
             )
         ]
+
+    def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
+        """That its runtime builds and can judge: a model runtime resolves the model, an
+        agent runtime can play a one-turn session of it. Nothing for a judge that names no
+        runtime or both (the review reports it), or for options filled in per cell."""
+        if any(placeholders(value) for value in options.values()):
+            return []
+        try:
+            point, name = _port(options)
+        except ValueError:
+            return []
+        config = dict(options.get("runtime_options") or {})
+        model = None if options.get("model") is None else str(options["model"])
+
+        def judges() -> None:
+            if point == MODEL_RUNTIME:
+                self._runtimes.build(MODEL_RUNTIME, name, config).check(model)
+                return
+            definition = matrix.AgentDefinition(
+                name="judge", system_prompt=SYSTEM, model=model, tools=(), max_turns=1
+            )
+            self._runtimes.build(AGENT_RUNTIME, name, config).check(definition)
+
+        noun = "model runtime" if point == MODEL_RUNTIME else "agent runtime"
+        return [runtime_requirement(f"the judge's {noun} {name!r} builds and can judge", judges)]
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """The judge on the ``mock`` of its own port, scoring every reply 0.5: its readings

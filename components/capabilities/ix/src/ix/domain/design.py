@@ -34,6 +34,8 @@ from ix.domain.problem import InvalidExperimentError, Problem, problem
 from ix.domain.schema import Record
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from ix.domain.experiment import (
         EnvironmentConfig,
         Experiment,
@@ -449,13 +451,12 @@ def select_sensors(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None
 
 @dataclass(frozen=True)
 class KindUse:
-    """One place the experiment names a kind: where, which kind, the options written beside
-    it, and the effects the author added."""
+    """One place the experiment names a kind: where, which kind, and the options written
+    beside it."""
 
     path: str
     kind: Kind
     options: dict[str, Any]
-    effects: tuple[str, ...]
 
 
 def kind_uses(
@@ -487,7 +488,7 @@ def kind_uses(
                     )
                 )
             return
-        found.append(KindUse(path=path, kind=kind, options=entry.options, effects=entry.effects))
+        found.append(KindUse(path=path, kind=kind, options=entry.options))
         problems.extend(check_options(kind, entry.options, path))
 
     bind("environment", family="environment", entry=experiment.environment)
@@ -522,6 +523,43 @@ def kinds_in_use(
     for where, kind in uses:
         first.setdefault(kind, where)
     return tuple((where, kind) for kind, where in first.items())
+
+
+def entries_in_use(
+    experiment: Experiment, design: Design, probes: ProbeSet
+) -> tuple[tuple[str, str, Mapping[str, Any]], ...]:
+    """Every entry a run of the experiment carries out, as (where it is written, its kind's
+    type URL, its options): the environment, each subject, each probe (``probes.<index>``
+    when written inline, ``probes.<id>`` when read from a file) and each sensor the design
+    uses (``sensors.<index>`` when listed, ``sensors`` when the genre chose it)."""
+    found: list[tuple[str, str, Mapping[str, Any]]] = [
+        (
+            "environment",
+            schema.url("environment", experiment.environment.kind),
+            experiment.environment.options,
+        )
+    ]
+    found += [
+        (f"subjects.{name}", schema.url("subject", subject.kind), subject.options)
+        for name, subject in experiment.subjects.items()
+    ]
+    inline = bool(experiment.probes)
+    found += [
+        (f"probes.{index if inline else probe.id}", schema.url("probe", probe.kind), probe.options)
+        for index, probe in enumerate(probes.probes)
+    ]
+    listed = {
+        schema.url("sensor", entry.kind): index for index, entry in enumerate(experiment.sensors)
+    }
+    found += [
+        (
+            "sensors" if sensor.kind not in listed else f"sensors.{listed[sensor.kind]}",
+            sensor.kind,
+            sensor.options,
+        )
+        for sensor in design.sensors
+    ]
+    return tuple(found)
 
 
 def missing_adapters(

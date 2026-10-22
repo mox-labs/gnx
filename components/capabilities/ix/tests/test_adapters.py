@@ -180,8 +180,8 @@ class TestProcessSubject:
         subject = ProcessSubject(MatrixLauncher())
 
         def told(command: list[str], **options: Any) -> str | None:
-            written = SubjectConfig(kind="process", options={"command": command, **options})
-            return subject.unstartable(written, base=str(tmp_path))
+            found = subject.requirements({"command": command, **options}, base=str(tmp_path))
+            return next((required.why for required in found if not required.holds), None)
 
         assert (
             told(["./proxy-typo"])
@@ -259,12 +259,13 @@ class TestHttpSubject:
         self, auth: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("IX_TEST_TOKEN", "s3cret")
-        subject = SubjectConfig(kind="http", options={"url": "https://x.test", "auth": auth})
-        assert HttpSubject().unstartable(subject, base=".") is not None
-        named = SubjectConfig(
-            kind="http", options={"url": "https://x.test", "auth": "env:IX_TEST_TOKEN"}
+        (unset,) = HttpSubject().requirements({"url": "https://x.test", "auth": auth}, base=".")
+        assert not unset.holds
+        assert "s3cret" not in f"{unset.need} {unset.why} {unset.fix}"
+        (named,) = HttpSubject().requirements(
+            {"url": "https://x.test", "auth": "env:IX_TEST_TOKEN"}, base="."
         )
-        assert HttpSubject().unstartable(named, base=".") is None
+        assert named.holds and named.need == "variable IX_TEST_TOKEN is set (auth)"
 
 
 class TestEnvironments:

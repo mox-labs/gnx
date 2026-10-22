@@ -32,7 +32,7 @@ from ix.domain.design import Design, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError
 from ix.domain.experiment import Experiment, ProbeConfig
 from ix.domain.kind import fill, placed
-from ix.domain.ports import Liveness, Preflight, Recorded, Sensed, StandIn, Traced
+from ix.domain.ports import Liveness, Recorded, Sensed, StandIn, Traced
 from ix.domain.registration import deviations
 from ix.domain.run import (
     Failure,
@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from ix.application.experiments import Examined, Vocabulary
     from ix.domain.experiment import ProbeSet
     from ix.domain.kind import Kind, Metric
+    from ix.domain.plan import Required
     from ix.domain.ports import (
         Environment,
         Measured,
@@ -122,13 +123,15 @@ def _span(scope: Scope | None, name: str, **attributes: Any) -> Iterator[Span]:
 
 @dataclass(frozen=True)
 class Prepared:
-    """A run that may start: its experiment and manifest, the trials it will carry out and
-    the kinds (type URLs) it uses."""
+    """A run that may start: its experiment, design and probes, its manifest, the trials it
+    will carry out and the kinds (type URLs) it uses."""
 
     experiment: Experiment
     manifest: RunManifest
     trials: tuple[Trial, ...]
     kinds: tuple[str, ...]
+    design: Design
+    probes: ProbeSet
 
 
 def prepare(
@@ -225,6 +228,8 @@ def prepare(
         ),
         trials=trials,
         kinds=tuple(kind for _, kind in kinds_in_use(experiment, design, probes)),
+        design=design,
+        probes=probes,
     )
 
 
@@ -285,33 +290,15 @@ def stand_in(
     return experiment.model_copy(update=changes), tuple(notes)
 
 
-def unstartable(
-    experiment: Experiment, subjects: Mapping[str, Subject], base: str
-) -> tuple[str, ...]:
-    """``subjects.<name>: <why>`` for each subject its adapter can already tell will not start
-    on this host (a command that is not there, an unset credential). A subject whose adapter
-    is not a :class:`Preflight` has nothing to tell; one whose kind has no adapter in
-    ``subjects`` is skipped, as that is told as a kind with no adapter."""
-    reasons: list[str] = []
-    for name, subject in experiment.subjects.items():
-        adapter = subjects.get(schema.url("subject", subject.kind))
-        if not isinstance(adapter, Preflight):
-            continue
-        reason = adapter.unstartable(subject, base=base)
-        if reason is not None:
-            reasons.append(f"subjects.{name}: {reason}")
-    return tuple(reasons)
-
-
-def check_startable(experiment: Experiment, kit: Kit, base: str) -> None:
-    """Refuse, before anything starts, what :func:`unstartable` finds. Raises
-    :class:`ConfigError` naming each subject."""
-    reasons = unstartable(experiment, kit.subjects, base)
-    if reasons:
+def check_startable(requirements: Sequence[Required]) -> None:
+    """Refuse, before anything starts, a run whose requirements do not all hold here.
+    Raises :class:`ConfigError` naming each, with what was found and its fix."""
+    unmet = [required.text() for required in requirements if not required.holds]
+    if unmet:
         raise ConfigError(
-            "the experiment cannot start: " + "; ".join(reasons),
-            fix="correct each subject named, or the host: a command and its cwd are relative "
-            "to the experiment's directory, and a variable an auth names must be set",
+            "the experiment cannot start on this host: " + "; ".join(unmet),
+            fix="make each requirement named hold, or correct the entry that needs it; `ix "
+            "plan` lists every requirement with whether it holds",
         )
 
 
