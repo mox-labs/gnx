@@ -204,9 +204,9 @@ Work in this order:
 known worth, graded by `function-test` and by `outcome` with the experiment's own graders.
 `ix run examples/harness-integrity --exploratory` calls no model. A check of the reply's text
 (it starts with, contains, matches) needs no graders: the `text-match` sensor reads it from
-the probe's truth (`starts_with: BANANA`). `examples/catalog-routing`
-asks whether the right skill fires for a real ask and stays quiet for a decoy, with its
-probes as files in `probes/`. [Evaluating an agent](docs/how-to/evaluate-an-agent.md) walks
+the probe's truth (`starts_with: BANANA`). The repository's `lab/catalog-routing` asks
+whether the right skill fires for a real ask and stays quiet for a decoy, with its probes as
+files in `probes/`. [Evaluating an agent](docs/how-to/evaluate-an-agent.md) walks
 through an agent evaluation end to end.
 
 ## Genres
