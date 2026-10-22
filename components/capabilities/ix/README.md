@@ -273,8 +273,9 @@ A declaration is not an adapter. ix can **run** these:
 | sensor | `usage` | tokens, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, and `hit_limit`, as the runtime reported them; what it did not report (a model call's cost or turns) is left out |
 | sensor | `judge` | a model scores the reply against a rubric, by one call on the model runtime `model_runtime` names or a one-turn session on the agent runtime `agent_runtime` names; its metrics are reported and never decide |
 | environment | `none`, `process` | nothing; or programs started before the trials and stopped when the run ends, each bound with where it listens (`{<service>.url}`, `.host`, `.port`), which a subject's or a probe's options name |
+| environment | `compose` | a docker compose project brought up once for the run (`docker compose up -d --wait`, healthchecks included) and down after it (`down -v --remove-orphans`, deferred before `up`, so a stack that came up in part still comes down); each running service bound with its first published port (`{web.url}`) and the image id it runs, in the run's bindings row; a service found stopped or unhealthy after a trial fails the run. Without `project`, the project is named for the run, and a stack a killed run left is swept; a `project` written that already has containers is refused |
 
-`inspect-task` and `compose` are declared only. An experiment that uses one is still valid:
+`inspect-task` is declared only. An experiment that uses one is still valid:
 `ix validate` warns (`kind_unimplemented`), `ix plan` prints `Runnable: no` with the kinds,
 and `ix run` refuses it before anything starts. `ix kinds` marks each kind. An adapter that
 is registered but cannot be built here (a need nothing supplies) is treated the same way,

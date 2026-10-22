@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added: `environment.compose`
+
+A docker compose project brought up once for a run and down after it, for experiments whose
+subjects need several services. Record section 21 has the reasons.
+
+- `docker compose up -d --wait` brings it up, healthchecks included; `down -v
+  --remove-orphans` is deferred before `up`, so a stack that came up in part, or whose up
+  was cancelled, still comes down. The environment's releases are given longer than
+  matrix's default for it.
+- Each running service is bound with its first published port (`{web.url}`, `.host`,
+  `.port`) and the image id it runs, in the run's bindings row. The compose file and
+  `env_file` are digested into the registration and the manifest.
+- Without `project`, the project is named for the run, and a stack a killed run left is
+  swept; a `project` written that already has containers is refused.
+- Options: `file`, `project`, `services`, `wait_timeout`, `profiles`, `env_file`, `build`,
+  `pull`. The kind's `file` is now a `path`.
+- The preflight checks docker, its daemon, compose and the files; liveness is `compose ps`.
+- A dry run says the environment is brought up for real (`stood_in`), for `process` too.
+- Bringing the environment up is a span, `ix.environment`.
+- `Scope` has `run_id`.
+
 ### Added: environment bindings reach the trials
 
 - **A subject or a probe names a service by its bindings.** `{<service>.url}`, `.host` and

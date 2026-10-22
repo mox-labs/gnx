@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from matrix import (
+    ComponentLimits,
     JsonlConstructStore,
     Limits,
     MatrixError,
@@ -26,6 +27,7 @@ from matrix import (
 from matrix import NotFoundError as MatrixNotFoundError
 from pydantic import ValidationError
 
+from ix.adapters._out.compose import DOWN_TIMEOUT_S
 from ix.adapters._out.matrix_errors import carried_over
 from ix.domain import schema
 from ix.domain.errors import ConfigError, IxError, NotFoundError
@@ -46,6 +48,10 @@ EVENTS = "matrix.v1.event"
 #: How long a trial in flight has to end after a stop request before it is cancelled: time
 #: for a load tool and a subject to be stopped politely.
 GRACE_S = 15.0
+
+#: How long the environment's releases have when the run ends: a compose stack's ``down``
+#: stops each container and removes its volumes, which outlasts matrix's default.
+ENVIRONMENT_CLEANUP_S = DOWN_TIMEOUT_S + 30.0
 
 _STATUS: dict[str, RunStatus] = {
     "running": "running",
@@ -104,7 +110,10 @@ async def execute(
                 {schema.RUN: manifest, schema.TRIAL: list(trials)},
                 store=JsonlConstructStore(root),
                 run_id=manifest.run,
-                limits=Limits(grace_s=GRACE_S),
+                limits=Limits(
+                    grace_s=GRACE_S,
+                    components={"environment": ComponentLimits(cleanup_s=ENVIRONMENT_CLEANUP_S)},
+                ),
             )
         except RunError:
             return  # a component failed: the record holds what happened and what was kept

@@ -69,6 +69,11 @@ class Flag(Protocol):
 class Scope(Protocol):
     """All ix assumes of whatever runs its components."""
 
+    #: The run's id, unique to it: what an adapter names what it starts for the run after,
+    #: so that two runs, or a run and what a killed one left behind, do not collide.
+    @property
+    def run_id(self) -> str: ...
+
     #: Set when the run is asked to finish now. Work that returns soon after keeps what it
     #: has recorded.
     @property

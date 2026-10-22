@@ -949,16 +949,15 @@ class TestWhatCannotRun:
         assert LOG == [] and not (file.parent / RUNS_DIRECTORY).exists()
 
     def test_what_ix_can_run_is_listed_with_the_kinds(self) -> None:
+        """Changed requirement (W8.7): ``compose`` has an adapter."""
         kinds = ix.kinds()
         runnable = {schema.short(name) for name in kinds.runnable}
         assert runnable == {
             "process", "http", "http-load", "timing", "memory", "none", "agent-session",
             "model-call", "prompt", "activation", "tool-usage", "function-test", "outcome",
-            "text-match", "usage", "judge",
+            "text-match", "usage", "judge", "compose",
         }  # fmt: skip
-        assert set(kinds.kinds) - set(kinds.runnable) == {
-            "ix.v1.probe.inspect-task", "ix.v1.environment.compose",
-        }  # fmt: skip
+        assert set(kinds.kinds) - set(kinds.runnable) == {"ix.v1.probe.inspect-task"}
         assert set(kinds.runnable) < set(kinds.kinds)
 
     def test_a_plan_of_something_runnable_names_nothing_missing(

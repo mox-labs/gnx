@@ -23,6 +23,7 @@ from ix.adapters._out.agent_sensors import (
     ToolUsageSensor,
     UsageSensor,
 )
+from ix.adapters._out.compose import ComposeEnvironment
 from ix.adapters._out.environments import NoEnvironment, ProcessEnvironment
 from ix.adapters._out.k6_load import K6Load
 from ix.adapters._out.matrix_agents import AgentSessionSubject, PromptProbe
@@ -102,6 +103,8 @@ def register(registry: Registry) -> None:
          {RUNTIMES}),
         ("environment", "none", NoEnvironment, "Nothing to bring up", set()),
         ("environment", "process", ProcessEnvironment, "Programs started for the run", {LAUNCHER}),
+        ("environment", "compose", ComposeEnvironment, "A docker compose project up for the run",
+         {LAUNCHER}),
     ]  # fmt: skip
     for family, name, build, summary, needs in adapters:
         registry.register(

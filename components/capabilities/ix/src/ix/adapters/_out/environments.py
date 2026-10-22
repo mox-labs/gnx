@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from ix.adapters._out.processes import answers, is_up, startable, wait_ready
 from ix.adapters._out.subjects import STARTUP_TIMEOUT_S
 from ix.domain.kind import seconds
+from ix.domain.ports import StoodIn
 from ix.domain.run import HarnessError
 
 if TYPE_CHECKING:
@@ -23,10 +24,13 @@ if TYPE_CHECKING:
 
 
 class NoEnvironment:
-    """Nothing to bring up."""
+    """Nothing to bring up; and so its own stand-in in a dry run."""
 
     async def up(self, environment: EnvironmentConfig, *, base: str, scope: Scope) -> Bindings:
         return {}
+
+    def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
+        return StoodIn(options=options)
 
     async def lost(self, bindings: Bindings) -> str | None:
         return None

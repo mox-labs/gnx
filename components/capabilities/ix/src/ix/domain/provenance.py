@@ -115,8 +115,9 @@ def _named(entry: str, kind: Kind | None, written: list[Mapping[str, Any]]) -> l
 
 
 def named_files(experiment: Experiment, kinds: Kinds) -> tuple[Named, ...]:
-    """Every file or folder the experiment's subjects and named sensors give an option of
-    their kind's ``path`` or ``paths`` type, each once, in the order written. A subject's
+    """Every file or folder the experiment's subjects, named sensors and environment give an
+    option of their kind's ``path`` or ``paths`` type (a compose file), each once, in the
+    order written. A subject's
     options are filled for each cell, as a trial fills them, so a factor that picks a skill
     names each skill it can pick."""
     found: list[Named] = []
@@ -125,6 +126,10 @@ def named_files(experiment: Experiment, kinds: Kinds) -> tuple[Named, ...]:
         found += _named(f"subjects.{name}", kinds.get("subject", subject.kind), filled)
     for index, sensor in enumerate(experiment.sensors):
         found += _named(f"sensors.{index}", kinds.get("sensor", sensor.kind), [sensor.options])
+    environment = experiment.environment
+    found += _named(
+        "environment", kinds.get("environment", environment.kind), [environment.options]
+    )
     return tuple(dict.fromkeys(found))
 
 

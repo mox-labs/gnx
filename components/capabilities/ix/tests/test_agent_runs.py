@@ -1106,7 +1106,12 @@ class TestTelemetry:
         names = [span.name for span in spans]
         assert names.count("ix.trial") == 15 and names.count("ix.plan") == 1
         assert names.count("ix.run") == 1 and names.count("ix.sensor") == 30  # 2 sensors
+        # Regression (ix-outer 20): bringing the environment up ran untraced.
+        assert names.count("ix.environment") == 1
         run = next(span for span in spans if span.name == "ix.run")
+        environment = next(span for span in spans if span.name == "ix.environment")
+        assert environment.parent is not None
+        assert environment.parent.span_id == run.context.span_id
         trial = next(span for span in spans if span.name == "ix.trial")
         assert trial.parent is not None and trial.parent.span_id == run.context.span_id
         # Spend is removed: no span carries a cost of ix's own.

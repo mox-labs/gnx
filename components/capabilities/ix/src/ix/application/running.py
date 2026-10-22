@@ -284,7 +284,16 @@ def stand_in(
         sensors.append(
             sensor if options is None else sensor.model_copy(update={"options": options})
         )
+    environment = experiment.environment
+    kept = stood(
+        "environment", adapter(schema.url("environment", environment.kind)), environment.options
+    )
+    if kept is None:
+        # An environment with no stand-in is brought up for real by a dry run, which says so.
+        notes.append(f"environment: {environment.kind} is brought up for real; it has no stand-in")
     changes: dict[str, Any] = {"subjects": subjects, "sensors": tuple(sensors)}
+    if kept is not None:
+        changes["environment"] = environment.model_copy(update={"options": kept})
     if tuple(rewritten) != probes.probes:
         # Probes read from files are carried inline once a stand-in changes one.
         changes["probes"] = tuple(rewritten)
@@ -354,11 +363,19 @@ def _cause(during: Failure | None, at_release: Failure) -> Failure:
 
 
 async def bring_up(setup: Setup, kit: Kit, scope: Scope) -> Bindings:
-    """Bring the experiment's environment up, once for the run. It comes down when the run
-    ends, through what the provider deferred."""
+    """Bring the experiment's environment up, once for the run, inside a span
+    ``ix.environment`` when the scope is :class:`Traced`. It comes down when the run ends,
+    through what the provider deferred."""
     environment = setup.experiment.environment
     provider = kit.environments[schema.url("environment", environment.kind)]
-    bindings = await provider.up(environment, base=setup.base, scope=scope)
+    attributes = {"ix.run.id": setup.manifest.run, "ix.environment": environment.kind}
+    with _span(scope, "ix.environment", **attributes) as span:
+        try:
+            bindings = await provider.up(environment, base=setup.base, scope=scope)
+        except TrialError as error:
+            span.set(**{"error.type": error.reason})
+            raise
+        span.set(**{"ix.environment.services": len(bindings)})
     scope.emit(ENVIRONMENT_UP, kind=environment.kind, services=sorted(bindings))
     return bindings
 

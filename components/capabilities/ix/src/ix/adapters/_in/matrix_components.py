@@ -65,6 +65,10 @@ class _TracedScope:
         self._tracer = tracer
 
     @property
+    def run_id(self) -> str:
+        return self._ctx.run_id
+
+    @property
     def stopping(self) -> Flag:
         return self._ctx.stopping
 
@@ -103,7 +107,7 @@ class EnvironmentComponent:
         self._kit = kit
 
     async def run(self, inputs: Inputs, ctx: RunContext) -> Mapping[str, Any]:
-        bindings = await running.bring_up(_setup(inputs), self._kit, ctx)
+        bindings = await running.bring_up(_setup(inputs), self._kit, _scope(ctx, self._kit))
         return {schema.BINDINGS: BindingsRow(services=bindings)}
 
 

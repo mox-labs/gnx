@@ -98,6 +98,9 @@ PREREQUISITES: dict[str, str] = {
     "memory": "samples resident memory with `ps`, so it reads memory on macOS and Linux",
     "process": "starts the `command` it is given; `ix plan` lists a program that is not "
     "there under `Runnable: no`",
+    "compose": "runs `docker compose` against a daemon that answers: `ix plan` checks docker, "
+    "the daemon, compose and the file, and lists what fails under `Runnable: no`. A dry run "
+    "brings the stack up for real",
 }
 
 #: The example the skill opens with. It runs as written where `python3` and `k6` are

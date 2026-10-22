@@ -12,7 +12,7 @@ Audience: anyone running ix against an experiment, a genre or a kind they did no
 
 | Command | Reads | Writes |
 |---|---|---|
-| `validate`, `plan`, `deviations` | the experiment file (or standard input, given `-`); genre and kind files; probe files; the registration file; ix's settings; for `plan`, the runs under `.ix/runs`; for `plan` and `deviations` (and `register` and `run`, below), every file and folder the subjects and sensors name, to digest it | nothing |
+| `validate`, `plan`, `deviations` | the experiment file (or standard input, given `-`); genre and kind files; probe files; the registration file; ix's settings; for `plan`, the runs under `.ix/runs`; for `plan` and `deviations` (and `register` and `run`, below), every file and folder the subjects, sensors and environment name, to digest it | nothing |
 | `register` | the same | `<file-stem>.registration.json` beside the experiment |
 | `genres`, `kinds`, `--skill` | genre and kind files | nothing |
 | `run` | the same as `plan`, the environment, and the git work tree the experiment sits in | `<experiment directory>/.ix/runs/<run id>/` (or under `runs:` in ix's settings); temporary directories it removes; whatever the programs and sessions it starts write |
@@ -29,7 +29,8 @@ service's `command`, `k6` for an `http-load` probe, `ps` for the `memory` sensor
 session for each trial of an `agent-session` subject (on `claude-sdk`, the Claude Code CLI,
 through the Claude Agent SDK), a model call for each trial of a `model-call` subject (on
 `hardline`, an HTTP request to the provider its registry names), a subject's `setup`
-command, and a Python child process for
+command, `docker` for a `compose` environment (`info` and `compose version` from `ix plan`
+too; `compose ls`, `up`, `ps` and `down` from `ix run`), and a Python child process for
 each `function-test` reading, each `outcome` reading and each round of a `test-feedback`
 loop. And it **sends**: HTTP requests from k6 to each probe's `target`; readiness checks to
 `ready` and `url`; each prompt, and what the session does, to the model provider of the
@@ -188,11 +189,23 @@ or the keys hardline's registry names); ix neither reads nor stores them.
 ### 12. The record holds what the run saw
 
 `.ix/runs/` holds the experiment as run (commands, URLs, literal headers), the design, the
-path and digest of each file the subjects and sensors name, the commit and the installed
+path and digest of each file the subjects, sensors and environment name, the commit and the installed
 versions, every measurement, and for an agent trial the prompt, the reply, every tool call with its input
 (the commands a session ran included), each round's transcript and the files collected.
 Keep it out of version control if any of that is private. A record is plain files: it can be
 edited, and `ix report` reports what the files say.
+
+### 13. A compose environment runs what its file says, with the daemon's privileges
+
+A `compose` environment hands its `file` to the docker daemon: images are pulled or built,
+containers started with the ports, volumes, mounts and privileges the file asks for. Whoever
+can reach the daemon is in effect root on its host, so running an experiment whose compose
+file you did not write is running its author's containers (boundary 6). `ix run` takes the
+stack down with `down -v --remove-orphans`, which removes the project's named volumes too,
+and sweeps only stacks ix itself named for the same compose file whose process is gone; a
+`project` an experiment names is never swept, and is refused while it has containers. The
+compose file is digested like the subjects' files, and each service's image id is recorded
+in the run's bindings, so what ran can be told afterwards.
 
 ## Findings
 
