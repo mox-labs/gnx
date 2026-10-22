@@ -5,17 +5,29 @@ repository (``open-telemetry/semantic-conventions-genai``) as read on 2026-10-19
 tagged yet, status Development, building on semantic conventions v1.44.0. They may change;
 the names here are pinned to that reading, and ``docs/reference/api.md`` lists them.
 
-**Spans**, each timed by the events' own times and parented as the events are, under the
-instrumentation scope ``matrix``:
+**Spans**, under the instrumentation scope ``matrix``, each opened through the observer's
+``around``: in the task doing the work, timed by the events' own times, and **current** in
+that task while the work goes on, so a span a library opens inside it (an instrumented HTTP
+client, a model runtime's own) is its child in the same trace. A span ends when its work
+does, from the end event matrix hands ``around``, so an end event the channel drops, or a
+channel that closes before it drained, leaves no span open. An event a component emits with
+``ctx.emit`` opens no span, whatever its name ends with.
 
-* a run is ``invoke_workflow`` (``gen_ai.operation.name: invoke_workflow``, ``matrix.run.id``);
+* a run is ``invoke_workflow`` (``gen_ai.operation.name: invoke_workflow``, ``matrix.run.id``),
+  the child of whatever span was current where the run was awaited;
 * a component is ``matrix.component`` (``matrix.component``): the conventions have no step;
 * an agent session is ``invoke_agent {agent}`` (kind INTERNAL: the agent is invoked in this
   process), with ``gen_ai.agent.name``, ``gen_ai.request.model``, ``gen_ai.provider.name``,
   ``gen_ai.response.model``, ``gen_ai.usage.input_tokens``, ``gen_ai.usage.output_tokens``
   and, when it failed or was cancelled, ``error.type``;
+* a model call a model step makes is ``matrix.model`` (the conventions have no operation for
+  one logical call, which may span retries and fallbacks), with ``gen_ai.request.model``,
+  ``gen_ai.response.model``, ``gen_ai.provider.name``, ``matrix.finish_reason`` and
+  ``error.type``. It carries no usage: the inference spans and counters of each attempt are
+  the model runtime's (hardline's ``chat`` spans), which nest under it;
 * a tool call the runtime timed is ``execute_tool {tool}``, with ``gen_ai.tool.name`` and
   ``gen_ai.tool.call.id``;
+* a deferred release is ``matrix.release``;
 * a component's own ``ctx.span`` is a span of that name.
 
 **No content by default.** Span attributes come from an allowlist: the conventions' names
@@ -50,10 +62,11 @@ Type URL: ``matrix.v1.observer.otel``.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
-from opentelemetry import metrics, trace
+from opentelemetry import context, metrics, trace
 from opentelemetry.trace import SpanKind, StatusCode
 
 from matrix.domain.observer import (
@@ -63,6 +76,8 @@ from matrix.domain.observer import (
     COMPONENT_RETRY,
     EVENTS_DROPPED,
     MEASURE,
+    MODEL_END,
+    MODEL_START,
     RUN_END,
     RUN_START,
     TOOL_END,
@@ -70,12 +85,12 @@ from matrix.domain.observer import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from datetime import datetime
 
     from matrix.domain.observer import Event
 
-_START, _END = ".start", ".end"
+_START = ".start"
 SCOPE = "matrix"
 
 
@@ -101,7 +116,6 @@ class OtelObserver:
         #: Whether content (tasks, error messages, a component's text fields) is exported.
         self.capture_content = capture_content
         self._tracer = trace.get_tracer(SCOPE, _version(), tracer_provider=tracer_provider)
-        self._open: dict[str, Any] = {}
         meter = metrics.get_meter(SCOPE, _version(), meter_provider=meter_provider)
         self._meter = meter
         self._workflow_duration = meter.create_histogram(
@@ -128,25 +142,32 @@ class OtelObserver:
         #: (measure name, kind) -> the bound method that records one value to its instrument
         self._measures: dict[tuple[str, str], Callable[..., None]] = {}
 
-    def on_event(self, event: Event) -> None:
-        if event.name.endswith(_START):
-            parent = self._open.get(event.parent or "")
-            context = trace.set_span_in_context(parent) if parent is not None else None
-            self._open[event.span] = self._tracer.start_span(
-                _span_name(event),
-                context=context,
-                kind=SpanKind.INTERNAL,
-                attributes=_attributes(event, content=self.capture_content),
-                start_time=_ns(event.time),
-            )
-        elif event.name.endswith(_END):
-            self._end_span(event)
-        self._record(event)
+    @contextmanager
+    def around(self, event: Event) -> Iterator[Callable[[Event], None]]:
+        """The span of the work ``event`` starts, current in this task until the work ends:
+        the child of the span current here, which a span opened inside the work is the
+        child of. Ended when the block exits, with the facts of the end event handed to
+        what this gives back."""
+        span = self._tracer.start_span(
+            _span_name(event),
+            kind=SpanKind.INTERNAL,
+            attributes=_attributes(event, content=self.capture_content),
+            start_time=_ns(event.time),
+        )
+        token = context.attach(trace.set_span_in_context(span))
+        ended: list[Event] = []
+        try:
+            yield ended.append
+        finally:
+            context.detach(token)
+            self._end(span, ended[-1] if ended else None)
 
-    def _end_span(self, event: Event) -> None:
-        span = self._open.pop(event.span, None)
-        if span is None:
-            return  # an end with no start: a component skipped before it ran
+    def _end(self, span: Any, event: Event | None) -> None:
+        """End ``span`` with what its end ``event`` says; with none (the work ended without
+        one), now."""
+        if event is None:
+            span.end()
+            return
         for key, value in _attributes(event, content=self.capture_content).items():
             span.set_attribute(key, value)
         error = _error_type(event)
@@ -155,6 +176,10 @@ class OtelObserver:
             message = event.fields.get("error") if self.capture_content else None
             span.set_status(StatusCode.ERROR, str(message or error))
         span.end(end_time=_ns(event.time))
+
+    def on_event(self, event: Event) -> None:
+        """Metrics: spans are made through :meth:`around`, never from queued events."""
+        self._record(event)
 
     def _record(self, event: Event) -> None:
         fields = event.fields
@@ -270,10 +295,13 @@ _GENAI = {
     "tool": "gen_ai.tool.name",
     "call_id": "gen_ai.tool.call.id",
 }
+#: The events whose fields the conventions name.
+_CONVENTIONAL = frozenset({AGENT_START, AGENT_END, MODEL_START, MODEL_END, TOOL_START, TOOL_END})
 
 
 #: matrix's own fields that carry no content, exported as ``matrix.<key>``: statuses, reasons
-#: and error kinds, counts, times and the ids matrix made. ``task`` and ``error`` are content.
+#: and error kinds, counts, times, the ids matrix made, and the names of a model step's runtime
+#: and of the registry row that answered. ``task`` and ``error`` are content.
 _MATRIX = frozenset(
     {
         "status",
@@ -287,6 +315,9 @@ _MATRIX = frozenset(
         "family",
         "tool_calls",
         "cost_usd",
+        "runtime",
+        "name",
+        "finish_reason",
     }
 )
 #: The statuses matrix gives a component's ``ctx.span`` at its end.
@@ -318,11 +349,11 @@ def _attributes(event: Event, *, content: bool = False) -> dict[str, Any]:
     for key, value in event.fields.items():
         if value is None or not _plain(value):
             continue
-        if event.name == AGENT_START and key == "model":
+        if event.name in (AGENT_START, MODEL_START) and key == "model":
             attributes["gen_ai.request.model"] = value
-        elif event.name == AGENT_END and key == "model":
+        elif event.name in (AGENT_END, MODEL_END) and key == "model":
             attributes["gen_ai.response.model"] = value
-        elif key in _GENAI and event.name in (AGENT_START, AGENT_END, TOOL_START, TOOL_END):
+        elif key in _GENAI and event.name in _CONVENTIONAL:
             attributes[_GENAI[key]] = value
         elif content or _no_content(root, key, value):
             attributes[f"{root}.{key}"] = value

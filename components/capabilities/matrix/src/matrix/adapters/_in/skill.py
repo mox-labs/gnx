@@ -764,12 +764,14 @@ The GenAI semantic conventions as read on 2026-10-19 (repository
 `open-telemetry/semantic-conventions-genai`, no release tagged, status Development), scope
 `matrix`:
 
-- spans: `invoke_workflow` (a run), `matrix.component` (a model step's call is inside its
-  component's span: a call is not an agent session), `invoke_agent {agent}` with
+- spans: `invoke_workflow` (a run), `matrix.component`, `invoke_agent {agent}` with
   `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`,
   `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` and
-  `error.type`; `execute_tool {tool}` for each tool call a runtime timed (`claude-sdk` does);
-  a component's own `ctx.span`;
+  `error.type`; `matrix.model` for a model step's call (no usage: the model runtime's own
+  spans count each attempt); `execute_tool {tool}` for each tool call a runtime timed
+  (`claude-sdk` does); `matrix.release`; a component's own `ctx.span`. Each is current in the
+  task doing its work, so a span a library opens there (an HTTP client, hardline) nests under
+  it; each ends with its work, whatever events were dropped. `ctx.emit` opens no span;
 - metrics: `gen_ai.invoke_workflow.duration`, `gen_ai.invoke_agent.duration`,
   `gen_ai.invoke_agent.tool_calls`, `gen_ai.execute_tool.duration`,
   `gen_ai.client.inference.usage.input_tokens` / `output_tokens`; matrix's own where the

@@ -32,7 +32,9 @@ from matrix.domain.observer import (
     TOOL_END,
     TOOL_START,
     Event,
+    around,
     emit,
+    observing,
 )
 from matrix.domain.session import agent_session, digest, record_session
 
@@ -238,55 +240,57 @@ class BoundAgent:
         run_id, parent, component = (
             (scope.run_id, scope.span, scope.component) if scope else (None, None, None)
         )
-        await emit(
-            self._observers,
-            Event(
-                AGENT_START,
-                span=span,
-                run_id=run_id,
-                parent=parent,
-                fields={"agent": name, "model": self._definition.model, "task": task},
-                component=component,
-            ),
+        begun = Event(
+            AGENT_START,
+            span=span,
+            run_id=run_id,
+            parent=parent,
+            fields={"agent": name, "model": self._definition.model, "task": task},
+            component=component,
         )
+        await emit(self._observers, begun)
         started = time.monotonic()
         fields: dict[str, Any] = {"agent": name}
-        try:
-            response = await self._runtime.run(self._definition, task)
-        except asyncio.CancelledError:
-            fields.update(status="cancelled", reason="cancelled")
-            raise
-        except Exception as e:
-            fields.update(status="error", error=str(e), reason=getattr(e, "reason", None))
-            fields["kind"] = getattr(e, "kind", type(e).__name__)
-            self._record(task, None if not isinstance(e, AgentRuntimeError) else e.response, e)
-            raise
-        else:
-            fields.update(
-                status=response.stop or "completed",
-                tokens_input=response.tokens_input,
-                tokens_output=response.tokens_output,
-                cost_usd=response.cost_usd,
-                model=response.model,
-                family=response.family,
-                provider=response.provider,
-                tool_calls=len(response.tool_calls),
-            )
-            for call in response.tool_calls:
-                await self._tool(call, span, run_id, component)
-            row = self._record(task, response)
-            return response if row is None else response.model_copy(update={"session": row})
-        finally:
-            fields["duration_ms"] = int((time.monotonic() - started) * 1000)
-            ended = Event(
-                AGENT_END,
-                span=span,
-                run_id=run_id,
-                parent=parent,
-                fields=fields,
-                component=component,
-            )
-            await emit(self._observers, ended)
+        # The session's span is current in this task while the runtime works, so what a
+        # runtime or a library opens inside it is the session's child.
+        with around(observing(self._observers), begun) as end:
+            try:
+                response = await self._runtime.run(self._definition, task)
+            except asyncio.CancelledError:
+                fields.update(status="cancelled", reason="cancelled")
+                raise
+            except Exception as e:
+                fields.update(status="error", error=str(e), reason=getattr(e, "reason", None))
+                fields["kind"] = getattr(e, "kind", type(e).__name__)
+                self._record(task, None if not isinstance(e, AgentRuntimeError) else e.response, e)
+                raise
+            else:
+                fields.update(
+                    status=response.stop or "completed",
+                    tokens_input=response.tokens_input,
+                    tokens_output=response.tokens_output,
+                    cost_usd=response.cost_usd,
+                    model=response.model,
+                    family=response.family,
+                    provider=response.provider,
+                    tool_calls=len(response.tool_calls),
+                )
+                for call in response.tool_calls:
+                    await self._tool(call, span, run_id, component)
+                row = self._record(task, response)
+                return response if row is None else response.model_copy(update={"session": row})
+            finally:
+                fields["duration_ms"] = int((time.monotonic() - started) * 1000)
+                ended = Event(
+                    AGENT_END,
+                    span=span,
+                    run_id=run_id,
+                    parent=parent,
+                    fields=fields,
+                    component=component,
+                )
+                end(ended)
+                await emit(self._observers, ended)
 
     def _record(
         self, task: str, response: AgentResponse | None, error: Exception | None = None
@@ -324,8 +328,8 @@ class BoundAgent:
             "status": "error" if error else "ok",
             "duration_ms": int((ended - began).total_seconds() * 1000),
         }
-        for event_name, at, fields in ((TOOL_START, began, about), (TOOL_END, ended, finished)):
-            event = Event(
+        start, end = (
+            Event(
                 event_name,
                 span=span,
                 run_id=run_id,
@@ -334,7 +338,13 @@ class BoundAgent:
                 component=component,
                 time=at,
             )
-            await emit(self._observers, event)
+            for event_name, at, fields in ((TOOL_START, began, about), (TOOL_END, ended, finished))
+        )
+        # Inside the session's span, at the times the runtime saw the call start and end.
+        with around(observing(self._observers), start) as ending:
+            await emit(self._observers, start)
+            await emit(self._observers, end)
+            ending(end)
 
 
 def _when(value: Any) -> datetime | None:

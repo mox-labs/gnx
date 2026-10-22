@@ -207,7 +207,8 @@ Runs narrate themselves as events (`matrix.run.start`, `matrix.component.end`,
 `events.jsonl`, with nothing configured. The built-in observers are `console` (progress on
 stderr), `jsonl` (one JSON document per event, to a file or stderr) and `otel` (spans and
 metrics on the OpenTelemetry GenAI conventions: `invoke_workflow`, `invoke_agent`,
-`execute_tool`).
+`execute_tool`). Its spans are current in the task doing the work, so a span a library opens
+inside a component, an agent session or a model call nests under matrix's.
 
 For OpenTelemetry, install the `otel` extra and set the standard variables: an
 `OTEL_EXPORTER_OTLP_ENDPOINT`, or `OTEL_TRACES_EXPORTER=console`, is enough for `matrix run`

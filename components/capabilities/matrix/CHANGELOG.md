@@ -104,6 +104,19 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Added
 
+- **An observer may have `around(event)`**, an optional member entered synchronously in the
+  task doing the work, around each span of work matrix starts: a run, a component, a
+  `ctx.span`, an agent session, a model step's call, a timed tool call and a deferred
+  release. What entering it gives back, when callable, is handed the span's end event before
+  the block exits. It must not block; what it raises is logged and skipped. An observer
+  without it works unedited. The `otel` observer uses it to make its spans current, so **a
+  span a library opens inside matrix's work nests under it** (mx-tests 2): before, a library
+  span inside a component or an agent session landed in a separate trace with no parent.
+- **A model step's call is a span of work**: `matrix.model.start` and `matrix.model.end`
+  events, and the `otel` observer's `matrix.model` span, current while the runtime works, so
+  the model runtime's own spans (hardline's `chat` per attempt) nest under it and the session
+  row names it. It carries no usage: each attempt's inference spans and counters are the
+  model runtime's own.
 - **A session that failed is a row of `matrix.v1.session` too.** A model call that exhausted
   its retries, or an agent session that failed, was asked for and may have spent tokens; only
   completed ones were recorded. `Session` gains `status` (`completed`, or `failed`), `reason`
@@ -168,6 +181,13 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **No OpenTelemetry span is left open.** The `otel` observer opened a span on each delivered
+  `*.start` event and closed it on the matching `*.end`, so an end event the bounded queue
+  dropped, or a queue the run left before it drained, left the span open for the life of the
+  process and never exported; and an event a component emitted with `ctx.emit` under a name
+  ending `.start` (ix's `ix.trial.start`), which has a span id of its own and no end, opened a
+  span nothing ended. Spans are now opened and ended through `around`, with their work;
+  `on_event` makes metrics only, and `ctx.emit` opens no span.
 - **The `claude-sdk` runtime closes the SDK's message stream** however reading it ends
   (`aclosing`), where closing it, and so the CLI process, was left to the garbage collector.
   Its error mapping is now tested: a missing CLI is `incapable`, a timeout `timeout`, and an

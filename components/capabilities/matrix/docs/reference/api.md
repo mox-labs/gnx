@@ -824,8 +824,9 @@ whether or not its reply is whole, and the `ModelCall` it provides is the reply 
 (`as_reply()`): the prompt as sent (`prompt`), the reply, and `session`, the call's row. With `output`, when the registry holds a schema for the kind, the request names it
 as `output` and the row is the validated `value`; without one, the reply must be one JSON
 document, as an agent step's, and a reply with none is a `ContractError` quoting it. Rows are
-rendered as an agent step renders them. A model step emits no agent events: its call is in
-its component's span.
+rendered as an agent step renders them. A model step emits no agent events: its call is a
+`matrix.model.start` / `matrix.model.end` pair, and the `otel` observer's `matrix.model`
+span, current while the runtime works.
 
 A reply that is not a whole answer is never provided: one with a `refusal`, a `finish_reason`
 other than `stop` and `None`, or empty `text`. The step raises `ModelRuntimeError`, reason
@@ -998,8 +999,10 @@ are only ever added.
 
 Names are namespaced, root first. matrix owns `matrix.*`; a component emits under its own
 root, and an observer treats a name it does not know as opaque. A `*.start`/`*.end` pair
-shares a `span`. An agent called from inside a component reports that component's span as its
-`parent` and its run id as its `run_id`; called outside a run, both are `None`.
+matrix emits for a span of work shares a `span`; an event a component emits with `ctx.emit`
+is one event, whatever its name ends with. An agent called from inside a component reports
+that component's span as its `parent` and its run id as its `run_id`; called outside a run,
+both are `None`.
 
 | Event | `span` / `parent` | `fields` |
 |-------|-------------------|----------|
@@ -1015,6 +1018,8 @@ shares a `span`. An agent called from inside a component reports that component'
 | `matrix.release.end` | same / run id | `status` (`released`, `failed`, `abandoned`), `error` |
 | `matrix.agent.start` | new id / the calling span | `agent`, `model`, `task` (the task as sent) |
 | `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`; or `status="error"`, `error`, `reason`, `kind`; or, when the session was cancelled, `status="cancelled"`, `reason="cancelled"` |
+| `matrix.model.start` | new id / the calling span | `runtime` (the step's model runtime), `model` (as asked; `None` for the runtime's default) |
+| `matrix.model.end` | same / the calling span | `runtime`, `duration_ms`, then `status="completed"`, `name`, `model`, `family`, `provider`, `finish_reason` (the model that answered); or `status="failed"`, `error`, `reason`, `kind`; or `status="cancelled"`, `reason="cancelled"`. No usage: the session row holds it |
 | `matrix.tool.start` | new id / the agent's span | `agent`, `tool`, `call_id`; timed when the runtime saw the call start |
 | `matrix.tool.end` | same / the agent's span | `agent`, `tool`, `call_id`, `status` (`ok`, `error`), `duration_ms`; timed when the runtime saw its result |
 | `matrix.measure` | new id / the calling span | `name`, `value`, `unit`, `kind`, `attrs` |
@@ -1025,11 +1030,27 @@ Events about a component carry its name in `component`.
 
 ### `Observer` (Protocol), `EventPolicy` and `RecordingObserver`
 
-`Observer` is `on_event(event: Event)`, a plain function or a coroutine function.
+`Observer` is `on_event(event: Event)`, a plain function or a coroutine function, and one
+optional member, read with `getattr` so an observer without it works unedited:
+
+```python
+def around(self, event: Event) -> AbstractContextManager[Callable[[Event], None] | None] | None: ...
+```
+
+matrix enters `around` **synchronously, in the task doing the work**, around each span of
+work it starts: a run, a component (all its attempts), a `ctx.span`, an agent session, a
+model step's call, a tool call a runtime timed, and a deferred release. `event` is the
+span's start event. What entering it gives back, when callable, is handed the span's end
+event before the block exits. The start and the end also reach `on_event` through the queue.
+This is how the `otel` observer makes its span current, so a span a library opens inside the
+work nests under it, and ends every span it opened whatever the queue drops. Since it runs in
+the work's task, `around` must not block; what it raises entering, ending or leaving is logged
+and skipped, and it cannot swallow the work's own exception. It is the one part of an observer
+that can slow a run.
 
 Events are delivered by a dispatcher task from a bounded queue, never on the emitting task.
 `EventPolicy(queue: int = 4096, drain_s: float = 10.0)` sets the bound, and how long the
-executor waits at the end of a run for the queue to empty. What follows from that:
+executor waits at the end of a run for the queue to empty. What follows from that, for `on_event`:
 
 - emitting never waits. When the queue is full the event is dropped and counted; the next
   event delivered is preceded by `matrix.events.dropped`, and `Run.events_dropped` has the
@@ -1075,7 +1096,8 @@ attach takes the default.
 - the conventions' names in the table below;
 - matrix's own fields that carry no content, as `matrix.<field>`: `status`, `reason`,
   `kind`, `abandoned`, `attempts`, `rows`, `duration_ms`, `reused_from`, `family`,
-  `tool_calls`, `cost_usd`, and the ids `matrix.run.id` and `matrix.component`;
+  `tool_calls`, `cost_usd`, a model call's `runtime`, `name` and `finish_reason`, and the ids
+  `matrix.run.id` and `matrix.component`;
 - of the fields a component passes to `ctx.span`, the numbers and booleans, under its root
   (`acme.rows`), and the `ok`/`error` status matrix gives the span at its end
   (`acme.status`). A string can hold anything, so a component's string field is content.
@@ -1098,8 +1120,14 @@ every name at status Development, building on semantic conventions v1.44.0. The 
 gives no schema URL yet, so matrix's tracer sets none. When the conventions are released,
 the names here are re-checked against that release.
 
-Spans, one per `*.start`/`*.end` pair, parented as the events are and timed by the events'
-own times (not when the observer received them):
+Spans, one per span of work, opened through `around` (above): in the task doing the work,
+**current** there while it goes on, and timed by the events' own times. So a span a library
+opens through the OpenTelemetry API inside the work (an instrumented HTTP client, a model
+runtime's own spans) is its child, in the run's trace, and the run's span is the child of
+whatever span was current where the run was awaited. A span ends with its work, from the end
+event matrix hands `around`: an end event the queue drops, or a queue the run leaves before it
+drained, leaves no span open. `on_event` makes metrics only, and an event a component emits
+with `ctx.emit` opens no span, whatever its name ends with.
 
 | Span | Kind | Attributes |
 |------|------|------------|
@@ -1107,6 +1135,7 @@ own times (not when the observer received them):
 | `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.duration_ms`, `matrix.attempts`, `matrix.abandoned`; `matrix.kind` and `error.type` (the error's kind, or the stop's reason for one cancelled) when it failed or was cancelled. The conventions have no step |
 | `matrix.release` | INTERNAL | `matrix.component`, `matrix.status`; `error.type` when it failed. With content: `matrix.error` |
 | `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed, and `error.type=cancelled` when the session was cancelled. With content: `matrix.task`, `matrix.error` |
+| `matrix.model` (a model step's call) | INTERNAL | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `matrix.component`, `matrix.runtime`, `matrix.name` (the registry row that answered), `matrix.family`, `matrix.finish_reason`, `matrix.status`, `matrix.duration_ms`; `matrix.reason`, `matrix.kind` and `error.type` when it failed or was cancelled. With content: `matrix.error`. The conventions have no operation for one logical call, which may span retries and fallbacks; it carries no usage, since each attempt's inference span is the model runtime's own and nests under it |
 | `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`, `matrix.status`, `matrix.duration_ms`; `error.type=tool_error` when the tool reported an error |
 | a component's `ctx.span(name)` | INTERNAL | `matrix.component`; its number and boolean fields and its status under its root (`acme.rows`, `acme.status`, `acme.duration_ms`). With content: its string fields too |
 

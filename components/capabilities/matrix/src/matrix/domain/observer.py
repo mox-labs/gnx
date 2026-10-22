@@ -3,16 +3,35 @@
 The executor, bound agents and components emit :class:`Event` records; observers receive them.
 
 **Telemetry is not data.** Nothing a run produces depends on an event being delivered: the
-Construct is the record. So the channel is lossy on purpose, and **an observer cannot stall
-or fail a run**: events go onto a bounded queue (:class:`EventPolicy`), emitting never waits,
-an event that does not fit is dropped and counted (``matrix.events.dropped``,
-``Run.events_dropped``), an observer that raises is logged and skipped, and at its end a run
-waits at most ``drain_s`` for the queue. A synchronous observer that blocks the event loop is
-the one thing this cannot bound.
+Construct is the record. So the channel is lossy on purpose, and **an observer's
+``on_event`` cannot stall or fail a run**: events go onto a bounded queue
+(:class:`EventPolicy`), emitting never waits, an event that does not fit is dropped and
+counted (``matrix.events.dropped``, ``Run.events_dropped``), an observer that raises is logged
+and skipped, and at its end a run waits at most ``drain_s`` for the queue. A synchronous
+observer that blocks the event loop is the one thing this cannot bound.
 
 **Event names are namespaced**, root first: matrix owns ``matrix.*``, and a component emits
-under its own root. A ``*.start``/``*.end`` pair shares a ``span`` id. Within
-``matrix.v1.event`` fields are only ever added.
+under its own root. A ``*.start``/``*.end`` pair matrix emits for a span of work shares a
+``span`` id; an event a component emits with ``ctx.emit`` is one event, whatever its name
+ends with, and opens no span. Within ``matrix.v1.event`` fields are only ever added.
+
+**Around the work.** An observer may have one optional member besides ``on_event``, read with
+``getattr`` so an observer written before it works unedited:
+
+    around(event) -> AbstractContextManager[Callable[[Event], None] | None] | None
+
+matrix enters it **synchronously, in the task doing the work**, around each span of work it
+starts: a run, a component (all its attempts), a ``ctx.span``, an agent session, a model
+call a model step makes, a tool call a runtime timed, and a deferred release. ``event`` is the
+span's start. What entering it gives back, when callable, is handed the span's end event
+before the block exits, so the observer can close what it opened with the end's facts without
+waiting for the queue; the start and the end also reach ``on_event`` through the channel, as
+every event does. This is how the ``otel`` observer makes its span current, so a span a
+library opens inside the work nests under it, and how its spans end whatever the channel
+drops. Because it runs in the work's own task, ``around`` **must not block**: no I/O that can
+wait, no lock another task holds. What it raises, entering, ending or leaving, is logged and
+skipped, and it can never swallow the work's own exception. An observer's ``around`` is the
+one part of an observer that can slow a run.
 """
 
 from __future__ import annotations
@@ -31,7 +50,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from matrix.domain.errors import ConfigError, ContractError
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
+    from contextlib import AbstractContextManager
 
 logger = logging.getLogger("matrix.observer")
 
@@ -51,6 +71,10 @@ RELEASE_END = "matrix.release.end"  # status, error?
 AGENT_START = "matrix.agent.start"  # agent, model, task (as sent)
 AGENT_END = "matrix.agent.end"  # agent, status, tokens_*, cost_usd, model, family, provider,
 #   duration_ms, tool_calls; reason and error when it failed; status cancelled when cancelled
+MODEL_START = "matrix.model.start"  # runtime, model (as asked)
+MODEL_END = "matrix.model.end"  # runtime, status, name, model, family, provider, finish_reason,
+#   duration_ms; reason and error when it failed; status cancelled when cancelled. No usage:
+#   the session row holds it, and the model runtime's own telemetry counts it
 TOOL_START = "matrix.tool.start"  # tool, call_id?, agent; timed as the runtime saw the call
 TOOL_END = "matrix.tool.end"  # tool, call_id?, agent, status, duration_ms
 MEASURE = "matrix.measure"  # name, value, unit, kind, attrs
@@ -91,7 +115,8 @@ class Event:
 
 @runtime_checkable
 class Observer(Protocol):
-    """A sink for events. ``on_event`` may be a plain function or a coroutine function."""
+    """A sink for events. ``on_event`` may be a plain function or a coroutine function.
+    ``around`` is optional (see the module docstring)."""
 
     def on_event(self, event: Event) -> Awaitable[None] | None: ...
 
@@ -161,12 +186,19 @@ class Channel:
     def start(self) -> None:
         self._dispatcher = asyncio.ensure_future(self._dispatch())
 
+    def observers(self, also: Sequence[Observer] = ()) -> tuple[Observer, ...]:
+        """The run's observers, and any in ``also`` not among them."""
+        return (*self._observers, *self._extra(also))
+
+    def _extra(self, also: Sequence[Observer]) -> tuple[Observer, ...]:
+        return tuple(o for o in also if not any(o is known for known in self._observers))
+
     def emit(self, event: Event, also: Sequence[Observer] = ()) -> None:
         """Queue ``event`` for the run's observers, and for any in ``also`` not among them.
 
         Never waits and never raises: a full queue drops the event and counts it.
         """
-        extra = tuple(o for o in also if not any(o is known for known in self._observers))
+        extra = self._extra(also)
         if self._closed or (not self._observers and not extra):
             return
         try:
@@ -237,6 +269,68 @@ async def emit(observers: Sequence[Observer], event: Event) -> None:
         scope.channel.emit(event, also=observers)
     else:
         await deliver(observers, event)
+
+
+def observing(observers: Sequence[Observer] = ()) -> tuple[Observer, ...]:
+    """Who sees the work of code that may or may not be inside a run: the run's observers
+    and ``observers`` inside one, ``observers`` outside one. What :func:`emit` reaches."""
+    scope = CURRENT_SPAN.get()
+    return scope.channel.observers(observers) if scope is not None else tuple(observers)
+
+
+class _Around:
+    """The ``around`` of each observer that has one, entered as one context manager. Entering
+    gives back ``end``, which hands the span's end event to each observer that asked for it."""
+
+    def __init__(self, observers: Sequence[Observer], event: Event) -> None:
+        self._observers = observers
+        self._event = event
+        self._entered: list[tuple[Observer, AbstractContextManager[Any]]] = []
+        self._enders: list[tuple[Observer, Callable[[Event], None]]] = []
+
+    def __enter__(self) -> Callable[[Event], None]:
+        for observer in self._observers:
+            hook = getattr(observer, "around", None)
+            if not callable(hook):
+                continue
+            try:
+                manager = hook(self._event)
+                if manager is None:
+                    continue
+                given = manager.__enter__()
+            except Exception:
+                logger.exception("observer %r failed entering %s", observer, self._event.name)
+                continue
+            self._entered.append((observer, manager))
+            if callable(given):
+                self._enders.append((observer, given))
+        return self.end
+
+    def end(self, event: Event) -> None:
+        """Hand ``event``, the span's end, to each observer whose ``around`` asked for it."""
+        for observer, ender in self._enders:
+            try:
+                ender(event)
+            except Exception:
+                logger.exception("observer %r failed ending %s", observer, self._event.name)
+
+    def __exit__(self, *raised: Any) -> None:
+        # Last entered, first left; an observer cannot swallow the work's exception, since
+        # what its __exit__ returns is not passed on.
+        for observer, manager in reversed(self._entered):
+            try:
+                manager.__exit__(*raised)
+            except Exception:
+                logger.exception("observer %r failed leaving %s", observer, self._event.name)
+
+
+def around(
+    observers: Sequence[Observer], event: Event
+) -> AbstractContextManager[Callable[[Event], None]]:
+    """Enter each observer's optional ``around(event)`` (see the module docstring) for the span
+    of work ``event`` starts. Entered in the task doing that work, around all of it; what it
+    gives back is called with the span's end event before the block exits."""
+    return _Around(observers, event)
 
 
 class RecordingObserver:
