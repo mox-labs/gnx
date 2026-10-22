@@ -30,4 +30,4 @@ service comparison and an agent evaluation.
 
 | Document | What it covers |
 |----------|----------------|
-| [Design record, 2026-10-19](design/2026-10-19-record.md) | Why the verdict's statistics are what they are: each method with its source, the simulations before and after, and the interface judgments of that pass |
+| [Design record, 2026-10-19](design/2026-10-19-record.md) | Every design judgment ix rests on, one row each with its test and evidence: the verdict's statistics with their sources and simulations, the agent path, the runtime ports, what a verdict is tied to, requirements in place of effects, environments, the layer map, the evaluator sensor, and the owner's rulings they follow |

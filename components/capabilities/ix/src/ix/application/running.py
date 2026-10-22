@@ -32,7 +32,7 @@ from ix.domain import schema
 from ix.domain.analysis import ANALYSES, analysis_unsupported
 from ix.domain.design import Design, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError
-from ix.domain.experiment import Experiment, ProbeConfig
+from ix.domain.experiment import Experiment, ProbeConfig, SubjectConfig
 from ix.domain.kind import fill, placed, placeholders
 from ix.domain.ports import Liveness, Recorded, Sensed, StandIn, Traced
 from ix.domain.registration import deviations
@@ -426,6 +426,17 @@ class _Adapters:
     sensors: tuple[tuple[str, Sensor, Mapping[str, Any]], ...]
 
 
+def _filled(subject: SubjectConfig, values: Mapping[str, Any], kit: Kit) -> dict[str, Any]:
+    """A subject's options filled with ``values``. An option the adapter fills again itself
+    (its kind ``binds`` placeholders: a loop's ``{response}``) keeps each doubled
+    placeholder doubled, so that it is un-doubled once, by the adapter's filling."""
+    kind = kit.kinds.get(schema.url("subject", subject.kind))
+    again = {name for name, option in kind.options.items() if option.binds} if kind else set()
+    return {
+        key: fill(value, values, escaped=key in again) for key, value in subject.options.items()
+    }
+
+
 def _adapters(trial: Trial, setup: Setup, kit: Kit) -> _Adapters:
     subject = setup.experiment.subjects[trial.subject]
     probe = setup.probes[trial.probe]
@@ -479,7 +490,7 @@ async def invoke(
     subject = setup.experiment.subjects[trial.subject]
     services = bound(bindings or {})
     filled = subject.model_copy(
-        update={"options": fill(subject.options, {**services, **trial.cell})}
+        update={"options": _filled(subject, {**services, **trial.cell}, kit)}
     )
     probe_options = setup.probes[trial.probe].options
     observations: dict[str, dict[str, Any]] = {}
@@ -693,7 +704,7 @@ def _counted(measured: object) -> dict[str, float] | None:
     return {"events": float(events), "units": float(units)}
 
 
-def _reading(
+def as_reading(
     interaction: Interaction,
     sensor: str,
     metric: Metric,
@@ -758,7 +769,7 @@ def _reading(
     )
 
 
-async def _measure(
+async def measure(
     sensor: Sensor, interaction: Interaction, truth: Mapping[str, Any], options: Mapping[str, Any]
 ) -> Sensed | Failure:
     """What a sensor gives for one interaction, or the failure it raised. Anything but a
@@ -826,7 +837,7 @@ async def sense(
                 **{"ix.trial.seq": interaction.seq, "ix.subject": interaction.subject},
             ) as span:
                 before = _recorded(scope)
-                measured = await _measure(kit.sensors[selected.kind], interaction, truth, options)
+                measured = await measure(kit.sensors[selected.kind], interaction, truth, options)
                 sessions = _since(before, scope)
                 for name in selected.metrics:
                     metric = setup.design.metric(name)
@@ -835,7 +846,7 @@ async def sense(
                     given = measured if isinstance(measured, Failure) else measured.values.get(name)
                     detail = {} if isinstance(measured, Failure) else measured.detail
                     _evaluated(span, name, given)
-                    reading = _reading(interaction, selected.kind, metric, given, detail)
+                    reading = as_reading(interaction, selected.kind, metric, given, detail)
                     readings.append(reading.model_copy(update={"sessions": sessions}))
     if scope is not None:
         scope.emit(SENSE_END, readings=len(readings), interactions=len(interactions))

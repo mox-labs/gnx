@@ -812,9 +812,9 @@ def test_the_evaluators_said_to_read_no_span_never_reach_for_one() -> None:
     reading spans in a later release fails here, not at a run."""
     import inspect
 
-    from ix.adapters._out.evaluators import READS_NO_SPANS, _registry
+    from ix.adapters._out.evaluators import READS_NO_SPANS, evaluator_classes
 
-    for name, cls in _registry().items():
+    for name, cls in evaluator_classes().items():
         assert ("span_tree" in inspect.getsource(cls)) == (name not in READS_NO_SPANS), name
     assert _sensor().reads_spans({"evaluator": "ToolCorrectness"})
     assert not _sensor().reads_spans({"evaluator": "LLMJudge"})

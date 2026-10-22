@@ -228,10 +228,11 @@ def _judged(case: Mapping[str, Any], line: Mapping[str, Any]) -> CaseResult:
     """Whether what the code did for ``case`` (``line``, as the child reported it) is what
     the case expects: judged here, never by the child that ran the code."""
     if "raised" in line:
+        # A name in the raised exception's MRO; ``any`` is ``Exception``: an error the code
+        # raised, so code that leaves the process (``SystemExit``) passes only where named.
         wanted, raised = case.get("raises"), line["raised"]
-        passed = wanted is not None and (
-            wanted in ("any", "Exception") or (isinstance(raised, list) and wanted in raised)
-        )
+        named = "Exception" if wanted == "any" else wanted
+        passed = named is not None and isinstance(raised, list) and named in raised
         return CaseResult(passed, "" if passed else f"raised {line.get('message', '')}")
     if "raises" in case:
         return CaseResult(

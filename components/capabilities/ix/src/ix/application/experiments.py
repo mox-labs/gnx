@@ -128,15 +128,15 @@ def examine(
     experiment: Experiment | object,
     vocabulary: Vocabulary,
     *,
-    base: str,
     source: str = "",
     folder: FolderProbes | None = None,
 ) -> Examined:
     """Check an experiment, or the data an experiment should be.
 
-    ``base`` is the directory relative paths in the experiment resolve against; ``folder``
-    is what its probes folder held, read only when it writes no probes inline. Never raises
-    on a wrong experiment: the problems are in the result.
+    ``folder`` is what its probes folder held, read only when it writes no probes inline.
+    Nothing here reads a path the experiment names (that is :func:`reviewed`'s and the
+    digest's), so it takes no directory. Never raises on a wrong experiment: the problems
+    are in the result.
     """
     source = source or "<experiment>"
     problems: list[Problem] = []

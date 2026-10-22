@@ -16,14 +16,22 @@ Audience: anyone running ix against an experiment, a genre or a kind they did no
 | `register` | the same | `<file-stem>.registration.json` beside the experiment |
 | `genres`, `kinds`, `--skill` | genre and kind files | nothing |
 | `run` | the same as `plan`, the environment, and the git work tree the experiment sits in | `<experiment directory>/.ix/runs/<run id>/` (or under `runs:` in ix's settings); temporary directories it removes; whatever the programs and sessions it starts write |
-| `report`, `runs` | the experiment file; the runs under `.ix/runs` | nothing |
+| `report`, `runs` | the experiment file; the runs under `.ix/runs` | nothing, but for the first read of a run whose `ix run` was killed on this host: matrix's store finishes its record as `interrupted` (`run.json` replaced, a cut-short last line moved to `<file>.torn`) |
 
-`report` and `runs` call no model. A report of a run that ended before its sensors read
-its interactions reads them then, but only with sensors whose adapters are not handed
-matrix's runtimes; a run that used one (a `judge`) is reported without readings (the test
-suite holds this with a judge that counts its calls over two reports). A third-party sensor
-that reaches a model provider by its own means, not through the runtimes ix hands it, is
-outside what ix can tell.
+`report` and `runs` call no model and start no process. A report of a run that ended before
+its sensors read its interactions reads them then, but only with sensors whose adapters ix
+hands nothing that acts outside its own process: not matrix's runtimes or a judge's models
+(a `judge`, an `evaluator`), and not a launcher (`function-test` and `outcome`, which run
+the agent's code and the experiment's graders). A run that used one is reported without
+readings, and the report says why and to run the experiment again (the test suite holds
+this with a judge that counts its calls, and with graders that leave a mark if they run,
+over two reports). A third-party sensor that reaches a model provider or starts a program by
+its own means, not through what ix hands it, is outside what ix can tell.
+
+`plan`, and `run` before its first trial, ask each adapter in use what it needs of this host:
+that builds the runtimes the subjects and sensors name (no session starts and no model is
+called), looks for programs on `PATH`, and starts `docker info` and `docker compose version`
+for a `compose` environment.
 
 `run` also **starts**: `git -c core.fsmonitor=false -C <experiment directory>` three times
 (`rev-parse --is-inside-work-tree`, `rev-parse --verify HEAD`, `status --porcelain
@@ -47,7 +55,11 @@ criteria, with the prompt when its `include_input` is set and the probe's `expec
 when its `include_expected_output` is, to the model provider of the model runtime the
 sensor's `model_runtime` names, and never to pydantic-evals' default model (an `evaluator`
 sensor whose arguments name a `model` is refused by `ix validate`); and spans to an
-OpenTelemetry endpoint when the `OTEL_*` variables name one. The `evaluator` sensor's other
+OpenTelemetry endpoint when the `OTEL_*` variables name one. ix's own spans carry ids,
+names, numbers and outcomes (and the message of an exception that ends one), never a prompt
+or a reply; matrix's spans carry a session's
+content (prompts, replies, tool arguments) only when its `otel` observer is told to capture
+it (`capture_content`). The `evaluator` sensor's other
 evaluators send nothing: they read what the run recorded.
 
 ## Trust boundaries
@@ -144,7 +156,10 @@ matrix builds the session and owns its authority: matrix's SECURITY.md has the d
 with no tools and no working directory, and the `mock` runtimes call no model. `ix run
 --dry-run` puts every session, every call and a judge on the `mock` runtime of its port,
 so it calls no model; it still copies the fixtures and skills, runs a subject's `setup`
-command and runs the code the sensors run (section 8), as a real run would. Which runtime
+command and runs the code the sensors run (section 8), as a real run would. **A dry run
+brings the environment up for real**: no environment has a stand-in, so a `process`
+environment starts its services' commands, and a `compose` environment pulls or builds its
+images and starts its containers (section 13), exactly as `ix run` does. Which runtime
 stands in is what its registration declares (`stand_in`), never read from its name.
 
 ### 8. Code runs in a child process that is not a sandbox
@@ -221,7 +236,8 @@ containers started with the ports, volumes, mounts and privileges the file asks 
 can reach the daemon is in effect root on its host, so running an experiment whose compose
 file you did not write is running its author's containers (boundary 6). `ix run` takes the
 stack down with `down -v --remove-orphans`, which removes the project's named volumes too,
-and sweeps only stacks ix itself named for the same compose file whose process is gone; a
+and sweeps only stacks ix itself brought up (marked by a compose file of its own among the
+project's files) for the same compose file whose process is gone; a
 `project` an experiment names is never swept, and is refused while it has containers. The
 compose file is digested like the subjects' files, and each service's image id is recorded
 in the run's bindings, so what ran can be told afterwards.

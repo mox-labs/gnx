@@ -25,7 +25,7 @@ import pytest
 import yaml
 from ix_fakes import LOG, FakeLoad, experiment, fake_registry
 
-from ix.adapters._out.compose import ComposeEnvironment
+from ix.adapters._out.compose import ComposeEnvironment, ownership_file
 from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.application import running
 from ix.composition import Root
@@ -212,16 +212,19 @@ class TestUpAndDown:
         }
         up = next(argv for argv in docker.calls if "up" in argv)
         project = f"ix-exp-20261022t101500z-ab12-{os.getpid()}"
+        owned = ownership_file(project)
         assert up == [
-            "compose", "-f", str((tmp_path / "compose.yaml").resolve()), "-p", project,
-            "up", "-d", "--wait", "--wait-timeout", "120",
+            "compose", "-f", str((tmp_path / "compose.yaml").resolve()), "-f", str(owned),
+            "-p", project, "up", "-d", "--wait", "--wait-timeout", "120",
         ]  # fmt: skip
+        assert owned.is_file()  # a compose file that adds nothing, and says the run is ix's
         assert docker.verbs() == ["ls", "up", "ps"]  # the sweep, then up, then the bindings
         assert len(scope.releases) == 1 and docker.state.get("down") is None
         await scope.release()
         down = docker.calls[-1]
         assert down[-5:] == ["down", "-v", "--remove-orphans", "--timeout", "10"]
-        assert down[:5] == up[:5]  # the same file and project
+        assert down[:7] == up[:7]  # the same files and project
+        assert not owned.exists()
 
     async def test_a_failed_up_fails_the_run_and_still_comes_down(
         self, docker: Docker, tmp_path: Path
@@ -291,12 +294,19 @@ class TestTheProject:
         gone = subprocess.Popen([sys.executable, "-c", "pass"])
         gone.wait()
         file = str((tmp_path / "compose.yaml").resolve())
+
+        def ixs(name: str, compose: str = file) -> dict[str, str]:
+            return {"Name": name, "ConfigFiles": f"{compose},{ownership_file(name)}"}
+
         docker.set(
             projects=[
-                {"Name": f"ix-killed-run-{gone.pid}", "ConfigFiles": file},
-                {"Name": f"ix-live-run-{os.getpid()}", "ConfigFiles": file},
-                {"Name": f"ix-elsewhere-{gone.pid}", "ConfigFiles": "/other/compose.yaml"},
+                ixs(f"ix-killed-run-{gone.pid}"),
+                ixs(f"ix-live-run-{os.getpid()}"),
+                ixs(f"ix-elsewhere-{gone.pid}", "/other/compose.yaml"),
                 {"Name": "someone-else", "ConfigFiles": file},
+                # Regression: a project ix did not bring up, named as ix names one, was
+                # taken down with its volumes.
+                {"Name": f"ix-stack-{gone.pid}", "ConfigFiles": file},
             ]
         )
         scope = Scope()
@@ -323,6 +333,17 @@ class TestLiveness:
         assert await provider.lost(bindings) == "service web is exited (exit code 137)"
         docker.set(containers=[_DB])
         assert await provider.lost(bindings) == "service web is gone"
+
+    async def test_one_replica_down_of_a_scaled_service_is_lost(
+        self, docker: Docker, tmp_path: Path
+    ) -> None:
+        """Regression: ``ps`` rows were keyed by service, so a replica that stopped was
+        hidden by another listed after it."""
+        provider = _environment()
+        bindings = await provider.up(_compose(tmp_path), base=str(tmp_path), scope=Scope())
+        stopped = {**_WEB, "State": "exited", "ExitCode": 1}
+        docker.set(containers=[stopped, _WEB, _DB])
+        assert await provider.lost(bindings) == "service web is exited (exit code 1)"
 
 
 class TestPreflight:
@@ -514,7 +535,7 @@ def _manifest() -> Any:
     from ix.application.experiments import examine
 
     vocabulary = Root(registry=fake_registry()).vocabulary()
-    examined = examine(experiment(), vocabulary, base=".")
+    examined = examine(experiment(), vocabulary)
     return running.prepare(
         examined, vocabulary, None, run="r-1", base=".", now="", version="", exploratory=True
     ).manifest

@@ -79,7 +79,7 @@ from ix.domain.experiment import Experiment
 from ix.domain.genre import Genres, genres
 from ix.domain.kind import KIND_FAMILIES, Kinds, kinds, per_cell
 from ix.domain.plan import required
-from ix.domain.ports import Preflight, SpanReader
+from ix.domain.ports import Preflight, SpanReader, Traced
 from ix.domain.problem import InvalidExperimentError
 from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
 from ix.domain.report import Report, Runs
@@ -320,7 +320,8 @@ class Root:
     :func:`root` is the default, over every installed ``matrix.extensions`` entry point.
     ``settings`` replaces what matrix's config tiers hold. ``run_store`` is the type URL of
     the store runs are kept in, built at matrix's ``store`` point: one whose config takes
-    ``root``, the directory a run's directory is made in."""
+    ``root``, the directory a run's directory is made in. ``tracer`` makes the spans of ix's
+    own work; by default they go through the OpenTelemetry provider installed."""
 
     def __init__(
         self,
@@ -333,6 +334,7 @@ class Root:
         clock: Callable[[], str] = _now,
         run_id: Callable[[str], str] = _run_id,
         run_store: str = RUN_STORE,
+        tracer: Traced | None = None,
     ) -> None:
         self._genre_files = genre_files or GenreFiles()
         self._kind_files = kind_files or KindFiles()
@@ -342,7 +344,7 @@ class Root:
         self._clock = clock
         self._run_id = run_id
         self._run_store = run_store
-        self._tracer = OtelTracer(version)
+        self._tracer: Traced = OtelTracer(version) if tracer is None else tracer
         self._runtimes = _Runtimes(self._registry, lambda: self._settings().matrix.models)
         self._supplies = {
             LAUNCHER: MatrixLauncher(),
@@ -359,16 +361,23 @@ class Root:
     # --- the adapters ---
 
     def _adapter(self, entry: Entry) -> Any:
+        """The adapter ``entry`` registers, built with what it needs. Building runs an
+        extension's own code, so any exception it raises makes the adapter unbuildable,
+        named with its error, rather than escaping into a command that only lists kinds."""
         try:
             return self._registry.create(entry.point, entry.type_url, needs=self._supplies)
         except MatrixError as error:
-            raise ConfigError(
-                f"the adapter for {entry.type_url} ({entry.origin}) cannot be built: "
-                f"{error.message}",
-                fix=f"an adapter may need {', '.join(sorted(self._supplies))} and nothing "
-                "else; fix or uninstall the extension that registered it",
-                details={**error.details, "value": entry.type_url},
-            ) from error
+            raise self._unbuildable(entry, error.message, error.details) from error
+        except Exception as error:
+            raise self._unbuildable(entry, f"{type(error).__name__}: {error}", {}) from error
+
+    def _unbuildable(self, entry: Entry, reason: str, details: dict[str, Any]) -> ConfigError:
+        return ConfigError(
+            f"the adapter for {entry.type_url} ({entry.origin}) cannot be built: {reason}",
+            fix=f"an adapter may need {', '.join(sorted(self._supplies))} and nothing "
+            "else; fix or uninstall the extension that registered it",
+            details={**details, "value": entry.type_url},
+        )
 
     def _built(self, kind: str) -> Any:
         """The adapter registered for ``kind`` (a type URL), or None when there is none or
@@ -398,11 +407,6 @@ class Root:
                 else:
                     built.add(entry.type_url)
         return frozenset(built), broken
-
-    @property
-    def _runnable(self) -> frozenset[str]:
-        """Every kind (type URL) whose adapter is registered and builds here."""
-        return self._buildable()[0]
 
     def _kit(self, kinds: Collection[str], declared: Kinds) -> Kit:
         """The adapters a run of ``kinds`` (type URLs) uses, each built from the registry,
@@ -435,13 +439,20 @@ class Root:
 
     def kinds(self, lab: PathLike | None = None) -> Kinds:
         """The installed kinds, plus those in ``<lab>/kinds``."""
+        return self._kinds(lab, self._buildable())
+
+    def _kinds(
+        self, lab: PathLike | None, buildable: tuple[frozenset[str], dict[str, str]]
+    ) -> Kinds:
+        """:meth:`kinds`, with what :meth:`_buildable` found, so that a caller that needs it
+        too builds each adapter once."""
         files = self._kind_files.files(None if lab is None else os.fspath(lab))
         found = kinds(files, grammar=type_url_problem)
         quarantined = tuple(
             f"{failure.extension} ({failure.origin}): {failure.error}"
             for failure in self._registry.failures
         )
-        built, broken = self._buildable()
+        built, broken = buildable
         return found.model_copy(
             update={
                 "runnable": tuple(sorted(built & set(found.kinds))),
@@ -451,10 +462,11 @@ class Root:
         )
 
     def vocabulary(self, lab: PathLike | None = None) -> Vocabulary:
+        buildable = self._buildable()
         return Vocabulary(
             genres=self.genres(lab),
-            kinds=self.kinds(lab),
-            adapters=self._runnable,
+            kinds=self._kinds(lab, buildable),
+            adapters=buildable[0],
         )
 
     def skill(self, reference: str | None = None) -> str:
@@ -511,11 +523,7 @@ class Root:
         """The experiment judged against the vocabulary, and by the adapters it would run
         on: what only an adapter can tell is wrong is a problem too."""
         examined = use_cases.examine(
-            experiment,
-            vocabulary,
-            base=base,
-            source=source,
-            folder=self._folder(experiment, base),
+            experiment, vocabulary, source=source, folder=self._folder(experiment, base)
         )
         absolute = str(Path(base).resolve())
         return use_cases.reviewed(examined, vocabulary, self._built, base=absolute)
@@ -830,17 +838,30 @@ class Root:
         readings, unread = self._derived_readings(record)
         return build_report(record, readings=readings, unread=unread)
 
-    def _calls_a_model(self, sensor: str) -> bool:
-        """Whether the adapter of ``sensor`` (a type URL) is handed matrix's runtimes: the
-        only way ix gives an adapter a model to call."""
-        return RUNTIMES in self._registry.entry(POINTS["sensor"], sensor).needs
+    def _acts(self, sensors: Collection[str]) -> str:
+        """What the adapters of ``sensors`` (type URLs) are handed that acts outside this
+        process, said in words: matrix's runtimes or a judge's models (it may call a model),
+        or a launcher (it starts processes: the experiment's graders, the agent's code).
+        Empty when none is: those are the sensors a report may run."""
+        needs = {sensor: self._registry.entry(POINTS["sensor"], sensor).needs for sensor in sensors}
+
+        def named(given: set[str]) -> str:
+            return ", ".join(schema.short(s) for s in sorted(needs) if needs[s] & given)
+
+        said = []
+        if calling := named({RUNTIMES, JUDGE_MODELS}):
+            said.append(f"{calling} may call a model")
+        if starting := named({LAUNCHER}):
+            said.append(f"{starting} starts processes")
+        return "; ".join(said)
 
     def _derived_readings(self, record: RunRecord) -> tuple[list[Reading] | None, str]:
         """The readings of a run that ended before its sensors read its interactions, taken
         now from the stored tables and never written back; or None, and why they were not
-        taken, when there are some to take. A report calls no model: a run that used a
-        sensor that does (a judge) is not read here at all, and neither is one whose sensor
-        has no adapter here."""
+        taken, when there are some to take. A report is a read: it calls no model and starts
+        no process, so a run that used a sensor that may (a judge, ``outcome``,
+        ``function-test``) is not read here at all, and neither is one whose sensor has no
+        adapter here."""
         if not record.interactions or record.readings or record.status == "running":
             return None, ""
         setup = running.setup_of(record.manifest)
@@ -849,17 +870,17 @@ class Root:
             f"run the experiment again for its readings: ix run {record.manifest.base}; a run "
             "reads its interactions as it finishes"
         )
-        missing = sorted(sensors - self._runnable)
+        built, broken = self._buildable()
+        missing = sorted(sensors - built)
         if missing:
             return None, f"no adapter here reads {', '.join(map(schema.short, missing))}: {again}"
-        calling = sorted(kind for kind in sensors if self._calls_a_model(kind))
-        if calling:
-            named = ", ".join(map(schema.short, calling))
-            return None, f"{named} calls a model, and a report never does: {again}"
+        acts = self._acts(sensors)
+        if acts:
+            return None, f"{acts}, and a report does neither: {again}"
         derived = asyncio.run(
             running.sense(
                 setup,
-                self._kit(sensors, self.kinds(setup.base)),
+                self._kit(sensors, self._kinds(setup.base, (built, broken))),
                 trials=record.trials,
                 interactions=record.interactions,
             )
@@ -894,7 +915,8 @@ class Root:
     def runs(self, target: PathLike | None = None) -> Runs:
         """The runs kept beside an experiment, oldest first. ``target`` is the experiment
         (its file or directory); with none, every experiment's runs under the current
-        directory (each ``.ix/runs`` below it), or under the settings' ``runs``."""
+        directory (each ``.ix/runs`` of an experiment at most :data:`RUNS_DEPTH`
+        directories below it), or under the settings' ``runs``."""
         if target is not None:
             records, _, experiment = self._locate(target)
             return Runs(location=records.root, runs=tuple(self._listed(records, experiment)))
@@ -941,19 +963,27 @@ def _with_otel(observers: Sequence[Any]) -> tuple[Any, ...]:
     return tuple(observers) if otel in named else (*observers, "otel")
 
 
+#: How many directories below the current one ``ix runs`` looks for an experiment's runs.
+RUNS_DEPTH = 6
+
+
 def _runs_under(directory: str) -> list[str]:
-    """Every ``.ix/runs`` directory at or below ``directory``, in path order. A hidden
-    directory other than ``.ix``, and ``node_modules``, are not entered."""
+    """Every ``.ix/runs`` directory of an experiment directory at or below ``directory``, at
+    most :data:`RUNS_DEPTH` directories down, in path order. A hidden directory other than
+    ``.ix``, and ``node_modules``, are not entered."""
     found: list[str] = []
+    top = Path(directory)
     for at, folders, _ in os.walk(directory):
         if os.path.basename(at) == ".ix":
             if "runs" in folders:
                 found.append(os.path.join(at, "runs"))
             folders[:] = []
             continue
+        deepest = len(Path(at).relative_to(top).parts) >= RUNS_DEPTH
         folders[:] = sorted(
             name for name in folders
-            if name == ".ix" or not (name.startswith(".") or name == "node_modules")
+            if name == ".ix"
+            or not (deepest or name.startswith(".") or name == "node_modules")
         )  # fmt: skip
     return found
 
@@ -962,9 +992,23 @@ _DEFAULT: Root | None = None
 
 
 def root() -> Root:
-    """The default wiring: the installed genres and kinds, every adapter in
+    """The root the library functions and the ``ix`` command run on: the one :func:`using`
+    chose, or else the default wiring: the installed genres and kinds, every adapter in
     matrix's registry, and the registration file beside the experiment."""
     global _DEFAULT  # noqa: PLW0603
     if _DEFAULT is None:
         _DEFAULT = Root()
     return _DEFAULT
+
+
+@contextmanager
+def using(chosen: Root) -> Iterator[Root]:
+    """Run the library functions and the ``ix`` command on ``chosen`` while the block runs
+    (a program's own registry, a test's scripted runtimes), and on the root they ran on
+    before once it ends."""
+    global _DEFAULT  # noqa: PLW0603
+    before, _DEFAULT = _DEFAULT, chosen
+    try:
+        yield chosen
+    finally:
+        _DEFAULT = before

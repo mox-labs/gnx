@@ -253,7 +253,7 @@ def _p_two_sided(statistic: float, df: float | None) -> float:
 # --- one sample --------------------------------------------------------------------------
 
 
-def spread(values: Sequence[float]) -> float:
+def sd(values: Sequence[float]) -> float:
     """The sample standard deviation (``n - 1`` in the denominator)."""
     centre = math.fsum(values) / len(values)
     return math.sqrt(math.fsum((value - centre) ** 2 for value in values) / (len(values) - 1))
@@ -263,7 +263,7 @@ def mean(values: Sequence[float]) -> Span:
     """Student's t interval for the mean of ``values``: two or more, not all equal."""
     n = len(values)
     centre = math.fsum(values) / n
-    error = spread(values) / math.sqrt(n)
+    error = sd(values) / math.sqrt(n)
     df = n - 1
 
     def at(alpha: float) -> Ends:

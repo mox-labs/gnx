@@ -325,6 +325,21 @@ class TestListingRuns:
         assert sorted(r.run for r in listed.runs) == sorted(ran)
         assert listed.location == str(one.parents[1].resolve())
 
+    def test_with_no_path_the_walk_goes_six_directories_deep_and_no_further(
+        self, write_experiment: Write, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Regression: the walk had no bound, so `ix runs` in a home directory read every
+        folder in it. An experiment up to six directories below is listed; one deeper is
+        not, and is listed by its path."""
+        root = Root(registry=fake_registry())
+        near = write_experiment(experiment(), "a/b/c/d/e/f")
+        far = write_experiment(experiment(name="far"), "a/b/c/d/e/f/g")
+        ran = root.run(near, exploratory=True).run
+        root.run(far, exploratory=True)
+        monkeypatch.chdir(tmp_path)
+        assert [r.run for r in root.runs().runs] == [ran]
+        assert len(root.runs(far).runs) == 1
+
 
 class TestWhereEachSettingCameFrom:
     def test_the_run_records_the_tier_that_set_each_setting_it_read(
@@ -585,7 +600,7 @@ class TestAReadingOfTheWrongShape:
     @pytest.mark.parametrize("given", [[1.0, 2.0], {"p99": None}, {"p99": "fast"}, {"p99": True}])
     def test_a_distribution_that_is_not_one_is_the_sensors_shape_failure(self, given: Any) -> None:
         latency = Metric(name="latency", unit="ms", direction="lower", shape="histogram")
-        reading = running._reading(self._INTERACTION, "ix.v1.sensor.test", latency, given)
+        reading = running.as_reading(self._INTERACTION, "ix.v1.sensor.test", latency, given)
         assert reading.failure is not None
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "shape")
         assert reading.statistics == {}
@@ -594,7 +609,7 @@ class TestAReadingOfTheWrongShape:
     def test_a_scalar_that_is_not_finite_is_the_sensors_failure(self, given: float) -> None:
         """Recorded as a value it would be dropped by the analysis without a word."""
         throughput = Metric(name="throughput", unit="1/s", direction="higher", shape="scalar")
-        reading = running._reading(self._INTERACTION, "s", throughput, given)
+        reading = running.as_reading(self._INTERACTION, "s", throughput, given)
         assert reading.failure is not None and reading.value is None
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "not_finite")
 
@@ -608,7 +623,7 @@ class TestAReadingOfTheWrongShape:
         """Regression: a NaN statistic was a ``shape`` failure, where a NaN scalar is
         ``not_finite``."""
         latency = Metric(name="latency", unit="ms", direction="lower", shape=shape)
-        reading = running._reading(self._INTERACTION, "s", latency, given)
+        reading = running.as_reading(self._INTERACTION, "s", latency, given)
         assert reading.failure is not None and reading.statistics == {}
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "not_finite")
 
@@ -618,7 +633,7 @@ class TestAReadingOfTheWrongShape:
     def test_a_scalar_int_too_large_for_a_float_is_not_finite(self, given: int) -> None:
         """Regression: ``float()`` raised OverflowError out of the run."""
         throughput = Metric(name="throughput", unit="1/s", direction="higher", shape="scalar")
-        reading = running._reading(self._INTERACTION, "s", throughput, given)
+        reading = running.as_reading(self._INTERACTION, "s", throughput, given)
         assert reading.failure is not None and reading.value is None
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "not_finite")
         assert "too large for a float" in reading.failure.message
@@ -632,7 +647,7 @@ class TestAReadingOfTheWrongShape:
     ) -> None:
         """Regression: ``float()`` raised OverflowError out of the run."""
         latency = Metric(name="latency", unit="ms", direction="lower", shape=shape)
-        reading = running._reading(self._INTERACTION, "s", latency, given)
+        reading = running.as_reading(self._INTERACTION, "s", latency, given)
         assert reading.failure is not None and reading.statistics == {}
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "not_finite")
         assert "p99=" in reading.failure.message
@@ -649,7 +664,7 @@ class TestAReadingOfTheWrongShape:
         """Regression: ``float()`` raised OverflowError out of the sense step, failing the
         run's sensing where one reading was meant to fail."""
         share = Metric(name="tests_pass_share", unit="ratio", direction="higher", shape="count")
-        reading = running._reading(self._INTERACTION, "s", share, given)
+        reading = running.as_reading(self._INTERACTION, "s", share, given)
         assert reading.failure is not None and reading.statistics == {}
         assert (reading.failure.owner, reading.failure.reason) == ("sensor", "shape")
 
@@ -670,13 +685,13 @@ class TestAReadingOfTheWrongShape:
             async def sense(self, interaction: Any, *, truth: Any, options: Any) -> Any:
                 return given
 
-        measured = await running._measure(Odd(), self._INTERACTION, {}, {})
+        measured = await running.measure(Odd(), self._INTERACTION, {}, {})
         assert isinstance(measured, Failure)
         assert (measured.owner, measured.reason) == ("sensor", "shape")
 
     def test_a_distribution_of_numbers_is_read(self) -> None:
         latency = Metric(name="latency", unit="ms", direction="lower", shape="histogram")
-        reading = running._reading(self._INTERACTION, "s", latency, {"p50": 3, "p99": 7.5})
+        reading = running.as_reading(self._INTERACTION, "s", latency, {"p50": 3, "p99": 7.5})
         assert reading.failure is None and reading.statistics == {"p50": 3.0, "p99": 7.5}
 
 
@@ -770,7 +785,7 @@ class TestWhoseFailureAtTheEdges:
         root = Root(registry=fake_registry())
         file = write_experiment(experiment())
         examined = ix.application.experiments.examine(
-            yaml.safe_load(file.read_text()), root.vocabulary(file.parent), base=str(file.parent)
+            yaml.safe_load(file.read_text()), root.vocabulary(file.parent)
         )
         prepared = running.prepare(
             examined, root.vocabulary(file.parent), None, run="r", base=str(file.parent),
@@ -855,9 +870,7 @@ def test_a_trial_cancelled_mid_flight_by_matrix_still_releases_its_subject(
     root = Root(registry=fake_registry())
     file = write_experiment(experiment())
     vocabulary = root.vocabulary(file.parent)
-    examined = ix.application.experiments.examine(
-        yaml.safe_load(file.read_text()), vocabulary, base=str(file.parent)
-    )
+    examined = ix.application.experiments.examine(yaml.safe_load(file.read_text()), vocabulary)
     prepared = running.prepare(
         examined, vocabulary, None, run="r", base=str(file.parent), now="", version="",
         exploratory=True,
@@ -980,6 +993,48 @@ class TestABrokenExtension:
         planned = root.plan(file)
         assert not planned.runnable
         assert any("s3_client" in reason for reason in planned.unimplemented)
+
+    def test_an_adapter_whose_constructor_raises_is_unbuildable_and_breaks_nothing_else(
+        self, write_experiment: Write
+    ) -> None:
+        """Regression: only a ``MatrixError`` from building an adapter was read as
+        "unbuildable"; any other exception from a third party's constructor escaped, and
+        since listing what is runnable builds every registered adapter, ``validate``,
+        ``plan`` and ``kinds`` raised it for every experiment, whether it used the kind or
+        not. Now the kind is unbuildable with its error, and the others are untouched."""
+
+        def explodes() -> Any:
+            raise RuntimeError("the acme sensor's licence server is down")
+
+        registry = fake_registry()
+        registry.register(POINTS["sensor"], "ix.v1.sensor.memory", explodes)
+        root = Root(registry=registry)
+        found = root.kinds()
+        assert "ix.v1.sensor.memory" not in found.runnable
+        why = found.unbuildable["ix.v1.sensor.memory"]
+        assert "RuntimeError: the acme sensor's licence server is down" in why
+        unrelated = write_experiment(experiment(), "plain")
+        assert root.validate(unrelated).valid
+        assert root.plan(unrelated).runnable
+        assert root.run(unrelated, exploratory=True).status == "completed"
+        uses_it = write_experiment(experiment(metrics=["memory_peak"]), "memory")
+        assert not root.plan(uses_it).runnable
+        with pytest.raises(ix.ConfigError, match="licence server is down"):
+            root.run(uses_it, exploratory=True)
+
+    def test_listing_the_vocabulary_builds_each_adapter_once(self) -> None:
+        """Regression: ``vocabulary()`` built every registered adapter twice (once for the
+        kinds, once for what is runnable), and every command lists it."""
+        built: list[int] = []
+
+        def counted() -> Any:
+            built.append(1)
+            return FakeTiming()
+
+        registry = fake_registry()
+        registry.register(POINTS["sensor"], "ix.v1.sensor.memory", counted)
+        Root(registry=registry).vocabulary()
+        assert len(built) == 1
 
     def test_an_adapter_not_of_its_ports_shape_is_refused_when_it_is_registered(
         self, write_experiment: Write

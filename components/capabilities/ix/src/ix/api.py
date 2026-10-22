@@ -129,7 +129,8 @@ def run(
     the options only the real runtime takes set aside, each noted in ``Report.stood_in``. It
     is exploratory, calls no model, and checks the harness, never the subject: its report
     gives no verdict and no indication. A subject with no stand-in (a ``process``) is
-    refused with :class:`ConfigError`.
+    refused with :class:`ConfigError`. The environment has no stand-in: it is brought up for
+    real (a ``compose`` stack's containers, a ``process`` environment's services).
 
     ``repeats`` runs a pilot with that many repeats in place of the file's, noted in
     ``Report.overridden``; only with ``exploratory`` or ``dry_run`` (else

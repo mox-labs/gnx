@@ -847,6 +847,25 @@ class TestFunctionTest:
             "refuses: returned 'xx' where TypeError was to be raised"
         ]
 
+    @pytest.mark.parametrize(
+        ("raises", "passes"),
+        [("Exception", False), ("any", False), ("SystemExit", True), ("BaseException", True)],
+    )
+    async def test_code_that_exits_does_not_pass_a_case_that_wants_an_error(
+        self, raises: str, passes: bool
+    ) -> None:
+        """Regression: ``raises: Exception`` and ``raises: any`` passed on any
+        ``BaseException``, so code that called ``sys.exit`` on every input passed every
+        must-raise case. ``Exception`` and ``any`` are an error the code raised; leaving the
+        process is ``SystemExit``, passed only where it is named."""
+        exits = "```python\nimport sys\ndef double(x):\n    sys.exit(0)\n```"
+        truth = {"function_name": "double", "test_cases": [{"input": "x", "raises": raises}]}
+        found = await self._run(exits, truth)
+        assert found.values["tests_passed"] is passes, found.detail
+        refuses = "```python\ndef double(x):\n    raise ValueError(x)\n```"
+        found = await self._run(refuses, truth)
+        assert found.values["tests_passed"] is (raises != "SystemExit"), found.detail
+
     async def test_code_that_raises_or_hangs_or_is_absent_scores_nothing(self) -> None:
         for text, said in [
             ("```python\nraise RuntimeError('boom')\n```", "did not load: RuntimeError: boom"),

@@ -58,6 +58,7 @@ from ix.adapters._out.matrix_agents import (
     Sessions,
     built,
     carried_out,
+    released,
     runtime_requirement,
 )
 from ix.domain.errors import IxError
@@ -126,9 +127,12 @@ class Call:
         )
         url = matrix.model_runtime_type_url(self.options.runtime)
         drives = tuple(self.runtimes.drives(MODEL_RUNTIME, self.options.runtime))
-        call = await matrix.call_model(
-            runtime, request, name=self.options.runtime, runtime_url=url, drives=drives
-        )
+        try:
+            call = await matrix.call_model(
+                runtime, request, name=self.options.runtime, runtime_url=url, drives=drives
+            )
+        finally:
+            await released(runtime)
         response: dict[str, Any] = {"prompt": prompt, "text": call.text, "refusal": call.refusal}
         if call.value is not None:
             response["value"] = call.value

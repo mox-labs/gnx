@@ -477,6 +477,19 @@ def test_every_type_reachable_from_a_public_result_is_exported_from_ix_domain() 
         assert getattr(ix.domain, name) is not None
 
 
+def test_an_exported_error_is_exported_with_its_base() -> None:
+    """Regression: ``SubjectError`` and ``HarnessError`` were exported and ``TrialError``,
+    the base an adapter catches both by, was not."""
+    import ix.domain
+
+    for name in ix.domain.__all__:
+        exported = getattr(ix.domain, name)
+        if isinstance(exported, type) and issubclass(exported, Exception):
+            for base in exported.__mro__[1:]:
+                if base.__module__.split(".")[0] == "ix":
+                    assert base.__name__ in ix.domain.__all__, (name, base.__name__)
+
+
 # --- the map: every module in a layer, and each rule biting ---------------------------------
 
 PACKAGE = SRC.parents[1]

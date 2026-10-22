@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,16 +30,27 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 import ix
 from ix.adapters._in.cli import main
+from ix.adapters._out.matrix_agents import Loop
 from ix.adapters._out.otel_tracing import OtelTracer
-from ix.composition import Root
+from ix.composition import Root, using
 from ix.composition.extension import register
 from ix.composition.settings import IxSettings
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 PACKAGE = Path(__file__).resolve().parents[1]
 EXAMPLE = PACKAGE / "examples" / "harness-integrity"
+
+
+#: The ``commands_on`` fixture: run the ``ix`` command (and the library functions) on a root.
+type CommandsOn = Callable[[Root], Root]
+
+
+@pytest.fixture
+def commands_on() -> Iterator[CommandsOn]:
+    with ExitStack() as stack:
+        yield lambda root: stack.enter_context(using(root))
 
 
 def _settings(**fields: Any) -> matrix.Config[IxSettings]:
@@ -358,11 +370,15 @@ MOUNTING = "acme.v1.agent-runtime.mounting"
 
 
 class MountingConfig(BaseModel):
-    """A third party's agent runtime that mounts plugins, as claude-sdk does."""
+    """A third party's agent runtime that mounts plugins, as claude-sdk does, and fires a
+    skill through ``Skill``, as the scripted runtime does."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     plugins: tuple[dict[str, Any], ...] = ()
+
+    def capabilities(self) -> matrix.AgentCapabilities:
+        return matrix.AgentCapabilities(skill_tool="Skill", skills_dir="acme/skills")
 
 
 def _mounting() -> matrix.Registry:
@@ -550,12 +566,14 @@ class TestAVerdictIsTiedToWhatItJudged:
         registry = _registry(_fires())
         driving = "acme.v1.agent-runtime.over-pydantic"
 
-        def build() -> Scripted:
+        def build(config: ScriptedConfig) -> Scripted:
             runtime = Scripted()
             runtime.answer = _fires()
             return runtime
 
-        registry.register("agent-runtime", driving, build, drives=("pydantic", "acme-gone"))
+        registry.register(
+            "agent-runtime", driving, build, config=ScriptedConfig, drives=("pydantic", "acme-gone")
+        )
         lab = _routing(
             tmp_path, subjects={"catalog": {"kind": "agent-session", "runtime": driving}}
         )
@@ -574,12 +592,10 @@ class TestAVerdictIsTiedToWhatItJudged:
         assert by_url[SCRIPTED].drives == {}
 
     def test_report_and_runs_show_the_subjects_digests_and_commit(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, commands_on: CommandsOn
     ) -> None:
-        import ix.composition
-
         root = Root(registry=_mounting(), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         lab = _subject_lab(tmp_path)
         commit = _committed(lab)
         report = root.run(lab, exploratory=True)
@@ -794,6 +810,88 @@ class TestThirdPartyRuntimes:
         assert {j["runtime"] for j in on_a_session} == {SCRIPTED}
 
 
+class _Pooled:
+    """What a runtime holding connections per event loop (hardline's clients) is asked: the
+    loop each call or session ran in, then the loop each ``aclose()`` ran in."""
+
+    def __init__(self, log: list[list[tuple[str, object]]]) -> None:
+        self.events: list[tuple[str, object]] = []
+        log.append(self.events)
+
+    def used(self) -> None:
+        self.events.append(("used", asyncio.get_running_loop()))
+
+    async def aclose(self) -> None:
+        self.events.append(("closed", asyncio.get_running_loop()))
+
+
+class PooledModel(Oneshot, _Pooled):
+    async def call(self, request: matrix.ModelRequest) -> matrix.ModelCall:
+        self.used()
+        return await super().call(request)
+
+
+class PooledAgent(Scripted, _Pooled):
+    async def run(self, definition: matrix.AgentDefinition, task: str) -> matrix.AgentResponse:
+        self.used()
+        return await super().run(definition, task)
+
+
+POOLED_MODEL = "acme.v1.model-runtime.pooled"
+POOLED_AGENT = "acme.v1.agent-runtime.pooled"
+
+
+def _pooled(log: list[list[tuple[str, object]]]) -> matrix.Registry:
+    registry = _third_parties()
+
+    def model() -> PooledModel:
+        runtime = PooledModel(log)
+        runtime.answer = lambda prompt: '{"score": 0.7}' if "Rubric:" in prompt else "BANANA"
+        return runtime
+
+    def agent(config: ScriptedConfig) -> PooledAgent:
+        runtime = PooledAgent(log)
+        runtime.answer = lambda task: matrix.AgentResponse(
+            content='{"score": 0.6}' if "Rubric:" in task else "BANANA", num_turns=1
+        )
+        return runtime
+
+    registry.register("model-runtime", POOLED_MODEL, model)
+    registry.register("agent-runtime", POOLED_AGENT, agent, config=ScriptedConfig)
+    return registry
+
+
+class TestEachRuntimeIsClosedInTheLoopThatUsedIt:
+    """Regression (W6.8, ix's half): a ``model-call`` trial, a model judge's reading and
+    each agent round build a runtime and never closed it. hardline keeps a client per event
+    loop and can close it only in that loop, while it runs, so every one was left open
+    until garbage collection, and hardline warned of it when the loop ended."""
+
+    @pytest.mark.parametrize(
+        ("subject", "judge"),
+        [
+            ({"kind": "model-call", "runtime": POOLED_MODEL}, {"model_runtime": POOLED_MODEL}),
+            ({"kind": "agent-session", "runtime": POOLED_AGENT}, {"agent_runtime": POOLED_AGENT}),
+        ],
+    )
+    def test_each_built_runtime_is_closed_after_its_calls_in_their_loop(
+        self, tmp_path: Path, subject: dict[str, Any], judge: dict[str, str]
+    ) -> None:
+        log: list[list[tuple[str, object]]] = []
+        lab = _either(
+            tmp_path, subject, sensors=[{"kind": "judge", "rubric": "Helpful.", **judge}],
+            metrics=["judged_score"],
+        )  # fmt: skip
+        report = Root(registry=_pooled(log), settings=_settings()).run(lab, exploratory=True)
+        assert report.status == "completed"
+        used = [events for events in log if events]
+        assert len(used) >= 2 * 10  # a subject's and a judge's runtime for each trial
+        for events in used:  # each closed once, after its calls, in the loop they ran in
+            kinds = [kind for kind, _ in events]
+            assert kinds == ["used"] * (len(kinds) - 1) + ["closed"], kinds
+            assert len({loop for _, loop in events}) == 1
+
+
 class SandboxConfig(BaseModel):
     """A third party's agent runtime config. It takes an option of claude-sdk's name with a
     meaning of its own (``setting_sources``: where it reads its sandbox's settings from,
@@ -883,6 +981,44 @@ class TestCapabilitiesAreAsked:
         assert self._validated(tmp_path / "b", session, sensors=[{"kind": "activation"}]) == {
             ("subjects.it.runtime", "unobservable")
         }
+
+
+class SilentConfig(BaseModel):
+    """A third party's agent runtime that declares nothing of what its sessions do."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ToollessConfig(BaseModel):
+    """One that says its sessions load skills from settings, and names no tool that fires
+    one."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    def capabilities(self) -> matrix.AgentCapabilities:
+        return matrix.AgentCapabilities(settings_skills=True)
+
+
+class TestASkillToolNobodyNames:
+    """Regression: ``activation`` on an agent runtime that names no tool through which a
+    skill fires read every ``must_trigger`` probe as not fired, a confident ``fails`` and a
+    perfect score on the decoys, and validate said nothing."""
+
+    @pytest.mark.parametrize("config", [SilentConfig, ToollessConfig])
+    def test_activation_is_unobservable_until_the_tool_is_named(
+        self, tmp_path: Path, config: type[BaseModel]
+    ) -> None:
+        registry = _third_parties()
+        url = "acme.v1.agent-runtime.quiet"
+        registry.register("agent-runtime", url, lambda config: Scripted(), config=config)
+        session = {"kind": "agent-session", "runtime": url}
+        root = Root(registry=registry, settings=_settings())
+        lab = _either(tmp_path / "a", session, routing=True, sensors=[{"kind": "activation"}])
+        found = {(p.path, p.kind) for p in root.validate(lab).problems}
+        assert found == {("subjects.it.runtime", "unobservable")}
+        named = [{"kind": "activation", "tool": "Skill"}]
+        lab = _either(tmp_path / "b", session, routing=True, sensors=named)
+        assert root.validate(lab).problems == ()
 
 
 class ElsewhereConfig(BaseModel):
@@ -1169,6 +1305,146 @@ class TestADryRun:
         assert "Indication" not in result.stdout
 
 
+class Listening(Scripted):
+    """A scripted runtime that keeps, for each session, the system prompt and the task it
+    was given, as the agent would read them."""
+
+    heard: list[tuple[str | None, str]]
+
+    async def run(self, definition: matrix.AgentDefinition, task: str) -> matrix.AgentResponse:
+        self.heard.append((definition.system_prompt, task))
+        return self.answer(task)
+
+
+def _listening(heard: list[tuple[str | None, str]]) -> matrix.Registry:
+    """``SCRIPTED`` as a :class:`Listening` runtime that appends to ``heard``."""
+    registry = matrix.default_registry(discover=False)
+    register(registry)
+
+    def build(config: ScriptedConfig) -> Listening:
+        runtime = Listening()
+        runtime.answer, runtime.heard = _fires(), heard
+        return runtime
+
+    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
+    return registry
+
+
+class TestAPromptReachesTheAgentAsWritten:
+    """Regression: every ``{{`` and ``}}`` in a subject's or a probe's options was un-doubled
+    before the agent saw it, so a prompt holding nested JSON or a template was sent altered,
+    while the registration digested the text as written, and nothing said so."""
+
+    SYSTEM = 'Answer as {"verdict": {"ok": true}} only; {{x}} is the factor, here {x}.'
+    PROMPT = (
+        'Return JSON like {"a": {"b": 1}} and keep the line {{ user.name }} as it is.\n'
+        "{% for item in items %}- {{ item }}{% endfor %}\n"
+        "Write {{x}} literally; the level is {x}."
+    )
+
+    def test_nested_json_and_a_template_arrive_byte_for_byte(self, tmp_path: Path) -> None:
+        data = {
+            "name": "as-written",
+            "question": "Does the prompt reach the agent as written?",
+            "genre": "evaluate",
+            "subjects": {
+                "agent": {"kind": "agent-session", "runtime": SCRIPTED,
+                          "system_prompt": self.SYSTEM},
+            },
+            "factors": {"x": ["one"]},
+            "probes": [
+                {"id": "ask", "kind": "prompt", "prompt": self.PROMPT,
+                 "truth": {"expectation": "must_trigger", "expected_skill": "review"}},
+            ],
+            "primary": {"metric": "activated_correctly"},
+            "threshold": {"op": ">=", "value": 0.5},
+            "repeats": 5,
+        }  # fmt: skip
+        lab = tmp_path / "as-written"
+        lab.mkdir()
+        (lab / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+        heard: list[tuple[str | None, str]] = []
+        root = Root(registry=_listening(heard), settings=_settings())
+        found = root.validate(lab)
+        assert found.valid and not found.problems, found.problems
+        root.run(lab, exploratory=True)
+        assert set(heard) == {
+            (
+                'Answer as {"verdict": {"ok": true}} only; {x} is the factor, here one.',
+                'Return JSON like {"a": {"b": 1}} and keep the line {{ user.name }} as it is.\n'
+                "{% for item in items %}- {{ item }}{% endfor %}\n"
+                "Write {x} literally; the level is one.",
+            )
+        }
+
+    def test_a_loops_doubled_placeholder_is_its_text_in_the_next_round(
+        self, tmp_path: Path
+    ) -> None:
+        """A loop's prompt is filled twice, with the cell's levels and then by the session
+        with the round's ``{response}``: ``{{response}}`` is un-doubled once, by the last."""
+        lab = _routing(
+            tmp_path,
+            subjects={
+                "catalog": {
+                    "kind": "agent-session",
+                    "runtime": SCRIPTED,
+                    "loop": {
+                        "strategy": "self-review",
+                        "rounds": 2,
+                        "prompt": 'You said {response}; quote {{response}} as {"k": {"v": 1}}.',
+                    },
+                }
+            },
+        )
+        heard: list[tuple[str | None, str]] = []
+        Root(registry=_listening(heard), settings=_settings()).run(lab, exploratory=True)
+        assert {task for _, task in heard[1::2]} == {
+            'You said ok; quote {response} as {"k": {"v": 1}}.'
+        }
+        assert Loop(strategy="self-review", until="{{done}} {}").until == "{done} {}"
+
+
+class TestTheLiveGuardIsOnIxsPath:
+    """ix-tests F12: the workspace guard replaces the calls where a session or a model call
+    reaches a provider, and its own check reads only that the names are replaced. These
+    hold that a run through ix calls those very names, so the guard is in ix's path too. In
+    case one ever is not, each first points the provider at a closed port, away from this
+    user's config and keys."""
+
+    @pytest.fixture(autouse=True)
+    def _nowhere(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+        for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_a_claude_sdk_session_reaches_the_guard(
+        self, tmp_path: Path, refused_live_calls: list[str]
+    ) -> None:
+        lab = _either(tmp_path, {"kind": "agent-session", "runtime": "claude-sdk",
+                                 "runtime_options": {"setting_sources": []}})  # fmt: skip
+        report = Root(settings=_settings()).run(lab, exploratory=True)
+        refused = list(refused_live_calls)
+        refused_live_calls.clear()  # before anything can fail: what is left fails the test
+        assert report.trials.carried_out == 10
+        assert refused and set(refused) == {"claude_agent_sdk.query"}
+
+    def test_a_hardline_model_call_reaches_the_guard(
+        self, tmp_path: Path, refused_live_calls: list[str]
+    ) -> None:
+        row = {"backend": "openai-compat", "model": "q-1", "family": "q",
+               "base_url": "http://127.0.0.1:9/v1"}  # fmt: skip
+        settings = matrix.Config[IxSettings](
+            client=IxSettings(), matrix=matrix.MatrixConfig(models={"models": {"q": row}})
+        )
+        lab = _either(tmp_path, {"kind": "model-call", "runtime": "hardline", "model": "q"})
+        report = Root(settings=settings).run(lab, exploratory=True)
+        refused = list(refused_live_calls)
+        refused_live_calls.clear()  # before anything can fail: what is left fails the test
+        assert report.trials.carried_out == 10
+        assert refused and set(refused) == {"hardline.adapters._out._http.network_transport"}
+
+
 class TestATextCheck:
     """Regression: a rule like "the reply starts with BANANA" needed a graders module."""
 
@@ -1200,13 +1476,11 @@ class TestATextCheck:
 
 class TestThePlan:
     def test_a_threshold_out_of_reach_is_said_once(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, commands_on: CommandsOn
     ) -> None:
         """Regression: plan printed the "This run cannot hold" line twice."""
-        import ix.composition
-
         root = Root(registry=_registry(_fires()), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         lab = _routing(tmp_path, threshold={"op": ">=", "value": 0.9})
         runner = CliRunner(env={"COLUMNS": "80"})
         for _ in range(2):  # before any run, and with an earlier run's spread
@@ -1221,12 +1495,10 @@ class TestTheRunsList:
     """Regression: ``ix runs`` gave a run's id and path, and nothing it found."""
 
     def test_each_run_says_how_it_stood_and_what_it_found(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, commands_on: CommandsOn
     ) -> None:
-        import ix.composition
-
         root = Root(registry=_registry(_fires()), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         lab = _routing(tmp_path)
         root.register(lab)
         gated = root.run(lab)
@@ -1493,6 +1765,39 @@ class TestAReportCallsNoModel:
             assert "judge" in report.unread and "ix run" in report.unread
         assert judged == []  # two reports, no call
 
+    def test_a_report_runs_neither_the_agents_code_nor_the_graders(self, tmp_path: Path) -> None:
+        """Regression: only sensors that call a model were kept out of a report; ``outcome``
+        and ``function-test`` start processes (the experiment's graders, the agent's code),
+        so ``ix report``, a read command, ran them on every report of a stopped run."""
+        registry = _registry(_fires())
+        environment = "acme.v1.environment.goes-down"
+        registry.register("ix.environment", environment, _GoesDown)
+        lab = _routing(
+            tmp_path,
+            metrics=["tests_score"],
+            sensors=[{"kind": "outcome", "graders": "graders.py"}],
+            environment={"kind": environment},
+        )
+        ran_graders = tmp_path / "graders-ran"
+        (lab / "graders.py").write_text(
+            f"open({str(ran_graders)!r}, 'a').write('ran\\n')\nGRADERS = {{}}\n"
+        )
+        (lab / "kinds").mkdir()
+        (lab / "kinds" / "goes-down.yaml").write_text(
+            yaml.safe_dump(
+                {"schema": "ix.v1.kind", "name": environment, "summary": "Lost after a trial."}
+            )
+        )
+        root = Root(registry=registry, settings=_settings())
+        ran = root.run(lab, exploratory=True)
+        assert ran.status == "failed" and ran.trials.carried_out == 2
+        assert ran.readings == "none" and "outcome starts processes" in ran.unread
+        for _ in range(2):
+            report = root.report(ran.location)
+            assert report.readings == "none"
+            assert "outcome starts processes" in report.unread and "ix run" in report.unread
+        assert not ran_graders.exists()  # neither the run's own report nor the two after
+
     def test_a_run_whose_sensors_call_no_model_is_still_read_at_report_time(
         self, tmp_path: Path
     ) -> None:
@@ -1542,8 +1847,11 @@ class TestTelemetry:
         exporter = InMemorySpanExporter()
         provider = TracerProvider()
         provider.add_span_processor(SimpleSpanProcessor(exporter))
-        root = Root(registry=_registry(_fires()), settings=_settings())
-        root._tracer = OtelTracer("test", tracer_provider=provider)
+        root = Root(
+            registry=_registry(_fires()),
+            settings=_settings(),
+            tracer=OtelTracer("test", tracer_provider=provider),
+        )
         lab = _routing(tmp_path, repeats=5)
         root.plan(lab)
         report = root.run(lab, exploratory=True)
@@ -1660,12 +1968,12 @@ def _cautious_registry(answer: Callable[[str], matrix.AgentResponse]) -> matrix.
     registry = matrix.default_registry(discover=False)
     register(registry)
 
-    def build() -> Cautious:
+    def build(config: ScriptedConfig) -> Cautious:
         runtime = Cautious()
         runtime.answer = answer
         return runtime
 
-    registry.register("agent-runtime", SCRIPTED, build)
+    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
     return registry
 
 
@@ -1695,14 +2003,12 @@ class TestTheSecondDrive:
     """Regressions from a second agent driving ix and matrix from ``--skill`` alone."""
 
     def test_a_verdict_is_followed_by_its_exit_code_and_next_step(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, commands_on: CommandsOn
     ) -> None:
         """The run's exit code was learned only through ``ix report``: nothing printed it,
         or a next step, after a run that did not hold."""
-        import ix.composition
-
         root = Root(registry=_registry(_fires()), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         lab = _routing(tmp_path)
         root.register(lab)
         runner = CliRunner(env={"COLUMNS": "200"})
@@ -1720,11 +2026,10 @@ class TestTheSecondDrive:
         assert again.exit_code == 11 and "Exit 11 (inconclusive)" in again.stderr
 
     def test_the_report_says_what_the_evidence_shows_in_plain_words(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, commands_on: CommandsOn
     ) -> None:
         """The plan said "build30 is better than build20 on latency p50", the verdict was
         fails, and nothing said build30 was slower."""
-        import ix.composition
         from ix.domain import Decision, Finding, Interval
         from ix.domain.report import shows
 
@@ -1753,7 +2058,7 @@ class TestTheSecondDrive:
         assert "the interval holds 0, so the run does not show which is higher" in said
 
         root = Root(registry=_registry(_fires()), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         report = root.run(lab, exploratory=True)
         (said,) = report.shows
         assert said.startswith("catalog's activated_correctly is 0.667 [")
@@ -1807,14 +2112,12 @@ class TestTheSecondDrive:
         assert "Best case:    This run cannot hold: with 20 trials" in shown.stdout
 
     def test_a_runtime_warning_is_said_once_per_run(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, commands_on: CommandsOn, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The claude-sdk runtime's bypassPermissions warning was printed once per trial:
         twenty times in a pilot of twenty."""
-        import ix.composition
-
         root = Root(registry=_cautious_registry(_fires()), settings=_settings())
-        monkeypatch.setattr(ix.composition, "_DEFAULT", root)
+        commands_on(root)
         lab = _routing(tmp_path)
         with caplog.at_level("WARNING"):
             report = root.run(lab, exploratory=True)

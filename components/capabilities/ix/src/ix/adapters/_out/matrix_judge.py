@@ -51,6 +51,7 @@ from ix.adapters._out.matrix_agents import (
     AGENT_RUNTIME,
     MODEL_RUNTIME,
     STAND_IN,
+    released,
     runtime_requirement,
 )
 from ix.domain.kind import placeholders
@@ -222,10 +223,13 @@ class JudgeSensor:
         request = matrix.ModelRequest(prompt=task, system=SYSTEM, model=model)
         url = matrix.model_runtime_type_url(name)
         drives = tuple(self._runtimes.drives(MODEL_RUNTIME, name))
-        calls = [
-            await matrix.call_model(runtime, request, name=name, runtime_url=url, drives=drives)
-            for _ in range(repeats)
-        ]
+        try:
+            calls = [
+                await matrix.call_model(runtime, request, name=name, runtime_url=url, drives=drives)
+                for _ in range(repeats)
+            ]
+        finally:
+            await released(runtime)
         return [_Reply(call.text, call.family, call.model, None) for call in calls]
 
     async def _by_agent(
@@ -242,7 +246,10 @@ class JudgeSensor:
             url = matrix.agent_runtime_type_url(name)
             drives = tuple(self._runtimes.drives(AGENT_RUNTIME, name))
             judge = matrix.BoundAgent(definition, runtime, runtime_url=url, drives=drives)
-            replies = [await judge.run(task) for _ in range(repeats)]
+            try:
+                replies = [await judge.run(task) for _ in range(repeats)]
+            finally:
+                await released(runtime)
         return [_Reply(r.content, r.family, r.model, r.cost_usd) for r in replies]
 
     async def sense(

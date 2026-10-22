@@ -570,7 +570,7 @@ def _commands() -> str:
             "",
             "`<path>` is the experiment file, a directory holding `experiment.yaml`, or `-` "
             "for an experiment on standard input (it has no file to register beside, so it "
-            "runs only with `--exploratory`). Every "
+            "runs only with `--exploratory` or `--dry-run`). Every "
             "command takes `--json` and then prints one document with a `schema` field on "
             "stdout: `ix.v1.validation`, `ix.v1.plan`, `ix.v1.registered`, "
             "`ix.v1.deviations`, `ix.v1.report`, `ix.v1.runs`, `ix.v1.genres`, `ix.v1.kinds`. "
@@ -658,7 +658,7 @@ def _skill(genres: Genres, kinds: Kinds, version: str) -> str:
         f"# ix {version}: experiments that decide a question about a system\n\n"
         "ix answers a question about a system with an experiment. One YAML file names the "
         "question, the subjects, the probes and the metric that decides. ix checks the file, "
-        "shows the decision a run would inform and what it would cost, freezes the design "
+        "shows the decision a run would inform and how many trials it takes, freezes the design "
         "before anything runs, runs it one trial at a time, and reports a verdict: `holds`, "
         "`fails` or `inconclusive`. The system is a service (a program, an endpoint), an AI "
         "agent (a fresh session per trial on one of matrix's agent runtimes, graded by its "
@@ -769,7 +769,9 @@ whether it came from the experiment, the genre or ix.
   environment binds a service with: `{{<service>.url}}`, `.host`, `.port` (a `process`
   service's `url`, a `compose` service's published port). A loop's `prompt` fills
   `{{prompt}}`, `{{response}}`, `{{until}}` and `{{failures}}` itself. Anything else is
-  `unbound_placeholder`. `{{{{name}}}}` is the text `{{name}}`, for code in a prompt.
+  `unbound_placeholder`. `{{{{name}}}}` is the text `{{name}}`; every other brace is sent as
+  written, so JSON (`{{"a": {{"b": 1}}}}`) or a template (`{{{{ user.name }}}}`) in a prompt
+  reaches the agent unchanged.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the
   experiment, one file per probe (`.md`, `.yaml`): a markdown file's text is the prompt,
   and its frontmatter keys other than `id` (default: the file's name), `kind` (default
@@ -993,15 +995,17 @@ then the report (`ix.v1.report`) on stdout.
 - **Stopping.** Ctrl-C stops the trial in flight, stops everything the run started and
   exits {EXIT_CODES["run_interrupted"]} with the partial report. `ix report <run directory>`
   reads any run again, finished or not; a run that did not finish gives no verdict, and one
-  still running exits {EXIT_CODES["running"]}. A report calls no model: a run stopped
-  before its judge read is reported without readings (`unread` says why); run it again.
+  still running exits {EXIT_CODES["running"]}. A report calls no model and runs no code: a
+  run stopped before a judge, an `evaluator`, `function-test` or `outcome` read is reported
+  without readings (`unread` says why); run it again.
 - **Refused before anything starts**: any requirement of this host that does not hold: a
   command that is not there, an `auth` variable that is not set, `k6` missing for
   `http-load`, the docker daemon down for `compose`, an agent runtime that cannot start or
   cannot play its agent (the plan's `requirements`, each with `holds`, `why` and `fix`).
 - **A dry run gives no verdict.** `ix run <path> --dry-run` runs the file as written
   with every agent session and model call on matrix's `mock` runtime of its port (`ix
-  --skill -r agents`); a subject with no stand-in (a `process`) is refused. A run in which
+  --skill -r agents`); a subject with no stand-in (a `process`) is refused, and the
+  environment is brought up for real (a `compose` stack, a `process` service). A run in which
   a stand-in answered any trial, this way or with `runtime: mock` written in, measured the
   harness, not the subject: the
   report says `Dry run on mock replies` and gives neither a verdict nor an indication, and
@@ -1099,8 +1103,10 @@ probes and a metric. What makes it one is the kinds.
   `tool_usage_score` (`tool-usage`, option `tool`: a tool called by name or a program run
   through Bash; truth `expected_command`, the whole word, and `expected_args`), `tests_passed`,
   `tests_pass_share` and `tests_score` (`function-test`: truth `function_name`,
-  `test_cases` of `{{input, expected}}` or `{{input, raises}}`, and `tiers` that weigh
-  them; option `file` tests a collected file instead of the reply), `outcome_score` and
+  `test_cases` of `{{input, expected}}` or `{{input, raises}}` (`raises` names an exception
+  class or a base of it; `any` is `Exception`, so code that exits passes only where
+  `SystemExit` is named), and `tiers` that weigh them; option `file` tests a collected
+  file instead of the reply), `outcome_score` and
   `outcome_passed` (`outcome`, option `graders`: a Python module of your own whose
   `GRADERS` maps a probe id, or the truth's `grader`, to a function of the reply returning
   0 to 1; a probe with none is graded by the share of its truth's `expected_facts` the reply

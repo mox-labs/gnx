@@ -105,7 +105,7 @@ and the sensor from the metric: `timing` provides `latency`. `ix plan` shows eac
 where it came from, the decision first:
 
 ```
-delay-slower  compare (ix.v1.genre.compare)  plan 377ee022f5a4
+delay-slower  compare (ix.v1.genre.compare)  plan 7ec2dd8efab9
 Question:     Is a server that waits 50% longer per request faster than the one it would replace?
 Decides:      candidate is better than baseline on latency p50
 Comparison:   superiority
@@ -204,9 +204,9 @@ Work in this order:
 known worth, graded by `function-test` and by `outcome` with the experiment's own graders.
 `ix run examples/harness-integrity --exploratory` calls no model. A check of the reply's text
 (it starts with, contains, matches) needs no graders: the `text-match` sensor reads it from
-the probe's truth (`starts_with: BANANA`). `examples/catalog-routing`
-asks whether the right skill fires for a real ask and stays quiet for a decoy, with its
-probes as files in `probes/`. [Evaluating an agent](docs/how-to/evaluate-an-agent.md) walks
+the probe's truth (`starts_with: BANANA`). The repository's `lab/catalog-routing` asks
+whether the right skill fires for a real ask and stays quiet for a decoy, with its probes as
+files in `probes/`. [Evaluating an agent](docs/how-to/evaluate-an-agent.md) walks
 through an agent evaluation end to end.
 
 ## Genres
@@ -321,7 +321,8 @@ def register(registry):
   filled with the levels, the subject's options and its facets: a factor, an option every
   subject sets, or a facet every subject's kind offers (`{pid}`). A loop's `prompt` fills
   `{prompt}`, `{response}`, `{until}` and `{failures}` itself. `{{name}}` is the text
-  `{name}`;
+  `{name}`; every other brace is sent as written, so a prompt holding JSON
+  (`{"a": {"b": 1}}`) or a template (`{{ user.name }}`) reaches the agent unchanged;
 - **a model-judged metric never decides.** Whether a metric is judged is the sensor's
   declaration, not the author's. A judged metric is refused as `primary` and as a guardrail
   in every genre with a verdict (`judged_gate`); it can be reported under `metrics:`.
@@ -420,7 +421,9 @@ nothing under `--json`); the report goes to stdout.
   reason. A gate cannot pass on a design moved after it was registered.
 - **A dry run gives no verdict.** `ix run <path> --dry-run` runs the experiment as written
   with every agent session and model call on matrix's `mock` runtime of its port; a subject
-  with no stand-in (a `process`) is refused. A run in which a stand-in (a runtime registered
+  with no stand-in (a `process`) is refused. The environment has no stand-in: a dry run
+  brings it up for real (a `compose` stack's containers, a `process` environment's
+  services). A run in which a stand-in (a runtime registered
   as one, as the mocks are) answered any trial measured the harness,
   not the subject: the report says `Dry run on mock replies: checks the harness, not the
   agent`, with neither a verdict nor an indication, nor a probe screen, and the run is not
@@ -526,7 +529,8 @@ disk when its trial finishes, so a run that is killed outright keeps every trial
 finished. `ix report <run directory>` reads a run in any state. When a run ended before its
 sensors read the interactions (it was stopped or killed), the report reads them from the
 stored interactions and says `readings: derived`; nothing is written back. A report never
-calls a model: when a sensor the run used does (a `judge`), it reads none and says so
+calls a model or starts a process: when a sensor the run used may (a `judge`, an
+`evaluator`, or `function-test` and `outcome`, which run code), it reads none and says so
 (`unread`), and the readings come from running the experiment again. Keep `.ix/` out
 of version control.
 
@@ -699,6 +703,10 @@ call it from synchronous code; `on_event=` receives progress events, which are t
 Importing `ix` loads no host runtime: matrix is imported when a function is first called.
 Only ix's composition root and its `matrix_*` adapters name matrix.
 
+A program that wires its own adapters builds an `ix.composition.Root` over its own registry
+(`Root(registry=...)`; `tracer=` takes where ix's spans go), and `with
+ix.composition.using(root):` runs the library functions and the `ix` command on it.
+
 ### What a caller may rely on
 
 Before 1.0 a minor release may change anything, said in the changelog. Beyond the declared
@@ -771,6 +779,6 @@ cut short by Ctrl-C, which prints the error envelope instead.
 | [Evaluating an agent](docs/how-to/evaluate-an-agent.md) | An agent evaluation end to end: the subject, probes in files, sensors, a dry run, a pilot, the judge, and reading the report |
 | `ix --skill` | The skill an agent reads, with frontmatter so it is a `SKILL.md` as printed: what ix is for and when not to use it, install and prerequisites, a quick start that runs, the commands in order, the errors and exit codes with what to do next. Generated from what is installed |
 | `ix --skill -r NAME` | One reference the skill lists: `experiment` (every key and value form), `genres`, `kinds`, `running` (registration, running, the verdict), `agents` (an agent evaluation end to end), `problems` |
-| [Design record, 2026-10-19](docs/design/2026-10-19-record.md) | Why the verdict's statistics are what they are: each method with its source, and the simulations before and after |
+| [Design record, 2026-10-19](docs/design/2026-10-19-record.md) | Every design judgment ix rests on, one row each with its test and evidence: the verdict's statistics with their sources and simulations, the agent path, the runtime ports, what a verdict is tied to, requirements in place of effects, environments, the layer map, the evaluator sensor, and the owner's rulings they follow |
 | [CHANGELOG.md](CHANGELOG.md) | What each release changed |
 | [SECURITY.md](SECURITY.md) | What ix reads, writes, starts, runs and sends |

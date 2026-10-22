@@ -8,6 +8,7 @@ record, and what an agent needs to act sits within the first 5,000 tokens.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import re
 from pathlib import Path
@@ -108,8 +109,8 @@ class TestTheSkillIsASkill:
 
     def test_every_install_line_pins_this_release_s_tag(self) -> None:
         """ix is installed from its repository, never a package index: every install line, in
-        the skill, the README, the how-to and the repository's README, names the tag of the
-        release they describe, so a version bump without the tag fails here."""
+        the skill, the README, SECURITY.md, the how-to and the repository's README, names the
+        tag of the release they describe, so a version bump without the tag fails here."""
         source = (
             f"git+https://github.com/mox-labs/gnx@ix-v{ix.__version__}"
             "#subdirectory=components/capabilities/ix"
@@ -118,12 +119,13 @@ class TestTheSkillIsASkill:
         texts = {"skill": _skill()}
         for file in (
             package / "README.md",
+            package / "SECURITY.md",
             package / "docs" / "how-to" / "evaluate-an-agent.md",
             package.parents[2] / "README.md",
         ):
             if file.is_file():  # the repository's README, when run from the repository
                 texts[str(file)] = file.read_text(encoding="utf-8")
-        assert len(texts) in (3, 4), list(texts)
+        assert len(texts) in (4, 5), list(texts)
         for name, text in texts.items():
             lines = [
                 line
@@ -132,6 +134,14 @@ class TestTheSkillIsASkill:
             ]
             assert lines and all(source in line for line in lines), (name, lines)
             assert "pip install" not in text, name
+
+    def test_ix_speaks_http_through_the_stacks_one_client(self) -> None:
+        """Regression: ix was the one package on httpx, where the stack is httpx2 (owner
+        ruling, 2026-10-22), so every install carried two HTTP clients."""
+        from importlib.metadata import requires
+
+        names = {re.split(r"[ <>=!~;\[]", line, maxsplit=1)[0] for line in requires("ix") or ()}
+        assert "httpx2" in names and "httpx" not in names
 
     def test_there_are_no_extras_to_name(self) -> None:
         """Q13: ix and matrix bring every runtime and the OpenTelemetry SDK, so the package
@@ -285,12 +295,19 @@ class TestEveryClaimHolds:
                                   else example)  # fmt: skip
 
     def test_the_prerequisites_are_of_runnable_kinds_and_name_what_the_adapters_run(
-        self,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         runnable = {name.rsplit(".", 1)[1] for name in ix.kinds().runnable}
         assert set(PREREQUISITES) <= runnable
         assert inspect.signature(K6Load).parameters["binary"].default == "k6"
-        assert '"ps"' in inspect.getsource(group_rss_bytes)
+        # The memory sensor reads `ps` from PATH: with none it reads nothing, with one it
+        # reads what that one prints.
+        monkeypatch.setenv("PATH", str(tmp_path))
+        assert asyncio.run(group_rss_bytes(42)) is None
+        ps = tmp_path / "ps"
+        ps.write_text("#!/bin/sh\necho '   42   10'\necho '    7  999'\n")
+        ps.chmod(0o755)
+        assert asyncio.run(group_rss_bytes(42)) == 10 * 1024
         install = _skill().split("## Install and check", 1)[1].split("## Quick start", 1)[0]
         assert "`k6 version`" in install and "`ps`" in install
 
@@ -299,7 +316,7 @@ class TestEveryClaimHolds:
         declared = sorted(
             {name.rsplit(".", 1)[1] for name in set(kinds.kinds) - set(kinds.runnable)}
         )
-        assert declared  # agent evaluations are declared only in this build
+        assert declared == ["inspect-task"]  # declared, with no adapter: design record §13
         when = _skill().split("## When to use ix", 1)[1].split("## Install", 1)[0]
         assert ", ".join(f"`{label}`" for label in declared) in when
 

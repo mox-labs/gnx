@@ -182,7 +182,7 @@ class _Group(click.RichGroup):
 def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     """ix: one file declares a question about a system and how it will be answered.
 
-    ix checks the file, shows the decision a run would inform and what it would cost,
+    ix checks the file, shows the decision a run would inform and how many trials it takes,
     freezes the design before anything runs, then runs it and reports what the readings say
     about that decision.
 
@@ -367,7 +367,7 @@ def _print_plan(plan: ix.Plan, path: str) -> None:
 @_path_argument
 @_json_option
 def plan(path: str, as_json: bool) -> None:
-    """Show the decision a run would inform and what it would cost. Runs nothing.
+    """Show the decision a run would inform and how many trials it takes. Runs nothing.
 
     States the question, the hypothesis rendered from the genre, the guardrails and the form
     of the verdict; then the subjects with their roles, the trials with their arithmetic, the
@@ -942,7 +942,8 @@ def runs(path: str | None, as_json: bool) -> None:
     """List the runs kept beside an experiment, oldest first.
 
     PATH is the experiment file or its directory; without it, every experiment's runs under
-    the current directory (each .ix/runs below it), or under the settings' runs. Each line
+    the current directory (each .ix/runs of an experiment at most 6 directories below it),
+    or under the settings' runs. Each line
     is a run: its id, when it started, whether it was held to a registration (gated),
     exploratory or a dry run, how it ended, its verdict (or the indication of a run that
     gives none), its trials and the commit it ran from. Each run is a directory: pass it to

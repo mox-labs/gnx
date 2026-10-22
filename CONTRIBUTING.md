@@ -58,7 +58,9 @@ is marked `network` and runs only when asked, as recon's live tests do (`just re
 
 `just capabilities-test` lists every skip with its reason, and fails on a skip that
 conftest.py's `EXPECTED_SKIPS` does not name: a test that cannot run here is either made to
-run or named there with why.
+run or named there with why. So it fails on a machine without `k6` on `PATH`, or without a
+docker daemon running with `alpine:3.20` pulled: ix's end-to-end k6 tests and its live
+compose test need them (see Tools).
 
 ## One-time setup: wire the hooks
 

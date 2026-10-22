@@ -8,6 +8,7 @@ their stated error rates by simulation.
 from __future__ import annotations
 
 import math
+import statistics
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -22,7 +23,7 @@ from ix.domain.genre import AnalysisRef
 from ix.domain.run import Failure, Interaction, Reading, Trial, schedule
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from ix.application.experiments import Vocabulary
     from ix.domain.design import Design
@@ -35,7 +36,7 @@ class Tables:
     """A design, its schedule, and readings written by a rule."""
 
     def __init__(self, data: dict[str, Any], vocabulary: Vocabulary) -> None:
-        examined = examine(data, vocabulary, base=".")
+        examined = examine(data, vocabulary)
         assert examined.problems == (), examined.problems
         assert examined.experiment and examined.design and examined.probes
         self.design: Design = examined.design
@@ -138,7 +139,7 @@ class TestTheNumbers:
             def excludes(alpha: float, span: intervals.Span = span, bound: float = bound) -> bool:
                 return span(alpha)[0] > bound
 
-            searched = intervals._bisect(excludes)
+            searched = intervals.Span(span.at).above(bound)  # no closed form: searched
             assert span.above(bound) == pytest.approx(searched, rel=1e-6)
 
     @pytest.mark.parametrize("units", [100, 10_000])
@@ -150,14 +151,16 @@ class TestTheNumbers:
         test at the effective sample size. A count then held ``< 0.2`` while its own 95%
         interval contained 0.2."""
         span = intervals.clustered_rate([0, 0, 0, 0, units * 4 // 10], [units] * 5)
-        searched = intervals._bisect(lambda alpha: span(alpha)[1] < 0.2)
+        searched = intervals.Span(span.at).below(0.2)  # no closed form: searched
         assert span.below(0.2) == pytest.approx(searched, rel=1e-6)
         assert span.below(0.2) > 0.05 and span(0.05)[1] > 0.2
 
     def test_the_search_stops_at_its_floor(self) -> None:
-        assert intervals._bisect(lambda alpha: False) == math.inf
-        assert intervals._bisect(lambda alpha: True) == intervals.LEVEL_FLOOR
-        assert intervals._bisect(lambda alpha: alpha >= 0.2) == pytest.approx(0.2, rel=1e-6)
+        """A span with no closed form is searched for its level, down to the floor."""
+        span = intervals.Span(lambda alpha: (1.0, 2.0) if alpha >= 0.2 else (-1.0, 2.0))
+        assert intervals.Span(lambda alpha: (-1.0, 2.0)).above(0.0) == math.inf
+        assert intervals.Span(lambda alpha: (1.0, 2.0)).above(0.0) == intervals.LEVEL_FLOOR
+        assert span.above(0.0) == pytest.approx(0.2, rel=1e-6)
 
     def test_a_ratio_is_unbounded_when_its_denominator_is_not_shown_to_be_away_from_zero(
         self,
@@ -183,11 +186,26 @@ class TestTheNumbers:
         beyond = sum(1 for value in values if value <= 1400.0)
         assert level == pytest.approx(2 * intervals.sign_cdf(beyond, 3000), rel=1e-12)
 
-    def test_the_estimators(self) -> None:
-        values = [1.0, 2.0, 3.0, 10.0]
-        assert stats._COMBINE["mean"](values) == 4.0
-        assert stats._COMBINE["median"](values) == 2.5 and stats._median([3.0, 1.0, 2.0]) == 2.0
-        assert stats._COMBINE["min"](values) == 1.0 and stats._COMBINE["max"](values) == 10.0
+    @pytest.mark.parametrize(
+        ("estimator", "combine"),
+        [("mean", statistics.fmean), ("median", statistics.median), ("min", min), ("max", max)],
+    )
+    def test_each_estimator_combines_a_subjects_trials(
+        self,
+        compare_data: dict[str, Any],
+        vocabulary: Vocabulary,
+        estimator: str,
+        combine: Callable[[list[float]], float],
+    ) -> None:
+        """Characterized, where a min or a max may be estimated since nothing is decided."""
+        data = {**compare_data, "genre": "characterize", "factors": {"rate": ["80/s"]}}
+        del data["subjects"]["buffered"], data["comparison"], data["margin"]
+        data["primary"]["estimator"] = estimator
+        tables = Tables(data, vocabulary).measure({"streaming": 110.0}, wobble=10.0)
+        (estimate,) = tables.analyze().estimates
+        numbers = [r.statistics["p99"] for r in tables.readings]
+        assert estimate.estimator == estimator and len(set(numbers)) > 1
+        assert estimate.value == pytest.approx(combine(numbers))
 
 
 class TestCompare:
@@ -433,22 +451,22 @@ class TestGuardrailsAndCorrection:
             part="primary", metric="m", statistic="value", estimator="mean",
             form="superiority", claim="better",
         )  # fmt: skip
-        pair = [stats._Pending(decision, "holds", 0.03), stats._Pending(decision, "holds", 0.04)]
-        settled = stats._settle(pair)
+        pair = [stats.Pending(decision, "holds", 0.03), stats.Pending(decision, "holds", 0.04)]
+        settled = stats.settle_family(pair)
         assert [settled[item].outcome for item in pair] == ["holds", "holds"]
         assert {settled[item].allowed for item in pair} == {0.05}
 
-        failing = [stats._Pending(decision, "fails", 0.03), stats._Pending(decision, "fails", 0.04)]
-        settled = stats._settle(failing)
+        failing = [stats.Pending(decision, "fails", 0.03), stats.Pending(decision, "fails", 0.04)]
+        settled = stats.settle_family(failing)
         assert [settled[item].outcome for item in failing] == ["inconclusive", "inconclusive"]
         assert "corrected with 1 other" in settled[failing[0]].reason
 
-        alone = [stats._Pending(decision, "fails", 0.03)]
-        (single,) = stats._settle(alone).values()
+        alone = [stats.Pending(decision, "fails", 0.03)]
+        (single,) = stats.settle_family(alone).values()
         assert single.outcome == "fails" and single.allowed == 0.05
 
-        mixed = [stats._Pending(decision, "fails", 0.02), stats._Pending(decision, "holds", 0.04)]
-        settled = stats._settle(mixed)
+        mixed = [stats.Pending(decision, "fails", 0.02), stats.Pending(decision, "holds", 0.04)]
+        settled = stats.settle_family(mixed)
         assert [settled[item].outcome for item in mixed] == ["fails", "holds"]
         assert settled[mixed[0]].allowed == 0.025  # the first of two steps
 

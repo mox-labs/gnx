@@ -114,7 +114,7 @@ class NoSpansError(ValueError):
 
 
 @cache
-def _registry() -> dict[str, type[Evaluator[Any, Any, Any]]]:
+def evaluator_classes() -> dict[str, type[Evaluator[Any, Any, Any]]]:
     """pydantic-evals' evaluators, by the name a spec gives them: every concrete
     ``Evaluator`` its ``evaluators`` package exports (report evaluators are not)."""
     import pydantic_evals.evaluators as evaluators
@@ -139,7 +139,7 @@ def _evaluator_class(options: Mapping[str, Any]) -> type[Evaluator[Any, Any, Any
     """The evaluator class ``options`` names. Raises ValueError for a name pydantic-evals does
     not export."""
     name = str(options.get("evaluator", ""))
-    known = _registry()
+    known = evaluator_classes()
     if name not in known:
         raise ValueError(
             f"pydantic-evals has no evaluator named {name!r}; it has {', '.join(sorted(known))}"
@@ -339,7 +339,7 @@ class EvaluatorSensor:
                     kind="option_invalid",
                     message=str(error),
                     fix="name one of pydantic-evals' evaluators",
-                    allowed=sorted(_registry()),
+                    allowed=sorted(evaluator_classes()),
                     got=options.get("evaluator"),
                 )
             ]

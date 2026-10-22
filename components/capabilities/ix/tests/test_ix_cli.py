@@ -20,7 +20,7 @@ from click.testing import CliRunner, Result
 
 import ix
 from ix.adapters._in.cli import main
-from ix.application.skill import COMMANDS
+from ix.application.skill import COMMANDS, REFERENCES
 from ix.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS
 from ix.domain.problem import PROBLEM_KINDS
 
@@ -427,14 +427,13 @@ class TestPlanCommand:
     def test_nothing_is_printed_as_python_prints_it(
         self, evaluate_data: dict[str, Any], write_experiment: Write
     ) -> None:
-        for path in (EXAMPLES_DIR / "proxy-streaming", EXAMPLES_DIR / "catalog-routing",
-                     write_experiment(evaluate_data)):  # fmt: skip
+        for path in (EXAMPLES_DIR / "proxy-streaming", write_experiment(evaluate_data)):
             text = _run("plan", str(path)).stdout
             for repr_ in ("True", "False", "None", "('", "['", "{'"):
                 assert repr_ not in text, (path, repr_)
 
     def test_one_role_needs_no_role_column(self) -> None:
-        text = _run("plan", str(EXAMPLES_DIR / "catalog-routing")).stdout
+        text = _run("plan", str(_lab() / "catalog-routing")).stdout
         header = next(line for line in text.splitlines() if "subject" in line and "kind" in line)
         assert "role" not in header
         assert "catalog has activated_correctly >= 0.9" in " ".join(text.split())
@@ -475,7 +474,6 @@ class TestEightyColumns:
         "args",
         [
             ("plan", "examples/proxy-streaming"),
-            ("plan", "examples/catalog-routing"),
             ("genres",),
             ("kinds",),
         ],
@@ -484,7 +482,14 @@ class TestEightyColumns:
         self, args: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(PACKAGE)
-        result = _run(*args)
+        self._fits(_run(*args))
+
+    def test_an_agent_evaluations_plan_fits_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(_repository())
+        self._fits(_run("plan", "lab/catalog-routing"))
+
+    @staticmethod
+    def _fits(result: Result) -> None:
         assert result.exit_code == 0, result.stderr
         for line in result.stdout.splitlines():
             if line[:1] in set("┏┃┡│└┌├╭╰"):
@@ -644,7 +649,8 @@ class TestGenresAndKindsCommands:
         command = document["kinds"]["ix.v1.subject.process"]["options"]["command"]
         assert (command["type"], command["within"]) == ("command", "cwd")
         runtime = document["kinds"]["ix.v1.subject.agent-session"]["options"]["runtime"]
-        assert runtime["required"] and set(runtime["choices"]) == {"claude-sdk", "mock"}
+        assert runtime["required"]
+        assert set(runtime["choices"]) == {"claude-sdk", "pydantic-ai", "mock"}
         runtime = document["kinds"]["ix.v1.subject.model-call"]["options"]["runtime"]
         assert runtime["required"] and set(runtime["choices"]) == {"hardline", "mock"}
         assert load["options"]["rate"]["required_when"] == {"load_model": "open"}
@@ -706,7 +712,7 @@ def _lab() -> Path:
 
 
 class TestExamplesAndLab:
-    @pytest.mark.parametrize("example", ["proxy-streaming", "catalog-routing", "harness-integrity"])
+    @pytest.mark.parametrize("example", ["proxy-streaming", "harness-integrity"])
     def test_each_example_validates_and_plans_clean(self, example: str) -> None:
         path = str(EXAMPLES_DIR / example)
         validated = _run("validate", path, "--json")
@@ -735,18 +741,17 @@ class TestExamplesAndLab:
         assert needs["'k6' on PATH"] == ("probes.0",)
         assert any("environment" in by for by in needs.values())
 
-    def test_the_agent_evaluation(self) -> None:
-        _repository()  # the example mounts the repository's plugins
-        plan = ix.plan(EXAMPLES_DIR / "catalog-routing")
-        assert plan.genre == "evaluate" and plan.control is None
-        assert plan.probes.ids == ("decoy-clear-ask", "does-it-follow", "vague-ask")
-        assert plan.runnable, plan.unmet
-        assert plan.trials.total == 36
-        # 36 trials, every one passing, can show a pass rate above 0.9; 30 could not.
-        assert not plan.sensitivity.text.startswith("This run cannot hold")
-        assert {s.label for s in plan.sensors} == {"activation", "usage"}
-        (session,) = [r for r in plan.requirements if "agent runtime" in r.need]
-        assert session.needed_by == ("subjects.catalog",) and session.holds
+    def test_the_plan_the_readme_shows_is_what_ix_plan_prints(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the README's sample plan carried a digest from an earlier design."""
+        readme = (PACKAGE / "README.md").read_text(encoding="utf-8")
+        (sample,) = re.findall(r"```\n(delay-slower .*?)```", readme, re.S)
+        monkeypatch.chdir(PACKAGE)
+        printed = _run("plan", "examples/delay-server/slower.yaml").stdout.splitlines()
+        for line in sample.splitlines():
+            if line != "...":
+                assert line in printed, line
 
     def test_the_experiment_the_readme_shows_validates(self, tmp_path: Path) -> None:
         readme = (PACKAGE / "README.md").read_text(encoding="utf-8")
@@ -828,11 +833,22 @@ class TestExamplesAndLab:
             assert result.warnings == ()
             plan = ix.plan(path)
             assert plan.trials.total == plan.probes.count * plan.trials.repeats
+            # Every kind it uses has an adapter here; whether this host can start them (the
+            # claude CLI) is the plan's requirements.
+            assert plan.unimplemented == ()
+            assert plan.runnable is all(r.holds for r in plan.requirements)
 
     def test_the_labs_routing_experiment(self) -> None:
         plan = ix.plan(_lab() / "catalog-routing")
-        assert plan.genre == "evaluate" and plan.probes.count == 8
+        assert plan.genre == "evaluate" and plan.control is None and plan.probes.count == 8
         assert plan.decides == ("catalog has activated_correctly >= 0.9",)
+        assert plan.runnable, plan.unmet
+        # 40 trials, every one passing, can show a pass rate above 0.9; 30 could not.
+        assert plan.trials.total == 40
+        assert not plan.sensitivity.text.startswith("This run cannot hold")
+        assert {s.label for s in plan.sensors} == {"activation"}
+        (session,) = [r for r in plan.requirements if "agent runtime" in r.need]
+        assert session.needed_by == ("subjects.catalog",) and session.holds
 
 
 # --- run, report and runs ----------------------------------------------------------------
@@ -953,6 +969,13 @@ def test_the_progress_bar_stops_however_the_run_ends(
     assert bar.stopped
 
 
+def test_nothing_ix_says_prices_a_run() -> None:
+    """Regression: spend is removed (owner ruling, 2026-10-22), yet the skill, ``ix
+    --help`` and ``ix plan --help`` said ix shows what a run "would cost"."""
+    said = [ix.skill(), *(ix.skill(name) for name in REFERENCES), _help(), _help("plan")]
+    assert not [text for text in said if "would cost" in " ".join(text.split())]
+
+
 class TestStandardInputAndWarnings:
     def test_a_dash_reads_the_experiment_from_standard_input(
         self, compare_data: dict[str, Any]
@@ -966,6 +989,23 @@ class TestStandardInputAndWarnings:
         assert planned.exit_code == 0 and _json(planned)["registration"]["status"] == "none"
         refused = CliRunner().invoke(main, ["register", "-", "--json"], input=text)
         assert refused.exit_code == 3 and "standard input" in _error(refused)["message"]
+
+    def test_standard_input_runs_dry_or_exploratory_and_the_skill_says_both(
+        self, evaluate_data: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the skill said `-` runs only with ``--exploratory`` while the command
+        runs it with ``--dry-run`` too, and its help says so."""
+        monkeypatch.chdir(tmp_path)
+        text = yaml.safe_dump(evaluate_data)
+        dry = CliRunner().invoke(main, ["run", "-", "--dry-run", "--json"], input=text)
+        assert dry.exit_code == 0, dry.output
+        refused = CliRunner().invoke(main, ["run", "-", "--json"], input=text)
+        assert refused.exit_code == 15 and _error(refused)["kind"] == "unregistered"
+        said = "runs only with `--exploratory` or `--dry-run`"
+        skill = [ix.skill(), *(ix.skill(name) for name in REFERENCES)]
+        assert any(said in " ".join(text.split()) for text in skill)
+        assert not any("runs only with `--exploratory`)" in text for text in skill)
+        assert said in " ".join(_help("run").split())
 
     def test_an_envelope_says_when_checking_stopped_early(
         self, compare_data: dict[str, Any], write_experiment: Write

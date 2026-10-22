@@ -8,6 +8,7 @@ options:
     description: "the matrix agent runtime that runs the agent: one of the choices, or any agent runtime installed. There is no default, so a model provider is never called implicitly"
     choices:
       claude-sdk: the Claude Agent SDK, with tools; calls a model provider
+      pydantic-ai: pydantic-ai's agent loop, every model call through hardline; calls a model provider
       mock: canned replies; calls no model
   definition: {type: path, description: "a Claude Code agent file: its body is the system prompt; its tools, model and maxTurns apply unless set here"}
   model: {type: string, description: the model the agent uses}

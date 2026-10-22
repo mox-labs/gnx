@@ -497,7 +497,14 @@ def _decision(
         estimator=genre.design.estimator if genre else "mean",
         blocks=None if probes is None else repeats * len(probes.probes),
     )
-    if deciding.decides and deciding.blocks is not None and deciding.blocks < MIN_BLOCKS:
+    # Repeats under the genre's minimum are said once, by the genre's check (`_repeats`).
+    short = genre is not None and repeats < genre.design.repeats.min
+    if (
+        deciding.decides
+        and not short
+        and deciding.blocks is not None
+        and deciding.blocks < MIN_BLOCKS
+    ):
         problems.append(
             problem(
                 "repeats",
