@@ -107,13 +107,17 @@ def seconds(value: Any) -> float | None:
 
 def arrivals(value: Any) -> tuple[int, Literal["s", "m"]] | None:
     """A rate option as (arrivals, per second or per minute): ``80/s``, ``600/m`` or a bare
-    number of arrivals per second. None when it is not a rate of at least one arrival."""
+    number of arrivals per second. None when it is not a whole number of at least one
+    arrival: ``2.5/s`` is written ``150/m``, never rounded."""
     if isinstance(value, bool):
         return None
     match = _RATE.match(str(value))
-    if match is None or round(float(match.group(1))) < 1:
+    if match is None:
         return None
-    return round(float(match.group(1))), "m" if match.group(2) == "m" else "s"
+    count = float(match.group(1))
+    if count < 1 or not count.is_integer():
+        return None
+    return int(count), "m" if match.group(2) == "m" else "s"
 
 
 class Metric(Record):
@@ -271,7 +275,7 @@ def _fits(value: Any, option: Option) -> bool:
 
 _EXAMPLES = {
     "duration": ", such as 60s or 2m",
-    "rate": ", such as 80/s or 600/m",
+    "rate": ", a whole number of arrivals such as 80/s or 600/m (2.5/s is 150/m)",
     "path": ", relative to the experiment's directory",
 }
 

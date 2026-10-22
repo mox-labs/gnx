@@ -308,7 +308,9 @@ A metric decision has two reductions: `statistic` reduces one trial's reading to
 (the p99 of a latency histogram) and `estimator` combines the trials (their mean; the rate
 of a boolean or a count). Both default. A verdict rests on a mean, a median (6 blocks or
 more) or a rate; `min` and `max` are measured, never decided on (`estimator_illegal`). A
-rate's margin is in points (`10pp`) or a share, never percent (`unit_mismatch`).
+rate's margin is in points (`10pp`) or a share, never percent (`unit_mismatch`), and below
+the whole range (`1`, `100pp`); a rate's threshold is a share between 0 and 1, never 0 or 1
+themselves (`invalid_value`).
 
 ## Extending
 
@@ -363,7 +365,8 @@ nothing under `--json`); the report goes to stdout.
   `--exploratory` runs it anyway; that run gives no verdict, its report shows what it found
   as an *indication*, and it exits 0.
 - **The exit code is the verdict**: 0 holds, 10 fails, 11 inconclusive. After the report,
-  stderr says the code, what it means and the next step; `exit` in `--json`.
+  stderr says the code, what it means and the next step; `exit` in `--json`. A run with no
+  verdict exits 0 only when none was asked for (`--exploratory`, `--dry-run`).
 - **The report says what the evidence shows**, beside the verdict and without changing it:
   `Shows: build30's latency p50 is higher than build20's by 29.6% [26.2%, 33.1%]; lower is
   better, so build30 is worse` (`shows`).
@@ -381,7 +384,9 @@ nothing under `--json`); the report goes to stdout.
   with every agent session on the `mock` runtime; a subject with no stand-in (a `process`)
   is refused. A run in which the `mock` runtime answered any trial measured the harness,
   not the subject: the report says `Dry run on mock replies: checks the harness, not the
-  agent`, with neither a verdict nor an indication, nor a probe screen.
+  agent`, with neither a verdict nor an indication, nor a probe screen, and the run is not
+  `gated`. A registered run in which a stand-in answered (`runtime: mock` written in) exits
+  16 (`simulated`), never 0: a gate on the exit code cannot pass on it.
 - **Stopping.** Ctrl-C (or SIGTERM) stops the trial in flight, kills the process groups the
   run started, and exits 12 with the partial report. A run the harness could not finish (an
   environment that did not come up, or went down between trials) exits 8. `ix report` of a
@@ -392,7 +397,7 @@ nothing under `--json`); the report goes to stdout.
   `Runnable: no` beforehand; they depend on the host, so they do not stop `ix register`.
 - **Failures have an owner.** A trial the subject failed (it exited, it was not up in time,
   it answered no request successfully within the measured time, it returned a different body; an agent session that
-  broke or was refused) counts against the subject. A trial the harness failed (k6 missing
+  broke, was refused or ran past its probe's `timeout`) counts against the subject. A trial the harness failed (k6 missing
   or broken, no request sent, a timeout, a stop request, an environment that went down, a
   model runtime that was unavailable, rate-limited or refused its credentials) is missing
   data. Every request sent in the measured time is waited for, past it if need be, until
@@ -481,9 +486,11 @@ every verdict.
    are unadjusted.
 5. **The A/A check.** Under A/A calibration the control runs twice in every block, and its
    second sample is compared with its first by the same method, at 1% shared out over every
-   such check. A control that differs from itself, or a check that cannot be made, makes
-   the run inconclusive and says why: the environment did not hold still enough to compare
-   in. The check never changes an interval.
+   such check. A control that reads the same in both samples of every block held still,
+   and passes. A control that differs from itself makes the run inconclusive: the
+   environment did not hold still enough to compare in. So does a check that cannot be
+   made, since nothing then shows that it did. The report says which. The check never
+   changes an interval.
 6. A subject that failed a trial of a cell fails that cell. In a comparison, a control that
    failed one makes the cell inconclusive instead, whatever the variant did. A model-judged
    metric never decides. ix's analyses take no parameters: a genre that gives one is warned
@@ -493,7 +500,9 @@ What the simulations show, on normal data, at the genres' minimum of 5 blocks an
 default of 10 (10,000 runs each): the 95% interval of a difference covers 94.7% of the
 time at both; a variant worse by exactly the margin holds 2.5% of the time (nominal 2.5%);
 a mean exactly on a threshold holds 2.4% and 2.8%; a stable environment fails the A/A check
-1.1% and 1.0% of the time (stated 1%).
+1.1% and 1.0% of the time (stated 1%). An error rate exactly on its threshold, over 1,000 or
+10,000 requests a trial whose failures cluster within trials, holds 1.9% to 3.9% of the time
+(4,000 runs each).
 
 What follows for two subjects that do not differ: under `superiority` the verdict is
 **inconclusive** (nothing was shown either way); under `non-inferiority` it **holds** once
@@ -507,11 +516,12 @@ latest run: a margin below it will rarely hold. For a pass rate held to a thresh
 passing cannot show it (30 trials can never show a rate above 0.9; 35 can).
 
 Known limits: fewer than 3 usable blocks on a side decide nothing (6 for a median); every
-trial reading the same number decides nothing; a one-sample t interval under-covers on
+trial reading the same number (on both sides, in a comparison) decides nothing; a one-sample t interval under-covers on
 strongly skewed per-trial numbers (a median is the remedy); a relative difference has no
 bounded interval when the control's mean is not distinguishable from zero; a difference of
 two rates does not use the pairing, so it is wider than it might be; a rate whose rare
-events come in bursts concentrated in a few trials is under-covered; Wilson's one-sided
+events come in bursts concentrated in a few trials is under-covered, and on its threshold
+holds up to 3.9% of the time where 2.5% is stated; Wilson's one-sided
 error oscillates with the number of trials, up to 3.9% where 2.5% is stated; the A/A check
 sees a shift, not every kind of instability; the memory peak is sampled, so a spike
 between two samples is missed.
@@ -607,8 +617,9 @@ the message. `"complete": false`, in a validation or an error, means checking st
 the file's shape: fix those problems and check again. Warnings travel inside the document
 (`warnings` in `ix.v1.validation` and `ix.v1.plan`). `ix validate` on an invalid file,
 `ix deviations` that finds any, and `ix run` or `ix report` of a run that fails, is
-inconclusive, was not held to a registration it moved away from, was stopped, could not
-finish or is still running are not failures: each prints its own document on stdout and
+inconclusive, was not held to a registration it moved away from, was answered by a stand-in
+where a gate was asked for, was stopped, could not finish or is still running are not
+failures: each prints its own document on stdout and
 exits non-zero. The envelope and the shared exit codes are every gnx capability's; ix's own
 kinds take 10 and up. `error.kind` is one of `unknown`, `usage`, `config`, `conflict`,
 `not_found`, `unregistered` or `interrupted`. `details` holds the wrong value (`value`) and
@@ -617,7 +628,7 @@ over.
 
 | Exit | Kind | Meaning |
 |------|------|---------|
-| 0 | `ok` | done; for validate, the experiment is valid; for run and report, the verdict holds or there is no verdict to give |
+| 0 | `ok` | done; for validate, the experiment is valid; for run and report, the verdict holds, or there is no verdict to give and none was asked for (exploratory or dry) |
 | 1 | `unknown` | a failure ix did not classify |
 | 2 | `usage` | a bad flag or argument |
 | 3 | `config` | the experiment is invalid, or it cannot be carried out here as written (a kind with no adapter, a subject that cannot start, an unsupported analysis): read the message and the fix |
@@ -630,6 +641,7 @@ over.
 | 13 | `running` | the run has not finished yet; report it again when it has |
 | 14 | `deviations` | the experiment differs from its registration (ix deviations); a run of it gave no gate result |
 | 15 | `unregistered` | ix run needs a registration, or --exploratory |
+| 16 | `simulated` | a stand-in (a mock runtime) answered a run held to its registration: it measured the harness, not the subject, and gives no gate result |
 | 130 | `interrupted` | the command itself was interrupted (Ctrl-C) before it finished: run it again |
 
 `run_interrupted` (12) is a run that was stopped and reported: `ix run` stopped by Ctrl-C

@@ -15,13 +15,14 @@ tighten it, so a finding under the child is still one under the parent.
 
 from __future__ import annotations
 
+import string
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError, model_validator
 
 from ix.domain import schema
-from ix.domain.kind import claim, placeholders, unreadable
+from ix.domain.kind import claim, unreadable
 from ix.domain.problem import Problem, from_validation_error, problem
 from ix.domain.schema import DeclarationFile, Record
 
@@ -88,7 +89,7 @@ class GenreDesign(Record):
     #: ``aa``: the control also runs against itself, a check that the environment held still.
     calibration: Calibration
     #: How the trials' numbers combine when the experiment names no estimator. A boolean
-    #: metric always combines as a rate.
+    #: or a count metric always combines as a rate.
     estimator: Literal["mean", "median", "min", "max"] = "mean"
     #: The standing of these choices, printed once under a plan.
     note: str = Field(min_length=1)
@@ -99,6 +100,13 @@ class AnalysisRef(Record):
 
     id: str = Field(min_length=1)
     params: dict[str, bool | int | float | str] = {}
+
+
+def _fields(form: str) -> list[str]:
+    """The names a hypothesis sentence fills, read as ``str.format_map`` reads it: a
+    positional ``{}`` is the name ``""``, ``{a.b}`` the name ``a.b``. Raises
+    :class:`ValueError` for a sentence it cannot read (a lone brace)."""
+    return [field for _, field, _, _ in string.Formatter().parse(form) if field is not None]
 
 
 class Genre(Record):
@@ -167,7 +175,14 @@ class Genre(Record):
             )
         legal = FORM_PLACEHOLDERS | set(names)
         for label, form in {"hypothesis_form": self.hypothesis_form, **self.comparisons}.items():
-            stray = sorted(set(placeholders(form)) - legal)
+            try:
+                fields = _fields(form)
+            except ValueError as error:
+                raise ValueError(
+                    f"{label} is not a sentence ix can fill ({error}); write a literal brace "
+                    "doubled, {{ or }}"
+                ) from error
+            stray = sorted(set(fields) - legal)
             if stray:
                 raise ValueError(
                     f"{label} refers to {stray}; a hypothesis sentence may refer to {sorted(legal)}"
@@ -189,9 +204,7 @@ class Genre(Record):
 
     def needs_margin(self, comparison: str | None) -> bool:
         """Whether ``comparison`` is stated in terms of a margin."""
-        return comparison is not None and "margin" in placeholders(
-            self.comparisons.get(comparison, "")
-        )
+        return comparison is not None and "margin" in _fields(self.comparisons.get(comparison, ""))
 
     @property
     def author_must_set(self) -> tuple[str, ...]:

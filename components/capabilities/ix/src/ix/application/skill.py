@@ -351,7 +351,8 @@ SHAPE_MARK = "# The shape of the file, not a file to validate."
 VALUE_FORMS: dict[str, tuple[str, tuple[str, ...]]] = {
     "duration": ("a number and a unit (ms, s, m, h), or a bare number of seconds",
                  ("500ms", "60s", "2m", "1h", "90")),
-    "rate": ("arrivals per second or per minute, or a bare number per second; at least one",
+    "rate": ("a whole number of arrivals per second or per minute, or a bare number per "
+             "second; at least one (2.5/s is 150/m)",
              ("80/s", "600/m", "20")),
     "margin": ("relative to the control, in percentage points, or a bare number in the "
                "metric's unit", ("5%", "10pp", "0.5")),
@@ -601,8 +602,9 @@ def _errors() -> str:
             "document as `warnings` (`ix.v1.validation`, `ix.v1.plan`).",
             "- Some outcomes are not failures, yet exit non-zero: an invalid experiment from "
             "`ix validate`, deviations found, and a run that fails, is inconclusive, was not "
-            "held to a registration it moved away from, stopped, could not finish or is still "
-            "running. Each prints its own document on stdout.",
+            "held to a registration it moved away from, was answered by a stand-in where a "
+            "gate was asked for, stopped, could not finish or is still running. Each prints its "
+            "own document on stdout.",
             "- Tolerate an error kind, a problem kind or a document field you do not know: "
             "each set grows. Refuse a `schema` whose major is not `v1`.",
             "",
@@ -730,7 +732,9 @@ whether it came from the experiment, the genre or ix.
 - **What a verdict can rest on.** A `mean`, a `median` (it needs 6 blocks, repeats x
   probes, in a cell: `repeats_below_min`) or a rate. A `min` or a `max` is measured and
   reported, never decided on (`estimator_illegal`). A rate's margin is in percentage points
-  (`10pp`) or a share (`0.05`), never in percent (`unit_mismatch`).
+  (`10pp`) or a share (`0.05`), never in percent (`unit_mismatch`), and below the whole range
+  (`1`, `100pp`). A rate's threshold is a share strictly between 0 and 1 (`0.9`, not `90%`
+  or `90`): one at 0 or 1 or beyond is passed by every rate or by none (`invalid_value`).
 - **Placeholders.** In an inline probe, `{{name}}` is a factor, or an option every subject
   sets; anything else is `unbound_placeholder`.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the
@@ -946,10 +950,13 @@ then the report (`ix.v1.report`) on stdout.
   with every agent session on the `mock` runtime (`ix --skill -r agents`); a subject with
   no stand-in (a `process`) is refused. A run in which a stand-in answered any trial,
   this way or with `runtime: mock` written in, measured the harness, not the subject: the
-  report says `Dry run on mock replies` and gives neither a verdict nor an indication.
+  report says `Dry run on mock replies` and gives neither a verdict nor an indication, and
+  the run is not `gated`. A registered run with `runtime: mock` written in exits
+  {EXIT_CODES["simulated"]} (`simulated`), never {EXIT_CODES["ok"]}.
   `ix runs` lists each run as `gated`, `exploratory` or `dry`.
 - **Failures have an owner.** A trial the *subject* failed (it died, it was not up in
-  time, it answered no request inside the measured window) counts against the subject. A
+  time, it answered no request inside the measured window, an agent session ran past its
+  probe's `timeout`) counts against the subject. A
   trial the *harness* failed (a tool broke, a timeout, an environment that went down) is
   missing data; an environment that went down also ends the run (exit
   {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be taken. The
@@ -976,7 +983,9 @@ the margin. Choose the comparison for the claim to be made.
   show it.
 - **The A/A check.** Where the genre calibrates, the control also runs against itself. If
   it differs from itself, or the check cannot be made, the run is `inconclusive` and
-  `analysis.reason` says why, whatever the variants did. It never widens an interval.
+  `analysis.reason` says which, whatever the variants did. A control that reads the same
+  number in both samples of every block held still, and passes. It never widens an
+  interval.
 - **Intervals are printed unadjusted**, at 95%; `allowed` is the level a decision was held
   to (the full 0.05 for `holds`, Holm's share for `fails`).
 """
@@ -1011,7 +1020,8 @@ probes and a metric. What makes it one is the kinds.
   frontmatter key but `id`, `kind`, `options` and `effects` is the truth sensors read
   (it never reaches the agent). Probe options, under `options:` in a file: `collect`
   (files the agent writes, kept for grading), `feedback` (tests a test-feedback loop shows
-  the agent), `mock_response` (the reply the `mock` runtime gives), `timeout` (600s).
+  the agent), `mock_response` (the reply the `mock` runtime gives), `timeout` (600s): a
+  session that runs past it fails the trial as the subject's (`overran`).
   An option written beside the truth is truth, which the probe never sees: validate says
   so (`truth_unclaimed`) and shows where it goes. `probes/review-ask.md`:
 

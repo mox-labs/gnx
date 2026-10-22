@@ -242,6 +242,22 @@ def clustered_covered(
     return hit / replications
 
 
+def clustered_false_holds(
+    trials: int, units: int, rate: float, correlation: float, replications: int, seed: int = 7
+) -> float:
+    """A pooled error rate whose truth is exactly its threshold: how often ``< rate`` holds,
+    with ``units`` requests per trial whose failures cluster as in
+    :func:`clustered_covered`."""
+    rng = random.Random(seed)
+    a = rate * (1 - correlation) / correlation
+    b = (1 - rate) * (1 - correlation) / correlation
+    held = 0
+    for _ in range(replications):
+        events = [rng.binomialvariate(units, rng.betavariate(a, b)) for _trial in range(trials)]
+        held += intervals.clustered_rate(events, [units] * trials).below(rate) <= 0.05
+    return held / replications
+
+
 # --- the fast checks -----------------------------------------------------------------------
 
 MINIMUM, DEFAULT = 5, 10
@@ -283,8 +299,11 @@ def test_a_stable_environment_rarely_fails_the_check() -> None:
 
 
 @pytest.mark.parametrize("trials", [10, 30, 60])
-def test_a_pass_rate_on_its_threshold_holds_no_more_often_than_stated(trials: int) -> None:
-    """Exact, not simulated: Wilson's one-sided error at the boundary, at 0.8 and 0.9."""
+def test_a_pass_rate_on_its_threshold_holds_at_most_4_percent_of_the_time(trials: int) -> None:
+    """Exact, not simulated: Wilson's one-sided error at the boundary, at 0.8 and 0.9. The
+    bound is 4%, not the stated 2.5%: Wilson's error oscillates with the number of trials,
+    up to 3.9% between 5 and 200, the record's named weakness. Changed name: it said "no
+    more often than stated" while allowing 1.5 points more."""
     for rate in (0.8, 0.9):
         assert wilson_false_holds(trials, rate) <= NOMINAL + 0.015
 
@@ -301,6 +320,15 @@ def test_zero_errors_never_make_an_interval_of_zero_width() -> None:
 def test_clustered_failures_are_covered_at_the_minimum() -> None:
     found = clustered_covered(MINIMUM, 0.01, 0.001, 600)
     assert found >= 0.95 - _tolerance(0.95, 600), found
+
+
+def test_a_count_on_its_threshold_over_many_units_holds_at_most_twice_as_often_as_stated() -> None:
+    """Regression: over 10000 requests a trial the score test's level is exactly 0, and the
+    decision stopped there, without the t test at the effective sample size; an error rate
+    on its threshold then held 22% of the time. Clustering this heavy is the record's named
+    weakness (it under-covers), so the bound is twice the nominal 2.5%, not the nominal."""
+    found = clustered_false_holds(MINIMUM, 10_000, 0.05, 0.01, 2000)
+    assert found <= 2 * NOMINAL, found
 
 
 # --- the full set --------------------------------------------------------------------------
@@ -347,3 +375,11 @@ def test_the_full_simulation() -> None:
             print(f"clustered rate {rate} correlation {correlation} trials {trials}: {found:.3f}")
             if correlation <= 0.001:  # heavier clustering is the record's named weakness
                 assert found >= 0.95 - _tolerance(0.95, 2000)
+    for trials in (5, 10):
+        for units, correlation in ((1000, 0.001), (1000, 0.01), (10_000, 0.001), (10_000, 0.01)):
+            found = clustered_false_holds(trials, units, 0.05, correlation, 4000)
+            print(
+                f"count on its threshold 0.05, {units} units, correlation {correlation}, "
+                f"trials {trials}: holds {found:.4f}"
+            )
+            assert found <= 2 * NOMINAL

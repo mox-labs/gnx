@@ -29,6 +29,76 @@
   `ix.run.halted` event and the trials component's `provides` entry are gone. A run is
   `interrupted` (exit 12) only when it is stopped.
 
+### Fixed
+
+- **A count's threshold decision at many units per trial.** Over thousands of units the
+  score test's level is exactly 0, and the decision stopped there instead of also reading
+  the t test at Korn and Graubard's effective sample size. A count could then hold `< 0.2`
+  while its own printed 95% interval contained 0.2. The level is now the larger of the two
+  whenever the bound lies inside (0, 1), as the interval is.
+- **A rate's margin and threshold are range-checked.** On a boolean or a count a bare
+  margin is a share, so `margin: 5` allowed a loss of 500 points and held for a variant
+  that lost 80; a threshold of `5`, or of 0 or 1, was passed by every rate or by none.
+  `validate` now refuses a rate margin of the whole range or more (`1`, `100pp`) and a rate
+  threshold outside (0, 1) as `invalid_value`. A rate threshold written in percent
+  (`90%`) is still `unit_mismatch`, and its fix now says the share (`0.9`), not "a bare
+  number".
+- **A/A with a control that reads the same every time.** A deterministic control (a size,
+  a count, a fixed suite's score) read the same number in both samples, the check found no
+  spread, could not be made, and made the run inconclusive with the reason "the environment
+  did not hold still enough". Such a control held still: the check passes. One whose second
+  sample reads the same amount off in every block differs from itself. A check that cannot
+  be made now says that nothing shows the environment held still, not that it moved.
+- **"No spread" in a relative comparison.** It was tested as exact proportionality between
+  the two sides, which constant readings such as 0.7 and 0.3 miss in binary; Fieller's
+  interval then had zero width and decided at a level of 0. It is now zero variance: every
+  block reading the same number on both sides decides nothing, as documented.
+- **A registered run a stand-in answered exits 16 (`simulated`), never 0.** An experiment
+  registered with `runtime: mock` written in ran held to its registration, gave no verdict
+  and exited 0, the code for `holds`, so a gate on the exit code passed a run that measured
+  nothing under test. It now exits with ix's own kind `simulated` (16, from 10 up as
+  `exit-codes.json` asks), and the report, `ix runs` and `RunSummary` say it was not
+  `gated` (`RunRecord.gated` and `RunRecord.stood_in` decide both). `--exploratory` and
+  `--dry-run` still exit 0: no gate was asked for.
+- **An agent session that runs past its probe's `timeout` is the subject's failure**
+  (`overran`), not a harness timeout. As missing data, an agent that hung on its hard
+  probes had exactly those trials left out, and its pass rate was computed over the probes
+  it finished: hanging on one probe of two and passing the other held `>= 0.8`. A runtime's
+  own `timeout` reason (a provider that did not answer) stays the harness's; ix's harness
+  timeout is now a backstop 30 s past the session's limit, for a session that does not
+  stop when its time is up.
+- **A count's estimator is `rate`.** A `count` metric took the genre's estimator, so the
+  plan, the registration and each decision said `mean` while the analysis pooled it as a
+  rate. Like a boolean, it now resolves to `rate` (`source: ix`), from the one default the
+  design, validation and the analysis share. A registration made before this release with
+  a count it names no estimator for differs from its plan: amend it.
+- **A genre's hypothesis sentence is read as `str.format` reads it.** The check saw only
+  `{identifier}`, so a positional `{}` or a lone brace loaded, then raised a bare
+  `ValueError` from every validate and plan of every experiment that named the genre. Such
+  a genre file is now refused when it loads (`genre_invalid`); a literal brace is written
+  doubled.
+- **Factor levels that read the same in a cell are one level.** Levels were told apart by
+  `repr` and cells by `str`, so `1` and `"1"` were accepted and their blocks merged into
+  one cell, keeping one trial of each block silently. Such levels are refused
+  (`invalid_value`).
+- **A rate of part arrivals is refused, not rounded.** `2.5/s` ran as 2/s and `0.6/s` as
+  1/s, with no notice. A `rate` is a whole number of arrivals per second or per minute
+  (`option_invalid`, whose fix says `2.5/s` is `150/m`).
+- **A reading outside its shape's domain is refused where it is made.** `Reading` accepted
+  a boolean of 2, negative events, more events than units and a statistic that is not
+  finite, and the analysis of such a row failed with a bare `math domain error`. Such a
+  reading is now a `ValueError` when it is built, and a stored run holding one is a damaged
+  record: `ix report` exits 3 (`config`) and names the file.
+- **An empty run says why it is inconclusive**: "no trial was carried out, so nothing was
+  measured", where the reason was empty.
+- **The median's interval is computed in linear time.** The sign test's tail was summed
+  again for every candidate order statistic, in big integers: one interval over 3,000
+  values took 50 s. It is summed once; the interval and its level are unchanged.
+- **`validate` refuses a run too thin for any interval.** It held a median to its 6 blocks
+  but no decision to the 3 every interval needs, so a third-party genre with `repeats.min`
+  1 validated and every decision of every run was then "too few". Fewer than 3 blocks
+  (repeats x probes) in a cell is `repeats_below_min` in a genre that decides.
+
 ### Kept
 
 - What a runtime reports a session cost stays a fact about the session: `cost_usd` in its

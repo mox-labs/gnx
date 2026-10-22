@@ -13,10 +13,11 @@ Only the first counts against the subject.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ix.domain import schema
 from ix.domain.experiment import Experiment, Level, ProbeSet, Shape, cells
@@ -134,6 +135,33 @@ class Reading(Stored):
     #: What the sensor said about this trial beyond its numbers (the skill that fired, the
     #: tests that failed), the same for each metric it read from the trial.
     detail: dict[str, Any] = {}
+
+    @model_validator(mode="after")
+    def _inside_its_shape(self) -> Self:
+        """A reading is refused outside its shape's domain: a boolean is 0 or 1, a scalar
+        and every statistic finite, a count whole ``events`` from 0 to ``units``."""
+        found = self._outside()
+        if found:
+            raise ValueError(
+                f"a {self.shape} reading of {self.metric} is outside its domain: {found}"
+            )
+        return self
+
+    def _outside(self) -> str:
+        if self.shape == "boolean" and self.value is not None and self.value not in (0, 1):
+            return f"{self.value!r} is neither true nor false"
+        if self.value is not None and not math.isfinite(self.value):
+            return f"{self.value!r} is not finite"
+        not_finite = sorted(name for name, v in self.statistics.items() if not math.isfinite(v))
+        if not_finite:
+            return f"{', '.join(not_finite)} not finite"
+        events, units = self.statistics.get("events"), self.statistics.get("units")
+        if self.shape == "count" and events is not None and units is not None:
+            if not (events.is_integer() and units.is_integer()):
+                return f"{events:g} of {units:g} is not a count of whole units"
+            if not 0 <= events <= units or units < 1:
+                return f"{events:g} events of {units:g} units is not 0 to all of at least 1"
+        return ""
 
     def number(self, statistic: str) -> float | None:
         """This trial's reading as one number under ``statistic``, or None when it has none.
@@ -297,6 +325,19 @@ class RunRecord:
     errors: tuple[str, ...] = ()
     #: Each table's kind and the file that holds it, for a reader with ``jq`` or SQL.
     tables: Mapping[str, str] = field(default_factory=dict)
+
+    @property
+    def stood_in(self) -> bool:
+        """A stand-in answered: the run was a dry run, or a stand-in (a mock runtime) answered
+        any of its trials. Such a run measured the harness, not the subject."""
+        return self.manifest.dry_run or any(i.simulated for i in self.interactions)
+
+    @property
+    def gated(self) -> bool:
+        """Held to its registration, and measuring the subject: a run a gate may read. The
+        manifest's ``gated`` is written before any trial, so a stand-in found answering
+        afterwards ungates it here."""
+        return self.manifest.gated and not self.stood_in
 
 
 class BindingsRow(Stored):

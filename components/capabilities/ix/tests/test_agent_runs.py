@@ -7,6 +7,7 @@ third party would register one: nothing here calls a model.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -152,6 +153,35 @@ class TestTheHarnessIntegrityCheck:
         # about whether the probe discriminates (tests/test_summaries.py holds the screen).
         assert report.screen == () and record.screen == ()
 
+    def test_a_registered_run_a_stand_in_answered_is_no_gate_and_never_exits_0(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: an experiment registered with ``runtime: mock`` written in ran held to
+        its registration, gave no verdict (a stand-in answered) and exited 0, the code that
+        says "holds": a gate reading the exit code passed a run in which nothing under test
+        was measured. It is not gated, and it exits ``simulated``."""
+        lab = tmp_path / "harness-integrity"
+        shutil.copytree(EXAMPLE, lab)
+        root = Root(settings=_settings())
+        root.register(lab)
+        report = root.run(lab)
+        assert report.simulated == "all" and report.verdict is None
+        assert report.gated is False and report.exit_kind == "simulated"
+        assert report.exit_code == ix.EXIT_CODES["simulated"] == 16
+        assert root.report(lab).exit_code == 16
+        (listed,) = root.runs(lab).runs
+        assert (listed.mode, listed.gated) == ("dry", False)
+
+    def test_a_dry_run_asked_for_is_no_gate_and_exits_0(self, tmp_path: Path) -> None:
+        """A dry run is asked for, as an exploratory run is: it gives no gate result and
+        none was wanted."""
+        lab = tmp_path / "harness-integrity"
+        shutil.copytree(EXAMPLE, lab)
+        root = Root(settings=_settings())
+        root.register(lab)
+        report = root.run(lab, dry_run=True)
+        assert report.gated is False and report.exit_code == 0
+
 
 def _rows(report: ix.Report, table: str) -> list[dict[str, Any]]:
     """The rows of one of a run's tables, as written."""
@@ -290,6 +320,59 @@ class TestTheHarnessCannotHideTheAgent:
             ("subjects.agent.permission_mode", "option_inapplicable"),
         }
         assert all("remove 'permission_mode' and 'skills'" in p.fix for p in found.problems)
+
+
+class Hanging(Scripted):
+    """A runtime whose agent never finishes a task that asks for something hard, and
+    answers every other one at once."""
+
+    async def run(self, definition: matrix.AgentDefinition, task: str) -> matrix.AgentResponse:
+        if "hard" in task:
+            await asyncio.sleep(60)
+        return self.answer(task)
+
+
+class TestASessionThatOverrunsItsBudget:
+    def test_is_the_subjects_failure_not_missing_data(self, tmp_path: Path) -> None:
+        """Regression: a session that ran past its probe's ``timeout`` was a harness timeout,
+        so missing data: an agent that hung on its hard probes had exactly those trials
+        left out, and its pass rate was computed over the probes it finished. Here it hangs
+        on one probe of two and passes the other, and ``>= 0.8`` held."""
+        registry = matrix.default_registry(discover=False)
+        register(registry)
+
+        def build() -> Hanging:
+            runtime = Hanging()
+            runtime.answer = lambda task: matrix.AgentResponse(
+                content=task, num_turns=1, stop="completed", family="scripted", model="s-1"
+            )
+            return runtime
+
+        registry.register("runtime", "acme.v1.runtime.hanging", build, effects={"model"})
+        data = {
+            "name": "hangs",
+            "question": "Does the agent answer each question?",
+            "genre": "evaluate",
+            "subjects": {"agent": {"kind": "agent-session", "runtime": "acme.v1.runtime.hanging"}},
+            "probes": [
+                {"id": probe, "kind": "prompt", "prompt": f"An {probe} question: say ok.",
+                 "timeout": "50ms", "truth": {"contains": "ok"}}
+                for probe in ("easy", "hard")
+            ],
+            "primary": {"metric": "text_matched"},
+            "threshold": {"op": ">=", "value": 0.8},
+            "repeats": 20,
+        }  # fmt: skip
+        lab = tmp_path / "hangs"
+        lab.mkdir()
+        (lab / "experiment.yaml").write_text(yaml.safe_dump(data))
+        report = Root(registry=registry, settings=_settings()).run(lab, exploratory=True)
+        assert report.indication == "fails"
+        assert [(f.owner, f.reason, f.count) for f in report.analysis.failures] == [
+            ("subject", "overran", 20)
+        ]
+        (finding,) = report.analysis.findings
+        assert finding.reason == "the subject failed 20 of 40 trial(s)"
 
 
 class TestADryRun:

@@ -20,13 +20,13 @@ from pydantic import Field
 
 from ix.domain import schema
 from ix.domain.experiment import (
-    ESTIMATORS,
     STATISTICS,
     Guardrail,
     Level,
     Margin,
     MetricRef,
     Threshold,
+    default_estimator,
 )
 from ix.domain.genre import CONTROL, AnalysisRef, Calibration, Order, VerdictForm
 from ix.domain.kind import Confusion, Metric, check_options
@@ -607,13 +607,10 @@ def _reductions(
         sourced.append(_from("ix", path=f"{path}.statistic", value=statistic, note=note))
     if estimator is not None:
         sourced.append(_from("experiment", path=f"{path}.estimator", value=estimator))
-    elif metric is not None and metric.shape == "boolean":
-        estimator = ESTIMATORS["boolean"][0]
-        sourced.append(
-            _from(
-                "ix", path=f"{path}.estimator", value=estimator, note="booleans combine as a rate"
-            )
-        )
+    elif metric is not None and metric.shape in ("boolean", "count"):
+        estimator = default_estimator(metric.shape)
+        note = "booleans and counts combine as a rate"
+        sourced.append(_from("ix", path=f"{path}.estimator", value=estimator, note=note))
     elif metric is not None:
         estimator = genre.design.estimator
         sourced.append(_from("genre", path=f"{path}.estimator", value=estimator))

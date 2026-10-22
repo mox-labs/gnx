@@ -874,13 +874,16 @@ class TestRunReportAndRunsCommands:
         }  # fmt: skip
         assert EXIT_CODES["unregistered"] == 15 and EXIT_CODES["run_failed"] == 8
         assert EXIT_CODES["running"] == 13 and EXIT_CODES["deviations"] == 14
+        assert EXIT_CODES["simulated"] == 16
         assert ix.UnregisteredError("x").exit_code == 15
         help_text = " ".join(_help("run").split())
-        for said in ("--exploratory", "10 fails", "11 inconclusive", "exits 12", "exits 8"):
+        for said in ("--exploratory", "10 fails", "11 inconclusive", "exits 12", "exits 8",
+                     "exits 16"):  # fmt: skip
             assert said in help_text, said
         report_help = " ".join(_help("report").split())
         for said in ("10 fails", "11 inconclusive", "12 for a run that was stopped",
-                     "8 for one the harness", "13 for a run that is still running"):  # fmt: skip
+                     "8 for one the harness", "16 for a registered run a stand-in",
+                     "13 for a run that is still running"):  # fmt: skip
             assert said in report_help, said
 
 
@@ -898,6 +901,7 @@ def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     assert {kind: EXIT_CODES[kind] for kind in shared} == {kind: agreed[kind] for kind in shared}
     own = {kind: code for kind, code in EXIT_CODES.items() if kind not in agreed}
     assert all(10 <= code < 128 for code in own.values()), own
+    assert own["simulated"] == 16  # a registered run a stand-in answered is ix's own kind
     assert len(set(EXIT_CODES.values())) == len(EXIT_CODES)  # one kind to a code
     assert not set(own.values()) & set(agreed.values())
 

@@ -59,7 +59,8 @@ test's p-value where the interval inverts a test, otherwise searched down to 1e-
 **Calibration is a check.** Under A/A calibration the control runs twice in every block. The
 control's second sample is compared with its first, with the same method, at the level
 :data:`CHECK_LEVEL` shared out over every such check (Bonferroni), so a stable environment
-fails the check in at most one run in a hundred. A check that finds the control differing
+fails the check in at most one run in a hundred. A control that reads the same in both
+samples of every block held still, and passes. A check that finds the control differing
 from itself, or that cannot be made, makes the run inconclusive and says why. It never
 changes an interval.
 
@@ -97,7 +98,7 @@ from typing import TYPE_CHECKING, Literal
 
 from ix.domain import intervals
 from ix.domain.errors import ConfigError
-from ix.domain.experiment import ESTIMATORS, STATISTICS, Level
+from ix.domain.experiment import STATISTICS, Level, default_estimator
 from ix.domain.genre import CONTROL
 from ix.domain.intervals import MEDIAN_MIN, Span
 from ix.domain.run import CALIBRATION, cell_key, turns
@@ -256,7 +257,7 @@ class Analysis(Record):
     #: How many decisions Holm's procedure corrected together on the ``fails`` side.
     family: int = 0
     #: Holds only if every finding holds; fails if any fails; inconclusive, with ``reason``,
-    #: when the calibration check does not pass.
+    #: when the calibration check does not pass or no trial was carried out.
     outcome: Outcome | None = None
     reason: str = ""
     findings: tuple[Finding, ...] = ()
@@ -387,7 +388,7 @@ class _Data:
 
 def _reductions(ref: MetricRef | Guardrail, metric: Metric) -> tuple[str, str]:
     statistic = ref.statistic or STATISTICS[metric.shape][0]
-    estimator = ref.estimator or ESTIMATORS[metric.shape][0]
+    estimator = ref.estimator or default_estimator(metric.shape)
     return statistic, estimator
 
 
@@ -565,8 +566,7 @@ def _gap(
         return _Estimated(n, problem="the control's estimate is 0, so there is no relative "
                           "difference")  # fmt: skip
     value = (_mean(mine) - control_mean) / abs(control_mean) * 100
-    ratio = _mean(mine) / control_mean
-    if all(a == ratio * b for a, b in zip(mine, base, strict=True)):
+    if min(mine) == max(mine) and min(base) == max(base):
         return _Estimated(n, value, problem=_FLAT)
     # The relative difference is (R - 1), turned when the control's mean is negative.
     span = intervals.ratio(mine, base).scaled(100.0, -100.0)
@@ -792,6 +792,18 @@ def _check(data: _Data, asked: _Checked, level: float) -> CalibrationCheck:
         difference=gap.value,
         confidence=1 - level,
     )
+    if gap.span is None and gap.problem == _FLAT and gap.value is not None:
+        # Both samples read alike in every block: the control held still, or moved by the
+        # same amount every time. Either is plain without an interval.
+        if gap.value == 0:
+            return check.model_copy(update={"stable": True})
+        return check.model_copy(
+            update={
+                "stable": False,
+                "reason": "the control differs from its own second sample by the same amount "
+                "in every block",
+            }
+        )
     if gap.span is None:
         return check.model_copy(update={"reason": f"the check could not be made: {gap.problem}"})
     low, high = gap.span(level)
@@ -824,10 +836,14 @@ def _unsettled(checks: Sequence[CalibrationCheck]) -> str:
     for check in checks:
         if check.stable is not True:
             where = cell_key(check.cell)
+            consequence = (
+                "the environment did not hold still enough to read a difference in"
+                if check.stable is False
+                else "nothing shows the environment held still enough to read a difference in"
+            )
             return (
                 f"calibration: on {check.metric} {check.statistic} in cell {where}, "
-                f"{check.reason}; the environment did not hold still enough to read a "
-                "difference in"
+                f"{check.reason}; {consequence}"
             )
     return ""
 
@@ -858,7 +874,7 @@ def _estimates(data: _Data) -> tuple[Estimate, ...]:
             measures.setdefault((metric.name, measured.statistic, measured.estimator), measured)
     for metric in design.metrics:
         if not any(name == metric.name for name, _, _ in measures):
-            defaults = (STATISTICS[metric.shape][0], ESTIMATORS[metric.shape][0])
+            defaults = (STATISTICS[metric.shape][0], default_estimator(metric.shape))
             measures[(metric.name, *defaults)] = _Measure("primary", metric, *defaults)
     found = []
     for cell in data.cells:
@@ -1018,6 +1034,8 @@ def analyze(
         )
     checks = _calibration(data, asked.checks)
     unsettled = _unsettled(checks)
+    if not findings:
+        unsettled = "no trial was carried out, so nothing was measured"
     return base.model_copy(
         update={
             "family": sum(1 for item in settled if item.level is not None),

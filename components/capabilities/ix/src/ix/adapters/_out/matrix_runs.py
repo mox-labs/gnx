@@ -26,10 +26,11 @@ from matrix import (
     compose,
 )
 from matrix import NotFoundError as MatrixNotFoundError
+from pydantic import ValidationError
 
 from ix.adapters._out.matrix_errors import carried_over
 from ix.domain import schema
-from ix.domain.errors import IxError, NotFoundError
+from ix.domain.errors import ConfigError, IxError, NotFoundError
 from ix.domain.report import RunSummary
 from ix.domain.run import Interaction, Reading, RunManifest, RunRecord, RunStatus, Trial
 
@@ -181,6 +182,15 @@ class Runs:
                 fix="`ix runs <experiment>` lists the runs",
             )
         location = f"{self.root}/{run}"
+        try:
+            readings = tuple(Reading.model_validate(row) for row in construct.rows(schema.READING))
+        except ValidationError as error:
+            raise ConfigError(
+                f"run {run!r} in {self.root} holds a reading ix never writes: "
+                f"{error.errors()[0]['msg']}",
+                fix="the record is damaged; run the experiment again",
+                details={"path": f"{location}/{schema.READING}.jsonl"},
+            ) from error
         return RunRecord(
             run=run,
             location=location,
@@ -190,7 +200,7 @@ class Runs:
             interactions=tuple(
                 Interaction.model_validate(row) for row in construct.rows(schema.INTERACTION)
             ),
-            readings=tuple(Reading.model_validate(row) for row in construct.rows(schema.READING)),
+            readings=readings,
             ended_at=str(described.get("ended") or ""),
             errors=_errors(described),
             tables={
@@ -222,12 +232,8 @@ class Runs:
                     location=record.location,
                     experiment=record.manifest.experiment,
                     status=record.status,
-                    gated=record.manifest.gated,
-                    mode="dry"
-                    if record.manifest.dry_run
-                    else "gated"
-                    if record.manifest.gated
-                    else "exploratory",
+                    gated=record.gated,
+                    mode="dry" if record.stood_in else "gated" if record.gated else "exploratory",
                     started_at=record.manifest.started_at,
                     planned=len(record.trials),
                     carried_out=len(record.interactions),

@@ -72,6 +72,14 @@ ESTIMATORS: dict[str, tuple[str, ...]] = {
     "series": ("mean", "median", "min", "max"),
 }
 
+
+def default_estimator(shape: str, genre_estimator: str = "mean") -> str:
+    """The estimator a metric of ``shape`` combines its trials by when none is written: a
+    boolean or a count as a rate, whatever the genre says; anything else as the genre
+    says. The one default the design, validation and the analysis share."""
+    return ESTIMATORS[shape][0] if shape in ("boolean", "count") else genre_estimator
+
+
 #: Experiment fields that are prose for a reader. A change to one changes the experiment's
 #: digest and not the plan's.
 PROSE_FIELDS = frozenset({"question", "rationale"})
@@ -388,8 +396,12 @@ class Experiment(Record):
         for name, levels in factors.items():
             if not levels:
                 raise ValueError(f"factor {name!r} has no levels; give at least one")
-            if len(set(map(repr, levels))) != len(levels):
-                raise ValueError(f"factor {name!r} repeats a level")
+            # Told apart as a cell names them (cell_key), so 1 and "1" are one level.
+            if len(set(map(str, levels))) != len(levels):
+                raise ValueError(
+                    f"factor {name!r} repeats a level: levels that read the same in a cell "
+                    "(1 and '1') are one"
+                )
         return factors
 
     @field_validator("metrics")

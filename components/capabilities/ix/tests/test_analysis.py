@@ -8,6 +8,7 @@ their stated error rates by simulation.
 from __future__ import annotations
 
 import math
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -134,6 +135,19 @@ class TestTheNumbers:
             searched = intervals._bisect(lambda alpha, s=span, b=bound: s(alpha)[0] > b)
             assert span.above(bound) == pytest.approx(searched, rel=1e-6)
 
+    @pytest.mark.parametrize("units", [100, 10_000])
+    def test_a_pooled_rate_level_is_the_search_level_at_any_number_of_units(
+        self, units: int
+    ) -> None:
+        """Regression: with thousands of units per trial the score test over every unit
+        gives a level of exactly 0, and the clustered level stopped there, skipping the t
+        test at the effective sample size. A count then held ``< 0.2`` while its own 95%
+        interval contained 0.2."""
+        span = intervals.clustered_rate([0, 0, 0, 0, units * 4 // 10], [units] * 5)
+        searched = intervals._bisect(lambda alpha: span(alpha)[1] < 0.2)
+        assert span.below(0.2) == pytest.approx(searched, rel=1e-6)
+        assert span.below(0.2) > 0.05 and span(0.05)[1] > 0.2
+
     def test_the_search_stops_at_its_floor(self) -> None:
         assert intervals._bisect(lambda alpha: False) == math.inf
         assert intervals._bisect(lambda alpha: True) == intervals.LEVEL_FLOOR
@@ -147,6 +161,21 @@ class TestTheNumbers:
     def test_a_median_needs_six_values_at_95_percent(self) -> None:
         assert intervals.median([1.0, 2.0, 3.0, 4.0, 5.0])(0.05) == (-math.inf, math.inf)
         assert intervals.median([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])(0.05) == (1.0, 6.0)
+
+    def test_a_median_interval_over_thousands_of_values_takes_linear_time(self) -> None:
+        """Regression: the sign test's tail was summed again for every ``k``, in big
+        integers, so one interval over 3000 values took 50 s. The interval and its level are
+        the same; only the cost changed."""
+        values = [float((i * 7919) % 3001) for i in range(3000)]
+        started = time.perf_counter()
+        span = intervals.median(values)
+        low, high = span(0.05)
+        level = span.above(1400.0)
+        assert time.perf_counter() - started < 2.0
+        ordered = sorted(values)
+        assert (low, high) == (ordered[1445], ordered[3000 - 1446])
+        beyond = sum(1 for value in values if value <= 1400.0)
+        assert level == pytest.approx(2 * intervals.sign_cdf(beyond, 3000), rel=1e-12)
 
     def test_the_estimators(self) -> None:
         values = [1.0, 2.0, 3.0, 10.0]
@@ -353,6 +382,16 @@ class TestFailuresAndThinData:
         decision = found.findings[0].decisions[0]
         assert found.outcome == "inconclusive" and decision.decided_at is None
         assert decision.reason == "too few usable blocks (2; 3 needed)"
+
+    def test_a_run_of_no_trials_says_why_it_is_inconclusive(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: with no trials there were no findings, and the analysis was
+        inconclusive with an empty reason."""
+        tables = _compare(compare_data, vocabulary)
+        found = analyze(tables.design, [], [], [])
+        assert found.outcome == "inconclusive" and found.findings == ()
+        assert found.reason == "no trial was carried out, so nothing was measured"
 
     def test_no_readings_at_all_is_inconclusive_not_an_error(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
@@ -565,6 +604,7 @@ class TestCountsMediansAndTheCheck:
         ).analyze()
         guardrail = found.findings[0].decisions[1]
         assert guardrail.method == "clustered wilson" and guardrail.outcome == "holds"
+        assert guardrail.estimator == "rate"  # pooled as a rate, and labelled one
         assert guardrail.interval is not None and guardrail.interval.low == 0.0
         assert guardrail.interval.high == pytest.approx(3.84 / 10_003.84, rel=1e-2)
 
@@ -580,6 +620,30 @@ class TestCountsMediansAndTheCheck:
             {"buffered": (0, 1000), "streaming": (50, 1000)}, metric="error_rate"
         ).analyze()
         assert found.findings[0].decisions[1].outcome == "fails" and found.outcome == "fails"
+
+    def test_an_error_rate_bursting_in_one_trial_of_many_requests_does_not_hold(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: nine clean trials and one with 4000 errors in 10000 requests held a
+        bound of 20%, decided at 0, while the printed interval reached above 20%. The
+        trials, not the requests, are what vary here, and they do not rule 20% out."""
+        tables = self._guarded(
+            compare_data,
+            vocabulary,
+            {"metric": "error_rate", "threshold": {"op": "<", "value": 0.2}},
+        )
+        tables.measure({"buffered": (0, 10_000), "streaming": (0, 10_000)}, metric="error_rate")
+        burst = max(trial.seq for trial in tables.trials if trial.subject == "streaming")
+        tables.readings = [
+            reading.model_copy(update={"statistics": {"events": 4000.0, "units": 10_000.0}})
+            if reading.seq == burst and reading.metric == "error_rate"
+            else reading
+            for reading in tables.readings
+        ]
+        guardrail = tables.analyze().findings[0].decisions[1]
+        assert guardrail.interval is not None and guardrail.interval.high > 0.2
+        assert guardrail.outcome == "inconclusive"
+        assert guardrail.decided_at is not None and guardrail.decided_at > 0.05
 
     def test_a_rate_compared_in_points(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
@@ -658,6 +722,59 @@ class TestCountsMediansAndTheCheck:
         (check,) = found.calibration
         assert check.stable is None and "could not be made" in check.reason
         assert found.outcome == "inconclusive" and "could not be made" in found.reason
+        assert "did not hold still" not in found.reason  # nothing showed that it did not
+
+    @staticmethod
+    def _steady_control(tables: Tables, control: float, calibration: float) -> Tables:
+        """Every trial of the control reads ``control``, and of its second sample
+        ``calibration``, with no wobble; the variant keeps what it measured."""
+        steady = {"control": control, "calibration": calibration}
+        tables.readings = [
+            reading.model_copy(update={"statistics": {"p99": steady[reading.role]}})
+            if reading.role in steady
+            else reading
+            for reading in tables.readings
+        ]
+        return tables
+
+    def test_a_control_that_reads_the_same_in_both_samples_is_stable(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: a deterministic control (a size, a count, a fixed suite's score) read
+        the same number in both samples, the check found "no spread", could not be made,
+        and made the run inconclusive, saying the environment did not hold still."""
+        tables = _compare(compare_data, vocabulary, comparison="superiority", margin=None)
+        tables.measure({"buffered": 100.0, "streaming": 90.0})
+        found = self._steady_control(tables, 100.0, 100.0).analyze()
+        (check,) = found.calibration
+        assert check.stable is True and check.difference == 0.0 and check.reason == ""
+        assert found.outcome == "holds" and found.reason == ""
+
+    def test_a_control_whose_second_sample_reads_steadily_higher_differs_from_itself(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        tables = _compare(compare_data, vocabulary, comparison="superiority", margin=None)
+        tables.measure({"buffered": 100.0, "streaming": 90.0})
+        found = self._steady_control(tables, 100.0, 110.0).analyze()
+        (check,) = found.calibration
+        assert check.stable is False and check.difference == pytest.approx(10.0)
+        assert found.outcome == "inconclusive" and "differs from its own" in found.reason
+
+    @pytest.mark.parametrize(("control", "variant"), [(0.3, 0.7), (1.0, 3.0), (0.7, 0.3)])
+    def test_constant_readings_decide_nothing_whatever_their_ratio(
+        self, control: float, variant: float, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: "no spread" was tested as exact proportionality, ``a == ratio * b``,
+        which 0.7 and 0.3 miss in binary; Fieller's interval then had zero width and the
+        decision was made at a level of 0."""
+        found = (
+            _compare(compare_data, vocabulary, comparison="superiority", margin=None)
+            .measure({"buffered": control, "streaming": variant}, wobble=0.0)
+            .analyze()
+        )
+        (decision,) = found.findings[0].decisions
+        assert decision.outcome == "inconclusive" and "no spread" in decision.reason
+        assert decision.decided_at is None and decision.interval is None
 
 
 def test_a_run_whose_every_block_read_the_same_gives_no_spread(
