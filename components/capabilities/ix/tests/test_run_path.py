@@ -252,6 +252,46 @@ class _CountingStore(JsonlConstructStore):
         return cls(config.root)
 
 
+class TestWhatCallersRelyOn:
+    """The observable behaviours README's "What a caller may rely on" lists as contract,
+    pinned. The exit kinds and codes are pinned in ``test_ix_cli.py``
+    (``test_the_agreed_kinds_keep_their_agreed_codes``,
+    ``test_the_exit_codes_of_a_run_are_in_the_one_table``), and the span names in
+    ``test_agent_runs.py::TestTelemetry``."""
+
+    def test_a_runs_layout_and_table_names(self, root: Root, write_experiment: Write) -> None:
+        file = write_experiment(experiment())
+        report = root.run(file, exploratory=True)
+        location = Path(report.location)
+        assert location.parent == file.parent.resolve() / ".ix" / "runs"
+        assert location.name == report.run and location.name.startswith("fake-compare-")
+        tables = {kind: Path(path).name for kind, path in report.tables.items()}
+        assert {
+            kind: tables[kind]
+            for kind in ("ix.v1.run", "ix.v1.trial", "ix.v1.bindings", "ix.v1.interaction",
+                         "ix.v1.reading", "matrix.v1.ledger")
+        } == {
+            kind: f"{kind}.jsonl"
+            for kind in ("ix.v1.run", "ix.v1.trial", "ix.v1.bindings", "ix.v1.interaction",
+                         "ix.v1.reading", "matrix.v1.ledger")
+        }  # fmt: skip
+        assert (location / "run.json").is_file()
+
+    def test_the_events_and_their_fields(self, root: Root, write_experiment: Write) -> None:
+        seen: dict[str, set[str]] = {}
+        root.run(
+            write_experiment(experiment(repeats=5)),
+            exploratory=True,
+            on_event=lambda name, fields: seen.setdefault(name, set()).update(fields),
+        )
+        assert {name: fields for name, fields in seen.items() if name.startswith("ix.")} == {
+            "ix.environment.up": {"kind", "services"},
+            "ix.trial.start": {"seq", "total", "subject", "role", "probe", "cell"},
+            "ix.trial.end": {"seq", "total", "subject", "role", "failure", "duration_ms"},
+            "ix.sense.end": {"readings", "interactions"},
+        }
+
+
 class TestListingRuns:
     def test_each_run_is_read_once(self, write_experiment: Write) -> None:
         """Regression: listing read every record in full to summarize it, then again to

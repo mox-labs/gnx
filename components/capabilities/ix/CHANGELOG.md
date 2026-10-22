@@ -339,6 +339,9 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   then again to report it, and `ix plan` and `ix report <experiment>` did the same to find
   an experiment's runs. Each record is now read once, latest first where only the latest
   is wanted.
+- **What a caller may rely on is listed.** README names the run layout and table names,
+  the events and their fields, the span names and the exit kinds as contract, each pinned
+  by a test, and span attributes, the conventions' names and the human text as not.
 
 ## 0.5.0 — 2026-10-19
 
