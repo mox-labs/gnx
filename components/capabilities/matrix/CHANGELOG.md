@@ -277,6 +277,9 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Fixed
 
+- **A claude-sdk session's unreported usage is None, not 0.** A result without usage was
+  recorded as 0 input and 0 output tokens, and absent cache counts as 0, though a fact the
+  runtime did not report is None. Input tokens are the sum of what was reported.
 - **A malformed model registry is a config problem, exit 3.** hardline's own `ConfigError`
   escaped the `hardline` model runtime and the `pydantic-ai` agent runtime, so a typo in
   `matrix.models` exited 1 as kind `unknown`, telling the reader to report a bug in matrix.

@@ -452,25 +452,29 @@ def _response(definition: AgentDefinition, transcript: _Transcript) -> AgentResp
 
 
 def _facts(transcript: _Transcript, stop: str | None) -> AgentResponse:
-    """What a session's result message says, whether the session ended or failed."""
+    """What a session's result message says, whether the session ended or failed. A fact it
+    does not report is None."""
     result = transcript.result
     usage = getattr(result, "usage", None)
     usage = usage if isinstance(usage, dict) else {}
-    cache_read = int(usage.get("cache_read_input_tokens") or 0)
-    cache_write = int(usage.get("cache_creation_input_tokens") or 0)
+    read, write = (
+        _count(usage, "cache_read_input_tokens"),
+        _count(usage, "cache_creation_input_tokens"),
+    )
+    uncached = _count(usage, "input_tokens")
     native = getattr(result, "stop_reason", None)
     reply = getattr(result, "result", None)
     return AgentResponse(
         content=reply if isinstance(reply, str) else "",
         transcript=transcript.texts,
         tool_calls=transcript.tool_calls,
-        duration_ms=getattr(result, "duration_ms", 0) or 0,
+        duration_ms=getattr(result, "duration_ms", None),
         cost_usd=getattr(result, "total_cost_usd", None),
-        tokens_input=int(usage.get("input_tokens") or 0) + cache_read + cache_write,
-        tokens_output=int(usage.get("output_tokens") or 0),
-        cache_read_tokens=cache_read,
-        cache_write_tokens=cache_write,
-        num_turns=getattr(result, "num_turns", 0) or 0,
+        tokens_input=None if uncached is None else uncached + (read or 0) + (write or 0),
+        tokens_output=_count(usage, "output_tokens"),
+        cache_read_tokens=read,
+        cache_write_tokens=write,
+        num_turns=getattr(result, "num_turns", None),
         family=FAMILY,
         provider=PROVIDER,
         model=_answered(getattr(result, "model_usage", None), transcript.last_model),
@@ -479,6 +483,12 @@ def _facts(transcript: _Transcript, stop: str | None) -> AgentResponse:
         native_finish_reason=native,
         session_id=getattr(result, "session_id", None),
     )
+
+
+def _count(usage: dict[str, Any], key: str) -> int | None:
+    """``usage[key]`` as a count; None when the result does not report it."""
+    value = usage.get(key)
+    return None if value is None else int(value)
 
 
 def _answered(model_usage: Any, last: str | None) -> str | None:
