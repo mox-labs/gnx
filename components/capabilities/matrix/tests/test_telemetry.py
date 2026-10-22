@@ -90,9 +90,9 @@ def test_an_application_installs_the_sdk_from_the_variables(
 def test_console_export_never_writes_on_the_task_whose_span_ends(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Console spans were written by a SimpleSpanProcessor, so ending one wrote to stderr on
-    the task that ended it: the otel observer's ``around`` could block the work it wraps on
-    a full pipe (final review N5). Every exporter is batched, written from its own thread."""
+    """Regression: console spans were written by a SimpleSpanProcessor, so ending one wrote
+    to stderr on the task that ended it: the otel observer's ``around`` could block the work
+    it wraps on a full pipe. Every exporter is batched, written from its own thread."""
     from opentelemetry import trace
     from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SpanExportResult
 

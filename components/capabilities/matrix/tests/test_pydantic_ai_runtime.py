@@ -321,9 +321,9 @@ def _tooled(package: str, **tools: str) -> dict[str, Any]:
 async def test_a_tool_named_in_config_is_located_when_built_and_run_only_by_a_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every configured tool was imported when the runtime was built, so ``matrix check``
-    and ``plan`` ran its module, and its package's, while saying nothing was called (final
-    review N3). Building only locates the module; a session imports what it offers."""
+    """Regression: every configured tool was imported when the runtime was built, so
+    ``matrix check`` and ``plan`` ran its module, and its package's, while saying nothing was
+    called. Building only locates the module; a session imports what it offers."""
     package = _tool_package(tmp_path, monkeypatch)
     box = compose(
         MatrixConfig.model_validate(_tooled(package)), registry=default_registry(discover=False)
@@ -347,7 +347,7 @@ def test_check_and_plan_call_nothing_a_tool_s_module_included(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """``matrix check`` and ``matrix plan`` say nothing was called: a tool's module is not run
-    either, so a checkout's config cannot run code by being checked (final review N3)."""
+    either, so a checkout's config cannot run code by being checked."""
     package = _tool_package(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")

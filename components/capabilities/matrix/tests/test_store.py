@@ -704,9 +704,9 @@ def test_a_killed_run_once_read_says_interrupted_on_disk_and_reads_without_matri
 def test_a_dead_run_reads_as_interrupted_by_a_reader_who_cannot_write_it(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Finishing a dead run's record on read made reading it depend on writing it: on a
-    read-only mount, or another user's runs, ``describe`` and ``load`` raised StoreError, and
-    ``--from`` failed with them (final review N1). Finishing the record is best-effort: a
+    """Regression: finishing a dead run's record on read made reading it depend on writing
+    it: on a read-only mount, or another user's runs, ``describe`` and ``load`` raised
+    StoreError, and ``--from`` failed with them. Finishing the record is best-effort: a
     reader who cannot write reads it as it stands, ``interrupted``, from its whole lines."""
     runs = _killed_mid_write(tmp_path)
     directory = runs / "killed"
@@ -733,9 +733,9 @@ def test_a_dead_run_reads_as_interrupted_by_a_reader_who_cannot_write_it(
 def test_a_second_reader_while_a_dead_run_is_being_finished_does_not_read_it_as_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The reader finishing a dead run held the writer's lock, so a second reader in that
-    window took it for a live writer and reported ``running`` (final review N4). The second
-    reader waits for the first, then reads the record it finished."""
+    """Regression: the reader finishing a dead run held the writer's lock, so a second reader
+    in that window took it for a live writer and reported ``running``. The second reader
+    waits for the first, then reads the record it finished."""
     runs = _killed_mid_write(tmp_path)
     module = sys.modules[JsonlConstructStore.__module__]
     real = module._cut_torn_tail

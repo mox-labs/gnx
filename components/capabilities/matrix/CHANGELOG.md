@@ -117,6 +117,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Changed
 
+- **`Wiring.order()` is the plan's stages one after another**, and `Wiring.stages()` is new:
+  the components in stages, each those whose dependencies are all in earlier stages, as
+  `matrix plan` prints them. Both are views, not the schedule. `order()` is still one valid
+  order of work, but may differ from the one before: for `a`, `b` after `a`, and `c`, it was
+  `(a, b, c)` and is `(a, c, b)`.
 - **Console span export is batched**, as every other span exporter is. With
   `OTEL_TRACES_EXPORTER=console` (or `configure_telemetry(console=True)`), spans went through
   a `SimpleSpanProcessor`, which writes to stderr as each span ends; now that spans end on the
