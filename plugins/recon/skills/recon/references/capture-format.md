@@ -68,7 +68,7 @@ Another tool may write either kind, or a log anywhere else that a `capture` coll
 | `http` | `method`, `url` (with an `auth.param` query value redacted), and `body` for a JSON request body |
 | `web` | `method`, `url` |
 | `cli` | `commands` (each substituted command, in order), `cwd`, `exit_codes` |
-| `external` | the Claude Code hook payload minus `tool_response`: `tool_name`, `tool_input`, `tool_use_id`, `session_id`, `cwd`, `hook_event_name`, `mcp_server`, … |
+| `external` | the Claude Code hook payload minus `tool_response`: `tool_name`, `tool_input`, `tool_use_id`, `session_id`, `cwd`, `hook_event_name`, `mcp_server`, …, as given (a credential the tool took as an argument included) |
 
 ## Writing rules
 

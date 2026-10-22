@@ -33,7 +33,7 @@ dev = [
     { name = "opentelemetry-sdk", specifier = ">=1.20" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "recon", extras = ["otel"], editable = "recon" },
+    { name = "recon", editable = "recon" },
     { name = "ruff", specifier = ">=0.8" },
     { name = "types-pyyaml" },
 ]
@@ -2149,9 +2149,11 @@ version = "0.11.0"
 source = { editable = "recon" }
 dependencies = [
     { name = "duckdb" },
-    { name = "httpx" },
+    { name = "httpx2" },
     { name = "markitdown", extra = ["all"] },
     { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-sdk" },
     { name = "pydantic" },
     { name = "pytz" },
     { name = "pyyaml" },
@@ -2165,19 +2167,15 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
-otel = [
-    { name = "opentelemetry-exporter-otlp" },
-    { name = "opentelemetry-sdk" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "duckdb", specifier = ">=1.0,<2" },
-    { name = "httpx", specifier = ">=0.27" },
+    { name = "httpx2", specifier = ">=2.10,<3" },
     { name = "markitdown", extras = ["all"], specifier = ">=0.1.0" },
     { name = "opentelemetry-api", specifier = ">=1.27" },
-    { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.27" },
-    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.27" },
+    { name = "opentelemetry-exporter-otlp", specifier = ">=1.27" },
+    { name = "opentelemetry-sdk", specifier = ">=1.27" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytz", specifier = ">=2024.1" },
@@ -2187,7 +2185,7 @@ requires-dist = [
     { name = "tenacity", specifier = ">=9.0" },
     { name = "xmltodict", specifier = ">=0.13" },
 ]
-provides-extras = ["dev", "otel"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "referencing"

@@ -41,7 +41,8 @@ class TestValidPlans:
                         "type": "api",
                         "source": "s2",
                         "endpoint": "/search/{q}",
-                        "params": {"q": "attention"},
+                        "vars": {"q": "attention"},
+                        "params": {"limit": "5"},
                     },
                 ],
             },
@@ -53,8 +54,8 @@ class TestValidPlans:
         assert runs["scan-a"]["effects"] == ["subprocess"]
         assert runs["scan-a"]["commands"] == ["rg x", "rg y"]
         assert runs["q"]["effects"] == ["network"]
-        # Every params: entry is sent as a query parameter too, and the plan shows it.
-        assert runs["q"]["url"] == "https://api.example.test/search/attention?q=attention"
+        # vars: fill the endpoint and go nowhere else; params: are the query.
+        assert runs["q"]["url"] == "https://api.example.test/search/attention?limit=5"
         assert runs["q"]["type_url"] == "recon.v1.records"
         assert plan.effects() == ["network", "subprocess"]
 
@@ -218,7 +219,7 @@ class TestEveryProblemWithAPath:
                         "name": "i",
                         "type": "api",
                         "endpoint": "/repos/{owner}/{repo}/issues",
-                        "params": {"owner": "{owner}", "repo": "gnx"},
+                        "vars": {"owner": "{owner}", "repo": "gnx"},
                     }
                 ],
             },
@@ -414,15 +415,19 @@ class TestCheckingDoesNotStopEarly:
     """Every problem at once, and a plan that says when it could not check everything."""
 
     def test_an_unknown_key_does_not_mask_the_rest_of_its_collector(self, registry):
-        """Regression: a collector with both a misspelt key and an unknown type reported only
-        the key, so the type surfaced one fix later."""
-        plan = _plan({"collectors": [{"name": "c", "type": "ftp", "normalise": {}}]}, registry)
+        """Regression: a collector with a misspelt key reported only the key, so its other
+        problems surfaced one fix later."""
+        plan = _plan({"collectors": [{"name": "c", "type": "cli", "normalise": {}}]}, registry)
         kinds = {p.path: p.kind for p in plan.problems}
-        assert kinds == {
-            "collectors.0.normalise": "unknown_key",
-            "collectors.0.type": "name_unknown",
-        }
+        assert kinds == {"collectors.0.normalise": "unknown_key", "collectors.0.run": "missing_key"}
         assert plan.complete
+
+    def test_the_keys_of_a_type_not_installed_are_left_unjudged(self, registry):
+        """Changed requirement: which keys a collector may hold is its type's to say, so with
+        the type unknown its other keys cannot be judged; the plan says it is incomplete."""
+        plan = _plan({"collectors": [{"name": "c", "type": "ftp", "normalise": {}}]}, registry)
+        assert {p.path: p.kind for p in plan.problems} == {"collectors.0.type": "name_unknown"}
+        assert not plan.complete
 
     def test_an_unknown_key_nested_in_a_source_does_not_mask_its_collectors(self, registry):
         plan = _plan(
@@ -445,12 +450,12 @@ class TestCheckingDoesNotStopEarly:
     ):
         plan = _plan(
             {
-                "catalog": [{"name": "s", "type": "ftp", "url": "https://x"}],
+                "catalog": [{"name": "s", "type": "api", "url": ["https://x"]}],
                 "collectors": [{"name": "c", "type": "api", "source": "s", "endpoint": "/x"}],
             },
             registry,
         )
-        assert set(_paths(plan)) == {"catalog.0.type"}
+        assert set(_paths(plan)) == {"catalog.0.url"}
         assert not plan.complete
 
     @pytest.mark.parametrize("raw", [None, [], {"collectors": "x"}])
@@ -469,7 +474,7 @@ class TestProblemRecords:
                 "catalog": [{"name": "s", "url": "https://x"}, {"name": "s", "url": "https://y"}],
                 "collectors": [
                     {"name": "a", "type": "ftp", "source": "nowhere"},
-                    {"name": "b", "type": "cli", "run": "true", "method": "FETCH"},
+                    {"name": "b", "type": "api", "endpoint": "/x", "method": "FETCH"},
                     {"name": "c", "type": "cli", "run": "true", "normalize": {"t": "x|$nope"}},
                     {"name": "d", "type": "cli", "normalise": {}},
                 ],
@@ -550,3 +555,104 @@ class TestLocalSourcesAreRelativeToTheProject:
         assert problem.got == str(tmp_path / "does-not-exist")
         assert str(tmp_path) in problem.fix, "says what a relative url is relative to"
         assert {r.output: r.detail["cwd"] for r in plan.runs}["a"] == str(tmp_path / "here")
+
+
+class TestATypeOwnsItsSettings:
+    """Regression: every key an entry may hold was a field of ``CollectorEntry``, which
+    forbade the rest, so a collector type that needed a setting of its own needed an edit to
+    recon. A type declares the schema of its own keys; the plan validates them by it."""
+
+    @pytest.fixture
+    def plugins(self, registry):
+        from pydantic import BaseModel, ConfigDict
+
+        from recon.domain.collector import CollectorType
+
+        class SqlSettings(BaseModel):
+            model_config = ConfigDict(frozen=True, extra="forbid")
+            database: str
+            sql: str
+            timeout_ms: int = 1000
+
+        types = dict(registry.collector_types)
+        types["sql"] = CollectorType(
+            create=lambda ctx: None, effects=None, settings=SqlSettings,
+            source_kinds=frozenset({"sqlite"}),
+        )  # fmt: skip
+        return Plugins(types, registry.transforms, [])
+
+    def test_a_type_s_own_keys_plan_valid(self, plugins):
+        raw = {"collectors": [{"name": "q", "type": "sql", "database": "d.db", "sql": "SELECT 1"}]}
+        plan = build_plan(raw, plugins, {})
+        assert plan.valid, plan.problems
+        assert plan.config.collectors[0].settings == {"database": "d.db", "sql": "SELECT 1"}
+
+    def test_its_schema_says_what_is_wrong_with_them_each_at_its_path(self, plugins):
+        raw = {"collectors": [{"name": "q", "type": "sql", "sql": "x", "timeout_ms": "soon",
+                               "databse": "d.db"}]}  # fmt: skip
+        plan = build_plan(raw, plugins, {})
+        kinds = {p.path: p.kind for p in plan.problems}
+        assert kinds == {
+            "collectors.0.database": "missing_key",
+            "collectors.0.timeout_ms": "wrong_shape",
+            "collectors.0.databse": "unknown_key",
+        }
+        [unknown] = [p for p in plan.problems if p.kind == "unknown_key"]
+        assert {"database", "sql", "normalize", "type_url"} <= set(unknown.allowed)
+
+    def test_one_type_s_keys_are_not_another_s(self, plugins):
+        """``run`` is the cli type's, not the api type's: it is unknown on an api collector,
+        where it used to be accepted and ignored."""
+        raw = {
+            "catalog": [{"name": "s", "url": "https://x"}],
+            "collectors": [{"name": "a", "type": "api", "endpoint": "/x", "run": "true"}],
+        }
+        plan = build_plan(raw, plugins, {})
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.0.run", "unknown_key")
+        assert "endpoint" in problem.allowed and "run" not in problem.allowed
+
+    def test_extract_is_for_a_type_that_reads_a_body(self, plugins):
+        plan = build_plan(
+            {"collectors": [{"name": "c", "type": "cli", "run": "true", "extract": "data"}]},
+            plugins,
+            {},
+        )
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.0.extract", "unknown_key")
+
+
+class TestSourceKinds:
+    """The source kinds are open: a collector type adds the kinds it needs."""
+
+    def test_an_unknown_kind_is_a_plan_problem_naming_the_installed_kinds(self, registry):
+        """Rewritten from a test that pinned ``git`` being refused by the model: what is
+        required is that a kind nothing installed adds is a plan problem that names the
+        kinds there are."""
+        raw = {
+            "catalog": [{"name": "repo", "type": "git", "url": "https://github.com/x/y"}],
+            "collectors": [{"name": "c", "type": "cli", "run": "true", "source": "repo"}],
+        }
+        plan = _plan(raw, registry)
+        [problem] = plan.problems
+        assert (problem.path, problem.kind, problem.got) == (
+            "catalog.0.type",
+            "name_unknown",
+            "git",
+        )
+        assert problem.allowed == ("api", "local", "web")
+        assert "api, local, web" in problem.message
+
+    def test_a_kind_an_installed_type_adds_plans(self, registry):
+        from recon.domain.collector import CollectorType
+
+        types = dict(registry.collector_types)
+        types["sqlite"] = CollectorType(
+            create=lambda ctx: None, effects=None, source_kinds=frozenset({"sqlite"})
+        )
+        raw = {
+            "catalog": [{"name": "db", "type": "sqlite", "url": "data.db"}],
+            "collectors": [{"name": "c", "type": "sqlite", "source": "db"}],
+        }
+        plan = build_plan(raw, Plugins(types, registry.transforms, []), {})
+        assert plan.valid, plan.problems

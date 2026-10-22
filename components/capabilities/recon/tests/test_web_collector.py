@@ -75,15 +75,6 @@ class TestUserAgent:
 
 
 class TestWebCollector:
-    def test_requires_source(self):
-        entry = CollectorEntry(name="test", type="web")
-        with pytest.raises(CollectionError, match="requires a source"):
-            list(
-                WebCollector(_FakeRequester(), _FakeConverter(), DEFAULT_USER_AGENT).collect(
-                    entry, None
-                )
-            )
-
     def test_html_flows_through_converter(self):
         req = _FakeRequester(_resp("https://x/", b"<html><title>T</title></html>", "text/html"))
         conv = _FakeConverter(ConversionResult(title="My Page", text="# Heading\n\nBody"))

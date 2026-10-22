@@ -23,7 +23,8 @@ def record_hook_payload(log: CaptureLog, payload: Any) -> Capture:
       an ``mcp__<server>__<tool>`` name, else None
     - ``body`` is ``tool_response``: JSON-encoded unless it is already a string
     - ``request`` is the rest of the payload (``tool_input``, ``tool_use_id``,
-      ``session_id``, ...), so the capture records what was asked as well as the answer
+      ``session_id``, ...), so the capture records what was asked as well as the answer;
+      it is kept as given, a credential the tool took as an argument included
 
     Raises ConfigError when the payload is not a JSON object carrying the required fields.
     """

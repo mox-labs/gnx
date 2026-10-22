@@ -347,15 +347,17 @@ def _taught_sql() -> list[str]:
 def test_no_query_the_skill_teaches_is_refused_as_a_write(tmp_path: Path) -> None:
     """recon query runs SELECT statements only; nothing the skill teaches may be refused for
     that. A taught query may name a table this archive lacks, which is a different error."""
+    from recon.adapters._out.archive_files import ArchiveFiles
     from recon.adapters._out.duckdb_query import DuckdbQuery
+    from recon.adapters._out.system_clock import SystemClock
 
-    archive = tmp_path / "m" / "archive" / "2026-01-01-000000-000000"
-    archive.mkdir(parents=True)
-    (archive / "papers.jsonl").write_text('{"title": "q", "authors": ["a"]}\n')
+    store = ArchiveFiles(SystemClock())
+    archive = store.create(tmp_path / "m", "2026-01-01-000000-000000")
+    store.write_table(archive, "papers", (r for r in [{"title": "q", "authors": ["a"]}]))
     taught = _taught_sql()
     assert len(taught) > 10, taught
     for sql in taught:
         try:
-            DuckdbQuery().execute(archive, sql)
+            DuckdbQuery(store).execute(archive, sql)
         except recon.QueryError as error:
             assert "statements" not in error.details, sql

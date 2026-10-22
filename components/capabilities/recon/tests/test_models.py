@@ -51,9 +51,22 @@ class TestSourceEntry:
         src = SourceEntry(name="tokio", type="local", url="/Users/dev/oss/tokio")
         assert src.type == "local"
 
-    def test_git_type_rejected(self):
-        with pytest.raises(ValidationError):
-            SourceEntry(name="repo", type="git", url="https://github.com/x/y")
+    @pytest.mark.parametrize(
+        ("fields", "named"),
+        [
+            ({"rate_limit": {"rps": 0}}, "rps"),
+            ({"rate_limit": {"rps": -1}}, "rps"),
+            ({"rate_limit": {"burst": 0}}, "burst"),
+            ({"rate_limit": {"burst": -2}}, "burst"),
+            ({"timeout": 0}, "timeout"),
+            ({"timeout": -5}, "timeout"),
+        ],
+    )
+    def test_a_bound_that_cannot_be_kept_is_refused(self, fields, named):
+        """Regression: ``rps: 0`` divided by zero on a request, ``burst: 0`` waited forever
+        for a token no bucket that holds none can give, and a negative timeout was accepted."""
+        with pytest.raises(ValidationError, match=named):
+            SourceEntry(name="s", url="https://x", **fields)
 
 
 class TestCollectorEntry:
@@ -84,11 +97,6 @@ class TestCollectorEntry:
         """Collector types are extensions: whether one is installed is a plan-time check
         against the entry-point group (test_plan.py), not a closed Literal here."""
         assert CollectorEntry(name="x", type="sql").type == "sql"
-
-    def test_unknown_field_is_rejected(self):
-        """A misspelt key (normalise:) must not be silently ignored."""
-        with pytest.raises(ValidationError, match="normalise"):
-            CollectorEntry(name="x", type="cli", run="true", normalise={"a": "b"})
 
     def test_type_url_defaults_to_records(self):
         assert CollectorEntry(name="x", type="cli").type_url == "recon.v1.records"

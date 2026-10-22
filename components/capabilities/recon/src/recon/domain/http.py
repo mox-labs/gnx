@@ -1,8 +1,8 @@
 """HTTP in the domain: the HttpResponse value object, the Requester port, and how a request
 is reported.
 
-Adapters construct HttpResponse from httpx.Response (or any transport); collectors consume
-only the domain type and talk to the network only through a Requester. httpx stays in one
+Adapters construct HttpResponse from httpx2.Response (or any transport); collectors consume
+only the domain type and talk to the network only through a Requester. httpx2 stays in one
 adapter module.
 
 A request is reported in two places, a ``recon.http.request`` span's ``url.full`` and a

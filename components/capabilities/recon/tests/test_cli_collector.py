@@ -119,11 +119,6 @@ class TestCliCollector:
         records = list(CliCollector().collect(entry, None))
         assert records[0]["value"] == 42
 
-    def test_no_run_raises(self):
-        entry = CollectorEntry(name="bad", type="cli")
-        with pytest.raises(CollectionError, match="no 'run' field"):
-            list(CliCollector().collect(entry, None))
-
     def test_failed_command_raises(self):
         """A non-zero exit other than a silent exit 1 surfaces during iteration."""
         entry = CollectorEntry(

@@ -3,10 +3,11 @@
 HTTP is delegated to the injected Requester (shared rate-limited instance);
 conversion is delegated to the injected DocumentConverter (markitdown by
 default — handles HTML, PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP,
-images with OCR, audio transcription, YouTube).
+images with OCR, audio transcription). Everything it converts is what the
+Requester fetched: nothing more is fetched for a page.
 
 The collector is format-agnostic: same code path for a web page, a PDF
-URL, a DOCX download, or a YouTube transcript. Returns Iterator[dict] —
+URL or a DOCX download. Returns Iterator[dict] —
 yields one record, `{url, title, content, status_code, content_type}`, which a
 `normalize:` spec may reshape like any other.
 
@@ -18,9 +19,11 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict
+
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, Problem
+from recon.domain.errors import Problem
 from recon.domain.http import reported_url
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
 from recon.domain.substitution import find_unresolved
@@ -35,6 +38,18 @@ if TYPE_CHECKING:
     from recon.domain.models import CollectorEntry, SourceEntry
 
 _MAX_CONTENT_CHARS = 100_000
+
+
+class WebSettings(BaseModel):
+    """A ``web`` collector's own key: ``endpoint``, appended to the source's url."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    endpoint: str | None = None
+
+
+def _endpoint(entry: CollectorEntry) -> str | None:
+    return WebSettings.model_validate(entry.settings).endpoint
 
 
 class WebCollector:
@@ -59,10 +74,7 @@ class WebCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        if not source:
-            msg = f"Web collector '{entry.name}' requires a source"
-            raise CollectionError(msg, kind="config", fix="add source: <a catalog source>")
-
+        assert source is not None  # the type requires a source, and the plan holds it
         url = _url(entry, source)
         headers = _headers(source, self._user_agent)
         resp: HttpResponse = self._requester.get(source, url, headers=headers)
@@ -101,7 +113,8 @@ class WebCollector:
 
 def _url(entry: CollectorEntry, source: SourceEntry) -> str:
     url = source.url.rstrip("/")
-    return f"{url}{entry.endpoint}" if entry.endpoint else url
+    endpoint = _endpoint(entry)
+    return f"{url}{endpoint}" if endpoint else url
 
 
 def _headers(source: SourceEntry, user_agent: str) -> dict[str, str]:
@@ -115,7 +128,8 @@ def _headers(source: SourceEntry, user_agent: str) -> dict[str, str]:
 def _check(entry: CollectorEntry) -> list[Problem]:
     """A web collector fills no placeholder, so one in ``endpoint`` would be fetched as
     written."""
-    unresolved = sorted(set(find_unresolved(entry.endpoint or "")))
+    endpoint = _endpoint(entry)
+    unresolved = sorted(set(find_unresolved(endpoint or "")))
     if not unresolved:
         return []
     names = ", ".join(f"{{{name}}}" for name in unresolved)
@@ -126,7 +140,7 @@ def _check(entry: CollectorEntry) -> list[Problem]:
             kind="unresolved",
             fix="write the value into endpoint:, or use an api collector, whose params: fill "
             "an endpoint's placeholders",
-            got=entry.endpoint,
+            got=endpoint,
         )
     ]
 
@@ -146,6 +160,8 @@ collector_type = CollectorType(
     create=lambda ctx: WebCollector(ctx.requester, ctx.converter, ctx.user_agent, ctx.transforms),
     effects=frozenset({"network"}),
     summary="HTTP GET → document converted to markdown → one record",
+    settings=WebSettings,
+    source_kinds=frozenset({"web"}),
     requires_source=True,
     normalizes=True,
     check=_check,

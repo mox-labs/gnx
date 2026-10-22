@@ -1,22 +1,29 @@
 """ApiCollector — delegates HTTP to an injected Requester; yields records.
 
-No direct httpx import. No rate limiter (that's inside the Requester).
+No direct httpx2 import. No rate limiter (that's inside the Requester).
 Constructor-injected dependencies are explicit: tests pass a fake Requester
 without monkeypatching anything.
+
+Its own keys (:class:`ApiSettings`): ``endpoint``, appended to the source's url; ``params``,
+the query parameters, sent as written; ``vars``, the values for the ``{placeholders}`` in
+``endpoint`` and in ``body``'s strings, which are sent nowhere else; ``method``, ``body`` and
+``response_format``.
 
 Registered as the built-in collector type ``api`` (entry-point group ``recon.collectors``).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._out.parsing import parse_body
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.capture import redact_query_params
 from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, Problem
+from recon.domain.errors import Problem
 from recon.domain.http import REDACTED, reported_url
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, to_records
 from recon.domain.substitution import find_unresolved, substitute
@@ -28,6 +35,23 @@ if TYPE_CHECKING:
     from recon.domain.collector import Transform
     from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, SourceEntry
+
+
+class ApiSettings(BaseModel):
+    """An ``api`` collector's own keys."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    endpoint: str | None = None
+    params: dict[str, str] = {}
+    vars: dict[str, str] = {}
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "GET"
+    body: dict[str, Any] | None = None
+    response_format: Literal["json", "xml", "html", "text"] = "json"
+
+
+def _settings(entry: CollectorEntry) -> ApiSettings:
+    return ApiSettings.model_validate(entry.settings)
 
 
 class ApiCollector:
@@ -57,30 +81,24 @@ class ApiCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        if not source:
-            msg = f"API collector '{entry.name}' requires a source"
-            raise CollectionError(msg, kind="config", fix="add source: <a catalog source>")
-        if not entry.endpoint:
-            msg = f"API collector '{entry.name}' has no endpoint"
-            raise CollectionError(msg, kind="config", fix="add endpoint: <path after the url>")
-
-        url = build_url(source.url, entry.endpoint, entry.params or {})
-        query_params = {**_checked_params(entry), **self._auth_params(source)}
-        headers = self._build_headers(source)
-        body = _substituted_body(entry)
+        settings = _settings(entry)
+        # The plan holds both: the type requires a source, and _check an endpoint.
+        assert source is not None and settings.endpoint is not None
+        url = build_url(source.url, settings.endpoint, settings.vars)
+        body = substitute(settings.body, settings.vars) if settings.body else None
 
         resp = self._requester.request(
             source,
-            entry.method,
+            settings.method,
             url,
-            params=query_params,
-            headers=headers,
+            params={**settings.params, **self._auth_params(source)},
+            headers=self._build_headers(source),
             json_body=body,
         )
 
         if captures is not None:
             request: dict[str, Any] = {
-                "method": entry.method,
+                "method": settings.method,
                 # The response URL carries the query string, and with auth.param the
                 # query string carries the key: it never reaches the capture log.
                 "url": redact_query_params(resp.url, [source.auth.param]),
@@ -98,7 +116,7 @@ class ApiCollector:
                 body=resp.body,
             )
 
-        data = parse_body(resp.text, entry.response_format, origin=resp.url)
+        data = parse_body(resp.text, settings.response_format, origin=resp.url)
         for record in to_records(data, entry.extract):
             yield (
                 apply_normalize(record, entry.normalize, self._transforms)
@@ -136,49 +154,19 @@ class ApiCollector:
         return f"{auth.prefix}{value}"
 
 
-def build_url(base_url: str, endpoint: str, params: dict[str, str]) -> str:
-    path = substitute(endpoint, params)
+def build_url(base_url: str, endpoint: str, values: Mapping[str, str]) -> str:
+    """The source's url and the endpoint, its ``{placeholders}`` filled from ``values``."""
+    path = substitute(endpoint, dict(values))
     return f"{base_url.rstrip('/')}{path}"
-
-
-def _checked_params(entry: CollectorEntry) -> dict[str, str]:
-    """The entry's params, sent as written. Nothing substitutes into a params value, so
-    one that still holds a ``{placeholder}`` is a template left unedited: refuse it."""
-    params = entry.params or {}
-    unresolved = find_unresolved(params)
-    if unresolved:
-        missing = ", ".join(sorted(set(unresolved)))
-        msg = (
-            f"API collector '{entry.name}' params has unresolved placeholder(s): "
-            f"{{{missing}}}. Replace each with the value to send."
-        )
-        raise CollectionError(msg, kind="config", fix="replace each {placeholder} in params:")
-    return dict(params)
-
-
-def _substituted_body(entry: CollectorEntry) -> dict[str, Any] | None:
-    if not entry.body:
-        return None
-    body: dict[str, Any] = substitute(entry.body, entry.params or {})
-    unresolved = find_unresolved(body)
-    if unresolved:
-        missing = ", ".join(sorted(set(unresolved)))
-        msg = (
-            f"API collector '{entry.name}' body has unresolved placeholder(s): "
-            f"{{{missing}}}. Add them to params: — sending this literally to the "
-            f"server will silently fail or return empty results."
-        )
-        raise CollectionError(msg, kind="config", fix=f"add {missing} to params:")
-    return body
 
 
 # --- Registration ---
 
 
 def _check(entry: CollectorEntry) -> list[Problem]:
+    settings = _settings(entry)
     problems = []
-    params = entry.params or {}
-    if not entry.endpoint:
+    if not settings.endpoint:
         problems.append(
             Problem(
                 "endpoint",
@@ -187,44 +175,46 @@ def _check(entry: CollectorEntry) -> list[Problem]:
                 fix="endpoint: /search (the path after the source's url)",
             )
         )
-    elif unresolved := _placeholders(substitute(entry.endpoint, params)):
+    elif unresolved := _placeholders(substitute(settings.endpoint, settings.vars)):
         problems.append(
             Problem(
                 "endpoint",
                 f"unresolved placeholder(s) {unresolved}",
                 kind="unresolved",
-                fix=f"set {unresolved} under params:",
-                got=entry.endpoint,
+                fix=f"set {unresolved} under vars:",
+                got=settings.endpoint,
             )
         )
-    if entry.response_format not in ("json", "xml"):
+    if settings.response_format not in ("json", "xml"):
         problems.append(
             Problem(
                 "response_format",
-                f"an api collector parses json or xml; {entry.response_format} would give a "
+                f"an api collector parses json or xml; {settings.response_format} would give a "
                 "table with no records",
                 fix="response_format: json (or xml); to convert a page, use a web collector",
-                got=entry.response_format,
+                got=settings.response_format,
                 allowed=("json", "xml"),
             )
         )
-    if entry.body and (unresolved := _placeholders(substitute(entry.body, params))):
+    if settings.body and (unresolved := _placeholders(substitute(settings.body, settings.vars))):
         problems.append(
             Problem(
                 "body",
                 f"unresolved placeholder(s) {unresolved}",
                 kind="unresolved",
-                fix=f"set {unresolved} under params:",
+                fix=f"set {unresolved} under vars:",
             )
         )
-    for key, value in params.items():
+    for key, value in settings.params.items():
         if unresolved := _placeholders(value):
             problems.append(
                 Problem(
                     f"params.{key}",
-                    f"unresolved placeholder(s) {unresolved}: a params value is sent as written",
+                    f"unresolved placeholder(s) {unresolved}: a params value is a query "
+                    "parameter, sent as written",
                     kind="unresolved",
-                    fix="replace the placeholder with the value to send",
+                    fix="write the value to send; a value to fill an endpoint or body "
+                    "placeholder goes under vars:",
                     got=value,
                 )
             )
@@ -240,22 +230,23 @@ def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, An
     """The request a run sends: its method, its URL with every query parameter, the headers
     the mission decides, and its body. The credential is :data:`REDACTED` wherever it goes,
     as in telemetry; it is sent only when its variable is set, which the plan warns about."""
-    if source is None or not entry.endpoint:
+    settings = _settings(entry)
+    if source is None or not settings.endpoint:
         return {}
-    params = dict(entry.params or {})
+    params = dict(settings.params)
     if source.auth.param and source.auth.env:
         params[source.auth.param] = REDACTED
-    url = _with_query(build_url(source.url, entry.endpoint, entry.params or {}), params)
+    url = _with_query(build_url(source.url, settings.endpoint, settings.vars), params)
     headers = {"User-Agent": source.user_agent or DEFAULT_USER_AGENT}
     if source.auth.header and source.auth.env:
         headers[source.auth.header] = REDACTED
     request: dict[str, Any] = {
-        "method": entry.method,
+        "method": settings.method,
         "url": reported_url(url, source.auth.param),
         "headers": headers,
     }
-    if entry.body:
-        request["body"] = substitute(entry.body, entry.params or {})
+    if settings.body:
+        request["body"] = substitute(settings.body, settings.vars)
     return request
 
 
@@ -271,6 +262,8 @@ collector_type = CollectorType(
     create=lambda ctx: ApiCollector(ctx.requester, ctx.env, ctx.user_agent, ctx.transforms),
     effects=frozenset({"network"}),
     summary="HTTP API request → JSON/XML → records",
+    settings=ApiSettings,
+    source_kinds=frozenset({"api"}),
     requires_source=True,
     normalizes=True,
     extracts=True,

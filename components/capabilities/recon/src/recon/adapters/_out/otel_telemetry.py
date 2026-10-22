@@ -2,22 +2,29 @@
 
 :class:`OtelEvents` is a sink. It writes through the OpenTelemetry API's global providers
 (instrumentation scope ``recon``, schema URL of semconv v1.44.0), which do nothing until an
-SDK is installed, so it costs next to nothing when nobody is listening. Its metrics are
-derived from the ``recon.collect`` end events:
+SDK is installed, so it costs next to nothing when nobody is listening. Each span carries
+``recon.event.span``, the id its events have in the survey's event log, so a line of
+``telemetry.jsonl`` is found in the exported trace as the span of that survey's trace (the
+one whose root carries its ``recon.archive``) with that id. While recon's work runs, its span
+is the current one (``around``), so a span another library opens meanwhile nests under it;
+an HTTP request carries its attempt's span as ``traceparent`` (``trace_headers``). When the
+sink is dropped (it raised), ``close`` ends the spans it holds open, as failed, so they are
+exported rather than lost. Its metrics are derived from the ``recon.collect`` end events:
 
 * ``recon.collect.records`` (counter, ``{record}``): records written, by
   ``recon.collector.type``;
 * ``recon.collect.failures`` (counter, ``{table}``): tables that failed, by
   ``recon.collector.type`` and ``error.type`` (the table's error kind).
 
-:func:`export_from_env` makes the standard variables enough to export: when one of
-:data:`EXPORT_VARIABLES` is set, ``OTEL_SDK_DISABLED`` is not ``true`` and no provider is
-installed yet, it installs the SDK's tracer and meter providers with OTLP exporters. What
-they send, where and how (``OTEL_EXPORTER_OTLP_*``, ``OTEL_SERVICE_NAME``,
-``OTEL_RESOURCE_ATTRIBUTES``, ...) the SDK reads from the process environment itself. The
-SDK and exporters are the ``otel`` extra; without it, the variables produce a warning
-instead of an export. A program that installs its own providers keeps them: recon's spans
-go there.
+:func:`export_from_env` makes the standard variables enough to export, signal by signal.
+A signal is asked for by the shared endpoint (``OTEL_EXPORTER_OTLP_ENDPOINT``), its own
+(``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT``) or its exporter (``OTEL_TRACES_EXPORTER``); for each
+signal asked, unless ``OTEL_SDK_DISABLED`` is ``true``, it installs the SDK's provider with
+an OTLP exporter when the program has installed none for that signal. What they send, where
+and how (``OTEL_EXPORTER_OTLP_*``, ``OTEL_SERVICE_NAME``, ``OTEL_RESOURCE_ATTRIBUTES``, ...)
+the SDK reads from the process environment itself. The SDK and the exporters are recon's
+dependencies; an install without them gets a warning instead of an export. A program that
+installs its own provider keeps it: recon's spans or metrics go there.
 """
 
 from __future__ import annotations
@@ -29,12 +36,19 @@ from recon.domain.telemetry import COLLECT, HTTP_REQUEST
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from contextlib import AbstractContextManager
     from datetime import datetime
 
     from recon.domain.telemetry import Event
 
 #: The semantic conventions recon's attributes follow.
 SCHEMA_URL = "https://opentelemetry.io/schemas/1.44.0"
+
+#: The attribute that holds a span's id in the survey's event log.
+EVENT_SPAN = "recon.event.span"
+
+#: The signals recon exports.
+SIGNALS = ("TRACES", "METRICS")
 
 #: Any of these set means "export": the endpoints, and the exporter selections.
 EXPORT_VARIABLES = (
@@ -46,7 +60,8 @@ EXPORT_VARIABLES = (
 )
 
 _INSTALL_FIX = (
-    'install recon with its otel extra: uv tool install "recon[otel] @ '
+    "reinstall recon, which depends on the OpenTelemetry SDK and its OTLP exporters: uv tool "
+    'install --reinstall "recon @ '
     'git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/recon"; or '
     "unset the OTEL_* variables"
 )
@@ -59,9 +74,10 @@ class OtelEvents:
     def __init__(
         self, version: str, *, tracer_provider: Any = None, meter_provider: Any = None
     ) -> None:
-        from opentelemetry import metrics, trace
+        from opentelemetry import metrics, propagate, trace
 
         self._trace = trace
+        self._propagate = propagate
         self._tracer = trace.get_tracer(
             "recon", version, tracer_provider=tracer_provider, schema_url=SCHEMA_URL
         )
@@ -85,7 +101,7 @@ class OtelEvents:
                 _span_name(event),
                 context=context,
                 kind=kinds.CLIENT if event.kind == "client" else kinds.INTERNAL,
-                attributes=event.attributes,
+                attributes={**event.attributes, EVENT_SPAN: event.span},
                 start_time=_nanoseconds(event.time),
             )
             return
@@ -98,6 +114,35 @@ class OtelEvents:
         span.end(end_time=_nanoseconds(event.time))
         if event.name == f"{COLLECT}.end":
             self._measure(event)
+
+    def around(self, event: Event) -> AbstractContextManager[Any] | None:
+        """The span ``event`` started, current for the work inside it."""
+        span = self._open.get(event.span)
+        if span is None:
+            return None
+        manager: AbstractContextManager[Any] = self._trace.use_span(
+            span, end_on_exit=False, record_exception=False, set_status_on_exception=False
+        )
+        return manager
+
+    def trace_headers(self, span_id: str) -> dict[str, str]:
+        """``traceparent`` (and ``tracestate``) naming the open span ``span_id``; none when
+        nothing records it (no SDK installed)."""
+        span = self._open.get(span_id)
+        if span is None or not span.get_span_context().is_valid:
+            return {}
+        carrier: dict[str, str] = {}
+        self._propagate.inject(carrier, context=self._trace.set_span_in_context(span))
+        return carrier
+
+    def close(self) -> None:
+        """End every span still open, as failed: recon sends this sink nothing more."""
+        for span in reversed(list(self._open.values())):
+            span.set_status(
+                self._trace.StatusCode.ERROR, "recon stopped sending telemetry to this sink"
+            )
+            span.end()
+        self._open.clear()
 
     def _measure(self, event: Event) -> None:
         about = {"recon.collector.type": str(event.attributes.get("recon.collector.type"))}
@@ -123,35 +168,55 @@ def _nanoseconds(time: datetime) -> int:
 
 
 def export_from_env(env: Mapping[str, str], version: str) -> list[Problem]:
-    """Install the SDK when ``env`` asks to export and nothing is installed; return warnings
-    for what it asked and cannot get."""
-    asked = [name for name in EXPORT_VARIABLES if env.get(name)]
-    if not asked or env.get("OTEL_SDK_DISABLED", "").strip().lower() == "true":
+    """Install the SDK's provider for each signal ``env`` asks to export that has none yet;
+    return warnings for what it asked and cannot get."""
+    if env.get("OTEL_SDK_DISABLED", "").strip().lower() == "true":
         return []
-    if _provider_installed():
-        return []  # the program installed its own providers: recon's spans go there
+    asked = {signal: _asked(signal, env) for signal in SIGNALS}
+    # A signal whose provider the program installed is the program's: recon's data goes there.
+    wanted = [signal for signal in SIGNALS if asked[signal] and not _installed(signal)]
+    if not wanted:
+        return []
     try:
-        return _install(env, version)
+        return _install(env, version, wanted)
     except ImportError as exc:
+        first = asked[wanted[0]][0]
         return [
             Problem(
                 "",
-                f"{asked[0]} is set, but {exc.name or 'the OpenTelemetry SDK'} is not "
+                f"{first} is set, but {exc.name or 'the OpenTelemetry SDK'} is not "
                 "installed, so recon exports nothing; the survey's event log is still written",
                 kind="otel_unavailable",
                 fix=_INSTALL_FIX,
-                got=asked[0],
+                got=first,
             )
         ]
 
 
-def _provider_installed() -> bool:
-    from opentelemetry import trace
+def _asked(signal: str, env: Mapping[str, str]) -> list[str]:
+    """The variables in ``env`` that ask for ``signal`` to be exported."""
+    names = (
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        f"OTEL_EXPORTER_OTLP_{signal}_ENDPOINT",
+        f"OTEL_{signal}_EXPORTER",
+    )
+    return [name for name in names if env.get(name)]
 
-    return not isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider)
+
+def _installed(signal: str) -> bool:
+    """Whether the program has installed a provider for ``signal``: the global one is no
+    longer the API's default, which forwards to whatever is installed later."""
+    from opentelemetry import metrics, trace
+
+    # The API names no public type for its default meter provider.
+    from opentelemetry.metrics._internal import _ProxyMeterProvider
+
+    if signal == "TRACES":
+        return not isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider)
+    return not isinstance(metrics.get_meter_provider(), _ProxyMeterProvider)
 
 
-def _install(env: Mapping[str, str], version: str) -> list[Problem]:
+def _install(env: Mapping[str, str], version: str, signals: list[str]) -> list[Problem]:
     from opentelemetry import metrics, trace
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
@@ -165,12 +230,12 @@ def _install(env: Mapping[str, str], version: str) -> list[Problem]:
     )
     defaults = {"service.version": version} | ({} if named else {"service.name": "recon"})
     resource = Resource.create(defaults)
-    if _selected("TRACES", env, warnings):
+    if "TRACES" in signals and _selected("TRACES", env, warnings):
         span_exporter = _exporter("TRACES", env, warnings)
         tracer_provider = TracerProvider(resource=resource)
         tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
         trace.set_tracer_provider(tracer_provider)
-    if _selected("METRICS", env, warnings):
+    if "METRICS" in signals and _selected("METRICS", env, warnings):
         reader = PeriodicExportingMetricReader(_exporter("METRICS", env, warnings))
         metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[reader]))
     return list(dict.fromkeys(warnings))  # a protocol both signals read is warned about once

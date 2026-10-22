@@ -95,16 +95,16 @@ def query(
 ) -> QueryRows:
     """Rows from the latest archive of ``name``, or the archive named (an id ``status(name)``
     lists). ``recon.v1.query-rows``, naming the archive as ``archive_id``."""
-    return _root(root).query(name, sql, archive_id=archive)
+    return _root(root).query(name, sql, archive=archive)
 
 
 def configure_telemetry() -> list[Problem]:
     """For an application, never a library: install OpenTelemetry's SDK so that recon's
-    spans and metrics export as the ``OTEL_*`` variables say, when they ask to export and no
-    provider is installed yet. Returns warnings (``otel_unavailable``) for what they ask and
-    cannot get, such as the SDK without the ``otel`` extra. The command line calls this; the
-    other operations never do, so a program that imports recon configures OpenTelemetry
-    itself, or calls this."""
+    spans and metrics export as the ``OTEL_*`` variables say, for each signal they ask for
+    whose provider is not installed yet. Returns warnings (``otel_unavailable``) for what
+    they ask and cannot get, such as the SDK in an install without it. The command line
+    calls this; the other operations never do, so a program that imports recon configures
+    OpenTelemetry itself, or calls this."""
     from recon.composition import configure_telemetry as configure
 
     return configure()

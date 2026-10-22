@@ -2,7 +2,8 @@
 
 An inbound adapter over the library API and nothing else: every call goes through
 ``recon``'s declared names, so a program importing ``recon`` gets exactly what these
-commands print.
+commands print. ``main(obj=...)`` runs the commands over the operations given instead, a
+root built with other ports: that is how a test drives the command line.
 
 Data goes to stdout and commentary to stderr. ``--json`` prints one versioned document. A
 command that fails, a usage error, Ctrl-C and a defect in recon included, prints the
@@ -73,6 +74,15 @@ def _telemetry_warnings() -> list[dict[str, Any]]:
     """The command line is an application, so it installs OpenTelemetry's SDK as the
     ``OTEL_*`` variables say; what they ask and cannot get is a warning in its document."""
     return [warning.document() for warning in recon.configure_telemetry()]
+
+
+def _operations() -> Any:
+    """What the commands run: ``recon``'s library API, or what the caller of ``main`` passed
+    as its ``obj``, the same operations over other ports (a test's root, built by
+    ``recon.composition.root`` with fakes)."""
+    context = click.get_current_context(silent=True)
+    given = context.find_root().obj if context is not None else None
+    return recon if given is None else given
 
 
 def _interrupt(signum: int, frame: FrameType | None) -> NoReturn:
@@ -224,7 +234,7 @@ def init(
     recon init gh-audit --template github-audit
     recon init review -c path/to/catalog.yaml
     """
-    document = recon.init(name, template=template, config=config, replace=replace)
+    document = _operations().init(name, template=template, config=config, replace=replace)
     if as_json:
         _emit(document.document())
         return
@@ -263,7 +273,7 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
     """
     setup = _telemetry_warnings()
     if dry_run:
-        plan = recon.plan(name, config=config, replace=replace)
+        plan = _operations().plan(name, config=config, replace=replace)
         plan = plan.model_copy(update={"warnings": setup + plan.warnings})
         if as_json:
             _emit(plan.document())
@@ -272,7 +282,7 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
         return
     if not as_json:
         _print_warnings(setup)
-    document = recon.survey(
+    document = _operations().survey(
         name, config=config, replace=replace, on_event=None if as_json else _print_event
     )
     document = document.model_copy(update={"warnings": setup + document.warnings})
@@ -359,7 +369,7 @@ def status(mission: str | None, as_json: bool) -> None:
     recon status
     recon status my-scan --json
     """
-    document = recon.status(mission)
+    document = _operations().status(mission)
     if as_json:
         _emit(document.document())
         return
@@ -451,7 +461,7 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
     recon query my-scan "SELECT count(*) FROM s2_search" --archive 2026-04-01-143022-000000
     """
     setup = _telemetry_warnings()
-    document = recon.query(name, sql, archive=archive)
+    document = _operations().query(name, sql, archive=archive)
     document = document.model_copy(update={"warnings": setup + document.warnings})
     if as_json:
         _emit(document.document())
@@ -481,7 +491,7 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
 @_json_option
 def templates(as_json: bool) -> None:
     """List the built-in templates `recon init -t` takes."""
-    document = recon.templates()
+    document = _operations().templates()
     if as_json:
         _emit(document.document())
         return
@@ -515,7 +525,7 @@ def capture(name: str, as_json: bool) -> None:
             f"stdin is not JSON ({exc})",
             fix="pipe one PostToolUse hook payload (a JSON object) to recon capture",
         ) from exc
-    line = recon.capture(name, payload)
+    line = _operations().capture(name, payload)
     if as_json:
         _emit(line.document())
         return

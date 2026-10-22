@@ -15,11 +15,25 @@ clock port, so a survey against a fixed clock emits the same events twice. Attri
 carry no secret and no request or response body, and a failed span's message quotes
 nothing from its error: an error's text can hold a command, a URL with its credentials or
 the SQL, and an event goes wherever a sink sends it.
+
+A sink may have three more members, each optional and read only when present, so a sink
+with ``on_event`` alone is never asked for them:
+
+* ``around(event)`` returns a context manager (or None) that is entered once the start
+  ``event`` is delivered and left before the end event is: the block's work runs inside it.
+  The OpenTelemetry sink makes its span current there, so a span another library opens
+  during the work nests under recon's. It must not block, and it cannot swallow the work's
+  exception; one that raises is dropped as a raising sink is, and is still left.
+* ``trace_headers(span)`` returns the headers that carry the trace context of the open span
+  ``span`` (its id) to a server, W3C ``traceparent`` and ``tracestate``; the requester sends
+  every sink's, merged by ``Telemetry.trace_headers``.
+* ``close()`` is called once when the sink is dropped, so it can end whatever it holds open:
+  the OpenTelemetry sink ends its open spans as failed, and they are exported.
 """
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -77,13 +91,18 @@ class Event:
 
 
 class EventSink(Protocol):
+    """Where events go. ``around``, ``trace_headers`` and ``close`` are optional members,
+    described above."""
+
     def on_event(self, event: Event) -> None: ...
 
 
 class Span:
-    """An open span: attributes to add before it ends, and how it failed."""
+    """An open span: its ``id`` (the events' ``span``), attributes to add before it ends,
+    and how it failed."""
 
-    def __init__(self, attributes: Mapping[str, AttributeValue | None]) -> None:
+    def __init__(self, span_id: str, attributes: Mapping[str, AttributeValue | None]) -> None:
+        self.id = span_id
         self.attributes: dict[str, AttributeValue] = {}
         self.error: tuple[str, str] | None = None
         for key, value in attributes.items():
@@ -127,18 +146,23 @@ class Telemetry:
         span_id = str(self._next_id)
         self._next_id += 1
         parent = self._open[-1] if self._open else None
-        span = Span(attributes or {})
+        span = Span(span_id, attributes or {})
         start = self._clock.monotonic()
         now = self._clock.now()
-        self._emit(Event(f"{name}.start", span_id, parent, now, kind, dict(span.attributes)))
+        started = Event(f"{name}.start", span_id, parent, now, kind, dict(span.attributes))
+        self._emit(started)
         self._open.append(span_id)
+        entered = self._enter(started)
+        failure: BaseException | None = None
         try:
             yield span
         except BaseException as exc:
+            failure = exc
             if span.error is None:
                 span.fail(error_type(exc), type(exc).__name__)
             raise
         finally:
+            self._leave(entered, failure)
             self._open.pop()
             if span.error is not None:
                 span.set("error.type", span.error[0])
@@ -156,13 +180,70 @@ class Telemetry:
                 )
             )
 
+    def trace_headers(self, span: Span) -> dict[str, str]:
+        """The headers that carry ``span``'s trace context to a server, from every sink that
+        traces (W3C ``traceparent``); empty when none does."""
+        headers: dict[str, str] = {}
+        for sink in list(self._sinks):
+            given = getattr(sink, "trace_headers", None)
+            if given is None:
+                continue
+            try:
+                headers.update(given(span.id))
+            except Exception as exc:  # a sink must not fail the work it observes
+                self._drop(sink, exc)
+        return headers
+
     def _emit(self, event: Event) -> None:
         for sink in list(self._sinks):
             try:
                 sink.on_event(event)
             except Exception as exc:  # a sink must not fail the work it observes
-                self._sinks.remove(sink)
-                self.failed.append(f"{type(sink).__name__}: {type(exc).__name__}: {exc}")
+                self._drop(sink, exc)
+
+    def _enter(self, event: Event) -> list[tuple[EventSink, AbstractContextManager[Any]]]:
+        """Enter each sink's ``around`` for the span ``event`` starts."""
+        entered: list[tuple[EventSink, AbstractContextManager[Any]]] = []
+        for sink in list(self._sinks):
+            around = getattr(sink, "around", None)
+            if around is None:
+                continue
+            try:
+                manager = around(event)
+                if manager is not None:
+                    manager.__enter__()
+                    entered.append((sink, manager))
+            except Exception as exc:
+                self._drop(sink, exc)
+        return entered
+
+    def _leave(
+        self,
+        entered: list[tuple[EventSink, AbstractContextManager[Any]]],
+        failure: BaseException | None,
+    ) -> None:
+        """Leave what :meth:`_enter` entered, innermost first, a dropped sink's too (what it
+        made current must not stay so). What a sink's exit returns is ignored: it cannot
+        swallow the work's exception."""
+        for sink, manager in reversed(entered):
+            try:
+                if failure is None:
+                    manager.__exit__(None, None, None)
+                else:
+                    manager.__exit__(type(failure), failure, failure.__traceback__)
+            except Exception as exc:
+                self._drop(sink, exc)
+
+    def _drop(self, sink: EventSink, exc: Exception) -> None:
+        """Stop sending to ``sink``, name it in ``failed``, and let it end what it holds."""
+        if sink not in self._sinks:
+            return
+        self._sinks.remove(sink)
+        self.failed.append(f"{type(sink).__name__}: {type(exc).__name__}: {exc}")
+        close = getattr(sink, "close", None)
+        if close is not None:
+            with suppress(Exception):  # already dropped and named: nothing more to say
+                close()
 
 
 def error_type(exc: BaseException) -> str:

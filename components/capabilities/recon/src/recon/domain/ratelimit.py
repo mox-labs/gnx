@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from recon.domain.clock import Clock
+    from recon.domain.deadline import Deadline
     from recon.domain.models import SourceEntry
 
 
@@ -22,8 +23,9 @@ class TokenBucket:
         self._tokens = float(burst)
         self._last = clock.monotonic()
 
-    def acquire(self) -> None:
-        """Return once a token is available, sleeping on the clock until then."""
+    def acquire(self, deadline: Deadline | None = None) -> None:
+        """Return once a token is available, sleeping on the clock until then; a wait that
+        would end past ``deadline`` raises instead."""
         while True:
             now = self._clock.monotonic()
             self._tokens = min(self._burst, self._tokens + (now - self._last) * self._rps)
@@ -31,7 +33,10 @@ class TokenBucket:
             if self._tokens >= 1.0:
                 self._tokens -= 1.0
                 return
-            self._clock.sleep((1.0 - self._tokens) / self._rps)
+            wait = (1.0 - self._tokens) / self._rps
+            if deadline is not None:
+                deadline.allow_wait(wait)
+            self._clock.sleep(wait)
 
 
 class RateLimiter:
@@ -41,10 +46,10 @@ class RateLimiter:
         self._clock = clock
         self._buckets: dict[str, TokenBucket] = {}
 
-    def acquire(self, source: SourceEntry) -> None:
+    def acquire(self, source: SourceEntry, deadline: Deadline | None = None) -> None:
         bucket = self._buckets.get(source.name)
         if bucket is None:
             limit = source.rate_limit
             bucket = TokenBucket(limit.rps, limit.burst, self._clock)
             self._buckets[source.name] = bucket
-        bucket.acquire()
+        bucket.acquire(deadline)

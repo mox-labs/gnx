@@ -56,10 +56,12 @@ a query parameter (`auth.param`), or both. Two consequences:
   that points a credentialed source at an attacker's host exfiltrates the credential. The
   URL and the credential are chosen by the same file. The dry-run plan shows each URL.
 - The secret goes only to the origin of the request a collector built. A redirect to
-  another host, port or scheme is followed without the source's `auth.header`, as httpx
+  another host, port or scheme is followed without the source's `auth.header`, as httpx2
   follows one without `Authorization`; an upgrade from http to https on the same host keeps
   it (R-9). A key sent as `auth.param` is part of the URL: a redirect carries it on only
   when the server writes it into the new location.
+- TLS certificates are verified against the operating system's trust store (httpx2's
+  default, through `truststore`).
 - Secrets are never written to the JSONL output and never logged. Request headers are
   never persisted. In captures, response headers are persisted with credential-bearing
   values redacted (R-2), and an `auth.param` value is redacted from the captured URL (R-4).
@@ -88,6 +90,9 @@ a collected value. It reads only under the mission directory and the catalog's `
 sources (after resolving symlinks and `..`), and it never fetches a URL; either refusal
 fails the table with a config error (R-6).
 
+A `web` collector's page is converted from the bytes the requester fetched and nothing
+else: the converter is never given a URL it would fetch more from by itself (R-12).
+
 ### 4. Capture logs → the capture collector
 
 A capture log (`captures.jsonl`, format `recon.v1.capture`) may be written by tools other
@@ -102,7 +107,12 @@ check stops the table with an error naming the file and line.
 payload's `tool_response` is stored verbatim and its other fields (`tool_input`,
 `session_id`, `cwd`, ...) become the capture's `request`. A captured MCP result can contain
 anything the tool saw, including private data, so `.recon/<mission>/captures/` deserves the
-same care as the conversation transcript. `recon capture` writes only under an existing
+same care as the conversation transcript. `tool_input` is stored as the hook gives it,
+credentials included: an MCP tool that takes a key as an argument has that key written to
+the log. recon cannot tell such an argument from any other, and redacting by guessing at
+names would both miss keys and destroy evidence, so nothing in `tool_input` is redacted. The
+redaction of credential headers and the source's `auth.param` covers what recon fetches
+itself, not what a hook hands it. `recon capture` writes only under an existing
 mission's directory; it refuses (exit 4) when the mission does not exist, rather than
 creating one from a name it was handed.
 
@@ -145,6 +155,12 @@ in the dry-run plan and `meta.yaml`. A `cli` collector's commands are neither at
 nor span messages. The
 endpoint the variables name receives the mission's URLs, table and collector names, and
 record counts: point it at a collector you trust with them.
+
+When an SDK is installed (the `OTEL_*` variables, or a program's own setup), each HTTP
+request also carries a W3C `traceparent` header naming its span, and `tracestate` and any
+baggage the caller's context holds, so the source's server can join recon's trace. It
+learns a trace id and a span id, nothing of the mission. With no SDK, no such header is
+sent.
 
 ## Findings
 
@@ -253,11 +269,11 @@ Regression: `test_a_request_is_a_client_span_with_the_required_attributes` and
 
 ### R-9 — a source's own auth header followed a redirect to another host (fixed)
 
-httpx drops `Authorization` when a redirect leaves the origin, and nothing else. A source
+httpx2 drops `Authorization` when a redirect leaves the origin, and nothing else. A source
 whose key goes in its own header (`x-api-key`, as Exa, Serper and Semantic Scholar take
 it) sent that key to whatever host its API redirected to. Fixed by dropping the source's
 `auth.header` from every request sent outside the origin of the one the collector built,
-by the rule httpx applies to `Authorization`. The redirect is still followed rather than
+by the rule httpx2 applies to `Authorization`. The redirect is still followed rather than
 refused: an API that sends a download to a storage or CDN host with a signed URL needs no
 key there, and refusing would fail that table for no gain.
 
@@ -289,6 +305,18 @@ reported as `url.full` is, with user information and `auth.param` `REDACTED`.
 
 Regression: `test_a_failure_exports_no_command_and_no_credential_in_a_url` in
 `recon/tests/test_telemetry.py`, which runs `recon survey` with an OTLP receiver.
+
+### R-12 — a YouTube page made markitdown fetch outside the requester (fixed)
+
+Given a YouTube watch URL, markitdown's YouTube converter asked YouTube for the video's
+transcript itself: a request outside the requester, its rate limit, `max_bytes`, spans and
+the capture log, the class of bypass R-6 closed for `$markitdown`. Its failures were printed
+on stdout, where `--json` writes the document. Fixed: the converter is given the page's
+bytes and content type, and no URL markitdown would fetch more from, so the page converts
+as the HTML it is. Its transcript is not collected.
+
+Regression: `test_a_youtube_page_is_converted_from_its_bytes_and_nothing_more_is_fetched` in
+`recon/tests/test_transforms.py`.
 
 ## Not covered
 

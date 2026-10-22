@@ -17,10 +17,18 @@ Transforms are extensions registered under the entry-point group ``recon.transfo
 looked up by name without the ``$``; the pure built-ins live here. A built-in given a value
 of a type it does not take gives ``None``, as a path that does not resolve does: one record
 whose field has an unexpected type must not fail a table.
+
+A transform takes the resolved value. One that needs to know more says so with a
+keyword-only parameter, which whoever holds the answer binds (:func:`bound`): ``roots``, the
+directories a transform that reads files may read under (recon binds the mission's), and
+``base``, the directory a relative path in a record is relative to (a collector that knows
+it binds it: a ``cli`` collector, the directory its command ran in).
 """
 
 from __future__ import annotations
 
+import inspect
+from functools import partial
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +67,24 @@ def _walk(value: Any, keys: list[str]) -> Any:
         rest = keys[index + 1 :]
         return [_walk(item, rest) for item in items] if rest else items
     return value
+
+
+def bound(transforms: Mapping[str, Transform], **values: Any) -> dict[str, Transform]:
+    """``transforms``, each given those of ``values`` it takes as keyword-only parameters."""
+    return {name: _bind(fn, values) for name, fn in transforms.items()}
+
+
+def _bind(fn: Transform, values: Mapping[str, Any]) -> Transform:
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # a callable whose signature cannot be read takes none
+        return fn
+    taken = {
+        name: value
+        for name, value in values.items()
+        if name in parameters and parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    return partial(fn, **taken) if taken else fn
 
 
 def path_problem(path: str) -> str | None:

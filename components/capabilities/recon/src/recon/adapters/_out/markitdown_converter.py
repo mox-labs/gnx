@@ -1,14 +1,19 @@
 """MarkitdownConverter — DocumentConverter adapter using Microsoft's markitdown.
 
 Handles HTML, PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP, images (OCR),
-audio (transcription), YouTube URLs, and more. Installed via `markitdown[all]`
+audio (transcription), and more. Installed via `markitdown[all]`
 which pulls the format-specific plugins (pdfminer, python-docx, python-pptx,
 openpyxl, pillow, speechrecognition, yt-dlp, etc.).
 
-Lazy-imports markitdown so plain `import recon` stays fast. A document markitdown cannot
-read is a CollectionError, never an empty string: an empty column reads as an empty
-document. Only markitdown's own errors and an unreadable file are classified; anything
-else is a defect and propagates as it is.
+Lazy-imports markitdown so plain `import recon` stays fast, and builds it once per converter.
+A document is converted by the content type its server gave, not by a guess from its bytes,
+and from its bytes alone: markitdown is not given a URL it would fetch more from by itself (a
+YouTube watch page's transcript), which would be a request outside the requester, its rate
+limit, ``max_bytes``, spans and capture log, whose failures markitdown prints on stdout. Such
+a page converts as the HTML page it is.
+A document markitdown cannot read is a CollectionError, never an empty string: an empty
+column reads as an empty document. Only markitdown's own errors and an unreadable file are
+classified; anything else is a defect and propagates as it is.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
 
 from recon.domain.converters import ConversionResult
 from recon.domain.errors import CollectionError
@@ -28,11 +34,15 @@ _URI_SCHEMES = ("http:", "https:", "file:", "data:")
 
 
 class MarkitdownConverter:
-    def convert(self, content: bytes, content_type: str, url: str) -> ConversionResult:
-        from markitdown import MarkItDown, MarkItDownException
+    def __init__(self) -> None:
+        self._markitdown: Any = None
 
+    def convert(self, content: bytes, content_type: str, url: str) -> ConversionResult:
+        from markitdown import MarkItDownException, StreamInfo
+
+        info = StreamInfo(mimetype=content_type or None, url=_url_markitdown_may_see(url))
         try:
-            result = MarkItDown().convert_stream(io.BytesIO(content), url=url)
+            result = self._converter().convert_stream(io.BytesIO(content), stream_info=info)
         except MarkItDownException as exc:
             raise _conversion_error(url, exc) from exc
 
@@ -44,19 +54,40 @@ class MarkitdownConverter:
             text=(getattr(result, "text_content", "") or ""),
         )
 
+    def _converter(self) -> Any:
+        if self._markitdown is None:
+            from markitdown import MarkItDown
 
-def markitdown_path(path: Any, *, roots: Sequence[Path] = ()) -> str:
+            self._markitdown = MarkItDown()
+        return self._markitdown
+
+
+#: The URLs for which markitdown fetches more by itself: a YouTube watch page, whose
+#: converter asks YouTube for the transcript. Matched as that converter matches them.
+_FETCHED_FROM = ("https://www.youtube.com/watch?",)
+
+
+def _url_markitdown_may_see(url: str) -> str | None:
+    """``url``, or None for one markitdown would fetch more from."""
+    as_matched = unquote(url).replace(r"\?", "?").replace(r"\=", "=")
+    return None if as_matched.startswith(_FETCHED_FROM) else url
+
+
+def markitdown_path(path: Any, *, roots: Sequence[Path] = (), base: Path | None = None) -> str:
     """The ``$markitdown`` transform: convert a local file the record names to markdown.
 
     Handles PDF, DOCX, PPTX, XLSX, EPub, images (OCR), audio (transcription),
     CSV, JSON, XML, ZIP, HTML. Registered under the entry-point group ``recon.transforms``
     as ``markitdown``.
 
+    A relative path is relative to ``base``, the directory its record came from (a ``cli``
+    collector binds the directory its command ran in), else to the working directory.
+
     The value is collected data, so what it may name is confined. Only a file under one of
-    ``roots`` is read (symlinks and ``..`` resolved first); the composition root binds the
-    mission directory and the catalog's ``local`` sources, and with no roots nothing is
-    read. A URI is never fetched: that would be a request outside the requester, its rate
-    limit and the capture log. Both refusals raise a config error rather than return
+    ``roots`` is read (symlinks and ``..`` resolved first); recon binds the mission
+    directory and the catalog's ``local`` sources, and with no roots nothing is read. A URI
+    is never fetched: that would be a request outside the requester, its rate limit and the
+    capture log. Both refusals raise a config error rather than return
     nothing, because an empty column would read as an empty document.
 
     A file that cannot be read, or that markitdown cannot convert, raises CollectionError
@@ -70,7 +101,7 @@ def markitdown_path(path: Any, *, roots: Sequence[Path] = ()) -> str:
             kind="config",
             fix="fetch the document with a `web` collector, which converts it by content type",
         )
-    resolved = Path(path).resolve()
+    resolved = (Path(base) / path if base is not None else Path(path)).resolve()
     if not any(resolved.is_relative_to(Path(root).resolve()) for root in roots):
         raise CollectionError(
             f"$markitdown may read only under the mission directory and the catalog's "

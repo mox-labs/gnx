@@ -118,13 +118,14 @@ Documents name their shape in `schema`: `recon.v1.plan`, `recon.v1.survey`, `rec
 ```yaml
 # Every key a mission file can hold, with its default; | separates the values allowed.
 preserve_raw: false            # true: keep every fetched body in the archive's capture log
+deadline: 600                  # optional: seconds the whole survey may take (> 0)
 catalog:                       # where to look; optional
   - name: <source>             # required, unique
-    type: api                  # api | web | local
+    type: api                  # api | web | local, or a kind an installed type adds
     url: <base URL, or a directory for local>   # required
     auth: {env: <VAR>, header: <Header-Name>, param: <query param>, prefix: "Bearer "}
-    rate_limit: {rps: 10.0, burst: 3}
-    timeout: 60                # seconds per request
+    rate_limit: {rps: 10.0, burst: 3}   # tokens a second (> 0), most held (>= 1)
+    timeout: 60                # seconds a send may take, first byte to last (> 0)
     max_bytes: 50000000        # largest response body; a larger one fails the table
     user_agent: <string>       # default: recon/<version> (+https://github.com/mox-labs/gnx)
 collectors:                    # what to ask; required, at least one
@@ -133,18 +134,21 @@ collectors:                    # what to ask; required, at least one
     source: <source>           # pin one source; omit to run against every catalog source
     type_url: recon.v1.records # what the records are: <namespace>.v<N>.<kebab-name>
     normalize: {<column>: "<path>|$<transform>"}   # every type; omit to keep records whole
-    # api:     endpoint, params, method (GET | POST | PUT | PATCH | DELETE), body,
-    #          response_format (json | xml), extract
+    extract: <path>            # api and capture: where the records are in a body
+    deadline: 120              # optional: seconds each of its tables may take (> 0)
+    # Every other key is the type's own:
+    # api:     endpoint, params (the query), vars (fill {placeholders}),
+    #          method (GET | POST | PUT | PATCH | DELETE), body, response_format (json | xml)
     # cli:     run, patterns
     # web:     endpoint
-    # capture: path, match {source, collector, kind}, response_format, extract
+    # capture: path, match {source, collector, kind}, response_format
 ```
 
-These are all the keys there are: an unknown key at the top level, in a source, a collector, `auth`, `rate_limit` or `match` is a plan problem with its path, so a typo like `normalise:` never passes silently. The one exception is a top-level key beginning with `_`, which recon ignores, for notes or a YAML anchor several collectors alias. `params:` values are strings: quote a number (`limit: "20"`).
+These are all the keys there are: an unknown key at the top level, in a source, a collector, `auth`, `rate_limit` or `match` is a plan problem with its path, so a typo like `normalise:` never passes silently. A collector's keys beyond the shared ones are its type's own, checked by that type (`run:` is unknown on an `api` collector), and an installed plugin type may take keys of its own; its source kinds, too. The one exception is a top-level key beginning with `_`, which recon ignores, for notes or a YAML anchor several collectors alias. `params:` values are strings: quote a number (`limit: "20"`).
 
 **Fan-out.** A collector with `source:` runs once and writes the table `<name>`. Without `source:` it runs against every catalog source and writes `<name>-<source>` for each; with no catalog it runs once. Adding a source to a mission therefore adds a run to every unpinned collector: when the catalog's sources are of different types, the plan warns (`fan_out_mixed`) for each unpinned collector; pin it with `source:`.
 
-**Placeholders.** A placeholder is `{name}`, the name a letter or `_` and then letters, digits or `_`, so a regular expression's `\w{3}` or `{2,5}` is not one. In an `api` collector, `{key}` in `endpoint` and in the string values of `body` is filled from `params:`, and every `params:` entry is also sent as a query parameter; a placeholder nothing fills there is a plan problem (`unresolved`), and a `params:` value is sent as written. A `web` collector fills none, so a placeholder in its `endpoint` is a plan problem. In a `cli` collector recon fills `{url}`, the source's `url`, and `{pattern}`, each entry of `patterns:` in turn: `{pattern}` without `patterns:` is a plan problem, and `{url}` in a run with no source fails its table before anything runs. Any other `{...}` in `run:` is the command's own (`cargo tree --format '{p}'`, a jq object) and is passed as written.
+**Placeholders.** A placeholder is `{name}`, the name a letter or `_` and then letters, digits or `_`, so a regular expression's `\w{3}` or `{2,5}` is not one. In an `api` collector, `{key}` in `endpoint` and in the string values of `body` is filled from `vars:`, which are sent nowhere else; `params:` are the query string, each value sent as written. A placeholder nothing fills is a plan problem (`unresolved`), and so is one in a `params:` value. A `web` collector fills none, so a placeholder in its `endpoint` is a plan problem. In a `cli` collector recon fills `{url}`, the source's `url`, and `{pattern}`, each entry of `patterns:` in turn: `{pattern}` without `patterns:` is a plan problem, and `{url}` in a run with no source fails its table before anything runs. Any other `{...}` in `run:` is the command's own (`cargo tree --format '{p}'`, a jq object) and is passed as written.
 
 **Credentials.** `auth.env` names the environment variable holding the secret; the secret never appears in the file. `auth.header` sends it as that header, `auth.param` as that query parameter, with `auth.prefix` in front. An unset variable sends the request without it, and the plan warns. A collector type sees only the variables the mission names this way.
 
@@ -152,12 +156,14 @@ These are all the keys there are: an unknown key at the top level, in a source, 
 
 | Type | Does | Each record is |
 |---|---|---|
-| `api` | one HTTP request per source to `url` + `endpoint`; retries 429, 5xx and network errors twice, waiting out a `Retry-After` of up to 60 s (a longer one fails the table at once, `transient`, naming the wait) | each object at `extract` in the JSON or XML body |
+| `api` | one HTTP request per source to `url` + `endpoint`; retries 429, 5xx and network errors twice, waiting out a `Retry-After` of up to 60 s (a longer one fails the table at once, `transient`, naming the wait); every send, a retry included, draws from the source's `rate_limit` | each object at `extract` in the JSON or XML body |
 | `cli` | runs `run` in a shell, in its `local` source's directory (a relative `url` is relative to the project root; a directory that does not exist is a plan problem), else, with no source or a source of another type, in the working directory; the plan shows it as each run's `cwd` (null: the working directory); exit 0 succeeds, and so does exit 1 with nothing on stderr (grep's and rg's no match) | each stdout line: a JSON object as is, other text as `{line_number, line}` |
 | `web` | one HTTP GET, converted to markdown by content type (HTML, PDF, DOCX, ...) | one `{url, title, content, status_code, content_type}`; `content` stops at 100,000 characters |
 | `capture` | reads capture logs (default `captures/captures.jsonl` in the mission; a glob works); fetches nothing; fanned out over a catalog, each run keeps the captures whose `source` is that source's name; a run that read captures and kept none is warned (`captures_unmatched`) | each object in each matching body, parsed by its content type: JSON, XML, or text lines as `cli` parses them |
 
-A `cli` command without a source times out after 300 seconds, otherwise after the source's `timeout`; the command and everything it started are then killed. A failed command's error ends with the last of its stderr. The command's stdin is empty, so a tool that reads stdin when it has no path argument gets nothing from it: give it an explicit path (`rg --json TODO .`). With `patterns:`, each record carries the `_pattern` that produced it.
+A `cli` command without a source times out after 300 seconds, otherwise after the source's `timeout`; the command and everything it started are then killed.
+
+**Bounds in time.** A source's `timeout` bounds each send of a request in wall time, from connecting to the body's last byte, so a server that trickles its body cannot hold a table for longer; a send past it is retried like any timeout. `deadline:` at the top bounds the whole survey and `deadline:` on a collector each of its tables: a request, a wait for the rate limit or a retry, and a command are all cut to what is left, a table cut short fails as `transient` (exit 5) with a fix naming the `deadline:` to raise, every table not started by the survey's deadline fails the same way, and the archive is still finished, marked incomplete. A failed command's error ends with the last of its stderr. The command's stdin is empty, so a tool that reads stdin when it has no path argument gets nothing from it: give it an explicit path (`rg --json TODO .`). With `patterns:`, each record carries the `_pattern` that produced it.
 
 ## Normalize
 
@@ -172,8 +178,9 @@ A spec maps each output column to a path into the record, optionally piped throu
   archive/<archive id>/            one per survey; the id is its start time, so ids sort; a
                                    directory not named so is not an archive
     <table>.jsonl                  one record per line
-    meta.yaml                      recon version, config sha256, times, and per table:
-                                   type_url, status, records, seconds, error {kind, message, fix}
+    meta.yaml                      recon version, config sha256, times, table_layout (1:
+                                   this layout of the tables), and per table: type_url,
+                                   status, records, seconds, error {kind, message, fix}
     telemetry.jsonl                the survey's recon.v1.event lines: a start and an end per
                                    span (survey, table, HTTP request); not a table
     .incomplete                    present unless the survey finished with every table: a table
@@ -182,7 +189,7 @@ A spec maps each output column to a path into the record, optionally piped throu
     captures.jsonl, raw/<sha256>   the capture log, with preserve_raw: true
 ```
 
-A table that collected nothing holds the one line `{"_empty": true}`, so DuckDB can read it; it is not a record, its view has no rows, and it counts as 0 records. When its collector has `normalize:`, the line keeps the spec's columns (`"_columns": [...]`) and the view has them, so a query of them runs on an empty table as it does on a full one; without `normalize:` the columns are not known and the view has only `_empty`. `query` reads the latest archive unless `--archive <archive id>` names another (`recon status <mission>` lists the ids), and reports `state: incomplete` for an incomplete archive, whose rows may be partial. SQL reads only files under the mission's `archive/` directory, so `read_json_auto('<that directory>/<archive id>/<table>.jsonl')` reaches an earlier archive for a diff; it loads no extension and reaches no network. A query runs SELECT statements only (`WITH`, `FROM`, `DESCRIBE` and `SUMMARIZE` among them); `COPY`, `ATTACH`, `CREATE` and the rest exit 10.
+A table that collected nothing holds the one line `{"_empty": true}`; it is not a record, its view has no rows, and it counts as 0 records. When its collector has `normalize:`, the line keeps the spec's columns (`"_columns": [...]`) and the view has them, so a query of them runs on an empty table as it does on a full one; without `normalize:` the columns are not known and the view has only `_empty`. `query` reads the latest archive unless `--archive <archive id>` names another (`recon status <mission>` lists the ids), and reports `state: incomplete` for an incomplete archive, whose rows may be partial. SQL reads only files under the mission's `archive/` directory, so `read_json_auto('<that directory>/<archive id>/<table>.jsonl')` reaches an earlier archive for a diff; it loads no extension and reaches no network. A query runs SELECT statements only (`WITH`, `FROM`, `DESCRIBE` and `SUMMARIZE` among them); `COPY`, `ATTACH`, `CREATE` and the rest exit 10.
 
 To cite a row, cite its line in one archive's file: each record is one line. Take the archive's `path` from `recon status <name> --json` (`missions[0].latest.path`, or an older archive's in `missions[0].history`; a query's document names its own as `archive`), then `SELECT ordinality AS line, title FROM read_json_auto('<path>/<table>.jsonl') WITH ORDINALITY` gives `<archive id>/<table>.jsonl` line `line` for each row. The number is the line in the file, counted before any `WHERE` or `ORDER BY`: it is not a rank and follows no sort. Read one file, not a glob across archives (`archive/*/<table>.jsonl`): a glob numbers the lines of all its files as one, and archives surveyed with different `normalize:` specs (one raw, one normalized) have different columns. A table's view leaves the number out, so `SELECT *` shows only the record.
 
@@ -192,7 +199,7 @@ The same mission and the same answers from its sources give the same records: re
 
 Every survey writes its event log, `telemetry.jsonl`, into its archive: one `recon.v1.event` line per span start and end, with OpenTelemetry attribute names (`recon.table`, `recon.records`, `error.type`, and the HTTP client attributes `http.request.method`, `url.full`, `http.response.status_code`, `http.request.resend_count`). A span that ends with `status: error` says why in `error.type` and `message`; a start with no end is where a killed survey stopped. No secret and no body is logged: `url.full` has the `auth.param` value `REDACTED`.
 
-recon also emits the same spans, and the metrics `recon.collect.records` and `recon.collect.failures` (by `error.type`), through OpenTelemetry. Setting the standard variables is enough to export them, for example `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`, with recon installed with its `otel` extra (`uv tool install "recon[otel] @ git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=components/capabilities/recon"`). Set without the extra, the variables give an `otel_unavailable` warning in the document instead of an export. This is the `recon` command's doing: a Python program that imports recon gets no SDK installed, configures OpenTelemetry itself, or calls `recon.configure_telemetry()`.
+recon also emits the same spans, and the metrics `recon.collect.records` and `recon.collect.failures` (by `error.type`), through OpenTelemetry. Setting the standard variables is enough to export them, for example `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` for both, or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for traces alone: the OpenTelemetry SDK and its OTLP exporters are installed with recon. An install without them gives an `otel_unavailable` warning in the document instead of an export. Each exported span carries `recon.event.span`, its event-log `span`, to join the two; each HTTP request sends its span as `traceparent`. This is the `recon` command's doing: a Python program that imports recon gets no SDK installed, configures OpenTelemetry itself, or calls `recon.configure_telemetry()`.
 
 ## Captures
 

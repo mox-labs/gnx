@@ -92,7 +92,7 @@ comments all over.
 - When in doubt, leave it out (C14). No speculative options.
 - Conceptual integrity (C21): the same idea is done the same way across matrix, ix, recon
   and hardline. One stack: pydantic v2 for every record, rich-click for every CLI, rich
-  for terminal output, httpx for HTTP (async). Errors with `kind`, `message`, `fix`; exit
+  for terminal output, httpx2 for HTTP (async). Errors with `kind`, `message`, `fix`; exit
   codes from the shared `exit-codes.json`. A package that departs from the stack names why
   in one line, and the owner has accepted it.
 - No backwards compatibility shims. This is pre-release; the owner has said so.

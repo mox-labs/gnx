@@ -11,17 +11,12 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from recon.adapters._out.api_collector import ApiCollector
-from recon.adapters._out.cli_collector import CliCollector
-from recon.composition import DEFAULT_USER_AGENT
-from recon.domain.models import ReconConfig, SourceEntry
+from recon.domain.models import SourceEntry
 from recon.domain.ratelimit import RateLimiter
 from tests.recon_fakes import FixedClock, ScriptedRequester, ScriptedShell, run_survey
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from recon.domain.collector import Collector
 
 MISSION = {
     "catalog": [{"name": "papers", "url": "https://api.example.test", "rate_limit": {"rps": 1}}],
@@ -44,19 +39,16 @@ BODY = json.dumps(
 )
 
 
-def _collectors() -> dict[str, Collector]:
+def _survey(project: Path, clock: FixedClock, **extra: object) -> Path:
     requester = ScriptedRequester({"https://api.example.test/search": BODY})
     shell = ScriptedShell({"list-things": ["one", '{"line_number": 7}', "three"]})
-    return {
-        "api": ApiCollector(requester, {}, DEFAULT_USER_AGENT),
-        "cli": CliCollector(runner=shell),
-    }
-
-
-def _survey(mission: Path, clock: FixedClock, **extra: object) -> Path:
-    mission.mkdir()
-    config = ReconConfig.model_validate({**MISSION, **extra})
-    archive, _ = run_survey(config, _collectors(), mission, config_sha256="ab" * 32, clock=clock)
+    archive, _ = run_survey(
+        {**MISSION, **extra},
+        project,
+        requester=lambda telemetry, deadline: requester,
+        shell=shell,
+        clock=clock,
+    )
     return archive
 
 

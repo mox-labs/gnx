@@ -37,7 +37,9 @@ from __future__ import annotations
 import glob
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._out.capture_files import read_captures
 from recon.adapters._out.parsing import parse_body, parse_line
@@ -58,6 +60,36 @@ DEFAULT_CAPTURE_PATH = f"captures/{CAPTURE_LOG_NAME}"
 
 #: The name under which a normalize spec can reach the capture line itself.
 CAPTURE_SCOPE = "_capture"
+
+
+class CaptureMatch(BaseModel):
+    """Filters a `capture` collector applies to capture-log lines.
+
+    Each field is a shell-style glob (`fnmatch`) matched against the capture's field of the
+    same name; an unset field matches everything.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: str | None = None
+    collector: str | None = None
+    kind: str | None = None
+
+
+class CaptureSettings(BaseModel):
+    """A ``capture`` collector's own keys: ``path`` (a capture log, or a glob, relative to
+    the mission), ``match`` and ``response_format`` (the bodies' format, when not their
+    content type's)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str | None = None
+    match: CaptureMatch | None = None
+    response_format: Literal["json", "xml", "html", "text"] = "json"
+
+
+def _settings(entry: CollectorEntry) -> CaptureSettings:
+    return CaptureSettings.model_validate(entry.settings)
 
 
 def body_format(content_type: str) -> str:
@@ -86,9 +118,10 @@ class CaptureCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        logs = self._logs(entry)
-        explicit_format = "response_format" in entry.model_fields_set
-        wanted = _wanted(entry, source)
+        settings = _settings(entry)
+        logs = self._logs(entry.name, settings)
+        explicit_format = "response_format" in settings.model_fields_set
+        wanted = _wanted(settings, source)
         read = kept = given = 0
         unfit: NoRecordsError | None = None
         for log in logs:
@@ -98,7 +131,7 @@ class CaptureCollector:
                     continue
                 kept += 1
                 fmt = (
-                    entry.response_format
+                    settings.response_format
                     if explicit_format
                     else body_format(str(capture.get("content_type", "")))
                 )
@@ -119,18 +152,19 @@ class CaptureCollector:
                     scope = {**record, CAPTURE_SCOPE: capture}
                     yield apply_normalize(scope, entry.normalize, self._transforms)
         if given == 0 and read and not kept:
-            implied = source is not None and (entry.match is None or entry.match.source is None)
+            match = settings.match
+            implied = source is not None and (match is None or match.source is None)
             raise _unmatched(read, wanted, implied=implied)
         if given == 0 and unfit is not None:
             raise unfit
 
-    def _logs(self, entry: CollectorEntry) -> list[Path]:
-        pattern = entry.path or DEFAULT_CAPTURE_PATH
+    def _logs(self, name: str, settings: CaptureSettings) -> list[Path]:
+        pattern = settings.path or DEFAULT_CAPTURE_PATH
         full = Path(pattern) if Path(pattern).is_absolute() else self._mission_dir / pattern
         logs = sorted(p for p in map(Path, glob.glob(str(full), recursive=True)) if p.is_file())
         if not logs:
             msg = (
-                f"capture collector '{entry.name}': no capture log matches {pattern!r} "
+                f"capture collector '{name}': no capture log matches {pattern!r} "
                 f"(relative to {self._mission_dir}). Captures are written by `recon capture` "
                 "and by surveys with preserve_raw: true"
             )
@@ -142,10 +176,10 @@ class CaptureCollector:
         return logs
 
 
-def _wanted(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, str]:
+def _wanted(settings: CaptureSettings, source: SourceEntry | None) -> dict[str, str]:
     """The globs a capture must match, by field: ``match:``, and the source's name as the
     ``source`` glob when the run has a source and ``match.source`` is not set."""
-    wanted = entry.match.model_dump(exclude_none=True) if entry.match else {}
+    wanted = settings.match.model_dump(exclude_none=True) if settings.match else {}
     if "source" not in wanted and source is not None:
         wanted["source"] = source.name
     return wanted
@@ -190,13 +224,15 @@ def _records(
 
 
 def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
-    return {"path": entry.path or DEFAULT_CAPTURE_PATH, "match": _wanted(entry, source)}
+    settings = _settings(entry)
+    return {"path": settings.path or DEFAULT_CAPTURE_PATH, "match": _wanted(settings, source)}
 
 
 collector_type = CollectorType(
     create=lambda ctx: CaptureCollector(ctx.mission_dir, ctx.transforms),
     effects=frozenset({"filesystem"}),
     summary="capture log (recon.v1.capture) → bodies → records; fetches nothing",
+    settings=CaptureSettings,
     normalizes=True,  # the spec may address the capture line itself, as `_capture.*`
     extracts=True,
     describe=_describe,

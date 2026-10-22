@@ -13,7 +13,7 @@ import pytest
 
 from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.cli_collector import CliCollector
-from recon.adapters._out.http_requester import HttpxRequester
+from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.web_collector import WebCollector
@@ -30,7 +30,7 @@ live = pytest.mark.skipif(
 
 def _requester():
     clock = SystemClock()
-    return HttpxRequester(RateLimiter(clock), clock)
+    return HttpRequester(RateLimiter(clock), clock)
 
 
 def _collectors():
@@ -141,9 +141,7 @@ class TestOpenAlexLive:
             }
         )
         with tempfile.TemporaryDirectory() as tmp:
-            mission = Path(tmp) / "m"
-            mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, Path(tmp))
             jsonl = archive / "oa-search.jsonl"
             assert jsonl.exists()
             records = [json.loads(line) for line in jsonl.read_text().splitlines()]
@@ -276,9 +274,7 @@ class TestFanOutLive:
                 ],
             }
         )
-        mission = tmp_path / "mission"
-        mission.mkdir()
-        archive, _ = run(config, _collectors(), mission)
+        archive, _ = run(config, tmp_path)
 
         a_lines = (archive / "read-a.jsonl").read_text().splitlines()
         b_lines = (archive / "read-b.jsonl").read_text().splitlines()
@@ -305,9 +301,7 @@ class TestFanOutLive:
                 ],
             }
         )
-        mission = tmp_path / "mission"
-        mission.mkdir()
-        archive, _ = run(config, _collectors(), mission)
+        archive, _ = run(config, tmp_path)
 
         assert (archive / "ok.jsonl").exists()
         import yaml

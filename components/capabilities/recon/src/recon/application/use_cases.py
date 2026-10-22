@@ -17,6 +17,7 @@ from recon.application.captures import record_hook_payload
 from recon.application.plan import Plan, build_plan, plugin_warning
 from recon.application.survey import EventCallback, Survey
 from recon.domain.archives import ARCHIVE_ID_FORMAT
+from recon.domain.deadline import Deadline
 from recon.domain.documents import (
     ArchiveStatus,
     BrokenPluginInfo,
@@ -42,20 +43,19 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
+    from recon.application.collectors import SurveyCollectors
     from recon.domain.archives import ArchiveQuery, ArchiveStore
     from recon.domain.clock import Clock
-    from recon.domain.collector import BrokenPlugin, Collector, Plugins
+    from recon.domain.collector import Plugins
     from recon.domain.documents import Capture
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import ReconConfig
     from recon.domain.telemetry import Telemetry
 
-#: Builds one collector per installed type for a mission, reporting through the survey's
-#: telemetry; also returns the types whose factory failed, which a survey reports and whose
-#: tables fail with a config error.
-CollectorFactory = Callable[
-    ["Path", "ReconConfig", "Telemetry"], tuple[dict[str, "Collector"], list["BrokenPlugin"]]
-]
+#: Builds a collector for each installed type a mission uses, reporting through the survey's
+#: telemetry, with the types whose factory failed (which a survey reports and whose tables
+#: fail with a config error), and what to close when the survey ends.
+CollectorFactory = Callable[["Path", "ReconConfig", "Telemetry", "Deadline"], "SurveyCollectors"]
 
 #: The telemetry for one operation: a survey passes the archive it writes, whose event log
 #: is one of the sinks; an operation that writes no archive passes None.
@@ -196,30 +196,41 @@ class Recon:
         archive = self._archives.create(mission, started.strftime(ARCHIVE_ID_FORMAT))
         telemetry = self._telemetry(archive)
         about = {"recon.mission": name, "recon.archive": archive.name}
+        deadline = Deadline(self._clock)
         with telemetry.span(SURVEY, about) as span:
-            collectors, failed = self._build_collectors(mission, plan.config, telemetry)
-            for broken in failed:
-                warnings.append(plugin_warning(broken))
-                emit({"kind": "warning", "reason": str(warnings[-1]), "fix": warnings[-1].fix})
-            emit(
-                {
-                    "kind": "start",
-                    "runs": len(plan.runs),
-                    "collectors": len(plan.config.collectors),
-                    "sources": len(plan.config.catalog),
-                }
-            )
-            extracts = {n for n, ct in self._plugins.collector_types.items() if ct.extracts}
-            survey = Survey(
-                self._archives, self._clock, self._version, telemetry, on_event, extracts=extracts
-            )
-            tables = survey.run(
-                plan.config,
-                collectors,
-                archive,
-                started=started,
-                config_sha256=hashlib.sha256(source.text).hexdigest(),
-            )
+            built = self._build_collectors(mission, plan.config, telemetry, deadline)
+            try:
+                for broken in built.failed:
+                    warnings.append(plugin_warning(broken))
+                    emit({"kind": "warning", "reason": str(warnings[-1]),
+                          "fix": warnings[-1].fix})  # fmt: skip
+                emit(
+                    {
+                        "kind": "start",
+                        "runs": len(plan.runs),
+                        "collectors": len(plan.config.collectors),
+                        "sources": len(plan.config.catalog),
+                    }
+                )
+                extracts = {n for n, ct in self._plugins.collector_types.items() if ct.extracts}
+                survey = Survey(
+                    self._archives, self._clock, self._version, telemetry, on_event,
+                    extracts=extracts, deadline=deadline,
+                )  # fmt: skip
+                tables = survey.run(
+                    plan.config,
+                    built.collectors,
+                    archive,
+                    started=started,
+                    config_sha256=hashlib.sha256(source.text).hexdigest(),
+                )
+            finally:
+                # Whatever the survey opened (a collector's session, the requester's
+                # connections) ends with it, however it ends.
+                for broken in built.close():
+                    warnings.append(plugin_warning(broken))
+                    emit({"kind": "warning", "reason": str(warnings[-1]),
+                          "fix": warnings[-1].fix})  # fmt: skip
             failed_tables = [t for t in tables if t.status == "error"]
             span.set("recon.tables", len(tables))
             span.set("recon.tables.failed", len(failed_tables))
@@ -336,24 +347,24 @@ class Recon:
             ],
         )
 
-    def query(self, name: str, sql: str, *, archive_id: str | None = None) -> QueryRows:
+    def query(self, name: str, sql: str, *, archive: str | None = None) -> QueryRows:
         """Run ``sql`` against the latest archive, or the one named. ``state`` says whether
         the archive is incomplete, so its rows may be partial. A row is an object keyed by
         column, so a name the SQL gives twice is made unique, in ``columns`` and every row,
         with the suffix DuckDB gives it in a subquery (``a``, ``a_1``, then ``a_1_1`` on a
         further clash)."""
-        archive = self._archive(name, archive_id)
+        path = self._archive(name, archive)
         telemetry = self._telemetry(None)
-        with telemetry.span(QUERY, {"recon.mission": name, "recon.archive": archive.name}) as span:
-            result = self._query.execute(archive, sql)
+        with telemetry.span(QUERY, {"recon.mission": name, "recon.archive": path.name}) as span:
+            result = self._query.execute(path, sql)
             span.set("recon.rows", len(result.rows))
         columns = _unique(result.columns)
         rows = [dict(zip(columns, row, strict=True)) for row in result.rows]
         return QueryRows(
             mission=name,
-            archive=str(archive),
-            archive_id=archive.name,
-            state="incomplete" if self._archives.is_incomplete(archive) else "ok",
+            archive=str(path),
+            archive_id=path.name,
+            state="incomplete" if self._archives.is_incomplete(path) else "ok",
             columns=columns,
             rows=rows,
             count=len(rows),

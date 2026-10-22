@@ -1,8 +1,10 @@
-"""Integration tests for the Recon dispatch loop."""
+"""A survey end to end, through recon's root: tables, the archive, meta.yaml and events."""
 
+import hashlib
 import inspect
 import json
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -12,11 +14,12 @@ import recon
 from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import CliCollector
-from recon.adapters._out.http_requester import HttpxRequester
+from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.web_collector import WebCollector
 from recon.application.survey import Survey
 from recon.composition import DEFAULT_USER_AGENT
+from recon.domain.collector import CollectorType
 from recon.domain.converters import ConversionResult
 from recon.domain.documents import TableError, TableOutcome, failure_kind
 from recon.domain.errors import CollectionError, NoRecordsError
@@ -24,7 +27,7 @@ from recon.domain.models import ReconConfig
 from recon.domain.ratelimit import RateLimiter
 from recon.domain.substitution import substitute
 from recon.domain.telemetry import Telemetry
-from tests.recon_fakes import FixedClock, ScriptedRequester
+from tests.recon_fakes import FixedClock, ScriptedRequester, plugins_with
 from tests.recon_fakes import run_survey as run
 
 
@@ -41,7 +44,7 @@ class _NoOpConverter:
 
 def _collectors():
     clock = SystemClock()
-    req = HttpxRequester(RateLimiter(clock), clock)
+    req = HttpRequester(RateLimiter(clock), clock)
     return {
         "cli": CliCollector(),
         "api": ApiCollector(req, {}, DEFAULT_USER_AGENT),
@@ -72,7 +75,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             assert archive.is_dir()
             assert (archive / "test.jsonl").exists()
             assert (archive / "meta.yaml").exists()
@@ -88,7 +91,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             lines = (archive / "data.jsonl").read_text().strip().splitlines()
             records = [json.loads(line) for line in lines]
             assert len(records) == 1
@@ -106,7 +109,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             assert (archive / "first.jsonl").exists()
             assert (archive / "second.jsonl").exists()
 
@@ -126,7 +129,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             assert (archive / "scan-a.jsonl").exists()
             assert (archive / "scan-b.jsonl").exists()
             assert not (archive / "scan.jsonl").exists()
@@ -147,7 +150,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             assert (archive / "test.jsonl").exists()
             assert not (archive / "test-arxiv.jsonl").exists()
 
@@ -163,28 +166,23 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             assert (archive / "solo.jsonl").exists()
 
-    def test_source_ref_error_recorded(self):
-        """Missing source reference records error, doesn't crash."""
-        config = ReconConfig.model_validate(
-            {
-                "collectors": [
-                    {"name": "bad", "type": "api", "source": "nonexistent", "endpoint": "/x"},
-                    {"name": "ok", "type": "cli", "run": "echo hi"},
-                ],
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            mission = Path(tmp) / "m"
-            mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
-            meta = yaml.safe_load((archive / "meta.yaml").read_text())
-            assert meta["tables"][0]["status"] == "error"
-            assert "nonexistent" in meta["tables"][0]["error"]["message"]
-            # Second collector still ran
-            assert meta["tables"][1]["status"] == "ok"
+    def test_a_source_not_in_the_catalog_stops_the_survey_before_it_starts(self, tmp_path):
+        """Changed requirement: the survey used to record a missing source as a failed
+        table, a check the plan already made; the plan refuses it, so nothing runs."""
+        config = {
+            "collectors": [
+                {"name": "bad", "type": "api", "source": "nonexistent", "endpoint": "/x"},
+                {"name": "ok", "type": "cli", "run": "echo hi"},
+            ],
+        }
+        with pytest.raises(recon.ConfigError) as excinfo:
+            run(config, tmp_path)
+        [problem] = excinfo.value.problems
+        assert problem.path == "collectors.0.source" and "nonexistent" in problem.message
+        assert not (tmp_path / ".recon" / "m" / "archive").exists()
 
     def test_meta_yaml_content(self):
         config = ReconConfig.model_validate(
@@ -197,7 +195,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
             assert "timestamp" in meta
             assert meta["tables"][0]["name"] == "meta-test"
@@ -225,13 +223,14 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission, config_sha256="ab" * 32)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
+            config_text = (mission / ".recon" / "m" / "config.yaml").read_bytes()
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
             records = [json.loads(x) for x in (archive / "typed.jsonl").read_text().splitlines()]
 
         assert meta["format_version"] == 2
         assert meta["recon_version"] == __version__
-        assert meta["config_sha256"] == "ab" * 32
+        assert meta["config_sha256"] == hashlib.sha256(config_text).hexdigest()
         tables = {t["name"]: t for t in meta["tables"]}
         assert tables["plain"]["type_url"] == "recon.v1.records"
         assert tables["typed"]["type_url"] == "acme.papers.v1.hit"
@@ -252,7 +251,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
             assert meta["tables"][0]["status"] == "error"
             assert meta["tables"][1]["status"] == "ok"
@@ -267,28 +266,30 @@ class TestReconRun:
             }
         )
         with tempfile.TemporaryDirectory() as tmp:
-            mission = Path(tmp) / "my-mission"
-            mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            project = Path(tmp).resolve()
+            archive, _ = run(config, project, name="my-mission")
             assert archive.parent.name == "archive"
-            assert archive.parent.parent == mission
+            assert archive.parent.parent == project / ".recon" / "my-mission"
 
-    def test_unknown_collector_type_recorded(self):
-        """Unregistered type gets error in meta, doesn't crash."""
-        config = ReconConfig.model_validate(
-            {
-                "collectors": [
-                    {"name": "ok", "type": "cli", "run": "echo hi"},
-                ],
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            mission = Path(tmp) / "m"
-            mission.mkdir()
-            archive, _ = run(config, {}, mission)  # empty registry
-            meta = yaml.safe_load((archive / "meta.yaml").read_text())
-            assert meta["tables"][0]["status"] == "error"
-            assert "No collector registered" in meta["tables"][0]["error"]["message"]
+    def test_a_type_that_could_not_be_built_fails_its_tables_and_the_rest_run(self, tmp_path):
+        """A type unknown to the plan never reaches a survey (the plan refuses it); a type
+        whose factory raised does, and its tables fail as config, naming it."""
+
+        def explode(ctx):
+            raise ValueError("no credentials file")
+
+        plugins = plugins_with()
+        plugins.collector_types["fragile"] = CollectorType(create=explode, effects=None)
+        config = {
+            "collectors": [
+                {"name": "f", "type": "fragile"},
+                {"name": "ok", "type": "cli", "run": "echo hi"},
+            ]
+        }
+        archive, tables = run(config, tmp_path, plugins=plugins)
+        assert [(t.name, t.status) for t in tables] == [("f", "error"), ("ok", "ok")]
+        assert tables[0].error.kind == "config"
+        assert "'fragile' could not be built" in tables[0].error.message
 
     def test_empty_collector_output(self):
         """Empty records get _empty sentinel."""
@@ -302,7 +303,7 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             lines = (archive / "empty.jsonl").read_text().strip().splitlines()
             records = [json.loads(line) for line in lines]
             assert records == [{"_empty": True}]
@@ -322,12 +323,17 @@ class TestReconRun:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, results = run(config, _collectors(), mission, on_event=events.append)
+            archive, results = run(
+                config, mission, converter=_NoOpConverter(), on_event=events.append
+            )
             meta = yaml.safe_load((archive / "meta.yaml").read_text())
 
         assert {r.name: r.records for r in results} == {"empty": 0, "one": 1}
         assert {t["name"]: t["records"] for t in meta["tables"]} == {"empty": 0, "one": 1}
-        assert {e["name"]: e["records"] for e in events} == {"empty": 0, "one": 1}
+        assert {e["name"]: e["records"] for e in events if e["kind"] == "ok"} == {
+            "empty": 0,
+            "one": 1,
+        }
 
 
 class TestAtomicJsonlWrite:
@@ -338,7 +344,7 @@ class TestAtomicJsonlWrite:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             # final file exists, no lingering .tmp
             assert (archive / "t.jsonl").exists()
             assert not (archive / "t.jsonl.tmp").exists()
@@ -359,7 +365,7 @@ class TestIncompleteSentinel:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, results = run(config, _collectors(), mission)
+            archive, results = run(config, mission, converter=_NoOpConverter())
             statuses = {r.name: r.status for r in results}
             assert statuses == {"ok": "ok", "bad": "error"}
             assert (archive / ".incomplete").exists()
@@ -372,7 +378,7 @@ class TestIncompleteSentinel:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             assert not (archive / ".incomplete").exists()
 
 
@@ -385,7 +391,7 @@ class TestPreserveRaw:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             assert not (archive / "raw").exists()
             assert not (archive / "captures.jsonl").exists()
 
@@ -404,7 +410,7 @@ class TestPreserveRaw:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
 
             lines = (archive / "captures.jsonl").read_text().splitlines()
             assert len(lines) == 1
@@ -435,21 +441,19 @@ class TestPreserveRaw:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
+            archive, _ = run(config, mission, converter=_NoOpConverter())
             assert (archive / "t.jsonl").exists()
             assert (archive / "captures.jsonl").exists()
 
-    def test_capture_log_is_not_a_query_table(self):
-        from recon.adapters._out.duckdb_query import DuckdbQuery
-
+    def test_capture_log_is_not_a_table(self):
         config = ReconConfig.model_validate(
             {"preserve_raw": True, "collectors": [{"name": "t", "type": "cli", "run": "true"}]}
         )
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            archive, _ = run(config, _collectors(), mission)
-            assert DuckdbQuery().tables(archive) == ["t"]
+            archive, _ = run(config, mission, converter=_NoOpConverter())
+            assert [t.output for t in ArchiveFiles(FixedClock()).tables(archive)] == ["t"]
 
 
 class TestFailureKind:
@@ -497,7 +501,7 @@ class TestEventCallback:
         with tempfile.TemporaryDirectory() as tmp:
             mission = Path(tmp) / "m"
             mission.mkdir()
-            run(config, _collectors(), mission, on_event=events.append)
+            run(config, mission, converter=_NoOpConverter(), on_event=events.append)
         kinds = [e["kind"] for e in events]
         assert "ok" in kinds and "error" in kinds
         ok_event = next(e for e in events if e["kind"] == "ok")
@@ -517,7 +521,7 @@ class TestAnUnclassifiedTableError:
                 yield {}
 
         config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
-        archive, [table] = run(config, {"x": Breaks()}, tmp_path)
+        archive, [table] = run(config, tmp_path, plugins=plugins_with(x=Breaks()))
         assert table.error is not None and table.error.kind == "run_failed"
         assert "'list' object has no attribute 'items'" in table.error.message
         meta = yaml.safe_load((archive / "meta.yaml").read_text())
@@ -538,11 +542,14 @@ class TestTableErrorCarriesItsFix:
     def _error(self, tmp_path, fix):
         config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
         events: list[dict] = []
-        archive, results = run(config, {"x": self._Refuses(fix)}, tmp_path, on_event=events.append)
+        archive, results = run(
+            config, tmp_path, plugins=plugins_with(x=self._Refuses(fix)), on_event=events.append
+        )
         meta = yaml.safe_load((archive / "meta.yaml").read_text())
         error = results[0].document()["error"]
         assert meta["tables"][0]["error"] == error
-        return error, events[0]
+        [event] = [e for e in events if e["kind"] == "error"]
+        return error, event
 
     def test_fix_reaches_the_results_meta_and_event(self, tmp_path):
         error, event = self._error(tmp_path, "raise the limit")
@@ -562,7 +569,7 @@ class TestTableErrorCarriesItsFix:
 
 class TestSinkClosesTheGenerator:
     """`write_table` must close a SUSPENDED generator when the consumer fails, so the
-    collector's cleanup runs: subprocess kill, httpx close, rate-limit release.
+    collector's cleanup runs: subprocess kill, httpx2 close, rate-limit release.
 
     Why the obvious tests do not catch a missing `contextlib.closing(records)`:
       - normal completion — the generator exhausts, so it is already closed;
@@ -600,7 +607,7 @@ class TestSinkClosesTheGenerator:
         assert closed == [True], (
             "the generator was suspended when the consumer raised; closing() must run its "
             "finally before write_table returns, or the upstream collector never releases its "
-            "subprocess / httpx client / rate-limit token"
+            "subprocess / httpx2 client / rate-limit token"
         )
         assert inspect.getgeneratorstate(gen) == inspect.GEN_CLOSED
 
@@ -640,12 +647,12 @@ class TestAnUnfinishedArchiveReadsIncomplete:
 
         class Looks:
             def collect(self, entry, source, *, captures=None):
-                [archive] = (tmp_path / "archive").iterdir()
+                [archive] = (tmp_path / ".recon" / "m" / "archive").iterdir()
                 seen.append((archive / ".incomplete").exists())
                 yield {"a": 1}
 
         config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
-        archive, _ = run(config, {"x": Looks()}, tmp_path)
+        archive, _ = run(config, tmp_path, plugins=plugins_with(x=Looks()))
         assert seen == [True]
         assert not (archive / ".incomplete").exists(), "removed once every table succeeded"
 
@@ -795,5 +802,48 @@ class TestNoPlausibleEmptyTable:
                 raise NoRecordsError("too late", problem_kind="x", field="extract", fix="f")
 
         config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "late"}]})
-        _archive, [table] = run(config, {"late": Late()}, tmp_path)
+        _archive, [table] = run(config, tmp_path, plugins=plugins_with(late=Late()))
         assert table.status == "error"
+
+
+class TestDeadlines:
+    """Regression: nothing bounded a survey or a table in time, so one slow source held up
+    every table after it, for as long as it liked."""
+
+    def test_a_survey_s_deadline_fails_the_table_it_cuts_and_starts_no_other(self, tmp_path):
+        config = {
+            "deadline": 1,
+            "collectors": [
+                {"name": "first", "type": "cli", "run": "sleep 5"},
+                {"name": "second", "type": "cli", "run": "echo never"},
+            ],
+        }
+        started = time.monotonic()
+        archive, tables = run(config, tmp_path)
+        assert time.monotonic() - started < 3
+        assert [(t.name, t.status) for t in tables] == [("first", "error"), ("second", "error")]
+        for table in tables:
+            assert table.error.kind == "transient" and "deadline" in table.error.fix
+        assert "survey's deadline" in tables[1].error.message
+        assert "not started" in tables[1].error.message
+        assert (archive / ".incomplete").exists()
+
+    def test_a_table_s_deadline_fails_that_table_alone(self, tmp_path):
+        config = {
+            "collectors": [
+                {"name": "slow", "type": "cli", "run": "sleep 5", "deadline": 0.5},
+                {"name": "quick", "type": "cli", "run": "echo hi"},
+            ],
+        }
+        started = time.monotonic()
+        _archive, tables = run(config, tmp_path)
+        assert time.monotonic() - started < 3
+        assert [(t.name, t.status) for t in tables] == [("slow", "error"), ("quick", "ok")]
+        assert "slow's deadline" in tables[0].error.message
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_a_deadline_must_be_positive(self, tmp_path, value):
+        with pytest.raises(recon.ConfigError) as excinfo:
+            run({"deadline": value, "collectors": [{"name": "c", "type": "cli", "run": "true"}]},
+                tmp_path)  # fmt: skip
+        assert [p.path for p in excinfo.value.problems] == ["deadline"]

@@ -11,7 +11,10 @@ Determinism (the contract the tests in ``test_determinism.py`` hold):
     capture log a mission with ``preserve_raw`` keeps: each capture has a unique ``id``.
 
 Tables run one at a time, in config order, each collector against each of its sources in
-catalog order. A table that fails is recorded with its error and the rest still run. The
+catalog order. A table that fails is recorded with its error and the rest still run. A
+mission's ``deadline:`` bounds them all, and a collector's each of its tables
+(:mod:`recon.domain.deadline`): a table cut short fails as ``transient``, and so does each
+table not started when the survey's deadline has passed; the archive is still finished. The
 archive is created incomplete and marked complete only after ``meta.yaml`` is written with
 every table succeeded, so a survey that fails a table, is interrupted or is killed leaves an
 archive that reads incomplete. A survey that cannot write ``meta.yaml`` or mark the archive
@@ -38,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 from recon.application.plan import fan_out
 from recon.domain.archives import META_FORMAT_VERSION
+from recon.domain.deadline import Deadline, DeadlineExceededError
 from recon.domain.documents import TableError, TableOutcome
 from recon.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem, ReconError
 from recon.domain.normalize import nested_records
@@ -93,9 +97,11 @@ class Survey:
         on_event: EventCallback | None = None,
         *,
         extracts: Collection[str] = (),
+        deadline: Deadline | None = None,
     ) -> None:
         self._archives = archives
         self._clock = clock
+        self._deadline = deadline if deadline is not None else Deadline(clock)
         self._recon_version = recon_version
         self._telemetry = telemetry
         self._on_event = on_event
@@ -117,8 +123,11 @@ class Survey:
         ``meta.yaml`` under ``tables``."""
         captures = self._archives.capture_log(archive) if config.preserve_raw else None
         tables: list[TableOutcome] = []
-        for index, entry in enumerate(config.collectors):
-            tables += self._run_entry(index, entry, config, collectors, archive, captures)
+        what = f"the survey's deadline ({config.deadline:g}s)" if config.deadline else ""
+        fix = "raise deadline: at the top of the mission, or survey fewer tables"
+        with self._deadline.bound(config.deadline, what, fix):
+            for index, entry in enumerate(config.collectors):
+                tables += self._run_entry(index, entry, config, collectors, archive, captures)
         meta = {
             "format_version": META_FORMAT_VERSION,
             "recon_version": self._recon_version,
@@ -154,21 +163,15 @@ class Survey:
         captures: CaptureLog | None,
     ) -> list[TableOutcome]:
         catalog = {s.name: s for s in config.catalog}
-        targets = fan_out(entry, catalog)
-        if entry.source and not targets:
-            available = ", ".join(sorted(catalog)) or "(none)"
-            message = f"Source '{entry.source}' not in catalog. Available: {available}"
-            table = _table(entry, entry.name, entry.source)
-            with self._telemetry.span(COLLECT, _attributes(table)) as span:
-                return [self._failed(span, table, "config", message, 0)]
         collector = collectors.get(entry.type)
         tables = []
-        for source, output in targets:
+        for source, output in fan_out(entry, catalog):
             table = _table(entry, output, source.name if source else None)
             with self._telemetry.span(COLLECT, _attributes(table)) as span:
-                if collector is None:
-                    message = f"No collector registered for type: {entry.type}"
-                    tables.append(self._failed(span, table, "config", message, 0))
+                if collector is None:  # its type's factory raised: a plugin_broken warning
+                    message = f"collector type {entry.type!r} could not be built"
+                    fix = "see the plugin_broken warning for why; fix or reinstall its package"
+                    tables.append(self._failed(span, table, "config", message, 0, fix))
                     continue
                 outcome = self._run_table(
                     span, table, collector, (index, entry), source, archive, captures
@@ -188,22 +191,35 @@ class Survey:
     ) -> TableOutcome:
         index, entry = at
         output = table.name
+        try:
+            self._deadline.check()
+        except DeadlineExceededError as passed:
+            message = f"not started: {passed}"
+            return self._failed(span, table, passed.kind, message, 0, passed.fix)
         # Each fan-out target is its own entry, named for its output, so its captures and
         # its table share the name.
         target = entry if output == entry.name else entry.model_copy(update={"name": output})
         start = self._clock.monotonic()
         first: list[dict[str, Any]] = []
         nothing: NoRecordsError | None = None
+        what = f"table {output}'s deadline ({entry.deadline:g}s)" if entry.deadline else ""
+        raise_it = f"raise deadline: on collector {entry.name!r}, or narrow what it asks for"
         try:
-            records = _keeping_first(_tagged(collector, target, source, captures), first)
-            columns = list(entry.normalize or ())
-            try:
-                count = self._archives.write_table(archive, output, records, columns=columns)
-            except NoRecordsError as said:
-                if first:  # records came before it: an empty table would drop them
-                    raise
-                nothing = said
-                count = self._archives.write_table(archive, output, _no_records(), columns=columns)
+            with self._deadline.bound(entry.deadline, what, raise_it):
+                records = _within(
+                    self._deadline,
+                    _keeping_first(_tagged(collector, target, source, captures), first),
+                )
+                columns = list(entry.normalize or ())
+                try:
+                    count = self._archives.write_table(archive, output, records, columns=columns)
+                except NoRecordsError as said:
+                    if first:  # records came before it: an empty table would drop them
+                        raise
+                    nothing = said
+                    count = self._archives.write_table(
+                        archive, output, _no_records(), columns=columns
+                    )
         except Exception as exc:
             kind: ErrorKind = exc.kind if isinstance(exc, ReconError) else "run_failed"
             fix = exc.fix if isinstance(exc, ReconError) else None
@@ -304,6 +320,19 @@ def _tagged(
 
 def _no_records() -> Generator[dict[str, Any], None, None]:
     yield from ()
+
+
+def _within(
+    deadline: Deadline, records: Generator[dict[str, Any], None, None]
+) -> Generator[dict[str, Any], None, None]:
+    """``records`` while the deadline holds: past it, the next record fails the table.
+    Closing this closes ``records``."""
+    try:
+        for record in records:
+            deadline.check()
+            yield record
+    finally:
+        records.close()
 
 
 def _keeping_first(

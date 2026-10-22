@@ -6,24 +6,40 @@ from importlib.metadata import EntryPoint
 
 import pytest
 
+from recon.adapters._out.cli_collector import PopenRunner
 from recon.adapters._out.system_clock import SystemClock
+from recon.application.collectors import CollectorPorts, ScopedEnv
+from recon.application.collectors import build_collectors as build
 from recon.composition import (
     COLLECTORS_GROUP,
     DEFAULT_USER_AGENT,
     TRANSFORMS_GROUP,
-    build_collectors,
     load_collector_types,
     load_plugins,
     load_transforms,
 )
 from recon.domain.collector import CollectorType
+from recon.domain.deadline import Deadline
 from recon.domain.errors import CollectionError
 from recon.domain.models import ReconConfig
 from recon.domain.telemetry import Telemetry
+from tests.recon_fakes import ScriptedRequester
 from tests.recon_fakes import run_survey as run
 
 #: Telemetry with no sinks, for building collectors outside a survey.
 QUIET = Telemetry([], SystemClock())
+
+#: Ports to build collectors over that reach nothing: no test here sends a request.
+PORTS = CollectorPorts(
+    requester=lambda telemetry, deadline: ScriptedRequester({}),
+    converter=None,  # type: ignore[arg-type]
+    shell=PopenRunner(),
+    user_agent=DEFAULT_USER_AGENT,
+)
+
+
+def build_collectors(registry, mission_dir, config, telemetry, *, env):
+    return build(registry, PORTS, env, mission_dir, config, telemetry, Deadline(SystemClock()))
 
 
 def test_builtins_register_through_the_entry_point_groups():
@@ -126,12 +142,24 @@ def test_a_factory_that_raises_is_reported_and_others_build(tmp_path):
         raise ValueError("no credentials file")
 
     registry.collector_types["fragile"] = replace(registry.collector_types["cli"], create=explode)
-    collectors, failed = build_collectors(
-        registry, tmp_path, _config(), QUIET, env={}, clock=SystemClock()
+    config = _config(
+        {"name": "f", "type": "fragile", "run": "true"}, {"name": "c", "type": "cli", "run": "true"}
     )
-    assert "fragile" not in collectors
-    assert {"api", "cli", "web", "capture"} <= set(collectors)
-    assert any(b.name == "fragile" and "no credentials file" in b.error for b in failed)
+    built = build_collectors(registry, tmp_path, config, QUIET, env={})
+    assert set(built.collectors) == {"cli"}
+    assert any(b.name == "fragile" and "no credentials file" in b.error for b in built.failed)
+
+
+def test_only_the_types_a_mission_uses_are_built(tmp_path):
+    """Regression: every installed type was built for every survey, so one plugin's broken
+    factory was a warning in every survey, whether or not the mission used it."""
+    registry = load_plugins()
+    built = []
+    registry.collector_types["unused"] = CollectorType(
+        create=lambda ctx: built.append("unused"), effects=None
+    )
+    survey = build_collectors(registry, tmp_path, _config(), QUIET, env={})
+    assert set(survey.collectors) == {"cli"} and survey.failed == [] and built == []
 
 
 # --- env: a collector type sees only the variables its sources declare ------------------
@@ -167,7 +195,6 @@ def _plugin_env(tmp_path, *collectors):
         _config(*collectors, catalog=CATALOG),
         QUIET,
         env=PROCESS_ENV,
-        clock=SystemClock(),
     )
     return handed["env"]
 
@@ -222,17 +249,15 @@ def test_a_factory_that_reads_an_undeclared_variable_is_reported_with_the_fix(tm
     registry.collector_types["eager"] = CollectorType(
         create=lambda ctx: ctx.env["HOME"], effects=None
     )
-    collectors, failed = build_collectors(
-        registry, tmp_path, _config(), QUIET, env=PROCESS_ENV, clock=SystemClock()
-    )
-    assert "eager" not in collectors
-    [broken] = [b for b in failed if b.name == "eager"]
+    config = _config({"name": "e", "type": "eager"})
+    built = build_collectors(registry, tmp_path, config, QUIET, env=PROCESS_ENV)
+    assert "eager" not in built.collectors
+    [broken] = [b for b in built.failed if b.name == "eager"]
     assert "'HOME'" in broken.error and "auth.env" in broken.error
 
 
 def test_the_api_collector_still_reads_its_source_s_key(tmp_path):
     from recon.adapters._out.api_collector import ApiCollector
-    from recon.composition import ScopedEnv
     from recon.domain.http import HttpResponse
     from recon.domain.models import SourceEntry
 
@@ -258,8 +283,6 @@ def test_the_api_collector_still_reads_its_source_s_key(tmp_path):
 
 def _markitdown_table(tmp_path, named: str, catalog=()):
     """Survey one cli collector whose only record names ``named``, converted by $markitdown."""
-    mission = tmp_path / "mission"
-    mission.mkdir(exist_ok=True)
     config = _config(
         {
             "name": "docs",
@@ -269,10 +292,7 @@ def _markitdown_table(tmp_path, named: str, catalog=()):
         },
         catalog=catalog,
     )
-    collectors, failed = build_collectors(
-        load_plugins(), mission, config, QUIET, env={}, clock=SystemClock()
-    )
-    archive, [table] = run(config, collectors, mission)
+    archive, [table] = run(config, tmp_path)
     path = archive / table.file
     lines = path.read_text().splitlines() if path.exists() else []
     return table, [json.loads(line) for line in lines]
@@ -285,6 +305,21 @@ def test_markitdown_converts_a_file_under_a_declared_local_source(tmp_path):
     catalog = [{"name": "here", "type": "local", "url": str(here)}]
 
     table, rows = _markitdown_table(tmp_path, str(here / "data.csv"), catalog)
+
+    assert table.status == "ok", table
+    assert "Alice" in rows[0]["text"]
+
+
+def test_markitdown_reads_a_path_relative_to_the_directory_its_command_ran_in(tmp_path):
+    """Regression: a relative path a ``cli`` command printed was resolved against recon's
+    working directory, not the ``local`` source the command ran in, so it named another file
+    or none, and was refused."""
+    here = tmp_path / "here"
+    here.mkdir()
+    (here / "data.csv").write_text("name,city\nAlice,Paris\n")
+    catalog = [{"name": "here", "type": "local", "url": str(here)}]
+
+    table, rows = _markitdown_table(tmp_path, "data.csv", catalog)
 
     assert table.status == "ok", table
     assert "Alice" in rows[0]["text"]
@@ -366,12 +401,9 @@ def _registry_with(name, collector, **fields):
     return registry
 
 
-def _survey(registry, mission_dir, collector_entry):
+def _survey(registry, project, collector_entry):
     config = ReconConfig.model_validate({"collectors": [collector_entry]})
-    collectors, failed = build_collectors(
-        registry, mission_dir, config, QUIET, env={}, clock=SystemClock()
-    )
-    archive, results = run(config, collectors, mission_dir)
+    archive, results = run(config, project, plugins=registry)
     assert [r.status for r in results] == ["ok"], results
     table = archive / f"{collector_entry['name']}.jsonl"
     return [json.loads(line) for line in table.read_text().splitlines()]
@@ -423,9 +455,7 @@ def test_stopping_early_closes_the_plugin_s_generator(tmp_path):
     config = ReconConfig.model_validate(
         {"collectors": [{"name": "t", "type": "raw", "normalize": NORMALIZE}]}
     )
-    collector = build_collectors(registry, tmp_path, config, QUIET, clock=SystemClock(), env={})[0][
-        "raw"
-    ]
+    collector = build_collectors(registry, tmp_path, config, QUIET, env={}).collectors["raw"]
     entry = config.collectors[0]
 
     records = collector.collect(entry, None)
@@ -433,3 +463,115 @@ def test_stopping_early_closes_the_plugin_s_generator(tmp_path):
     records.close()
 
     assert raw.closed
+
+
+# --- what a collector type is handed, and what a survey ends ---------------------------
+
+
+def test_a_collector_type_s_spans_nest_under_its_table(tmp_path):
+    """``CollectorContext`` carries the survey's telemetry, so a type that does its own I/O
+    (an MCP call) is traced where its table is, not left out of the event log."""
+
+    class Traced:
+        def __init__(self, ctx):
+            self._telemetry = ctx.telemetry
+
+        def collect(self, entry, source, *, captures=None):
+            with self._telemetry.span("acme.call", {"acme.op": "list"}):
+                yield {"a": 1}
+
+    registry = load_plugins()
+    registry.collector_types["traced"] = CollectorType(create=Traced, effects=None)
+    archive, [table] = run({"collectors": [{"name": "t", "type": "traced"}]}, tmp_path,
+                           plugins=registry)  # fmt: skip
+    assert table.status == "ok"
+    events = [json.loads(line) for line in (archive / "telemetry.jsonl").read_text().splitlines()]
+    collect = next(e for e in events if e["name"] == "recon.collect.start")
+    call = next(e for e in events if e["name"] == "acme.call.start")
+    assert call["parent"] == collect["span"] and call["attributes"] == {"acme.op": "list"}
+
+
+class _Server:
+    """A collector type that starts one stdio server (``cat``) on its first table, asks it
+    for every table after, and stops it in ``close()``."""
+
+    started: list = []
+    closed: list = []
+
+    def __init__(self, ctx):
+        self._process = None
+
+    def collect(self, entry, source, *, captures=None):
+        import subprocess
+
+        if self._process is None:
+            self._process = subprocess.Popen(
+                ["cat"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+            )
+            _Server.started.append(self._process)
+        self._process.stdin.write(f"{entry.name}\n")
+        self._process.stdin.flush()
+        line = self._process.stdout.readline().strip()
+        if line == "boom":
+            raise KeyboardInterrupt
+        yield {"echo": line, "pid": self._process.pid}
+
+    def close(self):
+        _Server.closed.append(self._process)
+        self._process.terminate()
+        self._process.wait()
+
+
+def _server_registry():
+    _Server.started.clear()
+    _Server.closed.clear()
+    registry = load_plugins()
+    registry.collector_types["stdio"] = CollectorType(create=_Server, effects=None)
+    return registry
+
+
+def test_a_collector_keeps_a_stdio_server_across_its_tables_and_recon_ends_it(tmp_path):
+    """A collector may hold a session across its tables (the prerequisite of an MCP
+    collector): one server serves every table, and recon closes the collector once, when
+    the survey ends."""
+    config = {"collectors": [{"name": "one", "type": "stdio"}, {"name": "two", "type": "stdio"},
+                             {"name": "bad", "type": "cli", "run": "exit 3"}]}  # fmt: skip
+    archive, tables = run(config, tmp_path, plugins=_server_registry())
+    assert [t.status for t in tables] == ["ok", "ok", "error"]
+    rows = [json.loads((archive / f"{t}.jsonl").read_text()) for t in ("one", "two")]
+    assert [r["echo"] for r in rows] == ["one", "two"]
+    assert rows[0]["pid"] == rows[1]["pid"], "one server for both tables"
+    [process] = _Server.started
+    assert _Server.closed == [process] and process.poll() is not None
+
+
+def test_a_survey_cut_short_still_ends_its_collectors_sessions(tmp_path):
+    config = {"collectors": [{"name": "one", "type": "stdio"}, {"name": "boom", "type": "stdio"}]}
+    with pytest.raises(KeyboardInterrupt):
+        run(config, tmp_path, plugins=_server_registry())
+    [process] = _Server.started
+    assert _Server.closed == [process] and process.poll() is not None
+
+
+def test_a_close_that_raises_is_a_warning_and_the_rest_are_closed(tmp_path):
+    class Fails:
+        def collect(self, entry, source, *, captures=None):
+            yield {"a": 1}
+
+        def close(self):
+            raise OSError("socket already gone")
+
+    registry = _server_registry()
+    registry.collector_types["fails"] = CollectorType(create=lambda ctx: Fails(), effects=None)
+    config = {"collectors": [{"name": "f", "type": "fails"}, {"name": "s", "type": "stdio"}]}
+    from recon.composition import root
+
+    doc_root = tmp_path / ".recon" / "m"
+    doc_root.mkdir(parents=True)
+    import yaml
+
+    (doc_root / "config.yaml").write_text(yaml.safe_dump(config))
+    document = root({}, project=tmp_path, plugins=registry).survey("m")
+    [warning] = [w for w in document.warnings if w["kind"] == "plugin_broken"]
+    assert "close() raised OSError: socket already gone" in warning["message"]
+    assert len(_Server.closed) == 1

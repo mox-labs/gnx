@@ -13,20 +13,22 @@ import re
 import threading
 import time
 
-import httpx
+import httpx2
 import pytest
 
-from recon.adapters._out.http_requester import HttpxRequester, classify_http_failure
+from recon.adapters._out.http_requester import HttpRequester, classify_http_failure
 from recon.adapters._out.system_clock import SystemClock
+from recon.domain.deadline import Deadline
 from recon.domain.errors import CollectionError
 from recon.domain.models import SourceEntry
 from recon.domain.ratelimit import RateLimiter
+from tests.recon_fakes import FixedClock, HurriedClock
 
 
-def _status_error(code: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "https://example.test/x")
-    response = httpx.Response(code, request=request)
-    return httpx.HTTPStatusError(f"HTTP {code}", request=request, response=response)
+def _status_error(code: int) -> httpx2.HTTPStatusError:
+    request = httpx2.Request("GET", "https://example.test/x")
+    response = httpx2.Response(code, request=request)
+    return httpx2.HTTPStatusError(f"HTTP {code}", request=request, response=response)
 
 
 @pytest.mark.parametrize(
@@ -46,9 +48,9 @@ def test_status_codes(code, kind):
 
 
 def test_transport_errors_are_transient():
-    request = httpx.Request("GET", "https://example.test/x")
-    assert classify_http_failure(httpx.ConnectError("refused", request=request)) == "transient"
-    assert classify_http_failure(httpx.ReadTimeout("slow", request=request)) == "transient"
+    request = httpx2.Request("GET", "https://example.test/x")
+    assert classify_http_failure(httpx2.ConnectError("refused", request=request)) == "transient"
+    assert classify_http_failure(httpx2.ReadTimeout("slow", request=request)) == "transient"
 
 
 # --- body size ------------------------------------------------------------------------
@@ -126,7 +128,7 @@ def base_url():
 def _get(base_url, path, **source_fields):
     source = SourceEntry(name="local", url=base_url, timeout=10, **source_fields)
     clock = SystemClock()
-    return HttpxRequester(RateLimiter(clock), clock).get(source, f"{base_url}{path}")
+    return HttpRequester(RateLimiter(clock), clock).get(source, f"{base_url}{path}")
 
 
 def test_a_body_within_the_limit_is_returned_whole(base_url):
@@ -144,7 +146,7 @@ def test_a_query_in_the_url_is_kept_and_params_are_added_to_it(base_url):
     assert _get(base_url, "/echo?id=3").text == "/echo?id=3"
     source = SourceEntry(name="local", url=base_url, timeout=10)
     clock = SystemClock()
-    requester = HttpxRequester(RateLimiter(clock), clock)
+    requester = HttpRequester(RateLimiter(clock), clock)
     sent = requester.request(source, "GET", f"{base_url}/echo?id=3", params={"key": "k"})
     assert sent.text == "/echo?id=3&key=k"
 
@@ -247,7 +249,7 @@ def test_a_retry_after_that_is_not_a_wait_falls_back_to_backoff(base_url, asked)
 # --- redirects ------------------------------------------------------------------------
 
 
-def _redirecting(monkeypatch, location, origin="https://api.example.test"):
+def _redirecting(location, origin="https://api.example.test"):
     """Requests sent through a MockTransport on which ``<origin>/start`` answers 302 to
     ``location`` and any other URL answers 200: each sent request's URL and headers."""
     sent = []
@@ -255,16 +257,11 @@ def _redirecting(monkeypatch, location, origin="https://api.example.test"):
     def answer(request):
         sent.append((str(request.url), dict(request.headers)))
         if request.url.path == "/start":
-            return httpx.Response(302, headers={"Location": location})
-        return httpx.Response(200, json={"ok": True})
+            return httpx2.Response(302, headers={"Location": location})
+        return httpx2.Response(200, json={"ok": True})
 
-    client = httpx.Client
-    monkeypatch.setattr(
-        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(answer), **kw)
-    )
     source = SourceEntry(name="keyed", url=origin, auth={"header": "x-api-key"})
-    clock = SystemClock()
-    requester = HttpxRequester(RateLimiter(clock), clock)
+    requester = _answered_by(answer)
     requester.request(source, "GET", f"{source.url}/start", headers={"x-api-key": "SECRET1"})
     return sent
 
@@ -277,11 +274,11 @@ def _redirecting(monkeypatch, location, origin="https://api.example.test"):
         "https://api.example.test:8443/landing",  # the same host, another port
     ],
 )
-def test_a_redirect_to_another_origin_does_not_carry_the_sources_credential(monkeypatch, location):
-    """Regression: httpx strips only Authorization on a cross-origin redirect, so a key in
-    the source's own ``auth.header`` (``x-api-key``, as Exa and Serper take it) went to
-    whatever host the first one redirected to."""
-    sent = _redirecting(monkeypatch, location)
+def test_a_redirect_to_another_origin_does_not_carry_the_sources_credential(location):
+    """Regression: httpx2 (as httpx before it) strips only Authorization on a cross-origin
+    redirect, so a key in the source's own ``auth.header`` (``x-api-key``, as Exa and Serper
+    take it) went to whatever host the first one redirected to."""
+    sent = _redirecting(location)
     assert [url for url, _ in sent] == ["https://api.example.test/start", location]
     assert sent[0][1]["x-api-key"] == "SECRET1"
     assert "x-api-key" not in sent[1][1]
@@ -295,33 +292,28 @@ def test_a_redirect_to_another_origin_does_not_carry_the_sources_credential(monk
         ("http://api.example.test", "https://api.example.test/landing"),  # up to https
     ],
 )
-def test_a_redirect_within_the_origin_keeps_the_credential(monkeypatch, origin, location):
+def test_a_redirect_within_the_origin_keeps_the_credential(origin, location):
     """The credential goes where the source's URL sends it, and only there: a redirect
-    inside that origin, or its upgrade to https, still authenticates, as httpx keeps
+    inside that origin, or its upgrade to https, still authenticates, as httpx2 keeps
     ``Authorization`` there."""
-    sent = _redirecting(monkeypatch, location, origin)
+    sent = _redirecting(location, origin)
     assert sent[1][0] == "https://api.example.test/landing"
     assert sent[1][1]["x-api-key"] == "SECRET1"
 
 
-# --- failures httpx raises that are not transport errors --------------------------------
+# --- failures httpx2 raises that are not transport errors -------------------------------
 
 
-def _answered_by(monkeypatch, answer):
-    client = httpx.Client
-    monkeypatch.setattr(
-        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(answer), **kw)
-    )
+def _answered_by(answer):
+    """A requester whose every request is answered by ``answer``, through a MockTransport."""
     clock = SystemClock()
-    return HttpxRequester(RateLimiter(clock), clock)
+    return HttpRequester(RateLimiter(clock), clock, transport=httpx2.MockTransport(answer))
 
 
-def test_a_redirect_loop_is_a_classified_failure(monkeypatch):
+def test_a_redirect_loop_is_a_classified_failure():
     """Regression: ``TooManyRedirects`` is not a transport error, so it escaped unclassified
     and its table failed with no fix."""
-    requester = _answered_by(
-        monkeypatch, lambda request: httpx.Response(302, headers={"Location": "/again"})
-    )
+    requester = _answered_by(lambda request: httpx2.Response(302, headers={"Location": "/again"}))
     source = SourceEntry(name="s", url="https://api.example.test")
     with pytest.raises(CollectionError) as excinfo:
         requester.request(source, "GET", "https://api.example.test/start")
@@ -330,12 +322,11 @@ def test_a_redirect_loop_is_a_classified_failure(monkeypatch):
     assert "redirect" in error.fix
 
 
-def test_a_body_that_does_not_decode_is_a_classified_failure(monkeypatch):
+def test_a_body_that_does_not_decode_is_a_classified_failure():
     """Regression: a body whose Content-Encoding lies (``DecodingError``) escaped
     unclassified."""
     requester = _answered_by(
-        monkeypatch,
-        lambda request: httpx.Response(
+        lambda request: httpx2.Response(
             200, headers={"Content-Encoding": "gzip"}, content=b"not gzip at all"
         ),
     )
@@ -347,11 +338,185 @@ def test_a_body_that_does_not_decode_is_a_classified_failure(monkeypatch):
     assert "Content-Encoding" in error.fix
 
 
-def test_a_url_that_is_not_one_is_a_config_error(monkeypatch):
+def test_a_url_that_is_not_one_is_a_config_error():
     """Regression: ``InvalidURL`` escaped unclassified; the URL is the mission's to fix."""
-    requester = _answered_by(monkeypatch, lambda request: httpx.Response(200))
+    requester = _answered_by(lambda request: httpx2.Response(200))
     source = SourceEntry(name="s", url="http://[::1")
     with pytest.raises(CollectionError) as excinfo:
         requester.request(source, "GET", "http://[::1/x")
     error = excinfo.value
     assert error.kind == "config" and "url:" in error.fix
+
+
+# --- what a retry costs ----------------------------------------------------------------
+
+
+class _CountingLimiter:
+    """The rate limiter, counting the tokens drawn and never waiting."""
+
+    def __init__(self) -> None:
+        self.drawn = 0
+
+    def acquire(self, source, deadline=None):
+        self.drawn += 1
+
+
+def _always_busy(request):
+    return httpx2.Response(503)
+
+
+def test_every_send_draws_a_token_resends_included():
+    """Regression: the token was drawn once per request, before its retries, so a source
+    answering 5xx took three sends for one token and its rate limit did not hold."""
+    limiter = _CountingLimiter()
+    clock = FixedClock()
+    requester = HttpRequester(limiter, clock, transport=httpx2.MockTransport(_always_busy))
+    source = SourceEntry(name="s", url="https://api.example.test")
+    with pytest.raises(CollectionError, match="after retries"):
+        requester.request(source, "GET", "https://api.example.test/x")
+    assert limiter.drawn == 3
+
+
+def test_a_retry_waits_on_the_clock_port():
+    """Regression: tenacity slept on the real clock, so a test clock could not see a retry's
+    backoff, and nothing that reads the clock port could bound it."""
+    clock = FixedClock()
+    requester = HttpRequester(
+        RateLimiter(clock), clock, transport=httpx2.MockTransport(_always_busy)
+    )
+    source = SourceEntry(name="s", url="https://api.example.test")
+    started = time.monotonic()
+    with pytest.raises(CollectionError, match="after retries"):
+        requester.request(source, "GET", "https://api.example.test/x")
+    assert clock.slept == [1.0, 2.0], "the backoff before the second and third sends"
+    assert time.monotonic() - started < 1, "no real time was slept"
+
+
+# --- one session per survey --------------------------------------------------------------
+
+
+class _KeepAlive(http.server.BaseHTTPRequestHandler):
+    """HTTP/1.1, so a client may send more than one request on a connection; records the
+    client port each request came from."""
+
+    protocol_version = "HTTP/1.1"
+    ports: list[int] = []
+
+    def do_GET(self):
+        _KeepAlive.ports.append(self.client_address[1])
+        body = b"{}"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def test_a_survey_s_requests_share_one_session_which_closing_ends():
+    """Regression: the requester opened a client per request, so nothing was kept between
+    requests (a connection, a session a later collector type would hold). It keeps one
+    session for the survey, and ``close()`` ends it."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _KeepAlive)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _KeepAlive.ports.clear()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        clock = SystemClock()
+        requester = HttpRequester(RateLimiter(clock), clock)
+        source = SourceEntry(name="s", url=base, timeout=10)
+        requester.get(source, f"{base}/a")
+        requester.get(source, f"{base}/b")
+        requester.close()
+        requester.get(source, f"{base}/c")
+        requester.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    first, second, after_close = _KeepAlive.ports
+    assert first == second, "the second request went on the first one's connection"
+    assert after_close != first, "a closed session's connection is not reused"
+
+
+# --- bounds in time --------------------------------------------------------------------
+
+
+class _Trickle(http.server.BaseHTTPRequestHandler):
+    """A 200 whose 20-byte body comes one byte every 0.25 s: within any per-read timeout."""
+
+    def do_GET(self):
+        body = b"[" + b" " * 18 + b"]"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        with contextlib.suppress(OSError):  # the client hangs up once it has waited enough
+            for i in range(len(body)):
+                self.wfile.write(body[i : i + 1])
+                self.wfile.flush()
+                time.sleep(0.25)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture(scope="module")
+def trickle():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Trickle)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+    server.server_close()
+
+
+def test_a_source_s_timeout_bounds_each_send_in_wall_time(trickle):
+    """Regression: ``timeout`` bounded each read, not the request, so a body trickled within
+    it took as long as the server liked (5 s here, any time at all in general)."""
+    clock = HurriedClock()  # retries' backoff is skipped, the sends' wall time is real
+    requester = HttpRequester(RateLimiter(clock), clock)
+    source = SourceEntry(name="slow", url=trickle, timeout=1)
+    started = time.monotonic()
+    with pytest.raises(CollectionError) as excinfo:
+        requester.get(source, f"{trickle}/x")
+    assert time.monotonic() - started < 3 * 1 + 1.5, "three sends of at most ~1 s each"
+    assert excinfo.value.kind == "transient" and "timeout" in excinfo.value.fix
+
+
+def test_a_deadline_ends_a_request_whatever_its_timeout(trickle):
+    clock = HurriedClock()
+    deadline = Deadline(clock)
+    requester = HttpRequester(RateLimiter(clock), clock, deadline=deadline)
+    source = SourceEntry(name="slow", url=trickle, timeout=60)
+    started = time.monotonic()
+    with (
+        deadline.bound(1.0, "table t's deadline", "raise deadline: on collector 't'"),
+        pytest.raises(CollectionError) as excinfo,
+    ):
+        requester.get(source, f"{trickle}/x")
+    assert time.monotonic() - started < 2
+    assert excinfo.value.kind == "transient"
+    assert "table t's deadline" in str(excinfo.value) and "deadline:" in excinfo.value.fix
+
+
+def test_a_wait_past_the_deadline_is_not_waited():
+    """A Retry-After, a backoff or a rate-limit wait that would end past the deadline fails
+    the request at once rather than sleep into it."""
+    clock = FixedClock()
+    deadline = Deadline(clock)
+    answer = httpx2.MockTransport(lambda r: httpx2.Response(503, headers={"Retry-After": "30"}))
+    requester = HttpRequester(RateLimiter(clock), clock, deadline=deadline, transport=answer)
+    source = SourceEntry(name="s", url="https://api.example.test")
+    with deadline.bound(10, "the survey's deadline", "raise deadline:"):
+        with pytest.raises(CollectionError, match="the survey's deadline"):
+            requester.request(source, "GET", "https://api.example.test/x")
+        assert clock.slept == []
+        slow = SourceEntry(name="slow", url="https://api.example.test",
+                           rate_limit={"rps": 0.01, "burst": 1})  # fmt: skip
+        fine = httpx2.MockTransport(lambda r: httpx2.Response(200))
+        quick = HttpRequester(RateLimiter(clock), clock, deadline=deadline, transport=fine)
+        quick.request(slow, "GET", "https://api.example.test/x")
+        with pytest.raises(CollectionError, match="the survey's deadline"):
+            quick.request(slow, "GET", "https://api.example.test/x")  # the next token: 100 s
+        assert clock.slept == []
