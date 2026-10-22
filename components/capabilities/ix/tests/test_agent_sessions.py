@@ -1,8 +1,10 @@
-"""Agent sessions over matrix's runtimes: the ``agent-session`` subject, the ``prompt``
-probe, and the sensors that read what a session said and did.
+"""Agent sessions and model calls over matrix's runtimes: the ``agent-session`` and
+``model-call`` subjects, the ``prompt`` probe, and the sensors that read what a session or a
+call said and did.
 
-The runtimes here are scripted test doubles of matrix's ``AgentRuntime`` port, handed over
-as the composition root hands over matrix's: no test runs a model.
+The runtimes here are scripted test doubles of matrix's ``AgentRuntime`` and
+``ModelRuntime`` ports, handed over as the composition root hands over matrix's: no test
+runs a model.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from ix.adapters._out.agent_sensors import (
     UsageSensor,
 )
 from ix.adapters._out.matrix_agents import AgentSessionSubject, PromptProbe, Sessions
+from ix.adapters._out.matrix_calls import ModelCallSubject
 from ix.adapters._out.matrix_judge import STAND_IN_REPLY, JudgeSensor
 from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.domain.design import SelectedSensor
@@ -61,25 +64,68 @@ class Scripted:
         return reply
 
 
+class ScriptedModel:
+    """A model runtime that answers from a script, one reply a call, the last one repeated."""
+
+    def __init__(self, *replies: matrix.ModelCall | Exception) -> None:
+        self.replies = list(replies)
+        self.requests: list[matrix.ModelRequest] = []
+        self.checked: list[str | None] = []
+
+    def check(self, model: str | None) -> None:
+        self.checked.append(model)
+        if model == "unknown":
+            raise matrix.ConfigError("no model 'unknown' in the registry")
+
+    async def call(self, request: matrix.ModelRequest) -> matrix.ModelCall:
+        self.requests.append(request)
+        reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+#: What claude-sdk's config declares, for a double that plays it.
+CLAUDE_SDK = frozenset(
+    {"agents", "cwd", "fallback_model", "max_budget_usd", "permission_mode", "plugins",
+     "setting_sources", "skills"}
+)  # fmt: skip
+#: What matrix's mock runtimes' configs declare.
+MOCK = frozenset({"by_agent", "by_model", "default", "family", "responses"})
+
+
 class Runtimes:
-    """matrix's runtimes as the composition root hands them over, all one scripted one."""
+    """matrix's runtimes as the composition root hands them over, at either point all one
+    scripted one. ``stand_in`` and ``takes`` are what its registration would declare."""
 
-    def __init__(self, runtime: Scripted, *, simulated: bool = False) -> None:
+    def __init__(
+        self,
+        runtime: Scripted | ScriptedModel,
+        *,
+        stand_in: bool = False,
+        takes: frozenset[str] | None = CLAUDE_SDK,
+    ) -> None:
         self.runtime = runtime
-        self._simulated = simulated
-        self.built: list[tuple[str, dict[str, Any], str | None]] = []
+        self._stand_in = stand_in
+        self._takes = takes
+        self.built: list[tuple[str, str, dict[str, Any], str | None]] = []
 
-    def build(self, name: str, config: Mapping[str, Any], *, cwd: str | None) -> Scripted:
-        self.built.append((name, dict(config), cwd))
+    def build(
+        self, point: str, name: str, config: Mapping[str, Any], *, cwd: str | None = None
+    ) -> Any:
+        self.built.append((point, name, dict(config), cwd))
         return self.runtime
 
-    def simulated(self, name: str) -> bool:
-        return self._simulated
+    def stand_in(self, point: str, name: str) -> bool:
+        return self._stand_in
+
+    def takes(self, point: str, name: str) -> frozenset[str] | None:
+        return self._takes
 
 
 def _subject(runtime: str = "claude-sdk", **options: Any) -> SubjectConfig:
-    """An ``agent-session`` subject. It names ``claude-sdk`` unless told otherwise, so the
-    SDK's options apply; the scripted double plays it, and no model is called."""
+    """An ``agent-session`` subject. It names ``claude-sdk`` unless told otherwise; the
+    scripted double plays it, and no model is called."""
     return SubjectConfig.model_validate({"kind": "agent-session", "runtime": runtime, **options})
 
 
@@ -95,6 +141,7 @@ async def _ask(
     sessions = Sessions()
     reached = AgentSessionSubject(sessions, runtimes, MatrixLauncher())
     async with reached.reach("agent", subject or _subject(), base=str(base)) as target:
+        assert set(target.facets) == {"respondent", "workdir"}
         workdir = Path(target.facets["workdir"])
         seen = await PromptProbe(sessions).apply(probe, target, seed=0)
         assert workdir.is_dir()
@@ -141,7 +188,7 @@ class TestASessionPerTrial:
 
         class Peek(Scripted):
             async def run(self, definition: Any, task: str) -> matrix.AgentResponse:
-                cwd = runtimes.built[-1][2]
+                cwd = runtimes.built[-1][3]
                 assert cwd is not None
                 seen["files"] = sorted(
                     str(p.relative_to(cwd)) for p in Path(cwd).rglob("*") if p.is_file()
@@ -182,7 +229,7 @@ class TestASessionPerTrial:
     async def test_what_the_session_said_and_did_is_kept(self, tmp_path: Path) -> None:
         class Writes(Scripted):
             async def run(self, definition: Any, task: str) -> matrix.AgentResponse:
-                Path(runtimes.built[-1][2] or ".", "solution.py").write_text("x = 1\n")
+                Path(runtimes.built[-1][3] or ".", "solution.py").write_text("x = 1\n")
                 return _reply(
                     "Wrote it.",
                     tool_calls=({"name": "Write", "input": {"file_path": "solution.py"}},),
@@ -203,43 +250,57 @@ class TestASessionPerTrial:
         assert response["files"] == {"solution.py": "x = 1\n"}
         assert [r["round"] for r in response["transcript"]] == [1]
         assert usage == {
-            "runtime": "claude-sdk", "model": "claude-x", "family": "claude", "provider": None,
+            "runtime": "matrix.v1.agent-runtime.claude-sdk", "model": "claude-x",
+            "family": "claude", "provider": None,
             "tokens_input": 100, "tokens_output": 20, "tokens_total": 120, "cost_usd": 0.03,
             "turns": 1, "tool_calls": 1, "duration_ms": 900, "rounds": 1,
             "stop": "completed", "simulated": False,
         }  # fmt: skip
 
+    @pytest.mark.parametrize("runtime", ["mock", "acme.v1.agent-runtime.canned"])
     async def test_a_stand_in_runtime_is_marked_and_gives_the_canned_reply(
-        self, tmp_path: Path
+        self, tmp_path: Path, runtime: str
     ) -> None:
-        runtimes = Runtimes(Scripted(_reply("canned")), simulated=True)
-        subject = _subject(runtime="mock")
+        """Regression: the canned reply was handed only to a runtime named ``mock``, so a
+        third party's stand-in was marked simulated and never given it. A stand-in is what
+        its registration declares, whatever its name."""
+        runtimes = Runtimes(Scripted(_reply("canned")), stand_in=True, takes=MOCK)
+        subject = _subject(runtime=runtime)
         seen, _, simulated = await _ask(
             runtimes, {"prompt": "Go.", "mock_response": "A canned answer."}, base=tmp_path,
             subject=subject,
         )  # fmt: skip
         assert simulated is True and seen["usage"]["simulated"] is True
-        assert runtimes.built[-1][1] == {"default": "A canned answer."}
+        assert runtimes.built[-1][:3] == ("agent-runtime", runtime, {"default": "A canned answer."})
 
-    async def test_the_sdks_options_reach_its_runtime_and_paths_are_absolute(
+    async def test_a_real_runtime_is_never_handed_the_canned_reply(self, tmp_path: Path) -> None:
+        runtimes = Runtimes(Scripted(_reply("real")))
+        seen, _, simulated = await _ask(
+            runtimes, {"prompt": "Go.", "mock_response": "A canned answer."}, base=tmp_path,
+            subject=_subject(runtime="mock"),
+        )  # fmt: skip
+        assert simulated is False and runtimes.built[-1][2] == {}
+
+    async def test_the_runtime_options_reach_the_runtime_as_written_and_plugin_paths_are_absolute(
         self, tmp_path: Path
     ) -> None:
+        """Changed requirement: ix maps no option by a runtime's name. A subject's
+        ``runtime_options`` are its runtime's config as written, ``plugins`` are added to
+        them with every path absolute, and skills are files copied, never a setting."""
         (tmp_path / "plugins" / "a").mkdir(parents=True)
         (tmp_path / "plugins" / "b").mkdir(parents=True)
         (tmp_path / "skills" / "s").mkdir(parents=True)
         runtimes = Runtimes(Scripted(_reply()))
-        subject = _subject(
-            permission_mode="bypassPermissions", setting_sources=[], plugins=["plugins/*"],
-            skills=["skills/s"], runtime_options={"fallback_model": "haiku"},
-        )  # fmt: skip
-        await _ask(runtimes, {"prompt": "Go."}, base=tmp_path, subject=subject)
-        name, config, _ = runtimes.built[-1]
-        assert name == "claude-sdk"
-        assert config == {
+        given = {
+            "permission_mode": "bypassPermissions", "setting_sources": ["project"],
             "fallback_model": "haiku",
-            "permission_mode": "bypassPermissions",
-            # Its skills are read from the session's own .claude, as project settings.
-            "setting_sources": ["project"],
+        }  # fmt: skip
+        subject = _subject(plugins=["plugins/*"], skills=["skills/s"], runtime_options=given)
+        await _ask(runtimes, {"prompt": "Go."}, base=tmp_path, subject=subject)
+        point, name, config, _ = runtimes.built[-1]
+        assert (point, name) == ("agent-runtime", "claude-sdk")
+        assert config == {
+            **given,
             "plugins": [
                 {"type": "local", "path": str((tmp_path / "plugins" / p).resolve())}
                 for p in ("a", "b")
@@ -340,9 +401,6 @@ class TestPreflight:
         (tmp_path / "plugins" / "review").mkdir(parents=True)
         assert self._unstartable(tmp_path, plugins=["plugins/*"]) is None
         assert "not on PATH" in self._unstartable(tmp_path, setup=["no-such-program-anywhere"])
-        assert "option of the claude-sdk runtime" in self._unstartable(
-            tmp_path, runtime="model", permission_mode="default"
-        )
         assert "strategy" in self._unstartable(tmp_path, loop={"strategy": "ralph"})
 
     def test_a_subject_that_names_no_runtime_never_starts_one(self, tmp_path: Path) -> None:
@@ -356,9 +414,12 @@ class TestPreflight:
         assert runtimes.built == []
 
     def test_a_runtime_that_cannot_play_the_definition_says_so(self, tmp_path: Path) -> None:
-        one_call = Scripted(_reply())
-        one_call.refuses_tools = True
-        said = self._unstartable(tmp_path, one_call, runtime="model", tools=["Bash"])
+        """The runtime's own ``check`` refuses what it cannot play; ix knows nothing of it."""
+        no_tools = Scripted(_reply())
+        no_tools.refuses_tools = True
+        said = self._unstartable(
+            tmp_path, no_tools, runtime="acme.v1.agent-runtime.no-tools", tools=["Bash"]
+        )
         assert said is not None and "no tools" in said
 
 
@@ -383,9 +444,14 @@ class TestReview:
     nothing is a problem before any trial runs, never a confident verdict after."""
 
     def _review(
-        self, around: Surroundings, runtime: str = "claude-sdk", **options: Any
+        self,
+        around: Surroundings,
+        runtime: str = "claude-sdk",
+        takes: frozenset[str] | None = CLAUDE_SDK,
+        **options: Any,
     ) -> set[tuple[str, str]]:
-        adapter = AgentSessionSubject(Sessions(), Runtimes(Scripted(_reply())), MatrixLauncher())
+        runtimes = Runtimes(Scripted(_reply()), takes=takes)
+        adapter = AgentSessionSubject(Sessions(), runtimes, MatrixLauncher())
         found = adapter.review({"runtime": runtime, **options}, around)
         return {(problem.path, problem.kind) for problem in found}
 
@@ -408,6 +474,16 @@ class TestReview:
         named = _around(tmp_path, ("activation", {"tool": "Activate"}))
         assert self._review(named, tools=["Skill"]) == {("subjects.agent.tools", "unobservable")}
 
+    @pytest.mark.parametrize("runtime", ["mock", "acme.v1.agent-runtime.scripted"])
+    def test_a_session_is_reviewed_whatever_its_runtime_is_called(
+        self, tmp_path: Path, runtime: str
+    ) -> None:
+        """Regression: the reviews ran only for a runtime named ``claude-sdk``, so a session
+        on any other agent runtime, given skills and no Skill tool, passed validate."""
+        activation = _around(tmp_path, ("activation", {}))
+        found = self._review(activation, runtime, None, skills=["skills/review"], tools=[])
+        assert found == {("subjects.agent.tools", "unobservable")}
+
     def test_the_tools_a_definition_file_gives_count(self, tmp_path: Path) -> None:
         (tmp_path / "agent.md").write_text("---\nname: a\ntools: [Read]\n---\nBe brief.\n")
         found = self._review(_around(tmp_path, ("activation", {})), definition="agent.md")
@@ -415,17 +491,31 @@ class TestReview:
 
     def test_a_session_with_no_skill_anywhere(self, tmp_path: Path) -> None:
         activation = _around(tmp_path, ("activation", {}))
-        assert self._review(activation, setting_sources=[]) == {
-            ("subjects.agent.setting_sources", "unobservable")
+        hermetic = {"setting_sources": []}
+        assert self._review(activation, runtime_options=hermetic) == {
+            ("subjects.agent.runtime_options.setting_sources", "unobservable")
         }
-        assert self._review(activation, setting_sources=[], plugins=["plugins/review"]) == set()
+        assert (
+            self._review(activation, runtime_options=hermetic, plugins=["plugins/review"]) == set()
+        )
 
-    def test_tool_calls_on_a_runtime_that_makes_none(self, tmp_path: Path) -> None:
-        for sensor in ("activation", "tool-usage"):
-            around = _around(tmp_path, (sensor, {"tool": "memex"}))
-            assert self._review(around, runtime="model") == {
-                ("subjects.agent.runtime", "unobservable")
-            }
+    def test_skills_are_read_only_where_project_settings_are(self, tmp_path: Path) -> None:
+        """Changed requirement: ix added ``project`` to claude-sdk's ``setting_sources``
+        for a session given skills, mapping an option by the runtime's name. The options
+        now pass through as written, so a session that would never read its skills is a
+        problem validate reports, with the fix."""
+        around = _around(tmp_path, ("activation", {}))
+        found = self._review(
+            around, skills=["skills/review"], runtime_options={"setting_sources": []}
+        )
+        assert found == {("subjects.agent.runtime_options.setting_sources", "unobservable")}
+        assert (
+            self._review(
+                around, skills=["skills/review"], runtime_options={"setting_sources": ["project"]}
+            )
+            == set()
+        )
+        assert self._review(around, skills=["skills/review"]) == set()  # the runtime's default
 
     def test_a_tool_the_session_may_not_call(self, tmp_path: Path) -> None:
         around = _around(tmp_path, ("tool-usage", {"tool": "memex"}))
@@ -436,24 +526,45 @@ class TestReview:
         probe = ProbeConfig(id="p", kind="prompt", options={"prompt": "x", "collect": ["a.py"]})
         around = _around(tmp_path, probes=(probe,))
         assert self._review(around, tools=[]) == {("subjects.agent.tools", "unobservable")}
-        assert self._review(around, permission_mode="plan") == {
-            ("subjects.agent.permission_mode", "unobservable")
+        assert self._review(around, runtime_options={"permission_mode": "plan"}) == {
+            ("subjects.agent.runtime_options.permission_mode", "unobservable")
         }
-        assert self._review(around, permission_mode="acceptEdits") == set()
+        assert self._review(around, runtime_options={"permission_mode": "acceptEdits"}) == set()
 
-    def test_an_sdk_option_on_another_runtime_names_what_to_remove(self, tmp_path: Path) -> None:
-        """Regression: validate said valid for runtime: mock with skills and permission_mode;
-        only plan and run refused it, with a generic fix."""
-        adapter = AgentSessionSubject(Sessions(), Runtimes(Scripted(_reply())), MatrixLauncher())
+    def test_an_option_the_runtime_does_not_declare_names_what_it_takes(
+        self, tmp_path: Path
+    ) -> None:
+        """Changed requirement: an option was ``option_inapplicable`` when the runtime was
+        not named ``claude-sdk``. What a runtime takes is its config's declaration, read
+        from its registration: an option outside it is unknown, and plugins on a runtime
+        that mounts none are inapplicable, whatever the runtime is called."""
+        runtimes = Runtimes(Scripted(_reply()), takes=MOCK)
+        adapter = AgentSessionSubject(Sessions(), runtimes, MatrixLauncher())
         found = adapter.review(
-            {"runtime": "mock", "skills": ["s"], "permission_mode": "plan"}, _around(tmp_path)
-        )
+            {
+                "runtime": "mock", "skills": ["s"], "plugins": ["p"],
+                "runtime_options": {"permission_mode": "plan", "default": "ok"},
+            },
+            _around(tmp_path),
+        )  # fmt: skip
         assert {(p.path, p.kind) for p in found} == {
-            ("subjects.agent.skills", "option_inapplicable"),
-            ("subjects.agent.permission_mode", "option_inapplicable"),
+            ("subjects.agent.runtime_options.permission_mode", "option_unknown"),
+            ("subjects.agent.plugins", "option_inapplicable"),
         }
-        assert all("remove 'permission_mode' and 'skills'" in p.fix for p in found)
-        assert all("claude-sdk" in p.fix for p in found)
+        unknown = next(p for p in found if p.kind == "option_unknown")
+        assert unknown.allowed == tuple(sorted(MOCK))
+        assert "matrix describe matrix.v1.agent-runtime.mock" in (unknown.fix or "")
+        # A runtime nothing registered is the preflight's to report, not the review's.
+        unregistered = AgentSessionSubject(
+            Sessions(), Runtimes(Scripted(_reply()), takes=None), MatrixLauncher()
+        )
+        assert (
+            unregistered.review(
+                {"runtime": "acme.v1.agent-runtime.gone", "runtime_options": {"x": 1}},
+                _around(tmp_path),
+            )
+            == []
+        )
 
     def test_a_missing_runtime_is_left_to_the_declaration(self, tmp_path: Path) -> None:
         """The kind's declaration reports it (``option_missing``); the review adds no second
@@ -466,14 +577,20 @@ class TestReview:
 
 
 class TestStandIn:
-    def test_a_session_stands_in_on_mock_with_the_sdk_options_set_aside(self) -> None:
+    def test_a_session_stands_in_on_mock_with_the_runtimes_config_set_aside(self) -> None:
         adapter = AgentSessionSubject(Sessions(), Runtimes(Scripted(_reply())), MatrixLauncher())
         stood = adapter.stand_in(
-            {"skills": ["s"], "permission_mode": "plan", "tools": ["Read"], "max_turns": 2}
-        )
-        assert stood.options == {"tools": ["Read"], "max_turns": 2, "runtime": "mock"}
+            {
+                "runtime": "claude-sdk", "skills": ["s"], "plugins": ["p"],
+                "runtime_options": {"permission_mode": "plan"}, "tools": ["Read"],
+                "max_turns": 2,
+            }
+        )  # fmt: skip
+        assert stood.options == {
+            "skills": ["s"], "tools": ["Read"], "max_turns": 2, "runtime": "mock",
+        }  # fmt: skip
         assert stood.notes == (
-            "permission_mode, skills set aside: the mock runtime takes none of them",
+            "runtime_options, plugins set aside: the mock runtime takes none of them",
         )
         assert adapter.stand_in({"runtime": "mock"}).notes == ()
 
@@ -482,11 +599,24 @@ class TestStandIn:
         assert probe.stand_in({"prompt": "x", "mock_response": "y"}).notes == ()
         assert "no mock_response" in probe.stand_in({"prompt": "x"}).notes[0]
 
-    def test_a_judge_stands_in_on_mock(self) -> None:
-        stood = JudgeSensor(Runtimes(Scripted(_reply()))).stand_in({"rubric": "r", "model": "m"})
-        assert stood.options["runtime"] == "mock"
-        assert stood.options["runtime_options"] == {"default": STAND_IN_REPLY}
-        assert stood.options["rubric"] == "r"
+    @pytest.mark.parametrize("port", ["model_runtime", "agent_runtime"])
+    def test_a_judge_stands_in_on_the_mock_of_its_own_port(self, port: str) -> None:
+        judge = JudgeSensor(Runtimes(Scripted(_reply())))
+        stood = judge.stand_in(
+            {"rubric": "r", "model": "m", port: "acme.v1.x", "runtime_options": {"t": 0}}
+        )
+        assert stood.options == {
+            "rubric": "r", "model": "m", port: "mock",
+            "runtime_options": {"default": STAND_IN_REPLY},
+        }  # fmt: skip
+
+    def test_a_model_call_stands_in_on_mock_with_the_runtimes_config_set_aside(self) -> None:
+        adapter = ModelCallSubject(Sessions(), Runtimes(ScriptedModel()))
+        stood = adapter.stand_in(
+            {"runtime": "hardline", "model": "fast", "runtime_options": {"temperature": 0}}
+        )
+        assert stood.options == {"runtime": "mock", "model": "fast"}
+        assert stood.notes == ("runtime_options set aside: the mock runtime takes none of them",)
 
 
 # --- the sensors ----------------------------------------------------------------------------
@@ -816,28 +946,46 @@ class TestUsage:
         assert found.values["cost"] == 0.02 and found.values["hit_limit"] is False
 
 
-class TestJudge:
-    async def _judge(self, *replies: matrix.AgentResponse, **options: Any) -> Sensed:
-        """The judge on ``model``, played by the scripted double: no model is called."""
-        interaction = _interaction({"prompt": "Merge.", "text": "def merge"}, {"family": "claude"})
-        return await _sense(JudgeSensor(Runtimes(Scripted(*replies))), interaction, {},
-                            rubric="Correct and clear.", runtime="model", **options)  # fmt: skip
+def _call(text: str = "", **fields: Any) -> matrix.ModelCall:
+    return matrix.ModelCall(text=text, **fields)
 
-    async def test_a_score_against_the_rubric_and_what_it_cost(self) -> None:
-        reply = _reply('Here: {"score": 0.8, "reason": "clear"}', cost_usd=0.01, family="qwen")
-        found = await self._judge(reply)
+
+class TestJudge:
+    async def _judge(self, *replies: matrix.ModelCall, **options: Any) -> Sensed:
+        """The judge on a model runtime, played by the scripted double: no model is
+        called."""
+        interaction = _interaction({"prompt": "Merge.", "text": "def merge"}, {"family": "claude"})
+        runtimes = Runtimes(ScriptedModel(*replies))
+        return await _sense(JudgeSensor(runtimes), interaction, {}, rubric="Correct and clear.",
+                            model_runtime="hardline", **options)  # fmt: skip
+
+    async def test_a_score_against_the_rubric_by_one_model_call(self) -> None:
+        model = ScriptedModel(_call('Here: {"score": 0.8, "reason": "clear"}', family="qwen"))
+        runtimes = Runtimes(model)
+        interaction = _interaction({"prompt": "Merge.", "text": "def merge"}, {"family": "claude"})
+        found = await _sense(JudgeSensor(runtimes), interaction, {}, rubric="Correct.",
+                             model_runtime="hardline", model="judge-model")  # fmt: skip
         assert found.values == {
             "judged_score": 0.8, "judged_pass": True, "judge_agreement": 1.0,
             "judge_inconsistent": False, "judge_in_family": False,
         }  # fmt: skip
         assert found.detail["reasons"] == ["clear"]
-        # What the judge's runtime reported it cost is kept as a fact about the judge.
-        assert found.detail["judge"]["cost_usd"] == 0.01
+        # The call went through the model port: checked, then one request per reading.
+        [(point, name, config, cwd)] = runtimes.built
+        assert (point, name, config, cwd) == ("model-runtime", "hardline", {}, None)
+        assert model.checked == ["judge-model"]
+        (request,) = model.requests
+        assert request.model == "judge-model" and "Correct." in request.prompt
+        assert request.system and "rubric" in request.system
+        assert found.detail["judge"] == {
+            "port": "model-runtime", "runtime": "matrix.v1.model-runtime.hardline",
+            "model": None, "family": "qwen", "cost_usd": None,
+        }  # fmt: skip
 
     async def test_repeats_check_the_judge_against_itself(self) -> None:
         found = await self._judge(
-            _reply('{"score": 0.9}', family="claude"), _reply('{"score": 0.2}', family="claude"),
-            _reply('{"score": 0.7}', family="claude"), repeats=3,
+            _call('{"score": 0.9}', family="claude"), _call('{"score": 0.2}', family="claude"),
+            _call('{"score": 0.7}', family="claude"), repeats=3,
         )  # fmt: skip
         assert found.values["judged_score"] == pytest.approx(0.6)
         assert found.values["judge_agreement"] == pytest.approx(2 / 3)
@@ -846,33 +994,53 @@ class TestJudge:
 
     async def test_a_reply_with_no_score_is_the_sensors_failure(self) -> None:
         with pytest.raises(ValueError, match="no score"):
-            await self._judge(_reply("I think it is good."))
+            await self._judge(_call("I think it is good."))
 
     async def test_it_needs_a_rubric(self) -> None:
-        sensor = JudgeSensor(Runtimes(Scripted(_reply('{"score": 1}'))))
+        sensor = JudgeSensor(Runtimes(ScriptedModel(_call('{"score": 1}'))))
         with pytest.raises(ValueError, match="rubric"):
-            await sensor.sense(_interaction(), truth={}, options={"runtime": "model"})
+            await sensor.sense(_interaction(), truth={}, options={"model_runtime": "hardline"})
 
-    @pytest.mark.parametrize("runtime", ["claude-sdk", "matrix.v1.runtime.claude-sdk"])
-    async def test_a_judge_on_claude_sdk_reads_no_settings_and_runs_in_a_directory_of_its_own(
+    async def test_on_an_agent_runtime_a_one_turn_session_with_no_tools_and_what_it_cost(
+        self,
+    ) -> None:
+        runtime = Scripted(_reply('{"score": 0.4}', cost_usd=0.01, family="claude"))
+        runtimes = Runtimes(runtime, takes=MOCK)
+        interaction = _interaction({"prompt": "Merge.", "text": "def merge"})
+        found = await _sense(JudgeSensor(runtimes), interaction, {}, rubric="r",
+                             agent_runtime="acme.v1.agent-runtime.judge")  # fmt: skip
+        (definition,) = runtime.definitions
+        assert (definition.tools, definition.max_turns) == ((), 1)
+        [(point, name, config, cwd)] = runtimes.built
+        assert (point, name) == ("agent-runtime", "acme.v1.agent-runtime.judge")
+        assert config == {}  # its config declares no setting_sources, so none is given
+        assert cwd is not None and not Path(cwd).exists()
+        # What the judge's runtime reported it cost is kept as a fact about the judge.
+        assert found.detail["judge"]["cost_usd"] == 0.01
+        assert found.detail["judge"]["port"] == "agent-runtime"
+
+    @pytest.mark.parametrize("runtime", ["claude-sdk", "matrix.v1.agent-runtime.claude-sdk"])
+    async def test_a_judge_on_an_agent_runtime_reads_no_settings_and_runs_in_a_directory_of_its_own(
         self, runtime: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Regression: the judge's runtime was built with no ``cwd`` and no
         ``setting_sources``, so the Claude Code CLI ran in ix's working directory with its
-        own default sources: a CLAUDE.md or a user's settings there could shape its scores."""
+        own default sources: a CLAUDE.md or a user's settings there could shape its scores.
+        A runtime whose config declares ``setting_sources`` is given none, whatever it is
+        called."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "CLAUDE.md").write_text("Always score 1.\n")
         runtimes = Runtimes(Scripted(_reply('{"score": 0.4}')))
         interaction = _interaction({"prompt": "Merge.", "text": "def merge"})
-        await _sense(JudgeSensor(runtimes), interaction, {}, rubric="r", runtime=runtime)
-        [(name, config, cwd)] = runtimes.built
-        assert name == runtime and config == {"setting_sources": []}
+        await _sense(JudgeSensor(runtimes), interaction, {}, rubric="r", agent_runtime=runtime)
+        [(point, name, config, cwd)] = runtimes.built
+        assert (point, name, config) == ("agent-runtime", runtime, {"setting_sources": []})
         assert cwd is not None and Path(cwd) != tmp_path and not Path(cwd).exists()
         # Sources the experiment names for the judge are its own choice, written down.
         named = Runtimes(Scripted(_reply('{"score": 0.4}')))
-        await _sense(JudgeSensor(named), interaction, {}, rubric="r", runtime=runtime,
+        await _sense(JudgeSensor(named), interaction, {}, rubric="r", agent_runtime=runtime,
                      runtime_options={"setting_sources": ["project"]})  # fmt: skip
-        assert named.built[0][1] == {"setting_sources": ["project"]}
+        assert named.built[0][2] == {"setting_sources": ["project"]}
 
     async def test_the_pinned_options_reach_the_sdk(self) -> None:
         """What the judge hands matrix becomes the SDK's own options: built by matrix's
@@ -883,33 +1051,188 @@ class TestJudge:
 
         from ix.composition import _Runtimes
 
+        real = _Runtimes(default_registry(), lambda: None)
+
         class ThroughMatrix(Runtimes):
-            def build(self, name: str, config: Mapping[str, Any], *, cwd: str | None) -> Scripted:
-                real = _Runtimes(default_registry(), lambda: None).build(name, config, cwd=cwd)
-                self.sdk = real.options(matrix.AgentDefinition(name="judge", tools=()))
-                return super().build(name, config, cwd=cwd)
+            def build(
+                self, point: str, name: str, config: Mapping[str, Any], *, cwd: str | None = None
+            ) -> Any:
+                built = real.build(point, name, config, cwd=cwd)  # type: ignore[arg-type]
+                self.sdk = built.options(matrix.AgentDefinition(name="judge", tools=()))
+                return super().build(point, name, config, cwd=cwd)
+
+            def takes(self, point: str, name: str) -> frozenset[str] | None:
+                return real.takes(point, name)  # type: ignore[arg-type]
 
         runtimes = ThroughMatrix(Scripted(_reply('{"score": 0.4}')))
         interaction = _interaction({"prompt": "Merge.", "text": "def merge"})
-        await _sense(JudgeSensor(runtimes), interaction, {}, rubric="r", runtime="claude-sdk")
-        [(_, _, cwd)] = runtimes.built
+        await _sense(JudgeSensor(runtimes), interaction, {}, rubric="r", agent_runtime="claude-sdk")
+        [(_, _, _, cwd)] = runtimes.built
         assert runtimes.sdk["setting_sources"] == [] and runtimes.sdk["cwd"] == cwd
 
-    async def test_a_judge_on_another_runtime_gets_only_its_own_options(self) -> None:
-        runtimes = Runtimes(Scripted(_reply('{"score": 0.4}')))
+    async def test_a_judge_on_a_model_runtime_gets_only_its_own_options(self) -> None:
+        runtimes = Runtimes(ScriptedModel(_call('{"score": 0.4}')))
         interaction = _interaction({"prompt": "Merge.", "text": "def merge"})
-        await _sense(JudgeSensor(runtimes), interaction, {}, rubric="r", runtime="model",
+        await _sense(JudgeSensor(runtimes), interaction, {}, rubric="r",
+                     model_runtime="acme.v1.model-runtime.oneshot",
                      runtime_options={"temperature": 0})  # fmt: skip
-        [(_, config, cwd)] = runtimes.built
-        assert config == {"temperature": 0} and cwd is not None
+        [(point, name, config, cwd)] = runtimes.built
+        assert (point, name, config, cwd) == (
+            "model-runtime", "acme.v1.model-runtime.oneshot", {"temperature": 0}, None,
+        )  # fmt: skip
 
-    async def test_a_judge_that_names_no_runtime_never_starts_one(self) -> None:
-        """Regression: ``runtime`` defaulted to ``model``, a paid model. Validation reports
-        it missing; should a judge reach a trial without one, nothing is built."""
+    @pytest.mark.parametrize(
+        "named", [{}, {"model_runtime": "hardline", "agent_runtime": "claude-sdk"}]
+    )
+    async def test_a_judge_that_names_no_runtime_or_both_never_starts_one(
+        self, named: dict[str, str], tmp_path: Path
+    ) -> None:
+        """Regression: ``runtime`` defaulted to ``model``, a paid model. A judge names one
+        runtime, on one port: validate reports none or both, and should a judge reach a
+        trial so, nothing is built."""
         runtimes = Runtimes(Scripted(_reply('{"score": 1}')))
-        with pytest.raises(ValueError, match="needs a runtime"):
-            await JudgeSensor(runtimes).sense(_interaction(), truth={}, options={"rubric": "r"})
+        judge = JudgeSensor(runtimes)
+        with pytest.raises(ValueError, match="needs one runtime"):
+            await judge.sense(_interaction(), truth={}, options={"rubric": "r", **named})
         assert runtimes.built == []
+        around = Surroundings(path="sensors.0", base=str(tmp_path))
+        found = {(p.path, p.kind) for p in judge.review({"rubric": "r", **named}, around)}
+        assert found == (
+            {("sensors.0.model_runtime", "option_missing")}
+            if not named
+            else {("sensors.0.model_runtime", "option_invalid"),
+                  ("sensors.0.agent_runtime", "option_invalid")}
+        )  # fmt: skip
+        assert judge.review({"rubric": "r", "agent_runtime": "claude-sdk"}, around) == []
+
+
+# --- the model call -----------------------------------------------------------------------
+
+
+async def _call_trial(
+    runtimes: Runtimes, probe: Mapping[str, Any], **options: Any
+) -> tuple[Mapping[str, Mapping[str, Any]], bool]:
+    """Reach a ``model-call`` subject, apply the prompt probe, release."""
+    sessions = Sessions()
+    subject = SubjectConfig.model_validate({"kind": "model-call", "runtime": "hardline", **options})
+    async with ModelCallSubject(sessions, runtimes).reach("model", subject, base=".") as target:
+        assert set(target.facets) == {"respondent"}  # no working directory
+        seen = await PromptProbe(sessions).apply(probe, target, seed=0)
+    return seen, target.simulated
+
+
+class TestAModelCall:
+    """Each trial of a ``model-call`` subject is one call through matrix's model port."""
+
+    async def test_one_call_and_its_facts_are_kept(self) -> None:
+        reply = _call(
+            "Merged.", name="fast", model="qwen-3-8b", family="qwen", backend="openai-compat",
+            provider="openai", usage=matrix.TokenUsage(input_tokens=40, output_tokens=8,
+                                                       cache_read_tokens=30),
+            request_id="req-1", attempts=1, retries=2, fallback_from="smart", latency_ms=120,
+            finish_reason="stop",
+        )  # fmt: skip
+        model = ScriptedModel(reply)
+        runtimes = Runtimes(model, takes=frozenset({"temperature"}))
+        seen, simulated = await _call_trial(
+            runtimes, {"prompt": "Merge them."}, model="fast", system_prompt="Be terse.",
+            runtime_options={"temperature": 0},
+        )  # fmt: skip
+        [(point, name, config, cwd)] = runtimes.built
+        assert (point, name, config, cwd) == ("model-runtime", "hardline", {"temperature": 0}, None)
+        (request,) = model.requests
+        assert (request.prompt, request.model, request.system) == (
+            "Merge them.",
+            "fast",
+            "Be terse.",
+        )
+        assert model.checked == ["fast"]
+        assert seen["response"] == {"prompt": "Merge them.", "text": "Merged.", "refusal": None}
+        assert seen["usage"] == {
+            "runtime": "matrix.v1.model-runtime.hardline", "name": "fast", "model": "qwen-3-8b",
+            "family": "qwen", "backend": "openai-compat", "provider": "openai",
+            "request_id": "req-1", "attempts": 1, "retries": 2, "fallback_from": "smart",
+            "latency_ms": 120, "finish_reason": "stop", "refusal": None, "tokens_input": 40,
+            "tokens_output": 8, "tokens_total": 48, "cache_read_tokens": 30,
+            "cache_write_tokens": 0, "duration_ms": 120, "simulated": False,
+        }  # fmt: skip
+        assert simulated is False
+        # The usage sensor reads what a call reports, and leaves out what it has none of.
+        found = await _sense(UsageSensor(), _interaction(usage=seen["usage"]), {})
+        assert found.values == {
+            "tokens_total": 48.0, "tokens_input": 40.0, "tokens_output": 8.0, "duration": 120.0,
+        }  # fmt: skip
+
+    async def test_a_stand_in_is_marked_and_gives_the_canned_reply(self) -> None:
+        runtimes = Runtimes(ScriptedModel(_call("canned")), stand_in=True, takes=MOCK)
+        seen, simulated = await _call_trial(
+            runtimes, {"prompt": "Go.", "mock_response": "A canned answer."}, runtime="mock"
+        )
+        assert simulated is True and seen["usage"]["simulated"] is True
+        assert runtimes.built[-1][2] == {"default": "A canned answer."}
+
+    @pytest.mark.parametrize(
+        ("reason", "owner"),
+        [("rate_limited", HarnessError), ("timeout", HarnessError), ("refused", SubjectError),
+         ("failed", SubjectError)],
+    )  # fmt: skip
+    async def test_the_runtimes_reason_says_whose(
+        self, reason: str, owner: type[Exception]
+    ) -> None:
+        error = matrix.ModelRuntimeError("it broke", reason=reason)  # type: ignore[arg-type]
+        with pytest.raises(owner) as failed:
+            await _call_trial(Runtimes(ScriptedModel(error)), {"prompt": "Go."})
+        assert failed.value.reason == reason  # type: ignore[attr-defined]
+
+    def test_the_preflight_asks_the_runtime_to_resolve_the_model(self) -> None:
+        runtimes = Runtimes(ScriptedModel(_call()))
+        adapter = ModelCallSubject(Sessions(), runtimes)
+
+        def subject(**options: Any) -> SubjectConfig:
+            return SubjectConfig.model_validate(
+                {"kind": "model-call", "runtime": "hardline", **options}
+            )
+
+        assert adapter.unstartable(subject(model="fast"), base=".") is None
+        said = adapter.unstartable(subject(model="unknown"), base=".")
+        assert said is not None and "no model 'unknown'" in said
+        unnamed = SubjectConfig.model_validate({"kind": "model-call"})
+        said = adapter.unstartable(unnamed, base=".")
+        assert said is not None and said.startswith("runtime:")
+
+    def test_what_a_model_call_leaves_nothing_to_read_for_is_refused(self, tmp_path: Path) -> None:
+        """A call has no tools and writes no files: sensors that read tool calls, a
+        function test of a written file, and files to collect never can be read, so
+        validate refuses each before any trial runs. The reply, its usage and every other
+        sensor apply."""
+        adapter = ModelCallSubject(Sessions(), Runtimes(ScriptedModel(), takes=None))
+        collect = ProbeConfig(id="p", kind="prompt", options={"prompt": "x", "collect": ["a"]})
+        around = _around(
+            tmp_path, ("activation", {}), ("tool-usage", {"tool": "memex"}),
+            ("function-test", {"file": "a.py"}), ("text-match", {}), ("judge", {}),
+            ("usage", {}), ("outcome", {}), probes=(collect,),
+        )  # fmt: skip
+        found = adapter.review({"runtime": "hardline"}, around)
+        assert sorted((p.path, p.kind, str(p.got)) for p in found) == [
+            ("probes.0.collect", "unobservable", "None"),
+            ("subjects.agent.kind", "unobservable", "None"),  # function-test's file
+            ("subjects.agent.kind", "unobservable", "activation"),
+            ("subjects.agent.kind", "unobservable", "tool-usage"),
+        ]
+        reads_the_reply = _around(
+            tmp_path, ("function-test", {}), ("text-match", {}), ("judge", {}), ("usage", {}),
+            probes=(ProbeConfig(id="p", kind="prompt", options={"prompt": "x"}),),
+        )  # fmt: skip
+        assert adapter.review({"runtime": "hardline"}, reads_the_reply) == []
+
+    def test_an_option_the_model_runtime_does_not_declare_is_unknown(self, tmp_path: Path) -> None:
+        adapter = ModelCallSubject(Sessions(), Runtimes(ScriptedModel(), takes=MOCK))
+        found = adapter.review(
+            {"runtime": "mock", "runtime_options": {"temperature": 0}}, _around(tmp_path)
+        )
+        assert [(p.path, p.kind) for p in found] == [
+            ("subjects.agent.runtime_options.temperature", "option_unknown")
+        ]
 
 
 def test_sessions_are_shared_by_handle_only() -> None:

@@ -254,7 +254,7 @@ def _estimator_illegal(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
 def _judged_gate(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     del e["probes"][0]["truth"]  # nothing reads it once activation is not in use
     e["primary"] = {"metric": "judged_pass"}
-    e["sensors"] = [{"kind": "judge", "runtime": "model", "rubric": "rubric.md"}]
+    e["sensors"] = [{"kind": "judge", "model_runtime": "hardline", "rubric": "rubric.md"}]
     return _found(e, v)
 
 
@@ -391,8 +391,8 @@ def _validated(write: Write, data: dict[str, Any]) -> Pairs:
 
 
 def _option_inapplicable(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
-    """A skill given to a session on the mock runtime, which would refuse it."""
-    e["subjects"]["catalog"]["skills"] = ["skills/review"]
+    """Plugins given to a session on the mock runtime, whose config takes none."""
+    e["subjects"]["catalog"]["plugins"] = ["plugins/review"]
     return _validated(write, e)
 
 
@@ -433,7 +433,11 @@ CASES: dict[str, tuple[Any, str, str]] = {
     "option_unknown": (_option_unknown, "probes.0.durration", "option_unknown"),
     "option_missing": (_option_missing, "probes.0.duration", "option_missing"),
     "option_invalid": (_option_invalid, "probes.0.load_model", "option_invalid"),
-    "option_inapplicable": (_option_inapplicable, "subjects.catalog.skills", "option_inapplicable"),
+    "option_inapplicable": (
+        _option_inapplicable,
+        "subjects.catalog.plugins",
+        "option_inapplicable",
+    ),
     "unobservable": (_unobservable, "subjects.catalog.tools", "unobservable"),
     "metric_unprovided": (_metric_unprovided, "primary.metric", "metric_unprovided"),
     "metric_ambiguous": (_metric_ambiguous, "primary.metric", "metric_ambiguous"),
@@ -677,7 +681,7 @@ class TestGenreRequirements:
 class TestJudgedMetricNeverDecides:
     """Enforced by the sensor's declaration, in every genre with a verdict."""
 
-    _JUDGE = [{"kind": "judge", "runtime": "model", "rubric": "rubrics/quality.md"}]
+    _JUDGE = [{"kind": "judge", "model_runtime": "hardline", "rubric": "rubrics/quality.md"}]
 
     @pytest.fixture
     def judged_data(self, evaluate_data: dict[str, Any]) -> dict[str, Any]:

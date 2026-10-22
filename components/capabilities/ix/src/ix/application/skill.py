@@ -84,10 +84,12 @@ REFERENCES: dict[str, str] = {
 #: What a runnable kind needs on the host beyond ix, by kind label. The tests hold each key
 #: to a kind this ix can run, and ``http-load`` to the program its adapter starts.
 PREREQUISITES: dict[str, str] = {
-    "agent-session": "runs on one of matrix's runtimes: `claude-sdk` needs `ix[claude]`, the "
-    "Claude Code CLI and its credentials; `model` needs `ix[models]` and a hardline model; "
-    "`mock` needs nothing and calls no model. `ix plan` lists one that cannot start under "
-    "`Runnable: no`",
+    "agent-session": "runs on one of matrix's agent runtimes: `claude-sdk` needs `ix[claude]`, "
+    "the Claude Code CLI and its credentials; `mock` needs nothing and calls no model. `ix "
+    "plan` lists one that cannot start under `Runnable: no`",
+    "model-call": "runs on one of matrix's model runtimes: `hardline` needs `ix[models]` and a "
+    "hardline model; `mock` needs nothing and calls no model. `ix plan` lists a runtime that "
+    "cannot start, or a model it cannot resolve, under `Runnable: no`",
     "function-test": "and `outcome` run Python in a child process with a time limit and no "
     "credentials in its environment; it is not a sandbox, so test code from a subject you "
     "would run yourself",
@@ -245,9 +247,10 @@ subjects:
     runtime: claude-sdk
     skills: [skills/review]
     tools: [Read, Grep, Skill]
-    setting_sources: []
-    permission_mode: bypassPermissions
     max_turns: 3
+    runtime_options:
+      setting_sources: [project]
+      permission_mode: bypassPermissions
 probes:
   - id: review-ask
     kind: prompt
@@ -272,9 +275,10 @@ subjects:
     kind: agent-session
     runtime: claude-sdk
     max_turns: 1
-    setting_sources: []
-    permission_mode: bypassPermissions
     plugins: [plugins/review]
+    runtime_options:
+      setting_sources: []
+      permission_mode: bypassPermissions
 probes:
   - id: review-ask
     kind: prompt
@@ -323,15 +327,15 @@ subjects:
     kind: agent-session
     runtime: claude-sdk
     tools: [Read, Grep, Skill]
-    setting_sources: []
     max_turns: 3
+    runtime_options: {setting_sources: [project]}
   with-skill:
     kind: agent-session
     runtime: claude-sdk
     skills: [skills/review]
     tools: [Read, Grep, Skill]
-    setting_sources: []
     max_turns: 3
+    runtime_options: {setting_sources: [project]}
 probes:
   - id: off-by-one
     kind: prompt
@@ -449,15 +453,15 @@ def _install(version: str, kinds: Kinds) -> str:
             "",
             "```bash",
             f'uv tool install "{source}"',
-            "# or, to run agent sessions on the claude-sdk runtime",
+            "# or, to run agent sessions on the claude-sdk agent runtime",
             f'uv tool install "ix[claude] @ {source}"',
             f"ix --version      # ix, version {version}",
             "```",
             "",
             "ix is on no package index: it is installed from its repository at the release's "
             "tag, and uv takes matrix, which ix runs on, from the same repository. The extras: "
-            "`claude` (the `claude-sdk` runtime), `models` (the `model` runtime, through "
-            "hardline), `otel` (export of spans over OTLP).",
+            "`claude` (the `claude-sdk` agent runtime), `models` (the `hardline` model "
+            "runtime), `otel` (export of spans over OTLP).",
             "",
             "What the runnable kinds need on the host:",
             "",
@@ -633,9 +637,10 @@ def _skill(genres: Genres, kinds: Kinds, version: str) -> str:
         "question, the subjects, the probes and the metric that decides. ix checks the file, "
         "shows the decision a run would inform and what it would cost, freezes the design "
         "before anything runs, runs it one trial at a time, and reports a verdict: `holds`, "
-        "`fails` or `inconclusive`. The system is a service (a program, an endpoint) or an AI "
-        "agent: a fresh session per trial on one of matrix's runtimes, graded by its tool "
-        "calls, tests, graders or a judge (`ix --skill -r agents` takes you through one)."
+        "`fails` or `inconclusive`. The system is a service (a program, an endpoint), an AI "
+        "agent (a fresh session per trial on one of matrix's agent runtimes, graded by its "
+        "tool calls, tests, graders or a judge) or a model (one call per trial on one of "
+        "matrix's model runtimes); `ix --skill -r agents` takes you through one."
     )
     sections = [
         _frontmatter(version),
@@ -947,9 +952,10 @@ then the report (`ix.v1.report`) on stdout.
   variable that is not set, and an agent runtime that cannot start or cannot play its
   agent (the plan lists them under `unstartable`).
 - **A dry run gives no verdict.** `ix run <path> --dry-run` runs the file as written
-  with every agent session on the `mock` runtime (`ix --skill -r agents`); a subject with
-  no stand-in (a `process`) is refused. A run in which a stand-in answered any trial,
-  this way or with `runtime: mock` written in, measured the harness, not the subject: the
+  with every agent session and model call on matrix's `mock` runtime of its port (`ix
+  --skill -r agents`); a subject with no stand-in (a `process`) is refused. A run in which
+  a stand-in answered any trial, this way or with `runtime: mock` written in, measured the
+  harness, not the subject: the
   report says `Dry run on mock replies` and gives neither a verdict nor an indication, and
   the run is not `gated`. A registered run with `runtime: mock` written in exits
   {EXIT_CODES["simulated"]} (`simulated`), never {EXIT_CODES["ok"]}.
@@ -1000,28 +1006,37 @@ An agent evaluation is an experiment like any other: a genre for the decision, s
 probes and a metric. What makes it one is the kinds.
 
 - **The subject is `agent-session`.** Each trial is a fresh session in a new working
-  directory outside the experiment, on the matrix runtime its `runtime` names. It is
+  directory outside the experiment, on the matrix agent runtime its `runtime` names. It is
   required, with no default, so a model provider is never called implicitly: `claude-sdk`
   (the Claude Agent SDK, with tools, turns, plugins and skills; calls a model provider),
-  `model` (one call through hardline, no tools; calls a model provider) or `mock` (canned
-  replies; calls no model: a dry run). Left out,
-  validate reports `option_missing`. The other options:
+  `mock` (canned replies; calls no model: a dry run), or any agent runtime installed, by
+  its type URL. Left out, validate reports `option_missing`. The other options:
   `definition` (a Claude Code agent file: body is the system prompt), `model`,
-  `system_prompt`, `tools` (`[]`: none), `max_turns`, and for `claude-sdk`
-  `permission_mode`, `setting_sources` (`[]` keeps this machine's settings and plugins
-  out), `plugins` (folders, `*` allowed) and `skills` (folders copied into the session's
-  `.claude/skills`). `fixtures` are files and folders copied into the working directory
-  first, and `setup` a command run there after them (`[python3, seed.py]`);
-  `runtime_options` are passed to the runtime's own config (`temperature` for `model`).
-  Only `claude-sdk` takes `permission_mode`, `setting_sources`, `plugins` and `skills`;
-  on another runtime they are `option_inapplicable`.
+  `system_prompt`, `tools` (`[]`: none), `max_turns`, `plugins` (folders, `*` allowed,
+  handed to the runtime as its `plugins`), `skills` (folders copied into the session's
+  `.claude/skills`, read as its `project` settings), `fixtures` (files and folders copied
+  into the working directory first), `setup` (a command run there after them:
+  `[python3, seed.py]`) and `runtime_options`: the runtime's own config, passed through as
+  written. For `claude-sdk` that is `permission_mode`, `setting_sources` (`[]` keeps this
+  machine's settings and plugins out), `fallback_model`, `max_budget_usd` and `agents`;
+  `matrix describe matrix.v1.agent-runtime.claude-sdk` lists them. A key the runtime's
+  config does not declare is `option_unknown`; `plugins` on a runtime that takes none are
+  `option_inapplicable`.
+- **To measure a model rather than an agent, the subject is `model-call`.** Each trial is
+  one call on the matrix model runtime its `runtime` names (`hardline`, `mock`, or any
+  installed): no turns, no tools, no working directory. Options: `model` (a name the
+  runtime resolves, checked by `ix plan`), `system_prompt` and `runtime_options` (the
+  runtime's config: `temperature`, `max_tokens` for `hardline`). The `prompt` probe
+  applies, without `collect`; `activation` and `tool-usage` read tool calls a call never
+  makes, so validate refuses them on it (`unobservable`), and a `function-test` `file`.
 - **The probe is `prompt`.** Write one file per probe in a `probes/` folder beside the
   experiment and leave `probes:` out: the markdown body is the prompt, and every
   frontmatter key but `id`, `kind`, `options` and `effects` is the truth sensors read
   (it never reaches the agent). Probe options, under `options:` in a file: `collect`
   (files the agent writes, kept for grading), `feedback` (tests a test-feedback loop shows
-  the agent), `mock_response` (the reply the `mock` runtime gives), `timeout` (600s): a
-  session that runs past it fails the trial as the subject's (`overran`).
+  the agent), `mock_response` (the reply a stand-in runtime such as `mock` gives),
+  `timeout` (600s): a session or call that runs past it fails the trial as the subject's
+  (`overran`).
   An option written beside the truth is truth, which the probe never sees: validate says
   so (`truth_unclaimed`) and shows where it goes. `probes/review-ask.md`:
 
@@ -1045,12 +1060,14 @@ probes and a metric. What makes it one is the kinds.
   `matches` (a regular expression), each in a probe's truth or as the sensor's option for
   every probe; options `ignore_case`, `strip`), `tokens_total`, `tokens_input`,
   `tokens_output`, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, `hit_limit`
-  (`usage`), and the judged `judged_score` and `judged_pass` (`judge`, option `rubric`).
+  (`usage`: what the runtime did not report is left out, so a model call has no `turns`),
+  and the judged `judged_score` and `judged_pass` (`judge`, option `rubric`).
 - **Validate checks that the sensors can see.** A setting that makes what a sensor reads
-  impossible is `unobservable`, refused before any trial: a skill with no `Skill` tool
-  among `tools`, `activation` or `tool-usage` on the `model` runtime (no tools), a
-  `tool-usage` tool the session may not call, a session with no skill, plugin or setting
-  to fire, and files to `collect` with no tool to write them or in `plan` mode.
+  impossible is `unobservable`, refused before any trial, whatever the runtime is called:
+  a skill with no `Skill` tool among `tools`, `skills` with `setting_sources` that leave
+  `project` out, a `tool-usage` tool the session may not call, a session with no skill,
+  plugin or setting to fire, files to `collect` with no tool to write them or in `plan`
+  mode, and `activation` or `tool-usage` on a `model-call` subject.
 - **Conditions to compare are subjects** under `compare`: one changed option each (a
   `system_prompt`, a `definition` file, a `model`, a `loop`). A `loop` adds rounds:
   `{{strategy: self-review, rounds: 3}}` asks again with the previous answer until it
@@ -1073,10 +1090,11 @@ A skill is a folder holding `SKILL.md`, beside the experiment:
 `SKILL.md` opens with frontmatter that has both keys: `name` (lowercase letters, digits
 and hyphens, the folder's name) and `description` (what the skill does and when to use
 it: the agent reads only this to decide whether to fire it). `skills:` copies each folder
-into the session's `.claude/skills`, and ix has the session read `project` settings, where
-they are found, even under `setting_sources: []`, which keeps this machine's own settings,
-skills and plugins out. A skill fires through the `Skill` tool, so `tools`, when you list
-them, must include `Skill`. `expected_skill` is the skill's `name`. Skills in a plugin come
+into the session's `.claude/skills`, which a session reads as its `project` settings:
+`setting_sources: [project]` reads them and nothing else of this machine, since the
+working directory is the trial's own (`[]` would read none, and validate refuses it). A
+skill fires through the `Skill` tool, so `tools`, when you list them, must include
+`Skill`. `expected_skill` is the skill's `name`. Skills in a plugin come
 with `plugins:` instead; `expected_skill: review` matches the plugin's `acme:review`, and
 `expected_skill: acme:review` names that plugin's skill only. A skill installed on this
 machine is read only when its settings source is listed (`setting_sources: [user]`), and
@@ -1110,11 +1128,11 @@ have written it anyway. Two things show more.
 1. `ix validate` and `ix plan`. Runnable says whether the runtime can start here.
 2. **Dry run.** `ix run <path> --dry-run` runs the file as written on stand-ins: each
    session on the `mock` runtime replying with its probe's `mock_response` (give each one
-   whose grade you know), the options only `claude-sdk` takes set aside and listed under
-   `Stood in`, a judge scoring every reply 0.5. Every sensor reads the canned replies as
-   it would a model's, so a grader that grades wrong shows here, for nothing. It checks
-   the harness, never the agent: the report says `Dry run on mock replies` and gives no
-   verdict and no indication (exit {dry}).
+   whose grade you know), the real runtime's `runtime_options` and `plugins` set aside and
+   listed under `Stood in`, a judge scoring every reply 0.5. Every sensor reads the canned
+   replies as it would a model's, so a grader that grades wrong shows here, for nothing.
+   It checks the harness, never the agent: the report says `Dry run on mock replies` and
+   gives no verdict and no indication (exit {dry}).
 3. **Pilot.** On the real runtime, `ix run <path> --exploratory --repeats N`, N the
    genre's fewest repeats: the file stays as it will be registered, and the report lists
    the change under `Changed`. A pilot gives no verdict, and one too small for even every
@@ -1128,16 +1146,20 @@ have written it anyway. Two things show more.
 
 ## The judge
 
-`judge` asks a model (`runtime`, required with no default: `model` or `claude-sdk`, which
-call a model provider, or `mock`, which does not; `model`) to score a reply against your
-`rubric` from 0 to 1: `{{kind: judge, runtime: model, rubric: rubric.md}}`. Its readings
+`judge` asks a model to score a reply against your `rubric` from 0 to 1. It names its
+runtime with one of two options, and has no default: `model_runtime` (one model call per
+reading: `hardline` calls a model provider, `mock` does not) or `agent_runtime` (a one-turn
+session with no tools per reading: `claude-sdk` calls a model provider, `mock` does not).
+Validate refuses a judge that names neither, or both:
+`{{kind: judge, model_runtime: hardline, rubric: rubric.md}}`. Its readings
 are judged: they are reported and **never decide** a verdict. `repeats: 3` asks it three
 times per reply: `judge_agreement` is how often it agreed with itself. Two flags are
 printed whenever a trial raises one: `judge_inconsistent` (its repeats split on pass or
 fail) and `judge_in_family` (the judge is of the subject's model family; judge with
-another). The judge runs in a fresh temporary directory and, on `claude-sdk`, reads no
-settings unless its `runtime_options` name `setting_sources`, so what is where ix runs
-(a CLAUDE.md, your settings, hooks) does not shape its scores.
+another). On an agent runtime the judge runs in a fresh temporary directory and, where the
+runtime's config takes `setting_sources`, reads no settings unless its `runtime_options`
+name some, so what is where ix runs (a CLAUDE.md, your settings, hooks) does not shape
+its scores.
 
 ## Reading the report
 

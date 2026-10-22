@@ -2,7 +2,8 @@
 
 Every adapter (subject, probe, sensor, environment) is resolved through matrix's registry by
 the type URL the experiment names, so an installed extension adds one without an edit here;
-so is every agent runtime a session or a judge runs on. A run's observers are the ones
+so is every runtime a session, a model call or a judge runs on, at matrix's
+``agent-runtime`` or ``model-runtime`` point. A run's observers are the ones
 matrix's config names for ix, resolved through the same registry. Genre and kind
 declarations are data, not components: they are files, found through the ``ix.genre`` and
 ``ix.kind`` entry points and a lab's own folders, and read, like the experiment and its
@@ -39,14 +40,15 @@ from matrix import (
     MatrixConfig,
     MatrixError,
     Registry,
+    agent_runtime_type_url,
     check_type_url,
     default_registry,
     load_config,
-    runtime_type_url,
+    model_runtime_type_url,
 )
 
 from ix.adapters._in.matrix_components import COMPOSITION, NEED
-from ix.adapters._out.matrix_agents import Sessions
+from ix.adapters._out.matrix_agents import AGENT_RUNTIME, MODEL_RUNTIME, Point, Sessions
 from ix.adapters._out.matrix_documents import (
     STDIN_SOURCE,
     GenreFiles,
@@ -141,9 +143,19 @@ def _unsaid(record: logging.LogRecord) -> bool:
     return False
 
 
+#: A runtime's name at each point, as its type URL; and what one is called in an error.
+_RUNTIME_URLS: dict[str, Callable[[str], str]] = {
+    AGENT_RUNTIME: agent_runtime_type_url,
+    MODEL_RUNTIME: model_runtime_type_url,
+}
+_RUNTIME_NOUNS = {AGENT_RUNTIME: "agent runtime", MODEL_RUNTIME: "model runtime"}
+
+
 class _Runtimes:
-    """matrix's agent runtimes, built from the registry by name: what a session and a judge
-    run on. A ``model`` runtime is handed the ``models`` of matrix's config.
+    """matrix's runtimes, built from the registry by name at its two points: an agent
+    runtime is what a session and an agent judge run on, a model runtime what a model call
+    and a model judge make their call on. Each is handed the ``models`` of matrix's config
+    and the ``cwd`` it runs in, as it declares it needs them.
 
     ix says a runtime's ``warnings`` itself, once, in the plan and the report: while
     :meth:`listening`, those of each runtime built are kept. What a runtime logs on
@@ -166,19 +178,21 @@ class _Runtimes:
         finally:
             self._heard = None
 
-    def _entry(self, name: str) -> Entry:
+    def _entry(self, point: Point, name: str) -> Entry:
         try:
-            return self._registry.entry("runtime", runtime_type_url(name))
+            return self._registry.entry(point, _RUNTIME_URLS[point](name))
         except MatrixError as error:
-            raise carried_over(f"no agent runtime {name!r}", error) from error
+            raise carried_over(f"no {_RUNTIME_NOUNS[point]} {name!r}", error) from error
 
-    def build(self, name: str, config: Mapping[str, Any], *, cwd: str | None) -> Any:
-        url = self._entry(name).type_url
+    def build(
+        self, point: Point, name: str, config: Mapping[str, Any], *, cwd: str | None = None
+    ) -> Any:
+        url = self._entry(point, name).type_url
         quiet = logging.getLogger(matrix.RUNTIME_LOGGER)
         quiet.addFilter(_unsaid)
         try:
             runtime = self._registry.create(
-                "runtime", url, config, needs={"cwd": cwd, "models": self._models()}
+                point, url, config, needs={"cwd": cwd, "models": self._models()}
             )
         finally:
             quiet.removeFilter(_unsaid)
@@ -188,9 +202,15 @@ class _Runtimes:
                     self._heard.append(found)
         return runtime
 
-    def simulated(self, name: str) -> bool:
-        effects = self._entry(name).effects
-        return effects is not None and "model" not in effects
+    def stand_in(self, point: Point, name: str) -> bool:
+        return self._entry(point, name).stand_in
+
+    def takes(self, point: Point, name: str) -> frozenset[str] | None:
+        try:
+            config = self._entry(point, name).config
+        except IxError:
+            return None
+        return frozenset() if config is None else frozenset(config.model_fields)
 
 
 @dataclass(frozen=True)
@@ -529,7 +549,9 @@ class Root:
     ) -> tuple[tuple[str, ...], tuple[Problem, ...]]:
         """What the subjects' adapters can tell before anything starts: why a subject cannot
         start here (``subjects.<name>: <why>``), and what the runtimes they would build warn
-        of (a permissive ``permission_mode``), each at ``subjects.<name>.<option>``."""
+        of (a permissive ``permission_mode``), each at
+        ``subjects.<name>.runtime_options.<option>``: a subject's runtime options are its
+        runtime's config."""
         kinds = {schema.url("subject", subject.kind) for subject in experiment.subjects.values()}
         subjects = self._kit(kinds).subjects
         reasons: list[str] = []
@@ -539,7 +561,7 @@ class Root:
             with self._runtimes.listening() as heard:
                 reasons += running.unstartable(alone, subjects, base)
             cautions += [
-                found.model_copy(update={"path": f"subjects.{name}.{found.path}"})
+                found.model_copy(update={"path": f"subjects.{name}.runtime_options.{found.path}"})
                 for found in converted(heard)
             ]
         return tuple(reasons), tuple(cautions)

@@ -16,9 +16,10 @@ subjects:
     kind: agent-session
     runtime: claude-sdk
     max_turns: 1                        # the skill call happens in the first turn; stop there
-    setting_sources: []                 # none of this machine's settings or plugins
-    permission_mode: bypassPermissions  # nobody is there to approve a tool call
     plugins: ["../../../../../plugins/*"]
+    runtime_options:                      # claude-sdk's own config, passed through as written
+      setting_sources: []                 # none of this machine's settings or plugins
+      permission_mode: bypassPermissions  # nobody is there to approve a tool call
 
 primary: {metric: activated_correctly}
 threshold: {op: ">=", value: 0.9}
