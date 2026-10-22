@@ -5,7 +5,8 @@ wherever the application's provider sends them, and nowhere when there is none. 
 command installs one from the standard ``OTEL_*`` variables through matrix
 (``matrix.configure_telemetry``); a program embedding ix configures OpenTelemetry itself.
 
-The spans are ix's work: ``ix.plan``, ``ix.run``, ``ix.trial`` and ``ix.sensor``. The agent
+The spans are ix's work: ``ix.plan``, ``ix.run``, ``ix.environment``, ``ix.trial`` and
+``ix.sensor``. The agent
 sessions inside a trial are matrix's (``invoke_agent``, ``execute_tool``), and matrix's
 ``invoke_workflow`` for the run sits under ``ix.run``.
 

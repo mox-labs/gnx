@@ -605,8 +605,8 @@ An unknown key is refused, by its path and file. The same read gives the `matrix
 the observers of a run, and the models a `hardline` model runtime is handed.
 
 ix makes spans through the OpenTelemetry API, under the instrumentation scope `ix`:
-`ix.plan`, `ix.run`, `ix.trial` and `ix.sensor`, with each reading as a
-`gen_ai.evaluation.result` event. The agent sessions inside a trial are matrix's spans. The
+`ix.plan`, `ix.run`, `ix.environment`, `ix.trial` and `ix.sensor`, with each reading as a
+`gen_ai.evaluation.result` event and a failure's reason as `error.type`. The agent sessions inside a trial are matrix's spans. The
 `ix` command installs the SDK from the standard `OTEL_*` variables when the `otel` extra is
 installed; set without it, every `--json` document carries a warning. A program that
 imports ix configures OpenTelemetry itself, or calls `ix.configure_telemetry()`.

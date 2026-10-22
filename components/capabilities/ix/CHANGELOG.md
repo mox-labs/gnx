@@ -258,6 +258,9 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   `Span.evaluated` and `Span.failed`, and `otel_tracing.py` names them. The spans are
   unchanged. A third-party `Traced` scope's spans implement the two methods in place of
   `event`.
+- **Bringing the environment up is traced.** The environment component ran with matrix's
+  plain context, so bring-up had no span of ix's. It is now `ix.environment`, under
+  `ix.run`, with the environment's kind and the services it bound.
 
 ## 0.5.0 — 2026-10-19
 

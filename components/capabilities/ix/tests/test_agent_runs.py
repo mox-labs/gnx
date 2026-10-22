@@ -1108,6 +1108,11 @@ class TestTelemetry:
         run = next(span for span in spans if span.name == "ix.run")
         trial = next(span for span in spans if span.name == "ix.trial")
         assert trial.parent is not None and trial.parent.span_id == run.context.span_id
+        # Bringing the environment up is ix's work too: one span, under the run.
+        (environment,) = [span for span in spans if span.name == "ix.environment"]
+        assert environment.parent is not None
+        assert environment.parent.span_id == run.context.span_id
+        assert (environment.attributes or {})["ix.environment.kind"] == "none"
         # Spend is removed: no span carries a cost of ix's own.
         assert not any("cost_usd" in key for span in spans for key in span.attributes or {})
         events = [e for span in spans if span.name == "ix.sensor" for e in span.events]

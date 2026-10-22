@@ -8,8 +8,8 @@ names no host. :func:`prepare` decides before anything starts whether the experi
 A failed trial never raises out of :func:`invoke` and never stops the run: it is an
 interaction carrying a failure with an owner (see :mod:`ix.domain.run`).
 
-**Spans.** When the scope is :class:`~ix.domain.ports.Traced`, each trial is a span
-``ix.trial`` and each sensor reading one
+**Spans.** When the scope is :class:`~ix.domain.ports.Traced`, the environment's bring-up
+is a span ``ix.environment``, each trial a span ``ix.trial`` and each sensor reading one
 interaction a span ``ix.sensor``, which records each metric it read
 (:meth:`~ix.domain.ports.Span.evaluated`) and a trial's failure
 (:meth:`~ix.domain.ports.Span.failed`). Which telemetry convention names them is the
@@ -373,11 +373,15 @@ def _cause(during: Failure | None, at_release: Failure) -> Failure:
 
 
 async def bring_up(setup: Setup, kit: Kit, scope: Scope) -> Bindings:
-    """Bring the experiment's environment up, once for the run. It comes down when the run
-    ends, through what the provider deferred."""
+    """Bring the experiment's environment up, once for the run, inside a span
+    ``ix.environment`` when the scope traces. It comes down when the run ends, through what
+    the provider deferred."""
     environment = setup.experiment.environment
     provider = kit.environments[schema.url("environment", environment.kind)]
-    bindings = await provider.up(environment, base=setup.base, scope=scope)
+    attributes = {"ix.run.id": setup.manifest.run, "ix.environment.kind": environment.kind}
+    with _span(scope, "ix.environment", **attributes) as span:
+        bindings = await provider.up(environment, base=setup.base, scope=scope)
+        span.set(**{"ix.environment.services": sorted(bindings)})
     scope.emit(ENVIRONMENT_UP, kind=environment.kind, services=sorted(bindings))
     return bindings
 
