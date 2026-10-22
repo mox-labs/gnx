@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from matrix.domain.model_call import FinishReason  # noqa: TC001 -- pydantic reads it
 from matrix.domain.observer import (
     AGENT_END,
     AGENT_START,
@@ -112,13 +113,20 @@ class AgentResponse(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    #: The session's reply: its final result, not every turn's text.
     content: str = ""
+    #: What the agent wrote, turn by turn: each of its text blocks, in order.
+    transcript: tuple[str, ...] = ()
     #: ``{name, input}`` per tool call, as plain dicts. A runtime that sees calls happen adds
     #: ``id``, ``started`` and ``ended`` (ISO times) and ``error`` (bool), and matrix reports
     #: each such call as an ``execute_tool`` span.
     tool_calls: tuple[dict[str, Any], ...] = ()
+    #: Every input token the session read, those served from and written to the prompt
+    #: cache included; ``cache_read_tokens`` and ``cache_write_tokens`` say how many of them.
     tokens_input: int = 0
     tokens_output: int = 0
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     duration_ms: int = 0
     cost_usd: float | None = None
     num_turns: int = 0
@@ -128,11 +136,19 @@ class AgentResponse(BaseModel):
     #: Who served it, as the GenAI conventions name providers (``anthropic``, ``openai``,
     #: ``gcp.gemini``), when the runtime knows.
     provider: str | None = None
-    #: The model id or registry name that answered, when the runtime knows it.
+    #: The model id or registry name that answered, when the runtime knows it: not the one
+    #: the definition asked for.
     model: str | None = None
     #: Why the session ended: ``completed``, or the limit reached (``max_turns``,
     #: ``max_budget_usd``). A limit is not a failure; a failure raises instead.
     stop: str | None = None
+    #: Why the session's last reply ended, in the model call's vocabulary (``stop``,
+    #: ``length``, ``refusal``, ...); None when the runtime does not say.
+    finish_reason: FinishReason | None = None
+    #: The provider's own value, verbatim.
+    native_finish_reason: str | None = None
+    #: The runtime's id for the session, when it gives one.
+    session_id: str | None = None
     #: The task the agent was given, as sent: an ``agent-step`` records it here, after
     #: substituting its inputs. None when the caller did not record it.
     task: str | None = None

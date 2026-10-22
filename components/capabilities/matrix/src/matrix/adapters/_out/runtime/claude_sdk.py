@@ -19,6 +19,16 @@ ends a session once it has spent that, and the response says so (``stop: max_bud
 matrix counts nothing against it. ``cost_usd`` on a response is the SDK's own report
 (``total_cost_usd``), kept as a fact of the session.
 
+**What a response carries.** The reply (``content``) is the session's result
+(``ResultMessage.result``); every text block the agent wrote along the way is its
+``transcript``, so a multi-turn agent's final JSON parses on its own. ``model`` is the model
+that answered: the one the SDK's ``model_usage`` names, or, when it names several (the CLI
+makes small calls of its own), the one that wrote the final reply. ``tokens_input`` counts
+every input token, those read from and written to the prompt cache included, which
+Anthropic's ``input_tokens`` leaves out; ``cache_read_tokens`` and ``cache_write_tokens`` say
+how many. The session id and the SDK's ``stop_reason`` (as ``native_finish_reason``, and
+mapped to ``finish_reason``) are kept.
+
 Type URL: ``matrix.v1.agent-runtime.claude-sdk``. Requires the ``claude`` extra.
 """
 
@@ -26,11 +36,12 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -40,9 +51,10 @@ from matrix.domain.ports._out.agent_runtime import RUNTIME_LOGGER
 from matrix.domain.problems import Problem, problem
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from matrix.domain.agent import AgentDefinition
+    from matrix.domain.model_call import FinishReason
 
 logger = logging.getLogger(__name__)
 
@@ -275,16 +287,22 @@ class ClaudeSdkRuntime:
         from claude_agent_sdk import query
 
         options = self.sdk_options(definition)
-        transcript = await _collect(query(prompt=task, options=options), definition.name)
+        # Closed here however reading ends, not by the garbage collector: closing the stream
+        # is what ends the CLI process. The SDK types it as an iterator; it is a generator.
+        stream = cast("AsyncGenerator[Any, None]", query(prompt=task, options=options))
+        async with aclosing(stream) as messages:
+            transcript = await _collect(messages, definition.name)
         return _response(definition, transcript)
 
 
 @dataclass(frozen=True)
 class _Transcript:
-    """What one session said: its text, the tools it called, and its result message."""
+    """What one session said: its text blocks, the tools it called, the model that wrote its
+    last reply, and its result message."""
 
-    content: str
+    texts: tuple[str, ...]
     tool_calls: tuple[dict[str, Any], ...]
+    last_model: str | None
     result: Any
 
 
@@ -300,11 +318,14 @@ async def _collect(messages: AsyncIterator[Any], agent: str) -> _Transcript:
     texts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
+    last_model: str | None = None
     result = None
     try:
         async for message in messages:
             now = datetime.now(UTC).isoformat()
             if isinstance(message, AssistantMessage):
+                if getattr(message, "parent_tool_use_id", None) is None:  # not a subagent's
+                    last_model = message.model or last_model
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         texts.append(block.text)
@@ -333,7 +354,9 @@ async def _collect(messages: AsyncIterator[Any], agent: str) -> _Transcript:
             reason="failed",
             agent=agent,
         )
-    return _Transcript(content="".join(texts), tool_calls=tuple(tool_calls), result=result)
+    return _Transcript(
+        texts=tuple(texts), tool_calls=tuple(tool_calls), last_model=last_model, result=result
+    )
 
 
 def _fields(cls: type) -> set[str]:
@@ -380,19 +403,49 @@ def _response(definition: AgentDefinition, transcript: _Transcript) -> AgentResp
             status=status,
         )
     usage = getattr(result, "usage", None)
+    usage = usage if isinstance(usage, dict) else {}
+    cache_read = int(usage.get("cache_read_input_tokens") or 0)
+    cache_write = int(usage.get("cache_creation_input_tokens") or 0)
+    native = getattr(result, "stop_reason", None)
+    reply = getattr(result, "result", None)
     return AgentResponse(
-        content=transcript.content,
+        content=reply if isinstance(reply, str) else "",
+        transcript=transcript.texts,
         tool_calls=transcript.tool_calls,
         duration_ms=getattr(result, "duration_ms", 0) or 0,
         cost_usd=getattr(result, "total_cost_usd", None),
-        tokens_input=usage.get("input_tokens", 0) if isinstance(usage, dict) else 0,
-        tokens_output=usage.get("output_tokens", 0) if isinstance(usage, dict) else 0,
+        tokens_input=int(usage.get("input_tokens") or 0) + cache_read + cache_write,
+        tokens_output=int(usage.get("output_tokens") or 0),
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
         num_turns=getattr(result, "num_turns", 0) or 0,
         family=FAMILY,
         provider=PROVIDER,
-        model=definition.model,
+        model=_answered(getattr(result, "model_usage", None), transcript.last_model),
         stop=stop,
+        finish_reason=None if native is None else _FINISH.get(native, "other"),
+        native_finish_reason=native,
+        session_id=getattr(result, "session_id", None),
     )
+
+
+def _answered(model_usage: Any, last: str | None) -> str | None:
+    """The model that answered: the one ``model_usage`` names, or, when it names several,
+    the one that wrote the final reply."""
+    named = list(model_usage) if isinstance(model_usage, dict) else []
+    return named[0] if len(named) == 1 else last
+
+
+#: The Messages API's stop reasons, which a result's ``stop_reason`` carries, in the model
+#: call's vocabulary. A reason not named here is ``other``.
+_FINISH: dict[str, FinishReason] = {
+    "end_turn": "stop",
+    "stop_sequence": "stop",
+    "max_tokens": "length",
+    "model_context_window_exceeded": "length",
+    "refusal": "refusal",
+    "tool_use": "tool_call",
+}
 
 
 #: Result subtypes that mean "a configured limit was reached" — an ending, not a failure.

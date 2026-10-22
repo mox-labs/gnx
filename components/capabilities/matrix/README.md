@@ -309,7 +309,9 @@ default (`matrix.v1.agent-response`, `matrix.v1.model-call`) serves one step. An
 with `output` needs the reply to be one JSON document, so say so in the agent's prompt or the
 task; a model step asks its runtime for the kind's registered schema when there is one. An
 agent's `model` is its runtime's to read: on `claude-sdk` an alias (`haiku`, `sonnet`,
-`opus`) or a full model id. A model step's `model` is a hardline registry name, checked when
+`opus`) or a full model id, and the reply records the model that answered, which may not be
+the one asked for. An agent's reply is its session's final result; what it wrote along the
+way is the reply's `transcript`. A model step's `model` is a hardline registry name, checked when
 the step is built. A model step never provides a reply that is not a whole answer: one cut at
 `max_tokens`, refused, withheld or empty fails the step, naming its `finish_reason`. The `mock` runtimes are stand-ins (`stand_in` in the catalog and the
 plan); the agent one replies by the whole task as sent (`responses`), then by agent name

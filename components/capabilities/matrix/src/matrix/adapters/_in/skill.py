@@ -639,10 +639,13 @@ def _reference_agents() -> str:
   stands, data as JSON), several as a JSON list. Without `task`, a single input is the task.
   Each placeholder must name an input and each input must have a placeholder: the step is
   refused when it is built (`config`), not when a run reaches it.
-- It provides an `AgentResponse` under `response`: `content`, `task` (as sent),
-  `tool_calls`, `tokens_input`, `tokens_output`, `cost_usd`, `num_turns`, `model`, `stop`
-  (`completed`, `max_turns`, `max_budget_usd`). A kind has one provider: two steps on the
-  default clash, and the problem's path is the second step's `config.response`.
+- It provides an `AgentResponse` under `response`: `content` (the session's final result),
+  `transcript` (every text block, in order), `task` (as sent), `tool_calls`, `tokens_input`
+  (cache included), `tokens_output`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`,
+  `num_turns`, `model` (the one that answered), `stop` (`completed`, `max_turns`,
+  `max_budget_usd`), `finish_reason`, `native_finish_reason`, `session_id`. A kind has one
+  provider: two steps on the default clash, and the problem's path is the second step's
+  `config.response`.
 - With `output`, the reply must be one JSON document, alone or in a ```` ```json ```` block;
   it is validated against the kind's schema when a package registered one. A reply without
   JSON fails the step (`contract`), quoting the reply. Ask for the JSON in the agent's

@@ -558,16 +558,21 @@ The runtime-neutral record of one session. Frozen.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `content` | `str` | `""` | |
+| `content` | `str` | `""` | the session's reply: its final result, not every turn's text |
+| `transcript` | `tuple[str, ...]` | `()` | each text block the agent wrote, in order |
 | `tool_calls` | `tuple[dict, ...]` | `()` | `{name, input}` per call; a runtime that sees calls happen adds `id`, `started`, `ended` (ISO times) and `error`, and each becomes an `execute_tool` span |
-| `tokens_input`, `tokens_output` | `int` | `0` | |
+| `tokens_input`, `tokens_output` | `int` | `0` | `tokens_input` counts every input token, those read from and written to the prompt cache included |
+| `cache_read_tokens`, `cache_write_tokens` | `int \| None` | `None` | how many of `tokens_input` the cache served, and wrote |
 | `duration_ms` | `int` | `0` | |
 | `cost_usd` | `float \| None` | `None` | the cost the backend reported, when it reports one: a fact of the session, which matrix neither limits nor estimates |
 | `num_turns` | `int` | `0` | |
 | `family` | `str \| None` | `None` | model family that answered (`claude`, `qwen`, ...), stamped by the runtime |
 | `provider` | `str \| None` | `None` | who served it, by the GenAI conventions' provider names (`anthropic`), when known |
-| `model` | `str \| None` | `None` | model id or registry name, when known |
+| `model` | `str \| None` | `None` | the model id or registry name that answered, when known: not the one the definition asked for |
 | `stop` | `str \| None` | `None` | `completed`, or the limit reached (`max_turns`, `max_budget_usd`, ...). A limit is not a failure |
+| `finish_reason` | `FinishReason \| None` | `None` | why the session's last reply ended, in the model call's vocabulary; `None` when the runtime does not say |
+| `native_finish_reason` | `str \| None` | `None` | the provider's own value, verbatim |
+| `session_id` | `str \| None` | `None` | the runtime's id for the session |
 | `task` | `str \| None` | `None` | the task as sent; an `agent-step` records it, after substituting its inputs |
 
 ### `AgentRuntime` (Protocol)
@@ -604,7 +609,7 @@ takes the short name.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `claude-sdk` | `matrix.v1.agent-runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | Extra `[claude]`. The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call |
+| `claude-sdk` | `matrix.v1.agent-runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | Extra `[claude]`. The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call. The reply is the session's result, every text block its `transcript`. `model` is the one the SDK's `model_usage` names, or, when it names several, the one that wrote the final reply. `tokens_input` adds the cache's tokens to Anthropic's `input_tokens`, which leaves them out. Keeps the session id and the SDK's `stop_reason` (`native_finish_reason`, mapped to `finish_reason`) |
 | `mock` | `matrix.v1.agent-runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Plays every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports no cost (`cost_usd` is `None`): no provider reported one. Records `calls`, each `(agent, task)` |
 
 Classes: `matrix.adapters._out.runtime.claude_sdk.ClaudeSdkRuntime`,

@@ -72,6 +72,18 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   `refused` (a refusal, `content_filter`) or `failed`, kind `component`, naming the
   `finish_reason` with a fix for it. A runtime that does not say why its reply ended
   (`finish_reason: null`) is not taken to have cut it.
+- **The `claude-sdk` runtime's reply is the session's result.** `content` joined every text
+  block of every turn and ignored the SDK's `ResultMessage.result`, so an agent that thought
+  aloud and then answered in JSON broke its step's `output`. `content` is the result now (empty
+  when the session stopped at a limit, which has none), and every text block is the new
+  `transcript`.
+- **`tokens_input` counts the prompt cache's tokens.** It was Anthropic's `input_tokens`,
+  which leaves out the tokens read from and written to the cache: under Claude Code's caching,
+  12 where the session read 90,000. It is their sum now, and `cache_read_tokens` and
+  `cache_write_tokens` say how many of each.
+- **`AgentResponse.model` is the model that answered**, as the SDK's `model_usage` names it
+  (the one that wrote the final reply, when it names several), not the definition's `model`,
+  which was the model asked for and `None` when the CLI's default answered.
 - `ModelCall.usage`, `attempts`, `retries` and `latency_ms` default to `None`, where they
   defaulted to zeros and `attempts=1`: a constant is not a fact. The `mock` model runtime
   reports what is true of a canned reply: one attempt, no retries, zero tokens, its latency,
@@ -95,6 +107,9 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   `attempt_log` (every backend call, with why each failed), `turns_digest` and `row` (the
   registry row that answered: its digest and the tier that set each field). New names:
   `FinishReason`, `RequestParams`, `CallAttempt`, `RegistryRow`.
+- `AgentResponse` gains `transcript`, `cache_read_tokens`, `cache_write_tokens`,
+  `finish_reason` and `native_finish_reason` (the SDK's `stop_reason`, read in the model
+  call's vocabulary) and `session_id`, which the `claude-sdk` runtime fills.
 - **`stand_in`** on a registry entry, declared at registration (`register(..., stand_in=True)`)
   and shown by `matrix catalog`, `matrix describe` and the plan's runtimes. Both mocks
   declare it, so a caller can tell canned answers from a model's without inferring it from
@@ -102,6 +117,10 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **The `claude-sdk` runtime closes the SDK's message stream** however reading it ends
+  (`aclosing`), where closing it, and so the CLI process, was left to the garbage collector.
+  Its error mapping is now tested: a missing CLI is `incapable`, a timeout `timeout`, and an
+  SDK error after the result arrived is logged with the result kept.
 - **A model step closes its runtime's connections.** hardline keeps one client per event loop
   and can close it only in that loop, and nothing called its `aclose()`: every run left its
   connections open, and the next loop to use the runtime logged that they had been. A model
