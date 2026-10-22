@@ -635,7 +635,9 @@ class TestGenresAndKindsCommands:
             "choices": {}, "description": "how long the measured load lasts",
         }  # fmt: skip
         runtime = document["kinds"]["ix.v1.subject.agent-session"]["options"]["runtime"]
-        assert runtime["required"] and set(runtime["choices"]) == {"claude-sdk", "model", "mock"}
+        assert runtime["required"] and set(runtime["choices"]) == {"claude-sdk", "mock"}
+        runtime = document["kinds"]["ix.v1.subject.model-call"]["options"]["runtime"]
+        assert runtime["required"] and set(runtime["choices"]) == {"hardline", "mock"}
         assert load["options"]["rate"]["required_when"] == {"load_model": "open"}
         assert (load["needs"], load["offers"]) == (["url"], ["load"])
         judge = document["kinds"]["ix.v1.sensor.judge"]

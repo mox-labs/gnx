@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### Changed (breaking): agent runtimes and model runtimes are two ports
+
+matrix now has two runtime ports, `agent-runtime` and `model-runtime`, and ix moves onto
+them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-19-record.md`
+§17 has the reasons.
+
+- **`agent-session` takes agent runtimes only** (`claude-sdk`, `mock`, or any installed at
+  matrix's `agent-runtime` point). `runtime: model` is gone from it; measure a model with
+  `model-call` instead.
+- **New subject kind `model-call`.** It takes model runtimes (`hardline`, `mock`, or any
+  installed at `model-runtime`). Each trial is one model call through `ModelRuntime.call`,
+  with `model`, `system_prompt` and `runtime_options`. The runtime resolves the `model`
+  before anything starts. The interaction's `usage` keeps the call's facts: the model that
+  answered, request id, attempts, retries, `fallback_from`, `finish_reason`, `refusal`,
+  latency, and tokens with the cache's. `activation`, `tool-usage`, a `function-test`
+  `file` and a probe's `collect` are refused on it (`unobservable`).
+- **Runtime options pass through.** `permission_mode` and `setting_sources` are no longer
+  options of `agent-session`. Write them under `runtime_options`, which is handed to the
+  runtime as written; `validate` refuses a key the runtime's config does not declare
+  (`option_unknown`). A runtime warning is reported at
+  `subjects.<name>.runtime_options.<key>`. `plugins` stays ix's own option, its paths
+  resolved and handed to the runtime as its `plugins`; on a runtime whose config takes
+  none it is `option_inapplicable`. The SDK options on another runtime are no longer
+  `option_inapplicable`.
+- **Skills no longer change `setting_sources`.** ix added `project` to it for a session
+  given `skills`. Now `validate` refuses `skills` with `setting_sources` that leave
+  `project` out, and the fix says to add it.
+- **The judge** names `model_runtime` (one model call per reading) or `agent_runtime` (a
+  one-turn session with no tools per reading), not `runtime`, and `validate` refuses one
+  that names neither or both. An agent-runtime judge gets `setting_sources: []` when its
+  runtime's config declares the key, whatever the runtime is called. The reading's
+  `detail.judge` holds `port` and the runtime's type URL.
+- **Stand-ins come from the registration** (`Entry.stand_in`), not from effects or a name.
+  A dry run puts each subject and judge on the `mock` of its own port and sets aside
+  `runtime_options` and `plugins`. Skills are kept, as copied files. Any stand-in is
+  handed each probe's `mock_response` as its config's `default`.
+- **The `respondent` facet** replaces `agent`. Both subject kinds offer it, and `prompt`
+  and `inspect-task` need it.
+- `usage.runtime` is the runtime's type URL (`matrix.v1.agent-runtime.claude-sdk`). The
+  `usage` sensor leaves out a metric whose fact the runtime did not report.
+- The `runtimes` need an adapter declares is now built by point and name:
+  `build(point, name, config, *, cwd=None)`, `stand_in(point, name)`, `takes(point, name)`.
+
 ### Removed (breaking)
 
 - **Spend.** ix no longer limits or estimates what a run costs. The ceiling was checked only
@@ -31,6 +74,9 @@
 
 ### Fixed
 
+- **A subject with a mapping option was never preflighted.** Any `{` in an option's text
+  read as a placeholder, so a session with `runtime_options` or a `loop` had its runtime
+  neither built nor checked before the run. Only a `{placeholder}` defers the check now.
 - **A count's threshold decision at many units per trial.** Over thousands of units the
   score test's level is exactly 0, and the decision stopped there instead of also reading
   the t test at Korn and Graubard's effective sample size. A count could then hold `< 0.2`

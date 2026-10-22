@@ -3,8 +3,9 @@
 ix owns one extension point per family of adapter an experiment names (:data:`POINTS`). An
 adapter registers at its family's point under the type URL of the kind it carries out
 (``ix.v1.subject.process``), and declares what it needs built in: :data:`LAUNCHER`, for one
-that starts processes; :data:`RUNTIMES`, for one that runs an agent on matrix's runtimes;
-:data:`SESSIONS`, for a subject and a probe that share an agent session by its handle.
+that starts processes; :data:`RUNTIMES`, for one that runs an agent or makes a model call on
+matrix's runtimes; :data:`SESSIONS`, for a subject and a probe that share an agent session or
+a model call by its handle.
 
 A third party adds an adapter for its own kind the same way, from its own entry point.
 """
@@ -25,6 +26,7 @@ from ix.adapters._out.agent_sensors import (
 from ix.adapters._out.environments import NoEnvironment, ProcessEnvironment
 from ix.adapters._out.k6_load import K6Load
 from ix.adapters._out.matrix_agents import AgentSessionSubject, PromptProbe
+from ix.adapters._out.matrix_calls import ModelCallSubject
 from ix.adapters._out.matrix_judge import JudgeSensor
 from ix.adapters._out.sensors import MemorySensor, TimingSensor
 from ix.adapters._out.subjects import HttpSubject, ProcessSubject
@@ -43,9 +45,11 @@ POINTS: dict[str, str] = {
 
 #: The need of an adapter that starts processes: a ``Launcher``.
 LAUNCHER = "launcher"
-#: The need of an adapter that runs an agent: matrix's runtimes, by name.
+#: The need of an adapter that runs an agent or makes a model call: matrix's runtimes, by
+#: point and name.
 RUNTIMES = "runtimes"
-#: The need of the adapters that share an agent session: the table of open sessions.
+#: The need of the adapters that share an agent session or a model call: the table of what
+#: is open, by handle.
 SESSIONS = "sessions"
 
 
@@ -69,8 +73,11 @@ def register(registry: Registry) -> None:
         ("subject", "http", HttpSubject, "An endpoint that is already running", set()),
         ("subject", "agent-session", AgentSessionSubject, "A fresh agent session per trial",
          agent),
+        ("subject", "model-call", ModelCallSubject, "One model call per trial",
+         {SESSIONS, RUNTIMES}),
         ("probe", "http-load", K6Load, "HTTP load for a fixed time, driven by k6", {LAUNCHER}),
-        ("probe", "prompt", PromptProbe, "One prompt put to an agent session", {SESSIONS}),
+        ("probe", "prompt", PromptProbe, "One prompt put to an agent session or a model call",
+         {SESSIONS}),
         ("sensor", "timing", TimingSensor, "Latency and throughput from a load probe", set()),
         ("sensor", "memory", MemorySensor, "Peak resident memory, sampled", set()),
         ("sensor", "activation", ActivationSensor, "Whether the expected skill fired", set()),

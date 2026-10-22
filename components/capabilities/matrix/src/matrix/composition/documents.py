@@ -15,11 +15,18 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from matrix.composition.builtins import runtime_type_url, store_type_url
+from matrix.composition.builtins import (
+    AGENT_RUNTIME,
+    MODEL_RUNTIME,
+    agent_runtime_type_url,
+    model_runtime_type_url,
+    store_type_url,
+)
 from matrix.composition.config import discover_sources, load_config
 from matrix.composition.container import build_store, compose, default_registry
 from matrix.domain.agent_step import AGENT_STEP
 from matrix.domain.errors import ConfigError, NotFoundError, UsageError, invalid
+from matrix.domain.model_step import MODEL_STEP
 from matrix.domain.ports._out.construct_store import location_of
 from matrix.domain.problems import Problem, problem, sourced
 
@@ -50,6 +57,8 @@ class CatalogEntry(_Document):
     needs: list[str]
     #: What it may touch; None when it did not say, which never means "nothing".
     effects: list[str] | None
+    #: Whether it stands in for the real thing: a mock's canned answers, not a model's.
+    stand_in: bool = False
     #: Whether it takes a config (``matrix describe`` shows the schema).
     configurable: bool
 
@@ -76,6 +85,7 @@ class ExtensionDescription(_Document):
     origin: str
     needs: list[str]
     effects: list[str] | None
+    stand_in: bool = False
     #: The JSON schema its config must meet; None when it takes none.
     config: dict[str, Any] | None
 
@@ -106,7 +116,8 @@ class CheckReport(_Document):
     schema_: Literal["matrix.v1.check"] = Field(default="matrix.v1.check", alias="schema")
     #: Always true: a config that does not compose raises instead.
     ok: Literal[True] = True
-    runtimes: list[str]
+    agent_runtimes: list[str]
+    model_runtimes: list[str]
     agents: list[str]
     #: How many observers composed.
     observers: int
@@ -142,9 +153,12 @@ class PlannedComponent(_Document):
     after: list[str]
     #: What it may touch; None when it did not say, which never means "nothing".
     effects: list[str] | None
-    #: For an ``agent-step``: the agent it runs, and that agent's runtime.
+    #: For an ``agent-step``: the agent it runs, and that agent's agent runtime. For a
+    #: ``model-step``: its model runtime, and the model it names (None: the runtime's
+    #: default).
     agent: str | None = None
     runtime: str | None = None
+    model: str | None = None
     #: How many times it may be run (its retry policy's attempts).
     attempts: int = 1
 
@@ -160,6 +174,8 @@ class PlannedRuntime(_Document):
     name: str
     type: str
     effects: list[str] | None
+    #: Whether it stands in for the real thing: its answers are canned, not a model's.
+    stand_in: bool
 
 
 class RunSummary(_Document):
@@ -201,13 +217,18 @@ class Plan(_Document):
     stages: list[list[str]]
     components: list[PlannedComponent]
     agents: list[PlannedAgent]
-    runtimes: list[PlannedRuntime]
+    agent_runtimes: list[PlannedRuntime]
+    model_runtimes: list[PlannedRuntime]
     #: Every effect the components declare; None when any component's are unknown.
     effects: list[str] | None
     #: Agent sessions: at least one per agent step, at most one per attempt. ``max`` is None
-    #: when a component that is not an agent step may call a model.
+    #: when a component that is neither an agent step nor a model step may call a model.
     agent_calls_min: int
     agent_calls_max: int | None
+    #: Model calls: at least one per model step, at most one per attempt (a structured
+    #: reply's repairs are inside one). ``max`` is None as for agent calls.
+    model_calls_min: int
+    model_calls_max: int | None
     store: StorePlan
     limits: dict[str, Any]
     warnings: list[Problem] = []
@@ -241,6 +262,7 @@ def catalog(point: str | None = None, *, registry: Registry | None = None) -> Ca
             origin=e.origin,
             needs=sorted(e.needs),
             effects=_effects(e),
+            stand_in=e.stand_in,
             configurable=e.config is not None,
         )
         for e in registry.entries(point)
@@ -277,6 +299,7 @@ def describe_extension(type_url: str, *, registry: Registry | None = None) -> Ex
                 origin=e.origin,
                 needs=sorted(e.needs),
                 effects=_effects(e),
+                stand_in=e.stand_in,
                 config=None if e.config is None else e.config.model_json_schema(),
             )
             for e in matches
@@ -360,7 +383,8 @@ def check_config(
     loaded = _load(tool, config, only)
     container = _composed(loaded)
     return CheckReport(
-        runtimes=sorted(container.runtimes),
+        agent_runtimes=sorted(container.agent_runtimes),
+        model_runtimes=sorted(container.model_runtimes),
         agents=sorted(container.agents),
         observers=len(container.observers),
         components=list(container.wire().order()),
@@ -386,7 +410,7 @@ def list_agents(
             AgentSummary(
                 name=name,
                 runtime=spec.runtime,
-                runtime_type=loaded.matrix.runtimes[spec.runtime].type,
+                runtime_type=loaded.matrix.agent_runtimes[spec.runtime].type,
                 model=agent.definition.model,
                 tools=None if tools is None else list(tools),
                 description=agent.definition.description,
@@ -402,8 +426,8 @@ def plan_config(
     only: bool = False,
 ) -> Plan:
     """What a run of ``tool``'s configured components would do: the order of work, what each
-    component touches, the agents and runtimes it uses, how many agent calls it makes, where
-    it would be recorded. Composes and wires; runs nothing and calls nothing.
+    component touches, the agents and runtimes it uses, how many agent and model calls it
+    makes, where it would be recorded. Composes and wires; runs nothing and calls nothing.
 
     Raises ConfigError with every problem found (``complete`` False when one kept a check
     from being made).
@@ -482,20 +506,25 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
     entries = {entry.name: entry for entry in matrix.components}
     components: list[PlannedComponent] = []
     used: dict[str, str] = {}
-    calls_min = calls_max = 0
-    countable = True  # no component but an agent step may call a model
+    models_used: set[str] = set()
+    agent_min = agent_max = model_min = model_max = 0
+    countable = True  # no component but an agent or a model step may call a model
     for name in wiring.order():
         component = wiring.components[name]
         entry = entries[name]
         effects = wiring.effects.get(name)
         attempts = container.limits.retry_of(name).attempts
-        agent = runtime = None
+        agent = runtime = model = None
         if entry.type == AGENT_STEP:
             agent = str(entry.config.get("agent"))
             runtime = matrix.agents[agent].runtime
             used[agent] = runtime
-            calls_min += 1
-            calls_max += attempts
+            agent_min, agent_max = agent_min + 1, agent_max + attempts
+        elif entry.type == MODEL_STEP:
+            runtime = str(entry.config.get("runtime"))
+            model = entry.config.get("model")
+            models_used.add(runtime)
+            model_min, model_max = model_min + 1, model_max + attempts
         elif effects is None or "model" in effects:
             countable = False
         components.append(
@@ -508,13 +537,10 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
                 effects=None if effects is None else sorted(effects),
                 agent=agent,
                 runtime=runtime,
+                model=None if model is None else str(model),
                 attempts=attempts,
             )
         )
-    runtimes = {
-        name: _runtime_effects(container, matrix.runtimes[name].type)
-        for name in sorted(set(used.values()))
-    }
     declared = wiring.declared_effects()
     return Plan(
         tool=tool,
@@ -526,18 +552,24 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
             PlannedAgent(
                 name=name,
                 runtime=runtime,
-                runtime_type=matrix.runtimes[runtime].type,
+                runtime_type=matrix.agent_runtimes[runtime].type,
                 model=container.agents[name].definition.model,
             )
             for name, runtime in sorted(used.items())
         ],
-        runtimes=[
-            PlannedRuntime(name=name, type=matrix.runtimes[name].type, effects=effects)
-            for name, effects in runtimes.items()
+        agent_runtimes=[
+            _planned(container, AGENT_RUNTIME, name, matrix.agent_runtimes[name].type)
+            for name in sorted(set(used.values()))
+        ],
+        model_runtimes=[
+            _planned(container, MODEL_RUNTIME, name, matrix.model_runtimes[name].type)
+            for name in sorted(models_used)
         ],
         effects=None if declared is None else sorted(declared),
-        agent_calls_min=calls_min,
-        agent_calls_max=calls_max if countable else None,
+        agent_calls_min=agent_min,
+        agent_calls_max=agent_max if countable else None,
+        model_calls_min=model_min,
+        model_calls_max=model_max if countable else None,
         store=StorePlan(
             type=store_type_url(matrix.store.type),
             location=location_of(container.store, "RUN_ID"),
@@ -547,6 +579,9 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
     )
 
 
-def _runtime_effects(container: Container, kind: str) -> list[str] | None:
-    effects = container.registry.entry("runtime", runtime_type_url(kind)).effects
-    return None if effects is None else sorted(effects)
+def _planned(container: Container, point: str, name: str, kind: str) -> PlannedRuntime:
+    """The runtime ``name`` of type ``kind`` at ``point``, as a plan lists it."""
+    url = agent_runtime_type_url(kind) if point == AGENT_RUNTIME else model_runtime_type_url(kind)
+    entry = container.registry.entry(point, url)
+    effects = None if entry.effects is None else sorted(entry.effects)
+    return PlannedRuntime(name=name, type=kind, effects=effects, stand_in=entry.stand_in)

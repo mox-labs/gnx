@@ -5,6 +5,8 @@
   row in a :class:`Construct`: a table per kind, kept in a store as the run goes.
 * **Agents**: an :class:`AgentDefinition` (what) bound to an :class:`AgentRuntime` (where),
   checked at binding. ``matrix.v1.agent-step`` makes an agent an ordinary component.
+* **Model calls**: one call on a :class:`ModelRuntime`, with no loop or tools, recorded as a
+  :class:`ModelCall`. ``matrix.v1.model-step`` makes one an ordinary component.
 * **Composition**: ``load_config`` reads the shared config tiers, ``compose`` builds runtimes,
   agents, observers and the store from them, and the registry finds every extension
   (built-ins too) through the ``matrix.extensions`` entry point. ``plan_config`` says what a
@@ -25,7 +27,12 @@ from . import process
 from .adapters._in.signals import cancel_on_signals
 from .adapters._in.skill import render as _render_skill
 from .adapters._out.stores.jsonl import JsonlConstructStore, MemoryConstructStore
-from .composition.builtins import observer_type_url, runtime_type_url, store_type_url
+from .composition.builtins import (
+    agent_runtime_type_url,
+    model_runtime_type_url,
+    observer_type_url,
+    store_type_url,
+)
 from .composition.config import discover_sources, load, load_config, load_each
 from .composition.container import Container, compose, default_registry, load_extensions
 from .composition.documents import (
@@ -72,6 +79,7 @@ from .domain.errors import (
     ContractError,
     ErrorKind,
     MatrixError,
+    ModelRuntimeError,
     NotFoundError,
     RunCancelled,
     RunError,
@@ -93,10 +101,13 @@ from .domain.executor import (
 )
 from .domain.ids import TypeUrl, check_type_url, is_type_url, parse_type_url, type_url
 from .domain.loading import Accumulate, BesideFile, Loader
+from .domain.model_call import ModelCall, ModelRequest, TokenUsage
+from .domain.model_step import MODEL_CALL, MODEL_STEP, PROMPT, ModelStep, ModelStepConfig
 from .domain.observer import Event, EventPolicy, Observer, RecordingObserver
 from .domain.ports._out.agent_runtime import RUNTIME_LOGGER, Agent, AgentRuntime
 from .domain.ports._out.construct_store import ConstructStore, RunWriter
 from .domain.ports._out.document_source import Document, DocumentSource
+from .domain.ports._out.model_runtime import ModelRuntime
 from .domain.problems import Problem
 from .domain.ref import REF, Ref
 from .domain.registry import Entry, Extension, Failure, Registry
@@ -123,6 +134,9 @@ __all__ = [
     "EXIT_MEANINGS",
     "EXIT_NEXT",
     "LEDGER",
+    "MODEL_CALL",
+    "MODEL_STEP",
+    "PROMPT",
     "REF",
     "RUNTIME_LOGGER",
     "TASK",
@@ -174,6 +188,12 @@ __all__ = [
     "MatrixConfig",
     "MatrixError",
     "MemoryConstructStore",
+    "ModelCall",
+    "ModelRequest",
+    "ModelRuntime",
+    "ModelRuntimeError",
+    "ModelStep",
+    "ModelStepConfig",
     "NotFoundError",
     "Observer",
     "ObserverConfig",
@@ -196,10 +216,12 @@ __all__ = [
     "StoreConfig",
     "StoreError",
     "Telemetry",
+    "TokenUsage",
     "TypeUrl",
     "UsageError",
     "Wiring",
     "__version__",
+    "agent_runtime_type_url",
     "cancel_on_signals",
     "catalog",
     "check_config",
@@ -218,11 +240,11 @@ __all__ = [
     "load_config",
     "load_each",
     "load_extensions",
+    "model_runtime_type_url",
     "observer_type_url",
     "parse_type_url",
     "plan_config",
     "process",
-    "runtime_type_url",
     "skill",
     "store_type_url",
     "type_url",

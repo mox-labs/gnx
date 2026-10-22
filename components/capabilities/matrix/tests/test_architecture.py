@@ -18,7 +18,8 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "src" / "matrix"
 ALLOWED_THIRD_PARTY = {"pydantic"}
 
-#: What the domain may take from the standard library: computation, plus the asyncio
+#: What the domain may take from the standard library: computation (a template's placeholders
+#: are read with ``string.Formatter``), plus the asyncio
 #: scheduling, clock, run ids and log records the executor needs to run components.
 DOMAIN_STDLIB = frozenset(
     {
@@ -34,6 +35,7 @@ DOMAIN_STDLIB = frozenset(
         "json",
         "logging",
         "re",
+        "string",
         "time",
         "typing",
         "uuid",

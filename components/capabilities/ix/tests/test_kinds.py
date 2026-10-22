@@ -42,7 +42,7 @@ Write = Any  # the write_experiment fixture
 
 #: The kinds DECISIONS §2 names, by family.
 EXPECTED = {
-    "subject": {"process", "http", "agent-session"},
+    "subject": {"process", "http", "agent-session", "model-call"},
     "probe": {"prompt", "http-load", "inspect-task"},
     "sensor": {
         "timing",
@@ -130,7 +130,7 @@ class TestBuiltInKinds:
         declared = {k.label: set(k.effects) for k in builtin_kinds.of("subject")}
         assert declared == {
             "process": {"process"}, "http": {"network"},
-            "agent-session": {"tools", "process", "filesystem"},
+            "agent-session": {"tools", "process", "filesystem"}, "model-call": {"network"},
         }  # fmt: skip
         judge = builtin_kinds.get("sensor", "judge")
         assert judge is not None and judge.effects == ()
@@ -143,9 +143,12 @@ class TestBuiltInKinds:
         assert offers == {
             "process": {"pid", "url"},
             "http": {"url", "headers"},
-            "agent-session": {"agent", "workdir"},
+            "agent-session": {"respondent", "workdir"},
+            "model-call": {"respondent"},
         }
-        assert needs == {"prompt": {"agent"}, "http-load": {"url"}, "inspect-task": {"agent"}}
+        assert needs == {
+            "prompt": {"respondent"}, "http-load": {"url"}, "inspect-task": {"respondent"},
+        }  # fmt: skip
 
     def test_a_sensor_declares_its_metrics_and_whether_a_model_judges_them(
         self, builtin_kinds: Kinds
@@ -297,30 +300,32 @@ class TestOptions:
         """Regression: ``runtime`` defaulted to claude-sdk, and an experiment and a test
         fixture that named none started paid Claude sessions. A model is never called
         implicitly."""
-        session = builtin_kinds.get("subject", "agent-session")
-        assert session is not None and session.options["runtime"].required
-        (problem,) = check_options(session, {"max_turns": 1}, "subjects.agent")
-        assert (problem.path, problem.kind) == ("subjects.agent.runtime", "option_missing")
-        for choice in ("claude-sdk (", "model (", "mock ("):
-            assert choice in problem.fix, choice
-        assert problem.fix.count("; calls a model provider)") == 2
-        assert "; calls no model)" in problem.fix
-        assert problem.allowed == ()  # an open set: an installed runtime is accepted too
-        assert check_options(session, {"runtime": "acme.v1.runtime.scripted"}, "s") == []
+        for label, choices in [("agent-session", ("claude-sdk (", "mock (")),
+                               ("model-call", ("hardline (", "mock ("))]:  # fmt: skip
+            session = builtin_kinds.get("subject", label)
+            assert session is not None and session.options["runtime"].required
+            (problem,) = check_options(session, {}, "subjects.agent")
+            assert (problem.path, problem.kind) == ("subjects.agent.runtime", "option_missing")
+            for choice in choices:
+                assert choice in problem.fix, choice
+            assert problem.fix.count("; calls a model provider)") == 1
+            assert "; calls no model)" in problem.fix
+            assert problem.allowed == ()  # an open set: an installed runtime is accepted too
+            assert check_options(session, {"runtime": f"acme.v1.{label}.x"}, "s") == []
 
-    def test_a_judge_names_its_runtime_and_the_fix_says_which_call_a_model(
+    def test_a_judge_names_a_runtime_on_one_of_two_ports_and_has_no_default(
         self, builtin_kinds: Kinds
     ) -> None:
         """Regression: the judge's ``runtime`` defaulted to ``model``, which calls a paid
-        model."""
+        model. It names a model runtime or an agent runtime, as two options; neither has a
+        default (the judge's review reports one named neither, or both)."""
         judge = builtin_kinds.get("sensor", "judge")
-        assert judge is not None and judge.options["runtime"].required
-        (problem,) = check_options(judge, {"rubric": "r"}, "sensors.0")
-        assert (problem.path, problem.kind) == ("sensors.0.runtime", "option_missing")
-        for choice in ("model (", "claude-sdk (", "mock ("):
-            assert choice in problem.fix, choice
-        assert problem.fix.count("; calls a model provider)") == 2
-        assert "; calls no model)" in problem.fix
+        assert judge is not None and "runtime" not in judge.options
+        for option, choices in [("model_runtime", {"hardline", "mock"}),
+                                ("agent_runtime", {"claude-sdk", "mock"})]:  # fmt: skip
+            assert set(judge.options[option].choices) == choices
+            assert not judge.options[option].required
+            assert "calls no model" in judge.options[option].choices["mock"]
 
     def test_an_options_open_choices_are_listed_and_never_enforced(self) -> None:
         declared = Kind.model_validate(
@@ -376,8 +381,8 @@ class TestFit:
         ).problems
         (unfit,) = [p for p in problems if p.kind == "kind_unfit"]
         assert unfit.path == "probes.0.kind" and unfit.got == "process"
-        assert unfit.allowed == ("agent-session",)
-        assert "needs agent" in unfit.message
+        assert unfit.allowed == ("agent-session", "model-call")
+        assert "needs respondent" in unfit.message
 
     def test_a_sensor_needs_what_subjects_or_probes_offer(
         self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds

@@ -15,8 +15,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from matrix.adapters._out.observers.jsonl import JsonlObserver, JsonlObserverConfig
 from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig
-from matrix.adapters._out.runtime.mock import MockRuntime, MockRuntimeConfig
-from matrix.adapters._out.runtime.model import ModelAgentRuntimeConfig
+from matrix.adapters._out.runtime.mock import (
+    MockAgentRuntime,
+    MockAgentRuntimeConfig,
+    MockModelRuntime,
+    MockModelRuntimeConfig,
+)
+from matrix.adapters._out.runtime.model import HardlineModelRuntimeConfig
 from matrix.adapters._out.stores.jsonl import (
     JsonlConstructStore,
     JsonlStoreConfig,
@@ -28,6 +33,8 @@ from matrix.domain.component import LEDGER
 from matrix.domain.construct import LedgerEntry
 from matrix.domain.errors import missing_extra
 from matrix.domain.ids import type_url
+from matrix.domain.model_call import ModelCall
+from matrix.domain.model_step import MODEL_CALL, MODEL_STEP, PROMPT, ModelStep, ModelStepConfig
 from matrix.domain.ref import REF, Ref
 
 if TYPE_CHECKING:
@@ -36,17 +43,29 @@ if TYPE_CHECKING:
     from matrix.adapters._out.observers.console import ConsoleObserver
     from matrix.adapters._out.observers.otel import OtelObserver
     from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime
-    from matrix.adapters._out.runtime.model import ModelAgentRuntime
+    from matrix.adapters._out.runtime.model import HardlineModelRuntime
     from matrix.domain.ports._out.agent_runtime import Agent
+    from matrix.domain.ports._out.model_runtime import ModelRuntime
     from matrix.domain.registry import Registry
 
-#: Runtime short names in config (``type: claude-sdk``) resolve under this prefix.
-RUNTIME_PREFIX = "matrix.v1.runtime."
+#: The registry point of each kind of runtime.
+AGENT_RUNTIME = "agent-runtime"
+MODEL_RUNTIME = "model-runtime"
+
+#: Short names in config (``type: claude-sdk``, ``type: hardline``) resolve under these.
+AGENT_RUNTIME_PREFIX = "matrix.v1.agent-runtime."
+MODEL_RUNTIME_PREFIX = "matrix.v1.model-runtime."
 
 
-def runtime_type_url(name: str) -> str:
-    """``claude-sdk`` → ``matrix.v1.runtime.claude-sdk``; a full type URL passes through."""
-    return name if "." in name else type_url("matrix", 1, f"runtime.{name}")
+def agent_runtime_type_url(name: str) -> str:
+    """``claude-sdk`` → ``matrix.v1.agent-runtime.claude-sdk``; a full type URL passes
+    through."""
+    return name if "." in name else type_url("matrix", 1, f"agent-runtime.{name}")
+
+
+def model_runtime_type_url(name: str) -> str:
+    """``hardline`` → ``matrix.v1.model-runtime.hardline``; a full type URL passes through."""
+    return name if "." in name else type_url("matrix", 1, f"model-runtime.{name}")
 
 
 def observer_type_url(name: str) -> str:
@@ -62,14 +81,14 @@ def _claude_sdk(config: ClaudeSdkRuntimeConfig, *, cwd: str | None = None) -> Cl
     return ClaudeSdkRuntime(config)
 
 
-def _model(
-    config: ModelAgentRuntimeConfig, *, models: dict[str, Any] | None = None
-) -> ModelAgentRuntime:
-    from matrix.adapters._out.runtime.model import ModelAgentRuntime
+def _hardline(
+    config: HardlineModelRuntimeConfig, *, models: dict[str, Any] | None = None
+) -> HardlineModelRuntime:
+    from matrix.adapters._out.runtime.model import HardlineModelRuntime
 
     if config.models is None and models is not None:
         config = config.model_copy(update={"models": models})
-    return ModelAgentRuntime.from_config(config)
+    return HardlineModelRuntime.from_config(config)
 
 
 def store_type_url(name: str) -> str:
@@ -114,34 +133,53 @@ def _agent_step(config: AgentStepConfig, *, agents: Mapping[str, Agent]) -> Agen
     return AgentStep(config, agents=agents)
 
 
+def _model_step(
+    config: ModelStepConfig,
+    *,
+    model_runtimes: Mapping[str, ModelRuntime],
+    schemas: Mapping[str, type[BaseModel]],
+) -> ModelStep:
+    return ModelStep(config, model_runtimes=model_runtimes, schemas=schemas)
+
+
 def register(registry: Registry) -> None:
     """Register matrix's runtimes, components, payload types, observers and stores."""
     registry.register(
-        "runtime",
-        runtime_type_url("claude-sdk"),
+        AGENT_RUNTIME,
+        agent_runtime_type_url("claude-sdk"),
         _claude_sdk,
         config=ClaudeSdkRuntimeConfig,
         needs={"cwd"},
         effects={"model", "network", "subprocess", "filesystem"},
-        summary="Claude Agent SDK sessions: tools, multiple turns, plugins",
+        summary="Claude Agent SDK sessions: tools, multiple turns, plugins, skills, subagents",
     )
     registry.register(
-        "runtime",
-        runtime_type_url("model"),
-        _model,
-        config=ModelAgentRuntimeConfig,
+        AGENT_RUNTIME,
+        agent_runtime_type_url("mock"),
+        MockAgentRuntime,
+        config=MockAgentRuntimeConfig,
+        effects=set(),
+        summary="A stand-in for any agent: deterministic replies from config; offline",
+        stability="stable",
+        stand_in=True,
+    )
+    registry.register(
+        MODEL_RUNTIME,
+        model_runtime_type_url("hardline"),
+        _hardline,
+        config=HardlineModelRuntimeConfig,
         needs={"models"},
         effects={"model", "network"},
-        summary="One model call through hardline; any model family, no tools",
+        summary="One model call through hardline, in any model family it has a row for",
     )
     registry.register(
-        "runtime",
-        runtime_type_url("mock"),
-        MockRuntime,
-        config=MockRuntimeConfig,
+        MODEL_RUNTIME,
+        model_runtime_type_url("mock"),
+        MockModelRuntime,
+        config=MockModelRuntimeConfig,
         effects=set(),
-        summary="Deterministic replies from config; offline",
-        stability="stable",
+        summary="A stand-in for any model: deterministic replies from config; offline",
+        stand_in=True,
     )
     registry.register(
         "component",
@@ -151,12 +189,22 @@ def register(registry: Registry) -> None:
         needs={"agents"},
         summary="An agent as a component: the rows it requires rendered into its task",
     )
+    registry.register(
+        "component",
+        MODEL_STEP,
+        _model_step,
+        config=ModelStepConfig,
+        needs={"model_runtimes", "schemas"},
+        summary="One model call as a component: the rows it requires rendered into its prompt",
+    )
     registry.register_payload(AGENT_RESPONSE, AgentResponse)
+    registry.register_payload(MODEL_CALL, ModelCall)
     registry.register_payload(LEDGER, LedgerEntry)
     registry.register_payload(REF, Ref)
     registry.register(
         "payload-type", TASK, str, summary="A task for an agent: plain text", stability="stable"
     )
+    registry.register("payload-type", PROMPT, str, summary="A prompt for a model: plain text")
     registry.register(
         "observer",
         observer_type_url("otel"),

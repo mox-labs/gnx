@@ -1,32 +1,42 @@
-"""MockRuntime — deterministic, offline, and a faithful implementation of AgentRuntime.
+"""The mock runtimes, one per port: deterministic, offline stand-ins.
 
-Structural typing would not notice a mock whose signature drifted from the port, so
-``test_every_runtime_satisfies_the_port`` checks it.
+Each registers with ``stand_in: true``, so a caller can tell its canned answers from a
+model's. Structural typing would not notice a mock whose signature drifted from its port, so
+registration checks each against its port, as it checks any runtime.
 
-A reply is chosen by the first of: ``responses`` keyed by the whole task text as sent (after
-an agent step substitutes its inputs), ``by_agent`` keyed by the agent's name, ``default``,
-or else an echo, ``mock:<agent>:<task>``, which shows the task each agent was sent. The task
-as sent is also on every response an agent step records (``AgentResponse.task``) and in the
-run's ``matrix.agent.start`` events, and ``calls`` keeps each ``(agent, task)``. A reply
-reports no cost (``cost_usd`` None): a reported cost is what a provider said, and the mock is
-not one.
+**MockAgentRuntime** (``matrix.v1.agent-runtime.mock``) plays any agent definition. A reply is
+chosen by the first of: ``responses`` keyed by the whole task text as sent (after an agent
+step substitutes its inputs), ``by_agent`` keyed by the agent's name, ``default``, or else an
+echo, ``mock:<agent>:<task>``, which shows the task each agent was sent. The task as sent is
+also on every response an agent step records (``AgentResponse.task``) and in the run's
+``matrix.agent.start`` events, and ``calls`` keeps each ``(agent, task)``.
 
-Type URL: ``matrix.v1.runtime.mock``.
+**MockModelRuntime** (``matrix.v1.model-runtime.mock``) answers any model name. A reply is the
+first of ``responses`` keyed by the whole prompt as sent, ``by_model`` keyed by the model
+name, ``default``, or else the echo ``mock:<model>:<prompt>``; ``calls`` keeps each
+``(model, prompt)``. A request with an ``output`` type gets the reply validated against it,
+as a real model runtime does.
+
+Neither reports a cost: a reported cost is what a provider said, and a mock is not one.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from matrix.domain.agent import AgentResponse
+from matrix.domain.errors import ModelRuntimeError
+from matrix.domain.model_call import ModelCall
+from matrix.domain.template import json_document
 
 if TYPE_CHECKING:
     from matrix.domain.agent import AgentDefinition
+    from matrix.domain.model_call import ModelRequest
 
 
-class MockRuntimeConfig(BaseModel):
+class MockAgentRuntimeConfig(BaseModel):
     """Offline replies, chosen by the first that matches: `responses`, keyed by the whole task
     text as sent (after an agent step fills its placeholders); `by_agent`, keyed by the
     agent's name, so each agent step gets its own reply; `default`; else the echo
@@ -45,9 +55,9 @@ class MockRuntimeConfig(BaseModel):
     family: str = "mock"
 
 
-class MockRuntime:
-    def __init__(self, config: MockRuntimeConfig | None = None) -> None:
-        self._config = config or MockRuntimeConfig()
+class MockAgentRuntime:
+    def __init__(self, config: MockAgentRuntimeConfig | None = None) -> None:
+        self._config = config or MockAgentRuntimeConfig()
         self.calls: list[tuple[str, str]] = []
 
     def check(self, definition: AgentDefinition) -> None:
@@ -68,4 +78,65 @@ class MockRuntime:
             family=self._config.family,
             model=definition.model,
             stop="completed",
+        )
+
+
+class MockModelRuntimeConfig(BaseModel):
+    """Offline replies, chosen by the first that matches: `responses`, keyed by the whole
+    prompt as sent (after a model step fills its placeholders); `by_model`, keyed by the model
+    name a step asks for; `default`; else the echo `mock:<model>:<prompt>`. Any model name is
+    accepted. A step whose `output` kind has a schema needs a reply of that shape, as JSON. A
+    call reports no cost and no finish reason: no provider reported one."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The whole prompt, as sent → reply.
+    responses: dict[str, str] = {}
+    #: Model name → reply, for any prompt that ``responses`` does not match.
+    by_model: dict[str, str] = {}
+    #: Reply for an unmatched prompt and model. ``None`` echoes ``mock:<model>:<prompt>``.
+    default: str | None = None
+    family: str = "mock"
+
+
+class MockModelRuntime:
+    def __init__(self, config: MockModelRuntimeConfig | None = None) -> None:
+        self._config = config or MockModelRuntimeConfig()
+        self.calls: list[tuple[str | None, str]] = []
+
+    def check(self, model: str | None) -> None:
+        """Every model name can be mocked."""
+
+    async def call(self, request: ModelRequest) -> ModelCall:
+        self.calls.append((request.model, request.prompt))
+        config = self._config
+        text = config.responses.get(request.prompt)
+        if text is None and request.model is not None:
+            text = config.by_model.get(request.model)
+        if text is None:
+            text = (
+                config.default
+                if config.default is not None
+                else (f"mock:{request.model or ''}:{request.prompt}")
+            )
+        value = None
+        if request.output is not None:
+            try:
+                value = request.output.model_validate(json_document(text)).model_dump(mode="json")
+            except (LookupError, ValidationError) as e:
+                raise ModelRuntimeError(
+                    f"the mock's reply is not a {request.output.__name__}: {text[:200]!r}",
+                    reason="failed",
+                    fix=f"make the mock's reply one JSON document of a {request.output.__name__}"
+                    " (`responses`, `by_model` or `default`)",
+                    model=request.model,
+                ) from e
+        return ModelCall(
+            text=text,
+            value=value,
+            name=request.model,
+            model=request.model,
+            family=config.family,
+            backend="mock",
+            attempts=1,
         )

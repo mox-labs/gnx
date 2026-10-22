@@ -12,7 +12,7 @@ from matrix import ConfigError, check_type_url, is_type_url, parse_type_url, typ
 from matrix.domain.ids import TypeUrl
 
 VALID = [
-    "matrix.v1.runtime.claude-sdk",
+    "matrix.v1.agent-runtime.claude-sdk",
     "ix.v1.sensor.activation",
     "matrix.v1.agent-response",
     "gnx.dev.v1.source-cache",
@@ -50,8 +50,8 @@ def test_invalid_says_why(url: str, reason: str) -> None:
 
 
 def test_parse_splits_at_the_version_segment() -> None:
-    assert parse_type_url("matrix.v1.runtime.claude-sdk") == TypeUrl(
-        "matrix", "v1", "runtime.claude-sdk"
+    assert parse_type_url("matrix.v1.agent-runtime.claude-sdk") == TypeUrl(
+        "matrix", "v1", "agent-runtime.claude-sdk"
     )
     assert str(parse_type_url("gnx.dev.v1.source-cache")) == "gnx.dev.v1.source-cache"
 

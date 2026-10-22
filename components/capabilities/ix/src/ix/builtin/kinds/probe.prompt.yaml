@@ -1,11 +1,11 @@
 schema: ix.v1.kind
 name: ix.v1.probe.prompt
-summary: One prompt put to an agent session; what the session said and did is what is measured.
+summary: One prompt put to an agent session or a model call; what it said and did is what is measured.
 options:
-  prompt: {type: string, required: true, description: "the text put to the agent; a probe file's body"}
-  collect: {type: list, description: "files of the working directory, read back after the session and kept in the record for sensors to grade"}
+  prompt: {type: string, required: true, description: "the text put to the agent or the model; a probe file's body"}
+  collect: {type: list, description: "files of an agent session's working directory, read back after the session and kept in the record for sensors to grade; a model call writes none"}
   feedback: {type: mapping, description: "for a test-feedback loop: {function_name, test_cases}, the tests whose failures the agent is shown"}
-  mock_response: {type: string, description: "what the mock runtime replies to this probe; any other runtime ignores it"}
-  timeout: {type: duration, description: "how long one session (every round of it) may take before the trial is the subject's failure (overran); 600s when absent"}
-needs: [agent]
+  mock_response: {type: string, description: "what a stand-in runtime (mock) replies to this probe; any other runtime ignores it"}
+  timeout: {type: duration, description: "how long one session (every round of it), or one call, may take before the trial is the subject's failure (overran); 600s when absent"}
+needs: [respondent]
 offers: [response, usage]

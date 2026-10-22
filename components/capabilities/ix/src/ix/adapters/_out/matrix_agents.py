@@ -1,23 +1,27 @@
-"""Agent sessions over matrix's agent runtimes: the ``agent-session`` subject and the
-``prompt`` probe.
+"""Agent sessions over matrix's agent runtimes: the ``agent-session`` subject, and the
+``prompt`` probe, which puts a prompt to whatever answers it.
 
 **A trial is one fresh session in a working directory of its own.** Reaching an
 ``agent-session`` subject makes a new temporary directory outside the experiment, copies the
 subject's ``fixtures`` and ``skills`` into it, runs its ``setup`` command there, and opens a
 :class:`Session`: an agent definition and the runtime that will play it, nothing started yet.
-The target carries the session's handle (``agent``) and its directory (``workdir``), never
-the session itself; the ``prompt`` probe looks the session up by its handle in the
+The target carries the session's handle (``respondent``) and its directory (``workdir``),
+never the session itself; the ``prompt`` probe looks it up by its handle in the
 :class:`Sessions` both were built with. Leaving the subject closes the session and removes
-the directory, however the trial ended.
+the directory, however the trial ended. A ``model-call`` subject
+(:mod:`ix.adapters._out.matrix_calls`) opens a call under a handle the same way, and the
+probe asks either alike: each is a :class:`Respondent`.
 
-**What runs the agent is matrix's.** A session builds its runtime from the registry by name
-(``claude-sdk``, ``model``, ``mock``, or any runtime installed). The subject must name it:
-there is no default, because two of them call a model provider, which is never implicit. The
-runtime takes the subject's options as its config and the working directory as its ``cwd``,
-and the session runs its definition through a :class:`matrix.BoundAgent`, so matrix reports
-each session as ``invoke_agent`` and each tool call it timed as ``execute_tool``; ix adds no
-span of its own for them. A runtime that declares it touches no model (matrix's ``mock``)
-is a stand-in: its trials are marked ``simulated`` and measure the harness, not the subject.
+**What runs the agent is matrix's.** A session builds its runtime from the registry's
+``agent-runtime`` point by name (``claude-sdk``, ``mock``, or any agent runtime installed).
+The subject must name it: there is no default, because a runtime may call a model provider,
+which is never implicit. The runtime takes the subject's ``runtime_options`` as its config,
+as written, and the working directory as its ``cwd``; ix maps no option by a runtime's name,
+and the runtime's own config and ``check`` refuse what it cannot take. The session runs its
+definition through a :class:`matrix.BoundAgent`, so matrix reports each session as
+``invoke_agent`` and each tool call it timed as ``execute_tool``; ix adds no span of its own
+for them. A runtime registered as a stand-in (``stand_in``: matrix's ``mock``) gives canned
+replies: its trials are marked ``simulated`` and measure the harness, not the subject.
 
 **Rounds.** Without a ``loop`` a session is one round: the prompt, and what the agent said
 and did. A ``self-review`` loop asks again with the previous answer until the answer carries
@@ -27,11 +31,11 @@ nothing does. Each round is a fresh session in the same working directory, so a 
 agent wrote is there for the next; tokens, turns and cost are added up over the rounds.
 
 **What validation learns from it.** As a :class:`~ix.domain.ports.Review` the subject
-tells ``validate`` what only it knows: an SDK option written for a subject on another
-runtime, and a session that leaves its sensors nothing to observe (a skill that cannot fire
-because the ``Skill`` tool is not among its ``tools``, a ``model`` runtime asked for tool
-calls, files to collect that no tool can write). As a :class:`~ix.domain.ports.StandIn` it
-puts the session on ``mock`` for a dry run, setting the SDK's options aside.
+tells ``validate`` what only it knows: a runtime option the runtime does not declare,
+plugins for a runtime that mounts none, and a session that leaves its sensors nothing to
+observe (a skill that cannot fire because the activation sensor's tool is not among its
+``tools``, files to collect that no tool can write). As a :class:`~ix.domain.ports.StandIn`
+it puts the session on ``mock`` for a dry run, setting the runtime's own options aside.
 
 **Whose failure.** A session the runtime could not run for reasons that are not the
 agent's (``unavailable``, ``rate_limited``, ``timeout``, ``auth``, ``incapable``: the port's
@@ -53,12 +57,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from glob import glob
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 import matrix
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ix.adapters._out.python_checks import code_in, run_cases
+from ix.domain.errors import IxError
 from ix.domain.kind import fill, placeholders, seconds
 from ix.domain.ports import StoodIn
 from ix.domain.problem import Problem, problem
@@ -84,14 +89,31 @@ SETUP_TIMEOUT_S = 300.0
 #: The largest file a probe collects from the working directory, in bytes.
 COLLECT_LIMIT = 1_000_000
 
-#: The runtime port's reasons that say the agent never had a fair attempt.
+#: The runtime ports' reasons that say the agent or model never had a fair attempt.
 HARNESS_REASONS = frozenset({"unavailable", "rate_limited", "timeout", "auth", "incapable"})
 
-#: Options that configure the Claude Agent SDK runtime and mean nothing to another.
-_SDK_OPTIONS = ("permission_mode", "setting_sources", "plugins", "skills")
+#: matrix's two runtime points: an agent session (a loop and tools) and one model call.
+type Point = Literal["agent-runtime", "model-runtime"]
+AGENT_RUNTIME: Final = "agent-runtime"
+MODEL_RUNTIME: Final = "model-runtime"
 
-#: The runtime a dry run puts a session on: canned replies, nothing spent.
+#: The runtime a dry run puts a subject on, at its own point: matrix's ``mock``, canned
+#: replies, no model called.
 STAND_IN = "mock"
+
+#: The config key under which a stand-in runtime is handed a probe's ``mock_response``: the
+#: reply matrix's mocks give an unmatched task or prompt.
+CANNED = "default"
+
+#: The config key under which a runtime that mounts plugins takes them.
+PLUGINS = "plugins"
+
+#: What a subject's options become in its runtime's config, beside ``runtime_options``.
+RUNTIME_CONFIG = ("runtime_options", PLUGINS)
+
+#: The facet a subject offers its session or call under: the handle a ``prompt`` probe
+#: looks it up by.
+RESPONDENT = "respondent"
 
 #: The tool through which a Claude Code session fires a skill.
 SKILL_TOOL = "Skill"
@@ -117,15 +139,40 @@ TEST_FEEDBACK = (
 
 
 class Runtimes(Protocol):
-    """matrix's agent runtimes, as the composition root hands them over."""
+    """matrix's runtimes, at its two points, as the composition root hands them over. A
+    ``name`` is a runtime's short name at that point (``claude-sdk``) or its type URL."""
 
-    def build(self, name: str, config: Mapping[str, Any], *, cwd: str | None) -> Any:
-        """The runtime registered as ``name`` (``claude-sdk``, or a type URL), built with
-        ``config``; ``cwd`` is where it runs its sessions. Raises ``matrix.MatrixError``."""
+    def build(
+        self, point: Point, name: str, config: Mapping[str, Any], *, cwd: str | None = None
+    ) -> Any:
+        """The runtime registered at ``point`` as ``name``, built with ``config``; ``cwd`` is
+        where an agent runtime runs its sessions. Raises ``matrix.MatrixError``, or ix's
+        ``NotFoundError`` for a name nothing registered there."""
         ...
 
-    def simulated(self, name: str) -> bool:
-        """Whether the runtime ``name`` declares it touches no model: a stand-in."""
+    def stand_in(self, point: Point, name: str) -> bool:
+        """Whether the runtime declares itself a stand-in (``Entry.stand_in``): its replies
+        are canned, not a model's. Raises as :meth:`build` does for an unknown name."""
+        ...
+
+    def takes(self, point: Point, name: str) -> frozenset[str] | None:
+        """The keys the runtime's config declares; an empty set for one that takes no
+        config, None for a name nothing registered there."""
+        ...
+
+
+class Respondent(Protocol):
+    """What a ``prompt`` probe puts its prompt to, by the handle a subject opened it under:
+    an agent :class:`Session`, or a model call."""
+
+    #: Whether a stand-in answers: canned replies, not a model's.
+    simulated: bool
+
+    async def answer(
+        self, prompt: str, options: Mapping[str, Any]
+    ) -> Mapping[str, Mapping[str, Any]]:
+        """Put ``prompt`` and return what was left behind, by facet: ``response`` and
+        ``usage``. ``options`` are the probe's. Raises the runtime's error as it stands."""
         ...
 
 
@@ -150,26 +197,21 @@ class SessionOptions(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    #: Required, with no default: two runtimes call a model provider, so a subject names its
-    #: own.
+    #: Required, with no default: a runtime may call a model provider, so a subject names
+    #: its own.
     runtime: str
     definition: str | None = None
     model: str | None = None
     system_prompt: str | None = None
     tools: tuple[str, ...] | None = None
     max_turns: int | None = Field(default=None, ge=1)
-    permission_mode: str | None = None
-    setting_sources: tuple[str, ...] | None = None
     plugins: tuple[str | dict[str, Any], ...] = ()
     skills: tuple[str, ...] = ()
     fixtures: tuple[str, ...] = ()
     setup: tuple[str, ...] = ()
     loop: Loop | None = None
+    #: The runtime's own config, passed through as written.
     runtime_options: dict[str, Any] = {}
-
-
-def _short(runtime: str) -> str:
-    return runtime.removeprefix("matrix.v1.runtime.")
 
 
 def _within(base: str, path: str) -> Path:
@@ -209,31 +251,14 @@ def _definition(name: str, options: SessionOptions, base: str) -> matrix.AgentDe
 def _runtime_config(
     options: SessionOptions, base: str, *, canned: str | None = None
 ) -> dict[str, Any]:
-    """The runtime's own config: ``runtime_options``, and for ``claude-sdk`` the SDK's
-    options written beside it. Raises ValueError for an SDK option on another runtime."""
+    """The runtime's own config: ``runtime_options`` as written, the ``plugins`` beside
+    them with every path absolute, and for a stand-in the probe's canned reply. The
+    runtime's config schema, and its ``check``, refuse what it cannot take."""
     config = dict(options.runtime_options)
-    runtime = _short(options.runtime)
-    if runtime == "claude-sdk":
-        if options.permission_mode is not None:
-            config["permission_mode"] = options.permission_mode
-        sources = None if options.setting_sources is None else list(options.setting_sources)
-        if options.skills:
-            # The session finds its skills in its own .claude/skills, which it reads as
-            # project settings: nothing else is there to read.
-            sources = sorted({*(sources or ()), "project"})
-        if sources is not None:
-            config["setting_sources"] = sources
-        if options.plugins:
-            config["plugins"] = _plugins(options, base)
-    else:
-        given = [key for key in _SDK_OPTIONS if getattr(options, key) not in (None, ())]
-        if given:
-            raise ValueError(
-                f"{', '.join(given)} {'is an option' if len(given) == 1 else 'are options'} of "
-                f"the claude-sdk runtime, and this subject runs on {runtime}"
-            )
-    if runtime == "mock" and canned is not None:
-        config["default"] = canned
+    if options.plugins:
+        config[PLUGINS] = [*config.get(PLUGINS, ()), *_plugins(options, base)]
+    if canned is not None:
+        config[CANNED] = canned
     return config
 
 
@@ -256,7 +281,8 @@ def _cost(rounds: Sequence[Round]) -> float | None:
 
 @dataclass
 class Session:
-    """One trial's agent: what it is, where it runs, and how it is asked."""
+    """One trial's agent: what it is, where it runs, and how it is asked. A
+    :class:`Respondent`."""
 
     name: str
     runtime: str
@@ -269,8 +295,8 @@ class Session:
     launcher: Launcher
 
     async def _round(self, task: str, canned: str | None) -> matrix.AgentResponse:
-        config = _runtime_config(self.options, self.base, canned=canned)
-        runtime = self.runtimes.build(self.runtime, config, cwd=str(self.workdir))
+        config = _runtime_config(self.options, self.base, canned=canned if self.simulated else None)
+        runtime = self.runtimes.build(AGENT_RUNTIME, self.runtime, config, cwd=str(self.workdir))
         response: matrix.AgentResponse = await matrix.BoundAgent(self.definition, runtime).run(task)
         return response
 
@@ -296,7 +322,7 @@ class Session:
         feedback: Mapping[str, Any] | None = None,
     ) -> list[Round]:
         """Put ``prompt`` to the agent, and again as the loop says. ``canned`` is the reply
-        the ``mock`` runtime gives; ``feedback`` the tests a test-feedback loop runs."""
+        a stand-in runtime gives; ``feedback`` the tests a test-feedback loop runs."""
         loop = self.options.loop
         rounds: list[Round] = []
         task = prompt
@@ -320,23 +346,67 @@ class Session:
                 )
         return rounds
 
+    async def answer(
+        self, prompt: str, options: Mapping[str, Any]
+    ) -> Mapping[str, Mapping[str, Any]]:
+        """``response`` (the prompt, the final text, every tool call, the transcript of
+        every round, how it stopped, the files collected) and ``usage`` (tokens, turns, tool
+        calls, duration and cost added over the rounds, the model and family that answered,
+        and whether a stand-in did)."""
+        canned = options.get("mock_response")
+        rounds = await self.ask(
+            prompt,
+            canned=None if canned is None else str(canned),
+            feedback=options.get("feedback"),
+        )
+        last = rounds[-1].response
+        calls = [call for r in rounds for call in r.response.tool_calls]
+        response = {
+            "prompt": prompt,
+            "text": last.content,
+            "stop": last.stop,
+            "tool_calls": calls,
+            "transcript": _trace(rounds),
+            "files": _collected(self.workdir, options.get("collect")),
+        }
+        tokens_in = sum(r.response.tokens_input for r in rounds)
+        tokens_out = sum(r.response.tokens_output for r in rounds)
+        usage = {
+            "runtime": matrix.agent_runtime_type_url(self.runtime),
+            "model": last.model,
+            "family": last.family,
+            "provider": last.provider,
+            "tokens_input": tokens_in,
+            "tokens_output": tokens_out,
+            "tokens_total": tokens_in + tokens_out,
+            "cost_usd": _cost(rounds),
+            "turns": sum(r.response.num_turns for r in rounds),
+            "tool_calls": len(calls),
+            "duration_ms": sum(r.response.duration_ms for r in rounds),
+            "rounds": len(rounds),
+            "stop": last.stop,
+            "simulated": self.simulated,
+        }
+        return {"response": response, "usage": usage}
+
 
 class Sessions:
-    """The sessions open now, by handle: how a subject and a probe built over the same table
-    share a live session while a target carries only its handle."""
+    """What is open now, by handle: the agent sessions and model calls subjects opened, so
+    that a subject and a probe built over the same table share a live one while a target
+    carries only its handle."""
 
     def __init__(self) -> None:
-        self._open: dict[str, Session] = {}
+        self._open: dict[str, Respondent] = {}
 
-    def open(self, session: Session) -> str:
+    def open(self, respondent: Respondent) -> str:
         handle = uuid.uuid4().hex
-        self._open[handle] = session
+        self._open[handle] = respondent
         return handle
 
     def close(self, handle: str) -> None:
         self._open.pop(handle, None)
 
-    def __getitem__(self, handle: str) -> Session:
+    def __getitem__(self, handle: str) -> Respondent:
         try:
             return self._open[handle]
         except KeyError:
@@ -401,24 +471,39 @@ def _seed(workdir: Path, options: SessionOptions, base: str) -> None:
             _copy(source, into)
 
 
-def _inapplicable(options: SessionOptions, runtime: str, path: str) -> list[Problem]:
-    """An SDK option on a subject that runs on another runtime, which would refuse it."""
-    if runtime == "claude-sdk":
+def _undeclared(options: SessionOptions, takes: frozenset[str] | None, path: str) -> list[Problem]:
+    """A runtime option the runtime's config does not declare, and plugins for a runtime
+    that mounts none: building it would refuse each. ``takes`` is what the runtime's config
+    declares; None for a runtime nothing registered, which the preflight reports."""
+    if takes is None:
         return []
-    given = [key for key in _SDK_OPTIONS if getattr(options, key) not in (None, ())]
-    return [
+    declared = ", ".join(sorted(takes)) or "none"
+    found = [
         problem(
-            f"{path}.{key}",
-            kind="option_inapplicable",
-            message=f"{key} is an option of the claude-sdk runtime, and this subject runs on "
-            f"{runtime}, which would refuse it",
-            fix=f"remove {' and '.join(repr(name) for name in given)}, or run the subject "
-            "on claude-sdk (runtime: claude-sdk)",
-            allowed=("claude-sdk",),
-            got=runtime,
+            f"{path}.runtime_options.{key}",
+            kind="option_unknown",
+            message=f"agent runtime {options.runtime} takes no option {key!r}; its config "
+            f"takes {declared}",
+            fix=f"remove {key!r} or correct its spelling; `matrix describe "
+            f"{matrix.agent_runtime_type_url(options.runtime)}` shows the runtime's config",
+            allowed=tuple(sorted(takes)),
+            got=key,
         )
-        for key in given
+        for key in options.runtime_options
+        if key not in takes
     ]
+    if options.plugins and PLUGINS not in takes:
+        found.append(
+            problem(
+                f"{path}.{PLUGINS}",
+                kind="option_inapplicable",
+                message=f"agent runtime {options.runtime} mounts no plugins: its config takes "
+                f"no {PLUGINS!r}",
+                fix="remove 'plugins', or run the subject on a runtime whose config takes them",
+                got=options.runtime,
+            )
+        )
+    return found
 
 
 def _tools(options: SessionOptions, base: str) -> tuple[tuple[str, ...] | None, str]:
@@ -434,29 +519,20 @@ def _tools(options: SessionOptions, base: str) -> tuple[tuple[str, ...] | None, 
     return (None if loaded.tools is None else tuple(loaded.tools)), "definition"
 
 
-def _unobservable(options: SessionOptions, runtime: str, around: Surroundings) -> list[Problem]:
+def _unobservable(options: SessionOptions, around: Surroundings) -> list[Problem]:
     """A session written so that what the sensors read can never happen: a run of it would
     report a confident verdict on a harness that could not see the agent."""
     path = around.path
     sensors = {sensor.kind: sensor.options for sensor in around.sensors}
     activation = ACTIVATION in sensors
     tools, where = _tools(options, around.base)
+    given = options.runtime_options
+    sources = given.get("setting_sources")
     problems: list[Problem] = []
 
     def unobservable(key: str, message: str, fix: str) -> None:
         problems.append(problem(f"{path}.{key}", kind="unobservable", message=message, fix=fix))
 
-    if runtime == "model":
-        for kind, what in [(ACTIVATION, "a skill fires"), (TOOL_USAGE, "a tool is called")]:
-            if kind in sensors:
-                unobservable(
-                    "runtime",
-                    f"the model runtime makes one call with no tools, and sensor "
-                    f"{kind.rsplit('.', 1)[-1]} reads whether {what}: it never can",
-                    "run the subject on claude-sdk (runtime: claude-sdk)",
-                )
-    if runtime != "claude-sdk":
-        return problems
     skill_tool = str((sensors.get(ACTIVATION) or {}).get("tool") or SKILL_TOOL)
     if (activation or options.skills) and tools is not None and skill_tool not in tools:
         observed = (
@@ -471,13 +547,22 @@ def _unobservable(options: SessionOptions, runtime: str, around: Surroundings) -
             f"add {skill_tool} to tools: [{', '.join([*tools, skill_tool])}], or leave "
             "'tools' out for every tool",
         )
-    if activation and not options.skills and not options.plugins and options.setting_sources == ():
+    if activation and not options.skills and not options.plugins and sources == []:
         unobservable(
-            "setting_sources",
+            "runtime_options.setting_sources",
             "the session reads no settings and is given no skills or plugins, so there is "
             "no skill for the activation sensor to see fire",
             "give the skills under test (skills: [<folder holding SKILL.md>] or plugins: "
             "[<plugin folder>]), or the settings that hold them (setting_sources: [project])",
+        )
+    if options.skills and isinstance(sources, list) and "project" not in sources:
+        unobservable(
+            "runtime_options.setting_sources",
+            "the skills are copied into the session's .claude/skills, which a session reads "
+            f"as its project settings, and setting_sources {sources} leaves project out: "
+            "they can never fire",
+            f"add project: setting_sources: [{', '.join(map(str, [*sources, 'project']))}]; "
+            "the working directory is the trial's own, so nothing else is read with it",
         )
     used = str((sensors.get(TOOL_USAGE) or {}).get("tool") or "")
     if used and tools is not None and used not in tools and "Bash" not in tools:
@@ -488,10 +573,11 @@ def _unobservable(options: SessionOptions, runtime: str, around: Surroundings) -
             f"add {used} (or Bash) to tools, or leave 'tools' out for every tool",
         )
     collecting = [at for at, probe in around.probes if probe.options.get("collect")]
-    if collecting and (tools == () or options.permission_mode == "plan"):
+    planning = given.get("permission_mode") == "plan"
+    if collecting and (tools == () or planning):
         cannot = "may call no tool" if tools == () else "runs in plan mode, which writes nothing"
         unobservable(
-            where if tools == () else "permission_mode",
+            where if tools == () else "runtime_options.permission_mode",
             f"{', '.join(collecting)} collect files the agent writes, and the session "
             f"{cannot}: nothing would be collected",
             "let the session write: give it the tools that write files (Write, Edit, Bash) "
@@ -502,7 +588,7 @@ def _unobservable(options: SessionOptions, runtime: str, around: Surroundings) -
 
 class AgentSessionSubject:
     """A fresh agent session per trial, in a working directory of its own: see the module
-    docstring. Offers ``agent`` (the session's handle) and ``workdir``. A
+    docstring. Offers ``respondent`` (the session's handle) and ``workdir``. A
     :class:`~ix.domain.ports.Review`, a :class:`~ix.domain.ports.Preflight` and a
     :class:`~ix.domain.ports.StandIn`."""
 
@@ -512,28 +598,23 @@ class AgentSessionSubject:
         self._launcher = launcher
 
     def review(self, options: Mapping[str, Any], around: Surroundings) -> list[Problem]:
-        """An option of another runtime, and a session that leaves its sensors nothing to
-        observe; nothing for options of the wrong shape, or filled in per cell."""
+        """A runtime option the runtime does not declare, and a session that leaves its
+        sensors nothing to observe; nothing for options of the wrong shape, or filled in per
+        cell."""
         if any(placeholders(value) for value in options.values()):
             return []
         try:
             parsed = SessionOptions.model_validate(options)
         except ValidationError:
             return []
-        runtime = _short(parsed.runtime)
-        return [
-            *_inapplicable(parsed, runtime, around.path),
-            *_unobservable(parsed, runtime, around),
-        ]
+        takes = self._runtimes.takes(AGENT_RUNTIME, parsed.runtime)
+        return [*_undeclared(parsed, takes, around.path), *_unobservable(parsed, around)]
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
-        """The session on ``mock``: the runtime's own options set aside, the rest kept, so
-        the fixtures, setup, loop and sensors run as they would."""
-        dropped = [
-            key
-            for key in (*_SDK_OPTIONS, "runtime_options")
-            if options.get(key) not in (None, [], (), {})
-        ]
+        """The session on ``mock``: what would be the real runtime's config (its
+        ``runtime_options`` and ``plugins``) set aside, the rest kept, so the fixtures,
+        skills, setup, loop and sensors run as they would."""
+        dropped = [key for key in RUNTIME_CONFIG if options.get(key) not in (None, [], (), {})]
         kept = {key: value for key, value in options.items() if key not in dropped}
         notes = (
             [f"{', '.join(dropped)} set aside: the {STAND_IN} runtime takes none of them"]
@@ -551,7 +632,7 @@ class AgentSessionSubject:
             first = error.errors()[0]
             where = ".".join(str(part) for part in first["loc"])
             return f"{where}: {first['msg']}"
-        if any("{" in str(value) for value in subject.options.values()):
+        if any(placeholders(value) for value in subject.options.values()):
             return None  # filled per cell: told when the trial starts
         named = [*options.fixtures, *options.skills, *filter(None, [options.definition])]
         named += [p if isinstance(p, str) else str(p.get("path", "")) for p in options.plugins]
@@ -572,10 +653,10 @@ class AgentSessionSubject:
         try:
             definition = _definition("preflight", options, base)
             runtime = self._runtimes.build(
-                options.runtime, _runtime_config(options, base), cwd=None
+                AGENT_RUNTIME, options.runtime, _runtime_config(options, base)
             )
             runtime.check(definition)
-        except (matrix.MatrixError, ValidationError, ValueError) as error:
+        except (matrix.MatrixError, IxError, ValidationError, ValueError) as error:
             return str(error)
         return None
 
@@ -585,6 +666,10 @@ class AgentSessionSubject:
             options = _options(subject)
             definition = _definition(name, options, base)
         except (matrix.MatrixError, ValidationError) as error:
+            raise HarnessError("misconfigured", f"{name}: {error}") from error
+        try:
+            stand_in = self._runtimes.stand_in(AGENT_RUNTIME, options.runtime)
+        except IxError as error:
             raise HarnessError("misconfigured", f"{name}: {error}") from error
         workdir = Path(tempfile.mkdtemp(prefix="ix-trial-"))
         try:
@@ -598,7 +683,7 @@ class AgentSessionSubject:
                 workdir=workdir,
                 options=options,
                 base=base,
-                simulated=self._runtimes.simulated(options.runtime),
+                simulated=stand_in,
                 runtimes=self._runtimes,
                 launcher=self._launcher,
             )
@@ -606,7 +691,7 @@ class AgentSessionSubject:
             try:
                 yield Target(
                     subject=name,
-                    facets={"agent": handle, "workdir": str(workdir)},
+                    facets={RESPONDENT: handle, "workdir": str(workdir)},
                     simulated=session.simulated,
                 )
             finally:
@@ -645,11 +730,10 @@ def _trace(rounds: Sequence[Round]) -> list[dict[str, Any]]:
 
 
 class PromptProbe:
-    """Puts the probe's prompt to the session the subject opened, and leaves behind
-    ``response`` (the prompt, the final text, every tool call, the transcript of every
-    round, how it stopped, the files collected) and ``usage`` (tokens, turns, tool calls,
-    duration and cost added over the rounds, the model and family that answered, and
-    whether a stand-in did)."""
+    """Puts the probe's prompt to what the subject opened (an agent session, a model call),
+    by its ``respondent`` handle, and leaves behind what that left: ``response`` and
+    ``usage`` (see :meth:`Session.answer`, and the model call's). The probe's ``timeout``
+    bounds the whole of it."""
 
     def __init__(self, sessions: Sessions) -> None:
         self._sessions = sessions
@@ -661,78 +745,43 @@ class PromptProbe:
         """The probe as it is: a stand-in replies with its ``mock_response``."""
         if options.get("mock_response") is not None:
             return StoodIn(options=options)
-        note = "no mock_response, so the mock runtime replies mock:<subject>:<prompt>"
+        note = "no mock_response, so the mock runtime replies with an echo of the prompt"
         return StoodIn(options=options, notes=(note,))
 
     async def apply(
         self, options: Mapping[str, Any], target: Target, *, seed: int
     ) -> Mapping[str, Mapping[str, Any]]:
-        session = self._sessions[str(target.facets["agent"])]
-        prompt = str(options["prompt"])
-        canned = options.get("mock_response")
+        respondent = self._sessions[str(target.facets[RESPONDENT])]
         limit = _limit(options)
         deadline = asyncio.timeout(limit)
         try:
             async with deadline:
-                rounds = await session.ask(
-                    prompt,
-                    canned=None if canned is None else str(canned),
-                    feedback=options.get("feedback"),
-                )
+                return await respondent.answer(str(options["prompt"]), options)
         except TimeoutError as error:
             if not deadline.expired():
                 raise _owned(error) from error
-            raise SubjectError(
-                "overran", f"the session ran past its time limit of {limit:g}s"
-            ) from error
+            raise SubjectError("overran", f"it ran past its time limit of {limit:g}s") from error
         except Exception as error:
             raise _owned(error) from error
-        last = rounds[-1].response
-        calls = [call for r in rounds for call in r.response.tool_calls]
-        response = {
-            "prompt": prompt,
-            "text": last.content,
-            "stop": last.stop,
-            "tool_calls": calls,
-            "transcript": _trace(rounds),
-            "files": _collected(session.workdir, options.get("collect")),
-        }
-        tokens_in = sum(r.response.tokens_input for r in rounds)
-        tokens_out = sum(r.response.tokens_output for r in rounds)
-        usage = {
-            "runtime": _short(session.runtime),
-            "model": last.model,
-            "family": last.family,
-            "provider": last.provider,
-            "tokens_input": tokens_in,
-            "tokens_output": tokens_out,
-            "tokens_total": tokens_in + tokens_out,
-            "cost_usd": _cost(rounds),
-            "turns": sum(r.response.num_turns for r in rounds),
-            "tool_calls": len(calls),
-            "duration_ms": sum(r.response.duration_ms for r in rounds),
-            "rounds": len(rounds),
-            "stop": last.stop,
-            "simulated": session.simulated,
-        }
-        return {"response": response, "usage": usage}
 
 
 def _limit(options: Mapping[str, Any]) -> float:
-    """How long one session (every round of it) may take: the probe's ``timeout``."""
+    """How long one session (every round of it), or one call, may take: the probe's
+    ``timeout``."""
     return seconds(options.get("timeout")) or SESSION_TIMEOUT_S
 
 
 def _owned(error: BaseException) -> Exception:
     """The trial failure ``error`` is: the harness's for an infrastructure reason or an
-    apparatus fault, the subject's for a session that ran and broke or was refused."""
+    apparatus fault, the subject's for a session or call that ran and broke or was
+    refused."""
     if isinstance(error, HarnessError | SubjectError):
         failure: HarnessError | SubjectError = error
-    elif isinstance(error, matrix.AgentRuntimeError):
+    elif isinstance(error, matrix.AgentRuntimeError | matrix.ModelRuntimeError):
         whose = HarnessError if error.reason in HARNESS_REASONS else SubjectError
         failure = whose(error.reason, str(error))
-    elif isinstance(error, matrix.MatrixError | ValueError):
-        failure = HarnessError("runtime", f"the session's runtime could not be built: {error}")
+    elif isinstance(error, matrix.MatrixError | IxError | ValueError):
+        failure = HarnessError("runtime", f"the runtime could not be built: {error}")
     else:
         failure = HarnessError("error", f"{type(error).__name__}: {error}")
     return failure

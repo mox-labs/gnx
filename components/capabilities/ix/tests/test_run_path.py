@@ -839,9 +839,9 @@ class TestWhatCannotRun:
         kinds = ix.kinds()
         runnable = {schema.short(name) for name in kinds.runnable}
         assert runnable == {
-            "process", "http", "http-load", "timing", "memory", "none", "agent-session", "prompt",
-            "activation", "tool-usage", "function-test", "outcome", "text-match", "usage",
-            "judge",
+            "process", "http", "http-load", "timing", "memory", "none", "agent-session",
+            "model-call", "prompt", "activation", "tool-usage", "function-test", "outcome",
+            "text-match", "usage", "judge",
         }  # fmt: skip
         assert set(kinds.kinds) - set(kinds.runnable) == {
             "ix.v1.probe.inspect-task", "ix.v1.environment.compose",

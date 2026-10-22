@@ -1,8 +1,8 @@
 """Agent evaluations run through the whole path: the registry, the use cases, matrix's
 components and store, and the report.
 
-Every session runs on matrix's ``mock`` runtime or on a scripted runtime registered as a
-third party would register one: nothing here calls a model.
+Every session and call runs on one of matrix's ``mock`` runtimes or on a scripted runtime
+registered as a third party would register one: nothing here calls a model.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from click.testing import CliRunner
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 import ix
 from ix.adapters._in.cli import main
@@ -51,19 +51,30 @@ class Scripted:
         return self.answer(task)
 
 
+class ScriptedConfig(BaseModel):
+    """What the scripted runtime takes: a third party's config, declared as matrix's are."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    family: str = "scripted"
+
+
 def _registry(answer: Callable[[str], matrix.AgentResponse]) -> matrix.Registry:
-    """ix's adapters, matrix's built-ins, and ``acme.v1.runtime.scripted``: a runtime that
-    declares it calls a model, so its trials are measured, not simulated."""
+    """ix's adapters, matrix's built-ins, and ``acme.v1.agent-runtime.scripted``: an agent
+    runtime that is no stand-in, so its trials are measured, not simulated."""
     registry = matrix.default_registry(discover=False)
     register(registry)
 
-    def build() -> Scripted:
+    def build(config: ScriptedConfig) -> Scripted:
         runtime = Scripted()
         runtime.answer = answer
         return runtime
 
-    registry.register("runtime", "acme.v1.runtime.scripted", build, effects={"model"})
+    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
     return registry
+
+
+SCRIPTED = "acme.v1.agent-runtime.scripted"
 
 
 def _routing(tmp_path: Path, **changes: Any) -> Path:
@@ -72,7 +83,7 @@ def _routing(tmp_path: Path, **changes: Any) -> Path:
         "name": "routing",
         "question": "Does the right skill fire?",
         "genre": "evaluate",
-        "subjects": {"catalog": {"kind": "agent-session", "runtime": "acme.v1.runtime.scripted"}},
+        "subjects": {"catalog": {"kind": "agent-session", "runtime": SCRIPTED}},
         "primary": {"metric": "activated_correctly"},
         "threshold": {"op": ">=", "value": 0.5},
         "metrics": ["cost"],
@@ -309,17 +320,179 @@ class TestTheHarnessCannotHideTheAgent:
         assert not (lab / ".ix").exists()
         assert root.validate(_skill_lab(tmp_path / "fixed", tools=["Read", "Skill"])).valid
 
-    def test_an_sdk_option_on_the_mock_runtime_is_a_problem_validate_reports(
+    def test_an_option_the_runtime_does_not_declare_is_a_problem_validate_reports(
         self, tmp_path: Path
     ) -> None:
-        """Regression: validate said valid; only plan and run refused, with a generic fix."""
-        lab = _skill_lab(tmp_path, runtime="mock", permission_mode="bypassPermissions")
+        """Regression: validate said valid; only plan and run refused, with a generic fix.
+        What the runtime takes is read from its registration's config, not its name."""
+        lab = _skill_lab(
+            tmp_path, runtime="mock", runtime_options={"permission_mode": "bypassPermissions"}
+        )
         found = Root(settings=_settings()).validate(lab)
         assert {(p.path, p.kind) for p in found.problems} == {
-            ("subjects.agent.skills", "option_inapplicable"),
-            ("subjects.agent.permission_mode", "option_inapplicable"),
+            ("subjects.agent.runtime_options.permission_mode", "option_unknown"),
         }
-        assert all("remove 'permission_mode' and 'skills'" in p.fix for p in found.problems)
+        (problem,) = found.problems
+        assert "default" in problem.allowed and "permission_mode" not in problem.allowed
+
+
+class Oneshot:
+    """A model runtime a third party registers: one call, answered by ``answer(prompt)``."""
+
+    answer: Callable[[str], str]
+
+    def check(self, model: str | None) -> None:
+        if model not in (None, "one-1"):
+            raise matrix.ConfigError(f"oneshot has no model {model!r}", fix="model: one-1")
+
+    async def call(self, request: matrix.ModelRequest) -> matrix.ModelCall:
+        return matrix.ModelCall(
+            text=self.answer(request.prompt), name="one-1", model="one-1", family="acme",
+            usage=matrix.TokenUsage(input_tokens=12, output_tokens=3), request_id="r-1",
+            latency_ms=40,
+        )  # fmt: skip
+
+
+ONESHOT = "acme.v1.model-runtime.oneshot"
+
+
+def _third_parties() -> matrix.Registry:
+    """ix's adapters, matrix's built-ins, an agent runtime and a model runtime registered
+    under ``acme``, as a third party registers them: neither name means anything to ix."""
+    fires = _fires()
+
+    def judges(task: str) -> matrix.AgentResponse:
+        if "Rubric:" not in task:
+            return fires(task)
+        return matrix.AgentResponse(content='{"score": 0.6}', num_turns=1, family="scripted")
+
+    registry = _registry(judges)
+
+    def build() -> Oneshot:
+        runtime = Oneshot()
+        runtime.answer = lambda prompt: (
+            '{"score": 0.7}' if "Rubric:" in prompt else "BANANA" if "fruit" in prompt else "no"
+        )
+        return runtime
+
+    registry.register("model-runtime", ONESHOT, build)
+    return registry
+
+
+def _either(
+    tmp_path: Path, subject: dict[str, Any], *, routing: bool = False, **changes: Any
+) -> Path:
+    """A text check put to one subject; with ``routing``, the probes carry what an
+    activation sensor reads too."""
+    fired = {"expectation": "must_trigger", "expected_skill": "review"} if routing else {}
+    quiet = {"expectation": "should_not_trigger"} if routing else {}
+    data: dict[str, Any] = {
+        "name": "either",
+        "question": "Does the reply start with BANANA?",
+        "genre": "evaluate",
+        "subjects": {"it": subject},
+        "probes": [
+            {"id": "fruit", "kind": "prompt", "prompt": "Name a fruit.",
+             "truth": {"starts_with": "BANANA", **fired}},
+            {"id": "other", "kind": "prompt", "prompt": "Name a colour.",
+             "truth": {"starts_with": "BANANA", **quiet}},
+        ],
+        "primary": {"metric": "text_matched"},
+        "threshold": {"op": ">=", "value": 0.5},
+        "metrics": ["tokens_total"],
+        "repeats": 5,
+        **changes,
+    }  # fmt: skip
+    folder = tmp_path / "either"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    return folder
+
+
+class TestThirdPartyRuntimes:
+    """Regression (W2.4, W2.5): ix told an agent runtime from a model runtime by name, so a
+    third party's model runtime escaped the no-tools review, and a third party's agent
+    runtime lost the session reviews. Each now gets the review of the port it is
+    registered at, whatever it is called."""
+
+    def test_a_model_runtime_is_a_model_call_and_its_tool_sensors_are_refused(
+        self, tmp_path: Path
+    ) -> None:
+        root = Root(registry=_third_parties(), settings=_settings())
+        call = {"kind": "model-call", "runtime": ONESHOT}
+        lab = _either(tmp_path / "tools", call, routing=True, sensors=[{"kind": "activation"}])
+        found = root.validate(lab)
+        assert {(p.path, p.kind) for p in found.problems} == {("subjects.it.kind", "unobservable")}
+        assert "agent-session" in (found.problems[0].fix or "")
+        # A runtime option its config does not declare: it declares none.
+        lab = _either(tmp_path / "options", {**call, "runtime_options": {"temperature": 0}})
+        (problem,) = root.validate(lab).problems
+        assert (problem.path, problem.kind) == ("subjects.it.runtime_options.temperature",
+                                                "option_unknown")  # fmt: skip
+
+    def test_a_model_call_runs_one_call_per_trial_and_keeps_its_facts(self, tmp_path: Path) -> None:
+        root = Root(registry=_third_parties(), settings=_settings())
+        lab = _either(tmp_path, {"kind": "model-call", "runtime": ONESHOT, "model": "one-1"})
+        assert root.validate(lab).valid and root.plan(lab).runnable
+        report = root.run(lab, exploratory=True)
+        assert report.status == "completed" and report.simulated == "none"
+        (estimate,) = [e for e in report.analysis.estimates if e.metric == "text_matched"]
+        assert estimate.value == pytest.approx(0.5) and estimate.n == 10
+        usage = [row["observations"]["usage"] for row in _rows(report, "ix.v1.interaction")]
+        assert {row["runtime"] for row in usage} == {ONESHOT}
+        assert {(row["request_id"], row["tokens_total"], row["family"]) for row in usage} == {
+            ("r-1", 15, "acme")
+        }
+        assert not any("turns" in row for row in usage)
+        # The model is resolved before anything starts: an unknown one cannot start.
+        unknown = _either(tmp_path / "unknown", {"kind": "model-call", "runtime": ONESHOT,
+                                                 "model": "two-2"})  # fmt: skip
+        assert any("oneshot has no model 'two-2'" in r for r in root.plan(unknown).unstartable)
+
+    def test_an_agent_runtime_gets_the_session_reviews(self, tmp_path: Path) -> None:
+        root = Root(registry=_third_parties(), settings=_settings())
+        (tmp_path / "skills" / "review").mkdir(parents=True)
+        session = {"kind": "agent-session", "runtime": SCRIPTED, "skills": ["skills/review"]}
+        lab = _either(
+            tmp_path, {**session, "tools": [], "runtime_options": {"permission_mode": "plan"}},
+            routing=True, sensors=[{"kind": "activation"}],
+        )  # fmt: skip
+        assert {(p.path, p.kind) for p in root.validate(lab).problems} == {
+            ("subjects.it.tools", "unobservable"),
+            ("subjects.it.runtime_options.permission_mode", "option_unknown"),
+        }
+        fixed = _either(tmp_path, session, routing=True, sensors=[{"kind": "activation"}])
+        assert root.validate(fixed).valid
+
+    def test_each_subject_takes_runtimes_of_its_own_port_only(self, tmp_path: Path) -> None:
+        root = Root(registry=_third_parties(), settings=_settings())
+        on_a_model = _either(tmp_path / "a", {"kind": "agent-session", "runtime": ONESHOT})
+        (said,) = root.plan(on_a_model).unstartable
+        assert said.startswith(f"subjects.it: no agent runtime {ONESHOT!r}")
+        on_an_agent = _either(tmp_path / "m", {"kind": "model-call", "runtime": SCRIPTED})
+        (said,) = root.plan(on_an_agent).unstartable
+        assert said.startswith(f"subjects.it: no model runtime {SCRIPTED!r}")
+
+    def test_a_judge_uses_the_port_its_option_names(self, tmp_path: Path) -> None:
+        root = Root(registry=_third_parties(), settings=_settings())
+
+        def judged(**judge: str) -> list[dict[str, Any]]:
+            lab = _either(
+                tmp_path / "-".join(judge), {"kind": "model-call", "runtime": ONESHOT},
+                sensors=[{"kind": "judge", "rubric": "Helpful.", **judge}],
+                metrics=["judged_score"],
+            )  # fmt: skip
+            report = root.run(lab, exploratory=True)
+            readings = _rows(report, "ix.v1.reading")
+            return [r["detail"]["judge"] for r in readings if r["metric"] == "judged_score"]
+
+        on_a_call = judged(model_runtime=ONESHOT)
+        assert on_a_call and {(j["port"], j["runtime"], j["family"]) for j in on_a_call} == {
+            ("model-runtime", ONESHOT, "acme")
+        }
+        on_a_session = judged(agent_runtime=SCRIPTED)
+        assert on_a_session and {j["port"] for j in on_a_session} == {"agent-runtime"}
+        assert {j["runtime"] for j in on_a_session} == {SCRIPTED}
 
 
 class Hanging(Scripted):
@@ -348,12 +521,14 @@ class TestASessionThatOverrunsItsBudget:
             )
             return runtime
 
-        registry.register("runtime", "acme.v1.runtime.hanging", build, effects={"model"})
+        registry.register("agent-runtime", "acme.v1.agent-runtime.hanging", build)
         data = {
             "name": "hangs",
             "question": "Does the agent answer each question?",
             "genre": "evaluate",
-            "subjects": {"agent": {"kind": "agent-session", "runtime": "acme.v1.runtime.hanging"}},
+            "subjects": {
+                "agent": {"kind": "agent-session", "runtime": "acme.v1.agent-runtime.hanging"}
+            },
             "probes": [
                 {"id": probe, "kind": "prompt", "prompt": f"An {probe} question: say ok.",
                  "timeout": "50ms", "truth": {"contains": "ok"}}
@@ -379,10 +554,16 @@ class TestADryRun:
     """Regression: a dry run needed an edited copy of the experiment."""
 
     def test_the_experiment_as_written_runs_on_stand_ins(self, tmp_path: Path) -> None:
-        lab = _skill_lab(tmp_path, permission_mode="bypassPermissions", setting_sources=["project"])
+        lab = _skill_lab(
+            tmp_path,
+            runtime_options={
+                "permission_mode": "bypassPermissions",
+                "setting_sources": ["project"],
+            },
+        )
         data = yaml.safe_load((lab / "experiment.yaml").read_text())
         data["sensors"] = [
-            {"kind": "judge", "runtime": "model", "rubric": "Did it review the diff?"}
+            {"kind": "judge", "model_runtime": "hardline", "rubric": "Did it review the diff?"}
         ]
         data["metrics"] = ["judged_score"]
         (lab / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
@@ -400,10 +581,33 @@ class TestADryRun:
         assert report.no_verdict == DRY_RUN and report.exit_code == 0
         assert report.trials.carried_out == 18
         assert report.stood_in == (
-            "subjects.agent: permission_mode, setting_sources, skills set aside: the mock "
-            "runtime takes none of them",
+            "subjects.agent: runtime_options set aside: the mock runtime takes none of them",
             "sensors.0: judged on mock, which scores every reply 0.5: the readings say nothing",
         )
+
+    def test_a_model_call_stands_in_on_matrixs_mock_model_runtime(self, tmp_path: Path) -> None:
+        """matrix's own mock model runtime gives each probe's canned reply, at the
+        model-runtime point: no hardline model is resolved or called."""
+        lab = _either(
+            tmp_path,
+            {"kind": "model-call", "runtime": "hardline", "model": "nowhere",
+             "runtime_options": {"temperature": 0}},
+        )  # fmt: skip
+        data = yaml.safe_load((lab / "experiment.yaml").read_text())
+        for probe, reply in zip(data["probes"], ["BANANA split", "Plain"], strict=True):
+            probe["mock_response"] = reply
+        (lab / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+        report = Root(settings=_settings()).run(lab, dry_run=True)
+        assert report.simulated == "all" and report.exit_code == 0
+        assert report.stood_in == (
+            "subjects.it: runtime_options set aside: the mock runtime takes none of them",
+        )
+        (estimate,) = [e for e in report.analysis.estimates if e.metric == "text_matched"]
+        assert estimate.value == pytest.approx(0.5)
+        usage = [row["observations"]["usage"] for row in _rows(report, "ix.v1.interaction")]
+        assert {(row["runtime"], row["backend"], row["simulated"]) for row in usage} == {
+            ("matrix.v1.model-runtime.mock", "mock", True)
+        }
 
     def test_a_subject_with_no_stand_in_is_refused(
         self, compare_data: dict[str, Any], write_experiment: Any
@@ -431,7 +635,7 @@ class TestADryRun:
         assert not (lab / ".ix").exists()
 
     def test_its_report_cannot_be_read_as_evidence(self, tmp_path: Path) -> None:
-        lab = _skill_lab(tmp_path, permission_mode="bypassPermissions")
+        lab = _skill_lab(tmp_path, runtime_options={"permission_mode": "bypassPermissions"})
         result = CliRunner(env={"COLUMNS": "200"}).invoke(main, ["run", str(lab), "--dry-run"])
         assert result.exit_code == 0, result.output
         assert f"none: {DRY_RUN}" in result.stdout
@@ -533,9 +737,7 @@ class TestAJudgesFlags:
         lab = _routing(
             tmp_path,
             metrics=["judged_score"],
-            sensors=[
-                {"kind": "judge", "rubric": "Helpful.", "runtime": "acme.v1.runtime.scripted"}
-            ],
+            sensors=[{"kind": "judge", "rubric": "Helpful.", "agent_runtime": SCRIPTED}],
         )
         report = Root(registry=_registry(answer), settings=_settings()).run(lab, exploratory=True)
         (flag,) = report.flags
@@ -632,7 +834,7 @@ def _cautious_registry(answer: Callable[[str], matrix.AgentResponse]) -> matrix.
         runtime.answer = answer
         return runtime
 
-    registry.register("runtime", "acme.v1.runtime.scripted", build, effects={"model"})
+    registry.register("agent-runtime", SCRIPTED, build)
     return registry
 
 
@@ -788,8 +990,9 @@ class TestTheSecondDrive:
             planned = root.plan(lab)
         assert report.trials.carried_out == 15
         (warning,) = report.warnings
-        assert (warning.path, warning.kind) == ("subjects.catalog.permission_mode", "permissive")
-        assert [w.path for w in planned.warnings] == ["subjects.catalog.permission_mode"]
+        said = "subjects.catalog.runtime_options.permission_mode"
+        assert (warning.path, warning.kind) == (said, "permissive")
+        assert [w.path for w in planned.warnings] == [said]
         assert not [r for r in caplog.records if r.name == matrix.RUNTIME_LOGGER]
         runner = CliRunner(env={"COLUMNS": "200"})
         shown = runner.invoke(main, ["run", str(lab), "--exploratory"])

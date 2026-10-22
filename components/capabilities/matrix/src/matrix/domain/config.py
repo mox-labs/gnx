@@ -1,8 +1,8 @@
 """The ``matrix:`` section of a tool's config, and the container that joins it to the tool's own.
 
-:class:`MatrixConfig` declares a composition: the runtimes, where agent definitions live, the
-agents that bind a definition to a runtime, the observers, the components a run wires, where
-runs are recorded and the limits a run keeps.
+:class:`MatrixConfig` declares a composition: the agent runtimes and the model runtimes, where
+agent definitions live, the agents that bind a definition to an agent runtime, the observers,
+the components a run wires, where runs are recorded and the limits a run keeps.
 ``matrix.composition.compose`` builds it; nothing here does I/O. :class:`Config` pairs that
 section with a tool's own typed section. The matrix README has a complete example.
 """
@@ -20,12 +20,13 @@ C = TypeVar("C", bound=BaseModel)
 
 
 class RuntimeConfig(BaseModel):
-    """One named runtime: a ``type`` plus that runtime's own options.
+    """One named runtime, of either kind: a ``type`` plus that runtime's own options.
 
-    ``type`` is a matrix built-in's short name (``claude-sdk``, ``model``, ``mock``) or the
-    full type URL of a runtime another package registered (``acme.v1.runtime.strands``).
-    Options are validated by the runtime's own typed config, so an unknown option fails
-    naming the runtime.
+    ``type`` is a matrix built-in's short name or the full type URL of a runtime another
+    package registered. Under ``agent_runtimes`` the built-ins are ``claude-sdk`` and
+    ``mock`` (``acme.v1.agent-runtime.strands`` names another's); under ``model_runtimes``
+    they are ``hardline`` and ``mock``. Options are validated by the runtime's own typed
+    config, so an unknown option fails naming the runtime.
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
@@ -79,7 +80,7 @@ class ComponentConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    """Binds a definition to a runtime, with optional inline overrides.
+    """Binds a definition to an agent runtime, with optional inline overrides.
 
     ``definition`` names a loaded definition (defaults to the agent's own key). Any of the
     override fields replace that definition's value. An agent with no loaded definition
@@ -88,6 +89,7 @@ class AgentConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    #: A name under ``agent_runtimes``.
     runtime: str
     definition: str | None = None
     description: str | None = None
@@ -105,7 +107,10 @@ class MatrixConfig(BaseModel):
     #: Directories of agent definitions. Each tier's are kept (yours plus the project's), and
     #: a relative one is read from beside the file that names it.
     definitions: Annotated[tuple[str, ...], Accumulate(), BesideFile()] = ()
-    runtimes: dict[str, RuntimeConfig] = {}
+    #: Agent sessions, with a loop and tools: what ``agents`` bind to.
+    agent_runtimes: dict[str, RuntimeConfig] = {}
+    #: One model call each: what a ``model-step`` names.
+    model_runtimes: dict[str, RuntimeConfig] = {}
     #: Observer extensions to attach: a built-in short name (``console``, ``jsonl``,
     #: ``otel``) or type URL, or ``{type, ...options}`` for one that takes config.
     observers: tuple[str | ObserverConfig, ...] = ()
@@ -122,8 +127,9 @@ class MatrixConfig(BaseModel):
     #: and per-component overrides (:class:`~matrix.domain.executor.Limits`).
     limits: Limits = Limits()
     #: A hardline registry section (``{default?, models: {...}}``) handed to every
-    #: ``type: model`` runtime that does not carry its own. ``None`` = hardline discovers its
-    #: own tiers (``~/.hardline/config.yaml``, ``./hardline.yaml``, ``$HARDLINE_CONFIG``).
+    #: ``type: hardline`` model runtime that does not carry its own. ``None`` = hardline
+    #: discovers its own tiers (``~/.hardline/config.yaml``, ``./hardline.yaml``,
+    #: ``$HARDLINE_CONFIG``).
     models: dict[str, Any] | None = None
 
 

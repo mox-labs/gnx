@@ -1,5 +1,5 @@
-"""The sensors that read an agent session: ``activation``, ``tool-usage``, ``function-test``,
-``outcome``, ``text-match`` and ``usage``.
+"""The sensors that read an agent session or a model call: ``activation``, ``tool-usage``,
+``function-test``, ``outcome``, ``text-match`` and ``usage``.
 
 Each reads what a ``prompt`` probe left behind (the ``response`` and ``usage`` facets: see
 :mod:`ix.adapters._out.matrix_agents`) and the probe's truth, and none calls a model. The
@@ -455,8 +455,9 @@ class TextMatchSensor(_Reads):
 
 
 class UsageSensor(_Reads):
-    """What the session consumed and how it ended, from the ``usage`` facet. A number the
-    runtime did not report is left out (the ``model`` runtime reports no cost)."""
+    """What the session or call consumed and how it ended, from the ``usage`` facet. A
+    number the runtime did not report is left out: a model call reports no cost, and has no
+    turns, tool calls, rounds or ``stop``."""
 
     async def sense(
         self, interaction: Interaction, *, truth: Mapping[str, Any], options: Mapping[str, Any]
@@ -466,12 +467,12 @@ class UsageSensor(_Reads):
             "tokens_total": float(usage["tokens_total"]),
             "tokens_input": float(usage["tokens_input"]),
             "tokens_output": float(usage["tokens_output"]),
-            "turns": float(usage["turns"]),
-            "tool_calls": float(usage["tool_calls"]),
             "duration": float(usage["duration_ms"]),
-            "rounds": float(usage["rounds"]),
-            "hit_limit": usage.get("stop") not in (None, "completed"),
         }
-        if usage.get("cost_usd") is not None:
-            found["cost"] = float(usage["cost_usd"])
+        for metric, key in [("turns", "turns"), ("tool_calls", "tool_calls"),
+                            ("rounds", "rounds"), ("cost", "cost_usd")]:  # fmt: skip
+            if usage.get(key) is not None:
+                found[metric] = float(usage[key])
+        if "stop" in usage:
+            found["hit_limit"] = usage["stop"] not in (None, "completed")
         return found

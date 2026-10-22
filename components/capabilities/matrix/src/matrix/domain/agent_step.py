@@ -18,21 +18,20 @@ Config::
 
     agent: reviewer                       # a composed agent, by name
     inputs: {diff: acme.v1.diff}          # placeholder -> the kind it stands for
-    task: "Review this change:\\n{diff}"   # {placeholder}s; {{ }} for literal braces
+    task: "Review this change:\\n{diff}"   # {placeholder}s, checked against inputs when built
     response: acme.v1.review-reply        # default: matrix.v1.agent-response; one per step
     output: acme.v1.review                # optional: the reply, parsed as one JSON document
 """
 
 from __future__ import annotations
 
-import json
-import re
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
 from matrix.domain.errors import ConfigError, ContractError, NotFoundError
 from matrix.domain.ids import check_type_url
+from matrix.domain.template import check_template, json_document, render
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -44,8 +43,6 @@ if TYPE_CHECKING:
 AGENT_STEP = "matrix.v1.agent-step"
 AGENT_RESPONSE = "matrix.v1.agent-response"
 TASK = "matrix.v1.task"
-
-_FENCED = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
 
 class AgentStepConfig(BaseModel):
@@ -84,6 +81,10 @@ class AgentStep:
                 "template",
                 fix="give a task template with a {placeholder} for each input",
             )
+        if config.task is not None:
+            check_template(
+                config.task, config.inputs, where=f"agent-step task for {config.agent!r}"
+            )
         agent = agents.get(config.agent)
         if agent is None:
             raise NotFoundError(
@@ -100,25 +101,8 @@ class AgentStep:
 
     def render(self, inputs: Mapping[str, tuple[Any, ...]]) -> str:
         """The task text for these rows: one row as itself, several as a JSON list."""
-        values: dict[str, str] = {}
-        for placeholder, kind in self._config.inputs.items():
-            rows = inputs[kind]
-            if not rows:
-                raise ContractError(
-                    f"agent-step for {self._config.agent!r} requires {kind!r}, but its "
-                    "provider handed over no rows",
-                    table=kind,
-                )
-            values[placeholder] = _text(rows[0] if len(rows) == 1 else list(rows))
-        if self._config.task is None:
-            return next(iter(values.values()))
-        try:
-            return self._config.task.format_map(values)
-        except (KeyError, IndexError, ValueError) as e:
-            raise ConfigError(
-                f"agent-step task template for {self._config.agent!r} is invalid: {e}",
-                fix="use {placeholder} for inputs and {{ }} for literal braces",
-            ) from e
+        where = f"agent-step for {self._config.agent!r}"
+        return render(self._config.task, self._config.inputs, inputs, where=where)
 
     async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
         task = self.render(inputs)
@@ -133,26 +117,15 @@ class AgentStep:
         return rows
 
 
-def _text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, BaseModel):
-        return value.model_dump_json(indent=2)
-    if isinstance(value, list):
-        value = [v.model_dump(mode="json") if isinstance(v, BaseModel) else v for v in value]
-    return json.dumps(value, indent=2, default=str)
-
-
 #: How much of a reply a contract error quotes.
 _EXCERPT = 200
 
 
 def _json_result(content: str, kind: str, agent: str) -> Any:
-    for candidate in (content.strip(), *(m.group(1) for m in _FENCED.finditer(content))):
-        try:
-            return json.loads(candidate)
-        except (json.JSONDecodeError, ValueError):
-            continue
+    try:
+        return json_document(content)
+    except LookupError:
+        pass
     excerpt = content.strip()[:_EXCERPT] or "(empty)"
     raise ContractError(
         f"agent {agent!r} was to reply with JSON for {kind} (the step's `output`), but its "

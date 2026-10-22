@@ -62,7 +62,7 @@ def test_the_screen_names_the_probes_that_cannot_discriminate(
 def test_a_flag_is_said_only_when_a_trial_raised_it(
     evaluate_data: dict[str, Any], vocabulary: Vocabulary
 ) -> None:
-    evaluate_data["sensors"] = [{"kind": "judge", "runtime": "mock", "rubric": "Helpful."}]
+    evaluate_data["sensors"] = [{"kind": "judge", "model_runtime": "mock", "rubric": "Helpful."}]
     design = _design(evaluate_data, vocabulary)
     # The judge's flagged metrics are read whenever the judge is in use.
     assert {"judge_in_family", "judge_inconsistent"} <= {m.name for m in design.metrics}

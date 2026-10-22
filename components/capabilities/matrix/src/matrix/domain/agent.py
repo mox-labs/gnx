@@ -2,8 +2,9 @@
 
 * **AgentDefinition** is what the agent *is*: prompt, tools, model, turn bound. Pure data, the
   same shape as a Claude Code agent file, so a plugin's agents are definitions as they stand.
-* **AgentRuntime** (a port) is *where and how* it runs: the Claude Agent SDK, one model call
-  through hardline, a mock. Deployment config lives on the runtime.
+* **AgentRuntime** (a port) is *where and how* it runs: a session with a loop and tools (the
+  Claude Agent SDK, a mock). Deployment config lives on the runtime. One model call is not an
+  agent session: it has its own port, ``ModelRuntime``, and its own step.
 * **BoundAgent** pairs them. The runtime's ``check`` runs at binding, so a definition the
   runtime cannot honour fails at composition, before anything has spent a token.
 
@@ -64,8 +65,8 @@ class AgentDefinition(BaseModel):
     description: str = ""
     #: The text after a definition file's frontmatter (``body``), or given by name.
     system_prompt: str = Field("", validation_alias=AliasChoices("system_prompt", "body"))
-    #: Interpreted by the runtime: an SDK alias or model id for the Claude runtime, a
-    #: hardline registry name for the model runtime. ``None`` = the runtime's default.
+    #: Interpreted by the runtime: an alias or model id for the Claude Agent SDK.
+    #: ``None`` = the runtime's default.
     model: str | None = None
     #: ``None`` = the runtime's default toolset. ``()`` = **no tools**: never collapsed into
     #: the default (see matrix/SECURITY.md M-2).

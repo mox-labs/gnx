@@ -21,12 +21,14 @@ Audience: anyone running ix against an experiment, a genre or a kind they did no
 `run` also **starts**: each `process` subject's `command`, each `process` environment
 service's `command`, `k6` for an `http-load` probe, `ps` for the `memory` sensor, an agent
 session for each trial of an `agent-session` subject (on `claude-sdk`, the Claude Code CLI,
-through the Claude Agent SDK), a subject's `setup` command, and a Python child process for
+through the Claude Agent SDK), a model call for each trial of a `model-call` subject (on
+`hardline`, an HTTP request to the provider its registry names), a subject's `setup`
+command, and a Python child process for
 each `function-test` reading, each `outcome` reading and each round of a `test-feedback`
 loop. And it **sends**: HTTP requests from k6 to each probe's `target`; readiness checks to
 `ready` and `url`; each prompt, and what the session does, to the model provider of the
-session's runtime; each reply and its rubric to the judge's model provider; and spans to
-an OpenTelemetry endpoint when the `OTEL_*` variables name one.
+session's or the call's runtime; each reply and its rubric to the judge's model provider;
+and spans to an OpenTelemetry endpoint when the `OTEL_*` variables name one.
 
 ## Trust boundaries
 
@@ -97,17 +99,24 @@ What ix does to bound it:
 
 An `agent-session` subject on the `claude-sdk` runtime is a Claude Code session with the
 tools its definition allows. Its tools act as the user who runs ix, with ix's environment,
-credentials included, as `permission_mode` allows: `bypassPermissions` approves every tool
-call, and `ix plan` and the run's report say so in their `warnings`, once per subject. Each trial's session starts in a fresh temporary directory, removed when the trial
-ends, but nothing confines a tool to that directory. `setting_sources: []` keeps this
-machine's own settings and plugins out of the session; without it the session reads them.
-The session sees its prompt and the files copied in; it never sees the probe's truth.
+credentials included, as the `permission_mode` in its `runtime_options` allows:
+`bypassPermissions` approves every tool call, and `ix plan` and the run's report say so in
+their `warnings`, once per subject. Each trial's session starts in a fresh temporary
+directory, removed when the trial ends, but nothing confines a tool to that directory.
+`setting_sources: []` in its `runtime_options` keeps this machine's own settings and
+plugins out of the session; without it the session reads them. ix passes a subject's
+`runtime_options` to the runtime as written and grants nothing of its own: what a session
+may do is what that config and its definition say, and the runtime's config schema refuses
+a key it does not declare. The session sees its prompt and the files copied in; it never
+sees the probe's truth.
 
-matrix builds the session and owns its authority: matrix's SECURITY.md has the detail. The
-`model` runtime makes one model call through hardline with no tools, and the `mock` runtime
-calls no model. `ix run --dry-run` puts every session, and a judge, on `mock`, so it calls
-no model; it still copies the fixtures, runs a subject's `setup` command
-and runs the code the sensors run (section 8), as a real run would.
+matrix builds the session and owns its authority: matrix's SECURITY.md has the detail. A
+`model-call` subject makes one model call per trial through a model runtime (`hardline`),
+with no tools and no working directory, and the `mock` runtimes call no model. `ix run
+--dry-run` puts every session, every call and a judge on the `mock` runtime of its port,
+so it calls no model; it still copies the fixtures and skills, runs a subject's `setup`
+command and runs the code the sensors run (section 8), as a real run would. Which runtime
+stands in is what its registration declares (`stand_in`), never read from its name.
 
 ### 8. Code runs in a child process that is not a sandbox
 
@@ -136,8 +145,8 @@ the child is not a sandbox: run ix in a container when that matters.
 
 ### 9. Nothing in ix bounds what a run costs
 
-A session on `claude-sdk` or `model`, and a judge on either, calls a paid model, and ix
-neither estimates what a run will cost nor stops one for what it has cost. What bounds a
+A session on `claude-sdk`, a call on `hardline`, and a judge on either call a paid model,
+and ix neither estimates what a run will cost nor stops one for what it has cost. What bounds a
 run is its shape: the plan's `Trials` is how many sessions it starts (and a judge's
 `repeats` how many calls it makes per trial), and `max_turns` bounds each session. The
 Claude Agent SDK's own `max_budget_usd`, given in a subject's `runtime_options`, ends a

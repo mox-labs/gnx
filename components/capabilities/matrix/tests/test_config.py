@@ -25,23 +25,26 @@ class SampleClientConfig(BaseModel):
 class TestMatrixConfig:
     def test_defaults_compose_nothing(self):
         config = MatrixConfig()
-        assert (config.runtimes, config.agents, config.definitions, config.models) == (
-            {},
-            {},
-            (),
-            None,
-        )
+        assert (
+            config.agent_runtimes,
+            config.model_runtimes,
+            config.agents,
+            config.definitions,
+            config.models,
+        ) == ({}, {}, {}, (), None)
 
     def test_runtime_keeps_its_options_for_the_runtime_to_validate(self):
         config = MatrixConfig.model_validate(
-            {"runtimes": {"sdk": {"type": "claude-sdk", "permission_mode": "plan"}}}
+            {"agent_runtimes": {"sdk": {"type": "claude-sdk", "permission_mode": "plan"}}}
         )
-        assert config.runtimes["sdk"].type == "claude-sdk"
-        assert config.runtimes["sdk"].options() == {"permission_mode": "plan"}
+        assert config.agent_runtimes["sdk"].type == "claude-sdk"
+        assert config.agent_runtimes["sdk"].options() == {"permission_mode": "plan"}
 
     def test_unknown_top_level_key_rejected(self):
         with pytest.raises(ValidationError, match="runtime"):
             MatrixConfig.model_validate({"runtime": {"model": "x"}})
+        with pytest.raises(ValidationError, match="runtimes"):  # agent_ or model_runtimes
+            MatrixConfig.model_validate({"runtimes": {"m": {"type": "mock"}}})
 
     def test_agent_rejects_unknown_field(self):
         with pytest.raises(ValidationError, match="promt"):
@@ -50,7 +53,7 @@ class TestMatrixConfig:
     def test_frozen(self):
         config = MatrixConfig()
         with pytest.raises(ValidationError):
-            config.runtimes = {}
+            config.agent_runtimes = {}
 
 
 # --- Config[C] composition ---
@@ -142,12 +145,13 @@ class TestLoadConfig:
         """A later tier overriding one runtime option keeps that runtime's other options."""
         user = tmp_path / "user.yaml"
         user.write_text(
-            "matrix:\n  runtimes:\n    sdk:\n      type: claude-sdk\n      permission_mode: plan\n"
+            "matrix:\n  agent_runtimes:\n    sdk:\n      type: claude-sdk\n"
+            "      permission_mode: plan\n"
         )
         project = tmp_path / "project.yaml"
-        project.write_text("matrix:\n  runtimes:\n    sdk:\n      cwd: /work\n")
+        project.write_text("matrix:\n  agent_runtimes:\n    sdk:\n      cwd: /work\n")
         config = load_config(SampleClientConfig, client_key="ix", sources=[user, project])
-        assert config.matrix.runtimes["sdk"].options() == {
+        assert config.matrix.agent_runtimes["sdk"].options() == {
             "permission_mode": "plan",
             "cwd": "/work",
         }

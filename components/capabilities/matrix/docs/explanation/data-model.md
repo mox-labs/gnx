@@ -105,12 +105,13 @@ earlier run, by that component, which ends `reused`. A component is reused only 
 completed in that run (`completed` or `reused`; a `stopped` component's rows may be partial),
 its fingerprint is the same, and every component it depends on is reused too: so what it
 was given then is what it would be given now. The fingerprint digests the component's type
-and config and each need it is handed: for an agent step its agent, for another component
-that needs `agents` every agent, and `models` and `cwd` (the process's working directory
-when none was given). An agent counts by its definition, its runtime's config and needs, and
-what the runtime resolved when it was built (the model runtime's registry, whether from
-`matrix.models` or the tiers hardline discovered). Not in it: the code that runs, and a need a
-host adds through `compose(context=)`. A reused component whose
+and config and each need it is handed: for an agent step its agent, for a model step its model
+runtime, for another component that needs `agents` or `model_runtimes` every one of them, and
+`models` and `cwd` (the process's working directory when none was given). An agent counts by
+its definition, its runtime's config and needs, and what the runtime resolved when it was
+built; a model runtime by its config and needs and what it resolved (the hardline runtime's
+registry, whether from `matrix.models` or the tiers hardline discovered). Not in it: the code
+that runs, the payload `schemas`, and a need a host adds through `compose(context=)`. A reused component whose
 rows its kind's schema now refuses ends `failed` and is not run again; what depends on it is
 skipped. Then each row is recorded when its component
 hands it over (`ctx.provide`) or, for what it returns, when it ends.
@@ -153,7 +154,9 @@ One kind per file means one schema per file, so `jq` or DuckDB's `read_json_auto
 table without matrix installed. An agent step's reply rows are `AgentResponse`s that carry
 the task as sent (`task`) beside the reply (`content`), and each `matrix.agent.start` event
 carries it too, so a step that failed before its reply was recorded still shows what it was
-asked. `matrix run` prints these files when the run ends; `matrix runs` lists the runs.
+asked. A model step's reply rows are `ModelCall`s: the prompt as sent (`prompt`), the reply
+(`text`, and `value` for a structured one) and the model that answered, its usage, request
+id, attempts and latency. `matrix run` prints these files when the run ends; `matrix runs` lists the runs.
 
 **While a run is going**, `run.json` says `running`, names the process writing it
 (`writer`: pid and host) and lists each table's file; every table file exists. Each row is one `write` of one whole line to a file opened for

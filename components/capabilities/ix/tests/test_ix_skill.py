@@ -29,6 +29,7 @@ from ix.application.skill import (
     QUICK_START,
     REFERENCES,
     SHAPE_MARK,
+    SKILL_FILE,
     VALUE_FORMS,
 )
 from ix.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT
@@ -456,7 +457,8 @@ class TestTheAgentsReference:
     def test_it_names_every_option_and_metric_of_the_agent_kinds(self) -> None:
         text = " ".join(_reference("agents").split())
         kinds = ix.kinds()
-        for family, name in [("subject", "agent-session"), ("probe", "prompt")]:
+        for family, name in [("subject", "agent-session"), ("subject", "model-call"),
+                             ("probe", "prompt")]:  # fmt: skip
             kind = kinds.get(family, name)
             assert kind is not None
             for option in kind.options:
@@ -485,10 +487,12 @@ class TestTheAgentsReference:
         # says which.
         assert "It is required, with no default" in text and "`option_missing`" in text
         for runtime, calls in [("claude-sdk", "calls a model provider)"),
-                               ("model", "calls a model provider)"),
                                ("mock", "calls no model")]:  # fmt: skip
             assert re.search(rf"`{runtime}` \([^)]*{re.escape(calls)}", text), runtime
-        assert "`judge` asks a model (`runtime`, required with no default" in text
+        assert "one call on the matrix model runtime its `runtime` names" in text
+        assert "`model_runtime` (one model call per reading" in text
+        assert "`agent_runtime` (a one-turn session with no tools per reading" in text
+        assert "and has no default" in text
         assert f"`timeout` ({SESSION_TIMEOUT_S:g}s)" in text and f"`{VERIFIED}`" in text
         for strategy in get_args(Loop.model_fields["strategy"].annotation):
             assert f"strategy: {strategy}" in text, strategy
@@ -499,9 +503,11 @@ class TestTheAgentsReference:
         self, example: str, tmp_path: Path
     ) -> None:
         """The order of work's second step, done to the reference's own examples with no
-        edit: the dry run sets aside what only the real runtime takes."""
+        edit: the dry run sets aside what only the real runtime takes. The skill folders
+        are files the session is given, as the layout shows them, so they are there."""
         lab = tmp_path / example
-        lab.mkdir()
+        (lab / "skills" / "review").mkdir(parents=True)
+        (lab / "skills" / "review" / "SKILL.md").write_text(SKILL_FILE + "\n")
         (lab / "experiment.yaml").write_text(AGENT_EXAMPLES[example])
         report = ix.run(lab, dry_run=True)
         assert report.dry_run and report.simulated == "all" and report.stood_in
@@ -520,6 +526,7 @@ class TestTheAgentsReference:
         data.pop("probes")
         lab = tmp_path / "review-skill"
         (lab / "probes").mkdir(parents=True)
+        (lab / "skills" / "review").mkdir(parents=True)
         (lab / "experiment.yaml").write_text(yaml.safe_dump(data))
         (lab / "probes" / f"{front['id']}.md").write_text(PROBE_FILE + "\n")
         assert ix.validate(lab).valid

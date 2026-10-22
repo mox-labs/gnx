@@ -150,26 +150,51 @@ record of it; what does survive is every row handed over before the kill.
 
 An agent has two owners. What it *is* (its prompt, tools, model and turn bound) belongs to
 whoever wrote it. *Where it runs* (the Claude Agent SDK with a permission mode and a working
-directory, one call through hardline, a mock) belongs to whoever deploys it. matrix keeps
-them apart:
+directory, or a mock) belongs to whoever deploys it. matrix keeps them apart:
 
 - an `AgentDefinition` is the what. It is data, the same shape as a Claude Code agent file, so
   a plugin's `agents/*.md` load as definitions without translation;
-- an `AgentRuntime` is the where. It has two calls: `check(definition)` and
-  `run(definition, task)`;
+- an `AgentRuntime` is the where: a session with a loop and tools. It has two calls:
+  `check(definition)` and `run(definition, task)`;
 - a `BoundAgent` pairs one of each, and calls `check` when it is made.
 
-`check` is how a runtime refuses a definition it would run as a different agent. The `model`
-runtime makes one call with no tool loop, so a definition that declares tools is refused at
-binding, before anything has spent a token, rather than run without them.
+`check` is how a runtime refuses a definition it would run as a different agent, at binding,
+before anything has spent a token. What a runtime can be given is data: its typed config is
+the whole of it, so `claude-sdk` takes `permission_mode`, `setting_sources`, `plugins`,
+`skills` and inline subagents and refuses any other option at its key; and its `check`
+refuses a definition whose tools leave out `Skill` when it has skills, which could then never
+run, and any option the installed SDK's own dataclasses do not have.
 
 A runtime reports how a session ended (`AgentResponse.stop`: `completed`, or the limit it
 reached, such as `max_turns`) and raises `AgentRuntimeError` when the session failed. The
 error's `reason` says whose problem it is (`rate_limited`, `auth`, `incapable`, ...) so a
 harness can keep an infrastructure failure out of an agent's score.
 
-`compose(config)` builds runtimes, loads definitions and binds agents from a `matrix:` config
-section, and returns a `Container`. Composition makes no model call and no tool call.
+`compose(config)` builds agent and model runtimes, loads definitions and binds agents from a
+`matrix:` config section, and returns a `Container`. Composition makes no model call and no
+tool call.
+
+### A model call is not an agent session
+
+One call to one model (a triage, an extraction, a judge) has no loop, no tools and no turns,
+so it is not played on an agent runtime. It has its own port, `ModelRuntime`, with two calls:
+`check(model)`, which resolves the model name when a step is built, so an unknown one is a
+`config` problem before anything runs; and `call(request)`, which returns a `ModelCall`. The
+record carries what the runtime reports of the call that answered: the model that answered
+(a fallback may make it differ from the one asked for, and `fallback_from` says so), usage
+with cache tokens, the request id, attempts, retries and latency. A fact the runtime does not
+report stays empty rather than being filled with a constant: a call has no `num_turns`, and
+its `finish_reason` and `refusal` are empty until hardline reports them.
+
+The two ports are separate because their contracts differ. A runtime that makes one call
+cannot honour a definition with tools; behind one port its `check` would refuse what another
+runtime of the same port accepts, and its replies would carry turns and a stop reason it
+never had. A caller that can use either, as a judge can, names which port it wants.
+
+Each port has its own registry point (`agent-runtime`, `model-runtime`) and its own config
+section (`agent_runtimes`, `model_runtimes`). An agent binds only to an agent runtime. The
+mocks of both declare `stand_in`, so a caller can tell canned answers from a model's without
+reading anything into a runtime's name or effects.
 
 ### An agent as a component
 
@@ -179,20 +204,29 @@ their rows are rendered into a task template. It provides the agent's `AgentResp
 the kind `response` names and, when its config names an `output` kind, the JSON the agent
 returned as one row of that kind. The executor validates that row against the kind's schema
 like any other, so an agent that does not return the promised structure breaks its contract
-and the run says so. The wiring knows nothing about agents.
+and the run says so. The wiring knows nothing about agents. A task template's placeholders
+are checked against its inputs when the step is built.
+
+`matrix.v1.model-step` is the same for one model call. It names a model runtime and a model,
+renders its prompt from its inputs, and provides the `ModelCall`, with the prompt as sent,
+under its `response` kind. With an `output` kind that has a registered schema, it asks the
+runtime for that structure, which hardline validates and repairs; the row is the validated
+reply.
 
 ## One registry for every extension
 
-The `Registry` holds **extension points** (`runtime`, `component`, `payload-type`,
-`observer`, `store`; other packages add their own, named under their own root, as ix adds
+The `Registry` holds **extension points** (`agent-runtime`, `model-runtime`, `component`,
+`payload-type`, `observer`, `store`; other packages add their own, named under their own root, as ix adds
 `ix.sensor`) and the **entries** registered at each, keyed by type URL. An entry carries
 what a caller, human or agent, needs to decide whether to use it:
 
 - `config`: the pydantic model its settings validate against;
-- `needs`: shared things composition hands it (`agents`, `models`, `cwd`, and for a
-  component its own `name`), declared rather than guessed from field names;
+- `needs`: shared things composition hands it (`agents`, `model_runtimes`, `schemas`,
+  `models`, `cwd`, and for a component its own `name`), declared rather than guessed from
+  field names;
 - `effects`: what it may touch (`network`, `subprocess`, `filesystem`, `model`). `None` means
   unknown, which is never read as "none";
+- `stand_in`: whether it stands in for the real thing, as the mock runtimes do;
 - `summary`, `stability` and `origin` (the package that registered it).
 
 Every extension, matrix's built-ins included, is found the same way: an entry point in the
@@ -213,7 +247,8 @@ both. Install order never decides.
 each through the registry, and wires them.
 
 Because entries declare their effects, a wiring can say what it may touch. `Container.wire`
-records each component's effects (an `agent-step` has its agent's runtime's), and
+records each component's effects (an `agent-step` has its agent's runtime's, a `model-step`
+its model runtime's), and
 `Wiring.declared_effects()` is their union, or `None` when any component's effects are
 unknown.
 

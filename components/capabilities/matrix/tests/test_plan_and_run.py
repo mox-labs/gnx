@@ -18,7 +18,7 @@ from matrix.adapters._in.cli import main
 #: A config that runs offline: one agent step on the mock runtime.
 CONFIG = """\
 matrix:
-  runtimes:
+  agent_runtimes:
     offline: {type: mock, default: '{"verdict": "ok"}'}
   agents:
     reviewer: {runtime: offline, system_prompt: "Review the change.", model: m1}
@@ -88,7 +88,8 @@ def test_the_plan_counts_an_agent_call_for_each_attempt_on_claude_sdk(
     code, plan, _ = _cli(capsys, "plan", "--json")
     assert code == 0
     assert (plan["agent_calls_min"], plan["agent_calls_max"]) == (1, 3)
-    assert "model" in plan["runtimes"][0]["effects"]
+    (runtime,) = plan["agent_runtimes"]
+    assert "model" in runtime["effects"] and runtime["stand_in"] is False
 
 
 def test_plan_reports_every_problem_at_once(
@@ -96,14 +97,14 @@ def test_plan_reports_every_problem_at_once(
 ) -> None:
     """S14: a bad runtime type and an agent naming a runtime that is not there, together."""
     (project / "matrix.yaml").write_text(
-        "matrix:\n  runtimes:\n    m: {type: nope}\n"
+        "matrix:\n  agent_runtimes:\n    m: {type: nope}\n"
         "  agents:\n    a: {runtime: zz, system_prompt: hi}\n"
     )
     code, _, err = _cli(capsys, "plan", "--json")
     error = json.loads(err)["error"]
     assert code == 3 and error["complete"] is True
     assert [p["path"] for p in error["problems"]] == [
-        "matrix.runtimes.m.type",
+        "matrix.agent_runtimes.m.type",
         "matrix.agents.a.runtime",
     ]
     assert all(p["source"] == str(project / "matrix.yaml") for p in error["problems"])
@@ -190,8 +191,8 @@ def test_without_json_each_problem_is_printed_with_its_own_fix(
     )
     code, _, err = _cli(capsys, "plan")
     assert code == 3
-    assert "matrix.components.again.config.response: agent steps again, review" in err
-    assert "    fix: give each agent step its own `response:` kind" in err
+    assert "matrix.components.again.config.response: steps again, review" in err
+    assert "    fix: give each step its own `response:` kind" in err
 
 
 def test_describe_says_which_models_each_runtime_takes(
@@ -199,14 +200,20 @@ def test_describe_says_which_models_each_runtime_takes(
 ) -> None:
     """Regression: no model names were discoverable from ``describe`` or the skill."""
     described = {
-        name: matrix.describe_extension(f"matrix.v1.runtime.{name}").entries[0].config or {}
-        for name in ("claude-sdk", "model", "mock")
+        url: matrix.describe_extension(f"matrix.v1.{url}").entries[0].config or {}
+        for url in (
+            "agent-runtime.claude-sdk",
+            "agent-runtime.mock",
+            "model-runtime.hardline",
+            "model-runtime.mock",
+        )
     }
-    claude = described["claude-sdk"]
+    claude = described["agent-runtime.claude-sdk"]
     assert all(alias in claude["description"] for alias in ("`haiku`", "`sonnet`", "`opus`"))
     assert "max_budget_usd" in claude["properties"]
-    assert "hardline registry" in described["model"]["description"]
-    assert "by_agent" in described["mock"]["properties"]
+    assert "hardline registry" in described["model-runtime.hardline"]["description"]
+    assert "by_agent" in described["agent-runtime.mock"]["properties"]
+    assert "by_model" in described["model-runtime.mock"]["properties"]
     assert "`sonnet`" in matrix.skill() and "`sonnet`" in matrix.skill("agents")
 
 
@@ -348,12 +355,12 @@ def test_a_permissive_runtime_is_a_warning_inside_the_documents(
         code, document, err = _cli(capsys, command, "--json")
         assert code == 0, command
         (warning,) = document["warnings"]
-        assert warning["path"] == "matrix.runtimes.offline.permission_mode", command
+        assert warning["path"] == "matrix.agent_runtimes.offline.permission_mode", command
         assert (warning["kind"], warning["got"]) == ("permissive", "bypassPermissions")
         assert "bypassPermissions" not in err, (command, err)
     monkeypatch.setattr(claude_sdk, "_LOGGED", set())
     code, _, err = _cli(capsys, "check")
-    assert "warning: matrix.runtimes.offline.permission_mode" in err
+    assert "warning: matrix.agent_runtimes.offline.permission_mode" in err
     assert err.count("without per-call confirmation") == 1, err
 
 

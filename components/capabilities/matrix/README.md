@@ -11,11 +11,14 @@ and runs what a config declares from the command line: `matrix plan`, then `matr
 - A run is **recorded as it goes**. A component can hand a row over while it is still
   running, and the row is on disk before that call returns. A run that is killed leaves
   everything it had recorded, readable, with a status.
-- An **agent** is a definition (prompt, tools, model) bound to a runtime (Claude Agent SDK,
-  one model call through hardline, or a mock). The binding is checked when it is made, and
-  `matrix.v1.agent-step` runs an agent as an ordinary component.
-- One **registry** holds every extension: runtimes, components, payload types, observers,
-  stores. matrix's built-ins arrive through the same `matrix.extensions` entry point as
+- An **agent** is a definition (prompt, tools, model) bound to an agent runtime: a session
+  with a loop and tools (the Claude Agent SDK, or a mock). The binding is checked when it is
+  made, and `matrix.v1.agent-step` runs an agent as an ordinary component.
+- A **model call** is one request to one model, with no loop and no tools, on a model runtime
+  (hardline, or a mock). `matrix.v1.model-step` makes one an ordinary component, and records
+  the model that answered, its usage and its request id.
+- One **registry** holds every extension: agent and model runtimes, components, payload
+  types, observers, stores. matrix's built-ins arrive through the same `matrix.extensions` entry point as
   anyone else's.
 - One **loader** reads every document matrix reads, and any YAML or markdown document you
   name a pydantic type for, reporting every problem with its key path and its file.
@@ -29,7 +32,7 @@ uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.6.0#subdirectory=
 
 matrix is installed from its repository at the release's tag; it is not on a package index,
 and `pip install matrix` installs an unrelated project. The extras are `claude` (the Claude
-Agent SDK runtime), `models` (the model runtime, through hardline) and `otel` (the
+Agent SDK agent runtime), `models` (the hardline model runtime) and `otel` (the
 OpenTelemetry SDK and OTLP exporters). Add one the same way,
 `uv add "matrix[otel] @ git+https://github.com/mox-labs/gnx@matrix-v0.6.0#subdirectory=components/capabilities/matrix"`,
 or to an installed tool with `uv tool install --with "matrix[otel] @ git+..." <tool>`.
@@ -232,7 +235,7 @@ from matrix import MatrixConfig, compose
 
 config = MatrixConfig.model_validate(
     {
-        "runtimes": {"offline": {"type": "mock", "default": '{"verdict": "ok"}'}},
+        "agent_runtimes": {"offline": {"type": "mock", "default": '{"verdict": "ok"}'}},
         "agents": {
             "reviewer": {"runtime": "offline", "system_prompt": "Review the change."},
         },
@@ -272,42 +275,50 @@ comes from `./matrix.yaml` (or the `matrix:` section of any tool's config), read
 ```yaml
 matrix:
   definitions: [agents/]                 # *.md agent files, Claude Code format
-  models:                                # a hardline registry, for `type: model` runtimes
+  models:                                # a hardline registry, for `type: hardline` runtimes
     default: qwen3-8b
     models:
       qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
                  model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
-  runtimes:
+  agent_runtimes:                        # sessions, with a loop and tools
     sdk:     {type: claude-sdk, permission_mode: default, setting_sources: []}
-    local:   {type: model}
     offline: {type: mock}
+  model_runtimes:                        # one model call each
+    local:   {type: hardline}
   observers:                             # optional
     - console
     - {type: jsonl, path: runs/events.jsonl}
   agents:
     reviewer: {runtime: sdk}                                    # agents/reviewer.md
-    triage:   {runtime: local, definition: reviewer, tools: []} # same prompt, no tools
     greeter:  {runtime: offline, system_prompt: "Say hello."}   # fully inline
   inputs: [acme.v1.diff]                 # the kinds whoever runs this supplies
   components:                            # wired by what they require and provide
     - name: review
       type: matrix.v1.agent-step
       config: {agent: reviewer, inputs: {diff: acme.v1.diff}, output: acme.v1.review}
+    - name: triage                       # one call, no tools
+      type: matrix.v1.model-step
+      config: {runtime: local, model: qwen3-8b, inputs: {diff: acme.v1.diff},
+               prompt: "Is this change risky? Answer yes or no.\n{diff}"}
 ```
 
 `container.wire()` with no arguments wires what the config lists.
 
-Two agent steps in one run each name their own `response` kind: a kind has one provider, and
-the default, `matrix.v1.agent-response`, serves one step. A step with `output` needs the
-reply to be one JSON document, so say so in the agent's prompt or the task. An agent's
-`model` is the runtime's to read: on `claude-sdk` an alias (`haiku`, `sonnet`, `opus`) or a
-full model id; on `model`, a hardline registry name. The `mock` runtime replies by the whole
-task as sent (`responses`), then by agent name (`by_agent`), then `default`
-(`matrix --skill -r agents` has the detail).
+Two steps in one run each name their own `response` kind: a kind has one provider, and each
+default (`matrix.v1.agent-response`, `matrix.v1.model-call`) serves one step. An agent step
+with `output` needs the reply to be one JSON document, so say so in the agent's prompt or the
+task; a model step asks its runtime for the kind's registered schema when there is one. An
+agent's `model` is its runtime's to read: on `claude-sdk` an alias (`haiku`, `sonnet`,
+`opus`) or a full model id. A model step's `model` is a hardline registry name, checked when
+the step is built. The `mock` runtimes are stand-ins (`stand_in` in the catalog and the
+plan); the agent one replies by the whole task as sent (`responses`), then by agent name
+(`by_agent`), then `default` (`matrix --skill -r agents` has the detail).
 
-A runtime that cannot honour a definition refuses it at composition: the `model` runtime makes
-one call with no tool loop, so an agent bound to it that declares tools is a `ConfigError`,
-not a quiet downgrade.
+Each runtime refuses what it cannot play before anything runs (`matrix check` and `matrix
+plan` say so), with the fix: an agent bound
+to a model runtime (a call has no loop and no tools), a model name hardline cannot resolve, a
+`claude-sdk` agent whose tools leave out `Skill` when the runtime gives it skills, an option
+the installed SDK lacks. Nothing is quietly downgraded.
 
 ## Extending
 
@@ -347,7 +358,7 @@ default JSONL under `.matrix/runs`) and its `limits` (deadlines, concurrency, re
 Plan it, then run it:
 
 ```bash
-matrix plan --json                                  # order of work, effects, agents, agent calls; runs nothing
+matrix plan --json                                  # order of work, effects, agents, calls; runs nothing
 matrix run --input acme.v1.diff=diffs.jsonl --json  # one JSON row a line; - is standard input
 matrix runs                                         # every recorded run: id, status, start, where
 matrix run --from 20261019T101500Z-3f2a             # its inputs, reusing what completed unchanged
@@ -356,11 +367,11 @@ matrix run live.yaml --only --input acme.v1.diff=diffs.jsonl  # recorded in its 
 ```
 
 `plan` composes and wires and reports every problem at once, each with its key path and the
-file that set it, and how many agent calls a run makes (`agent_calls_min`,
-`agent_calls_max`). matrix states no cost and keeps no spending ceiling: a run's cost is not
+file that set it, and how many agent sessions and model calls a run makes
+(`agent_calls_min`, `agent_calls_max`, `model_calls_min`, `model_calls_max`). matrix states no cost and keeps no spending ceiling: a run's cost is not
 something it can measure, so it does not pretend to. `run` prints the run id, where the record is, and its
 files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as
-sent), `matrix.v1.ledger.jsonl` and `events.jsonl`. Each reply row keeps its tokens, and the cost
+sent, a model step's the prompt), `matrix.v1.ledger.jsonl` and `events.jsonl`. Each reply row keeps its tokens, and the cost
 the runtime reported when it reported one (`cost_usd`), as facts of that session. From
 Python it is `compose(load_config()).run(inputs)`, and
 `plan_config(tool="matrix", config=None, *, only=False)` the plan: the first argument is the

@@ -6,7 +6,7 @@
       "name": "domain",
       "files": ["src/matrix/domain/*.py"],
       "allow": ["__future__", "asyncio", "collections", "contextlib", "contextvars", "copy",
-                "dataclasses", "datetime", "inspect", "json", "logging", "re", "time",
+                "dataclasses", "datetime", "inspect", "json", "logging", "re", "string", "time",
                 "typing", "uuid", "pydantic", "matrix.domain"],
       "forbid": ["opentelemetry", "yaml", "claude_agent_sdk", "hardline"]
     },
@@ -15,6 +15,7 @@
       "files": ["src/matrix/domain/ports/**/*.py"],
       "allow": ["__future__", "dataclasses", "typing", "collections",
                 "matrix.domain.agent", "matrix.domain.construct", "matrix.domain.executor",
+                "matrix.domain.model_call",
                 "matrix.domain.observer", "matrix.domain.problems"],
       "forbid": ["opentelemetry", "yaml"]
     },
