@@ -911,6 +911,33 @@ def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     assert not set(own.values()) & set(agreed.values())
 
 
+class _Bar:
+    def __init__(self) -> None:
+        self.stopped = False
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+@pytest.mark.parametrize("raised", [RuntimeError("a defect"), KeyboardInterrupt()])
+def test_the_progress_bar_stops_however_the_run_ends(
+    raised: BaseException, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: only an ``IxError`` stopped the bar, so a defect or a Ctrl-C outside the
+    run printed its envelope over a live display."""
+    import ix.adapters._in.cli as cli
+
+    bar = _Bar()
+    monkeypatch.setattr(cli, "_progress", lambda as_json: (None, bar))
+
+    def fails(*_: Any, **__: Any) -> Any:
+        raise raised
+
+    monkeypatch.setattr(ix, "run", fails)
+    CliRunner().invoke(main, ["run", "lab"])
+    assert bar.stopped
+
+
 class TestStandardInputAndWarnings:
     def test_a_dash_reads_the_experiment_from_standard_input(
         self, compare_data: dict[str, Any]

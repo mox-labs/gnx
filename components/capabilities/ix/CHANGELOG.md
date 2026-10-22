@@ -329,6 +329,8 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   rounds, or a model call, read "the runtime could not be built", including a runtime's
   own check of its reply. Only building and binding the runtime is that (`runtime`); any
   other error is the harness's `error`, named by its type.
+- **`ix run`'s progress bar stops however the run ends.** Only an ix error stopped it, so a
+  defect or a Ctrl-C outside the run printed over a live display.
 
 ## 0.5.0 — 2026-10-19
 

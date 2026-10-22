@@ -918,8 +918,11 @@ def run(path: str, exploratory: bool, dry_run: bool, repeats: int | None, as_jso
         if bar is not None:
             bar.stop()
         _fail(error, as_json=as_json)
-    if bar is not None:
-        bar.stop()
+    finally:
+        # However the run ended: a defect or a stop outside the run must not print over a
+        # live display.
+        if bar is not None:
+            bar.stop()
     _finish(report, as_json, path)
 
 
