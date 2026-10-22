@@ -59,3 +59,8 @@
 - The mock backend's docstring said it echoed the last user message; it echoes the first, and keys `responses` on the last user turn, else the first. Its `request_id` is the row's call ordinal counted from 1, computed as such rather than read from the counter after the reply was picked.
 - **A schema repair goes on from the row that answered.** Each `extract` attempt restarted the fallback chain at the requested row, so when a fallback had answered, the repair asked the primary that had just failed again, paid its retries again, and could mix two models' replies in one conversation.
 - **`extract` finds the answer after bracketed prose.** A reply such as `Answer [1] below: {...}` had `[1]` taken as the answer and the valid object discarded, which cost a repair turn. Every balanced value that parses as JSON is now tried against the schema in turn.
+
+### Checks
+
+- The layer test reads `layers.json` with the workspace's shared checker, and plants a violation
+  derived from every rule of the map beside its own.
