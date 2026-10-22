@@ -110,6 +110,12 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 - `AgentResponse` gains `transcript`, `cache_read_tokens`, `cache_write_tokens`,
   `finish_reason` and `native_finish_reason` (the SDK's `stop_reason`, read in the model
   call's vocabulary) and `session_id`, which the `claude-sdk` runtime fills.
+- **`drives`** on a registry entry: the distributions it drives, by their installed names,
+  declared at registration (`register(..., drives=("claude-agent-sdk",))`) and shown by
+  `matrix catalog --json` and `matrix describe`. `claude-sdk` drives `claude-agent-sdk`, the
+  `hardline` model runtime `hardline`. A tool that records the versions behind a run reads it,
+  rather than keeping a table of runtime names. Optional: an entry that does not say drives
+  nothing it declares.
 - **`stand_in`** on a registry entry, declared at registration (`register(..., stand_in=True)`)
   and shown by `matrix catalog`, `matrix describe` and the plan's runtimes. Both mocks
   declare it, so a caller can tell canned answers from a model's without inferring it from

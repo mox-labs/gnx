@@ -59,6 +59,8 @@ class CatalogEntry(_Document):
     effects: list[str] | None
     #: Whether it stands in for the real thing: a mock's canned answers, not a model's.
     stand_in: bool = False
+    #: The distributions it drives, by their installed names.
+    drives: list[str] = []
     #: Whether it takes a config (``matrix describe`` shows the schema).
     configurable: bool
 
@@ -86,6 +88,7 @@ class ExtensionDescription(_Document):
     needs: list[str]
     effects: list[str] | None
     stand_in: bool = False
+    drives: list[str] = []
     #: The JSON schema its config must meet; None when it takes none.
     config: dict[str, Any] | None
 
@@ -263,6 +266,7 @@ def catalog(point: str | None = None, *, registry: Registry | None = None) -> Ca
             needs=sorted(e.needs),
             effects=_effects(e),
             stand_in=e.stand_in,
+            drives=list(e.drives),
             configurable=e.config is not None,
         )
         for e in registry.entries(point)
@@ -300,6 +304,7 @@ def describe_extension(type_url: str, *, registry: Registry | None = None) -> Ex
                 needs=sorted(e.needs),
                 effects=_effects(e),
                 stand_in=e.stand_in,
+                drives=list(e.drives),
                 config=None if e.config is None else e.config.model_json_schema(),
             )
             for e in matches

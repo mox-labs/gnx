@@ -796,6 +796,7 @@ declare their own with `add_point`, named under their own root (ix declares `ix.
 | `stability` | `"stable" \| "beta" \| "experimental"` | default `beta` |
 | `origin` | `str` | the distribution that registered it; `(direct)` for a direct call |
 | `stand_in` | `bool` | whether it stands in for the real thing (the mock runtimes): its answers are canned, not a model's. Declared, never inferred from `effects`. Default `False` |
+| `drives` | `tuple[str, ...]` | the distributions it drives, by their installed names: `claude-sdk` drives `claude-agent-sdk`, the `hardline` model runtime `hardline`. What a record of the versions behind a run reads, rather than a table of runtime names. Default `()` |
 
 `entry.describe()` returns all of it as a JSON-ready dict, with `config` as a JSON schema.
 
@@ -810,7 +811,7 @@ called with the registry, and anything it raises, importing included, quarantine
 | Method | Signature | Behaviour |
 |--------|-----------|-----------|
 | `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point; with `port`, a Protocol whatever is registered there must keep |
-| `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta", stand_in=False) -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
+| `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta", stand_in=False, drives=()) -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
 | `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the first line of the model's docstring |
 | `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
 | `entries` | `(point=None) -> list[Entry]` | Sorted by point, then type URL |
@@ -1350,7 +1351,7 @@ tier; `UsageError` when there are none).
 
 | Function | Record (`schema`) | Raises |
 |----------|-------------------|--------|
-| `catalog(point=None, *, registry=None)` | `Catalog` (`matrix.v1.catalog`): `entries` (point, type_url, summary, stability, origin, needs, effects, stand_in, configurable) and `failures` (extension, origin, error) | `UsageError` when `point` is not a declared point, with the points in `details["allowed"]` |
+| `catalog(point=None, *, registry=None)` | `Catalog` (`matrix.v1.catalog`): `entries` (point, type_url, summary, stability, origin, needs, effects, stand_in, drives, configurable) and `failures` (extension, origin, error) | `UsageError` when `point` is not a declared point, with the points in `details["allowed"]` |
 | `describe_extension(type_url, *, registry=None)` | `Extensions` (`matrix.v1.extension`): one entry per point it is registered at, with its `config` JSON schema | `NotFoundError` listing the registered type URLs |
 | `config_sources(tool="matrix", config=None, *, only=False)` | `ConfigSources` (`matrix.v1.config-sources`): `sources`, lowest priority first | `ConfigError` |
 | `config_view(tool="matrix", config=None, *, only=False)` | `ConfigView` (`matrix.v1.config`): `tool`, `sources`, the merged `matrix` section | `ConfigError` |

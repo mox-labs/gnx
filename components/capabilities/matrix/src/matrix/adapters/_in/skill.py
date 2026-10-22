@@ -333,7 +333,8 @@ package's own namespace (`acme` owns `acme.*`):
 - A runtime registers at `agent-runtime` or `model-runtime` and is held to that point's port
   (`check` and async `run`; `check` and async `call`) when it is registered and when it is
   built: one that lacks a member is a `config` error naming it. A mock declares
-  `stand_in=True`.
+  `stand_in=True`; a runtime over a package declares it as `drives=("<distribution>",)`, so a
+  tool can record that package's version (`matrix catalog --json` shows it).
 - An extension that fails to import or register is quarantined: its entries are dropped,
   the others load, and `matrix catalog` lists it as `FAILED`.
 

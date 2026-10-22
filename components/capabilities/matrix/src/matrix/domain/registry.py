@@ -86,6 +86,9 @@ class Entry:
     origin: str = "(direct)"
     #: Whether it stands in for the real thing: a mock's canned answers, not a model's.
     stand_in: bool = False
+    #: The distributions it drives, by their installed names (``claude-agent-sdk``): what a
+    #: record of the versions behind a run reads, rather than a table of runtime names.
+    drives: tuple[str, ...] = ()
 
     def describe(self) -> dict[str, Any]:
         """A JSON-ready description: what an agent reads to decide whether to use it."""
@@ -98,6 +101,7 @@ class Entry:
             "needs": sorted(self.needs),
             "effects": None if self.effects is None else sorted(self.effects),
             "stand_in": self.stand_in,
+            "drives": list(self.drives),
             "config": None if self.config is None else self.config.model_json_schema(),
         }
 
@@ -169,6 +173,7 @@ class Registry:
         summary: str = "",
         stability: Stability = "beta",
         stand_in: bool = False,
+        drives: tuple[str, ...] | list[str] = (),
     ) -> Registry:
         """Register ``build(config, **needs)`` (or ``build(**needs)`` when untyped).
 
@@ -224,6 +229,7 @@ class Registry:
             stability=stability,
             origin=self._origin,
             stand_in=stand_in,
+            drives=tuple(drives),
         )
         return self
 

@@ -152,6 +152,7 @@ def register(registry: Registry) -> None:
         needs={"cwd"},
         effects={"model", "network", "subprocess", "filesystem"},
         summary="Claude Agent SDK sessions: tools, multiple turns, plugins, skills, subagents",
+        drives=("claude-agent-sdk",),
     )
     registry.register(
         AGENT_RUNTIME,
@@ -171,6 +172,7 @@ def register(registry: Registry) -> None:
         needs={"models"},
         effects={"model", "network"},
         summary="One model call through hardline, in any model family it has a row for",
+        drives=("hardline",),
     )
     registry.register(
         MODEL_RUNTIME,

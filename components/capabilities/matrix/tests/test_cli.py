@@ -18,6 +18,7 @@ from matrix import (
     ErrorKind,
     MatrixError,
     Problem,
+    Registry,
     StoreError,
     discover_sources,
     load_config,
@@ -119,6 +120,21 @@ def test_catalog_lists_built_ins_as_json(capsys: pytest.CaptureFixture[str]) -> 
     urls = {e["type_url"] for e in data["entries"]}
     assert {"matrix.v1.agent-runtime.mock", "matrix.v1.agent-step"} <= urls
     assert data["failures"] == []
+
+
+def test_a_runtime_says_which_distribution_it_drives(capsys: pytest.CaptureFixture[str]) -> None:
+    """A tool that records the versions behind a run (ix's manifest) reads which package
+    each runtime drives from its entry, not from a table of runtime names. Optional: an
+    entry that does not say drives nothing it declares."""
+    code, data, _ = _cli(capsys, "catalog", "--json")
+    drives = {e["type_url"]: e["drives"] for e in data["entries"]}
+    assert drives["matrix.v1.agent-runtime.claude-sdk"] == ["claude-agent-sdk"]
+    assert drives["matrix.v1.model-runtime.hardline"] == ["hardline"]
+    assert drives["matrix.v1.agent-runtime.mock"] == []
+    code, data, _ = _cli(capsys, "describe", "matrix.v1.agent-runtime.claude-sdk", "--json")
+    assert data["entries"][0]["drives"] == ["claude-agent-sdk"]
+    registry = Registry().register("component", "acme.v1.thing", object)
+    assert registry.entry("component", "acme.v1.thing").drives == ()
 
 
 def test_describe_shows_the_config_schema(capsys: pytest.CaptureFixture[str]) -> None:
