@@ -62,8 +62,8 @@ succeed, or `null` when there is none.
 | 5 | `rate_limit`, `timeout`, `unavailable` | retry later, after `retry_after` seconds if set |
 | 6 | `auth` | stop and tell the operator the key was rejected |
 
-The runtime has already spent the row's retries and fallbacks before exit 5, so an immediate
-retry is unlikely to help.
+The runtime has already spent the row's retries and fallbacks, or reached its `limits`, before
+exit 5, so an immediate retry is unlikely to help.
 
 ## Choosing a model
 

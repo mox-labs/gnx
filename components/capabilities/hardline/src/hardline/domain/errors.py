@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from hardline.domain.types import Attempt, Usage
+    from hardline.domain.types import Attempt, Limit, Usage
 
 #: Why a provider call failed, in terms a caller can act on (cf. Google AIP-193's
 #: machine-readable reason). The first three are transient: the same call may succeed later.
@@ -54,6 +54,9 @@ class BackendError(HardlineError):
     #: and the usage those calls reported (an ``extract`` repair that answered included).
     attempt_log: tuple[Attempt, ...] = ()
     usage: Usage | None = None
+    #: Set by the runtime when one of the call's ``limits`` stopped it, naming which; None when
+    #: the call ran out of retries and fallbacks, or failed outright.
+    limit: Limit | None = None
 
     def __init__(
         self, message: str, *, reason: Reason = "unknown", retry_after: float | None = None
@@ -91,6 +94,7 @@ class SchemaError(HardlineError):
         attempts: int,
         attempt_log: tuple[Attempt, ...] = (),
         usage: Usage | None = None,
+        limit: Limit | None = None,
     ) -> None:
         super().__init__(message)
         self.last_text = last_text
@@ -99,3 +103,5 @@ class SchemaError(HardlineError):
         #: Every backend call made, and the usage they reported: what the failure cost.
         self.attempt_log = attempt_log
         self.usage = usage
+        #: The one of the call's ``limits`` that stopped the repairs; None when they ran out.
+        self.limit = limit

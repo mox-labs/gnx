@@ -52,7 +52,28 @@ Fields: `backend`, `model`, `family` (required) · `base_url` · `api_key` (`env
 `local` · `structured` (`prompt` | `json_object` | `json_schema`) · `max_tokens` · `temperature` ·
 `timeout_s` · `retries` (transient failures only, default 2, full-jitter backoff, honours a
 provider's Retry-After) · `fallbacks` (distinct registry names tried once retries are spent) ·
-`options` (the backend's own; see [Built-in backends](#built-in-backends)).
+`limits` (bounds on a call, below) · `options` (the backend's own; see
+[Built-in backends](#built-in-backends)).
+
+**A call has its own bound.** One `extract` can make (schema repairs + 1) × the sum over its
+chain of (`retries` + 1) backend calls, each paid for in tokens and each up to `timeout_s` long.
+`limits` bounds the whole call, every retry, fallback and repair included, and is unset by
+default:
+
+```yaml
+models:
+  haiku:
+    # ... the row's other fields
+    limits:
+      attempts: 4      # backend calls, at most
+      seconds: 300     # wall time from the call's start; a running attempt is cut when it passes
+      tokens: 20000    # input + output tokens reported, checked between calls
+```
+
+The row asked for sets the bounds; a fallback's own `limits` apply only when it is asked for by
+name. A call a limit stops raises what it would have raised anyway, with `limit` set to the bound
+that stopped it (`attempts`, `seconds` or `tokens`): a `BackendError` with the last failure's
+reason (`timeout` when a running attempt was cut), or, between schema repairs, a `SchemaError`.
 
 **Where a row sends is in the row.** A row with no `base_url` is given its backend's default
 when the runtime is composed (`https://api.openai.com/v1`, `https://api.anthropic.com`), so

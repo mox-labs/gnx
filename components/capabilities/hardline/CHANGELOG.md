@@ -17,6 +17,8 @@
 - A `BackendError` the runtime raises carries `attempt_log` and `usage`, and a `SchemaError` too: what the failed call cost.
 - **`ModelRuntime.aclose()`, and `async with runtime`.** Either closes the connections that the backends opened in the running event loop. The runtime stays usable afterwards. A backend that holds connections defines its own async `aclose()`, which the runtime calls; a backend without one is left alone.
 
+- **A call has its own bound: `limits`.** A row may set `limits: {attempts, seconds, tokens}`, which bound a call that asks for it across every retry, fallback and schema repair: backend calls, wall time from the call's start (a running attempt is cut when it passes, and a wait for a retry that would pass it is not started), and tokens reported. Each is unset by default. A call a limit stops raises the error it would have raised, with `limit` naming the bound; the message names the setting (`limits.attempts=4`). New export: `CallLimits`.
+
 ### Changed (breaking)
 
 - **No provider SDK.** Both wire protocols are spoken directly over httpx2: `openai-compat` (chat completions) and `anthropic` (the Messages API). hardline depends on pydantic, pyyaml and httpx2 only; the `openai` and `anthropic` packages are no longer installed with it.

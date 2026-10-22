@@ -4,8 +4,9 @@ Everything a provider library does on the wire (HTTP, auth headers) stays in the
 What is policy lives here, once: a registry lookup that fails with the legal names; retries
 of transient failures with exponential backoff and jitter; fallback to other registry rows
 when a model stays unavailable; a contract check on what the backend returned; schema
-validation with bounded repair; and a Completion carrying the family, usage and latency of
-the model that actually answered.
+validation with bounded repair; the call's own limits on attempts, wall time and tokens
+across all of these; and a Completion carrying the family, usage and latency of the model that
+actually answered.
 
 Retry and fallback are separate mechanisms, as in most model libraries: a retry asks the
 same model again after a transient failure; a fallback asks a different model once retries
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
     from hardline.domain.ports._out.backend import ModelBackend
     from hardline.domain.ports._out.secrets import SecretResolver
     from hardline.domain.registry import ModelRegistry
+    from hardline.domain.types import Limit
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -247,7 +249,10 @@ class ModelRuntime:
         started = self._clock()
         log: list[Attempt] = []
         answer = await self._call(
-            spec, lambda s: self._request(s, turns, None, max_tokens, temperature), log
+            spec,
+            lambda s: self._request(s, turns, None, max_tokens, temperature),
+            log,
+            started=started,
         )
         return self._completion(
             spec, answer, log, attempts=1, retries=answer.retries, started=started
@@ -287,13 +292,26 @@ class ModelRuntime:
         # from two models in one conversation.
         position = 0
         for _ in range(self._schema_retries + 1):
+            reached = self._limit_reached(spec, started, log) if attempts else None
+            if reached is not None:
+                limit, setting = reached
+                raise SchemaError(
+                    f"model {spec.name!r} did not produce a valid {output.__name__}, and "
+                    f"{setting} stopped the repairs after {attempts} attempt(s): {last_error}",
+                    last_text=last_text,
+                    validation=last_error,
+                    attempts=attempts,
+                    attempt_log=tuple(log),
+                    usage=_total(log),
+                    limit=limit,
+                )
             attempts += 1
             sent = tuple(turns)
 
             def build(s: ModelSpec, sent: tuple[Message, ...] = sent) -> Request:
                 return self._request(s, sent, schema, max_tokens, temperature)
 
-            answer = await self._call(spec, build, log, start=position)
+            answer = await self._call(spec, build, log, started=started, start=position)
             position = answer.position
             retries += answer.retries
             last_text = answer.raw.text
@@ -342,12 +360,15 @@ class ModelRuntime:
         build: Callable[[ModelSpec], Request],
         log: list[Attempt],
         *,
+        started: float,
         start: int = 0,
     ) -> _Answer:
         """One logical call: retries on ``spec``, then each fallback, until one answers.
 
         ``start`` skips the rows of the chain before it. Each backend call is appended to
-        ``log``; a BackendError raised from here carries it.
+        ``log``; a BackendError raised from here carries it. ``spec.limits``, counted from
+        ``started`` over ``log``, stops the call before a retry or a fallback that would pass
+        them, and cuts an attempt that outlives ``limits.seconds``.
         """
         retries = 0
         last: BackendError | None = None
@@ -358,8 +379,27 @@ class ModelRuntime:
             request = build(candidate)
             for attempt in range(candidate.retries + 1):
                 attempt_started = self._clock()
+                deadline = asyncio.timeout(self._remaining(spec, started))
                 try:
-                    raw = await self._attempt(candidate, request)
+                    async with deadline:
+                        raw = await self._attempt(candidate, request)
+                except TimeoutError:
+                    if not deadline.expired():
+                        raise  # the backend's own, not the call's limit
+                    log.append(
+                        Attempt(
+                            name=candidate.name,
+                            reason="timeout",
+                            latency_ms=self._ms_since(attempt_started),
+                        )
+                    )
+                    cut = BackendError(
+                        f"model {candidate.name!r}: no reply before the call's "
+                        f"{self._setting(spec, 'seconds')} passed",
+                        reason="timeout",
+                    )
+                    reached: tuple[Limit, str] = ("seconds", self._setting(spec, "seconds"))
+                    raise self._stopped(spec, reached, cut, log) from None
                 except BackendError as e:
                     log.append(
                         Attempt(
@@ -372,9 +412,14 @@ class ModelRuntime:
                         _logged(e, log)
                         raise
                     last = e
-                    if attempt < candidate.retries:
+                    retrying = attempt < candidate.retries
+                    delay = self._delay(attempt, e.retry_after) if retrying else 0.0
+                    if retrying or position < len(chain) - 1:
+                        stop = self._limit_reached(spec, started, log, wait=delay)
+                        if stop is not None:
+                            raise self._stopped(spec, stop, e, log) from e
+                    if retrying:
                         retries += 1
-                        delay = self._delay(attempt, e.retry_after)
                         logger.info(
                             "model %r: %s; retry %d/%d in %.2fs",
                             candidate.name,
@@ -412,6 +457,47 @@ class ModelRuntime:
             retry_after=last.retry_after,
         )
         raise _logged(exhausted, log) from last
+
+    def _limit_reached(
+        self, spec: ModelSpec, started: float, log: Sequence[Attempt], *, wait: float = 0.0
+    ) -> tuple[Limit, str] | None:
+        """The first of ``spec.limits`` the call has reached, or would reach by waiting
+        ``wait`` seconds first, with its setting as written (``limits.attempts=3``)."""
+        limits = spec.limits
+        if limits.attempts is not None and len(log) >= limits.attempts:
+            return "attempts", self._setting(spec, "attempts")
+        if limits.seconds is not None and self._clock() - started + wait >= limits.seconds:
+            return "seconds", self._setting(spec, "seconds")
+        used = _total(log)
+        if limits.tokens is not None and used.input_tokens + used.output_tokens >= limits.tokens:
+            return "tokens", self._setting(spec, "tokens")
+        return None
+
+    @staticmethod
+    def _setting(spec: ModelSpec, limit: Limit) -> str:
+        return f"limits.{limit}={getattr(spec.limits, limit):g}"
+
+    def _remaining(self, spec: ModelSpec, started: float) -> float | None:
+        """Seconds left of the call's ``limits.seconds``; None when it sets none."""
+        if spec.limits.seconds is None:
+            return None
+        return max(0.0, spec.limits.seconds - (self._clock() - started))
+
+    @staticmethod
+    def _stopped(
+        spec: ModelSpec, reached: tuple[Limit, str], last: BackendError, log: Sequence[Attempt]
+    ) -> BackendError:
+        """The error for a call one of its limits stopped: the last failure's reason, so a
+        transient one is still retryable later, and the limit named."""
+        limit, setting = reached
+        stopped = BackendError(
+            f"model {spec.name!r}: {setting} stopped the call after {len(log)} backend "
+            f"call(s). Last: {last}",
+            reason=last.reason,
+            retry_after=last.retry_after,
+        )
+        stopped.limit = limit
+        return _logged(stopped, log)
 
     def _ms_since(self, started: float) -> int:
         return int((self._clock() - started) * 1000)

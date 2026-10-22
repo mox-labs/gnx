@@ -54,6 +54,31 @@ class Message(BaseModel):
     content: str
 
 
+#: The bounds a ``CallLimits`` can set, by key.
+Limit = Literal["attempts", "seconds", "tokens"]
+
+
+class CallLimits(BaseModel):
+    """Bounds on one logical call: a ``complete`` or ``extract``, with every retry, fallback and
+    schema repair it makes. Each is unset by default, which leaves the call bounded only by its
+    chain: (schema repairs + 1) x the sum over the chain of (retries + 1) backend calls.
+
+    The row asked for sets the bounds of the whole call; a fallback's own ``limits`` apply only
+    to a call that asks for the fallback by name.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Backend calls, at most: every retry, fallback and schema repair counts one.
+    attempts: int | None = Field(default=None, ge=1)
+    #: Wall time from the call's start, in seconds. An attempt still running when it passes is
+    #: cut, and a wait for a retry that would pass it is not started.
+    seconds: float | None = Field(default=None, gt=0)
+    #: Tokens reported (input and output), summed over the call's backend calls. Checked
+    #: between calls, so the call that crosses it completes; a failed call reports none.
+    tokens: int | None = Field(default=None, ge=1)
+
+
 class ModelSpec(BaseModel):
     """One registry row: a model is configuration, not a class.
 
@@ -82,6 +107,8 @@ class ModelSpec(BaseModel):
     #: failure. Never on a bad key or a malformed request — those are faults to fix, and
     #: another model would hide them. The Completion names the model that answered.
     fallbacks: tuple[str, ...] = ()
+    #: Bounds on a call that asks for this row, across its retries, fallbacks and repairs.
+    limits: CallLimits = CallLimits()
     options: dict[str, Any] = {}
 
     @field_validator("api_key")
