@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, get_args
 
 from pydantic import BaseModel, ValidationError
 
-from recon.domain.archives import EVENT_LOG_NAME
+from recon.domain.archives import EVENT_LOG_NAME, table_name
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
@@ -41,6 +41,9 @@ IGNORED_KEY_PREFIX = "_"
 RESERVED_OUTPUT_NAMES = frozenset(
     name.removesuffix(".jsonl") for name in (CAPTURE_LOG_NAME, EVENT_LOG_NAME)
 )
+
+#: What an output name may not hold: it is the stem of one file in the archive.
+_NOT_IN_A_FILE_NAME = ("/", "\\", "..")
 
 #: pydantic's error types, as problem kinds; a type error not listed is ``wrong_shape`` when
 #: its name says the value had the wrong type, else ``invalid_value``.
@@ -147,14 +150,15 @@ def build_plan(
     unchecked = _unparsed_names(raw.get("catalog"), catalog) if not sources_whole else set()
 
     runs: list[PlannedRun] = []
-    produced_by: dict[str, int] = {}
+    produced_by: dict[str, tuple[int, str]] = {}
     used_sources: set[str] = set()
     for i, entry in entries:
         ctype = plugins.collector_types.get(entry.type)
         problems.extend(_entry_problems(i, entry, catalog, plugins, unchecked))
         for source, output in fan_out(entry, catalog):
             problems.extend(_output_problems(i, output, produced_by))
-            produced_by.setdefault(output, i)
+            for key in _table_keys(output):
+                produced_by.setdefault(key, (i, output))
             if source is not None:
                 used_sources.add(source.name)
             if ctype is not None:
@@ -468,10 +472,28 @@ def _unknown_type(at: str, name: str, plugins: Plugins) -> Problem:
     return Problem(f"{at}.type", message, kind="name_unknown", fix=fix, got=name, allowed=installed)
 
 
-def _output_problems(i: int, output: str, produced_by: Mapping[str, int]) -> list[Problem]:
+def _table_keys(output: str) -> tuple[str, str]:
+    """What two outputs may not share: the name SQL knows the table by, which ignores case,
+    and the table's file name as a filesystem that ignores case sees it (macOS's default)."""
+    return f"view:{table_name(output).lower()}", f"file:{output.casefold()}"
+
+
+def _output_problems(
+    i: int, output: str, produced_by: Mapping[str, tuple[int, str]]
+) -> list[Problem]:
     at = f"collectors.{i}.name"
     problems = []
-    if output in RESERVED_OUTPUT_NAMES:
+    if any(part in output for part in _NOT_IN_A_FILE_NAME):
+        problems.append(
+            Problem(
+                at,
+                f"output {output!r} is not one file name: it names the table's file in the "
+                f"archive, so it holds no {', no '.join(_NOT_IN_A_FILE_NAME)}",
+                fix="rename the collector (or, for an output <collector>-<source>, the source)",
+                got=output,
+            )
+        )
+    if output.casefold() in RESERVED_OUTPUT_NAMES:
         problems.append(
             Problem(
                 at,
@@ -481,13 +503,27 @@ def _output_problems(i: int, output: str, produced_by: Mapping[str, int]) -> lis
                 got=output,
             )
         )
-    if output in produced_by:
+    taken = next((produced_by[key] for key in _table_keys(output) if key in produced_by), None)
+    if taken is not None and taken[1] == output:
         problems.append(
             Problem(
                 at,
-                f"output {output}.jsonl is also produced by collectors.{produced_by[output]}",
+                f"output {output}.jsonl is also produced by collectors.{taken[0]}",
                 kind="name_taken",
                 fix="rename one of the two collectors so each output is unique",
+                got=output,
+            )
+        )
+    elif taken is not None:
+        problems.append(
+            Problem(
+                at,
+                f"output {output!r} would be one table with the output of collectors.{taken[0]} "
+                f"({taken[1]!r}): SQL knows both as {table_name(output)}, ignoring case, and a "
+                "filesystem that ignores case (macOS's) would keep one file of the two",
+                kind="name_taken",
+                fix="rename one of the two collectors so the names differ in more than case and "
+                "in more than the characters that are not a letter, a digit or _",
                 got=output,
             )
         )

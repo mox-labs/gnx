@@ -224,7 +224,7 @@ Three JSONL files in the latest archive, one per collector. The `probe` collecto
 
 ## Stage 5 — Query
 
-DuckDB reads JSONL natively. Table names derive from filenames (hyphens become underscores). Query the latest archive:
+DuckDB reads JSONL natively. Table names derive from filenames, every character but a letter, digit or `_` becoming `_` (hyphens become underscores). Query the latest archive:
 
 ```bash
 recon query dep-releases "SELECT tag, published FROM tokio ORDER BY published DESC LIMIT 5"

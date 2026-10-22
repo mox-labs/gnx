@@ -32,17 +32,11 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from recon.adapters._out.archive_files import is_empty_table, table_files
-from recon.domain.archives import Rows
+from recon.domain.archives import Rows, table_name
 from recon.domain.errors import NotFoundError, Problem, QueryError
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-_NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
-
-
-def table_name(stem: str) -> str:
-    return _NOT_IDENTIFIER.sub("_", stem)
 
 
 def _confine(conn: Any, readable: Path) -> None:

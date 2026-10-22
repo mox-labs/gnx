@@ -431,12 +431,13 @@ def _archive_tables(document: recon.StatusDocument) -> list[Table]:
 def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
     """Query a mission's latest archive, or the one --archive names, with SQL (DuckDB).
 
-    Each table is a view named after its file (hyphens become underscores). The output
-    names the archive the rows came from. An older archive's table, or a table's raw lines,
-    is read by its file: read_json_auto('<archive dir>/<table>.jsonl') for an earlier
-    archive, read_ndjson_objects(...) for each line as JSON text, and WITH ORDINALITY after
-    either for each row's line number in the file. Read one archive's file: a glob across
-    archives numbers all its files' lines as one, and their columns can differ.
+    Each table is a view named after its file, every character but a letter, digit or _
+    becoming _ (oa-works is oa_works); SQL ignores its case. The output names the archive
+    the rows came from. An older archive's table, or a table's raw lines, is read by its
+    file: read_json_auto('<archive dir>/<table>.jsonl') for an earlier archive,
+    read_ndjson_objects(...) for each line as JSON text, and WITH ORDINALITY after either
+    for each row's line number in the file. Read one archive's file: a glob across archives
+    numbers all its files' lines as one, and their columns can differ.
 
     \b
     recon query my-scan "SELECT title, year FROM s2_search LIMIT 10"

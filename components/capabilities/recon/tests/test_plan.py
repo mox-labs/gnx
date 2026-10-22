@@ -143,7 +143,64 @@ class TestEveryProblemWithAPath:
         )
         assert "also produced by collectors.0" in _paths(plan)["collectors.1.name"]
 
-    @pytest.mark.parametrize("name", ["captures", "telemetry"])
+    @pytest.mark.parametrize(
+        ("first", "second", "view"),
+        [("a-b", "a_b", "a_b"), ("Foo", "foo", "Foo"), ("oa.works", "OA-works", "oa_works")],
+    )
+    def test_outputs_that_would_be_one_table_are_a_problem(self, registry, first, second, view):
+        """Regression: ``a-b`` and ``a_b`` are one view to SQL, which turns every character
+        but a letter, digit or ``_`` into ``_``; ``Foo`` and ``foo`` are one view, since SQL
+        ignores case, and one file on macOS. Both pairs planned valid, then one table's rows
+        were read as the other's, or overwrote them, and the survey said ok."""
+        plan = _plan(
+            {
+                "collectors": [
+                    {"name": first, "type": "cli", "run": "true"},
+                    {"name": second, "type": "cli", "run": "true"},
+                ]
+            },
+            registry,
+        )
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.1.name", "name_taken")
+        assert problem.got == second
+        assert f"collectors.0 ({first!r})" in problem.message
+        assert view.lower() in problem.message.lower()
+
+    def test_a_fanned_out_output_that_would_be_one_table_with_another_is_a_problem(self, registry):
+        plan = _plan(
+            {
+                "catalog": [{"name": "Repo", "type": "local", "url": "/tmp"}],
+                "collectors": [
+                    {"name": "scan", "type": "cli", "run": "true"},
+                    {"name": "scan-repo", "type": "cli", "source": "Repo", "run": "true"},
+                ],
+            },
+            registry,
+        )
+        assert "collectors.0 ('scan-Repo')" in _paths(plan)["collectors.1.name"]
+
+    @pytest.mark.parametrize("name", ["bad/name", "../x", "..", "a..b", "back\\slash"])
+    def test_an_output_name_that_is_not_one_file_name_is_a_problem(self, registry, name):
+        """Regression: ``bad/name`` planned valid and its table failed as ``unknown`` for
+        want of a directory; ``../x`` wrote outside the archive."""
+        plan = _plan({"collectors": [{"name": name, "type": "cli", "run": "true"}]}, registry)
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.0.name", "invalid_value")
+        assert problem.got == name
+
+    def test_a_source_name_that_makes_an_output_not_one_file_name_is_a_problem(self, registry):
+        plan = _plan(
+            {
+                "catalog": [{"name": "x/y", "type": "local", "url": "/tmp"}],
+                "collectors": [{"name": "scan", "type": "cli", "run": "true"}],
+            },
+            registry,
+        )
+        [problem] = plan.problems
+        assert problem.path == "collectors.0.name" and problem.got == "scan-x/y"
+
+    @pytest.mark.parametrize("name", ["captures", "telemetry", "Captures", "TELEMETRY"])
     def test_the_names_of_the_archive_s_logs_are_reserved(self, registry, name):
         plan = _plan({"collectors": [{"name": name, "type": "cli", "run": "true"}]}, registry)
         assert "reserved" in _paths(plan)["collectors.0.name"]

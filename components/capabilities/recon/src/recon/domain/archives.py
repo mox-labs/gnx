@@ -11,6 +11,7 @@ engine answers SQL over it, and the sandbox that engine runs in, is :class:`Arch
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -26,6 +27,15 @@ META_FORMAT_VERSION = 2
 
 #: The survey's ``recon.v1.event`` lines, beside ``meta.yaml``; never a table.
 EVENT_LOG_NAME = "telemetry.jsonl"
+
+_NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
+
+
+def table_name(output: str) -> str:
+    """The name SQL knows an output's table by: every character but an ASCII letter, a digit
+    or ``_`` becomes ``_`` (``oa-works`` is ``oa_works``). SQL matches it without regard to
+    case, so two outputs whose names agree here, ignoring case, would be one table."""
+    return _NOT_IDENTIFIER.sub("_", output)
 
 
 class ArchiveStore(Protocol):
