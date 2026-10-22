@@ -256,7 +256,8 @@ def init(
     "-n",
     "--dry-run",
     is_flag=True,
-    help="Validate and print the plan: no network, no subprocess, nothing written",
+    help="Validate and print the plan. Nothing is written; nothing is fetched or run, except "
+    "what a collector type's preflight says (mcp starts each stdio server to list its tools)",
 )
 @_json_option
 def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json: bool) -> None:
@@ -304,14 +305,35 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
         effects = run["effects"] if isinstance(run["effects"], str) else ", ".join(run["effects"])
         table.add_row(run["output"], run["type"], run["source"] or "-", effects, escape(_does(run)))
     _print_table(table)
+    for required in plan.requirements:
+        holds = "yes" if required.holds else "[red]NO[/] "
+        said = f"{required.need} ({', '.join(required.needed_by)})"
+        if not required.holds:
+            said += "".join(f"; {part}" for part in (required.why, required.fix) if part)
+        out.print(f"{holds}  {escape(said)}")
+    if not plan.runnable:
+        out.print("[red]Runnable: no[/]: a survey fails each table whose requirement is NO")
     if plan.writes.config:
         out.print(f"[dim]Would copy the config to {plan.writes.config}[/]")
-    out.print(f"[dim]{len(plan.runs)} run(s); nothing was fetched, executed or written.[/]")
+    if plan.preflight:
+        for said in plan.preflight:
+            out.print(f"[dim]The preflight of {escape(said)}.[/]")
+        out.print(f"[dim]{len(plan.runs)} run(s); nothing else was fetched or run, and nothing "
+                  "was written.[/]")  # fmt: skip
+    else:
+        out.print(f"[dim]{len(plan.runs)} run(s); nothing was fetched, executed or written.[/]")
 
 
 def _does(run: dict[str, Any]) -> str:
-    """A run's request (its method, URL, headers and body, a line each), or its commands and
-    the directory they run in."""
+    """A run's request (its method, URL, headers and body, a line each), its MCP call and the
+    server it goes to, or its commands and the directory they run in."""
+    if run.get("server") and run.get("method"):
+        target = run.get("tool") or run.get("resource")
+        lines = [f"{run['method']} {target}"]
+        if run.get("arguments"):
+            lines.append(json.dumps(run["arguments"]))
+        lines.append(f"on {run['server']}")
+        return "\n".join(lines)
     if run.get("url"):
         lines = [f"{run.get('method', 'GET')} {run['url']}"]
         lines += [f"{name}: {value}" for name, value in (run.get("headers") or {}).items()]

@@ -9,7 +9,12 @@ to, whoever wrote it.
   once when the survey ends, however it ends, and closes the survey's Requester
   (:meth:`SurveyCollectors.close`).
 * **A type sees only the environment its mission declares for it**: the ``auth.env`` names of
-  the catalog sources its collectors run against (:class:`ScopedEnv`).
+  the catalog sources its collectors run against, and the variables those sources name
+  through their kind's own settings (``CollectorType.source_env``) (:class:`ScopedEnv`).
+* **A source's rate limit holds whoever calls it**: one limiter, one bucket per source, serves
+  the survey's Requester and every type that reaches a source another way.
+* **A dry run asks only the types that declare a preflight**: their collectors' optional
+  ``requirements`` are collected as :attr:`SurveyCollectors.requirements`.
 * **``normalize:`` is applied to every type's records**: a type that does not apply it itself
   (``CollectorType.normalizes``) has it applied to what it yields (:class:`Normalizing`).
 * **A transform that reads files reads only where the mission says.** A transform that takes
@@ -28,12 +33,14 @@ from recon.application.plan import fan_out
 from recon.domain.collector import BrokenPlugin, CollectorContext
 from recon.domain.errors import CollectionError, ReconError
 from recon.domain.normalize import apply_normalize, bound
+from recon.domain.ratelimit import RateLimiter
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator
 
     from recon.domain.capture import CaptureLog
-    from recon.domain.collector import Collector, Plugins, Transform
+    from recon.domain.clock import Clock
+    from recon.domain.collector import Collector, CollectorType, Plugins, Requirement, Transform
     from recon.domain.converters import DocumentConverter
     from recon.domain.deadline import Deadline
     from recon.domain.http import Requester
@@ -48,25 +55,30 @@ COLLECTORS_GROUP = "recon.collectors"
 class CollectorPorts:
     """The driven ports every survey's collectors are built over, bound once by the root.
 
-    ``requester`` builds the survey's one Requester (one rate limit per source, one span per
-    request in the survey's telemetry, every send and wait inside its deadline);
-    ``user_agent`` is what an HTTP collector sends when
-    its source sets none."""
+    ``requester`` builds the survey's one Requester over the survey's rate limiter (one span
+    per request in the survey's telemetry, every send and wait inside its deadline);
+    ``clock`` is what the rate limiter waits on; ``user_agent`` is what an HTTP collector
+    sends when its source sets none."""
 
-    requester: Callable[[Telemetry, Deadline], Requester]
+    requester: Callable[[Telemetry, Deadline, RateLimiter], Requester]
     converter: DocumentConverter
     shell: ShellRunner
     user_agent: str
+    clock: Clock
 
 
 @dataclass
 class SurveyCollectors:
-    """One survey's collectors by type name, the types whose factory raised, and what to end
-    when the survey ends."""
+    """One survey's collectors by type name, the types whose factory raised, what to end
+    when the survey ends, and, by type name, each collector's ``requirements`` when it has
+    one."""
 
     collectors: dict[str, Collector]
     failed: list[BrokenPlugin]
     _ends: list[tuple[str, Callable[[], object]]] = field(default_factory=list)
+    requirements: dict[
+        str, Callable[[CollectorEntry, SourceEntry | None], Collection[Requirement]]
+    ] = field(default_factory=dict)
 
     def close(self) -> list[BrokenPlugin]:
         """Close each collector that has a ``close()``, then the survey's Requester, once
@@ -114,16 +126,28 @@ class ScopedEnv(Mapping[str, str]):
         return sum(1 for _ in self)
 
 
-def declared_env(config: ReconConfig) -> dict[str, set[str]]:
+def declared_env(
+    config: ReconConfig, types: Mapping[str, CollectorType] | None = None
+) -> dict[str, set[str]]:
     """For each collector type the config uses, the ``auth.env`` names of the sources its
-    collectors run against."""
+    collectors run against, and the names each such source reads through its kind's own
+    settings, as the installed type that adds the kind says (``CollectorType.source_env``)."""
     catalog = {s.name: s for s in config.catalog}
+    adders: dict[str, CollectorType] = {}
+    for ct in (types or {}).values():
+        for kind in sorted(ct.source_kinds):
+            adders.setdefault(kind, ct)
     declared: dict[str, set[str]] = {}
     for entry in config.collectors:
         names = declared.setdefault(entry.type, set())
         for source, _output in fan_out(entry, catalog):
-            if source is not None and source.auth.env:
+            if source is None:
+                continue
+            if source.auth.env:
                 names.add(source.auth.env)
+            adder = adders.get(source.type)
+            if adder is not None and adder.source_settings is not None:
+                names.update(adder.source_env(source))
     return declared
 
 
@@ -183,19 +207,21 @@ def build_collectors(
     ``ScopedEnv`` over ``env`` holding only the variables ``config`` declares for that type's
     sources."""
     transforms = confined_transforms(plugins.transforms, config, mission_dir)
-    requester = ports.requester(telemetry, deadline)
+    rate_limiter = RateLimiter(ports.clock)
+    requester = ports.requester(telemetry, deadline, rate_limiter)
     ctx = CollectorContext(
         requester=requester,
         converter=ports.converter,
         shell=ports.shell,
         telemetry=telemetry,
         deadline=deadline,
+        rate_limiter=rate_limiter,
         transforms=transforms,
         mission_dir=mission_dir,
         env={},
         user_agent=ports.user_agent,
     )
-    declared = declared_env(config)
+    declared = declared_env(config, plugins.collector_types)
     built = SurveyCollectors({}, [])
     for name in dict.fromkeys(entry.type for entry in config.collectors):
         ct = plugins.collector_types[name]
@@ -211,6 +237,9 @@ def build_collectors(
         close = getattr(collector, "close", None)
         if callable(close):
             built._ends.append((name, close))
+        requirements = getattr(collector, "requirements", None)
+        if ct.preflight and callable(requirements):
+            built.requirements[name] = requirements
         built.collectors[name] = collector if ct.normalizes else Normalizing(collector, transforms)
     close = getattr(requester, "close", None)
     if callable(close):

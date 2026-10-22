@@ -44,7 +44,6 @@ from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.application.collectors import COLLECTORS_GROUP, CollectorPorts, build_collectors
 from recon.application.use_cases import Recon as Recon
 from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
-from recon.domain.ratelimit import RateLimiter
 from recon.domain.telemetry import Telemetry
 
 if TYPE_CHECKING:
@@ -57,6 +56,7 @@ if TYPE_CHECKING:
     from recon.domain.deadline import Deadline
     from recon.domain.errors import Problem
     from recon.domain.http import Requester
+    from recon.domain.ratelimit import RateLimiter
     from recon.domain.shell import ShellRunner
     from recon.domain.telemetry import EventSink
 
@@ -64,9 +64,9 @@ TRANSFORMS_GROUP = "recon.transforms"
 
 type Discover = Callable[[str], Iterable[EntryPoint]]
 
-#: Builds a survey's Requester, reporting through the survey's telemetry and keeping to its
-#: deadline.
-type RequesterFactory = Callable[[Telemetry, Deadline], Requester]
+#: Builds a survey's Requester, reporting through the survey's telemetry, keeping to its
+#: deadline and drawing from its rate limiter, which every collector of the survey shares.
+type RequesterFactory = Callable[[Telemetry, Deadline, RateLimiter], Requester]
 
 
 def _discover(group: str) -> list[EntryPoint]:
@@ -154,6 +154,7 @@ def root(
         converter=converter or MarkitdownConverter(),
         shell=shell or PopenRunner(),
         user_agent=DEFAULT_USER_AGENT,
+        clock=clock,
     )
 
     def telemetry(archive: Path | None) -> Telemetry:
@@ -175,12 +176,14 @@ def root(
     )
 
 
-def _http_requester(clock: Clock, telemetry: Telemetry, deadline: Deadline) -> Requester:
+def _http_requester(
+    clock: Clock, telemetry: Telemetry, deadline: Deadline, rate_limiter: RateLimiter
+) -> Requester:
     """The survey's Requester over httpx2, imported only when a survey runs, so planning and
     status never import it."""
     from recon.adapters._out.http_requester import HttpRequester
 
-    return HttpRequester(RateLimiter(clock), clock, telemetry, deadline=deadline)
+    return HttpRequester(rate_limiter, clock, telemetry, deadline=deadline)
 
 
 def configure_telemetry(env: Mapping[str, str] | None = None) -> list[Problem]:

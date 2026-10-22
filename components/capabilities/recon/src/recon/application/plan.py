@@ -12,7 +12,10 @@ exists is asked of the predicate the caller passes. Collector types contribute t
 ``CollectorType.settings`` schema, which validates an entry's keys beyond the ones recon
 reads, and their ``check`` and ``describe`` hooks, which are pure by contract and see only an
 entry whose settings the schema accepts. A source's kind must be one an installed type adds
-(``CollectorType.source_kinds``).
+(``CollectorType.source_kinds``); its keys beyond the shared ones are validated against that
+type's ``source_settings`` schema, and its ``check_source`` hook judges the rest. What a run
+needs of the host beyond this (a server that starts, a tool it lists) is not the plan's to
+check: a dry run asks the collector types that declare a ``preflight``.
 """
 
 from __future__ import annotations
@@ -157,7 +160,8 @@ def build_plan(
         raw.get("collectors"), "collectors", CollectorEntry, problems
     )
     sources = [(i, _anchored(src, base)) for i, src in sources]
-    problems += _source_kind_problems(sources, plugins)
+    found, refused = _source_problems(sources, plugins)
+    problems += found
     catalog = _catalog(sources, problems)
     unchecked = _unparsed_names(raw.get("catalog"), catalog) if not sources_whole else set()
 
@@ -180,12 +184,14 @@ def build_plan(
                 produced_by.setdefault(key, (i, output))
             if source is not None:
                 used_sources.add(source.name)
-            if ctype is not None and checked is not None:
+            # A type's describe sees only a source whose own settings were accepted.
+            judged = source is None or source.name not in refused
+            if ctype is not None and checked is not None and judged:
                 runs.append(_planned_run(checked, output, source, ctype))
 
     if is_directory is not None:
         problems += _directory_problems(sources, used_sources, is_directory, base)
-    warnings += _credential_warnings(sources, used_sources, env)
+    warnings += _credential_warnings(sources, used_sources - refused, env, plugins)
     warnings += _mixed_fan_out_warnings(entries, catalog)
     config = None
     if not problems:
@@ -200,7 +206,7 @@ def build_plan(
         runs=runs,
         problems=problems,
         warnings=warnings,
-        complete=sources_whole and entries_whole and settings_whole,
+        complete=sources_whole and entries_whole and settings_whole and not refused,
     )
 
 
@@ -573,23 +579,91 @@ def source_kinds(plugins: Plugins) -> tuple[str, ...]:
     )
 
 
-def _source_kind_problems(
+def _kind_types(plugins: Plugins) -> dict[str, CollectorType]:
+    """The installed type that adds each source kind, recon's own first (the registry's
+    order), the first one when two add the same kind."""
+    adders: dict[str, CollectorType] = {}
+    for ct in plugins.collector_types.values():
+        for kind in sorted(ct.source_kinds):
+            adders.setdefault(kind, ct)
+    return adders
+
+
+def _source_problems(
     sources: list[tuple[int, SourceEntry]], plugins: Plugins
-) -> list[Problem]:
+) -> tuple[list[Problem], set[str]]:
+    """The problems in each source's kind and in the keys that are its kind's own, and the
+    sources that could not be judged whole: one of a kind nothing installed adds that has
+    keys of its own, or whose own keys its kind's schema refuses, may hide more problems,
+    and no type's hook is shown it."""
     installed = source_kinds(plugins)
-    return [
-        Problem(
-            f"catalog.{i}.type",
-            f"unknown source kind {src.type!r}; installed: {', '.join(installed) or '(none)'}",
-            kind="name_unknown",
-            fix=f"use one of: {', '.join(installed)}, or install the collector type that adds "
-            f"{src.type!r} sources",
-            got=src.type,
-            allowed=installed,
-        )
-        for i, src in sources
-        if src.type not in installed
-    ]
+    adders = _kind_types(plugins)
+    problems: list[Problem] = []
+    refused: set[str] = set()
+    for i, src in sources:
+        at = f"catalog.{i}"
+        ctype = adders.get(src.type)
+        if ctype is None:
+            problems.append(
+                Problem(
+                    f"{at}.type",
+                    f"unknown source kind {src.type!r}; installed: "
+                    f"{', '.join(installed) or '(none)'}",
+                    kind="name_unknown",
+                    fix=f"use one of: {', '.join(installed)}, or install the collector type "
+                    f"that adds {src.type!r} sources",
+                    got=src.type,
+                    allowed=installed,
+                )
+            )
+            if src.settings:
+                refused.add(src.name)
+            continue
+        schema = ctype.source_settings
+        if schema is None:
+            allowed = _source_keys(None)
+            for key, value in src.settings.items():
+                problems.append(
+                    Problem(
+                        f"{at}.{key}",
+                        f"unknown key: a {src.type} source takes no such setting",
+                        kind="unknown_key",
+                        fix=f"remove {at}.{key} or correct its spelling",
+                        got=_scalar(value),
+                        allowed=allowed,
+                    )
+                )
+            if not src.url:
+                problems.append(
+                    Problem(
+                        f"{at}.url",
+                        f"a {src.type} source needs url:",
+                        kind="missing_key",
+                        fix=f"set {at}.url",
+                    )
+                )
+            continue
+        try:
+            schema.model_validate(src.settings)
+        except ValidationError as exc:
+            problems += [
+                replace(problem, allowed=_source_keys(schema))
+                if problem.kind == "unknown_key" and problem.path.count(".") == at.count(".") + 1
+                else problem
+                for problem in _from_pydantic(at, schema, exc)
+            ]
+            refused.add(src.name)
+            continue
+        for p in ctype.check_source(src):
+            path = f"{at}.{p.path}" if p.path else at
+            problems.append(Problem(path, p.message, p.kind, p.fix, p.got, p.allowed, p.source))
+    return problems, refused
+
+
+def _source_keys(schema: type[BaseModel] | None) -> tuple[str, ...]:
+    """Every key a source may hold: the ones every source has and its kind's own."""
+    own = set(schema.model_fields) if schema is not None else set()
+    return tuple(sorted(set(SourceEntry.model_fields) | own))
 
 
 def _unknown_type(at: str, name: str, plugins: Plugins) -> Problem:
@@ -718,16 +792,41 @@ def _directory_problems(
 
 
 def _credential_warnings(
-    sources: list[tuple[int, SourceEntry]], used: set[str], env: Mapping[str, str]
+    sources: list[tuple[int, SourceEntry]],
+    used: set[str],
+    env: Mapping[str, str],
+    plugins: Plugins,
 ) -> list[Problem]:
-    return [
-        Problem(
-            f"catalog.{i}.auth.env",
-            f"{src.auth.env} is not set; requests to {src.name!r} will be sent without credentials",
-            kind="env_unset",
-            fix=f"set {src.auth.env}, or leave it unset to send the requests without it",
-            got=src.auth.env,
-        )
-        for i, src in sources
-        if src.name in used and src.auth.env and not env.get(src.auth.env)
-    ]
+    """A warning for each variable a used source names, as ``auth.env`` or through its kind's
+    own settings (``CollectorType.source_env``), that ``env`` does not set."""
+    adders = _kind_types(plugins)
+    warnings = []
+    for i, src in sources:
+        if src.name not in used:
+            continue
+        if src.auth.env and not env.get(src.auth.env):
+            warnings.append(
+                Problem(
+                    f"catalog.{i}.auth.env",
+                    f"{src.auth.env} is not set; requests to {src.name!r} will be sent "
+                    "without credentials",
+                    kind="env_unset",
+                    fix=f"set {src.auth.env}, or leave it unset to send the requests without it",
+                    got=src.auth.env,
+                )
+            )
+        ctype = adders.get(src.type)
+        if ctype is None or ctype.source_settings is None:
+            continue
+        for name, where in ctype.source_env(src).items():
+            if not env.get(name):
+                warnings.append(
+                    Problem(
+                        f"catalog.{i}.{where}",
+                        f"{name} is not set; {src.name!r} will be reached without it",
+                        kind="env_unset",
+                        fix=f"set {name}, or leave it unset to reach {src.name!r} without it",
+                        got=name,
+                    )
+                )
+    return warnings

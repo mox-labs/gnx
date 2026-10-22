@@ -3,10 +3,12 @@
 No infrastructure dependencies. These flow through the hexagon.
 
 Every model forbids unknown keys: a misspelt ``normalise:`` or ``preserve-raw:`` is a config
-error with a path, not a silently ignored line. Two exceptions: a top-level key beginning
-with ``_`` is dropped by the planner before a config reaches these models, and a collector
-entry keeps the keys that are its type's own settings, which the planner validates against
-that type's schema (``CollectorType.settings``), so an unknown one is still a config error.
+error with a path, not a silently ignored line. Three exceptions: a top-level key beginning
+with ``_`` is dropped by the planner before a config reaches these models; a collector entry
+keeps the keys that are its type's own settings, which the planner validates against that
+type's schema (``CollectorType.settings``); and a catalog source keeps the keys that are its
+kind's own, which the planner validates against the schema of the type that adds the kind
+(``CollectorType.source_settings``). An unknown one is still a config error.
 """
 
 from __future__ import annotations
@@ -71,22 +73,32 @@ class SourceEntry(BaseModel):
     adds (``CollectorType.source_kinds``). It is an open string here; whether it is installed
     is checked at plan time.
 
+    ``url`` is where the source is. A source of a kind with no settings of its own needs one,
+    which the plan checks; a kind with settings of its own (``mcp``: a stdio server's
+    ``command``, or a remote's ``url``) says through its type what it needs. Every other key
+    is the kind's own setting, kept in :attr:`settings`.
+
     ``max_bytes`` bounds one HTTP response body from this source, counted after any
     content-encoding is undone. A larger body fails the table instead of being buffered.
     ``timeout`` bounds, in seconds of wall time, one send of a request (from connecting to
     its body's last byte) and a ``cli`` command.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="allow")
 
     name: str
     type: str = "api"
-    url: str
+    url: str = ""
     auth: AuthConfig = AuthConfig()
     rate_limit: RateLimitConfig = RateLimitConfig()
     user_agent: str | None = None
     timeout: float = Field(default=60.0, gt=0)
     max_bytes: int = Field(default=DEFAULT_MAX_BYTES, gt=0)
+
+    @property
+    def settings(self) -> dict[str, Any]:
+        """The keys that are the source kind's own settings, as written."""
+        return dict(self.model_extra or {})
 
 
 # --- Collector Entry ---

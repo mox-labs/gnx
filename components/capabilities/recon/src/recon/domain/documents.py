@@ -55,6 +55,20 @@ class PlanWrites(Document):
     captures: bool
 
 
+class Required(Document):
+    """Something a planned run needs of this host, or of what it reaches, whether it holds
+    here now, and the outputs of the runs that need it: what a collector type's preflight
+    said, the same need from several runs said once."""
+
+    need: str
+    holds: bool
+    #: What was found, when it does not hold.
+    why: str = ""
+    #: How to make it hold, when it does not.
+    fix: str = ""
+    needed_by: list[str]
+
+
 class PlanDocument(Document):
     schema_: Literal["recon.v1.plan"] = Field(default="recon.v1.plan", alias="schema")
     mission: str
@@ -67,6 +81,15 @@ class PlanDocument(Document):
     problems: list[dict[str, Any]]
     #: Problem records (``recon.v1.error``'s shape) that do not stop the survey.
     warnings: list[dict[str, Any]]
+    #: What the runs need of this host, as the collector types that declare a preflight
+    #: checked it during this dry run, each with whether it holds.
+    requirements: list[Required] = []
+    #: Whether every requirement holds. False is not an error: the plan is still valid, and a
+    #: survey fails each table whose requirement does not hold, as ``config``.
+    runnable: bool = True
+    #: What this dry run did to check the requirements, by collector type (``mcp: started
+    #: each stdio server a run names ...``); empty when it ran, fetched and wrote nothing.
+    preflight: list[str] = []
 
 
 # --- survey ---------------------------------------------------------------------------------

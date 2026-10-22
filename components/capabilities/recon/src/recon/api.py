@@ -57,9 +57,12 @@ def init(
 def plan(
     name: str, *, config: Path | None = None, replace: bool = False, root: Path | None = None
 ) -> PlanDocument:
-    """What ``survey`` would do, without doing any of it. ``recon.v1.plan``.
+    """What ``survey`` would do, without doing it. ``recon.v1.plan``.
 
-    ``config`` is a file to plan instead of the mission's own; ``replace`` allows it to
+    Writes nothing, and fetches and runs nothing, but for the preflight of a collector type
+    that declares one, which the document's ``preflight`` names: an ``mcp`` run's server is
+    started (or connected to) and asked for its tools, and ``requirements`` says what was
+    found. ``config`` is a file to plan instead of the mission's own; ``replace`` allows it to
     differ from the mission's config. Raises ConfigError listing every problem; its
     ``complete`` is false when more may follow their fixes."""
     return _root(root).plan(name, config=config, replace=replace)
