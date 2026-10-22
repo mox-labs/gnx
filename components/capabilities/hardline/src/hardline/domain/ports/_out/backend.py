@@ -1,8 +1,12 @@
 """ModelBackend — the one port a provider adapter implements.
 
 Two members. ``structured_modes`` lets composition reject a registry row that asks a
-backend for a structured mode it cannot honour, before any call is made. ``complete``
-runs one attempt; retries, schema validation and provenance belong to the runtime.
+backend for a structured mode it cannot honour, before any call is made: a frozenset that
+always holds ``prompt`` (the schema stated in an instruction, which any backend can send).
+``complete`` runs one attempt, async; retries, schema validation and provenance belong to the
+runtime. It returns a ``RawCompletion``, whose ``finish_reason`` it should set, or no reply it
+returns is ever a whole answer. ``hardline.backend_problems`` and ``hardline.answer_problems``
+check all of this against an installed hardline.
 
 Two optional members. A backend whose rows can be wrong in ways it alone knows (its
 ``options``, a key it cannot run without) defines ``check(spec)`` (``CheckedBackend``), and the

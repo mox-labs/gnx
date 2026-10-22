@@ -89,3 +89,13 @@ def test_runtime_rejects_structured_mode_the_backend_cannot_honour() -> None:
             backends={"anthropic": AnthropicBackend()},
             secrets=DictSecrets(),
         )
+
+
+def test_a_backend_is_keyed_by_its_entry_point_name_alone() -> None:
+    # F8: `backend_type_url` published `hardline.v1/backend.<name>` as "registry keys", but every
+    # registry row and the composition root key on the short name. A published key that nothing
+    # reads is a door that cannot be closed later.
+    import hardline
+
+    assert "backend_type_url" not in hardline.__all__
+    assert not hasattr(hardline, "backend_type_url")

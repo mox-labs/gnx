@@ -19,10 +19,13 @@ the prompt off-machine. **A registry file decides where your prompts go.** Revie
   (`test_a_row_without_base_url_goes_to_its_backends_default_whatever_the_environment`).
 - **No proxy or certificate variable.** HTTP clients are built with `trust_env=False`:
   `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE` and `SSL_CERT_DIR` change neither
-  where a request goes nor what it trusts. TLS is verified against the operating system's trust
+  where a request goes nor what it trusts. A proxy is used only when a row names one
+  (`proxy:`), and one carrying credentials is refused, since they would sit in a config file
+  (`test_a_row_names_its_proxy`, `test_a_proxy_the_row_cannot_use_fails_composition`). TLS is verified against the operating system's trust
   store (truststore).
-- **Redirects are not followed.** A 3xx is reported with its `Location`; following it would send
-  the row's key to wherever it points (`test_a_redirect_is_reported_not_followed`).
+- **Redirects are not followed.** A 3xx is a config error whose fix names where to point the
+  row's `base_url`; following it would send the row's key to wherever it points
+  (`test_a_redirect_is_reported_not_followed`).
 - **Which registry files are read is ambient.** `./hardline.yaml` is found through the working
   directory and `$HARDLINE_CONFIG` through the environment. Each tier is named with how it was
   found (`cwd`, `$HARDLINE_CONFIG`) in errors, in `hardline check`, and in the record of every
@@ -48,6 +51,15 @@ the prompt off-machine. **A registry file decides where your prompts go.** Revie
   holds no request headers.
 - A call's record holds digests, never content: `turns_digest` of the turns sent, and the row's
   digest, which covers the row's `api_key` *reference*, not the key.
+
+## Telemetry
+
+hardline records OpenTelemetry spans and metrics through the API, which sends nothing until the
+host application installs an SDK and an exporter. What it records carries no content: no
+prompt, system prompt, reply, refusal or error message is an attribute, a span event or a
+span status, and a failed call's exception is not recorded on its span
+(`test_no_content_leaves_in_a_span`). What it does record says where calls went: the model id,
+the row name, the provider's host and port, token counts, reasons and durations.
 
 ## Model output
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from hardline_helpers import DictSecrets, mock_runtime
@@ -289,10 +289,11 @@ async def test_a_bad_call_argument_is_a_config_error(call: dict[str, Any], match
     # Before: a bare ValueError (no messages), a pydantic ValidationError (max_tokens=0), and a
     # negative temperature sent to the provider. None of them is caught by `except HardlineError`.
     rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}})
-    kwargs = {"messages": "hi", **call}
-    for method in (rt.complete, lambda *a, **k: rt.extract(*a, output=Verdict, **k)):
-        with pytest.raises(ConfigError, match=match):
-            await method("q", **kwargs)
+    kwargs: dict[str, Any] = {"messages": "hi", **call}
+    with pytest.raises(ConfigError, match=match):
+        await rt.complete("q", **kwargs)
+    with pytest.raises(ConfigError, match=match):
+        await rt.extract("q", output=Verdict, **kwargs)
 
 
 def test_a_negative_schema_retries_is_a_config_error() -> None:
@@ -384,7 +385,9 @@ async def test_the_record_holds_the_params_the_answering_row_was_sent() -> None:
 
 
 @pytest.mark.parametrize("mode", ["prompt", "json_object", "json_schema"])
-async def test_the_record_holds_the_structured_mode_used(mode: str) -> None:
+async def test_the_record_holds_the_structured_mode_used(
+    mode: Literal["prompt", "json_object", "json_schema"],
+) -> None:
     rt = mock_runtime(
         {
             "q": {
@@ -438,3 +441,22 @@ async def test_a_default_location_is_recorded_as_the_backends() -> None:
         "family": "matrix.models",
         "base_url": "default of backend openai-compat",
     }
+
+
+# --- who upgrades first (W10.2, D18) -------------------------------------------------------
+
+
+async def test_a_completion_reads_back_its_own_json_and_refuses_keys_it_does_not_know() -> None:
+    # Completion is extra="forbid": its JSON round-trips, and a reader refuses a key a newer
+    # hardline added. So the reader of stored Completions upgrades before any writer does, as
+    # the Completion docstring states.
+    from pydantic import ValidationError
+
+    from hardline import Completion
+
+    rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}})
+    c = await rt.complete("q", "hi")
+    assert Completion.model_validate_json(c.model_dump_json()) == c
+    with pytest.raises(ValidationError, match="added_later"):
+        Completion.model_validate({**c.model_dump(mode="json"), "added_later": 1})
+    assert "upgrades first" in (Completion.__doc__ or "")

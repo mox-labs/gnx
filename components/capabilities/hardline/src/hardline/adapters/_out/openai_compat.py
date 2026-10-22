@@ -29,8 +29,7 @@ from hardline.domain.errors import BackendError
 from hardline.domain.types import ModelSpec, RawCompletion, Request, Usage
 
 if TYPE_CHECKING:
-    import httpx2
-
+    from hardline.adapters._out._http import Transport
     from hardline.domain.types import FinishReason
 
 #: The protocol's finish reasons, in hardline's vocabulary. Anything else is ``other``.
@@ -89,7 +88,7 @@ class OpenAICompatBackend:
     structured_modes = frozenset({"prompt", "json_object", "json_schema"})
     default_base_url = "https://api.openai.com/v1"
 
-    def __init__(self, transport: httpx2.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, transport: Transport | None = None) -> None:
         self._http = Http(transport)
 
     def check(self, spec: ModelSpec) -> list[str]:

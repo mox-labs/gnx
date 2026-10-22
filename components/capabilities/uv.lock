@@ -744,25 +744,20 @@ version = "0.2.0"
 source = { editable = "hardline" }
 dependencies = [
     { name = "httpx2" },
+    { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "pyyaml" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
+    { name = "rich-click" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx2", specifier = ">=2.10,<3" },
+    { name = "opentelemetry-api", specifier = ">=1.27" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich-click", specifier = ">=1.8" },
 ]
-provides-extras = ["dev"]
 
 [[package]]
 name = "httpcore"

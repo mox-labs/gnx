@@ -1,0 +1,104 @@
+{
+  "language": "python",
+  "about": "hardline's layers, checked by tests/test_hardline_layering.py on every test run. Adopted from the reviewed map (scratch/review-2026-10-22/hardline-layers.json, at 1580c81) and brought to hardline 0.2: digests in the domain, the HTTP helpers and telemetry among the adapters, httpx2 and OpenTelemetry each confined to one file, no provider SDK. The format is that of slick crafting-aces' layer-check.py. 'why' keys are read by neither.",
+  "scan": ["src/hardline/**/*.py"],
+  "scan_why": "Every Python file in the package. Tests are out of scan: a test root reaches adapters (the mock, a recording observer) by design.",
+  "layers": [
+    {
+      "name": "domain",
+      "files": ["src/hardline/domain/__init__.py", "src/hardline/domain/errors.py",
+                "src/hardline/domain/types.py", "src/hardline/domain/structured.py",
+                "src/hardline/domain/registry.py", "src/hardline/domain/digests.py"],
+      "allow": ["__future__", "collections", "dataclasses", "hashlib", "json", "re", "typing",
+                "pydantic",
+                "hardline.domain.errors", "hardline.domain.types", "hardline.domain.digests"],
+      "forbid": ["os", "logging", "opentelemetry", "yaml", "httpx", "httpx2"],
+      "why": {
+        "stdlib": "pure data and string work: structured.py parses JSON text and digests.py hashes canonical JSON; no clock, no I/O",
+        "pydantic": "the one outside library admitted: the port's vocabulary is pydantic models, and validation is the domain's own rule",
+        "hardline.domain.*": "the core types, errors and digests reach only each other; nothing here reaches the runtime, a port or an adapter",
+        "forbid": "no I/O, no logging, no HTTP, no YAML, no telemetry in the core"
+      }
+    },
+    {
+      "name": "application",
+      "files": ["src/hardline/domain/runtime.py"],
+      "allow": ["__future__", "asyncio", "collections", "dataclasses", "logging", "random",
+                "time", "types", "typing", "pydantic",
+                "hardline.domain.errors", "hardline.domain.types", "hardline.domain.structured",
+                "hardline.domain.registry", "hardline.domain.digests", "hardline.domain.ports"],
+      "forbid": ["os", "opentelemetry", "yaml", "httpx", "httpx2"],
+      "why": {
+        "split from domain": "ModelRuntime lives under domain/, but it is the inside that calls the driven ports; a layer of its own keeps the core types on the narrower allowance",
+        "asyncio, time, random": "the defaults of the injected sleep, clock and rng, and asyncio.timeout for the call's limits.seconds",
+        "logging": "configuration warnings (shared_fate) and an observer that raised; the fallback signal is the CallObserver port, not a log line",
+        "types": "TracebackType, for __aexit__'s signature",
+        "hardline.domain.ports": "the runtime names its driven ports: ModelBackend, SecretResolver, CallObserver"
+      }
+    },
+    {
+      "name": "ports",
+      "files": ["src/hardline/domain/ports/**/*.py"],
+      "allow": ["__future__", "collections", "typing", "hardline.domain.types"],
+      "forbid": ["os", "logging", "opentelemetry", "yaml", "httpx", "httpx2"],
+      "why": {
+        "hardline.domain.types": "a port is stated in domain types (ModelSpec, Request, RawCompletion, CallEvent)",
+        "no other port": "not in allow, so a port reaching another port is a finding",
+        "forbid logging/opentelemetry": "a port that traces forces that opinion on every implementor"
+      }
+    },
+    {
+      "name": "adapters_out",
+      "files": ["src/hardline/adapters/__init__.py", "src/hardline/adapters/_out/**/*.py"],
+      "allow": ["*", "hardline.domain.errors", "hardline.domain.types",
+                "hardline.adapters._out._classify", "hardline.adapters._out._clients",
+                "hardline.adapters._out._http", "hardline.adapters._out._options",
+                "hardline.adapters._out._scrub"],
+      "why": {
+        "*": "an adapter's own technology: httpx2, yaml, os, pathlib, opentelemetry (each confined to one file by single_importer)",
+        "hardline.domain.errors, hardline.domain.types": "adapters build RawCompletion and raise BackendError, ConfigError, SecretError",
+        "the underscored helpers": "shared by the provider adapters: one HTTP client policy, one status classifier, one options reader",
+        "not hardline.domain.ports": "a backend satisfies ModelBackend structurally, so no adapter needs the port module",
+        "not composition, the runtime or a sibling backend": "an adapter reaching the root or another technology is a finding"
+      }
+    },
+    {
+      "name": "conformance",
+      "files": ["src/hardline/conformance.py"],
+      "allow": ["__future__", "inspect", "typing", "hardline.domain.ports", "hardline.domain.types"],
+      "forbid": ["os", "logging", "opentelemetry", "yaml", "httpx", "httpx2"],
+      "why": {
+        "inspect": "whether complete and aclose are coroutine functions",
+        "hardline.domain.ports, hardline.domain.types": "the port it checks against, and the shapes a call must return",
+        "not an adapter or the root": "it checks a backend it is handed, and names none"
+      }
+    },
+    {
+      "name": "driving",
+      "files": ["src/hardline/adapters/_in/**/*.py", "src/hardline/skill.py"],
+      "allow": ["*", "hardline"],
+      "forbid": ["MockBackend", "OpenAICompatBackend", "AnthropicBackend", "TracedBackend",
+                 "OtelCallObserver", "Telemetry", "Http", "LoopClients",
+                 "EnvFileSecretResolver", "YamlConfigSource", "MappingConfigSource"],
+      "why": {
+        "*": "rich_click, json, sys, asyncio; importlib.resources in skill.py",
+        "hardline": "the CLI reaches the public surface only. The map cannot allow the package root without every hardline.* path, so tests/test_hardline_layering.py also holds the CLI to names in hardline.__all__",
+        "forbid": "naming a concrete adapter in the CLI is a second wiring"
+      }
+    },
+    {
+      "name": "root",
+      "files": ["src/hardline/__init__.py", "src/hardline/composition/**/*.py"],
+      "allow": ["*", "hardline"],
+      "why": {
+        "*, hardline": "the composition root is the one place allowed to reach everything; the package __init__ re-exports the public surface"
+      }
+    }
+  ],
+  "single_importer": [
+    {"name": "httpx2", "only": "src/hardline/adapters/_out/_http.py"},
+    {"name": "opentelemetry", "only": "src/hardline/adapters/_out/otel.py"},
+    {"name": "yaml", "only": "src/hardline/adapters/_out/yaml_source.py"}
+  ],
+  "single_importer_why": "one file per technology, its types handed out under hardline's own names (_http.Transport, otel.TracerProvider)"
+}

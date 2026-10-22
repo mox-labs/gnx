@@ -23,10 +23,10 @@ from hardline import (
     Request,
     build_runtime,
 )
+from hardline.adapters._in.cli import error_payload
 from hardline.adapters._out.anthropic_native import AnthropicBackend
 from hardline.adapters._out.mock import MockBackend
 from hardline.adapters._out.openai_compat import OpenAICompatBackend
-from hardline.composition import discover_backends
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -103,19 +103,32 @@ def _message(*blocks: dict[str, Any], **extra: Any) -> dict[str, Any]:
     }
 
 
-# --- the contract test: every installed backend, same assertions ---------------------
-
-
-@pytest.mark.parametrize("name", sorted(discover_backends()))
-def test_every_backend_satisfies_the_port(name: str) -> None:
-    backend = discover_backends()[name]
-    assert isinstance(backend, ModelBackend)
-    assert isinstance(backend.structured_modes, frozenset) and "prompt" in backend.structured_modes
+# The contract every installed backend meets is test_hardline_conformance.py's, run through the
+# helper hardline ships (W8.3).
 
 
 async def test_mock_returns_the_declared_shape() -> None:
     raw = await MockBackend().complete(_spec(backend="mock"), _request(), None)
     assert isinstance(raw, RawCompletion) and raw.text == "mock:m:hi"
+
+
+async def test_mock_says_which_turn_it_echoes_and_names_each_call() -> None:
+    # F12: the docstring said the echo was the last user message; it is the first. And the
+    # request id was whatever the call counter held after the reply was picked; it is now the
+    # call's own ordinal, counted from 1, and says so.
+    backend = MockBackend()
+    spec = _spec(backend="mock", options={"responses": {"later": "keyed on the last turn"}})
+    turns = (
+        Message(role="user", content="first"),
+        Message(role="assistant", content="a"),
+        Message(role="user", content="second"),
+    )
+    request = Request(messages=turns, max_tokens=8)
+    first = await backend.complete(spec, request, None)
+    assert first.text == "mock:m:first" and first.request_id == "mock-q-1"
+    keyed = Request(messages=(*turns, Message(role="user", content="later")), max_tokens=8)
+    second = await backend.complete(spec, keyed, None)
+    assert second.text == "keyed on the last turn" and second.request_id == "mock-q-2"
 
 
 async def test_mock_script_repeats_last_entry() -> None:
@@ -341,7 +354,14 @@ def test_a_backend_location_must_be_an_http_url() -> None:
         (429, "rate_limit"),
         (408, "timeout"),
         (500, "unavailable"),
+        (502, "unavailable"),
+        (503, "unavailable"),
+        (504, "unavailable"),
         (529, "unavailable"),
+        # W6.1: no retry can change these. 501 says the server does not implement the request
+        # and 505 that it refuses the HTTP version: the row points somewhere that cannot serve it.
+        (501, "bad_request"),
+        (505, "bad_request"),
         (400, "bad_request"),
         (404, "bad_request"),
     ],
@@ -364,12 +384,66 @@ async def test_retry_after_header_is_read() -> None:
 
 
 async def test_a_redirect_is_reported_not_followed() -> None:
-    # Following it would send the row's key to wherever the Location points.
-    wire = Wire(lambda _: httpx2.Response(307, headers={"location": "http://elsewhere.example/v1"}))
-    with pytest.raises(BackendError) as e:
+    # Following it would send the row's key to wherever the Location points. Changed requirement
+    # (W7.10): a redirect is the row's location to correct, so a config error (exit 3) whose fix
+    # names where to point it, not `unknown` (exit 1, "report a bug").
+    moved = "https://127.0.0.1:9/v1/chat/completions"
+    wire = Wire(lambda _: httpx2.Response(308, headers={"location": moved}))
+    with pytest.raises(ConfigError) as e:
         await OpenAICompatBackend(wire.transport).complete(_spec(), _request(), "k")
     assert len(wire.requests) == 1
-    assert "http://elsewhere.example/v1" in str(e.value) and "base_url" in str(e.value)
+    assert moved in str(e.value) and "models.q.base_url" in str(e.value)
+    assert e.value.fix == "set models.q.base_url to 'https://127.0.0.1:9/v1'"
+    payload, code = error_payload(e.value)
+    assert code == 3 and payload["error"]["fix"] == e.value.fix
+
+
+async def test_a_redirect_elsewhere_names_the_location_in_its_fix() -> None:
+    wire = Wire(lambda _: httpx2.Response(301, headers={"location": "http://elsewhere.example/"}))
+    with pytest.raises(ConfigError) as e:
+        await AnthropicBackend(wire.transport).complete(_spec(backend="anthropic"), _request(), "k")
+    assert e.value.fix is not None and "http://elsewhere.example/" in e.value.fix
+
+
+# --- a proxy is named by the row, never taken from the environment (W7.10) -----------------
+
+
+@pytest.mark.parametrize("proxy", [None, "http://proxy.local:3128"])
+async def test_a_row_names_its_proxy(proxy: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    # trust_env=False rightly ignores HTTPS_PROXY, which left a user behind a proxy no route.
+    from hardline.adapters._out import _http
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://ambient.example:1")
+    built: list[str | None] = []
+    wire = _answer(_chat())
+
+    def transport(proxy: str | None = None) -> httpx2.AsyncBaseTransport:
+        built.append(proxy)
+        return wire.transport
+
+    monkeypatch.setattr(_http, "network_transport", transport)
+    await OpenAICompatBackend().complete(_spec(proxy=proxy), _request(), None)
+    assert built == [proxy]
+
+
+@pytest.mark.parametrize(
+    ("proxy", "problem"),
+    [
+        ("proxy.local:3128", "http:// or https://"),
+        ("socks5://proxy.local:1080", "http:// or https://"),
+        ("http://user:secret@proxy.local:3128", "credentials"),
+    ],
+)
+def test_a_proxy_the_row_cannot_use_fails_composition(proxy: str, problem: str) -> None:
+    with pytest.raises(ConfigError, match=rf"models\.q\.proxy: .*{problem}") as e:
+        build_runtime(
+            {
+                "models": {
+                    "q": {"backend": "openai-compat", "model": "m", "family": "x", "proxy": proxy}
+                }
+            }
+        )
+    assert "secret" not in str(e.value)
 
 
 @pytest.mark.parametrize(

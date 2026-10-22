@@ -12,12 +12,14 @@ One command for every model the operator has configured. Models are registry row
 ```bash
 hardline models          # name, family, backend, local?, model id
 hardline check           # validates every tier and resolves every api_key reference
-hardline check --json    # {"ok", "tiers": [...], "models": [{"name", "ok", "problem", ...}]}
+hardline check --json    # {"ok", "tiers", "models": [{"name", "ok", "problem", ...}], "warnings"}
 ```
 
 `check` exits 0 only when every row would get past composition and find its key: a valid row,
 options its backend reads, an http(s) `base_url`, a key reference where the backend needs one.
-A key the provider then rejects is only discovered by a call (exit 6).
+A key the provider then rejects is only discovered by a call (exit 6). A `shared_fate` warning means a
+row's fallback sends to the same server as the row, so it will not answer when that server is
+down: tell the operator rather than count on it.
 
 If `hardline models` lists nothing, no registry exists yet. Do not invent one — ask the operator
 which models they run.
@@ -48,22 +50,27 @@ beside it; the exit is still 0.
 
 ## When a command fails
 
-The exit code is the next move. Pass `--json` and stderr carries one JSON line,
-`{"error": {"kind", "message", "retryable", "retry_after", "fix"}}`; `fix` is a step that can
-succeed, or `null` when there is none.
+The exit code is the next move. Pass `--json` and every failure, a usage error included, is one
+JSON line on stderr: the envelope matrix, ix and recon print too,
+`{"schema": "hardline.v1.error", "error": {"kind", "message", "fix", "complete", "problems",
+"details"}}`. `fix` is always a step that can succeed. `problems` lists each bad registry key
+(`path`, `kind`, `message`, `source`: the tier it came from). `details.reason` says why a
+provider call failed (`rate_limit`, `timeout`, `unavailable`, `auth`, `bad_request`, `unknown`),
+with `details.retry_after` when the provider gave one and `details.limit` when the row's
+`limits` stopped the call.
 
 | exit | kind | do this |
 |---|---|---|
-| 0 | — | use the output |
+| 0 | `ok` | use the output |
 | 1 | `unknown` | report the message; do not retry blindly |
-| 2 | — | usage: fix the flags (`hardline <command> --help`) |
-| 3 | `config`, `bad_request` | change the input: the model name, the registry row (its options, `base_url`, `api_key`), the secret |
-| 4 | `not_found` | reserved; hardline raises none today |
-| 5 | `rate_limit`, `timeout`, `unavailable` | retry later, after `retry_after` seconds if set |
+| 2 | `usage` | fix the flags (`hardline <command> --help`) |
+| 3 | `config` | change the input: the model name, the registry row (its options, `base_url`, `api_key`), the secret, or a request the provider rejected (`details.reason: bad_request`). A redirect lands here: `fix` names the `base_url` to set |
+| 5 | `transient` | retry later, after `details.retry_after` seconds if set |
 | 6 | `auth` | stop and tell the operator the key was rejected |
+| 130 | `interrupted` | run the command again |
 
-The runtime has already spent the row's retries and fallbacks before exit 5, so an immediate
-retry is unlikely to help.
+The runtime has already spent the row's retries and fallbacks, or reached its `limits`, before
+exit 5, so an immediate retry is unlikely to help.
 
 ## Choosing a model
 

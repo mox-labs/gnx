@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from hardline.domain.errors import ConfigError
+from hardline.domain.types import Problem
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -26,16 +27,23 @@ class YamlConfigSource:
         try:
             data = yaml.safe_load(self._path.read_text(encoding="utf-8"))
         except yaml.YAMLError as e:
-            raise ConfigError(f"{self.describe()}: not valid YAML: {e}") from e
+            raise self._unread(f"not valid YAML: {e}", "yaml_syntax") from e
         except UnicodeDecodeError as e:
-            raise ConfigError(f"{self.describe()}: not UTF-8 text: {e}") from e
+            raise self._unread(f"not UTF-8 text: {e}", "yaml_syntax") from e
         except OSError as e:
-            raise ConfigError(f"{self.describe()}: cannot be read: {e.strerror}") from e
+            raise self._unread(f"cannot be read: {e.strerror}", "wrong_shape") from e
         if data is None:
             return {}
         if not isinstance(data, dict):
-            raise ConfigError(f"{self.describe()}: top level must be a mapping")
+            raise self._unread("top level must be a mapping", "wrong_shape")
         return data
+
+    def _unread(self, message: str, kind: str) -> ConfigError:
+        """The whole tier is the problem: its path is the document's root."""
+        return ConfigError(
+            f"{self.describe()}: {message}",
+            problems=[Problem(path="", kind=kind, message=message, source=self.describe())],
+        )
 
     def describe(self) -> str:
         return f"{self._rung} {self._path}" if self._rung else str(self._path)

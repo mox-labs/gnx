@@ -27,18 +27,22 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from hardline.adapters._out.otel import OtelCallObserver, Telemetry, TracedBackend
 from hardline.adapters._out.secrets import EnvFileSecretResolver
 from hardline.adapters._out.yaml_source import MappingConfigSource, YamlConfigSource
 from hardline.domain.errors import ConfigError
 from hardline.domain.ports._out.backend import ModelBackend
-from hardline.domain.registry import ModelRegistry
+from hardline.domain.registry import ModelRegistry, models_not_a_mapping, unknown_keys
 from hardline.domain.runtime import ModelRuntime
+from hardline.domain.types import Problem
 
 if TYPE_CHECKING:
     import random
     from importlib.metadata import EntryPoint
 
+    from hardline.adapters._out.otel import MeterProvider, TracerProvider
     from hardline.domain.ports._out.config_source import ConfigSource
+    from hardline.domain.ports._out.observer import CallObserver
     from hardline.domain.ports._out.secrets import SecretResolver
     from hardline.domain.types import ModelSpec, RawCompletion, Request
 
@@ -159,18 +163,25 @@ def merge_tiers(
             continue
         unknown = set(data) - {"default", "models"}
         if unknown:
-            raise ConfigError(
-                f"{source.describe()}: unknown top-level key(s) {sorted(unknown)}. "
-                "Legal: ['default', 'models']"
-            )
+            raise unknown_keys(unknown, source.describe())
         if "default" in data:
             default = data["default"]
         models = data.get("models") or {}
         if not isinstance(models, Mapping):
-            raise ConfigError(f"{source.describe()}: 'models' must be a mapping of name -> spec")
+            raise models_not_a_mapping(source.describe())
         for name, row in models.items():
             if not isinstance(row, Mapping):
-                raise ConfigError(f"{source.describe()}: models.{name}: must be a mapping")
+                raise ConfigError(
+                    f"{source.describe()}: models.{name}: must be a mapping",
+                    problems=[
+                        Problem(
+                            path=f"models.{name}",
+                            kind="wrong_shape",
+                            message="must be a mapping",
+                            source=source.describe(),
+                        )
+                    ],
+                )
             merged_models[str(name)] = {**merged_models.get(str(name), {}), **row}
             fields = origins.setdefault(str(name), {})
             for field in row:
@@ -212,12 +223,21 @@ def build_runtime(
     label: str = "<mapping>",
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     rng: random.Random | None = None,
+    observer: CallObserver | None = None,
+    tracer_provider: TracerProvider | None = None,
+    meter_provider: MeterProvider | None = None,
 ) -> ModelRuntime:
     """Wire a ModelRuntime.
 
     ``config`` wins over ``sources``; with neither, tiers are discovered from disk.
-    ``backends`` defaults to built-ins plus entry points; tests pass their own, and inject
+    ``backends`` defaults to the installed entry points; tests pass their own, and inject
     ``sleep``/``rng`` to observe retry backoff without waiting.
+
+    Every backend, found or handed in, is wrapped in ``TracedBackend``: one ``chat`` span and
+    the inference metrics per backend call. ``observer`` hears each logical call's failed
+    attempts, fallbacks and answer; by default ``OtelCallObserver`` counts the retries and
+    fallbacks. Both use the OpenTelemetry API on ``tracer_provider`` and ``meter_provider``,
+    the global ones by default, which record nothing until an application installs an SDK.
     """
     if config is not None:
         tiers: Sequence[ConfigSource] = [MappingConfigSource(dict(config), label=label)]
@@ -226,13 +246,18 @@ def build_runtime(
     else:
         tiers = discover_sources()
     found = backends if backends is not None else discover_backends()
+    telemetry = Telemetry(tracer_provider, meter_provider)
+    traced: dict[str, ModelBackend] = {
+        name: TracedBackend(backend, name, telemetry) for name, backend in found.items()
+    }
     return ModelRuntime(
-        load_registry(tiers, found),
-        found,
+        load_registry(tiers, traced),
+        traced,
         secrets if secrets is not None else EnvFileSecretResolver(),
         schema_retries=schema_retries,
         sleep=sleep,
         rng=rng,
+        observer=observer if observer is not None else OtelCallObserver(telemetry),
     )
 
 
