@@ -35,6 +35,7 @@
 
 ### Fixed
 
+- **`Usage.input_tokens` means one thing on every backend: every input token, the cache's included.** The `anthropic` backend reported the Messages API's `input_tokens`, which leaves out the tokens read from and written to the prompt cache, while `openai-compat`'s `prompt_tokens` counts them, so a call served mostly from the cache reported a small part of what it was sent. It now adds `cache_read_tokens` and `cache_write_tokens` in, as the GenAI semantic conventions ask of `gen_ai.usage.input_tokens` (registry notes [42], [43] and [47]). The two cache counts are kept beside it.
 - **`Completion.usage` is what it says.** It was documented as summing failed and retried calls, and summed only the answering call of each schema attempt; when an `extract`'s chain was exhausted, the usage of its earlier repairs was lost. It is now the sum over `attempt_log`, and the documentation says what that is: a failed call reports no usage, so it adds nothing. The two tests named for the summation, which passed on `> 0`, assert the exact sums.
 - **A registry error names the tier that set the bad field**, where it named the last tier that touched the row.
 - **A tier that cannot be read is a `ConfigError`.** `$HARDLINE_CONFIG` naming a directory passed discovery and raised `IsADirectoryError`; a tier that is not UTF-8 raised `UnicodeDecodeError`. Discovery now requires `$HARDLINE_CONFIG` to name a file, and a tier that cannot be read or decoded names itself in a `ConfigError`.

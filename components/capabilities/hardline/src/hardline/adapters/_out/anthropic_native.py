@@ -129,14 +129,18 @@ class AnthropicBackend:
         usage = reply.usage or _Usage()
         text = "".join(block.text or "" for block in reply.content if block.type == "text")
         native = reply.stop_reason
+        cache_read = usage.cache_read_input_tokens or 0
+        cache_write = usage.cache_creation_input_tokens or 0
         return RawCompletion(
             text=text,
             model=reply.model or spec.model,
             usage=Usage(
-                input_tokens=usage.input_tokens or 0,
+                # The API's input_tokens leaves out the tokens read from and written to the
+                # cache; hardline's counts every input token (see ``Usage``).
+                input_tokens=(usage.input_tokens or 0) + cache_read + cache_write,
                 output_tokens=usage.output_tokens or 0,
-                cache_read_tokens=usage.cache_read_input_tokens or 0,
-                cache_write_tokens=usage.cache_creation_input_tokens or 0,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
             ),
             request_id=reply.id,
             finish_reason=_FINISH.get(native, "other") if native is not None else None,
