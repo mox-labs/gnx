@@ -21,7 +21,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 
-# Every runtime and telemetry is a dependency: there are no extras (Q13). Each is imported only
+# Every runtime and telemetry is a dependency: there are no extras (owner ruling 2026-10-22). Each is imported only
 # inside the adapter that uses it, when that adapter is built, so `import matrix` loads none.
 dependencies = [
     # >=0.1.51: the first release that strips CLAUDECODE from the CLI's environment itself

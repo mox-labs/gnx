@@ -671,7 +671,7 @@ def test_a_killed_run_once_read_says_interrupted_on_disk_and_reads_without_matri
     """A torn last line broke jq and DuckDB, and ``interrupted`` lived only in what
     ``describe`` computed. The first matrix reader that finds
     the writer gone finishes the record: ``run.json`` says ``interrupted``, and each torn
-    tail is moved aside to ``<file>.torn``, so every file reads without matrix (W5.1)."""
+    tail is moved aside to ``<file>.torn``, so every file reads without matrix."""
     runs = _killed_mid_write(tmp_path)
     directory = runs / "killed"
     assert json.loads((directory / "run.json").read_text())["status"] == "running"
@@ -859,7 +859,7 @@ def test_the_documented_readers_skip_a_line_cut_short_in_a_run_not_yet_finished(
         assert [json.loads(line)["seq"] for line in read.stdout.splitlines()] == [0, 1, 2]
 
 
-# --- the record's observable behaviours, each pinned (W5.3) ------------------------------
+# --- the record's observable behaviours, each pinned ------------------------------
 
 
 def test_every_table_file_exists_from_the_start_even_with_no_rows(tmp_path: Path) -> None:

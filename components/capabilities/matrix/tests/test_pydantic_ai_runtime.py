@@ -528,7 +528,7 @@ def _counted(reader: InMemoryMetricReader, name: str) -> int:
 
 async def test_one_agent_run_counts_each_token_once() -> None:
     """hardline counts ``gen_ai.client.inference.usage.*`` for every model call it makes, so
-    matrix's agent-session counters leave this runtime's sessions alone (W7.12): the runtime
+    matrix's agent-session counters leave this runtime's sessions alone: the runtime
     declares it (``usage_counted_by``), and nothing reads its name."""
     reader = InMemoryMetricReader()
     meters = MeterProvider(metric_readers=[reader])
@@ -563,7 +563,7 @@ async def test_pydantic_ai_records_no_content_even_when_instrumented_process_wid
     """pydantic-ai's instrumentation is off unless something turns it on for every agent
     (``Agent.instrument_all``), and then records prompts and replies by default
     (``InstrumentationSettings.include_content``). This runtime's agents switch it off, since
-    hardline and matrix already trace, without content (P1.1)."""
+    hardline and matrix already trace, without content."""
     from pydantic_ai import Agent
     from pydantic_ai.models.instrumented import InstrumentationSettings
 
@@ -616,7 +616,7 @@ def test_importing_matrix_does_not_import_pydantic_ai() -> None:
 
 
 async def test_a_hardline_model_runtime_gives_a_pydantic_ai_model_on_a_row_it_names() -> None:
-    """W11.2b: a caller that runs pydantic-ai itself (ix's evaluator judge) asks a model
+    """A caller that runs pydantic-ai itself (ix's evaluator judge) asks a model
     runtime for a pydantic-ai ``Model`` (``pydantic_ai_model``, optional on the port), so the
     model comes from the runtime's config and nowhere else: its row, and its ``max_tokens`` and
     ``temperature``. Each request is one hardline call; the connections close with ``aclose``."""
@@ -638,7 +638,7 @@ async def test_a_hardline_model_runtime_gives_a_pydantic_ai_model_on_a_row_it_na
 
 
 async def test_a_session_names_the_provider_its_row_names() -> None:
-    """W7.11: the row's ``provider:`` is who served the session; without one, its backend's
+    """The row's ``provider:`` is who served the session; without one, its backend's
     name stands in (above)."""
     runtime = PydanticAiRuntime(
         _models("Bone.", provider="ollama"), PydanticAiRuntimeConfig(default_model="q")

@@ -29,7 +29,8 @@ arguments were refused. ``model``, ``family``, ``provider``, ``finish_reason`` a
 (``provider`` its row's ``provider:``, else its backend's name); usage is summed over every call
 of the session, each already summed over its attempts; ``num_turns`` counts the calls;
 ``session_id`` is pydantic-ai's run id. No cost: hardline reports tokens, and pydantic-ai's own
-price estimate is not a provider's report (Q1).
+price estimate is not a provider's report (owner ruling 2026-10-22: a cost is kept only as the
+provider's own report).
 
 **Counted once.** hardline counts the inference tokens of every call it makes. So this runtime
 declares ``usage_counted_by = "hardline"``, and matrix's agent-session counters leave its
@@ -43,7 +44,7 @@ has not chosen, and its ``InstrumentationSettings`` record prompts, replies and 
 unless told not to (``include_content: bool = True``, ``pydantic_ai/models/instrumented.py:85``,
 ``:96``). Each agent here sets ``instrument = False`` (``:1199-1201``), so nothing in the process
 can turn it on: hardline's ``chat`` spans and matrix's ``invoke_agent`` span trace a session,
-without content (P1.1).
+without content.
 
 **Connections.** hardline's connections belong to the event loop that opened them. Sessions in
 one loop share them, and they are closed when the last session running in that loop ends.

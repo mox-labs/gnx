@@ -59,7 +59,8 @@ def test_plan_says_the_order_agents_and_agent_calls_and_runs_nothing(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Changed requirement: the plan states no spend (spend was removed), and no effects
-    (Q6: removed); the agent-call counts the spend record held are the plan's own."""
+    (owner ruling 2026-10-22: removed); the agent-call counts the spend record held are the plan's
+    own."""
     code, plan, _ = _cli(capsys, "plan", "--json")
     assert code == 0 and plan["schema"] == "matrix.v1.plan"
     assert plan["inputs"] == ["acme.v1.diff"] and plan["stages"] == [["review"]]
@@ -109,8 +110,8 @@ def test_the_call_counts_are_open_only_for_a_component_handed_the_runtimes(
     needs: tuple[str, ...],
     bounded: bool,
 ) -> None:
-    """Changed requirement (Q6: effects are removed). Whether a component that is neither an
-    agent step nor a model step may make a session is read from its needs, which the
+    """Changed requirement (owner ruling 2026-10-22: effects are removed). Whether a component that
+    is neither an agent step nor a model step may make a session is read from its needs, which the
     registry checks, not from a label: one handed matrix's agents or model runtimes may, so
     the plan leaves the most calls open; one handed neither cannot reach a runtime."""
     from matrix.composition import container

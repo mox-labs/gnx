@@ -410,7 +410,8 @@ def test_selecting_what_an_incomplete_install_lacks_is_a_config_error_saying_how
     monkeypatch: pytest.MonkeyPatch, module: str, config: dict[str, object]
 ) -> None:
     """Regression: a missing dependency raised a bare ImportError, with no kind and no fix.
-    matrix depends on each one (Q13: no extras), so the fix reinstalls matrix."""
+    matrix depends on each one (no extras: owner ruling 2026-10-22), so the fix reinstalls
+    matrix."""
     monkeypatch.setitem(sys.modules, module, None)
     with pytest.raises(ConfigError) as raised:
         compose(_config(**config))

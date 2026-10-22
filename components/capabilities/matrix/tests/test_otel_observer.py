@@ -233,7 +233,7 @@ class _Counted:
 async def test_matrix_counts_no_inference_usage_for_a_model_call() -> None:
     """A model call's tokens are counted once, by the model runtime that made it (hardline
     counts each attempt): matrix's inference counters and its ``matrix.model`` span carry
-    none of them, so nothing is counted twice (W4.5). The session row still holds them."""
+    none of them, so nothing is counted twice. The session row still holds them."""
     from matrix import PROMPT, ModelStep, ModelStepConfig
 
     reader = InMemoryMetricReader()
@@ -277,7 +277,7 @@ def _tracked() -> tuple[OtelObserver, _Tracked]:
 
 async def test_an_end_event_the_channel_never_delivers_leaves_no_span_open() -> None:
     """The channel stops delivering at a component's end (an observer before the otel one
-    holds it), and drops the rest when the run closes it: every span still ends (W4.8)."""
+    holds it), and drops the rest when the run closes it: every span still ends."""
 
     class Holds:
         async def on_event(self, event: Event) -> None:
@@ -295,7 +295,7 @@ async def test_an_end_event_the_channel_never_delivers_leaves_no_span_open() -> 
 
 async def test_an_event_a_component_emits_opens_no_span_whatever_its_name() -> None:
     """``ctx.emit`` makes one event with a span id of its own: a name ending ``.start`` (ix's
-    ``ix.trial.start``) opens no span that nothing would end (W4.8, W6.8)."""
+    ``ix.trial.start``) opens no span that nothing would end."""
 
     class Trials:
         requires: tuple[str, ...] = ()
@@ -658,14 +658,14 @@ async def test_content_leaves_on_a_span_only_when_asked_for() -> None:
     assert spans["acme.fetch"].attributes["acme.url"] == f"https://user:{_SECRET}@host/x"
     assert _SECRET in str(spans["matrix.release"].status.description)
     # A tool call's arguments, as the conventions name them: a JSON object, as the runtime
-    # reported it (W4.11: what pydantic-evals' ArgumentCorrectness reads).
+    # reported it (what pydantic-evals' ArgumentCorrectness reads).
     arguments = spans["execute_tool Read"].attributes["gen_ai.tool.call.arguments"]
     assert json.loads(arguments) == {"pattern": f"{_SECRET} pattern"}
     assert "matrix.arguments" not in spans["execute_tool Read"].attributes
 
 
 async def test_the_span_names_are_the_pinned_ones() -> None:
-    """The span names a trace consumer relies on (W5.3): a run, a component, an agent
+    """The span names a trace consumer relies on: a run, a component, an agent
     session, a timed tool call, a model step's call, a release and a component's own span."""
     from matrix import PROMPT, AgentDefinition, BoundAgent, ModelStep, ModelStepConfig
 
