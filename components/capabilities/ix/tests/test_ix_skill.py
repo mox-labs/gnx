@@ -307,7 +307,7 @@ class TestEveryClaimHolds:
         declared = sorted(
             {name.rsplit(".", 1)[1] for name in set(kinds.kinds) - set(kinds.runnable)}
         )
-        assert declared  # agent evaluations are declared only in this build
+        assert declared == ["inspect-task"]  # declared, with no adapter: design record §13
         when = _skill().split("## When to use ix", 1)[1].split("## Install", 1)[0]
         assert ", ".join(f"`{label}`" for label in declared) in when
 

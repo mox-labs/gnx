@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 Write = Any  # the write_experiment fixture
 
-#: The kinds DECISIONS §2 names, by family.
+#: The kinds ix ships, by family.
 EXPECTED = {
     "subject": {"process", "http", "agent-session", "model-call"},
     "probe": {"prompt", "http-load", "inspect-task"},
@@ -337,7 +337,7 @@ class TestOptions:
         """Regression: ``runtime`` defaulted to claude-sdk, and an experiment and a test
         fixture that named none started paid Claude sessions. A model is never called
         implicitly."""
-        for label, choices in [("agent-session", ("claude-sdk (", "mock (")),
+        for label, choices in [("agent-session", ("claude-sdk (", "pydantic-ai (", "mock (")),
                                ("model-call", ("hardline (", "mock ("))]:  # fmt: skip
             session = builtin_kinds.get("subject", label)
             assert session is not None and session.options["runtime"].required
@@ -345,7 +345,8 @@ class TestOptions:
             assert (problem.path, problem.kind) == ("subjects.agent.runtime", "option_missing")
             for choice in choices:
                 assert choice in problem.fix, choice
-            assert problem.fix.count("; calls a model provider)") == 1
+            # every choice but the stand-in says it calls a model provider
+            assert problem.fix.count("; calls a model provider)") == len(choices) - 1
             assert "; calls no model)" in problem.fix
             assert problem.allowed == ()  # an open set: an installed runtime is accepted too
             assert check_options(session, {"runtime": f"acme.v1.{label}.x"}, "s") == []
@@ -358,8 +359,9 @@ class TestOptions:
         default (the judge's review reports one named neither, or both)."""
         judge = builtin_kinds.get("sensor", "judge")
         assert judge is not None and "runtime" not in judge.options
+        agents = {"claude-sdk", "pydantic-ai", "mock"}
         for option, choices in [("model_runtime", {"hardline", "mock"}),
-                                ("agent_runtime", {"claude-sdk", "mock"})]:  # fmt: skip
+                                ("agent_runtime", agents)]:  # fmt: skip
             assert set(judge.options[option].choices) == choices
             assert not judge.options[option].required
             assert "calls no model" in judge.options[option].choices["mock"]

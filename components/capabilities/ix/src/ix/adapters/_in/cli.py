@@ -182,7 +182,7 @@ class _Group(click.RichGroup):
 def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     """ix: one file declares a question about a system and how it will be answered.
 
-    ix checks the file, shows the decision a run would inform and what it would cost,
+    ix checks the file, shows the decision a run would inform and how many trials it takes,
     freezes the design before anything runs, then runs it and reports what the readings say
     about that decision.
 
@@ -367,7 +367,7 @@ def _print_plan(plan: ix.Plan, path: str) -> None:
 @_path_argument
 @_json_option
 def plan(path: str, as_json: bool) -> None:
-    """Show the decision a run would inform and what it would cost. Runs nothing.
+    """Show the decision a run would inform and how many trials it takes. Runs nothing.
 
     States the question, the hypothesis rendered from the genre, the guardrails and the form
     of the verdict; then the subjects with their roles, the trials with their arithmetic, the

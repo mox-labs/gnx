@@ -16,16 +16,17 @@ neither a verdict nor an indication, and says so in words that cannot be read as
 evidence (:data:`DRY_RUN`).
 
 Beside the verdict a report carries what :mod:`ix.domain.summaries` computes: confusion
-tables, flags, the probe screen (left out when a stand-in answered: canned replies screen
-nothing), and what the run spent. ``shows`` says what the evidence shows in plain words, in
+tables, flags, and the probe screen (left out when a stand-in answered: canned replies
+screen nothing). ``shows`` says what the evidence shows in plain words, in
 the direction it points, whatever the verdict: ``build30's latency p50 is higher than
 build20's by 29.6% [26.2%, 33.1%]``. ``best_case`` says when the run was too small for even
 every trial passing to show its threshold.
 
 ``exit_code`` is what a command that printed the report exits with: 0 when the verdict
 holds or there is none to give, and a code of its own for ``fails``, ``inconclusive``, an
-interrupted run, a failed one, one that is still running, and one whose experiment had
-changed since its registration (``deviations``: never 0, so no gate passes on it).
+interrupted run, a failed one, one that is still running, one whose experiment had changed
+since its registration (``deviations``), and a registered run a stand-in answered
+(``simulated``): neither of the last two is ever 0, so no gate passes on it.
 ``exit`` is the same with what it means and what to do next, as :data:`EXIT_NEXT` says.
 """
 

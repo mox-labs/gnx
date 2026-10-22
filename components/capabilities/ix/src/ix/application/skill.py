@@ -570,7 +570,7 @@ def _commands() -> str:
             "",
             "`<path>` is the experiment file, a directory holding `experiment.yaml`, or `-` "
             "for an experiment on standard input (it has no file to register beside, so it "
-            "runs only with `--exploratory`). Every "
+            "runs only with `--exploratory` or `--dry-run`). Every "
             "command takes `--json` and then prints one document with a `schema` field on "
             "stdout: `ix.v1.validation`, `ix.v1.plan`, `ix.v1.registered`, "
             "`ix.v1.deviations`, `ix.v1.report`, `ix.v1.runs`, `ix.v1.genres`, `ix.v1.kinds`. "
@@ -658,7 +658,7 @@ def _skill(genres: Genres, kinds: Kinds, version: str) -> str:
         f"# ix {version}: experiments that decide a question about a system\n\n"
         "ix answers a question about a system with an experiment. One YAML file names the "
         "question, the subjects, the probes and the metric that decides. ix checks the file, "
-        "shows the decision a run would inform and what it would cost, freezes the design "
+        "shows the decision a run would inform and how many trials it takes, freezes the design "
         "before anything runs, runs it one trial at a time, and reports a verdict: `holds`, "
         "`fails` or `inconclusive`. The system is a service (a program, an endpoint), an AI "
         "agent (a fresh session per trial on one of matrix's agent runtimes, graded by its "

@@ -20,7 +20,7 @@ from click.testing import CliRunner, Result
 
 import ix
 from ix.adapters._in.cli import main
-from ix.application.skill import COMMANDS
+from ix.application.skill import COMMANDS, REFERENCES
 from ix.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS
 from ix.domain.problem import PROBLEM_KINDS
 
@@ -649,7 +649,8 @@ class TestGenresAndKindsCommands:
         command = document["kinds"]["ix.v1.subject.process"]["options"]["command"]
         assert (command["type"], command["within"]) == ("command", "cwd")
         runtime = document["kinds"]["ix.v1.subject.agent-session"]["options"]["runtime"]
-        assert runtime["required"] and set(runtime["choices"]) == {"claude-sdk", "mock"}
+        assert runtime["required"]
+        assert set(runtime["choices"]) == {"claude-sdk", "pydantic-ai", "mock"}
         runtime = document["kinds"]["ix.v1.subject.model-call"]["options"]["runtime"]
         assert runtime["required"] and set(runtime["choices"]) == {"hardline", "mock"}
         assert load["options"]["rate"]["required_when"] == {"load_model": "open"}
@@ -956,6 +957,13 @@ def test_the_progress_bar_stops_however_the_run_ends(
     assert bar.stopped
 
 
+def test_nothing_ix_says_prices_a_run() -> None:
+    """Regression: spend is removed (owner ruling, 2026-10-22), yet the skill, ``ix
+    --help`` and ``ix plan --help`` said ix shows what a run "would cost"."""
+    said = [ix.skill(), *(ix.skill(name) for name in REFERENCES), _help(), _help("plan")]
+    assert not [text for text in said if "would cost" in " ".join(text.split())]
+
+
 class TestStandardInputAndWarnings:
     def test_a_dash_reads_the_experiment_from_standard_input(
         self, compare_data: dict[str, Any]
@@ -969,6 +977,23 @@ class TestStandardInputAndWarnings:
         assert planned.exit_code == 0 and _json(planned)["registration"]["status"] == "none"
         refused = CliRunner().invoke(main, ["register", "-", "--json"], input=text)
         assert refused.exit_code == 3 and "standard input" in _error(refused)["message"]
+
+    def test_standard_input_runs_dry_or_exploratory_and_the_skill_says_both(
+        self, evaluate_data: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the skill said `-` runs only with ``--exploratory`` while the command
+        runs it with ``--dry-run`` too, and its help says so."""
+        monkeypatch.chdir(tmp_path)
+        text = yaml.safe_dump(evaluate_data)
+        dry = CliRunner().invoke(main, ["run", "-", "--dry-run", "--json"], input=text)
+        assert dry.exit_code == 0, dry.output
+        refused = CliRunner().invoke(main, ["run", "-", "--json"], input=text)
+        assert refused.exit_code == 15 and _error(refused)["kind"] == "unregistered"
+        said = "runs only with `--exploratory` or `--dry-run`"
+        skill = [ix.skill(), *(ix.skill(name) for name in REFERENCES)]
+        assert any(said in " ".join(text.split()) for text in skill)
+        assert not any("runs only with `--exploratory`)" in text for text in skill)
+        assert said in " ".join(_help("run").split())
 
     def test_an_envelope_says_when_checking_stopped_early(
         self, compare_data: dict[str, Any], write_experiment: Write

@@ -17,7 +17,7 @@ the schedule, the record and the analysis, which a declaration cannot give it; a
 an existing family needs only its file and its adapter.
 
 **Facets** are how kinds fit together without knowing each other. A subject kind offers how
-it can be reached (``url``, ``pid``, ``agent``); a probe kind needs some of those and offers
+it can be reached (``url``, ``pid``, ``respondent``); a probe kind needs some of those and offers
 what applying it leaves behind (``load``, ``response``, ``usage``); a sensor needs what it
 measures from.
 """
