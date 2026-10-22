@@ -281,7 +281,10 @@ A declaration is not an adapter. ix can **run** these:
 `ix validate` warns (`kind_unimplemented`), `ix plan` prints `Runnable: no` with the kinds,
 and `ix run` refuses it before anything starts. `ix kinds` marks each kind. An adapter that
 is registered but cannot be built here (a need nothing supplies) is treated the same way,
-and `ix kinds` says why under `unbuildable`.
+and `ix kinds` says why under `unbuildable`. An adapter whose review of its options raises
+makes the experiment invalid (`adapter_failed`, naming the adapter and its error), and one
+whose preflight raises is a requirement that does not hold, so `ix plan` prints
+`Runnable: no` and `ix run` refuses it.
 
 An adapter plugs in through matrix's registry, as every extension does. A package declares
 its kind as data at the `ix.kind` entry point, and registers the adapter from its

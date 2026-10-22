@@ -290,6 +290,11 @@
   Only a `MatrixError` was read as "cannot be built", so a third party's constructor that
   raised anything else made `validate`, `plan`, `register`, `run` and `kinds` raise for
   every experiment. Listing the kinds builds each adapter once, where it built each twice.
+- **An adapter that raises while it checks an entry is named, not a crash.** An adapter
+  whose `review()` raised made `validate`, `plan` and `run` of an experiment that used it
+  raise the error as it stood. It is now a problem at the entry (`adapter_failed`), naming
+  the adapter and its error. One whose `requirements()` raises is a requirement that does
+  not hold, so the plan says `Runnable: no` and the run refuses to start.
 - **A report never calls a model and never starts a process.** `ix report` of a run that
   ended before its sensors read its interactions derived the readings then: each report of a
   run with a `judge` asked the judge again, and one with `function-test` or `outcome` ran

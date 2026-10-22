@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 import ix
-from ix.application.experiments import Vocabulary, examine, validate
+from ix.application.experiments import Vocabulary, examine, reviewed, validate
 from ix.domain.problem import PROBLEM_KINDS, Problem, problem
 
 if TYPE_CHECKING:
@@ -414,6 +414,17 @@ def _unobservable(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return _validated(write, e)
 
 
+def _adapter_failed(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    """An extension's adapter whose review raises: a problem at each entry it reviews."""
+
+    class Raising:
+        def review(self, options: Any, around: Any) -> list[Problem]:
+            raise RuntimeError("a bug in the extension")
+
+    examined = reviewed(examine(e, v), v, lambda kind: Raising(), base=".")
+    return {(p.path, p.kind) for p in examined.problems}
+
+
 #: Each case by the scenario it builds: (the case, the path, the problem kind it reports).
 #: Changed requirement: an unknown genre, kind, control subject or parent genre is the
 #: shared ``name_unknown``, and a genre, kind or probe id defined twice the shared
@@ -446,6 +457,7 @@ CASES: dict[str, tuple[Any, str, str]] = {
         "option_inapplicable",
     ),
     "unobservable": (_unobservable, "subjects.catalog.tools", "unobservable"),
+    "adapter_failed": (_adapter_failed, "subjects.catalog", "adapter_failed"),
     "metric_unprovided": (_metric_unprovided, "primary.metric", "metric_unprovided"),
     "metric_ambiguous": (_metric_ambiguous, "primary.metric", "metric_ambiguous"),
     "metric_mismatch": (_metric_mismatch, "metrics.0.shape", "metric_mismatch"),

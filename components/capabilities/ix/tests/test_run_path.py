@@ -64,6 +64,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
     from ix.domain.experiment import Shape
+    from ix.domain.ports import Requirement, Surroundings
+    from ix.domain.problem import Problem
 
 Write = Any
 
@@ -1021,6 +1023,53 @@ class TestABrokenExtension:
         assert not root.plan(uses_it).runnable
         with pytest.raises(ix.ConfigError, match="licence server is down"):
             root.run(uses_it, exploratory=True)
+
+    @pytest.mark.parametrize("raises_in", ["review", "requirements"])
+    def test_an_adapter_that_raises_while_it_checks_is_named_not_a_crash(
+        self, raises_in: str, write_experiment: Write
+    ) -> None:
+        """Regression: an adapter whose ``review()`` or ``requirements()`` raised escaped
+        ``validate``, ``plan`` and ``run`` as a raw error. A review that raises is a problem
+        at the entry, and a preflight that raises a requirement that does not hold, each
+        naming the adapter and its error; an experiment that does not use it is untouched."""
+
+        class Checking(FakeTiming):
+            def review(self, options: Mapping[str, Any], around: Surroundings) -> list[Problem]:
+                if raises_in == "review":
+                    raise RuntimeError("the acme sensor's licence server is down")
+                return []
+
+            def requirements(self, options: Mapping[str, Any], *, base: str) -> list[Requirement]:
+                if raises_in == "requirements":
+                    raise RuntimeError("the acme sensor's licence server is down")
+                return []
+
+        registry = fake_registry()
+        registry.register(POINTS["sensor"], "ix.v1.sensor.memory", Checking)
+        root = Root(registry=registry)
+        uses_it = write_experiment(experiment(metrics=["memory_peak"]), "memory")
+        said = "ix.v1.sensor.memory raised RuntimeError: the acme sensor's licence server is down"
+        validation = root.validate(uses_it)
+        if raises_in == "review":
+            assert not validation.valid
+            (found,) = validation.problems
+            assert (found.path, found.kind) == ("sensors", "adapter_failed")
+            assert said in found.message
+            with pytest.raises(ix.InvalidExperimentError):
+                root.plan(uses_it)
+            with pytest.raises(ix.InvalidExperimentError) as refused:
+                root.run(uses_it, exploratory=True)
+            assert refused.value.problems == (found,)
+        else:
+            assert validation.valid
+            plan = root.plan(uses_it)
+            assert not plan.runnable
+            (unmet,) = plan.unmet
+            assert unmet.needed_by == ("sensors",) and said in unmet.why
+            with pytest.raises(ix.ConfigError, match="licence server is down"):
+                root.run(uses_it, exploratory=True)
+        unrelated = write_experiment(experiment(), "plain")
+        assert root.validate(unrelated).valid and root.plan(unrelated).runnable
 
     def test_listing_the_vocabulary_builds_each_adapter_once(self) -> None:
         """Regression: ``vocabulary()`` built every registered adapter twice (once for the

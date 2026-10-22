@@ -189,7 +189,8 @@ def reviewed(
 
     found: list[Problem] = []
     for name, subject in experiment.subjects.items():
-        built = adapter(schema.url("subject", subject.kind))
+        kind = schema.url("subject", subject.kind)
+        built = adapter(kind)
         if not isinstance(built, Review):
             continue
         # Each cell's options, as its trials will have them: a factor on one option hides
@@ -199,7 +200,7 @@ def reviewed(
         for options in per_cell(subject.options, experiment.factors, text=text):
             found += [
                 said
-                for said in built.review(options, around(f"subjects.{name}"))
+                for said in _review(built, kind, options, around(f"subjects.{name}"))
                 if said not in found
             ]
     listed = {
@@ -209,12 +210,37 @@ def reviewed(
         built = adapter(sensor.kind)
         if isinstance(built, Review):
             index = listed.get(sensor.kind)
-            found += built.review(
-                sensor.options, around("sensors" if index is None else f"sensors.{index}")
+            found += _review(
+                built,
+                sensor.kind,
+                sensor.options,
+                around("sensors" if index is None else f"sensors.{index}"),
             )
     if not found:
         return examined
     return replace(examined, problems=(*examined.problems, *found), design=None)
+
+
+def _review(
+    built: Review, kind: str, options: Mapping[str, Any], around: Surroundings
+) -> list[Problem]:
+    """What ``built``, the adapter of ``kind`` (a type URL), finds wrong with ``options``. A
+    review runs an extension's own code, so one that raises is a problem at the entry that
+    names the adapter and its error, not an error out of every command that checks the
+    experiment."""
+    try:
+        return list(built.review(options, around))
+    except Exception as error:
+        return [
+            problem(
+                around.path,
+                kind="adapter_failed",
+                message=f"the adapter for {kind} raised {type(error).__name__}: {error} while "
+                "it checked these options, so they are unchecked",
+                fix="fix or uninstall the extension that registered it",
+                got=schema.short(kind),
+            )
+        ]
 
 
 def validate(examined: Examined) -> Validation:
