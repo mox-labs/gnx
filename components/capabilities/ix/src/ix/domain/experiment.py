@@ -72,6 +72,14 @@ ESTIMATORS: dict[str, tuple[str, ...]] = {
     "series": ("mean", "median", "min", "max"),
 }
 
+
+def default_estimator(shape: str, genre_estimator: str = "mean") -> str:
+    """The estimator a metric of ``shape`` combines its trials by when none is written: a
+    boolean or a count as a rate, whatever the genre says; anything else as the genre
+    says. The one default the design, validation and the analysis share."""
+    return ESTIMATORS[shape][0] if shape in ("boolean", "count") else genre_estimator
+
+
 #: Experiment fields that are prose for a reader. A change to one changes the experiment's
 #: digest and not the plan's.
 PROSE_FIELDS = frozenset({"question", "rationale"})

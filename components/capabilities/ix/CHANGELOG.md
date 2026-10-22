@@ -67,6 +67,11 @@
   own `timeout` reason (a provider that did not answer) stays the harness's; ix's harness
   timeout is now a backstop 30 s past the session's limit, for a session that does not
   stop when its time is up.
+- **A count's estimator is `rate`.** A `count` metric took the genre's estimator, so the
+  plan, the registration and each decision said `mean` while the analysis pooled it as a
+  rate. Like a boolean, it now resolves to `rate` (`source: ix`), from the one default the
+  design, validation and the analysis share. A registration made before this release with
+  a count it names no estimator for differs from its plan: amend it.
 
 ### Kept
 

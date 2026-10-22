@@ -29,7 +29,7 @@ from ix.domain.design import (
     resolve,
     select_sensors,
 )
-from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment
+from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment, default_estimator
 from ix.domain.genre import CONTROL
 from ix.domain.intervals import MEDIAN_MIN
 from ix.domain.kind import NOTE_PREFIX, placeholders
@@ -426,7 +426,7 @@ def _decidable(
     median with fewer blocks than its interval needs."""
     problems: list[Problem] = []
     rate = metric.shape in ("boolean", "count")
-    estimator = ref.estimator or (ESTIMATORS[metric.shape][0] if rate else deciding.estimator)
+    estimator = ref.estimator or default_estimator(metric.shape, deciding.estimator)
     if estimator in ("min", "max") and estimator in ESTIMATORS[metric.shape]:
         problems.append(
             problem(

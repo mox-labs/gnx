@@ -98,7 +98,7 @@ from typing import TYPE_CHECKING, Literal
 
 from ix.domain import intervals
 from ix.domain.errors import ConfigError
-from ix.domain.experiment import ESTIMATORS, STATISTICS, Level
+from ix.domain.experiment import STATISTICS, Level, default_estimator
 from ix.domain.genre import CONTROL
 from ix.domain.intervals import MEDIAN_MIN, Span
 from ix.domain.run import CALIBRATION, cell_key, turns
@@ -388,7 +388,7 @@ class _Data:
 
 def _reductions(ref: MetricRef | Guardrail, metric: Metric) -> tuple[str, str]:
     statistic = ref.statistic or STATISTICS[metric.shape][0]
-    estimator = ref.estimator or ESTIMATORS[metric.shape][0]
+    estimator = ref.estimator or default_estimator(metric.shape)
     return statistic, estimator
 
 
@@ -874,7 +874,7 @@ def _estimates(data: _Data) -> tuple[Estimate, ...]:
             measures.setdefault((metric.name, measured.statistic, measured.estimator), measured)
     for metric in design.metrics:
         if not any(name == metric.name for name, _, _ in measures):
-            defaults = (STATISTICS[metric.shape][0], ESTIMATORS[metric.shape][0])
+            defaults = (STATISTICS[metric.shape][0], default_estimator(metric.shape))
             measures[(metric.name, *defaults)] = _Measure("primary", metric, *defaults)
     found = []
     for cell in data.cells:

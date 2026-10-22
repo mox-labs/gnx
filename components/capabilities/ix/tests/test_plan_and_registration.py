@@ -89,6 +89,20 @@ class TestPlanStatesTheDecision:
             "worse; the person's decision, made before the run"
         ) in shown.stdout
 
+    def test_a_count_combines_as_a_rate_whatever_the_genre_says(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: a count took the genre's estimator, so the plan, the registration and
+        each decision on ``error_rate`` said ``mean`` while the analysis pooled it as a
+        rate."""
+        compare_data["guardrails"] = [
+            {"metric": "error_rate", "threshold": {"op": "<", "value": 0.01}}
+        ]
+        made = _plan(compare_data, vocabulary)
+        (estimator,) = [v for v in made.provenance if v.path == "guardrails.0.estimator"]
+        assert (estimator.value, estimator.source) == ("rate", "ix")
+        assert "counts" in estimator.note
+
     def test_the_genre_is_carried_short_and_as_its_url(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:

@@ -88,7 +88,7 @@ class GenreDesign(Record):
     #: ``aa``: the control also runs against itself, a check that the environment held still.
     calibration: Calibration
     #: How the trials' numbers combine when the experiment names no estimator. A boolean
-    #: metric always combines as a rate.
+    #: or a count metric always combines as a rate.
     estimator: Literal["mean", "median", "min", "max"] = "mean"
     #: The standing of these choices, printed once under a plan.
     note: str = Field(min_length=1)

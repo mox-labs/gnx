@@ -578,6 +578,7 @@ class TestCountsMediansAndTheCheck:
         ).analyze()
         guardrail = found.findings[0].decisions[1]
         assert guardrail.method == "clustered wilson" and guardrail.outcome == "holds"
+        assert guardrail.estimator == "rate"  # pooled as a rate, and labelled one
         assert guardrail.interval is not None and guardrail.interval.low == 0.0
         assert guardrail.interval.high == pytest.approx(3.84 / 10_003.84, rel=1e-2)
 
