@@ -6,6 +6,8 @@ fake narrower than the SDK could not tell the runtime it reads a field the SDK l
 hands it an option the SDK refuses (mx-tests 5).
 """
 
+from pathlib import Path
+
 import pytest
 
 import matrix
@@ -86,6 +88,27 @@ def _runtime(**config):
 
 def _defn(**kw):
     return AgentDefinition(**{"name": "a", **kw})
+
+
+async def test_a_session_reaches_the_workspace_guard(
+    refused_live_calls: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The workspace guard refuses the SDK's ``query``. This holds that a session calls that
+    very name, so the guard is in its path (ix-tests F12): a ``query`` bound in the runtime's
+    module at import would be the real one, beyond the guard's reach. In case one ever is, the
+    test first points the CLI at a closed port, away from the user's config and keys."""
+    from matrix.adapters._out.runtime import claude_sdk
+
+    assert "query" not in vars(claude_sdk), "the runtime binds the SDK's query past the guard"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(AssertionError, match="a live model session"):
+        await _runtime(setting_sources=[]).run(_defn(), "hi")
+    assert refused_live_calls == ["claude_agent_sdk.query"]
+    refused_live_calls.clear()
 
 
 class TestClaudeSdkRuntime:
