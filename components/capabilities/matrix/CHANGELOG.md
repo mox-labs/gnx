@@ -439,6 +439,14 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Security
 
+- **`matrix check` and `plan` run no tool's module.** The `pydantic-ai` runtime imported every
+  configured tool when it was built, so composing a config (`check`, `plan`, `agents`) ran
+  each tool's module and its packages while saying nothing was called; with the working
+  directory's config tiers, checking an untrusted checkout could run its code. Building the
+  runtime now only finds each module on the import path, without running it; a session
+  imports a tool when it first offers it. A module that cannot be found is still a config
+  problem when the runtime is built, every one listed at once; a function the module does not
+  hold fails the session that offers it as `incapable`.
 - **SECURITY.md names the working directory as an ambient route to a capability grant**
   (mx-src F31): every command, and every tool on matrix, reads `./matrix.yaml` and
   `./<tool>.yaml` from where it runs, so an untrusted checkout's config chooses permission

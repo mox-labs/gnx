@@ -10,6 +10,8 @@ import asyncio
 import json
 import subprocess
 import sys
+import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx2
@@ -36,6 +38,7 @@ from matrix import (
     compose,
     default_registry,
 )
+from matrix.adapters._in.cli import main
 from matrix.adapters._out.observers.otel import OtelObserver
 from matrix.adapters._out.runtime.model import HardlineModelRuntime, HardlineModelRuntimeConfig
 from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntime, PydanticAiRuntimeConfig
@@ -290,22 +293,105 @@ def test_it_is_registered_saying_what_it_drives_and_accepts() -> None:
     assert _runtime().usage_counted_by == "hardline"
 
 
-def test_tools_named_in_config_are_imported_when_the_runtime_is_built() -> None:
-    config: dict[str, Any] = {"agent_runtimes": {"p": {
+def _tool_package(root: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A package on the path whose ``__init__`` and ``tools`` module each leave a file behind
+    when they run, and whose ``tools.define`` is a tool. Returns the package's name."""
+    name = f"tools_{uuid.uuid4().hex}"
+    package = root / name
+    package.mkdir()
+    (package / "__init__.py").write_text(f"open({str(root / 'PACKAGE_RAN')!r}, 'w').close()\n")
+    (package / "tools.py").write_text(
+        f"open({str(root / 'MODULE_RAN')!r}, 'w').close()\n\n"
+        "def define(word: str) -> str:\n"
+        '    """Find a word in the dictionary."""\n'
+        "    return 'to turn into bone'\n"
+    )
+    monkeypatch.syspath_prepend(str(root))
+    return name
+
+
+def _tooled(package: str, **tools: str) -> dict[str, Any]:
+    return {"agent_runtimes": {"p": {
         "type": "pydantic-ai", "default_model": "q",
         "models": {"models": {"q": {"backend": "mock", "model": "m", "family": "x"}}},
-        "tools": {"lookup": f"{__name__}:lookup", "gone": f"{__name__}:no_such_tool"},
+        "tools": {"define": f"{package}.tools:define", **tools},
     }}}  # fmt: skip
-    with pytest.raises(ConfigError) as raised:
-        compose(MatrixConfig.model_validate(config), registry=default_registry(discover=False))
-    assert "tools.gone" in str(raised.value)
-    # a problem the runtime raises is placed under the runtime's key, as a config one is
-    assert [p.path for p in raised.value.problems] == ["matrix.agent_runtimes.p.tools.gone"]
-    del config["agent_runtimes"]["p"]["tools"]["gone"]
-    box = compose(MatrixConfig.model_validate(config), registry=default_registry(discover=False))
+
+
+async def test_a_tool_named_in_config_is_located_when_built_and_run_only_by_a_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every configured tool was imported when the runtime was built, so ``matrix check``
+    and ``plan`` ran its module, and its package's, while saying nothing was called (final
+    review N3). Building only locates the module; a session imports what it offers."""
+    package = _tool_package(tmp_path, monkeypatch)
+    box = compose(
+        MatrixConfig.model_validate(_tooled(package)), registry=default_registry(discover=False)
+    )
     runtime = box.agent_runtime("p")
     assert isinstance(runtime, PydanticAiRuntime)
-    assert runtime.resolved["tools"] == {"lookup": f"{__name__}:lookup"}
+    assert runtime.resolved["tools"] == {"define": f"{package}.tools:define"}
+    assert not (tmp_path / "PACKAGE_RAN").exists() and not (tmp_path / "MODULE_RAN").exists()
+    assert package not in sys.modules
+
+    asks = {"tool_calls": [{"name": "define", "arguments": '{"word": "ossify"}'}]}
+    scripted = PydanticAiRuntime(_models(asks, "to turn into bone"), runtime.config)
+    assert not (tmp_path / "MODULE_RAN").exists()
+    response = await scripted.run(_agent(), "define ossify")
+    assert response.content == "to turn into bone"
+    assert [call["name"] for call in response.tool_calls] == ["define"]
+    assert (tmp_path / "MODULE_RAN").exists()
+
+
+def test_check_and_plan_call_nothing_a_tool_s_module_included(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``matrix check`` and ``matrix plan`` say nothing was called: a tool's module is not run
+    either, so a checkout's config cannot run code by being checked (final review N3)."""
+    package = _tool_package(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    (tmp_path / "matrix.yaml").write_text(json.dumps({"matrix": {
+        **_tooled(package),
+        "agents": {"a": {"runtime": "p", "system_prompt": "Define words."}},
+        "inputs": ["matrix.v1.task"],
+        "components": [{"name": "ask", "type": "matrix.v1.agent-step", "config": {"agent": "a"}}],
+    }}))  # fmt: skip
+    assert main(["check"]) == 0, capsys.readouterr()
+    assert "nothing was called" in capsys.readouterr().out
+    assert main(["plan"]) == 0, capsys.readouterr()
+    assert not (tmp_path / "PACKAGE_RAN").exists() and not (tmp_path / "MODULE_RAN").exists()
+
+
+def test_a_tool_whose_module_cannot_be_found_is_refused_when_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = _tool_package(tmp_path, monkeypatch)
+    config = _tooled(package, gone=f"{package}.nowhere:define", bare="not-a-reference")
+    with pytest.raises(ConfigError) as raised:
+        compose(MatrixConfig.model_validate(config), registry=default_registry(discover=False))
+    # a problem the runtime raises is placed under the runtime's key, as a config one is
+    assert sorted(p.path for p in raised.value.problems) == [
+        "matrix.agent_runtimes.p.tools.bare",
+        "matrix.agent_runtimes.p.tools.gone",
+    ]
+    assert not (tmp_path / "PACKAGE_RAN").exists()
+
+
+async def test_a_tool_that_is_not_in_the_module_it_names_fails_the_session_as_a_config_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The module is found when the runtime is built; what it holds is known only once it
+    runs, at the session that offers it."""
+    package = _tool_package(tmp_path, monkeypatch)
+    runtime = PydanticAiRuntime(
+        _models("never asked"),
+        PydanticAiRuntimeConfig(default_model="q", tools={"absent": f"{package}.tools:absent"}),
+    )
+    with pytest.raises(AgentRuntimeError) as raised:
+        await runtime.run(_agent(), "define ossify")
+    assert (raised.value.reason, raised.value.kind) == ("incapable", "config")
+    assert "tools.absent" in str(raised.value)
 
 
 async def test_its_session_row_names_the_model_that_answered_its_usage_and_ids() -> None:

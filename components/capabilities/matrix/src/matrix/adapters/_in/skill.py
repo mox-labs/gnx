@@ -704,8 +704,9 @@ Agent runtimes (`matrix.agent_runtimes`):
   `max_turns` (on the agent) bounds its turns.
 - `pydantic-ai`: a pydantic-ai agent loop whose every model call goes through hardline, in
   any family it has a row for. Options: `models` (a hardline registry; else `matrix.models`),
-  `default_model`, `tools` (name to `module:function`, a Python function imported when the
-  runtime is built), `temperature`, `max_tokens`. An agent's `tools` choose from the
+  `default_model`, `tools` (name to `module:function`, a Python function whose module is
+  found when the runtime is built and imported when a session first offers it),
+  `temperature`, `max_tokens`. An agent's `tools` choose from the
   runtime's (unset: all; `[]`: none); `max_turns` bounds its model calls (`stop: max_turns`).
   A tool it does not have, a model hardline cannot resolve, or tools on a row whose backend
   cannot call them is refused at binding. Its tokens are counted by hardline, once; it
