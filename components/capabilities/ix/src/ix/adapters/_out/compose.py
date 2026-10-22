@@ -11,9 +11,12 @@ healthcheck. ``down -v --remove-orphans`` is deferred with the run **before** ``
 so a stack that came up only in part, or whose ``up`` was cancelled, still comes down.
 
 **The project.** Without a ``project`` option it is named for the run and this process
-(``ix-<run id>-<pid>``), so two runs never share one, and a stack a killed run left behind
-(its process gone, the same compose file) is swept before ``up``. A ``project`` the
-experiment names is refused when it already has containers: whose they are cannot be told.
+(``ix-<run id>-<pid>``), so two runs never share one, and ix adds to it a compose file of
+its own that adds nothing (:func:`ownership_file`), which compose lists among the project's
+files. A stack a killed run left behind (its process gone, the same compose file, and ix's
+file among its files) is swept before ``up``; a project that only looks like ix's is not. A
+``project`` the experiment names is refused when it already has containers: whose they are
+cannot be told.
 
 **Bindings.** Each service that is running once ``up`` returns is bound with its first
 published TCP port (by target port) as ``host``, ``port`` and ``url``, and with the image it
@@ -32,6 +35,7 @@ import math
 import os
 import re
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -62,6 +66,17 @@ STOP_TIMEOUT_S = 10
 
 #: A project ix named, and the pid of the process that named it.
 _OURS = re.compile(r"^ix-.+-(\d+)$")
+
+
+#: The directory of the compose files that mark a project as ix's (:func:`ownership_file`).
+OWNED = "ix-compose-owned"
+
+
+def ownership_file(project: str) -> Path:
+    """The compose file ix adds to a project it names (one that adds nothing): compose lists
+    it among the project's files, so a later run can tell a stack ix brought up from one
+    that only looks like it."""
+    return Path(tempfile.gettempdir(), OWNED, f"{project}.yaml")
 
 
 def _tail(text: str, limit: int = 400) -> str:
@@ -154,6 +169,8 @@ class ComposeEnvironment:
         self._binary = binary
         #: ``docker compose -f <file> -p <project> ...``, once ``up`` has named the project.
         self._compose: list[str] = []
+        #: The file that marks the project as ix's, while ix has it up (an unnamed project).
+        self._owned: Path | None = None
 
     # --- before anything starts ---
 
@@ -219,7 +236,17 @@ class ComposeEnvironment:
         file = str(Path(base, str(options["file"])).resolve())
         named = options.get("project")
         project = str(named) if named else _project(scope.run_id)
-        compose = [self._binary, "compose", "-f", file, "-p", project]
+        compose = [self._binary, "compose", "-f", file]
+        if not named:
+            self._owned = ownership_file(project)
+            self._owned.parent.mkdir(parents=True, exist_ok=True)
+            self._owned.write_text(
+                f"# ix brought up compose project {project} for run {scope.run_id}, and takes "
+                "it down.\n{}\n",
+                encoding="utf-8",
+            )
+            compose += ["-f", str(self._owned)]
+        compose += ["-p", project]
         for profile in options.get("profiles") or ():
             compose += ["--profile", str(profile)]
         if options.get("env_file"):
@@ -259,20 +286,24 @@ class ComposeEnvironment:
         code, out, said = await self._run([*self._compose, "ps", "--all", "--format", "json"])
         if code != 0:
             return f"docker compose ps failed: {_tail(said)}"
-        states = {str(row.get("Service")): row for row in _rows(out)}
+        rows = _rows(out)
         for name in bindings:
-            row = states.get(name)
-            if row is None:
+            replicas = [row for row in rows if str(row.get("Service")) == name]
+            if not replicas:
                 return f"service {name} is gone"
-            if row.get("State") != "running":
-                return f"service {name} is {row.get('State')} (exit code {row.get('ExitCode')})"
-            if row.get("Health") == "unhealthy":
-                return f"service {name} is unhealthy"
+            for row in replicas:  # a scaled service is lost when any replica is
+                if row.get("State") != "running":
+                    state, exited = row.get("State"), row.get("ExitCode")
+                    return f"service {name} is {state} (exit code {exited})"
+                if row.get("Health") == "unhealthy":
+                    return f"service {name} is unhealthy"
         return None
 
     async def _down(self) -> None:
         argv = [*self._compose, "down", "-v", "--remove-orphans", "--timeout", str(STOP_TIMEOUT_S)]
         code, _, said = await self._run(argv, timeout_s=DOWN_TIMEOUT_S)
+        if code == 0 and self._owned is not None:
+            self._owned.unlink(missing_ok=True)  # the stack is down: nothing left to mark
         if code != 0:
             raise HarnessError(
                 "tool_failed",
@@ -291,8 +322,9 @@ class ComposeEnvironment:
             )
 
     async def _sweep(self, file: str, scope: Scope) -> None:
-        """Bring down every project ix named for this compose file whose process is gone: a
-        stack a killed run left behind."""
+        """Bring down every project ix brought up for this compose file whose process is
+        gone: a stack a killed run left behind. A project is ix's when its files include the
+        one ix marks its projects with (:func:`ownership_file`); a name alone is not enough."""
         code, out, _ = await self._run([self._binary, "compose", "ls", "--all", "--format", "json"])
         if code != 0:
             return
@@ -300,7 +332,12 @@ class ComposeEnvironment:
             name = str(row.get("Name") or "")
             ours = _OURS.match(name)
             files = str(row.get("ConfigFiles") or "").split(",")
-            if ours is None or file not in files or _alive(int(ours.group(1))):
+            if (
+                ours is None
+                or file not in files
+                or str(ownership_file(name)) not in files
+                or _alive(int(ours.group(1)))
+            ):
                 continue
             argv = [self._binary, "compose", "-p", name, "down", "-v", "--remove-orphans"]
             code, _, _ = await self._run(argv, timeout_s=DOWN_TIMEOUT_S)

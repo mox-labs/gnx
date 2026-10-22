@@ -174,10 +174,13 @@ reasons, from §16 on.
   - Each running service is bound with its first published port (`{web.url}`, `.host`,
     `.port`) and the image id it runs, in the run's bindings row. The compose file and
     `env_file` are digested into the registration and the manifest.
-  - Without `project`, the project is named for the run, and a stack a killed run left is
-    swept; a `project` written that already has containers is refused.
+  - Without `project`, the project is named for the run and marked as ix's by a compose file
+    of ix's own that adds nothing; a stack a killed run left, so marked, is swept, and one
+    that only looks like ix's is not. A `project` written that already has containers is
+    refused.
   - Options: `file` (a `path`), `project`, `services`, `wait_timeout`, `profiles`,
-    `env_file`, `build`, `pull`. Liveness is `compose ps`.
+    `env_file`, `build`, `pull`. Liveness is `compose ps`, every replica of a scaled
+    service read.
   - A dry run brings the environment up for real, `compose` and `process` alike, and says
     so (`stood_in`).
   - `Scope` has `run_id`.

@@ -236,7 +236,8 @@ containers started with the ports, volumes, mounts and privileges the file asks 
 can reach the daemon is in effect root on its host, so running an experiment whose compose
 file you did not write is running its author's containers (boundary 6). `ix run` takes the
 stack down with `down -v --remove-orphans`, which removes the project's named volumes too,
-and sweeps only stacks ix itself named for the same compose file whose process is gone; a
+and sweeps only stacks ix itself brought up (marked by a compose file of its own among the
+project's files) for the same compose file whose process is gone; a
 `project` an experiment names is never swept, and is refused while it has containers. The
 compose file is digested like the subjects' files, and each service's image id is recorded
 in the run's bindings, so what ran can be told afterwards.
