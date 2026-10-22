@@ -28,8 +28,9 @@ is no adapter between the ports:
 
 What its runtime reported it cost, where it reports one, is kept beside its runtime and model
 in the readings' ``detail``, a fact about the judge that nothing adds up. Each of its calls or
-sessions is a row of the run's session table, failed or not, and its readings name them
-(``sessions``). In a dry run it
+sessions goes through matrix's own path (``matrix.call_model``, a ``BoundAgent``), so it is a
+span of matrix's work and a row of the run's session table, failed or not, and its readings
+name them (``sessions``). In a dry run it
 stands in on the ``mock`` of its own port, which gives every reply the same score: the
 sensor's path is exercised and no model is called.
 """
@@ -51,7 +52,6 @@ from ix.adapters._out.matrix_agents import (
     STAND_IN,
     runtime_requirement,
 )
-from ix.adapters._out.matrix_calls import recorded_call
 from ix.domain.kind import placeholders
 from ix.domain.ports import Requirement, Sensed, StoodIn
 from ix.domain.problem import Problem, problem
@@ -225,7 +225,8 @@ class JudgeSensor:
         url = matrix.model_runtime_type_url(name)
         drives = tuple(self._runtimes.drives(MODEL_RUNTIME, name))
         calls = [
-            await recorded_call(runtime, request, url=url, drives=drives) for _ in range(repeats)
+            await matrix.call_model(runtime, request, name=name, runtime_url=url, drives=drives)
+            for _ in range(repeats)
         ]
         return [_Reply(call.text, call.family, call.model, None) for call in calls]
 

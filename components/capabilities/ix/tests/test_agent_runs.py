@@ -21,6 +21,7 @@ import matrix
 import pytest
 import yaml
 from click.testing import CliRunner
+from matrix.adapters._out.observers.otel import OtelObserver
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -702,6 +703,40 @@ class TestThirdPartyRuntimes:
         unknown = _either(tmp_path / "unknown", {"kind": "model-call", "runtime": ONESHOT,
                                                  "model": "two-2"})  # fmt: skip
         assert any("oneshot has no model 'two-2'" in r.why for r in root.plan(unknown).unmet)
+
+    def test_each_model_call_ix_makes_is_a_matrix_model_span_as_a_model_steps_is(
+        self, tmp_path: Path
+    ) -> None:
+        """W7.12: ix made its direct model calls (a ``model-call`` trial, a judge on a model
+        runtime) beside matrix's event path, so none was a ``matrix.model`` span and a model
+        runtime's own spans (hardline's ``chat``) had no call span to nest under. Each now
+        goes through matrix's public call path, as a model step's call does."""
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        registry = _third_parties()
+        spans = "acme.v1.observer.spans"
+        registry.register("observer", spans, lambda: OtelObserver(tracer_provider=provider))
+        settings = matrix.Config[IxSettings](
+            client=IxSettings(), matrix=matrix.MatrixConfig(observers=(spans,))
+        )
+        lab = _either(
+            tmp_path, {"kind": "model-call", "runtime": ONESHOT, "model": "one-1"},
+            sensors=[{"kind": "judge", "rubric": "Helpful.", "model_runtime": ONESHOT}],
+            metrics=["judged_score"],
+        )  # fmt: skip
+        report = Root(registry=registry, settings=settings).run(lab, exploratory=True)
+        assert report.status == "completed"
+        calls = [span for span in exporter.get_finished_spans() if span.name == "matrix.model"]
+        assert len(calls) == 20  # ten trials, and the judge's reading of each
+        for call in calls:
+            attributes = dict(call.attributes or {})
+            assert attributes["matrix.runtime"] == ONESHOT
+            assert attributes["matrix.status"] == "completed"
+            assert attributes["gen_ai.response.model"] == "one-1"
+            assert call.parent is not None  # under the component whose work made it
+        # Each is still a row of the session table, as before, and the rows name no fewer.
+        assert len(_session_rows(report)) == 20
 
     def test_an_agent_runtime_gets_the_session_reviews(self, tmp_path: Path) -> None:
         root = Root(registry=_third_parties(), settings=_settings())

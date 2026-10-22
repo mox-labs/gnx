@@ -69,6 +69,11 @@ subjects need several services. Record section 22 has the reasons.
 
 ### Fixed
 
+- **A model call ix makes is a `matrix.model` span** (W7.12). A `model-call` trial and a judge
+  on a model runtime recorded their session rows beside matrix's event path, so neither was a
+  span of matrix's work, and a model runtime's own spans (hardline's `chat`) had no call span
+  to nest under. Both now call through `matrix.call_model`, the model step's own path.
+
 - `environment.process` asks the process it started whether it is still up. It asked
   `os.kill(pid, 0)` of the stored pid, which read a pid the system had given to another
   process as the service still up, and raised out of the run for one another user owns.
