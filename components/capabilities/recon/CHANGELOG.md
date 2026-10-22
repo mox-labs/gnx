@@ -10,6 +10,10 @@
 
 - **`meta.yaml` names the layout of the archive's tables** (`table_layout: 1`), as it names its own format, and `query` refuses an archive in a layout it does not know rather than misreading it. An archive with no `table_layout` is in layout 1.
 
+- **A collector type is built only for a survey that uses it**, so one plugin's broken factory no longer warns in every survey. A table of a type whose factory raised fails as `config`, naming the type.
+- **`CollectorContext` carries `shell`**, the port the `cli` type runs commands through, and a transform that reads files declares it by taking a keyword-only `roots` (recon binds the mission's directories to every transform that does; `$markitdown` is no longer special-cased by identity).
+- **A missing source is a plan problem only.** The survey no longer records a pinned source missing from the catalog as a failed table: the plan refuses the mission first, so no archive is made.
+
 ### Fixed
 
 - **The query engine reads the tables the archive store lists.** `DuckdbQuery` imported the archive adapter's file helpers and read its sentinel lines itself, so how an archive is stored was known to two adapters; it now asks `ArchiveStore.tables()`, which describes each table (its output name, its file, whether it is empty and the columns it keeps).

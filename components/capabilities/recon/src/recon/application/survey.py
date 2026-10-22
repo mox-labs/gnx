@@ -154,21 +154,15 @@ class Survey:
         captures: CaptureLog | None,
     ) -> list[TableOutcome]:
         catalog = {s.name: s for s in config.catalog}
-        targets = fan_out(entry, catalog)
-        if entry.source and not targets:
-            available = ", ".join(sorted(catalog)) or "(none)"
-            message = f"Source '{entry.source}' not in catalog. Available: {available}"
-            table = _table(entry, entry.name, entry.source)
-            with self._telemetry.span(COLLECT, _attributes(table)) as span:
-                return [self._failed(span, table, "config", message, 0)]
         collector = collectors.get(entry.type)
         tables = []
-        for source, output in targets:
+        for source, output in fan_out(entry, catalog):
             table = _table(entry, output, source.name if source else None)
             with self._telemetry.span(COLLECT, _attributes(table)) as span:
-                if collector is None:
-                    message = f"No collector registered for type: {entry.type}"
-                    tables.append(self._failed(span, table, "config", message, 0))
+                if collector is None:  # its type's factory raised: a plugin_broken warning
+                    message = f"collector type {entry.type!r} could not be built"
+                    fix = "see the plugin_broken warning for why; fix or reinstall its package"
+                    tables.append(self._failed(span, table, "config", message, 0, fix))
                     continue
                 outcome = self._run_table(
                     span, table, collector, (index, entry), source, archive, captures

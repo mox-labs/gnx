@@ -31,7 +31,8 @@ SRC = Path(recon.__file__).resolve().parent
 #: Standard-library modules an inner layer may import: pure computation only. ``pathlib``
 #: names a location (a mission directory, an archive); touching the filesystem through it
 #: is caught separately. ``datetime`` is the type the clock port returns; reading the time
-#: through it is caught separately.
+#: through it is caught separately. ``inspect`` reads a transform's signature, and
+#: ``functools`` binds its keywords.
 PURE_STDLIB = frozenset(
     {
         "__future__",
@@ -39,7 +40,9 @@ PURE_STDLIB = frozenset(
         "contextlib",
         "dataclasses",
         "datetime",
+        "functools",
         "html",
+        "inspect",
         "pathlib",
         "re",
         "typing",

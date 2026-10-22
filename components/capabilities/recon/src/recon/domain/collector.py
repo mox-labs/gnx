@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from recon.domain.errors import Problem
     from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, SourceEntry
+    from recon.domain.shell import ShellRunner
 
 #: What running a collector can touch. Reported by ``survey --dry-run`` for every planned
 #: run; a type that declares ``effects=None`` is shown as ``unknown``, never as none.
@@ -60,11 +61,12 @@ class Collector(Protocol):
 
 @dataclass(frozen=True)
 class CollectorContext:
-    """What the composition root hands a collector type's factory.
+    """What a collector type's factory is handed for one survey.
 
     Shared on purpose: one Requester (and so one rate limiter per source) serves every
-    HTTP collector in a run. ``mission_dir`` anchors relative paths in a config.
-    ``user_agent`` is what an HTTP collector sends when its source sets none.
+    HTTP collector in a run. ``shell`` runs a command. ``mission_dir`` anchors relative
+    paths in a config. ``user_agent`` is what an HTTP collector sends when its source sets
+    none.
 
     ``env`` is not the process environment. It holds only the variables the mission
     declares for this type: the ``auth.env`` names of the catalog sources its collectors
@@ -73,6 +75,7 @@ class CollectorContext:
 
     requester: Requester
     converter: DocumentConverter
+    shell: ShellRunner
     transforms: Mapping[str, Transform]
     mission_dir: Path
     env: Mapping[str, str]

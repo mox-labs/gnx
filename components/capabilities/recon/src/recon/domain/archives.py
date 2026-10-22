@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
     from recon.domain.capture import CaptureLog
     from recon.domain.errors import Problem
+    from recon.domain.telemetry import EventSink
 
 #: The ``format_version`` of the ``meta.yaml`` a survey writes.
 META_FORMAT_VERSION = 2
@@ -84,6 +85,10 @@ class ArchiveStore(Protocol):
         ...
 
     def capture_log(self, archive: Path) -> CaptureLog: ...
+
+    def event_log(self, archive: Path) -> EventSink:
+        """The sink that keeps the survey's events in the archive."""
+        ...
 
     def mark_complete(self, archive: Path) -> None:
         """Remove the incomplete marker. Raises OSError when it cannot."""

@@ -6,12 +6,14 @@ from importlib.metadata import EntryPoint
 
 import pytest
 
+from recon.adapters._out.cli_collector import PopenRunner
 from recon.adapters._out.system_clock import SystemClock
+from recon.application.collectors import CollectorPorts, ScopedEnv
+from recon.application.collectors import build_collectors as build
 from recon.composition import (
     COLLECTORS_GROUP,
     DEFAULT_USER_AGENT,
     TRANSFORMS_GROUP,
-    build_collectors,
     load_collector_types,
     load_plugins,
     load_transforms,
@@ -20,10 +22,23 @@ from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError
 from recon.domain.models import ReconConfig
 from recon.domain.telemetry import Telemetry
+from tests.recon_fakes import ScriptedRequester
 from tests.recon_fakes import run_survey as run
 
 #: Telemetry with no sinks, for building collectors outside a survey.
 QUIET = Telemetry([], SystemClock())
+
+#: Ports to build collectors over that reach nothing: no test here sends a request.
+PORTS = CollectorPorts(
+    requester=lambda telemetry: ScriptedRequester({}),
+    converter=None,  # type: ignore[arg-type]
+    shell=PopenRunner(),
+    user_agent=DEFAULT_USER_AGENT,
+)
+
+
+def build_collectors(registry, mission_dir, config, telemetry, *, env):
+    return build(registry, PORTS, env, mission_dir, config, telemetry)
 
 
 def test_builtins_register_through_the_entry_point_groups():
@@ -126,12 +141,24 @@ def test_a_factory_that_raises_is_reported_and_others_build(tmp_path):
         raise ValueError("no credentials file")
 
     registry.collector_types["fragile"] = replace(registry.collector_types["cli"], create=explode)
-    collectors, failed = build_collectors(
-        registry, tmp_path, _config(), QUIET, env={}, clock=SystemClock()
+    config = _config(
+        {"name": "f", "type": "fragile", "run": "true"}, {"name": "c", "type": "cli", "run": "true"}
     )
-    assert "fragile" not in collectors
-    assert {"api", "cli", "web", "capture"} <= set(collectors)
+    collectors, failed = build_collectors(registry, tmp_path, config, QUIET, env={})
+    assert set(collectors) == {"cli"}
     assert any(b.name == "fragile" and "no credentials file" in b.error for b in failed)
+
+
+def test_only_the_types_a_mission_uses_are_built(tmp_path):
+    """Regression: every installed type was built for every survey, so one plugin's broken
+    factory was a warning in every survey, whether or not the mission used it."""
+    registry = load_plugins()
+    built = []
+    registry.collector_types["unused"] = CollectorType(
+        create=lambda ctx: built.append("unused"), effects=None
+    )
+    collectors, failed = build_collectors(registry, tmp_path, _config(), QUIET, env={})
+    assert set(collectors) == {"cli"} and failed == [] and built == []
 
 
 # --- env: a collector type sees only the variables its sources declare ------------------
@@ -167,7 +194,6 @@ def _plugin_env(tmp_path, *collectors):
         _config(*collectors, catalog=CATALOG),
         QUIET,
         env=PROCESS_ENV,
-        clock=SystemClock(),
     )
     return handed["env"]
 
@@ -222,9 +248,8 @@ def test_a_factory_that_reads_an_undeclared_variable_is_reported_with_the_fix(tm
     registry.collector_types["eager"] = CollectorType(
         create=lambda ctx: ctx.env["HOME"], effects=None
     )
-    collectors, failed = build_collectors(
-        registry, tmp_path, _config(), QUIET, env=PROCESS_ENV, clock=SystemClock()
-    )
+    config = _config({"name": "e", "type": "eager"})
+    collectors, failed = build_collectors(registry, tmp_path, config, QUIET, env=PROCESS_ENV)
     assert "eager" not in collectors
     [broken] = [b for b in failed if b.name == "eager"]
     assert "'HOME'" in broken.error and "auth.env" in broken.error
@@ -232,7 +257,6 @@ def test_a_factory_that_reads_an_undeclared_variable_is_reported_with_the_fix(tm
 
 def test_the_api_collector_still_reads_its_source_s_key(tmp_path):
     from recon.adapters._out.api_collector import ApiCollector
-    from recon.composition import ScopedEnv
     from recon.domain.http import HttpResponse
     from recon.domain.models import SourceEntry
 
@@ -258,8 +282,6 @@ def test_the_api_collector_still_reads_its_source_s_key(tmp_path):
 
 def _markitdown_table(tmp_path, named: str, catalog=()):
     """Survey one cli collector whose only record names ``named``, converted by $markitdown."""
-    mission = tmp_path / "mission"
-    mission.mkdir(exist_ok=True)
     config = _config(
         {
             "name": "docs",
@@ -269,10 +291,7 @@ def _markitdown_table(tmp_path, named: str, catalog=()):
         },
         catalog=catalog,
     )
-    collectors, failed = build_collectors(
-        load_plugins(), mission, config, QUIET, env={}, clock=SystemClock()
-    )
-    archive, [table] = run(config, collectors, mission)
+    archive, [table] = run(config, tmp_path)
     path = archive / table.file
     lines = path.read_text().splitlines() if path.exists() else []
     return table, [json.loads(line) for line in lines]
@@ -366,12 +385,9 @@ def _registry_with(name, collector, **fields):
     return registry
 
 
-def _survey(registry, mission_dir, collector_entry):
+def _survey(registry, project, collector_entry):
     config = ReconConfig.model_validate({"collectors": [collector_entry]})
-    collectors, failed = build_collectors(
-        registry, mission_dir, config, QUIET, env={}, clock=SystemClock()
-    )
-    archive, results = run(config, collectors, mission_dir)
+    archive, results = run(config, project, plugins=registry)
     assert [r.status for r in results] == ["ok"], results
     table = archive / f"{collector_entry['name']}.jsonl"
     return [json.loads(line) for line in table.read_text().splitlines()]
@@ -423,9 +439,7 @@ def test_stopping_early_closes_the_plugin_s_generator(tmp_path):
     config = ReconConfig.model_validate(
         {"collectors": [{"name": "t", "type": "raw", "normalize": NORMALIZE}]}
     )
-    collector = build_collectors(registry, tmp_path, config, QUIET, clock=SystemClock(), env={})[0][
-        "raw"
-    ]
+    collector = build_collectors(registry, tmp_path, config, QUIET, env={})[0]["raw"]
     entry = config.collectors[0]
 
     records = collector.collect(entry, None)

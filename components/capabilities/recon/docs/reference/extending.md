@@ -57,7 +57,7 @@ sqlite = "my_package.recon_sqlite:collector_type"
 
 The contract:
 
-- **`create(ctx)`** builds the collector once per survey. `ctx` (`CollectorContext`) carries the shared `requester` (rate-limited HTTP, one bucket per source), `converter`, `transforms`, `mission_dir`, `env`, and `user_agent` (what to send when a source sets none). Take what you need from it; never read `os.environ` directly, so tests can inject. Every request through `requester` is an HTTP client span in the survey's telemetry, with its `url.full` redacted, so a type that fetches through it is traced with nothing more to do.
+- **`create(ctx)`** builds the collector once per survey whose mission uses the type. `ctx` (`CollectorContext`) carries the shared `requester` (rate-limited HTTP, one bucket per source), `converter`, `shell` (runs a command, as the `cli` type does), `transforms`, `mission_dir`, `env`, and `user_agent` (what to send when a source sets none). Take what you need from it; never read `os.environ` directly, so tests can inject. Every request through `requester` is an HTTP client span in the survey's telemetry, with its `url.full` redacted, so a type that fetches through it is traced with nothing more to do.
 - **`ctx.env` is not the process environment.** It holds only the variables the mission declares for your type: the `auth.env` names of the catalog sources your collectors run against. Reading any other name raises a config error whose `fix` says to name the variable as `auth.env` on such a source. A declared variable that is unset is simply absent (`ctx.env.get(name)` is `None`).
 - **`collect(entry, source, *, captures=None)`** yields dicts, one per record. It is consumed lazily and closed if the consumer stops, so release resources in a `finally`. If the mission has `preserve_raw: true`, `captures` is the archive's capture log: call `captures.record(...)` with the bytes you fetched before parsing them.
 - **`extracts=True`** says your type finds its records at `entry.extract` in a body, as `api` and `capture` do. A survey whose table of your type gets exactly one record holding a list of two or more objects, with neither `extract:` nor `normalize:`, then warns (`extract_missing`) and names the path to set.
@@ -90,6 +90,8 @@ normalize:
 ```
 
 A transform receives whatever the path resolved to (often `None` when a field is missing) and should return a value rather than raise. An unknown `$name` is a config error at plan time, never a silently skipped step.
+
+A transform that reads files the records name says so by taking a keyword-only `roots`: recon passes the directories the mission declares (its own and each `local` source's), and the transform reads only under them, as `$markitdown` does. recon binds `roots` to every transform that takes it; none is named.
 
 ## When a plugin is broken
 

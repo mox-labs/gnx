@@ -23,9 +23,10 @@ from click import unstyle
 from click.testing import CliRunner
 
 import recon
-from recon import composition
 from recon.adapters._in.cli import main
-from recon.composition import load_plugins
+from recon.adapters._out.archive_files import ArchiveFiles
+from recon.adapters._out.system_clock import SystemClock
+from recon.composition import load_plugins, root
 from recon.domain.collector import BrokenPlugin, CollectorType
 from recon.domain.errors import CollectionError
 from recon.domain.type_url import is_type_url
@@ -52,8 +53,23 @@ def _mission(project: Path, name: str, config: dict | str) -> Path:
     return mission
 
 
-def _invoke(*args: str, stdin: str | None = None):
-    return CliRunner().invoke(main, list(args), input=stdin, catch_exceptions=False)
+def _invoke(*args: str, stdin: str | None = None, over=None):
+    """The command line, over recon's library API, or over ``over``: a root built with the
+    ports a test stands in for."""
+    return CliRunner().invoke(main, list(args), input=stdin, obj=over, catch_exceptions=False)
+
+
+class _Raises:
+    """Operations that each raise ``error``: a defect, or an error that escapes them."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def __getattr__(self, name: str):
+        def raises(*args, **kwargs):
+            raise self._error
+
+        return raises
 
 
 def _doc(result) -> dict:
@@ -159,13 +175,10 @@ class TestSurvey:
             (["transient", "run_failed"], 8, "run_failed"),
         ],
     )
-    def test_exit_code_follows_the_failures_classification(
-        self, project, monkeypatch, kinds, code, kind
-    ):
+    def test_exit_code_follows_the_failures_classification(self, project, kinds, code, kind):
         registry = load_plugins()
         for k in set(kinds):
             registry.collector_types[f"fails-{k}"] = _failing_type(k)
-        monkeypatch.setattr(composition, "load_plugins", lambda: registry)
         config = {
             "collectors": [
                 {"name": "ok", "type": "cli", "run": "echo '{}'"},
@@ -173,7 +186,7 @@ class TestSurvey:
             ]
         }
         _mission(project, "m", config)
-        result = _invoke("survey", "m", "--json")
+        result = _invoke("survey", "m", "--json", over=root(plugins=registry))
 
         assert result.exit_code == code
         assert _error(result)["kind"] == kind
@@ -182,9 +195,7 @@ class TestSurvey:
         assert [tables[f"t{i}"]["error"]["kind"] for i in range(len(kinds))] == kinds
 
     @pytest.mark.parametrize("step", ["write_meta", "mark_complete"])
-    def test_an_archive_that_could_not_be_finished_is_incomplete_and_fails(
-        self, project, monkeypatch, step
-    ):
+    def test_an_archive_that_could_not_be_finished_is_incomplete_and_fails(self, project, step):
         """Regression: a survey whose ``meta.yaml`` or completion step failed (a full disk)
         said ``status: ok`` and exited 0, and under --json the one word of it, an event,
         went nowhere; the archive stayed incomplete and only a later query said so."""
@@ -192,10 +203,10 @@ class TestSurvey:
         def fails(self, archive, *args):
             raise OSError(28, "No space left on device")
 
-        unfinished = type("Unfinished", (composition.ArchiveFiles,), {step: fails})
-        monkeypatch.setattr(composition, "ArchiveFiles", unfinished)
+        unfinished = type("Unfinished", (ArchiveFiles,), {step: fails})
+        over = root(archives=unfinished(SystemClock()))
         _mission(project, "m", OK_CONFIG)
-        result = _invoke("survey", "m", "--json")
+        result = _invoke("survey", "m", "--json", over=over)
 
         assert result.exit_code == 8
         doc = _doc(result)
@@ -210,7 +221,7 @@ class TestSurvey:
         assert error["details"] == {"archive": doc["archive"], "failed": []}
         assert (Path(doc["archive"]) / ".incomplete").exists()
 
-        human = _invoke("survey", "m")
+        human = _invoke("survey", "m", over=over)
         assert human.exit_code == 8
         assert "No space left on device" in human.stderr
         assert "error (run_failed):" in human.stderr
@@ -292,7 +303,7 @@ class TestSurveyConfigOverride:
 
 class TestDryRun:
     @pytest.mark.parametrize("flag", ["--dry-run", "-n"])
-    def test_plans_without_running_or_writing(self, project, monkeypatch, flag):
+    def test_plans_without_running_or_writing(self, project, flag):
         marker = project / "ran"
         config = {
             "catalog": [{"name": "api", "url": "http://192.0.2.1"}],  # TEST-NET: unroutable
@@ -303,13 +314,16 @@ class TestDryRun:
         }
         mission = _mission(project, "m", config)
 
-        def no_collectors(*a, **k):
-            raise AssertionError("a dry run must not build collectors")
-
-        monkeypatch.setattr(composition, "build_collectors", no_collectors)
-        result = _invoke("survey", "m", flag, "--json")
+        built = []
+        registry = load_plugins()
+        for name, ct in list(registry.collector_types.items()):
+            registry.collector_types[name] = replace(
+                ct, create=lambda ctx, name=name: built.append(name)
+            )
+        result = _invoke("survey", "m", flag, "--json", over=root(plugins=registry))
 
         assert result.exit_code == 0, result.stderr
+        assert built == [], "a dry run builds no collector"
         doc = _doc(result)
         assert doc["schema"] == "recon.v1.plan"
         assert doc["valid"] is True
@@ -387,14 +401,14 @@ class TestStatus:
         doc = _doc(_invoke("status", "--json"))
         assert doc["missions"] == []
 
-    def test_reports_a_broken_plugin(self, project, monkeypatch):
+    def test_reports_a_broken_plugin(self, project):
         registry = load_plugins()
         registry.broken.append(BrokenPlugin("recon.collectors", "sql", "x:y", "ImportError: z"))
-        monkeypatch.setattr(composition, "load_plugins", lambda: registry)
+        over = root(plugins=registry)
 
-        doc = _doc(_invoke("status", "--json"))
+        doc = _doc(_invoke("status", "--json", over=over))
         assert doc["plugins"]["broken"][0]["name"] == "sql"
-        human = _invoke("status")
+        human = _invoke("status", over=over)
         assert "sql" in human.stderr and "failed to load" in human.stderr
 
     def test_reads_a_format_1_archive(self, project):
@@ -971,26 +985,19 @@ class TestCapture:
 # --- errors that escape -----------------------------------------------------------------
 
 
-def test_an_unexpected_exception_is_classified_unknown(project, monkeypatch):
-    def boom():
-        raise RuntimeError("wiring bug")
-
-    monkeypatch.setattr(composition, "load_plugins", boom)
+def test_an_unexpected_exception_is_classified_unknown(project):
     _mission(project, "m", OK_CONFIG)
-    result = _invoke("survey", "m", "--json")
+    result = _invoke("survey", "m", "--json", over=_Raises(RuntimeError("wiring bug")))
     assert result.exit_code == 1
     error = _error(result)
     assert error["kind"] == "unknown"
     assert "wiring bug" in error["message"]
 
 
-def test_an_escaping_error_keeps_its_own_fix(project, monkeypatch):
-    def refuses():
-        raise CollectionError("cannot do that", kind="config", fix="do this instead")
-
-    monkeypatch.setattr(composition, "load_plugins", refuses)
+def test_an_escaping_error_keeps_its_own_fix(project):
+    refuses = CollectionError("cannot do that", kind="config", fix="do this instead")
     _mission(project, "m", OK_CONFIG)
-    result = _invoke("survey", "m", "--json")
+    result = _invoke("survey", "m", "--json", over=_Raises(refuses))
     assert result.exit_code == 3
     assert _error(result)["fix"] == "do this instead"
 
@@ -1009,10 +1016,9 @@ def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(proj
 
     registry = load_plugins()
     registry.collector_types["greedy"] = CollectorType(create=Greedy, effects=None)
-    monkeypatch.setattr(composition, "load_plugins", lambda: registry)
     mission = _mission(project, "m", {"collectors": [{"name": "g", "type": "greedy"}]})
 
-    result = _invoke("survey", "m", "--json")
+    result = _invoke("survey", "m", "--json", over=root(plugins=registry))
 
     [table] = _doc(result)["tables"]
     assert table["status"] == "error"
@@ -1023,16 +1029,15 @@ def test_a_plugin_reading_an_undeclared_variable_fails_its_table_with_a_fix(proj
     assert not (archive / "g.jsonl").exists()
 
 
-def test_a_factory_failure_reaches_the_tables_not_a_traceback(project, monkeypatch):
+def test_a_factory_failure_reaches_the_tables_not_a_traceback(project):
     registry = load_plugins()
 
     def explode(ctx):
         raise ValueError("no credentials file")
 
     registry.collector_types["fragile"] = replace(registry.collector_types["cli"], create=explode)
-    monkeypatch.setattr(composition, "load_plugins", lambda: registry)
     _mission(project, "m", {"collectors": [{"name": "f", "type": "fragile", "run": "true"}]})
-    result = _invoke("survey", "m", "--json")
+    result = _invoke("survey", "m", "--json", over=root(plugins=registry))
     assert result.exit_code == 8
     [table] = _doc(result)["tables"]
     assert table["error"]["kind"] == "config"
@@ -1109,21 +1114,18 @@ def test_an_unknown_skill_reference_names_the_ones_there_are(project):
     assert ", ".join(recon.skill_references()) in stderr
 
 
-def test_ctrl_c_is_one_envelope_of_kind_interrupted_and_exits_130(project, monkeypatch):
-    def interrupted(*args, **kwargs):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(recon, "status", interrupted)
-    result = _invoke("status", "--json")
+def test_ctrl_c_is_one_envelope_of_kind_interrupted_and_exits_130(project):
+    interrupted = _Raises(KeyboardInterrupt())
+    result = _invoke("status", "--json", over=interrupted)
     assert result.exit_code == 130 == recon.EXIT_CODES["interrupted"]
     assert _error(result)["kind"] == "interrupted"
     assert result.stderr.startswith("{"), "regression (N2): no blank line before the envelope"
-    for_a_person = _invoke("status")
+    for_a_person = _invoke("status", over=interrupted)
     assert for_a_person.exit_code == 130
     assert "error (interrupted):" in for_a_person.stderr
 
 
-def test_a_survey_cut_short_leaves_its_archive_marked_incomplete(project, monkeypatch):
+def test_a_survey_cut_short_leaves_its_archive_marked_incomplete(project):
     """Regression: Ctrl-C mid-survey left an archive with no meta.yaml and no marker, which
     status reported as ok and query read without a warning."""
 
@@ -1132,13 +1134,12 @@ def test_a_survey_cut_short_leaves_its_archive_marked_incomplete(project, monkey
             yield {"a": 1}
             raise KeyboardInterrupt
 
-    plugins = composition.load_plugins()
+    plugins = load_plugins()
     plugins.collector_types["stops"] = CollectorType(create=lambda ctx: Interrupts(),
                                                      effects=None)  # fmt: skip
-    monkeypatch.setattr(composition, "load_plugins", lambda: plugins)
     mission = _mission(project, "m", {"collectors": [{"name": "s", "type": "stops"}]})
 
-    result = _invoke("survey", "m", "--json")
+    result = _invoke("survey", "m", "--json", over=root(plugins=plugins))
 
     assert result.exit_code == 130
     [archive] = (mission / "archive").iterdir()

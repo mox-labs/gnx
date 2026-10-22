@@ -9,7 +9,6 @@ import pytest
 import recon
 from recon.adapters._out.capture_collector import CaptureCollector, body_format
 from recon.adapters._out.capture_files import FilesystemCaptureLog
-from recon.adapters._out.cli_collector import CliCollector
 from recon.adapters._out.system_clock import SystemClock
 from recon.application.captures import record_hook_payload
 from recon.domain.errors import CollectionError, ConfigError, NoRecordsError
@@ -227,7 +226,7 @@ def test_renormalize_a_survey_without_refetching():
                 ],
             }
         )
-        archive, _ = run(first, {"cli": CliCollector()}, mission)
+        archive, _ = run(first, mission)
         again = ReconConfig.model_validate(
             {
                 "collectors": [
@@ -241,7 +240,7 @@ def test_renormalize_a_survey_without_refetching():
                 ]
             }
         )
-        second, results = run(again, {"capture": CaptureCollector(mission)}, mission)
+        second, results = run(again, mission)
         lines = (second / "renorm.jsonl").read_text().splitlines()
     assert results[0].status == "ok"
     assert [json.loads(x) for x in lines] == [{"value": 1}, {"value": 2}]

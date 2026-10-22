@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError, Problem
+from recon.domain.errors import Problem
 from recon.domain.http import reported_url
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
 from recon.domain.substitution import find_unresolved
@@ -59,10 +59,7 @@ class WebCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        if not source:
-            msg = f"Web collector '{entry.name}' requires a source"
-            raise CollectionError(msg, kind="config", fix="add source: <a catalog source>")
-
+        assert source is not None  # the type requires a source, and the plan holds it
         url = _url(entry, source)
         headers = _headers(source, self._user_agent)
         resp: HttpResponse = self._requester.get(source, url, headers=headers)

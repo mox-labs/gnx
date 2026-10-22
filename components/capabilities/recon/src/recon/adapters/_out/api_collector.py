@@ -57,13 +57,8 @@ class ApiCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        if not source:
-            msg = f"API collector '{entry.name}' requires a source"
-            raise CollectionError(msg, kind="config", fix="add source: <a catalog source>")
-        if not entry.endpoint:
-            msg = f"API collector '{entry.name}' has no endpoint"
-            raise CollectionError(msg, kind="config", fix="add endpoint: <path after the url>")
-
+        # The plan holds both: the type requires a source, and _check an endpoint.
+        assert source is not None and entry.endpoint is not None
         url = build_url(source.url, entry.endpoint, entry.params or {})
         query_params = {**_checked_params(entry), **self._auth_params(source)}
         headers = self._build_headers(source)

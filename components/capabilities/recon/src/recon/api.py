@@ -95,7 +95,7 @@ def query(
 ) -> QueryRows:
     """Rows from the latest archive of ``name``, or the archive named (an id ``status(name)``
     lists). ``recon.v1.query-rows``, naming the archive as ``archive_id``."""
-    return _root(root).query(name, sql, archive_id=archive)
+    return _root(root).query(name, sql, archive=archive)
 
 
 def configure_telemetry() -> list[Problem]:

@@ -165,9 +165,7 @@ class CliCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        if not entry.run:
-            msg = f"Collector '{entry.name}' has type=cli but no 'run' field"
-            raise CollectionError(msg, kind="config", fix='run: "<the shell command>"')
+        assert entry.run is not None  # _check requires it, and the plan holds it
         if source is None and "{url}" in entry.run:
             raise CollectionError(
                 f"collector {entry.name!r}: run: uses {{url}}, the source's url, and this run "
@@ -296,7 +294,7 @@ def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, An
 
 
 collector_type = CollectorType(
-    create=lambda ctx: CliCollector(transforms=ctx.transforms),
+    create=lambda ctx: CliCollector(ctx.shell, ctx.transforms),
     effects=frozenset({"subprocess"}),
     summary="shell command → stdout lines (JSON objects or text) → records",
     normalizes=True,

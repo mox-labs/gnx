@@ -336,24 +336,24 @@ class Recon:
             ],
         )
 
-    def query(self, name: str, sql: str, *, archive_id: str | None = None) -> QueryRows:
+    def query(self, name: str, sql: str, *, archive: str | None = None) -> QueryRows:
         """Run ``sql`` against the latest archive, or the one named. ``state`` says whether
         the archive is incomplete, so its rows may be partial. A row is an object keyed by
         column, so a name the SQL gives twice is made unique, in ``columns`` and every row,
         with the suffix DuckDB gives it in a subquery (``a``, ``a_1``, then ``a_1_1`` on a
         further clash)."""
-        archive = self._archive(name, archive_id)
+        path = self._archive(name, archive)
         telemetry = self._telemetry(None)
-        with telemetry.span(QUERY, {"recon.mission": name, "recon.archive": archive.name}) as span:
-            result = self._query.execute(archive, sql)
+        with telemetry.span(QUERY, {"recon.mission": name, "recon.archive": path.name}) as span:
+            result = self._query.execute(path, sql)
             span.set("recon.rows", len(result.rows))
         columns = _unique(result.columns)
         rows = [dict(zip(columns, row, strict=True)) for row in result.rows]
         return QueryRows(
             mission=name,
-            archive=str(archive),
-            archive_id=archive.name,
-            state="incomplete" if self._archives.is_incomplete(archive) else "ok",
+            archive=str(path),
+            archive_id=path.name,
+            state="incomplete" if self._archives.is_incomplete(path) else "ok",
             columns=columns,
             rows=rows,
             count=len(rows),
