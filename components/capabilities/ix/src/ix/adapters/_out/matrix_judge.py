@@ -15,7 +15,10 @@ judge can be trusted here:
   flag too. Both flags are read whenever the sensor is in use.
 
 The judge runs with no tools and one turn, on the runtime its ``runtime`` names: there is
-no default, because two of them call a model provider, which is never implicit. What its
+no default, because two of them call a model provider, which is never implicit. It runs in
+a fresh temporary directory, removed after, and on ``claude-sdk`` reads no settings
+(``setting_sources: []`` unless its ``runtime_options`` name some), so a CLAUDE.md, a
+hook or a user's settings where ix happens to run cannot shape its scores. What its
 runtime reported it cost is kept beside its runtime and model in the readings' ``detail``,
 a fact about the judge that nothing adds up. In a dry run it stands in on ``mock``, which
 gives every reply the same score: the sensor's path is exercised and no model is called.
@@ -25,6 +28,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -123,10 +127,14 @@ class JudgeSensor:
         if not options.get("runtime"):
             raise ValueError("the judge needs a runtime: give runtime (model, claude-sdk or mock)")
         name = str(options["runtime"])
-        runtime = self._runtimes.build(name, dict(options.get("runtime_options") or {}), cwd=None)
-        judge = matrix.BoundAgent(definition, runtime)
+        config = dict(options.get("runtime_options") or {})
+        if name.removeprefix("matrix.v1.runtime.") == "claude-sdk":
+            config = {"setting_sources": [], **config}
         repeats = max(1, int(options.get("repeats") or 1))
-        replies = [await judge.run(task) for _ in range(repeats)]
+        with tempfile.TemporaryDirectory(prefix="ix-judge-") as workdir:
+            runtime = self._runtimes.build(name, config, cwd=workdir)
+            judge = matrix.BoundAgent(definition, runtime)
+            replies = [await judge.run(task) for _ in range(repeats)]
         scored = [_score(reply.content) for reply in replies]
         scores = [score for score, _ in scored]
         pass_at = float(options.get("pass_at", 0.5))

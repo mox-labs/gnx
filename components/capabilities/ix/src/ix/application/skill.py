@@ -1125,7 +1125,9 @@ are judged: they are reported and **never decide** a verdict. `repeats: 3` asks 
 times per reply: `judge_agreement` is how often it agreed with itself. Two flags are
 printed whenever a trial raises one: `judge_inconsistent` (its repeats split on pass or
 fail) and `judge_in_family` (the judge is of the subject's model family; judge with
-another).
+another). The judge runs in a fresh temporary directory and, on `claude-sdk`, reads no
+settings unless its `runtime_options` name `setting_sources`, so what is where ix runs
+(a CLAUDE.md, your settings, hooks) does not shape its scores.
 
 ## Reading the report
 

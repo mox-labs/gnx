@@ -440,8 +440,11 @@ each reply three times, and `judge_agreement` is how often it agreed with itself
 flags a trial whose readings split on pass or fail (`judge_inconsistent`) and a judge of the
 subject's own model family (`judge_in_family`). The judge runs on the runtime its `runtime`
 names, which is required: `model` (one call through hardline) and `claude-sdk` call a model
-provider, `mock` does not. What its runtime reported it cost is kept in the reading's
-detail, beside the judge's runtime and model.
+provider, `mock` does not. It runs in a fresh temporary directory, and on `claude-sdk`
+it reads no settings (`setting_sources: []`) unless its `runtime_options` name some, so a
+CLAUDE.md, a hook or your own settings where ix runs cannot shape its scores. What its
+runtime reported it cost is kept in the reading's detail, beside the judge's runtime and
+model.
 
 ```yaml
 sensors:

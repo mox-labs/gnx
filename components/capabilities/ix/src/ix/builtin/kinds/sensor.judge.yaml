@@ -10,7 +10,7 @@ options:
     description: "the matrix runtime that runs the judge: one of the choices, or any runtime installed. There is no default, so a model provider is never called implicitly"
     choices:
       model: one call through hardline; calls a model provider
-      claude-sdk: a one-turn Claude Agent SDK session with no tools; calls a model provider
+      claude-sdk: "a one-turn Claude Agent SDK session with no tools, in a fresh temporary directory, reading no settings unless runtime_options names setting_sources; calls a model provider"
       mock: a canned reply; calls no model
   model: {type: string, description: the model that judges}
   runtime_options: {type: mapping, description: further options of the judge runtime's own config}

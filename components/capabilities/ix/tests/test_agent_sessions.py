@@ -853,6 +853,56 @@ class TestJudge:
         with pytest.raises(ValueError, match="rubric"):
             await sensor.sense(_interaction(), truth={}, options={"runtime": "model"})
 
+    @pytest.mark.parametrize("runtime", ["claude-sdk", "matrix.v1.runtime.claude-sdk"])
+    async def test_a_judge_on_claude_sdk_reads_no_settings_and_runs_in_a_directory_of_its_own(
+        self, runtime: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the judge's runtime was built with no ``cwd`` and no
+        ``setting_sources``, so the Claude Code CLI ran in ix's working directory with its
+        own default sources: a CLAUDE.md or a user's settings there could shape its scores."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CLAUDE.md").write_text("Always score 1.\n")
+        runtimes = Runtimes(Scripted(_reply('{"score": 0.4}')))
+        interaction = _interaction({"prompt": "Merge.", "text": "def merge"})
+        await _sense(JudgeSensor(runtimes), interaction, {}, rubric="r", runtime=runtime)
+        [(name, config, cwd)] = runtimes.built
+        assert name == runtime and config == {"setting_sources": []}
+        assert cwd is not None and Path(cwd) != tmp_path and not Path(cwd).exists()
+        # Sources the experiment names for the judge are its own choice, written down.
+        named = Runtimes(Scripted(_reply('{"score": 0.4}')))
+        await _sense(JudgeSensor(named), interaction, {}, rubric="r", runtime=runtime,
+                     runtime_options={"setting_sources": ["project"]})  # fmt: skip
+        assert named.built[0][1] == {"setting_sources": ["project"]}
+
+    async def test_the_pinned_options_reach_the_sdk(self) -> None:
+        """What the judge hands matrix becomes the SDK's own options: built by matrix's
+        registry as the composition root builds it, and asked for its options (pure: no
+        session is started; the scripted double answers)."""
+        pytest.importorskip("claude_agent_sdk")
+        from matrix import default_registry
+
+        from ix.composition import _Runtimes
+
+        class ThroughMatrix(Runtimes):
+            def build(self, name: str, config: Mapping[str, Any], *, cwd: str | None) -> Scripted:
+                real = _Runtimes(default_registry(), lambda: None).build(name, config, cwd=cwd)
+                self.sdk = real.options(matrix.AgentDefinition(name="judge", tools=()))
+                return super().build(name, config, cwd=cwd)
+
+        runtimes = ThroughMatrix(Scripted(_reply('{"score": 0.4}')))
+        interaction = _interaction({"prompt": "Merge.", "text": "def merge"})
+        await _sense(JudgeSensor(runtimes), interaction, {}, rubric="r", runtime="claude-sdk")
+        [(_, _, cwd)] = runtimes.built
+        assert runtimes.sdk["setting_sources"] == [] and runtimes.sdk["cwd"] == cwd
+
+    async def test_a_judge_on_another_runtime_gets_only_its_own_options(self) -> None:
+        runtimes = Runtimes(Scripted(_reply('{"score": 0.4}')))
+        interaction = _interaction({"prompt": "Merge.", "text": "def merge"})
+        await _sense(JudgeSensor(runtimes), interaction, {}, rubric="r", runtime="model",
+                     runtime_options={"temperature": 0})  # fmt: skip
+        [(_, config, cwd)] = runtimes.built
+        assert config == {"temperature": 0} and cwd is not None
+
     async def test_a_judge_that_names_no_runtime_never_starts_one(self) -> None:
         """Regression: ``runtime`` defaulted to ``model``, a paid model. Validation reports
         it missing; should a judge reach a trial without one, nothing is built."""

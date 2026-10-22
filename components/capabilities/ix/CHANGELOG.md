@@ -77,6 +77,11 @@
   sensor that returned something other than a mapping of metrics to values, or a count
   with a number too large for a float, raised out of the sense step, so no reading of the
   run was written. Each is now a `sensor` failure (`shape`) of that sensor's readings.
+- **The judge reads nothing from where ix runs.** On `claude-sdk` it was built with no
+  working directory and no `setting_sources`, so the Claude Code CLI ran in ix's own
+  directory with its default sources, and a CLAUDE.md, a hook or a user's settings there
+  could shape its scores. It now runs in a fresh temporary directory, removed after, with
+  `setting_sources: []` unless its `runtime_options` name some.
 
 ## 0.5.0 — 2026-10-19
 
