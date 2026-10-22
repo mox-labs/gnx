@@ -209,14 +209,14 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
 async def _complete(args: argparse.Namespace) -> int:
     prompt = sys.stdin.read() if args.prompt == "-" else args.prompt
-    runtime = build_runtime()
-    completion = await runtime.complete(
-        args.model,
-        prompt,
-        system=args.system,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-    )
+    async with build_runtime() as runtime:
+        completion = await runtime.complete(
+            args.model,
+            prompt,
+            system=args.system,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+        )
     if args.json:
         print(completion.model_dump_json(indent=2, exclude={"raw"}))
     else:

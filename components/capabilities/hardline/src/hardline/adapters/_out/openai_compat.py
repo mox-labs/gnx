@@ -11,6 +11,8 @@ Row options this adapter reads::
 
 Retries are the runtime's (``retries`` on the row), not the SDK's: the client is built with
 ``max_retries=0``, so a transient failure is retried by one policy rather than compounded by two.
+A client is pooled within one event loop and never shared across loops (``_clients``);
+``aclose()`` closes the running loop's.
 
 No ambient credentials: when a row names no ``api_key`` the client is given a placeholder
 rather than being left to read ``OPENAI_API_KEY`` from the environment behind the
@@ -22,6 +24,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hardline.adapters._out._classify import classify
+from hardline.adapters._out._clients import LoopClients
 from hardline.adapters._out._scrub import scrub
 from hardline.domain.errors import BackendError, ConfigError
 from hardline.domain.types import ModelSpec, RawCompletion, Request, Usage
@@ -37,22 +40,23 @@ class OpenAICompatBackend:
     structured_modes = frozenset({"prompt", "json_object", "json_schema"})
 
     def __init__(self) -> None:
-        self._clients: dict[tuple[str | None, str, float], AsyncOpenAI] = {}
+        self._clients: LoopClients[AsyncOpenAI] = LoopClients(lambda client: client.close())
 
     def _client(self, spec: ModelSpec, api_key: str | None) -> AsyncOpenAI:
         from openai import AsyncOpenAI
 
-        key = (spec.base_url, api_key or _PLACEHOLDER_KEY, spec.timeout_s)
-        client = self._clients.get(key)
-        if client is None:
-            client = AsyncOpenAI(
+        return self._clients.get(
+            (spec.base_url, api_key or _PLACEHOLDER_KEY, spec.timeout_s),
+            lambda: AsyncOpenAI(
                 api_key=api_key or _PLACEHOLDER_KEY,
                 base_url=spec.base_url,
                 timeout=spec.timeout_s,
                 max_retries=0,
-            )
-            self._clients[key] = client
-        return client
+            ),
+        )
+
+    async def aclose(self) -> None:
+        await self._clients.aclose()
 
     async def complete(
         self, spec: ModelSpec, request: Request, api_key: str | None

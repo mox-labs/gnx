@@ -75,6 +75,24 @@ s.completion  # the Completion that produced it, attempts included
 and the validation error once before raising `SchemaError`. A provider's "structured" mode is
 an optimisation; validation here is the guarantee.
 
+A runtime's connections belong to the event loop that opened them, and are pooled within that
+loop. Close them in that loop before it ends, with `async with rt:` or `await rt.aclose()`.
+The runtime stays usable afterwards, so one runtime can serve several `asyncio.run` calls:
+
+```python
+async def main() -> None:
+    async with rt:
+        c = await rt.complete("qwen3-8b", "...")
+
+
+asyncio.run(main())
+asyncio.run(main())  # the same runtime: new connections in the new loop
+```
+
+A runtime called from a new loop never reuses a connection from another loop. If that other
+loop ended without `aclose()`, its connections can no longer be closed. They stay open until
+garbage collection, and hardline logs a warning that names the fix.
+
 Another composition root wires hardline from a section of its own config:
 
 ```python
@@ -121,7 +139,9 @@ step that can succeed, or `null`.
 ## Extend
 
 A backend is two members — a `structured_modes` frozenset and an async `complete(spec,
-request, api_key) -> RawCompletion` — and one entry point:
+request, api_key) -> RawCompletion` — and one entry point. A backend that holds connections
+also defines an async `aclose()`, which closes those opened in the running loop. A runtime's
+`aclose()` calls it.
 
 ```toml
 [project.entry-points."hardline.backends"]

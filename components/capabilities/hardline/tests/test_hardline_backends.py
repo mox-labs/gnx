@@ -138,7 +138,7 @@ async def test_openai_compat_rejects_unknown_token_param() -> None:
         await backend.complete(_spec(options={"token_param": "tokens"}), _request(), None)
 
 
-def test_openai_compat_never_reads_ambient_key(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_openai_compat_never_reads_ambient_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "ambient-should-not-be-used")
     client = OpenAICompatBackend()._client(_spec(base_url="http://127.0.0.1:9/v1"), None)
     assert client.api_key == "hardline-no-key"

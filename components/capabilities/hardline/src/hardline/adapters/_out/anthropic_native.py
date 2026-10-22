@@ -4,7 +4,9 @@ System turns are lifted into the ``system`` parameter, as the API requires. Stru
 output is ``prompt`` mode only here: the schema is stated in an instruction and the
 runtime validates the reply. A registry row asking this backend for ``json_schema`` is
 rejected at composition, not silently downgraded. The client is built with
-``max_retries=0``: retries belong to the runtime's policy, not a second hidden one here.
+``max_retries=0``: retries belong to the runtime's policy, not a second hidden one here. A
+client is pooled within one event loop and never shared across loops (``_clients``);
+``aclose()`` closes the running loop's.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hardline.adapters._out._classify import classify
+from hardline.adapters._out._clients import LoopClients
 from hardline.adapters._out._scrub import scrub
 from hardline.domain.errors import BackendError
 from hardline.domain.types import ModelSpec, RawCompletion, Request, Usage
@@ -24,7 +27,7 @@ class AnthropicBackend:
     structured_modes = frozenset({"prompt"})
 
     def __init__(self) -> None:
-        self._clients: dict[tuple[str | None, str | None, float], AsyncAnthropic] = {}
+        self._clients: LoopClients[AsyncAnthropic] = LoopClients(lambda client: client.close())
 
     def _client(self, spec: ModelSpec, api_key: str | None) -> AsyncAnthropic:
         from anthropic import AsyncAnthropic
@@ -37,14 +40,15 @@ class AnthropicBackend:
                 "Add api_key: env:ANTHROPIC_API_KEY or api_key: file:~/.secrets/claude-api",
                 reason="auth",
             )
-        key = (spec.base_url, api_key, spec.timeout_s)
-        client = self._clients.get(key)
-        if client is None:
-            client = AsyncAnthropic(
+        return self._clients.get(
+            (spec.base_url, api_key, spec.timeout_s),
+            lambda: AsyncAnthropic(
                 api_key=api_key, base_url=spec.base_url, timeout=spec.timeout_s, max_retries=0
-            )
-            self._clients[key] = client
-        return client
+            ),
+        )
+
+    async def aclose(self) -> None:
+        await self._clients.aclose()
 
     async def complete(
         self, spec: ModelSpec, request: Request, api_key: str | None
