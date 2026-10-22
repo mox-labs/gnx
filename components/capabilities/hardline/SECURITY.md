@@ -22,7 +22,8 @@ the prompt off-machine. **A registry file decides where your prompts go.** Revie
   where a request goes nor what it trusts. A proxy is used only when a row names one
   (`proxy:`), and one carrying credentials is refused, since they would sit in a config file
   (`test_a_row_names_its_proxy`, `test_a_proxy_the_row_cannot_use_fails_composition`). TLS is verified against the operating system's trust
-  store (truststore).
+  store (truststore), on the hop to an `https://` proxy too
+  (`test_an_https_proxy_is_verified_against_the_system_store_whatever_the_environment`).
 - **Redirects are not followed.** A 3xx is a config error whose fix names where to point the
   row's `base_url`; following it would send the row's key to wherever it points
   (`test_a_redirect_is_reported_not_followed`).

@@ -84,7 +84,7 @@ when the runtime is composed (`https://api.openai.com/v1`, `https://api.anthropi
 to decide it: not `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL` or `OPENAI_ORG_ID`, nor a proxy
 (`HTTPS_PROXY` and the like) or certificate variable (`SSL_CERT_FILE`). A row behind a proxy
 names it (`proxy: http://proxy.internal:3128`). TLS is verified against the operating system's
-trust store. A redirect is never followed, since following it would send the row's key along:
+trust store, the hop to an `https://` proxy included. A redirect is never followed, since following it would send the row's key along:
 it is a config error (exit 3) whose fix says where to point `base_url`.
 
 A bad row fails at composition, naming the file and the key path:

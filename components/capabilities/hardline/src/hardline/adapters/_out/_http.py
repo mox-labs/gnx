@@ -10,7 +10,8 @@ How httpx2 (2.10) is used, each choice checked against its source and recorded i
 
 * **No ambient configuration.** Clients and the transport are built with ``trust_env=False``,
   so no proxy variable (``HTTP_PROXY``, ``HTTPS_PROXY``, ``ALL_PROXY``) reroutes a request and
-  neither ``SSL_CERT_FILE`` nor ``SSL_CERT_DIR`` changes what it trusts.
+  neither ``SSL_CERT_FILE`` nor ``SSL_CERT_DIR`` changes what it trusts: the TLS hop to an
+  ``https://`` proxy is handed that context too, where httpcore2 would read both.
 * **TLS** is verified against the operating system's trust store, through ``truststore``,
   which httpx2 uses by default where httpx used certifi's bundle.
 * **Redirects are not followed** (httpx2's default, kept). A 3xx is a ``ConfigError`` whose fix
@@ -56,8 +57,20 @@ _DETAIL_CHARS = 500
 def network_transport(proxy: str | None = None) -> httpx2.AsyncBaseTransport:
     """The real network, through ``proxy`` when a row names one. The workspace's test guard
     refuses this call, so no test reaches a provider; a test hands a backend an
-    ``httpx2.MockTransport`` instead."""
-    return httpx2.AsyncHTTPTransport(trust_env=False, retries=0, proxy=proxy)
+    ``httpx2.MockTransport`` instead.
+
+    The TLS hop to an ``https://`` proxy gets the same context as the provider's: given none,
+    httpcore2 builds its own from ``SSL_CERT_FILE`` and ``SSL_CERT_DIR``, whatever
+    ``trust_env`` says."""
+    return httpx2.AsyncHTTPTransport(
+        trust_env=False,
+        retries=0,
+        proxy=(
+            None
+            if proxy is None
+            else httpx2.Proxy(proxy, ssl_context=httpx2.create_ssl_context(trust_env=False))
+        ),
+    )
 
 
 def client_timeout(spec: ModelSpec) -> httpx2.Timeout:
