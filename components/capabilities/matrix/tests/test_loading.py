@@ -138,13 +138,13 @@ def test_a_folder_is_not_one_document(tmp_path: Path) -> None:
 
 def test_a_stream_is_read_as_yaml() -> None:
     stream = io.StringIO("name: piped\n")
-    stream.name = "<stdin>"  # type: ignore[misc]
+    stream.name = "<stdin>"
     assert load(Experiment, stream).name == "piped"
 
 
 def test_a_stream_reports_problems_against_its_name() -> None:
     stream = io.StringIO("repeats: 2\n")
-    stream.name = "<stdin>"  # type: ignore[misc]
+    stream.name = "<stdin>"
     with pytest.raises(ConfigError) as raised:
         load(Experiment, stream)
     assert raised.value.problems[0].source == "<stdin>"

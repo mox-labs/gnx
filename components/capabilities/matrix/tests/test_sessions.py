@@ -132,7 +132,7 @@ async def test_the_session_row_records_the_trace_and_span_the_host_is_in() -> No
 
 async def test_outside_a_run_nothing_is_recorded_and_the_response_keeps_its_facts() -> None:
     runtime = MockAgentRuntime(MockAgentRuntimeConfig(default="ok"))
-    response = await BoundAgent(AgentDefinition(name="a"), runtime).run("hello")
+    response = await BoundAgent(AgentDefinition(name="a", system_prompt=""), runtime).run("hello")
     assert (response.session, response.content, response.num_turns) == (None, "ok", 1)
 
 
@@ -154,7 +154,7 @@ class _TwoAgents:
 
 async def test_a_row_names_the_sessions_its_component_ran_since_its_last_hand_over() -> None:
     runtime = MockAgentRuntime(MockAgentRuntimeConfig(default="ok"))
-    agent = BoundAgent(AgentDefinition(name="a"), runtime)
+    agent = BoundAgent(AgentDefinition(name="a", system_prompt=""), runtime)
     run = await Executor().run(wire({"two": _TwoAgents(agent)}, inputs=[TASK]), {TASK: "go"})
     assert len(run.rows(SESSION)) == 3
     assert [e.sessions for e in run.construct.provenance("acme.v1.first")] == [(0,)]
@@ -166,7 +166,7 @@ async def test_a_component_can_ask_which_sessions_its_next_row_will_name() -> No
     """``ctx.sessions()`` is what the ledger entry of the component's next row will name, so
     a component can put the sessions behind a row in the row itself."""
     runtime = MockAgentRuntime(MockAgentRuntimeConfig(default="ok"))
-    agent = BoundAgent(AgentDefinition(name="a"), runtime)
+    agent = BoundAgent(AgentDefinition(name="a", system_prompt=""), runtime)
     seen: list[tuple[int, ...]] = []
 
     class _Asks:
@@ -289,7 +289,9 @@ async def test_a_failed_agent_session_is_still_a_session_row(
 ) -> None:
     """A session that failed is on the record with what its runtime knew of it: its ids and
     usage when the runtime's error carried them, and always that it failed and why."""
-    agent = BoundAgent(AgentDefinition(name="a"), _Failing(error), runtime_url="acme.v1.rt")
+    agent = BoundAgent(
+        AgentDefinition(name="a", system_prompt=""), _Failing(error), runtime_url="acme.v1.rt"
+    )
 
     class _Once:
         requires = frozenset({TASK})
@@ -308,7 +310,10 @@ async def test_a_failed_agent_session_is_still_a_session_row(
     usage = session.usage.input_tokens if session.usage is not None else None
     assert (session.session_id, usage, session.cost_usd, session.turns) == facts
     assert session.sent == digest(
-        {"definition": AgentDefinition(name="a").model_dump(mode="json"), "task": "go"}
+        {
+            "definition": AgentDefinition(name="a", system_prompt="").model_dump(mode="json"),
+            "task": "go",
+        }
     )
     assert run.construct.provenance(SESSION)[0].component == "once"
 
@@ -333,7 +338,9 @@ async def test_a_cancelled_agent_session_is_a_session_row_that_says_so() -> None
     sdk_trace = pytest.importorskip("opentelemetry.sdk.trace")
     from matrix.composition.telemetry import current_trace
 
-    agent = BoundAgent(AgentDefinition(name="a"), _Hangs(), runtime_url="acme.v1.rt")
+    agent = BoundAgent(
+        AgentDefinition(name="a", system_prompt=""), _Hangs(), runtime_url="acme.v1.rt"
+    )
 
     class _Asks:
         requires = frozenset({TASK})
@@ -352,7 +359,10 @@ async def test_a_cancelled_agent_session_is_a_session_row_that_says_so() -> None
     assert (session.port, session.agent, session.runtime) == ("agent-runtime", "a", "acme.v1.rt")
     assert (session.status, session.reason, session.error) == ("cancelled", "cancelled", None)
     assert session.sent == digest(
-        {"definition": AgentDefinition(name="a").model_dump(mode="json"), "task": "go"}
+        {
+            "definition": AgentDefinition(name="a", system_prompt="").model_dump(mode="json"),
+            "task": "go",
+        }
     )
     assert session.trace_id is not None and session.span_id is not None
     assert e.value.run.construct.provenance(SESSION)[0].component == "asks"

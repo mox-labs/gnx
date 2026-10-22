@@ -152,7 +152,7 @@ async def test_the_mock_replies_by_task_then_by_agent_then_by_default() -> None:
             responses={"exact task": "by task"}, by_agent={"a": "by agent"}, default="default"
         )
     )
-    a, b = AgentDefinition(name="a"), AgentDefinition(name="b")
+    a, b = AgentDefinition(name="a", system_prompt=""), AgentDefinition(name="b", system_prompt="")
     assert (await mock.run(a, "exact task")).content == "by task"
     assert (await mock.run(a, "other")).content == "by agent"
     assert (await mock.run(b, "other")).content == "default"
@@ -175,7 +175,7 @@ async def test_a_fenced_json_block_is_accepted() -> None:
         AgentStepConfig(agent="a", output=REVIEW),
         agents={
             "a": BoundAgent(
-                AgentDefinition(name="a"),
+                AgentDefinition(name="a", system_prompt=""),
                 MockAgentRuntime(
                     MockAgentRuntimeConfig(default='ok\n```json\n{"verdict": "hold"}\n```')
                 ),
@@ -205,7 +205,9 @@ def test_several_inputs_need_a_template() -> None:
 
 async def test_bound_agents_report_to_observers() -> None:
     recorder = RecordingObserver()
-    agent = BoundAgent(AgentDefinition(name="a"), MockAgentRuntime(), observers=[recorder])
+    agent = BoundAgent(
+        AgentDefinition(name="a", system_prompt=""), MockAgentRuntime(), observers=[recorder]
+    )
     await agent.run("hi")
     assert recorder.names() == ["matrix.agent.start", "matrix.agent.end"]
     assert recorder.events[-1].fields["status"] == "completed"
@@ -342,7 +344,7 @@ def test_the_container_wires_the_components_its_config_lists() -> None:
         )
     )
     wiring = box.wire()
-    assert (wiring.inputs, wiring.order()) == ({DIFF}, ("rev",))
+    assert (wiring.inputs, wiring.order()) == (frozenset({DIFF}), ("rev",))
 
 
 async def test_the_offline_agent_runtime_says_its_session_completed() -> None:
@@ -350,12 +352,14 @@ async def test_the_offline_agent_runtime_says_its_session_completed() -> None:
     turn completes, a fact of the mock, so the test holds that value and not any truthy one
     (mx-tests 4). A model call has no session to end: it is the model port's."""
     box = compose(MatrixConfig.model_validate({"agent_runtimes": {"mock": {"type": "mock"}}}))
-    response = await box.agent_runtime("mock").run(AgentDefinition(name="a", tools=()), "hi")
+    response = await box.agent_runtime("mock").run(
+        AgentDefinition(name="a", system_prompt="", tools=()), "hi"
+    )
     assert (response.stop, response.num_turns) == ("completed", 1)
 
 
 def test_an_unknown_reason_is_a_failure_not_a_crash() -> None:
-    error = AgentRuntimeError("quota exhausted", reason="quota")  # type: ignore[arg-type]
+    error = AgentRuntimeError("quota exhausted", reason="quota")
     assert (error.kind, error.exit_code, error.retryable) == ("component", 8, False)
 
 

@@ -289,7 +289,7 @@ def test_it_is_registered_saying_what_it_drives_and_accepts() -> None:
 
 
 def test_tools_named_in_config_are_imported_when_the_runtime_is_built() -> None:
-    config = {"agent_runtimes": {"p": {
+    config: dict[str, Any] = {"agent_runtimes": {"p": {
         "type": "pydantic-ai", "default_model": "q",
         "models": {"models": {"q": {"backend": "mock", "model": "m", "family": "x"}}},
         "tools": {"lookup": f"{__name__}:lookup", "gone": f"{__name__}:no_such_tool"},

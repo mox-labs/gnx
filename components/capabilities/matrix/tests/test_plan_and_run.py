@@ -182,7 +182,7 @@ def test_a_named_config_sits_above_the_tiers_and_can_be_standard_input(
     project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     piped = io.StringIO("matrix:\n  agents:\n    reviewer: {model: m2}\n")
-    piped.name = "<stdin>"  # type: ignore[misc]
+    piped.name = "<stdin>"
     monkeypatch.setattr(sys, "stdin", piped)
     code, plan, _ = _cli(capsys, "plan", "-", "--json")
     assert code == 0 and plan["agents"][0]["model"] == "m2"

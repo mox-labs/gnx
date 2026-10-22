@@ -52,7 +52,7 @@ class Flaky:
     async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
         self.calls += 1
         if self.calls <= self.times:
-            raise AgentRuntimeError("busy", reason=self.reason, **self.details)  # type: ignore[arg-type]
+            raise AgentRuntimeError("busy", reason=self.reason, **self.details)
         return {UPPER: [t.upper() for t in inputs[TEXT]]}
 
 

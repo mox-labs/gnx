@@ -175,7 +175,7 @@ async def test_a_failed_call_is_a_classified_model_runtime_error() -> None:
 async def test_the_mock_agent_is_the_agent_port_not_a_lookalike() -> None:
     runtime = MockAgentRuntime(MockAgentRuntimeConfig(responses={"ping": "pong"}))
     assert isinstance(runtime, AgentRuntime)
-    d = AgentDefinition(name="a", model="m")
+    d = AgentDefinition(name="a", system_prompt="", model="m")
     assert (await runtime.run(d, "ping")).content == "pong"
     assert (await runtime.run(d, "other")).content == "mock:a:other"
     assert runtime.calls == [("a", "ping"), ("a", "other")]
@@ -183,7 +183,7 @@ async def test_the_mock_agent_is_the_agent_port_not_a_lookalike() -> None:
 
 async def test_the_mock_agent_reports_no_cost_because_no_provider_reported_one() -> None:
     """A reported cost is provenance: what a provider said. A mock is not a provider."""
-    response = await MockAgentRuntime().run(AgentDefinition(name="a"), "hello")
+    response = await MockAgentRuntime().run(AgentDefinition(name="a", system_prompt=""), "hello")
     assert response.cost_usd is None
 
 
