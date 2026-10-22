@@ -1065,6 +1065,80 @@ class TestAVerdictTracesToTheModelThatAnswered:
             assert failed["usage"]["input_tokens"] == 9 and len(failed["attempt_log"]) == 2
 
 
+class _GoesDown:
+    """An environment that is lost after its second trial: the run fails before it senses."""
+
+    def __init__(self) -> None:
+        self.asked = 0
+
+    async def up(self, environment: Any, *, base: str, scope: Any) -> dict[str, Any]:
+        return {}
+
+    async def lost(self, bindings: Any) -> str | None:
+        self.asked += 1
+        return "the service went away" if self.asked >= 2 else None
+
+
+class TestAReportCallsNoModel:
+    def test_a_run_that_ended_before_its_judge_read_is_reported_without_asking_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: ``ix report`` of a run that ended before sensing derived its readings
+        then, so every report asked the judge again: paid calls from a read command, and a
+        stochastic judge's readings differing between two reports of one run."""
+        judged: list[str] = []
+
+        def answer(task: str) -> matrix.AgentResponse:
+            if "Rubric:" in task:
+                judged.append(task)
+                return matrix.AgentResponse(content='{"score": 0.9, "reason": "fine"}')
+            return _fires()(task)
+
+        registry = _registry(answer)
+        environment = "acme.v1.environment.goes-down"
+        registry.register("ix.environment", environment, _GoesDown)
+        lab = _routing(
+            tmp_path,
+            metrics=["judged_score"],
+            sensors=[{"kind": "judge", "rubric": "Helpful.", "agent_runtime": SCRIPTED}],
+            environment={"kind": environment},
+        )
+        (lab / "kinds").mkdir()
+        (lab / "kinds" / "goes-down.yaml").write_text(
+            yaml.safe_dump(
+                {"schema": "ix.v1.kind", "name": environment, "summary": "Lost after a trial."}
+            )
+        )
+        root = Root(registry=registry, settings=_settings())
+        ran = root.run(lab, exploratory=True)
+        assert ran.status == "failed" and ran.trials.carried_out == 2
+        assert judged == []  # the run ended before its sensors read anything
+
+        for _ in range(2):
+            report = root.report(ran.location)
+            assert report.readings == "none" and report.trials.carried_out == 2
+            assert "judge" in report.unread and "ix run" in report.unread
+        assert judged == []  # two reports, no call
+
+    def test_a_run_whose_sensors_call_no_model_is_still_read_at_report_time(
+        self, tmp_path: Path
+    ) -> None:
+        registry = _registry(_fires())
+        environment = "acme.v1.environment.goes-down"
+        registry.register("ix.environment", environment, _GoesDown)
+        lab = _routing(tmp_path, environment={"kind": environment})
+        (lab / "kinds").mkdir()
+        (lab / "kinds" / "goes-down.yaml").write_text(
+            yaml.safe_dump(
+                {"schema": "ix.v1.kind", "name": environment, "summary": "Lost after a trial."}
+            )
+        )
+        root = Root(registry=registry, settings=_settings())
+        ran = root.run(lab, exploratory=True)
+        report = root.report(ran.location)
+        assert report.readings == "derived" and report.unread == ""
+
+
 class TestAJudgesFlags:
     def test_a_judge_of_the_subjects_family_is_flagged_and_what_it_cost_kept(
         self, tmp_path: Path

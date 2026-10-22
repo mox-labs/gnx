@@ -725,18 +725,35 @@ class Root:
 
     def _report(self, records: RunRecords, run: str) -> Report:
         record = records.record(run)
-        return build_report(record, readings=self._derived_readings(record))
+        readings, unread = self._derived_readings(record)
+        return build_report(record, readings=readings, unread=unread)
 
-    def _derived_readings(self, record: RunRecord) -> list[Reading] | None:
+    def _calls_a_model(self, sensor: str) -> bool:
+        """Whether the adapter of ``sensor`` (a type URL) is handed matrix's runtimes: the
+        only way ix gives an adapter a model to call."""
+        return RUNTIMES in self._registry.entry(POINTS["sensor"], sensor).needs
+
+    def _derived_readings(self, record: RunRecord) -> tuple[list[Reading] | None, str]:
         """The readings of a run that ended before its sensors read its interactions, taken
-        now from the stored tables and never written back. None when there are none to take,
-        or a sensor the run used has no adapter here."""
+        now from the stored tables and never written back; or None, and why they were not
+        taken, when there are some to take. A report calls no model: a run that used a
+        sensor that does (a judge) is not read here at all, and neither is one whose sensor
+        has no adapter here."""
         if not record.interactions or record.readings or record.status == "running":
-            return None
+            return None, ""
         setup = running.setup_of(record.manifest)
         sensors = {selected.kind for selected in setup.design.sensors}
-        if not sensors <= self._runnable:
-            return None
+        again = (
+            f"run the experiment again for its readings: ix run {record.manifest.base}; a run "
+            "reads its interactions as it finishes"
+        )
+        missing = sorted(sensors - self._runnable)
+        if missing:
+            return None, f"no adapter here reads {', '.join(map(schema.short, missing))}: {again}"
+        calling = sorted(kind for kind in sensors if self._calls_a_model(kind))
+        if calling:
+            named = ", ".join(map(schema.short, calling))
+            return None, f"{named} calls a model, and a report never does: {again}"
         derived = asyncio.run(
             running.sense(
                 setup,
@@ -745,7 +762,7 @@ class Root:
                 interactions=record.interactions,
             )
         )
-        return derived or None
+        return derived or None, ""
 
     def _locate(self, target: PathLike) -> tuple[RunRecords, str | None, str]:
         """(records, run id or None, experiment name) for a run directory or an experiment."""

@@ -18,6 +18,13 @@ Audience: anyone running ix against an experiment, a genre or a kind they did no
 | `run` | the same as `plan`, the environment, and the git work tree the experiment sits in | `<experiment directory>/.ix/runs/<run id>/` (or under `runs:` in ix's settings); temporary directories it removes; whatever the programs and sessions it starts write |
 | `report`, `runs` | the experiment file; the runs under `.ix/runs` | nothing |
 
+`report` and `runs` call no model. A report of a run that ended before its sensors read
+its interactions reads them then, but only with sensors whose adapters are not handed
+matrix's runtimes; a run that used one (a `judge`) is reported without readings (the test
+suite holds this with a judge that counts its calls over two reports). A third-party sensor
+that reaches a model provider by its own means, not through the runtimes ix hands it, is
+outside what ix can tell.
+
 `run` also **starts**: `git -c core.fsmonitor=false -C <experiment directory>` three times
 (`rev-parse --is-inside-work-tree`, `rev-parse --verify HEAD`, `status --porcelain
 --untracked-files=no`) to record the commit, with the repository's file-system monitor

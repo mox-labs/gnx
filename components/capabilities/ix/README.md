@@ -496,7 +496,9 @@ Each file is one JSON document per line, readable with `jq` or DuckDB. An intera
 disk when its trial finishes, so a run that is killed outright keeps every trial it
 finished. `ix report <run directory>` reads a run in any state. When a run ended before its
 sensors read the interactions (it was stopped or killed), the report reads them from the
-stored interactions and says `readings: derived`; nothing is written back. Keep `.ix/` out
+stored interactions and says `readings: derived`; nothing is written back. A report never
+calls a model: when a sensor the run used does (a `judge`), it reads none and says so
+(`unread`), and the readings come from running the experiment again. Keep `.ix/` out
 of version control.
 
 The work is three components that matrix wires by the kinds they exchange: `environment`

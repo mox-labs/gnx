@@ -733,7 +733,11 @@ def _render_warrant(report: ix.Report) -> None:
             "derived from the record when this report was made."
         )
     elif report.readings == "none":
-        lines.append("No readings: none were recorded, and none could be derived here.")
+        lines.append(
+            f"No readings: none were recorded, and none were derived here: {report.unread}."
+            if report.unread
+            else "No readings were recorded."
+        )
     _field("Warrant", *lines, *analysis.notes)
 
 

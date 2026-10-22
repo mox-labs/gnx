@@ -1032,6 +1032,7 @@ def test_a_hard_kill_mid_run_leaves_every_finished_trial_readable_and_reportable
     # says none were taken; any other error while deriving them is raised, not read as that.
     unread = Root(registry=fake_registry(sensor=None)).report(location)
     assert unread.readings == "none" and unread.trials.carried_out == len(kept)
+    assert unread.unread.startswith("no adapter here reads timing: run the experiment again")
 
     def broken(*_: Any, **__: Any) -> Any:
         raise KeyError("a defect, not a missing adapter")

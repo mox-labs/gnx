@@ -265,6 +265,13 @@ them. Nothing in ix branches on a runtime's name any more. `docs/design/2026-10-
   built matrix's `JsonlConstructStore` itself. The root now builds the store at matrix's
   `store` point (`Root(run_store=...)`, `jsonl` by default, whose config takes the `root`
   directory) and hands it in, for running, reporting and listing alike.
+- **A report never calls a model.** `ix report` of a run that ended before its sensors read
+  its interactions derived the readings then, so each report of a run with a `judge` asked
+  the judge again: paid calls from a read command, and a stochastic judge's readings
+  differing between two reports of one run. `ix run`'s own report of a failed run did the
+  same. Readings are still derived at report time with sensors that call no model; a run
+  that used one is reported with `readings: none` and `unread` naming the sensor and the
+  fix (run the experiment again).
 
 ## 0.5.0 — 2026-10-19
 
