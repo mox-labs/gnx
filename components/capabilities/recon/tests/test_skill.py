@@ -233,6 +233,48 @@ def test_every_mission_shown_plans_clean_in_this_build() -> None:
         assert plan.valid, (name, mission["collectors"][0]["name"], plan.problems)
 
 
+def _page_catalog(text: str) -> list[dict[str, Any]]:
+    """The sources a page shows, in a ``catalog:`` block or as a block of source entries
+    alone (a walkthrough that adds one source at a time); a source shown again is its last
+    showing."""
+    sources: list[dict[str, Any]] = []
+    for block in _yaml_blocks(text):
+        try:
+            parsed = yaml.safe_load(block)
+        except yaml.YAMLError:
+            continue  # a fragment of a mapping, shown indented under its key
+        if isinstance(parsed, dict) and isinstance(parsed.get("catalog"), list):
+            sources += parsed["catalog"]
+        elif isinstance(parsed, list) and all(
+            isinstance(i, dict) and ("url" in i or "command" in i) for i in parsed
+        ):
+            sources += parsed
+    return list({source.get("name"): source for source in sources}.values())
+
+
+def test_every_mission_the_docs_and_readme_show_plans_clean_in_this_build() -> None:
+    """The how-tos, the explanation and the README show missions too; a reader copies them
+    as the skill's are copied, so each must plan in this build. A ``collectors:`` block with
+    no ``catalog:`` of its own runs against the sources its page showed."""
+    plugins = composition.load_plugins()
+    pages = [PACKAGE / "README.md", *sorted((PACKAGE / "docs").glob("*/*.md"))]
+    shown = []
+    for page in pages:
+        # The record holds no missions; extending.md's mission uses the plugin type it builds.
+        if "design" in page.parts or page.name == "extending.md":
+            continue
+        text = page.read_text()
+        catalog = _page_catalog(text)
+        shown += [
+            (page.relative_to(PACKAGE), {"catalog": catalog, **mission})
+            for mission in _missions(text)
+        ]
+    assert shown, "the scan found the missions"
+    for page, mission in shown:
+        plan = build_plan(mission, plugins, {})
+        assert plan.valid, (str(page), mission["collectors"][0]["name"], plan.problems)
+
+
 def test_no_pointer_to_a_file_the_command_cannot_print() -> None:
     for name, text in ({"SKILL.md": SKILL} | REFERENCES).items():
         assert not re.search(r"\]\((?!https?:|#)[^)]+\)", text), f"{name}: a relative link"

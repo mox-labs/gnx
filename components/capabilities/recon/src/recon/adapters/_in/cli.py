@@ -531,7 +531,8 @@ def capture(name: str, as_json: bool) -> None:
     \b
     Hook (settings.json), capturing every MCP tool result:
       {"hooks": {"PostToolUse": [{"matcher": "mcp__.*",
-        "hooks": [{"type": "command", "command": "recon capture my-mcp --json"}]}]}}
+        "hooks": [{"type": "command",
+                   "command": "cd \\"$CLAUDE_PROJECT_DIR\\" && recon capture my-mcp --json"}]}]}}
     """
     if sys.stdin.isatty():
         raise recon.UsageError(
