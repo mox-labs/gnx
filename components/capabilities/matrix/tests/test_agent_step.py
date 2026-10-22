@@ -68,7 +68,7 @@ async def test_an_agent_runs_as_a_component_with_the_rows_it_requires_rendered()
     assert wiring.components["rev"].requires == {DIFF}
     assert wiring.components["rev"].provides == {AGENT_RESPONSE, REVIEW}
     run = await box.executor().run(wiring, {DIFF: "+ added line"})
-    assert run.rows(REVIEW) == ({"verdict": "ship"},)
+    assert run.rows(REVIEW) == (Review(verdict="ship"),)
     assert isinstance(run.rows(AGENT_RESPONSE)[0], AgentResponse)
     runtime = box.runtime("m")
     assert runtime.calls == [("reviewer", "Review:\n+ added line")]

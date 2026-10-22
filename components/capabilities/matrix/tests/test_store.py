@@ -77,12 +77,13 @@ async def test_a_row_handed_over_is_on_disk_before_the_call_returns(tmp_path: Pa
 
     wiring = wire({"trials": Step(trials, provides=[TRIAL])}, schemas={TRIAL: Trial})
     run = await Executor().run(wiring, store=store, run_id="r1")
-    assert seen["rows"] == [{"seq": 0, "note": ""}, {"seq": 1}]  # the records, nothing around them
+    # The records as their kind's schema reads them, nothing around them.
+    assert seen["rows"] == [{"seq": 0, "note": ""}, {"seq": 1, "note": ""}]
     assert seen["ledger"] == [(0, TRIAL, 0), (1, TRIAL, 1)]
     assert seen["record"]["status"] == "running"
     assert seen["record"]["tables"][TRIAL] == {"file": f"{TRIAL}.jsonl", "rows": 2}
-    assert seen["loaded"] == ({"seq": 0, "note": ""}, {"seq": 1})
-    assert run.rows(TRIAL) == (Trial(seq=0), {"seq": 1}, Trial(seq=2))
+    assert seen["loaded"] == ({"seq": 0, "note": ""}, {"seq": 1, "note": ""})
+    assert run.rows(TRIAL) == (Trial(seq=0), Trial(seq=1), Trial(seq=2))
 
 
 async def test_a_finished_run_reads_back_with_rows_ledger_and_status(tmp_path: Path) -> None:
@@ -123,6 +124,68 @@ async def test_a_finished_run_reads_back_with_rows_ledger_and_status(tmp_path: P
     assert loaded.provenance(SEED)[0].component == "$input"
     assert loaded.last(READING) == {"seq": 1, "ok": True}
     assert store.runs() == [run.run_id]
+
+
+async def test_nested_values_are_written_as_json_not_as_their_str(tmp_path: Path) -> None:
+    import dataclasses
+    from datetime import UTC, datetime
+
+    @dataclasses.dataclass
+    class Point:
+        x: int
+
+    class Inner(BaseModel):
+        a: int
+        b: str
+
+    async def give(inputs: Inputs, ctx: RunContext) -> Any:
+        return {
+            TRIAL: {
+                "inner": Inner(a=1, b="x"),
+                "tags": {"s"},
+                "at": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+                "point": Point(x=2),
+                "pair": (1, 2),
+            }
+        }
+
+    store = JsonlConstructStore(tmp_path)
+    await Executor().run(wire({"give": Step(give, provides=[TRIAL])}), store=store, run_id="r")
+    expected = {
+        "inner": {"a": 1, "b": "x"},
+        "tags": ["s"],
+        "at": "2026-01-02T03:04:05Z",
+        "point": {"x": 2},
+        "pair": [1, 2],
+    }
+    assert _table(tmp_path / "r", TRIAL) == [expected]
+    assert store.load("r").rows(TRIAL) == (expected,)
+
+
+async def test_a_row_that_is_not_json_data_is_refused_naming_the_field(tmp_path: Path) -> None:
+    """The JSONL store refuses it before writing anything for it, so the record stays whole
+    and the component may go on."""
+    refused: list[ContractError] = []
+
+    class Handle:
+        pass
+
+    async def give(inputs: Inputs, ctx: RunContext) -> Any:
+        try:
+            ctx.provide(TRIAL, {"meta": {"handle": Handle()}})
+        except ContractError as e:
+            refused.append(e)
+        ctx.provide(TRIAL, {"seq": 1})
+
+    store = JsonlConstructStore(tmp_path)
+    run = await Executor().run(
+        wire({"give": Step(give, provides=[TRIAL])}), store=store, run_id="r"
+    )
+    assert len(refused) == 1 and "meta.handle" in str(refused[0])
+    assert run.rows(TRIAL) == ({"seq": 1},)
+    loaded = store.load("r")
+    assert loaded.rows(TRIAL) == ({"seq": 1},) and loaded.torn == ()
+    assert [e["row"] for e in _table(tmp_path / "r", LEDGER)] == [0]
 
 
 def test_the_ledger_entry_is_written_before_its_row() -> None:

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from matrix.domain.component import LEDGER
-from matrix.domain.errors import NotFoundError, StoreError
+from matrix.domain.errors import ContractError, NotFoundError, StoreError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -71,7 +71,8 @@ class Construct:
 
         If the sink raises, that row is not recorded, the error propagates, and every later
         append raises StoreError: a record that failed once is not appended to again, and a
-        row it cannot keep is not kept in memory either.
+        row it cannot keep is not kept in memory either. The exception is a ContractError: the
+        store refused that row before writing anything for it, and the record goes on.
         """
         self._sink = sink
 
@@ -100,6 +101,8 @@ class Construct:
             try:
                 self._sink(LEDGER, entry)
                 self._sink(kind, row)
+            except ContractError:
+                raise
             except BaseException as e:
                 self._broken = e
                 raise

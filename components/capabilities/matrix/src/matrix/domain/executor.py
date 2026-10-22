@@ -464,10 +464,12 @@ def _check_inputs(
     ]
     if problems:
         raise invalid("the run cannot start", problems)
-    for kind, rows in supplied.items():
-        for row in rows:
-            _validate(wiring, kind, row, where=f"input {kind!r}")
-    return {kind: tuple(_private(row, kind) for row in rows) for kind, rows in supplied.items()}
+    return {
+        kind: tuple(
+            _private(_validate(wiring, kind, row, where=f"input {kind!r}"), kind) for row in rows
+        )
+        for kind, rows in supplied.items()
+    }
 
 
 def _open(store: ConstructStore, run: Run) -> RunWriter:
@@ -761,12 +763,13 @@ class _Session:
                 self._skip(name, f"upstream: {broken[0]}")
                 continue
             try:
-                for kind, rows in tables.items():
-                    for row in rows:
-                        _validate(self._wiring, kind, row, where=f"reused {name!r} kind {kind!r}")
-                for kind, rows in tables.items():
-                    for row in rows:
-                        self._record(name, kind, row, checked=True)
+                kept = [
+                    (kind, _validate(self._wiring, kind, row, where=f"reused {name!r} {kind!r}"))
+                    for kind, rows in tables.items()
+                    for row in rows
+                ]
+                for kind, row in kept:
+                    self._record(name, kind, row, checked=True)
             except MatrixError as e:
                 ending = ComponentEnding(status="failed", reason=why)
                 ended[name] = ending
@@ -1060,9 +1063,11 @@ class _Session:
                 component=name,
                 declared=sorted(step.provides),
             )
-        returned = [(kind, row) for kind, value in result.items() for row in _rows(value)]
-        for kind, row in returned:
-            _validate(self._wiring, kind, row, where=f"component {name!r} kind {kind!r}")
+        returned = [
+            (kind, _validate(self._wiring, kind, row, where=f"component {name!r} kind {kind!r}"))
+            for kind, value in result.items()
+            for row in _rows(value)
+        ]
         for kind, row in returned:
             self._record(name, kind, row, checked=True)
 
@@ -1084,8 +1089,9 @@ class _Session:
             raise
 
     def _record(self, name: str, kind: str, row: Any, *, checked: bool = False) -> None:
+        """Record ``row``; ``checked`` when it is already as :func:`_validate` returns it."""
         if not checked:
-            _validate(self._wiring, kind, row, where=f"component {name!r} kind {kind!r}")
+            row = _validate(self._wiring, kind, row, where=f"component {name!r} kind {kind!r}")
         # The record keeps its own copy: a component that goes on to change the object it
         # handed over cannot change what was recorded.
         kept = _private(row, kind)
@@ -1213,12 +1219,16 @@ def _private(value: Any, kind: str) -> Any:
         ) from e
 
 
-def _validate(wiring: Wiring, kind: str, row: Any, *, where: str) -> None:
+def _validate(wiring: Wiring, kind: str, row: Any, *, where: str) -> Any:
+    """``row`` as the record keeps it: an instance of its kind's schema, however it was handed
+    over (a dict, or rows read back from a store, are validated into one), so a consumer gets
+    the same type on a fresh run and on one that reuses the rows. A kind without a schema
+    keeps ``row`` as it is. Raises ContractError when the schema refuses the row."""
     schema: type[BaseModel] | None = wiring.schemas.get(kind)
     if schema is None or isinstance(row, schema):
-        return
+        return row
     try:
-        schema.model_validate(row)
+        return schema.model_validate(row)
     except ValidationError as e:
         issues = "; ".join(
             f"{'.'.join(str(p) for p in err['loc']) or '(root)'}: {err['msg']}"

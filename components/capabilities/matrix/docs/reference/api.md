@@ -365,7 +365,10 @@ async Executor.run(
 4. Rows a component hands over with `ctx.provide` are recorded then. What it returns is
    recorded when it ends: every returned row is checked first, and if one fails none is
    recorded. A row of an undeclared kind, a return value that is not a mapping, or a row that
-   fails its kind's schema (whatever its validator raises) is a `ContractError`.
+   fails its kind's schema (whatever its validator raises) is a `ContractError`. A row of a
+   kind with a schema is recorded as an instance of the schema, whether it was handed over as
+   one or as a dict; a row of a reused component is too, so its consumers get the type a fresh
+   run gives them. A row of a kind without a schema is recorded as given.
 5. A component that raises becomes a `ComponentError` (a `MatrixError` it raises keeps its own
    kind); a component past its deadline is a `ComponentError` saying so, with
    `details["reason"] == "timeout"`. A failure its retry policy covers is run again first.
@@ -504,7 +507,10 @@ and is located by the run id.
 
 `JsonlConstructStore(root, *, fsync=False)` keeps a directory per run: `run.json`, one
 `<kind>.jsonl` per table whose lines are the rows, and `events.jsonl`. `fsync=True` flushes
-each row to the disk. `MemoryConstructStore()` keeps runs in a dict, rows as given. Both are
+each row to the disk. Each row is written as pydantic's `to_jsonable_python` makes it (nested
+models, dataclasses, sets, tuples, datetimes); a row holding anything else is refused with a
+`ContractError` naming where in the row, before anything is written for it, so the record
+goes on. `MemoryConstructStore()` keeps runs in a dict, rows as given. Both are
 registered at the `store` point (`matrix.v1.store.jsonl` with `root` and `fsync`,
 `matrix.v1.store.memory`), and `matrix.store` in config chooses one; a package adds its own
 by registering there.

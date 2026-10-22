@@ -36,6 +36,17 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **Reused rows reach downstream components in the type a fresh run gives them.** A row of a
+  kind with a registered schema is now recorded as an instance of that schema, whether it was
+  handed over as one, as a dict, or read back from a store by `--from`. A consumer written
+  against a fresh run (`row.score`) used to fail only on resume, given a dict. The rows of
+  such a kind in `Run.rows` and the memory store are models now, where a dict handed over
+  used to stay a dict; on disk they are the schema's JSON, defaults included.
+- **The JSONL store writes nested values as JSON.** A model inside a dict row, a set, a
+  dataclass or a nested datetime was written as its `str()`, so jq, DuckDB, `load()` and reuse
+  all read the wrong value. Rows are now written with pydantic's `to_jsonable_python`; a row
+  holding anything it cannot write is refused with a `ContractError` naming where in the row
+  it is, before its ledger entry or anything else is written, and the record goes on.
 - **A run's record no longer says `completed` when the executor raised.** A schema validator
   that raised something pydantic does not wrap (a `TypeError`) escaped the executor raw: the
   other components were left running, releases ran under them, and `run.json` said

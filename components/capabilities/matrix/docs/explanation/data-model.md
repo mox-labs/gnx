@@ -32,7 +32,10 @@ Rows are append-only and the executor is their only writer. Components never rec
 Construct. A component gets `Inputs`: for each kind it requires, a tuple of that kind's rows,
 each its own deep copy. That is what makes `requires` the true data dependencies, and why a
 component that mutates what it read changes neither the record nor what another component
-sees. The record keeps its own copy of a row too, so a component that goes on to change an
+sees. A row of a kind with a registered schema is recorded as an instance of that schema,
+however it was handed over (a dict, or the JSON a store gives back for a reused row), so its
+consumers see one type on every run. A row of a kind without one is kept as given. The
+record keeps its own copy of a row too, so a component that goes on to change an
 object after handing it over does not change what was recorded. Rows must therefore be data
 that can be copied, not live handles.
 
@@ -126,7 +129,10 @@ The stores:
 
 - `MemoryConstructStore()` keeps runs in a dict, rows as given. For tests and single-process
   callers.
-- `JsonlConstructStore(root, fsync=False)` keeps one directory per run:
+- `JsonlConstructStore(root, fsync=False)` keeps one directory per run, each row as JSON:
+  models, dataclasses, sets, tuples and datetimes inside a row are written as pydantic writes
+  them, and a row holding anything else is refused with a `ContractError` that names where in
+  the row it is, before anything is written for it:
 
 ```
 <root>/<run_id>/run.json                {"schema": "matrix.v1.run", run_id, status, started,
@@ -178,7 +184,11 @@ The store contract:
   appended to that record, and none is kept in memory either: a later `ctx.provide` raises
   `StoreError`. The store is still asked to finish the record, as `failed`.
 - `load` works on a run in any state. From the JSONL store rows come back as JSON data, not
-  as the Python objects that produced them (a pydantic model comes back as a dict).
+  as the Python objects that produced them (a pydantic model comes back as a dict). A run
+  that reuses them validates each into its kind's schema, as a fresh run does.
+- A store may refuse a row it cannot keep with a `ContractError`, only before writing anything
+  for it, its ledger entry included; the component that handed it over fails, and the record
+  goes on. Any other failure to append fails the run, as above.
 - `describe` returns `status` as recorded for a finished run. For one that never finished it
   counts the rows on disk, reports `torn`, and says `running`, or `interrupted` when the
   process that was writing it, on this host, no longer holds `writer.lock`. From another

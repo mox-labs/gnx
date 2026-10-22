@@ -293,8 +293,9 @@ class Container:
         ``reused``, never ``stopped``), was built from the same fingerprint, and whose
         providers are all reused too, with its rows as recorded.
 
-        Rows come back as the store keeps them (JSON data), not as the objects that were
-        handed over. Raises NotFoundError when there is no such run.
+        Rows come back as the store keeps them (JSON data); the executor validates each into
+        its kind's schema as it records it, as on a fresh run. Raises NotFoundError when there
+        is no such run.
         """
         wiring = wiring or self.wire()
         described = self.store.describe(run_id)

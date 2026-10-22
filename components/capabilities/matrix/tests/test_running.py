@@ -419,6 +419,42 @@ async def test_a_component_stopped_before_it_finished_is_not_reused(tmp_path: Pa
     assert container.reuse("first").rows == {}
 
 
+async def test_reused_rows_reach_downstream_in_the_type_a_fresh_run_gives(tmp_path: Path) -> None:
+    """A kind with a schema is recorded as an instance of it, however it was handed over, so a
+    consumer sees a model on a fresh run and on a run that reuses the rows from the store."""
+    from pydantic import BaseModel
+
+    class Score(BaseModel):
+        score: int
+
+    seen: list[str] = []
+
+    class Make:
+        requires = (TEXT,)
+        provides = (UPPER,)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            return {UPPER: [Score(score=3), {"score": 4}]}
+
+    class Use:
+        requires = (UPPER,)
+        provides = (COUNT,)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            seen.extend(type(row).__name__ for row in inputs[UPPER])
+            return {COUNT: sum(row.score for row in inputs[UPPER])}
+
+    store = JsonlConstructStore(tmp_path)
+    wiring = wire({"make": Make(), "use": Use()}, inputs=[TEXT], schemas={UPPER: Score})
+    first = await Executor().run(wiring, {TEXT: "a"}, store=store, run_id="first")
+    stored = store.load("first")
+    reuse = Reuse(run_id="first", rows={"make": {UPPER: stored.rows(UPPER)}})
+    again = await Executor().run(wiring, {TEXT: "a"}, store=store, run_id="again", reuse=reuse)
+    assert seen == ["Score", "Score", "Score", "Score"]
+    assert first.rows(COUNT) == again.rows(COUNT) == (7,)
+    assert again.rows(UPPER) == first.rows(UPPER) == (Score(score=3), Score(score=4))
+
+
 async def test_reuse_takes_the_prior_inputs_and_refuses_new_ones(tmp_path: Path) -> None:
     config = _config(store={"type": "jsonl", "root": str(tmp_path)})
     await compose(config, registry=_registry()).run({TEXT: ["a"]}, run_id="first")

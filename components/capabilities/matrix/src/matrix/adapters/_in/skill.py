@@ -566,8 +566,9 @@ A run killed mid-way keeps every row it had recorded and reads `interrupted`.
 `matrix run --from RUN_ID` runs again with that run's inputs, and reuses the rows of each
 component that completed there (`stopped` is not completed), was built from the same type,
 config and (for an agent step) agent definition and runtime, and whose providers are reused
-too: those components end `reused`, the rest run. Reused rows are JSON data as the store
-keeps them, not the objects first handed over. `--input` cannot be given with it.
+too: those components end `reused`, the rest run. A reused row of a kind with a registered
+schema reaches its consumers as an instance of that schema, as on a fresh run; a kind
+without one is reused as the JSON the store kept. `--input` cannot be given with it.
 
 ## From Python
 
