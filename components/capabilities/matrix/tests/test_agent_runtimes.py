@@ -53,3 +53,9 @@ async def test_mock_runtime_is_the_port_not_a_lookalike() -> None:
     assert (await runtime.run(d, "ping")).content == "pong"
     assert (await runtime.run(d, "other")).content == "mock:a:other"
     assert runtime.calls == [("a", "ping"), ("a", "other")]
+
+
+async def test_the_mock_reports_no_cost_because_no_provider_reported_one() -> None:
+    """A reported cost is provenance: what a provider said. A mock is not a provider."""
+    response = await MockRuntime().run(AgentDefinition(name="a"), "hello")
+    assert response.cost_usd is None

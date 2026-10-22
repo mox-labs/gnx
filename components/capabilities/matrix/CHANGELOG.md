@@ -66,6 +66,8 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 - **`process.start` keeps a pending cancellation.** Cancelled while a child was being started
   whose start then failed (no such program), the caller got the start's error in place of
   the cancellation.
+- **The mock runtime reports no cost.** It reported `cost_usd: 0.0`. A reported cost is
+  provenance, what a provider said, and a mock is not a provider, so it is now `None`.
 - **A run's record no longer says `completed` when the executor raised.** A schema validator
   that raised something pydantic does not wrap (a `TypeError`) escaped the executor raw: the
   other components were left running, releases ran under them, and `run.json` said
