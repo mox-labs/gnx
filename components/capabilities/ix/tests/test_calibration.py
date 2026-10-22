@@ -336,6 +336,7 @@ def test_a_count_on_its_threshold_over_many_units_holds_at_most_twice_as_often_a
 
 @slow
 @pytest.mark.slow
+@pytest.mark.timeout(900)  # about 90 seconds on a laptop, past the suite's default
 def test_the_full_simulation() -> None:
     """Every scenario across trial counts, printed as the record's table, each held to its
     tolerance."""
