@@ -20,12 +20,13 @@ from recon.domain.http import HttpResponse
 from recon.domain.models import CollectorEntry, ReconConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Mapping
+    from collections.abc import Callable, Generator, Iterator, Mapping
 
     from recon.composition import RequesterFactory
+    from recon.domain.capture import CaptureLog
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector, CollectorContext
-    from recon.domain.converters import DocumentConverter
+    from recon.domain.converters import ConversionResult, DocumentConverter
     from recon.domain.documents import TableOutcome
     from recon.domain.models import SourceEntry
     from recon.domain.shell import ShellRunner
@@ -118,6 +119,13 @@ class ScriptedShell:
         return 0
 
 
+class NoConverter:
+    """A DocumentConverter for a test that reaches none: converting a document is a failure."""
+
+    def convert(self, content: bytes, content_type: str, url: str) -> ConversionResult:
+        raise AssertionError("no test here converts a document")
+
+
 def collector_entry(**fields: Any) -> CollectorEntry:
     """A ``CollectorEntry`` with the settings of its type (``run=``, ``endpoint=``, ...), which
     the model keeps as extra fields: they are arbitrary keys, so they are not typed."""
@@ -131,6 +139,20 @@ def plugins_with(**collectors: Collector) -> Plugins:
     for name, collector in collectors.items():
         plugins.collector_types[name] = CollectorType(create=_creating(collector), effects=None)
     return plugins
+
+
+class EmptyCollector:
+    """A Collector that finds no records: for a collector type that is registered, built and
+    never run."""
+
+    def collect(
+        self,
+        entry: CollectorEntry,
+        source: SourceEntry | None,
+        *,
+        captures: CaptureLog | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        return iter(())
 
 
 def building(built: list[str], name: str) -> Callable[[CollectorContext], Collector]:
