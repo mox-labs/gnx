@@ -49,12 +49,12 @@ SOURCE = "git+https://github.com/mox-labs/gnx@ix-v{version}#subdirectory=compone
 #: The commands ix has, in the order an author uses them.
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("ix validate <path>", "every problem at once, each with path, kind, message, fix"),
-    ("ix plan <path>", "the decision, the cost, and the smallest effect it can detect"),
+    ("ix plan <path>", "the decision, the trials, and the smallest effect it can detect"),
     ("ix register <path>", "freeze the design beside the file, before any run"),
     ("ix deviations <path>", "what changed since registration"),
     (
         "ix run <path> --dry-run",
-        "the same file on mock replies: checks the harness, spends nothing, never a verdict",
+        "the same file on mock replies: checks the harness, calls no model, never a verdict",
     ),
     (
         "ix run <path> --exploratory --repeats N",
@@ -62,7 +62,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ),
     ("ix run <path>", "carry it out and print the report; the exit code is the verdict"),
     ("ix report <path>", "the latest run's report again; or give a run directory"),
-    ("ix runs <path>", "each run: when, gated, exploratory or dry, verdict, spend"),
+    ("ix runs <path>", "each run: when, gated, exploratory or dry, verdict, trials"),
     ("ix genres", "the genres installed, and any genre file ix refused"),
     ("ix kinds", "the kinds installed, and which of them this ix can run"),
 )
@@ -77,7 +77,7 @@ REFERENCES: dict[str, str] = {
     "kinds": "each subject kind, probe kind, sensor and environment kind: options and metrics",
     "running": "registration, running, the run record, and how a verdict is reached",
     "agents": "evaluating an agent end to end: sessions, probe files, sensors, dry runs, "
-    "screens, spend, the judge, and reading the report",
+    "screens, the judge, and reading the report",
     "problems": "every problem kind validate reports",
 }
 
@@ -86,7 +86,7 @@ REFERENCES: dict[str, str] = {
 PREREQUISITES: dict[str, str] = {
     "agent-session": "runs on one of matrix's runtimes: `claude-sdk` needs `ix[claude]`, the "
     "Claude Code CLI and its credentials; `model` needs `ix[models]` and a hardline model; "
-    "`mock` needs nothing and spends nothing. `ix plan` lists one that cannot start under "
+    "`mock` needs nothing and calls no model. `ix plan` lists one that cannot start under "
     "`Runnable: no`",
     "function-test": "and `outcome` run Python in a child process with a time limit and no "
     "credentials in its environment; it is not a sandbox, so test code from a subject you "
@@ -262,7 +262,6 @@ probes:
 primary: {metric: activated_correctly}
 threshold: {op: ">=", value: 0.8}
 metrics: [text_matched, cost]
-spend: {ceiling: 3.00, per_trial: 0.05}
 """,
     "routing": """\
 name: review-routing
@@ -288,7 +287,6 @@ probes:
 primary: {metric: activated_correctly}
 threshold: {op: ">=", value: 0.8}
 metrics: [cost, hit_limit]
-spend: {ceiling: 3.00, per_trial: 0.05}
 """,
     "loop": """\
 name: self-review-merge
@@ -315,7 +313,6 @@ probes:
 primary: {metric: tests_passed}
 comparison: superiority
 metrics: [tests_score, rounds, cost]
-spend: {ceiling: 5.00, per_trial: 0.04}
 """,
     "control": """\
 name: review-skill-effect
@@ -344,7 +341,6 @@ probes:
 primary: {metric: text_matched}
 comparison: superiority
 metrics: [cost]
-spend: {ceiling: 3.00, per_trial: 0.05}
 """,
 }
 
@@ -488,7 +484,7 @@ def _quick_start() -> str:
             "```bash",
             f"ix validate lab/static   # {ok}: valid. {invalid}: fix every problem listed, "
             "validate again",
-            "ix plan lab/static       # read Decides, Trials, Effects, Spend; runs nothing. "
+            "ix plan lab/static       # read Decides, Trials, Effects; runs nothing. "
             "Runnable: no (--json: runnable false) means stop and fix what it lists",
             f"ix register lab/static   # {ok}: the design is frozen in "
             "lab/static/experiment.registration.json",
@@ -498,7 +494,7 @@ def _quick_start() -> str:
             "```",
             "",
             "`ix plan` exits 0 whether or not this host can run the plan: it only shows. "
-            "Read the plan before every run: its Effects and Spend are what the run will do, "
+            "Read the plan before every run: its Trials and Effects are what the run will do, "
             "and nothing has happened yet. Decide before you run: the registration is what the "
             "verdict is held to.",
         ]
@@ -682,8 +678,7 @@ metrics: [<metric>]                 # further metrics to measure and report
 sensors:                            # only to give a sensor options, or to choose between two
   - {{kind: <sensor>, <option>: <value>}}
 repeats: <n>
-seed: <n>
-spend: {{ceiling: 5.00, per_trial: 0.02, currency: USD}}"""
+seed: <n>"""
     shapes = "\n".join(
         f"  - `{shape}`: statistic {', '.join(STATISTICS[shape])}; "
         f"estimator {', '.join(ESTIMATORS[shape])}"
@@ -745,7 +740,7 @@ whether it came from the experiment, the genre or ix.
   measures against; it never reaches the subject). A truth key no sensor in use reads is
   `truth_unclaimed`.
 - **Effects** come from the kinds. `effects:` beside a `kind` adds to them and cannot remove
-  one. A run that spends money needs `spend.ceiling` (`spend_unbounded`). Effects: {effects}.
+  one. Effects: {effects}.
 """
 
 
@@ -947,9 +942,6 @@ then the report (`ix.v1.report`) on stdout.
 - **Refused before anything starts**: a subject command that is not there, an `auth`
   variable that is not set, and an agent runtime that cannot start or cannot play its
   agent (the plan lists them under `unstartable`).
-- **Spend.** A run with a ceiling stops starting trials once the next could take it past
-  the ceiling; the report says why (`halt`) and exits {EXIT_CODES["run_interrupted"]}
-  with no verdict (`ix --skill -r agents`).
 - **A dry run gives no verdict.** `ix run <path> --dry-run` runs the file as written
   with every agent session on the `mock` runtime (`ix --skill -r agents`); a subject with
   no stand-in (a `process`) is refused. A run in which a stand-in answered any trial,
@@ -989,7 +981,7 @@ the margin. Choose the comparison for the claim to be made.
 
 
 def _agents() -> str:
-    halted, dry, usage = EXIT_CODES["run_interrupted"], EXIT_CODES["ok"], EXIT_CODES["usage"]
+    dry, usage = EXIT_CODES["ok"], EXIT_CODES["usage"]
     return f"""\
 ## Evaluating an agent
 
@@ -998,9 +990,10 @@ probes and a metric. What makes it one is the kinds.
 
 - **The subject is `agent-session`.** Each trial is a fresh session in a new working
   directory outside the experiment, on the matrix runtime its `runtime` names. It is
-  required, with no default, so spending is never implicit: `claude-sdk` (the Claude Agent
-  SDK, with tools, turns, plugins and skills; spends), `model` (one call through hardline,
-  no tools; spends) or `mock` (canned replies; spends nothing: a dry run). Left out,
+  required, with no default, so a model provider is never called implicitly: `claude-sdk`
+  (the Claude Agent SDK, with tools, turns, plugins and skills; calls a model provider),
+  `model` (one call through hardline, no tools; calls a model provider) or `mock` (canned
+  replies; calls no model: a dry run). Left out,
   validate reports `option_missing`. The other options:
   `definition` (a Claude Code agent file: body is the system prompt), `model`,
   `system_prompt`, `tools` (`[]`: none), `max_turns`, and for `claude-sdk`
@@ -1099,10 +1092,7 @@ have written it anyway. Two things show more.
 
 ## The order of work
 
-1. `ix validate` and `ix plan`. Before a run, the plan's Spend is the declared `per_trial`
-   times the trials, a guess; once a run has reported costs, the mean cost of its trials
-   times the trials, and the plan says which it used. Runnable says whether the runtime
-   can start here.
+1. `ix validate` and `ix plan`. Runnable says whether the runtime can start here.
 2. **Dry run.** `ix run <path> --dry-run` runs the file as written on stand-ins: each
    session on the `mock` runtime replying with its probe's `mock_response` (give each one
    whose grade you know), the options only `claude-sdk` takes set aside and listed under
@@ -1117,37 +1107,28 @@ have written it anyway. Two things show more.
    size, not the agent. Read the screen: a probe at `floor` or `ceiling` (every trial
    failed, or passed) or `noisy` (one subject's readings on it spread over more than 0.35
    of the range) cannot discriminate; fix or drop those probes. Then `ix plan` again:
-   Spend now rests on what a trial cost, and Sensitivity on how much the primary varied.
+   Sensitivity now rests on how much the primary varied.
 4. `ix register`, then `ix run`: the exit code is the verdict. `--repeats` is refused
    here (exit {usage}): a verdict rests on the registered design.
-
-## Spend
-
-A kind that spends needs a ceiling: `spend.ceiling`, or `spend_cap` in ix's settings
-(`ix:` in `~/.ix/config.yaml` or `./ix.yaml`, beside `runs:`, where every run is kept). A
-run adds up the cost each session reported and stops starting trials once the next could
-take it past the ceiling (the dearest trial so far, or `per_trial` if more); a runtime
-that reports no cost (`model`) is held to `per_trial` or not started past its first trial.
-The report says why it stopped (`halt`), and exits {halted} with no verdict. A judge's
-spend counts against the ceiling too.
 
 ## The judge
 
 `judge` asks a model (`runtime`, required with no default: `model` or `claude-sdk`, which
-spend, or `mock`, which does not; `model`) to score a reply against your `rubric` from 0 to
-1: `{{kind: judge, runtime: model, rubric: rubric.md}}`. Its readings are judged: they are
-reported and **never decide** a verdict. `repeats: 3` asks it three times per reply:
-`judge_agreement` is how often it agreed with itself. Two flags are printed whenever a
-trial raises one: `judge_inconsistent` (its repeats split on pass or fail) and
-`judge_in_family` (the judge is of the subject's model family; judge with another).
+call a model provider, or `mock`, which does not; `model`) to score a reply against your
+`rubric` from 0 to 1: `{{kind: judge, runtime: model, rubric: rubric.md}}`. Its readings
+are judged: they are reported and **never decide** a verdict. `repeats: 3` asks it three
+times per reply: `judge_agreement` is how often it agreed with itself. Two flags are
+printed whenever a trial raises one: `judge_inconsistent` (its repeats split on pass or
+fail) and `judge_in_family` (the judge is of the subject's model family; judge with
+another).
 
 ## Reading the report
 
 Beside the verdict: `Shows`, what the evidence shows in plain words and in the direction
 it points (`with-skill's text_matched is higher than without's by 40pp [12pp, 61pp]`),
-whatever the verdict; `Spent` (trials, sensors, ceiling), the expected-against-observed
-table of `activation` and `tool-usage` with precision and recall, the flags, and the
-probes that cannot discriminate (left out of a dry run: canned replies screen nothing).
+whatever the verdict; the expected-against-observed table of `activation` and
+`tool-usage` with precision and recall, the flags, and the probes that cannot discriminate
+(left out of a dry run: canned replies screen nothing).
 After it, on stderr, the exit code, what it means and the next step (`exit` in `--json`).
 A runtime warning, such as a permissive `permission_mode`, is said once per run, in
 `warnings`. Each trial's record keeps the prompt, the reply, every

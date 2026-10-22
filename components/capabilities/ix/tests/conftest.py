@@ -46,7 +46,7 @@ _EVALUATE: dict[str, Any] = {
     "name": "routing",
     "question": "Does the right skill fire?",
     "genre": "evaluate",
-    # The mock runtime: a test that runs this by mistake spends nothing.
+    # The mock runtime: a test that runs this by mistake calls no model.
     "subjects": {"catalog": {"kind": "agent-session", "runtime": "mock", "max_turns": 1}},
     "probes": [
         {
@@ -58,7 +58,6 @@ _EVALUATE: dict[str, Any] = {
     ],
     "primary": {"metric": "activated_correctly"},
     "threshold": {"op": ">=", "value": 0.9},
-    "spend": {"ceiling": 5},
 }
 
 

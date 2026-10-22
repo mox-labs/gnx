@@ -8,14 +8,6 @@ names no host. :func:`prepare` decides before anything starts whether the experi
 A failed trial never raises out of :func:`invoke` and never stops the run: it is an
 interaction carrying a failure with an owner (see :mod:`ix.domain.run`).
 
-**Spend.** A run with a ceiling adds up what each trial reported it cost
-(:data:`~ix.domain.run.COST`) and stops starting trials once the next could take it past the
-ceiling: the next is assumed to cost as much as the dearest so far, or the experiment's
-``spend.per_trial`` when that is more. A trial of a subject that spends and reports no cost
-cannot be held to the ceiling, so without a ``per_trial`` the run stops there too. Either
-way it writes down why (a :class:`~ix.domain.run.Halt`). Sensors that spend (a judge) are
-held to what is left.
-
 **Spans.** When the scope is :class:`~ix.domain.ports.Traced`, each trial is a span
 ``ix.trial`` and each sensor reading one interaction a span ``ix.sensor``, with the GenAI
 conventions' ``gen_ai.evaluation.*`` attributes on a ``gen_ai.evaluation.result`` event per
@@ -40,13 +32,10 @@ from ix.domain.design import Design, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError
 from ix.domain.experiment import Experiment, ProbeConfig
 from ix.domain.kind import fill, placed
-from ix.domain.plan import effects
 from ix.domain.ports import Liveness, Preflight, Sensed, StandIn, Traced
 from ix.domain.registration import deviations
 from ix.domain.run import (
-    COST,
     Failure,
-    Halt,
     HarnessError,
     Interaction,
     Reading,
@@ -80,7 +69,6 @@ if TYPE_CHECKING:
 ENVIRONMENT_UP = "ix.environment.up"
 TRIAL_START = "ix.trial.start"
 TRIAL_END = "ix.trial.end"
-HALTED = "ix.run.halted"
 SENSE_END = "ix.sense.end"
 
 
@@ -194,14 +182,6 @@ def prepare(
         )
     trials = schedule(experiment, design, probes)
     changed = () if stored is None else deviations(stored, frozen)
-    spends = any(
-        effect.effect == "spend" for effect in effects(experiment, design, vocabulary.kinds, probes)
-    )
-    ceiling, source = None, ""
-    if experiment.spend is not None and experiment.spend.ceiling is not None:
-        ceiling, source = experiment.spend.ceiling, "experiment"
-    elif spends and vocabulary.spend_cap is not None:
-        ceiling, source = vocabulary.spend_cap, "settings"
     return Prepared(
         experiment=experiment,
         manifest=RunManifest(
@@ -222,9 +202,6 @@ def prepare(
             dry_run=dry_run is not None,
             stood_in=dry_run or (),
             overridden=overridden,
-            spends=spends,
-            spend_ceiling=ceiling,
-            spend_ceiling_source=source,
             started_at=now,
             ix_version=version,
         ),
@@ -359,21 +336,6 @@ def _failure(error: BaseException) -> Failure:
     return Failure(owner="harness", reason="error", message=f"{type(error).__name__}: {error}")
 
 
-def _spent(error: BaseException) -> float | None:
-    """What a trial that failed with ``error`` had spent, where its adapter knew."""
-    return error.cost_usd if isinstance(error, TrialError) else None
-
-
-def _reported_cost(observations: Mapping[str, Mapping[str, Any]]) -> float | None:
-    """What the facets a probe left behind say applying it cost; None when none says."""
-    costs = [
-        float(facet[COST])
-        for facet in observations.values()
-        if _number(facet.get(COST)) and math.isfinite(float(facet[COST]))
-    ]
-    return round(math.fsum(costs), 6) if costs else None
-
-
 def _cause(during: Failure | None, at_release: Failure) -> Failure:
     """The failure a trial is recorded with, given one found when its subject was released.
 
@@ -478,7 +440,6 @@ async def invoke(
     observations: dict[str, dict[str, Any]] = {}
     watching: dict[str, dict[str, Any]] = {}
     failure: Failure | None = None
-    spent: float | None = None
     simulated = False
 
     stack = AsyncExitStack()
@@ -498,10 +459,8 @@ async def invoke(
             observations = await _apply(
                 adapters.probe, fill(probe_options, bound), target, trial.seed, scope
             )
-            spent = _reported_cost(observations)
         except Exception as error:
             failure = _failure(error)
-            spent = _spent(error)
     # Watchers exit before the subject is released: the stack unwinds in reverse.
     try:
         await stack.aclose()
@@ -522,74 +481,12 @@ async def invoke(
         observations=observations if failure is None else {},
         watched={kind: dict(seen) for kind, seen in watching.items()},
         failure=failure,
-        cost_usd=spent,
         simulated=simulated,
     )
 
 
 def _environment(setup: Setup, kit: Kit) -> Environment:
     return kit.environments[schema.url("environment", setup.experiment.environment.kind)]
-
-
-@dataclass
-class _Purse:
-    """What a run with a ceiling has spent, and what it expects the next trial to cost."""
-
-    ceiling: float | None
-    #: The experiment's own estimate of one trial, the floor of every expectation.
-    per_trial: float | None
-    #: Whether a kind the run uses spends: a trial that reports no cost is then unknown.
-    spends: bool
-    spent: float = 0.0
-    dearest: float = 0.0
-    unknown: bool = False
-
-    @classmethod
-    def of(cls, manifest: RunManifest) -> _Purse:
-        declared = manifest.declared.get("spend") or {}
-        per_trial = declared.get("per_trial") if isinstance(declared, Mapping) else None
-        return cls(
-            ceiling=manifest.spend_ceiling,
-            per_trial=float(per_trial) if _number(per_trial) else None,
-            spends=manifest.spends,
-        )
-
-    @property
-    def next_cost(self) -> float:
-        return max(self.dearest, self.per_trial or 0.0)
-
-    def charge(self, interaction: Interaction) -> None:
-        cost = interaction.cost_usd
-        if cost is None and self.spends and not interaction.simulated:
-            if self.per_trial is None:
-                self.unknown = True
-            cost = self.per_trial
-        self.spent += cost or 0.0
-        self.dearest = max(self.dearest, cost or 0.0)
-
-    def stop(self, done: int) -> Halt | None:
-        """Why no further trial may start, or None while one may."""
-        if self.ceiling is None:
-            return None
-        if self.unknown:
-            return Halt(
-                reason="cost_unknown",
-                message="a trial reported no cost, so the run cannot be held to its ceiling of "
-                f"{self.ceiling:g}; declare spend.per_trial to hold it by that estimate",
-                carried_out=done,
-                spent=round(self.spent, 6),
-                ceiling=self.ceiling,
-            )
-        if self.spent + self.next_cost > self.ceiling + 1e-9:
-            return Halt(
-                reason="spend_ceiling",
-                message=f"spent {self.spent:.4g} of a ceiling of {self.ceiling:g}, and the next "
-                f"trial could cost {self.next_cost:.4g}",
-                carried_out=done,
-                spent=round(self.spent, 6),
-                ceiling=self.ceiling,
-            )
-        return None
 
 
 def _trial_attributes(trial: Trial, setup: Setup) -> dict[str, Any]:
@@ -612,20 +509,17 @@ async def carry_out(
     bindings: Bindings,
     scope: Scope,
     land: Callable[[Interaction], None],
-    halt: Callable[[Halt], None] | None = None,
 ) -> int:
     """Carry out ``trials`` in order, one at a time, handing each interaction to ``land`` as
     it finishes. Returns how many were carried out.
 
     Stops between trials when the scope says to; a trial in flight then ends as a harness
-    failure (``cancelled``) and is landed like any other. Stops starting trials when the
-    next could take the run past its spend ceiling, handing ``halt`` the reason. After each
-    trial it asks the environment whether it is still up (when its provider is a
-    :class:`Liveness`): when it is not, that trial is landed as a harness failure
-    (``environment_lost``) and :class:`HarnessError` ends the run.
+    failure (``cancelled``) and is landed like any other. After each trial it asks the
+    environment whether it is still up (when its provider is a :class:`Liveness`): when it
+    is not, that trial is landed as a harness failure (``environment_lost``) and
+    :class:`HarnessError` ends the run.
     """
     environment = _environment(setup, kit)
-    purse = _Purse.of(setup.manifest)
     open_now: list[AsyncExitStack] = []
 
     async def release_open() -> None:
@@ -636,12 +530,6 @@ async def carry_out(
     done = 0
     for trial in trials:
         if scope.stopping.is_set():
-            break
-        stopped = purse.stop(done)
-        if stopped is not None:
-            if halt is not None:
-                halt(stopped)
-            scope.emit(HALTED, reason=stopped.reason, message=stopped.message)
             break
         scope.emit(
             TRIAL_START,
@@ -665,7 +553,6 @@ async def carry_out(
                     }
                 )
             span.set(**_trial_outcome(interaction))
-        purse.charge(interaction)
         land(interaction)
         done += 1
         scope.emit(
@@ -676,7 +563,6 @@ async def carry_out(
             role=trial.role,
             failure=None if interaction.failure is None else interaction.failure.document(),
             duration_ms=interaction.duration_ns // 1_000_000,
-            cost_usd=interaction.cost_usd,
         )
         if lost is not None:
             raise HarnessError("environment_lost", f"the environment went down: {lost}")
@@ -685,8 +571,6 @@ async def carry_out(
 
 def _trial_outcome(interaction: Interaction) -> dict[str, Any]:
     found: dict[str, Any] = {"ix.trial.simulated": interaction.simulated}
-    if interaction.cost_usd is not None:
-        found["ix.trial.cost_usd"] = interaction.cost_usd
     if interaction.failure is not None:
         found["error.type"] = interaction.failure.reason
         found["ix.failure.owner"] = interaction.failure.owner
@@ -835,16 +719,10 @@ async def sense(
     """Every reading of every interaction that was carried out without a failure.
 
     One reading per metric the design names, from the sensor the design selected for it. A
-    sensor that raises gives each of its metrics a ``sensor`` failure. A sensor whose kind
-    spends is not asked once the run's ceiling would not cover it: its metrics then fail
-    with ``spend_ceiling``. It needs only the stored tables, so it can be run again over a
-    run that ended before it got this far.
+    sensor that raises gives each of its metrics a ``sensor`` failure. It needs only the
+    stored tables, so it can be run again over a run that ended before it got this far.
     """
     planned = {trial.seq: trial for trial in trials}
-    purse = _Purse.of(setup.manifest)
-    for interaction in interactions:
-        purse.charge(interaction)
-    sensing_cost: dict[str, float] = {}
     readings: list[Reading] = []
     for interaction in interactions:
         trial = planned.get(interaction.seq)
@@ -856,34 +734,13 @@ async def sense(
             options = selected.options
             if declared is not None:
                 options = placed(declared, options, setup.base)
-            spends = declared is not None and "spend" in declared.effects
             with _span(
                 scope,
                 "ix.sensor",
                 **{"ix.run.id": setup.manifest.run, "ix.sensor": selected.kind},
                 **{"ix.trial.seq": interaction.seq, "ix.subject": interaction.subject},
             ) as span:
-                expected = sensing_cost.get(selected.kind, 0.0)
-                if (
-                    spends
-                    and purse.ceiling is not None
-                    and (purse.spent + expected > purse.ceiling + 1e-9)
-                ):
-                    measured: Sensed | Failure = Failure(
-                        owner="sensor",
-                        reason="spend_ceiling",
-                        message=f"the run has spent {purse.spent:.4g} of its ceiling of "
-                        f"{purse.ceiling:g}; this sensor was not asked",
-                    )
-                else:
-                    measured = await _measure(
-                        kit.sensors[selected.kind], interaction, truth, options
-                    )
-                if isinstance(measured, Sensed) and measured.cost_usd is not None:
-                    purse.spent += measured.cost_usd
-                    sensing_cost[selected.kind] = max(expected, measured.cost_usd)
-                    span.set(**{"ix.sensor.cost_usd": measured.cost_usd})
-                cost = None if isinstance(measured, Failure) else measured.cost_usd
+                measured = await _measure(kit.sensors[selected.kind], interaction, truth, options)
                 for name in selected.metrics:
                     metric = setup.design.metric(name)
                     if metric is None:
@@ -891,9 +748,7 @@ async def sense(
                     given = measured if isinstance(measured, Failure) else measured.values.get(name)
                     detail = {} if isinstance(measured, Failure) else measured.detail
                     _evaluated(span, name, given)
-                    read = _reading(interaction, selected.kind, metric, given, detail)
-                    readings.append(read.model_copy(update={"cost_usd": cost}))
-                    cost = None  # counted once, on the first
+                    readings.append(_reading(interaction, selected.kind, metric, given, detail))
     if scope is not None:
         scope.emit(SENSE_END, readings=len(readings), interactions=len(interactions))
     return readings

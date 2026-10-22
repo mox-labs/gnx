@@ -188,15 +188,14 @@ class TestPlanCounts:
         alone = _plan(evaluate_data, vocabulary).order
         assert "nothing to interleave" in alone.description
 
-    def test_spend_is_estimated_from_the_declared_cost_and_never_invented(
+    def test_a_plan_of_a_run_that_calls_a_model_states_no_spend(
         self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:
-        priced = _plan({**evaluate_data, "spend": {"ceiling": 5, "per_trial": 0.02}}, vocabulary)
-        assert priced.spend.estimated == pytest.approx(priced.trials.total * 0.02)
-        assert (priced.spend.ceiling, priced.spend.currency) == (5, "USD")
-        unpriced = _plan(evaluate_data, vocabulary).spend
-        assert unpriced.estimated is None and unpriced.ceiling == 5
-        assert "per_trial" in unpriced.basis
+        """Changed requirement: spend is removed. A plan estimates no cost and holds a run
+        to no ceiling; what the run will do is in its trials and its effects."""
+        made = _plan(evaluate_data, vocabulary)
+        assert "spend" not in made.document()
+        assert {e.effect for e in made.effects} == {"tools", "process", "filesystem"}
 
     def test_the_genres_note_is_said_once(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary

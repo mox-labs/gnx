@@ -481,20 +481,21 @@ class TestTheAgentsReference:
         from ix.domain.summaries import NOISY
 
         text = " ".join(_reference("agents").split())
-        # No session runtime is the default: each spends or not, and the reference says which.
+        # No session runtime is the default: each calls a model or not, and the reference
+        # says which.
         assert "It is required, with no default" in text and "`option_missing`" in text
-        for runtime, spends in [("claude-sdk", "spends)"), ("model", "spends)"),
-                                ("mock", "spends nothing")]:  # fmt: skip
-            assert re.search(rf"`{runtime}` \([^)]*{re.escape(spends)}", text), runtime
+        for runtime, calls in [("claude-sdk", "calls a model provider)"),
+                               ("model", "calls a model provider)"),
+                               ("mock", "calls no model")]:  # fmt: skip
+            assert re.search(rf"`{runtime}` \([^)]*{re.escape(calls)}", text), runtime
         assert "`judge` asks a model (`runtime`, required with no default" in text
         assert f"`timeout` ({SESSION_TIMEOUT_S:g}s)" in text and f"`{VERIFIED}`" in text
         for strategy in get_args(Loop.model_fields["strategy"].annotation):
             assert f"strategy: {strategy}" in text, strategy
         assert f"more than {NOISY:g} of the range" in text
-        assert f"exits {ix.EXIT_CODES['run_interrupted']} with no verdict" in text
 
     @pytest.mark.parametrize("example", ["skill", "routing", "control"])
-    def test_its_dry_run_runs_here_as_written_and_spends_nothing(
+    def test_its_dry_run_runs_here_as_written_and_calls_no_model(
         self, example: str, tmp_path: Path
     ) -> None:
         """The order of work's second step, done to the reference's own examples with no
@@ -505,7 +506,7 @@ class TestTheAgentsReference:
         report = ix.run(lab, dry_run=True)
         assert report.dry_run and report.simulated == "all" and report.stood_in
         assert report.verdict is None and report.indication is None
-        assert report.spend.total == 0 and report.exit_code == 0
+        assert report.exit_code == 0
 
     def test_its_probe_file_puts_options_under_options_and_runs(self, tmp_path: Path) -> None:
         """Regression: the reference showed no probe file, and an agent wrote

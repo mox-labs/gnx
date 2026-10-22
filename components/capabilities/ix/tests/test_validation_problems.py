@@ -197,7 +197,7 @@ def _kind_unfit(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
         "new": {"kind": "agent-session", "runtime": "mock", "model": "b"},
     }
     c["probes"][0]["target"] = "http://127.0.0.1:8080/x"
-    return _found({**c, "spend": {"ceiling": 1}}, v)
+    return _found(c, v)
 
 
 def _option_unknown(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
@@ -297,14 +297,6 @@ def _truth_unclaimed(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
 def _unbound_placeholder(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     c["probes"][0]["target"] = "{url}/blobs/{size}"
     return _found(c, v)
-
-
-def _spend_over_ceiling(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
-    return _found({**e, "spend": {"ceiling": 1.0, "per_trial": 0.5}}, v)
-
-
-def _spend_unbounded(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
-    return _found({**e, "spend": {"per_trial": 0.5}}, v)
 
 
 def _genre_invalid(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
@@ -457,8 +449,6 @@ CASES: dict[str, tuple[Any, str, str]] = {
     "probe_duplicate_id": (_probe_duplicate_id, "probes", "name_taken"),
     "truth_unclaimed": (_truth_unclaimed, "probes.0.truth.expected_skil", "truth_unclaimed"),
     "unbound_placeholder": (_unbound_placeholder, "probes.0.target", "unbound_placeholder"),
-    "spend_over_ceiling": (_spend_over_ceiling, "spend.ceiling", "spend_over_ceiling"),
-    "spend_unbounded": (_spend_unbounded, "spend.ceiling", "spend_unbounded"),
     "genre_invalid": (_genre_invalid, "", "genre_invalid"),
     "genre_duplicate": (_genre_duplicate, "name", "name_taken"),
     "genre_extends_unknown": (_genre_extends_unknown, "extends", "name_unknown"),

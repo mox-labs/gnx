@@ -339,7 +339,6 @@ class Root:
             genres=self.genres(lab),
             kinds=self.kinds(lab),
             adapters=self._runnable,
-            spend_cap=self._settings().client.spend_cap,
         )
 
     def skill(self, reference: str | None = None) -> str:

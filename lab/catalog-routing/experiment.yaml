@@ -45,8 +45,6 @@ primary: {metric: activated_correctly}
 threshold: {op: ">=", value: 0.9}
 
 # 8 probes x 5 repeats = 40 sessions: the genre's minimum, and more than the 35 a pass
-# rate's interval needs to reach above 0.9 at all (the genre's default of 10 would cost
-# about 8 USD). The per-trial figure is an estimate; the ceiling is what stops a run that
-# goes wrong.
+# rate's interval needs to reach above 0.9 at all (the genre's default of 10 would double
+# the sessions).
 repeats: 5
-spend: {ceiling: 5.00, per_trial: 0.10}

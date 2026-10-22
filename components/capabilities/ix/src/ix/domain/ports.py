@@ -22,9 +22,6 @@ Each port is named for what it is to a run; what an experiment writes for one is
   subject failed and :class:`~ix.domain.run.HarnessError` when the harness or its tool did;
   anything else is read as the harness's. None of these fails the run.
 * *Release.* Leaving ``reach`` releases everything it started, however it is left.
-* *Spend.* A facet ``apply`` returns reports what applying the probe cost under
-  :data:`~ix.domain.run.COST`; a sensor that spends to measure says so in :class:`Sensed`.
-  The run adds both up and holds them to its ceiling.
 * *Blocking.* Every method that waits is ``async`` and yields.
 """
 
@@ -51,12 +48,10 @@ type Measured = bool | float | Mapping[str, float]
 @dataclass(frozen=True)
 class Sensed:
     """What a sensor read from one interaction, when it has more to say than its numbers:
-    ``detail`` (the skill that fired, the tests that failed), kept with each of its readings,
-    and ``cost_usd``, what measuring cost (a model asked to judge)."""
+    ``detail`` (the skill that fired, the tests that failed), kept with each of its readings."""
 
     values: Mapping[str, Measured]
     detail: Mapping[str, Any] = field(default_factory=dict)
-    cost_usd: float | None = None
 
 
 class Flag(Protocol):
@@ -169,8 +164,8 @@ class StoodIn:
 @runtime_checkable
 class StandIn(Protocol):
     """Optional for a :class:`Subject`, :class:`Probe` or :class:`Sensor`: the same entry
-    on a stand-in that touches no model and spends nothing, for a dry run, which checks
-    the harness and never the subject. A subject without one cannot be dry run."""
+    on a stand-in that touches no model, for a dry run, which checks the harness and never
+    the subject. A subject without one cannot be dry run."""
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn: ...
 

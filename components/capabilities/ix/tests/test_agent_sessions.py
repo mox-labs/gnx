@@ -79,7 +79,7 @@ class Runtimes:
 
 def _subject(runtime: str = "claude-sdk", **options: Any) -> SubjectConfig:
     """An ``agent-session`` subject. It names ``claude-sdk`` unless told otherwise, so the
-    SDK's options apply; the scripted double plays it, and nothing spends."""
+    SDK's options apply; the scripted double plays it, and no model is called."""
     return SubjectConfig.model_validate({"kind": "agent-session", "runtime": runtime, **options})
 
 
@@ -310,12 +310,17 @@ class TestWhoseFailure:
             await _ask(Runtimes(Scripted(error)), {"prompt": "Go."}, base=tmp_path)
         assert failed.value.reason == reason  # type: ignore[attr-defined]
 
-    async def test_what_earlier_rounds_spent_stays_with_the_failure(self, tmp_path: Path) -> None:
-        runtime = Scripted(_reply("draft", cost_usd=0.05), matrix.AgentRuntimeError("x"))
+    async def test_a_session_that_fails_after_a_round_is_owned_as_its_cause_says(
+        self, tmp_path: Path
+    ) -> None:
+        """Changed requirement: a failure no longer carries what earlier rounds cost (spend
+        is removed); it is owned by the runtime's reason, whatever ran before it."""
+        error = matrix.AgentRuntimeError("it broke", reason="refused")
+        runtime = Scripted(_reply("draft", cost_usd=0.05), error)
         subject = _subject(loop={"strategy": "self-review"})
         with pytest.raises(SubjectError) as failed:
             await _ask(Runtimes(runtime), {"prompt": "Go."}, base=tmp_path, subject=subject)
-        assert failed.value.cost_usd == 0.05
+        assert (failed.value.reason, str(failed.value)) == ("refused", "it broke")
 
 
 class TestPreflight:
@@ -725,7 +730,7 @@ class TestUsage:
 
 class TestJudge:
     async def _judge(self, *replies: matrix.AgentResponse, **options: Any) -> Sensed:
-        """The judge on ``model``, played by the scripted double: nothing spends."""
+        """The judge on ``model``, played by the scripted double: no model is called."""
         interaction = _interaction({"prompt": "Merge.", "text": "def merge"}, {"family": "claude"})
         return await _sense(JudgeSensor(Runtimes(Scripted(*replies))), interaction, {},
                             rubric="Correct and clear.", runtime="model", **options)  # fmt: skip
@@ -737,7 +742,9 @@ class TestJudge:
             "judged_score": 0.8, "judged_pass": True, "judge_agreement": 1.0,
             "judge_inconsistent": False, "judge_in_family": False,
         }  # fmt: skip
-        assert found.cost_usd == 0.01 and found.detail["reasons"] == ["clear"]
+        assert found.detail["reasons"] == ["clear"]
+        # What the judge's runtime reported it cost is kept as a fact about the judge.
+        assert found.detail["judge"]["cost_usd"] == 0.01
 
     async def test_repeats_check_the_judge_against_itself(self) -> None:
         found = await self._judge(
@@ -759,7 +766,7 @@ class TestJudge:
             await sensor.sense(_interaction(), truth={}, options={"runtime": "model"})
 
     async def test_a_judge_that_names_no_runtime_never_starts_one(self) -> None:
-        """Regression: ``runtime`` defaulted to ``model``, which spends. Validation reports
+        """Regression: ``runtime`` defaulted to ``model``, a paid model. Validation reports
         it missing; should a judge reach a trial without one, nothing is built."""
         runtimes = Runtimes(Scripted(_reply('{"score": 1}')))
         with pytest.raises(ValueError, match="needs a runtime"):

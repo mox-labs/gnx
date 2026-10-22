@@ -2,7 +2,7 @@
 components and store, and the report.
 
 Every session runs on matrix's ``mock`` runtime or on a scripted runtime registered as a
-third party would register one: nothing here calls a model or spends.
+third party would register one: nothing here calls a model.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from click.testing import CliRunner
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic import ValidationError
 
 import ix
 from ix.adapters._in.cli import main
@@ -75,7 +76,6 @@ def _routing(tmp_path: Path, **changes: Any) -> Path:
         "threshold": {"op": ">=", "value": 0.5},
         "metrics": ["cost"],
         "repeats": 5,
-        "spend": {"ceiling": 10.0},
         **changes,
     }
     folder = tmp_path / "routing"
@@ -153,8 +153,13 @@ class TestTheHarnessIntegrityCheck:
         assert report.screen == () and record.screen == ()
 
 
+def _rows(report: ix.Report, table: str) -> list[dict[str, Any]]:
+    """The rows of one of a run's tables, as written."""
+    return [json.loads(line) for line in Path(report.tables[table]).read_text().splitlines()]
+
+
 class TestAnActivationRun:
-    def test_the_confusion_table_and_the_spend(self, tmp_path: Path) -> None:
+    def test_the_confusion_table_and_the_reported_cost(self, tmp_path: Path) -> None:
         root = Root(registry=_registry(_fires()), settings=_settings())
         report = root.run(_routing(tmp_path), exploratory=True)
         assert report.status == "completed" and report.simulated == "none"
@@ -167,53 +172,38 @@ class TestAnActivationRun:
         assert (table.precision, table.recall) == (0.5, 0.5)
         review = next(label for label in table.labels if label.label == "review")
         assert (review.precision, review.recall) == (0.5, 1.0)
-        assert report.spend.trials == pytest.approx(1.5) and report.spend.reported == 15
-        assert report.spend.ceiling == 10.0 and report.spend.ceiling_source == "experiment"
+        # What each session's runtime reported it cost is a fact about the session, read by
+        # the usage sensor like its tokens: nothing adds it up or holds a run to it.
+        (cost,) = [e for e in report.analysis.estimates if e.metric == "cost"]
+        assert cost.value == pytest.approx(0.1)
+        assert "spend" not in report.document() and "halt" not in report.document()
 
-    def test_the_plan_states_the_spend_an_earlier_run_shows(self, tmp_path: Path) -> None:
-        root = Root(registry=_registry(_fires()), settings=_settings())
-        lab = _routing(tmp_path)
-        before = root.plan(lab).spend
-        assert before.estimated is None and "no earlier run" in before.basis
-        report = root.run(lab, exploratory=True)
-        after = root.plan(lab).spend
-        assert after.estimated == pytest.approx(1.5)
-        assert report.run in after.basis and "mean cost of a trial" in after.basis
-
-    def test_the_ceiling_stops_the_next_trial_that_could_pass_it(self, tmp_path: Path) -> None:
-        root = Root(registry=_registry(_fires(cost=0.4)), settings=_settings())
-        report = root.run(_routing(tmp_path, spend={"ceiling": 1.0}), exploratory=True)
-        assert report.status == "interrupted" and report.exit_code == 12
-        assert report.halt is not None and report.halt.reason == "spend_ceiling"
-        # 0.8 spent after two trials; a third could cost 0.4 more.
-        assert report.trials.carried_out == 2 and report.spend.trials == pytest.approx(0.8)
-        assert report.verdict is None and "stopped before its schedule" in report.no_verdict
-
-    def test_a_cost_nobody_reports_cannot_be_held_to_a_ceiling(self, tmp_path: Path) -> None:
-        root = Root(registry=_registry(_fires(cost=None)), settings=_settings())
-        lab = _routing(tmp_path, metrics=[])
-        report = root.run(lab, exploratory=True)
-        assert report.halt is not None and report.halt.reason == "cost_unknown"
-        assert report.trials.carried_out == 1
-        # With an estimate per trial, the run is held to that instead, and here it fits.
-        held = root.run(
-            _routing(tmp_path / "held", metrics=[], spend={"ceiling": 4.0, "per_trial": 0.25}),
-            exploratory=True,
-        )
-        assert held.halt is None and held.trials.carried_out == 15
-
-    def test_the_settings_cap_bounds_an_experiment_that_sets_no_ceiling(
-        self, tmp_path: Path
+    @pytest.mark.parametrize("cost", [0.4, None])
+    def test_a_run_carries_out_its_whole_schedule_whatever_its_sessions_cost(
+        self, tmp_path: Path, cost: float | None
     ) -> None:
-        lab = _routing(tmp_path, spend=None)
-        unbounded = Root(registry=_registry(_fires()), settings=_settings()).validate(lab)
-        assert [p.kind for p in unbounded.problems] == ["spend_unbounded"]
-        capped = Root(registry=_registry(_fires()), settings=_settings(spend_cap=0.25))
-        assert capped.validate(lab).valid
-        assert capped.plan(lab).spend.ceiling_source == "settings"
-        report = capped.run(lab, exploratory=True)
-        assert report.halt is not None and report.trials.carried_out == 2
-        assert report.spend.ceiling_source == "settings"
+        """Changed requirement: spend is removed. A run was stopped once the next trial
+        could take it past a ceiling, and at the first trial whose cost no runtime
+        reported; now cost never stops a run, and what a runtime reported is kept on the
+        session's record (its ``usage``), not on the trial."""
+        root = Root(registry=_registry(_fires(cost=cost)), settings=_settings())
+        report = root.run(_routing(tmp_path, metrics=[]), exploratory=True)
+        assert report.status == "completed" and report.exit_code == 0
+        assert report.trials.carried_out == report.trials.planned == 15
+        rows = _rows(report, "ix.v1.interaction")
+        assert [row["observations"]["usage"]["cost_usd"] for row in rows] == [cost] * 15
+        assert not any("cost_usd" in row for row in rows)
+        assert "ix.v1.halt" not in report.tables
+
+    def test_spend_is_refused_in_an_experiment_and_in_ixs_settings(self, tmp_path: Path) -> None:
+        """Changed requirement: spend is removed, so a ``spend`` section and ix's
+        ``spend_cap`` are keys that do not exist, and a plan states no spend."""
+        root = Root(registry=_registry(_fires()), settings=_settings())
+        (problem,) = root.validate(_routing(tmp_path / "spend", spend={"ceiling": 1.0})).problems
+        assert (problem.path, problem.kind) == ("spend", "unknown_key")
+        with pytest.raises(ValidationError, match="spend_cap"):
+            IxSettings(spend_cap=1.0)  # type: ignore[call-arg]
+        assert "spend" not in root.plan(_routing(tmp_path / "plain")).document()
 
     def test_the_settings_say_where_runs_are_kept(self, tmp_path: Path) -> None:
         kept = tmp_path / "every-run"
@@ -264,7 +254,6 @@ def _skill_lab(tmp_path: Path, **subject: Any) -> Path:
         "primary": {"metric": "activated_correctly"},
         "threshold": {"op": ">=", "value": 0.5},
         "repeats": 18,
-        "spend": {"ceiling": 2.0, "per_trial": 0.05},
     }
     (folder / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
     return folder
@@ -326,14 +315,12 @@ class TestADryRun:
         assert report.dry_run and report.simulated == "all" and not report.gated
         assert report.verdict is None and report.indication is None
         assert report.no_verdict == DRY_RUN and report.exit_code == 0
-        assert report.spend.total == 0 and report.trials.carried_out == 18
+        assert report.trials.carried_out == 18
         assert report.stood_in == (
             "subjects.agent: permission_mode, setting_sources, skills set aside: the mock "
             "runtime takes none of them",
             "sensors.0: judged on mock, which scores every reply 0.5: the readings say nothing",
         )
-        # A dry run measured nothing about the agent: the plan still rests on the guess.
-        assert root.plan(lab).spend.source == "declared"
 
     def test_a_subject_with_no_stand_in_is_refused(
         self, compare_data: dict[str, Any], write_experiment: Any
@@ -342,12 +329,12 @@ class TestADryRun:
             Root(settings=_settings()).run(write_experiment(compare_data), dry_run=True)
 
     @pytest.mark.parametrize("dry_run", [True, False])
-    def test_a_session_that_names_no_runtime_is_refused_before_anything_spends(
+    def test_a_session_that_names_no_runtime_is_refused_before_any_session_starts(
         self, tmp_path: Path, dry_run: bool
     ) -> None:
         """Regression: ``runtime`` defaulted to claude-sdk, and a fixture that named none
         started paid sessions. A dry run does not paper over it: the file is wrong as
-        written, and the fix lists what each runtime spends."""
+        written, and the fix says which runtime calls a model."""
         lab = _skill_lab(tmp_path, tools=["Read", "Skill"])
         data = yaml.safe_load((lab / "experiment.yaml").read_text())
         del data["subjects"]["agent"]["runtime"]
@@ -355,7 +342,7 @@ class TestADryRun:
         root = Root(settings=_settings())
         (problem,) = root.validate(lab).problems
         assert (problem.path, problem.kind) == ("subjects.agent.runtime", "option_missing")
-        assert "mock (canned replies; spends nothing)" in problem.fix
+        assert "mock (canned replies; calls no model)" in problem.fix
         with pytest.raises(ix.ConfigError):
             root.run(lab, dry_run=dry_run, exploratory=not dry_run)
         assert not (lab / ".ix").exists()
@@ -387,7 +374,6 @@ class TestATextCheck:
             "primary": {"metric": "text_matched"},
             "threshold": {"op": ">=", "value": 0.5},
             "repeats": 5,
-            "spend": {"ceiling": 0},
         }  # fmt: skip
         lab = tmp_path / "banana"
         lab.mkdir()
@@ -400,19 +386,6 @@ class TestATextCheck:
 
 
 class TestThePlan:
-    def test_a_measured_cost_is_preferred_to_the_declared_one(self, tmp_path: Path) -> None:
-        root = Root(registry=_registry(_fires()), settings=_settings())
-        lab = _routing(tmp_path, spend={"ceiling": 10.0, "per_trial": 0.05})
-        before = root.plan(lab).spend
-        assert (before.estimated, before.source) == (pytest.approx(0.75), "declared")
-        assert "pilot" in before.basis
-        report = root.run(lab, exploratory=True)
-        after = root.plan(lab).spend
-        assert (after.estimated, after.source) == (pytest.approx(1.5), "measured")
-        assert (
-            report.run in after.basis and "declared per_trial of 0.05 is set aside" in after.basis
-        )
-
     def test_a_threshold_out_of_reach_is_said_once(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -434,7 +407,7 @@ class TestThePlan:
 class TestTheRunsList:
     """Regression: ``ix runs`` gave a run's id and path, and nothing it found."""
 
-    def test_each_run_says_how_it_stood_what_it_found_and_spent(
+    def test_each_run_says_how_it_stood_and_what_it_found(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import ix.composition
@@ -451,7 +424,6 @@ class TestTheRunsList:
         assert [run.mode for run in listed] == ["gated", "exploratory", "dry"]
         assert [run.verdict for run in listed] == [gated.verdict, None, None]
         assert [run.indication for run in listed] == [None, exploratory.indication, None]
-        assert [run.spent for run in listed] == [pytest.approx(1.5), pytest.approx(1.5), 0]
         assert all(run.started_at and run.ended_at for run in listed)
         runner = CliRunner(env={"COLUMNS": "80"})
         document = json.loads(runner.invoke(main, ["runs", str(lab), "--json"]).stdout)
@@ -459,11 +431,12 @@ class TestTheRunsList:
         text = runner.invoke(main, ["runs", str(lab)]).stdout
         assert f"{gated.run}  " in text and f"  gated  completed  {gated.verdict}  " in text
         assert f"indication {exploratory.indication}" in text
-        assert "dry  completed  the harness, not the agent  15/15 trials  spent 0" in text
+        assert "dry  completed  the harness, not the agent  15/15 trials\n" in text
+        assert "spent" not in text and all("spent" not in run for run in document["runs"])
 
 
 class TestAJudgesFlags:
-    def test_a_judge_of_the_subjects_family_is_flagged_and_its_spend_counted(
+    def test_a_judge_of_the_subjects_family_is_flagged_and_what_it_cost_kept(
         self, tmp_path: Path
     ) -> None:
         def answer(task: str) -> matrix.AgentResponse:
@@ -484,7 +457,9 @@ class TestAJudgesFlags:
         report = Root(registry=_registry(answer), settings=_settings()).run(lab, exploratory=True)
         (flag,) = report.flags
         assert flag.startswith("judge_in_family:") and "(15 of 15 trials)" in flag
-        assert report.spend.sensing == pytest.approx(0.15)
+        judged = [row for row in _rows(report, "ix.v1.reading") if row["sensor"].endswith("judge")]
+        assert judged and all(row["detail"]["judge"]["cost_usd"] == 0.01 for row in judged)
+        assert not any("cost_usd" in row for row in judged)
 
 
 class TestTelemetry:
@@ -505,7 +480,8 @@ class TestTelemetry:
         run = next(span for span in spans if span.name == "ix.run")
         trial = next(span for span in spans if span.name == "ix.trial")
         assert trial.parent is not None and trial.parent.span_id == run.context.span_id
-        assert trial.attributes is not None and trial.attributes["ix.trial.cost_usd"] == 0.1
+        # Spend is removed: no span carries a cost of ix's own.
+        assert not any("cost_usd" in key for span in spans for key in span.attributes or {})
         events = [e for span in spans if span.name == "ix.sensor" for e in span.events]
         labels = {
             (e.attributes or {}).get("gen_ai.evaluation.name")
@@ -592,7 +568,6 @@ def _pass_rate(tmp_path: Path, repeats: int) -> Path:
         "primary": {"metric": "text_matched"},
         "threshold": {"op": ">=", "value": 0.9},
         "repeats": repeats,
-        "spend": {"ceiling": 1.0},
     }  # fmt: skip
     lab = tmp_path / f"pass-rate-{repeats}"
     lab.mkdir()

@@ -43,7 +43,6 @@ MUST_SETTABLE: frozenset[str] = frozenset(
         "guardrails",
         "repeats",
         "seed",
-        "spend",
     }
 )
 

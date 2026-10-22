@@ -7,16 +7,15 @@ options:
   runtime:
     type: string
     required: true
-    description: "the matrix runtime that runs the judge: one of the choices, or any runtime installed. There is no default, so spending is never implicit"
+    description: "the matrix runtime that runs the judge: one of the choices, or any runtime installed. There is no default, so a model provider is never called implicitly"
     choices:
-      model: one call through hardline; spends
-      claude-sdk: a one-turn Claude Agent SDK session with no tools; spends
-      mock: a canned reply; spends nothing
+      model: one call through hardline; calls a model provider
+      claude-sdk: a one-turn Claude Agent SDK session with no tools; calls a model provider
+      mock: a canned reply; calls no model
   model: {type: string, description: the model that judges}
   runtime_options: {type: mapping, description: further options of the judge runtime's own config}
   repeats: {type: integer, description: "how many times the judge reads each response, to check that it agrees with itself; 1 when absent"}
   pass_at: {type: number, description: "the score at which judged_pass is true; 0.5 when absent"}
-effects: [spend]
 needs: [response]
 metrics:
   - {name: judged_score, unit: ratio, direction: higher, shape: scalar, judged: true, bounds: [0, 1], description: "the judge's score against the rubric, the mean of its repeats"}

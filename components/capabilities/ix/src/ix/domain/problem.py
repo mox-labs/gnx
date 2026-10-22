@@ -63,12 +63,10 @@ PROBLEM_KINDS: frozenset[str] = frozenset(
         "estimator_illegal",
         "judged_gate",
         "unit_mismatch",
-        # probes, placeholders and spend
+        # probes and placeholders
         "probes_empty",
         "truth_unclaimed",
         "unbound_placeholder",
-        "spend_over_ceiling",
-        "spend_unbounded",
         # genre and kind files
         "genre_invalid",
         "genre_depth",

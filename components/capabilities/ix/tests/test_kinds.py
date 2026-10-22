@@ -121,8 +121,10 @@ class TestBuiltInKinds:
         declared = {k.label: set(k.effects) for k in builtin_kinds.of("subject")}
         assert declared == {
             "process": {"process"}, "http": {"network"},
-            "agent-session": {"spend", "tools", "process", "filesystem"},
+            "agent-session": {"tools", "process", "filesystem"},
         }  # fmt: skip
+        judge = builtin_kinds.get("sensor", "judge")
+        assert judge is not None and judge.effects == ()
         with pytest.raises(ValidationError):
             Kind.model_validate(_sensor("x", effects=["telepathy"]))
 
@@ -266,32 +268,36 @@ class TestOptions:
         assert (problem.path, problem.kind) == ("probes.0.rate", "option_missing")
         assert "when load_model is open" in problem.message
 
-    def test_an_agent_session_names_its_runtime_and_the_fix_says_what_each_spends(
+    def test_an_agent_session_names_its_runtime_and_the_fix_says_which_call_a_model(
         self, builtin_kinds: Kinds
     ) -> None:
         """Regression: ``runtime`` defaulted to claude-sdk, and an experiment and a test
-        fixture that named none started paid Claude sessions. Spending is never implicit."""
+        fixture that named none started paid Claude sessions. A model is never called
+        implicitly."""
         session = builtin_kinds.get("subject", "agent-session")
         assert session is not None and session.options["runtime"].required
         (problem,) = check_options(session, {"max_turns": 1}, "subjects.agent")
         assert (problem.path, problem.kind) == ("subjects.agent.runtime", "option_missing")
         for choice in ("claude-sdk (", "model (", "mock ("):
             assert choice in problem.fix, choice
-        assert problem.fix.count("; spends)") == 2 and "; spends nothing)" in problem.fix
+        assert problem.fix.count("; calls a model provider)") == 2
+        assert "; calls no model)" in problem.fix
         assert problem.allowed == ()  # an open set: an installed runtime is accepted too
         assert check_options(session, {"runtime": "acme.v1.runtime.scripted"}, "s") == []
 
-    def test_a_judge_names_its_runtime_and_the_fix_says_what_each_spends(
+    def test_a_judge_names_its_runtime_and_the_fix_says_which_call_a_model(
         self, builtin_kinds: Kinds
     ) -> None:
-        """Regression: the judge's ``runtime`` defaulted to ``model``, which spends."""
+        """Regression: the judge's ``runtime`` defaulted to ``model``, which calls a paid
+        model."""
         judge = builtin_kinds.get("sensor", "judge")
         assert judge is not None and judge.options["runtime"].required
         (problem,) = check_options(judge, {"rubric": "r"}, "sensors.0")
         assert (problem.path, problem.kind) == ("sensors.0.runtime", "option_missing")
         for choice in ("model (", "claude-sdk (", "mock ("):
             assert choice in problem.fix, choice
-        assert problem.fix.count("; spends)") == 2 and "; spends nothing)" in problem.fix
+        assert problem.fix.count("; calls a model provider)") == 2
+        assert "; calls no model)" in problem.fix
 
     def test_an_options_open_choices_are_listed_and_never_enforced(self) -> None:
         declared = Kind.model_validate(
@@ -527,7 +533,6 @@ class TestEffects:
     ) -> None:
         plan = ix.plan(write_experiment(evaluate_data))
         assert {(e.effect, e.source, e.declared_by) for e in plan.effects} == {
-            ("spend", "subjects.catalog", "kind"),
             ("tools", "subjects.catalog", "kind"),
             ("process", "subjects.catalog", "kind"),
             ("filesystem", "subjects.catalog", "kind"),
@@ -561,13 +566,14 @@ class TestEffects:
         plan = ix.plan(write_experiment(evaluate_data))
         assert ("code", "sensor function-test") in {(e.effect, e.source) for e in plan.effects}
 
-    def test_spending_needs_a_ceiling(
+    def test_a_run_that_calls_a_model_needs_no_spend_and_takes_none(
         self, evaluate_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
     ) -> None:
-        del evaluate_data["spend"]
-        assert _found(evaluate_data, builtin_genres, builtin_kinds) == {
-            ("spend.ceiling", "spend_unbounded")
-        }
+        """Changed requirement: spend is removed. A session that calls a model needs no
+        ceiling, and a ``spend`` section is a key the experiment does not have."""
+        assert _found(evaluate_data, builtin_genres, builtin_kinds) == set()
+        _, problems = parse({**evaluate_data, "spend": {"ceiling": 5}})
+        assert [(p.path, p.kind) for p in problems] == [("spend", "unknown_key")]
 
 
 # --- the extension point ---------------------------------------------------------------

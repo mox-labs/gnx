@@ -3,8 +3,8 @@
 ix validates, plans and registers an experiment, and runs one. Validating, planning and
 registering read files, compute, and write one registration file. **Running does what the
 experiment file says**: it starts programs, sends network requests, runs agent sessions
-that call a model, use tools on this machine and spend money, and runs code (the agent's,
-and the experiment's own graders) in child processes.
+that call a paid model and use tools on this machine, and runs code (the agent's, and the
+experiment's own graders) in child processes.
 
 Audience: anyone running ix against an experiment, a genre or a kind they did not author.
 
@@ -58,7 +58,7 @@ derived from the file's own name.
 
 ### 4. A declaration is a claim, not a control
 
-A kind declares its effects (`process`, `network`, `spend`, `tools`, `code`, `containers`,
+A kind declares its effects (`process`, `network`, `tools`, `code`, `containers`,
 `filesystem`) and the plan reports them. That is a statement by whoever wrote the kind file,
 and ix has no code that enforces it. Two properties limit how it can mislead:
 
@@ -106,7 +106,7 @@ The session sees its prompt and the files copied in; it never sees the probe's t
 matrix builds the session and owns its authority: matrix's SECURITY.md has the detail. The
 `model` runtime makes one model call through hardline with no tools, and the `mock` runtime
 calls no model. `ix run --dry-run` puts every session, and a judge, on `mock`, so it calls
-no model and spends nothing; it still copies the fixtures, runs a subject's `setup` command
+no model; it still copies the fixtures, runs a subject's `setup` command
 and runs the code the sensors run (section 8), as a real run would.
 
 ### 8. Code runs in a child process that is not a sandbox
@@ -122,13 +122,16 @@ Model-written code is untrusted; run code from a subject you would run yourself,
 in a container. A graders module is trusted as far as the experiment's author is. Neither
 is imported by `validate` or `plan`.
 
-### 9. A run spends money up to a ceiling
+### 9. Nothing in ix bounds what a run costs
 
-A kind that spends needs a ceiling before the experiment is valid: `spend.ceiling`, or
-`spend_cap` in ix's settings. A run adds up the cost each session reported and stops
-starting trials once the next could take it past the ceiling; a runtime that reports no
-cost is held to the declared `per_trial`, or stopped after one trial. The ceiling is checked
-between trials, so one trial can take a run past it. A judge's spend counts against it.
+A session on `claude-sdk` or `model`, and a judge on either, calls a paid model, and ix
+neither estimates what a run will cost nor stops one for what it has cost. What bounds a
+run is its shape: the plan's `Trials` is how many sessions it starts (and a judge's
+`repeats` how many calls it makes per trial), and `max_turns` bounds each session. The
+Claude Agent SDK's own `max_budget_usd`, given in a subject's `runtime_options`, ends a
+`claude-sdk` session once that session has cost that much (`stop: max_budget_usd`). What a
+runtime reports a session cost is recorded with the session, in its `usage`, as a fact.
+Read the plan before a run, and run with `--dry-run` first: it calls no model.
 
 ### 10. Load is sent where the file says
 

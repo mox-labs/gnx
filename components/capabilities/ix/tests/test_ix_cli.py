@@ -352,7 +352,7 @@ class TestPlanCommand:
             "schema", "digest", "experiment", "experiment_digest", "genre", "genre_url",
             "question", "decides", "comparison", "guardrails", "verdict_form", "subjects",
             "control", "factors", "probes", "calibration", "trials", "schedule_digest", "duration",
-            "order", "sensors", "effects", "spend", "registration", "sensitivity",
+            "order", "sensors", "effects", "registration", "sensitivity",
             "provenance", "unimplemented", "unstartable", "notes", "warnings", "runnable",
         ]  # fmt: skip
         assert re.fullmatch(r"[0-9a-f]{64}", document["schedule_digest"])
@@ -400,9 +400,9 @@ class TestPlanCommand:
         assert lines[1].startswith("Question:")
         order = [text.index(label) for label in (
             "Question:", "Decides:", "Comparison:", "Guardrails:", "Verdict:", "Subjects",
-            "Trials:", "Duration:", "Order:", "Effects:", "Spend:", "Registration:", "Design",
+            "Trials:", "Duration:", "Order:", "Effects:", "Registration:", "Design",
         )]  # fmt: skip
-        assert order == sorted(order)
+        assert order == sorted(order) and "Spend" not in text
         flat = " ".join(text.split())
         assert "streaming is at most 5% worse than buffered on ttfb p99" in flat
         assert "Comparison: non-inferiority" in flat
@@ -725,11 +725,11 @@ class TestExamplesAndLab:
         assert plan.genre == "evaluate" and plan.control is None
         assert plan.probes.ids == ("decoy-clear-ask", "does-it-follow", "vague-ask")
         assert plan.runnable, plan.unstartable
-        assert plan.trials.total == 36 and plan.spend.estimated == pytest.approx(1.8)
+        assert plan.trials.total == 36
         # 36 trials, every one passing, can show a pass rate above 0.9; 30 could not.
         assert not plan.sensitivity.text.startswith("This run cannot hold")
         assert {s.label for s in plan.sensors} == {"activation", "usage"}
-        assert {e.effect for e in plan.effects} == {"spend", "tools", "process", "filesystem"}
+        assert {e.effect for e in plan.effects} == {"tools", "process", "filesystem"}
 
     def test_the_experiment_the_readme_shows_validates(self, tmp_path: Path) -> None:
         readme = (PACKAGE / "README.md").read_text(encoding="utf-8")
@@ -816,7 +816,6 @@ class TestExamplesAndLab:
         plan = ix.plan(_lab() / "catalog-routing")
         assert plan.genre == "evaluate" and plan.probes.count == 8
         assert plan.decides == ("catalog has activated_correctly >= 0.9",)
-        assert plan.spend.ceiling == 5.0 and plan.spend.estimated == pytest.approx(4.0)
 
 
 # --- run, report and runs ----------------------------------------------------------------

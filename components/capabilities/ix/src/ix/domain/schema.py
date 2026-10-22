@@ -50,14 +50,12 @@ REPORT: Final = "ix.v1.report"
 RUNS: Final = "ix.v1.runs"
 
 #: The kinds of the rows a run records, one table each. ``RUN`` and ``TRIAL`` are computed
-#: before the run starts and supplied to it; the others are provided by components, and
-#: ``HALT`` only by a run that stopped starting trials early.
+#: before the run starts and supplied to it; the others are provided by components.
 RUN: Final = "ix.v1.run"
 TRIAL: Final = "ix.v1.trial"
 BINDINGS: Final = "ix.v1.bindings"
 INTERACTION: Final = "ix.v1.interaction"
 READING: Final = "ix.v1.reading"
-HALT: Final = "ix.v1.halt"
 
 FAMILIES: Final = ("genre", "subject", "probe", "sensor", "environment")
 

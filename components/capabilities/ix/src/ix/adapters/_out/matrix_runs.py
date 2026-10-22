@@ -31,7 +31,7 @@ from ix.adapters._out.matrix_errors import carried_over
 from ix.domain import schema
 from ix.domain.errors import IxError, NotFoundError
 from ix.domain.report import RunSummary
-from ix.domain.run import Halt, Interaction, Reading, RunManifest, RunRecord, RunStatus, Trial
+from ix.domain.run import Interaction, Reading, RunManifest, RunRecord, RunStatus, Trial
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -181,14 +181,10 @@ class Runs:
                 fix="`ix runs <experiment>` lists the runs",
             )
         location = f"{self.root}/{run}"
-        halts = construct.rows(schema.HALT)
-        status = _STATUS.get(str(described.get("status")), "failed")
-        if halts and status == "completed":
-            status = "interrupted"  # it stopped starting trials: the halt row says why
         return RunRecord(
             run=run,
             location=location,
-            status=status,
+            status=_STATUS.get(str(described.get("status")), "failed"),
             manifest=RunManifest.model_validate(manifests[0]),
             trials=tuple(Trial.model_validate(row) for row in construct.rows(schema.TRIAL)),
             interactions=tuple(
@@ -209,7 +205,6 @@ class Runs:
                     else {}
                 ),
             },
-            halt=Halt.model_validate(halts[0]) if halts else None,
         )
 
     def summaries(self) -> list[RunSummary]:

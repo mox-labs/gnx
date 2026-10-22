@@ -291,7 +291,7 @@ class TestFileProblems:
     @pytest.mark.parametrize(
         "change",
         [{"repeats": 0}, {"seed": -1}, {"factors": {"size": []}}, {"factors": {"size": [1, 1]}},
-         {"subjects": {}}, {"spend": {"ceiling": -1}}, {"metrics": ["ttfb", "ttfb"]}],
+         {"subjects": {}}, {"metrics": ["ttfb", "ttfb"]}],
     )  # fmt: skip
     def test_invalid_values(self, compare_data: dict[str, Any], change: dict[str, Any]) -> None:
         experiment, problems = parse({**compare_data, **change})

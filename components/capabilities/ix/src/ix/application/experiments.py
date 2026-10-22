@@ -3,7 +3,7 @@
 Each takes data: an experiment (or the data it should be), the probes read from its folder
 when it writes none inline, the genres and kinds it may name, and what a stored registration
 held. Reading and writing files is the composition root's work. Nothing starts a subject,
-applies a probe or spends anything.
+applies a probe or calls a model.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from ix.domain.analysis import Spread, spread
 from ix.domain.design import select_sensors
 from ix.domain.errors import ConfigError, NotFoundError
 from ix.domain.experiment import PROBES_FOLDER, Experiment, ProbeConfig, ProbeSet, probe_set
-from ix.domain.plan import Plan, RegistrationStatus, estimate_spend, plan, sensitivity
+from ix.domain.plan import Plan, RegistrationStatus, plan, sensitivity
 from ix.domain.ports import Review, Surroundings
 from ix.domain.problem import InvalidExperimentError, Problem, Validation, problem
 from ix.domain.registration import (
@@ -50,8 +50,6 @@ class Vocabulary:
     kinds: Kinds
     #: The kinds (type URLs) a run could carry out here; None when nothing was said.
     adapters: frozenset[str] | None = None
-    #: The ceiling of a run that spends and whose experiment sets none (ix's settings).
-    spend_cap: float | None = None
 
 
 @dataclass(frozen=True)
@@ -149,7 +147,6 @@ def examine(
         vocabulary.kinds,
         probes,
         adapters=vocabulary.adapters,
-        spend_cap=vocabulary.spend_cap,
     )
     return Examined(
         source=source,
@@ -276,7 +273,6 @@ def standing(
         checked.probes,
         vocabulary.kinds,
         adapters=vocabulary.adapters,
-        spend_cap=vocabulary.spend_cap,
     )
     current = freeze(
         checked.experiment,
@@ -340,21 +336,6 @@ def earlier_spread(design: Design, earlier: Iterable[RunRecord]) -> Spread | Non
     return None
 
 
-def earlier_cost(earlier: Iterable[RunRecord]) -> tuple[float, str] | None:
-    """The mean cost of a trial in the first of ``earlier`` (latest first) whose trials
-    reported one, with its run id; trials a stand-in answered are left out. None when no
-    run did."""
-    for record in earlier:
-        costs = [
-            interaction.cost_usd
-            for interaction in record.interactions
-            if interaction.cost_usd is not None and not interaction.simulated
-        ]
-        if costs:
-            return sum(costs) / len(costs), record.run
-    return None
-
-
 def make_plan(
     examined: Examined,
     vocabulary: Vocabulary,
@@ -366,19 +347,11 @@ def make_plan(
 ) -> Plan:
     """What a run would do, where the experiment stands against its registration, the
     ``unstartable`` subjects the host found, and, from the ``earlier`` runs of the
-    experiment (latest first), how small an effect it can detect and what it should
-    cost."""
+    experiment (latest first), how small an effect it can detect."""
     made, current = standing(examined, vocabulary, now="", version="")
     checked = valid(examined, "planned")
     blocks = checked.design.repeats * len(checked.probes.probes)
-    earlier = list(earlier)
     sensed = sensitivity(checked.design, blocks, earlier_spread(checked.design, earlier))
-    spend = estimate_spend(
-        checked.experiment.spend,
-        made.trials.total,
-        spend_cap=vocabulary.spend_cap,
-        observed=earlier_cost(earlier),
-    )
     if stored is None:
         status = RegistrationStatus(status="none", location=location)
     else:
@@ -391,7 +364,6 @@ def make_plan(
             "registration": status,
             "unstartable": unstartable,
             "sensitivity": sensed,
-            "spend": spend,
             "warnings": examined.warnings,
         }
     )

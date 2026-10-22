@@ -127,7 +127,7 @@ def run(
     ``dry_run`` runs the experiment as written with every subject on a stand-in (an agent
     session on matrix's ``mock`` runtime, replying with each probe's ``mock_response``) and
     the options only the real runtime takes set aside, each noted in ``Report.stood_in``. It
-    is exploratory, spends nothing, and checks the harness, never the subject: its report
+    is exploratory, calls no model, and checks the harness, never the subject: its report
     gives no verdict and no indication. A subject with no stand-in (a ``process``) is
     refused with :class:`ConfigError`.
 

@@ -1,5 +1,5 @@
-"""What a report says beside its verdict: confusion tables, flags, the probe screen and
-spend. Each is a pure function of the design and a run's tables, so a report computed again
+"""What a report says beside its verdict: confusion tables, flags and the probe screen.
+Each is a pure function of the design and a run's tables, so a report computed again
 from the record says the same.
 
 * **Confusion.** A sensor whose kind declares a :class:`~ix.domain.kind.Confusion` names, in
@@ -15,8 +15,6 @@ from the record says the same.
   of one subject on it spread by more than 0.35 of that range, and ``failed`` when no trial
   of it gave a reading. A metric with no
   range (a latency) is screened only for ``failed``.
-* **Spend.** What the trials and the sensors reported spending, against the ceiling the run
-  was held to.
 """
 
 from __future__ import annotations
@@ -34,7 +32,7 @@ if TYPE_CHECKING:
 
     from ix.domain.design import Design
     from ix.domain.kind import Metric
-    from ix.domain.run import Interaction, Reading, RunManifest, Trial
+    from ix.domain.run import Reading, Trial
 
 #: The spread of one subject's readings on one probe, as a share of the metric's range,
 #: above which the probe is ``noisy``.
@@ -225,35 +223,3 @@ def screen(
             )
         )
     return tuple(found)
-
-
-class Spent(Record):
-    """What a run reported spending, and the ceiling it was held to."""
-
-    trials: float = 0.0
-    #: What the sensors spent reading the trials (a model judging).
-    sensing: float = 0.0
-    total: float = 0.0
-    ceiling: float | None = None
-    #: ``experiment`` or ``settings``; empty with no ceiling.
-    ceiling_source: str = ""
-    #: Trials whose cost was reported, of those carried out.
-    reported: int = 0
-    carried_out: int = 0
-
-
-def spent(
-    manifest: RunManifest, interactions: Sequence[Interaction], readings: Sequence[Reading]
-) -> Spent:
-    trial_costs = [i.cost_usd for i in interactions if i.cost_usd is not None]
-    sensing = math.fsum(r.cost_usd for r in readings if r.cost_usd is not None)
-    trials = math.fsum(trial_costs)
-    return Spent(
-        trials=round(trials, 6),
-        sensing=round(sensing, 6),
-        total=round(trials + sensing, 6),
-        ceiling=manifest.spend_ceiling,
-        ceiling_source=manifest.spend_ceiling_source,
-        reported=len(trial_costs),
-        carried_out=len(interactions),
-    )

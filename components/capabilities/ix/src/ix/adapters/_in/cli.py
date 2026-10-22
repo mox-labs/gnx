@@ -189,7 +189,7 @@ def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     \b
     ix --skill                  the skill an agent reads; ix --skill -r NAME a reference
     ix validate lab/proxy       every problem at once, nothing run
-    ix plan lab/proxy           the decision, the trials, the effects, the spend
+    ix plan lab/proxy           the decision, the trials, the effects
     ix register lab/proxy       freeze the design before a run
     ix deviations lab/proxy     what changed since registration
     ix run lab/proxy            carry it out; the exit code is the verdict
@@ -323,16 +323,6 @@ def _print_plan_cost(plan: ix.Plan) -> None:
         for (name, detail), sources in by_effect.items()
     ]
     _field("Effects", *(lines or ["none"]))
-    spend = plan.spend
-    source = f" from {spend.ceiling_source}" if spend.ceiling_source else ""
-    if spend.estimated is None:
-        ceiling = (
-            "" if spend.ceiling is None else f"; ceiling {spend.ceiling:g} {spend.currency}{source}"
-        )
-        _field("Spend", f"not estimated ({spend.basis}){ceiling}")
-    else:
-        ceiling = "" if spend.ceiling is None else f", ceiling {spend.ceiling:g}{source}"
-        _field("Spend", f"about {spend.estimated:g} {spend.currency}{ceiling}  ({spend.basis})")
     _field("Registration", plan.registration.text())
     _field("Sensitivity", plan.sensitivity.text)
     blockers = [
@@ -384,7 +374,7 @@ def plan(path: str, as_json: bool) -> None:
 
     States the question, the hypothesis rendered from the genre, the guardrails and the form
     of the verdict; then the subjects with their roles, the trials with their arithmetic, the
-    estimated duration, the effects, the spend and where the experiment stands against its
+    estimated duration, the effects and where the experiment stands against its
     registration. The plan's digest changes when a value a run would use changes.
 
     PATH is the experiment file, a directory that holds experiment.yaml, or - for standard
@@ -585,17 +575,6 @@ def _print_outcome(report: ix.Report) -> None:
         )
     if report.stood_in:
         _field("Stood in", *report.stood_in)
-    if report.halt is not None:
-        _field("Stopped", f"{report.halt.reason}: {report.halt.message}")
-    spend = report.spend
-    if spend.total or spend.ceiling is not None:
-        ceiling = "" if spend.ceiling is None else f" of a ceiling of {spend.ceiling:g}"
-        source = f" ({spend.ceiling_source})" if spend.ceiling_source else ""
-        _field(
-            "Spent",
-            f"{spend.total:.4g}{ceiling}{source}: trials {spend.trials:.4g}, sensors "
-            f"{spend.sensing:.4g}; {spend.reported} of {spend.carried_out} trials reported a cost",
-        )
     for error in report.errors:
         _field("Failed", error)
     if report.registered_at:
@@ -864,8 +843,8 @@ The experiment must be registered first (`ix register`), or the run refused (exi
 run of an experiment that changed since its registration, until the registration is amended
 with a reason. `--dry-run` runs the experiment as written with every subject on a
 stand-in (an agent session on the mock runtime, replying with each probe's mock_response),
-setting aside the options only the real runtime takes: it checks the harness, spends
-nothing and gives no verdict. `--repeats N` pilots either with N repeats in place of the
+setting aside the options only the real runtime takes: it checks the harness, calls no
+model and gives no verdict. `--repeats N` pilots either with N repeats in place of the
 file's (never below the genre's minimum); a run that gives a verdict refuses it (exit
 {_CODE["usage"]}). PATH may be - for an experiment on standard input, which
 runs only with `--exploratory` or `--dry-run` and keeps its runs under the current
@@ -898,7 +877,7 @@ finish; and {_CODE["running"]} for a run that is still running."""
     "--dry-run",
     is_flag=True,
     help="Run the experiment as written on stand-ins (agent sessions on mock, each probe's "
-    "mock_response the reply): checks the harness, spends nothing, never a verdict",
+    "mock_response the reply): checks the harness, calls no model, never a verdict",
 )
 @click.option(
     "--repeats",
@@ -967,7 +946,7 @@ def runs(path: str | None, as_json: bool) -> None:
             outcome = "the harness, not the agent" if item.mode == "dry" else "no verdict"
         out.print(
             f"  {escape(item.run)}  {escape(item.started_at)}  {item.mode}  {item.status}  "
-            f"{outcome}  {item.carried_out}/{item.planned} trials  spent {item.spent:.4g}",
+            f"{outcome}  {item.carried_out}/{item.planned} trials",
             soft_wrap=True,
             highlight=False,
         )

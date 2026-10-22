@@ -2,7 +2,7 @@
 
 This page takes one agent evaluation from the question to the verdict: does one round of
 self-review make an agent's code pass its tests more often? On the way it covers the
-subject, probes kept as files, the metric that decides, a dry run that spends nothing, a
+subject, probes kept as files, the metric that decides, a dry run that calls no model, a
 pilot, and reading the report. The last sections cover the other ways to grade an agent:
 whether a skill fires (a skill of your own included), whether it used a tool, a check of
 the reply's text, your own graders, and a judge.
@@ -15,7 +15,7 @@ uv tool install "ix[claude] @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subd
 
 The `claude` extra brings the `claude-sdk` runtime, which runs each session through the
 Claude Agent SDK. It needs the Claude Code CLI and its credentials on this machine. The
-`mock` runtime needs neither: it gives canned replies and spends nothing, and the dry run
+`mock` runtime needs neither: it gives canned replies and calls no model, and the dry run
 below puts every session on it.
 
 ## 1. The question and the genre
@@ -57,7 +57,6 @@ subjects:
 primary: {metric: tests_passed}
 comparison: superiority
 metrics: [tests_score, rounds, cost]
-spend: {ceiling: 3.00, per_trial: 0.03}
 ```
 
 ## 2. The subjects
@@ -66,10 +65,11 @@ An `agent-session` subject is a fresh session for every trial, in a new temporar
 directory outside the experiment, removed when the trial ends. Its options:
 
 - `runtime` (required): the matrix runtime that plays the agent. `claude-sdk` is a Claude
-  Agent SDK session, with tools, turns, plugins and skills, and spends. `model` is one model
-  call through hardline, with no tools, and spends. `mock` gives canned replies and spends
-  nothing. There is no default, so a session never spends because a line was left out:
-  without one, `ix validate` reports `option_missing` and lists the three.
+  Agent SDK session, with tools, turns, plugins and skills, and calls a model provider.
+  `model` is one model call through hardline, with no tools, and calls a model provider.
+  `mock` gives canned replies and calls no model. There is no default, so a session never
+  calls a paid model because a line was left out: without one, `ix validate` reports
+  `option_missing` and lists the three.
 - `definition`: a Claude Code agent file. Its body is the system prompt, and its tools,
   model and `maxTurns` apply unless the options beside it say otherwise.
 - `model`, `system_prompt`, `tools` (`[]` is none at all), `max_turns`.
@@ -176,18 +176,14 @@ Verdict:      holds / fails / inconclusive
 ...
 Trials:       2 subjects x 1 cell x 2 probes x 10 repeats = 40, + 20 A/A = 60
 ...
-Effects:      spend: spends money  (subjects.single, subjects.reviewed)
-              tools: lets a model call tools  (subjects.single, subjects.reviewed)
+Effects:      tools: lets a model call tools  (subjects.single, subjects.reviewed)
               process: starts a process on this machine  (subjects.single, subjects.reviewed)
               filesystem: writes files outside the run's own record  (subjects.single, subjects.reviewed)
               code: executes generated code  (sensor function-test)
-Spend:        about 1.8 USD, ceiling 3 from experiment  (60 trials x 0.03 declared per trial)
 ```
 
 The control also runs against itself in every block (the A/A check), so the trials are 60,
-not 40. `Spend` is the declared `per_trial` times the trials, a guess, until a run has
-measured what a trial costs; from then on it is that run's mean cost per trial, and the
-basis says which it used. A plan that cannot run here ends with `Runnable: no` and says
+not 40: 60 sessions, each a call to a paid model on `claude-sdk`. A plan that cannot run here ends with `Runnable: no` and says
 why: a runtime that cannot start, a file the subject names that is not there.
 
 `ix validate` also refuses a session its sensors could not see into (`unobservable`): a
@@ -197,7 +193,7 @@ verdict about a harness that could not observe the agent.
 
 ## 6. A dry run
 
-Before spending, check that the grading grades. Give each probe a `mock_response` whose
+Before calling a paid model, check that the grading grades. Give each probe a `mock_response` whose
 grade you know. For `bad-input`, a reply that parses but never refuses:
 
 ```markdown
@@ -255,8 +251,7 @@ One too small for even every trial passing to show a pass rate's threshold says 
 `Best case`: that is its size, not the agent. Read the screen at the end of the report. A probe that every trial passed (`ceiling`) or
 every trial failed (`floor`), or one whose readings spread over more than 0.35 of the range
 for one subject (`noisy`), cannot tell one subject from another: fix it or drop it before
-the real run. `ix plan` now estimates the spend from what a trial cost, and states the
-smallest difference a run of this size can show (`Sensitivity:`); a difference smaller than
+the real run. `ix plan` now states the smallest difference a run of this size can show (`Sensitivity:`); a difference smaller than
 that will rarely be shown.
 
 ## 8. Register and run
@@ -274,17 +269,14 @@ is. `--repeats` is refused here: a verdict rests on the registered design. Addin
 chance of a false `holds`; if you decide to extend the experiment, amend the registration
 with a reason that names the earlier result (`ix register <path> --amend --reason "<why>"`).
 
-A run stops starting trials once the next could take it past `spend.ceiling` (the dearest
-trial so far, or `per_trial` if that is more). It then exits 12, with a report that says why
-(`Stopped: spend_ceiling`) and gives no verdict. Ctrl-C stops the trial in flight and exits
-12 too. Either way the record is kept, and `ix report` reads it.
+Ctrl-C stops the trial in flight and exits 12, with a report that gives no verdict. The
+record is kept, and `ix report` reads it.
 
 ## Reading the report
 
 The report states the question, the decision and the verdict first, then each finding: the
 difference, its 95% interval, the method, and the level it was decided at. Beside them:
 
-- `Spent`: what the trials and the sensors cost, against the ceiling.
 - Estimates per subject, and the A/A check (`Calibration`).
 - `Failures`, by whose: the subject's (a session that broke or was refused counts against
   it), the harness's (a runtime that was unavailable or rate-limited is missing data), or a
@@ -330,7 +322,6 @@ subjects:
 primary: {metric: activated_correctly}
 threshold: {op: ">=", value: 0.8}
 repeats: 20
-spend: {ceiling: 3.00, per_trial: 0.05}
 ```
 
 `max_turns: 1` stops each session after the turn in which a skill would be called.
@@ -376,7 +367,6 @@ subjects:
 primary: {metric: activated_correctly}
 threshold: {op: ">=", value: 0.8}
 repeats: 20
-spend: {ceiling: 3.00, per_trial: 0.05}
 ```
 
 `SKILL.md` needs both frontmatter keys: `name` (lowercase letters, digits and hyphens, the
@@ -445,8 +435,9 @@ Report it under `metrics:` beside a metric that decides. With `repeats: 3` the j
 each reply three times, and `judge_agreement` is how often it agreed with itself. The report
 flags a trial whose readings split on pass or fail (`judge_inconsistent`) and a judge of the
 subject's own model family (`judge_in_family`). The judge runs on the runtime its `runtime`
-names, which is required: `model` (one call through hardline) and `claude-sdk` spend, `mock`
-does not. Its cost counts against the run's ceiling.
+names, which is required: `model` (one call through hardline) and `claude-sdk` call a model
+provider, `mock` does not. What its runtime reported it cost is kept in the reading's
+detail, beside the judge's runtime and model.
 
 ```yaml
 sensors:

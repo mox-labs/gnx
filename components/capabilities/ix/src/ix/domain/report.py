@@ -42,17 +42,9 @@ from ix.domain.genre import VerdictForm
 from ix.domain.plan import best_case
 from ix.domain.problem import Problem
 from ix.domain.registration import Deviation
-from ix.domain.run import Halt, RunStatus, cell_key
+from ix.domain.run import RunStatus, cell_key
 from ix.domain.schema import Record
-from ix.domain.summaries import (
-    ConfusionTable,
-    ProbeScreen,
-    Spent,
-    confusion,
-    flags,
-    screen,
-    spent,
-)
+from ix.domain.summaries import ConfusionTable, ProbeScreen, confusion, flags, screen
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -140,9 +132,6 @@ class Report(Record):
     #: ``all`` when a stand-in (a mock runtime) answered every trial, ``some`` when it
     #: answered some: such a run measured the harness and gives no verdict; ``none`` else.
     simulated: Literal["none", "some", "all"] = "none"
-    #: Why the run stopped starting trials before its schedule was done, when it did.
-    halt: Halt | None = None
-    spend: Spent = Spent()
     #: The sentences of the flagged metrics any trial raised.
     flags: tuple[str, ...] = ()
     confusion: tuple[ConfusionTable, ...] = ()
@@ -244,10 +233,6 @@ def report(
         why = "the run failed"
     elif record.status == "running":
         why = f"the run has not finished: {counts.text()} so far"
-    elif record.halt is not None:
-        why = f"the run stopped before its schedule was done ({counts.text()}): " + (
-            record.halt.message
-        )
     elif record.status != "completed":
         why = f"the run was {record.status}: {counts.text()}"
     elif stood_in:
@@ -294,8 +279,6 @@ def report(
         readings=source,
         analysis=analysis,
         simulated=simulated,
-        halt=record.halt,
-        spend=spent(manifest, record.interactions, used),
         flags=flags(design, used),
         confusion=confusion(design, used),
         screen=() if stood_in else screen(design, record.trials, used),
@@ -415,8 +398,6 @@ class RunSummary(Record):
     #: for a run whose report could not be computed here.
     verdict: Outcome | None = None
     indication: Outcome | None = None
-    #: What the run reported spending, its trials and its sensors together.
-    spent: float = 0.0
 
 
 def summary(report: Report) -> RunSummary:
@@ -439,7 +420,6 @@ def summary(report: Report) -> RunSummary:
         mode=mode,
         verdict=report.verdict,
         indication=report.indication,
-        spent=report.spend.total,
     )
 
 

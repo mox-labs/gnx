@@ -32,7 +32,6 @@ from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment
 from ix.domain.genre import CONTROL
 from ix.domain.intervals import MEDIAN_MIN
 from ix.domain.kind import NOTE_PREFIX, placeholders
-from ix.domain.plan import count_trials, effects, estimate_spend
 from ix.domain.problem import Problem, Validation, from_validation_error, problem
 
 if TYPE_CHECKING:
@@ -50,7 +49,6 @@ _MUST_SET_FIX = {
     "guardrails": "guardrails: [{metric: <name>, margin: 5%}]",
     "repeats": "repeats: 5",
     "seed": "seed: 1",
-    "spend": "spend: {ceiling: 5.00}",
 }
 
 
@@ -583,48 +581,6 @@ def _misplaced_option(path: str, key: str, value: Any, *, inline: bool) -> Probl
     )
 
 
-def _spend(
-    experiment: Experiment,
-    design: Design,
-    kinds: Kinds,
-    probes: ProbeSet,
-    spend_cap: float | None,
-) -> list[Problem]:
-    trials = count_trials(experiment, design, len(probes.probes))
-    estimate = estimate_spend(experiment.spend, trials.total, spend_cap=spend_cap)
-    problems: list[Problem] = []
-    spenders = sorted(
-        {e.source for e in effects(experiment, design, kinds, probes) if e.effect == "spend"}
-    )
-    if spenders and estimate.ceiling is None:
-        problems.append(
-            problem(
-                "spend.ceiling",
-                kind="spend_unbounded",
-                message=f"a run would spend money ({', '.join(spenders)}) and neither the "
-                "experiment nor ix's settings (spend_cap) set a ceiling",
-                fix="spend: {ceiling: <the most this run may cost>, per_trial: <your estimate>}",
-            )
-        )
-    if (
-        estimate.estimated is not None
-        and estimate.ceiling is not None
-        and estimate.estimated > estimate.ceiling
-    ):
-        problems.append(
-            problem(
-                "spend.ceiling",
-                kind="spend_over_ceiling",
-                message=f"the run is estimated at {estimate.estimated:g} {estimate.currency} "
-                f"({estimate.basis}), over the ceiling of {estimate.ceiling:g}",
-                fix="lower repeats, probes or cells, or raise spend.ceiling to at least "
-                f"{estimate.estimated:g}",
-                got=estimate.ceiling,
-            )
-        )
-    return problems
-
-
 def _parity(experiment: Experiment, control: str | None) -> list[Problem]:
     """Warn when a variant differs from the control in more than one option: the effects of
     the differences cannot be told apart."""
@@ -737,13 +693,11 @@ def check(
     probes: ProbeSet | None,
     *,
     adapters: frozenset[str] | None = None,
-    spend_cap: float | None = None,
 ) -> Checked:
     """Every problem with a loaded experiment. ``probes`` is None when they could not be
     read (the caller reports why). ``adapters`` is the kinds (type URLs) a run could carry
     out here; a kind in use that is not among them is a warning, since the experiment is
-    still a valid declaration. ``spend_cap`` is the ceiling ix's settings give a run that
-    spends when the experiment sets none."""
+    still a valid declaration."""
     genre, problems = _genre(experiment, genres)
     control: str | None = None
     roles_fit = False
@@ -767,9 +721,6 @@ def check(
         if genre is not None and roles_fit
         else None
     )
-    if design is not None and probes is not None:
-        problems += _spend(experiment, design, kinds, probes, spend_cap)
-
     warnings = _parity(experiment, control if genre and genre.role(CONTROL) else None)
     # Said of a valid experiment only: an invalid one cannot run for reasons already given.
     if not problems and design is not None and probes is not None and adapters is not None:

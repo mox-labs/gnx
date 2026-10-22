@@ -30,14 +30,13 @@ from ix.domain.schema import DeclarationFile, Record
 
 KIND_FAMILIES: tuple[str, ...] = ("subject", "probe", "sensor", "environment")
 
-EffectName = Literal["process", "network", "spend", "tools", "code", "containers", "filesystem"]
+EffectName = Literal["process", "network", "tools", "code", "containers", "filesystem"]
 
-#: What using a kind can do to the world. A closed set, so a plan can be read at a glance
-#: and a rule can act on one (a kind that spends needs a ceiling).
+#: What using a kind can do to the world. A closed set, so that a plan can be read at a
+#: glance: each effect it lists is one of these, said in the same words.
 EFFECTS: dict[EffectName, str] = {
     "process": "starts a process on this machine",
     "network": "sends requests over the network",
-    "spend": "spends money",
     "tools": "lets a model call tools",
     "code": "executes generated code",
     "containers": "starts containers",
