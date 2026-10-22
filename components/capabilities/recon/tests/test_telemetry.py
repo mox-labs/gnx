@@ -87,6 +87,18 @@ def test_an_exception_fails_its_span_and_goes_on(raised: BaseException, error_ty
     assert end.status == "error" and end.attributes["error.type"] == error_type
 
 
+def test_an_exception_s_span_message_is_its_class_and_quotes_nothing_of_it() -> None:
+    """An exception no caller described (a plugin's own, a defect) fails its span with its
+    class name alone: its text may hold a command or a URL's credentials, and the span's
+    message goes to the OTLP endpoint and the event log."""
+    sink = Recorded()
+    telemetry = Telemetry([sink], FixedClock())
+    with pytest.raises(RuntimeError), telemetry.span("recon.collect"):
+        raise RuntimeError("curl https://user:hunter2@api.example.test/x failed")
+    [end] = sink.ends("recon.collect")
+    assert end.message == "RuntimeError"
+
+
 def test_a_sink_that_raises_is_dropped_and_named_and_the_work_goes_on() -> None:
     class Broken:
         def on_event(self, event: Any) -> None:
