@@ -135,6 +135,14 @@ class TestTheSkillIsASkill:
             assert lines and all(source in line for line in lines), (name, lines)
             assert "pip install" not in text, name
 
+    def test_ix_speaks_http_through_the_stacks_one_client(self) -> None:
+        """Regression: ix was the one package on httpx, where the stack is httpx2 (owner
+        ruling, 2026-10-22), so every install carried two HTTP clients."""
+        from importlib.metadata import requires
+
+        names = {re.split(r"[ <>=!~;\[]", line, maxsplit=1)[0] for line in requires("ix") or ()}
+        assert "httpx2" in names and "httpx" not in names
+
     def test_there_are_no_extras_to_name(self) -> None:
         """Q13: ix and matrix bring every runtime and the OpenTelemetry SDK, so the package
         declares no extra and the skill names none to install."""

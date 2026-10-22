@@ -116,6 +116,9 @@ reasons, from §16 on.
     raised. `ix validate` warns of it (`kind_unimplemented`, with the reason), `ix plan`
     says `Runnable: no` with it, and `ix run` refuses it naming it. Every other kind, and
     every experiment that does not use it, is unaffected.
+- **httpx2 in place of httpx.** A subject's and a service's readiness checks go through
+  httpx2, the stack's one HTTP client, and ix no longer depends on httpx, so an install
+  carries one HTTP stack.
 - **A count's estimator is `rate`.** A `count` metric took the genre's estimator, so the
   plan, the registration and each decision said `mean` while the analysis pooled it as a
   rate. Like a boolean, it now resolves to `rate` (`source: ix`), from the one default the
