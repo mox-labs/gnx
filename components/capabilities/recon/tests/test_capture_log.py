@@ -253,6 +253,20 @@ def test_hook_payload_becomes_an_external_capture(tmp_path: Path) -> None:
     assert json.loads(body) == {"results": [{"title": "Mamba", "url": "https://x"}]}
 
 
+def test_a_hooks_tool_input_is_kept_as_given_and_security_md_says_so(tmp_path: Path) -> None:
+    """A tool's input is what the agent asked, so the capture keeps it whole: recon cannot
+    tell a credential an MCP tool takes as an argument from any other argument, and does
+    not redact by guessing at names. That is a stated boundary, not an accident (W10.8):
+    the capture docstring said a credential never reaches the log, which held only for
+    what recon fetches itself."""
+    log = FilesystemCaptureLog(tmp_path, SystemClock())
+    tool_input = {"query": "q", "api_key": "sk-passed-as-an-argument"}
+    line = record_hook_payload(log, _payload(tool_input=tool_input)).document()
+    assert line["request"]["tool_input"] == tool_input
+    security = (Path(__file__).parents[1] / "SECURITY.md").read_text()
+    assert "`tool_input` is stored as the hook gives it" in " ".join(security.split())
+
+
 def test_hook_payload_prefers_the_mcp_server_object(tmp_path: Path) -> None:
     payload = _payload(mcp_server={"name": "plugin_research_exa", "source": "plugin"})
     line = record_hook_payload(FilesystemCaptureLog(tmp_path, SystemClock()), payload)

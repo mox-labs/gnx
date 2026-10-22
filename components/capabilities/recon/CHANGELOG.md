@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- **The hook route's `tool_input` is documented as kept whole.** The capture log's docs said a credential never reaches it, which held only for what recon fetches itself: a `PostToolUse` payload's `tool_input` is stored as given, so a key an MCP tool takes as an argument is in the log. SECURITY.md (boundary 5) and the capture format now say so; recon does not guess at which arguments are keys.
+
 - **A `web` collector's YouTube page fetches nothing more.** markitdown asked YouTube for the video's transcript itself, outside the requester (its rate limit, `max_bytes`, spans and capture log), and printed its failures on stdout, where `--json` writes the document. The page now converts from the bytes the requester fetched, as HTML; the transcript is not collected (SECURITY R-12).
 
 - **`$markitdown` reads a relative path where the command that printed it ran.** A path a `cli` command printed (`rg --files`, `find .`) is relative to its `local` source's directory, but was resolved against recon's working directory, so it named another file or none and was refused. A transform may take a keyword-only `base`, which a `cli` collector binds to the directory its command ran in.

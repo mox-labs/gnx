@@ -107,7 +107,12 @@ check stops the table with an error naming the file and line.
 payload's `tool_response` is stored verbatim and its other fields (`tool_input`,
 `session_id`, `cwd`, ...) become the capture's `request`. A captured MCP result can contain
 anything the tool saw, including private data, so `.recon/<mission>/captures/` deserves the
-same care as the conversation transcript. `recon capture` writes only under an existing
+same care as the conversation transcript. `tool_input` is stored as the hook gives it,
+credentials included: an MCP tool that takes a key as an argument has that key written to
+the log. recon cannot tell such an argument from any other, and redacting by guessing at
+names would both miss keys and destroy evidence, so nothing in `tool_input` is redacted. The
+redaction of credential headers and the source's `auth.param` covers what recon fetches
+itself, not what a hook hands it. `recon capture` writes only under an existing
 mission's directory; it refuses (exit 4) when the mission does not exist, rather than
 creating one from a name it was handed.
 

@@ -7,8 +7,10 @@ content-addressed beside it under ``raw/<sha256>``. The line format is an interc
 format other tools write to; it is specified by `recon --skill -r capture-format`.
 
 A capture proves what a server said, and an archive is something people commit and pass
-on, so a credential never reaches the log: the value of a credential-bearing response
-header, and of a query parameter that carries the mission's key, is replaced.
+on, so a credential recon itself sends or receives never reaches the log: the value of a
+credential-bearing response header, and of a query parameter that carries the mission's key,
+is replaced. What another process hands recon (a hook's ``tool_input``) is kept as given,
+credentials included: recon cannot tell one from any other argument (SECURITY.md, boundary 5).
 """
 
 from __future__ import annotations
