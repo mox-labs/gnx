@@ -9,6 +9,7 @@ the author; a kind is a data file a third party can ship.
 from __future__ import annotations
 
 from importlib import metadata
+from itertools import permutations
 from typing import TYPE_CHECKING, Any, get_args
 
 import pytest
@@ -689,3 +690,23 @@ class TestKindExtensionPoint:
         found = kinds(files, grammar=type_url_problem)
         assert found.get("sensor", "twin") is None and found.get("sensor", "timing") is not None
         assert [p.kind for p in found.rejected["lab.v1.sensor.twin"]] == ["name_taken"] * 2
+
+    @pytest.mark.parametrize("order", list(permutations(range(3))))
+    def test_the_owner_keeps_its_name_whatever_order_the_files_arrive_in(
+        self, order: tuple[int, ...]
+    ) -> None:
+        """Regression (ix-domain 14): two impostors read before the owner had the owner
+        refused as a duplicate. Who keeps a name does not depend on the order files are read."""
+        owner = {**_sensor("x"), "name": "acme.v1.sensor.twin", "summary": "The owner's."}
+        impostor = {**_sensor("x"), "name": "acme.v1.sensor.twin", "summary": "Not acme's."}
+        files = [
+            DeclarationFile(origin="owner.yaml", data=owner, owned=True),
+            DeclarationFile(origin="one.yaml", data=impostor),
+            DeclarationFile(origin="two.yaml", data=impostor),
+        ]
+        found = kinds([files[i] for i in order], grammar=type_url_problem)
+        twin = found.kinds.get("acme.v1.sensor.twin")
+        assert twin is not None and twin.summary == "The owner's."
+        refused = found.rejected["acme.v1.sensor.twin"]
+        assert sorted(str(p.source) for p in refused) == ["one.yaml", "two.yaml"]
+        assert {p.kind for p in refused} == {"name_taken"}

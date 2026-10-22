@@ -22,7 +22,7 @@ from typing import Any, Literal
 from pydantic import Field, ValidationError, model_validator
 
 from ix.domain import schema
-from ix.domain.kind import claim, unreadable
+from ix.domain.kind import settle, unreadable
 from ix.domain.problem import Problem, from_validation_error, problem
 from ix.domain.schema import DeclarationFile, Record
 
@@ -496,8 +496,7 @@ type _Raw = dict[str, tuple[DeclarationFile, dict[str, Any]]]
 
 def _named(files: Iterable[DeclarationFile], rejected: _Rejected) -> _Raw:
     """Each readable genre file by the name it declares; the rest go to ``rejected``."""
-    raw: _Raw = {}
-    duplicated: set[str] = set()
+    declared: dict[str, list[tuple[DeclarationFile, dict[str, Any]]]] = {}
     for file in files:
         if file.data is None:
             rejected.setdefault(file.origin, []).extend(file.problems or unreadable(file.origin))
@@ -513,8 +512,8 @@ def _named(files: Iterable[DeclarationFile], rejected: _Rejected) -> _Raw:
                 )
             )
             continue
-        claim(name, file, dict(file.data), raw, duplicated, rejected, noun="genre")
-    return raw
+        declared.setdefault(name, []).append((file, dict(file.data)))
+    return settle(declared, rejected, noun="genre")
 
 
 def _child(

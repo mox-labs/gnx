@@ -405,14 +405,14 @@ def kinds(files: Iterable[DeclarationFile], *, grammar: schema.Grammar) -> Kinds
     declare one name, a file that does not own it is refused alone if the other does, and
     both are refused otherwise."""
     rejected: dict[str, list[Problem]] = {}
-    accepted: dict[str, tuple[DeclarationFile, Kind]] = {}
-    duplicated: set[str] = set()
+    declared: dict[str, list[tuple[DeclarationFile, Kind]]] = {}
 
     for file in files:
         kind = _parsed(file, grammar, rejected)
         if kind is not None:
-            claim(kind.name, file, kind, accepted, duplicated, rejected, noun="kind")
+            declared.setdefault(kind.name, []).append((file, kind))
 
+    accepted = settle(declared, rejected, noun="kind")
     return Kinds(
         kinds={name: kind for name, (_, kind) in sorted(accepted.items())},
         rejected={name: tuple(found) for name, found in sorted(rejected.items())},
@@ -469,40 +469,37 @@ def unreadable(origin: str) -> tuple[Problem, ...]:
     )
 
 
-def claim[T](
-    name: str,
-    file: DeclarationFile,
-    declared: T,
-    accepted: dict[str, tuple[DeclarationFile, T]],
-    duplicated: set[str],
+def settle[T](
+    declared: Mapping[str, list[tuple[DeclarationFile, T]]],
     rejected: dict[str, list[Problem]],
     *,
     noun: str,
-) -> None:
-    """Accept ``declared`` under ``name`` unless another file holds the name. Of a file that
-    owns the name's namespace and one that does not, the one that does not is refused; two
-    files alike are both refused, and so is any later file that declares the name, so that
-    neither silently wins."""
-    held = accepted.get(name)
-    if held is not None and held[0].owned != file.owned:
-        intruder = held[0] if file.owned else file
-        rejected.setdefault(name, []).append(
-            problem(
-                "name",
-                kind="name_taken",
-                message=f"{name} belongs to the package that owns its namespace; this file "
-                "cannot declare it again",
-                fix=f"give this {noun} a name in its own namespace",
-                source=intruder.origin,
-            )
-        )
-        if file.owned:
-            accepted[name] = (file, declared)
-        return
-    if held is not None or name in duplicated:
-        duplicated.add(name)
-        first = accepted.pop(name, None)
-        for origin in [file.origin] + ([first[0].origin] if first else []):
+) -> dict[str, tuple[DeclarationFile, T]]:
+    """Of the files that declare each name, the one that keeps it; the others are added to
+    ``rejected``. A file that owns the name's namespace keeps it, and every file that does
+    not is refused; two or more files alike are all refused, so that none silently wins.
+    Which file keeps a name does not depend on the order the files were read in."""
+    accepted: dict[str, tuple[DeclarationFile, T]] = {}
+    for name, held in declared.items():
+        owners = [entry for entry in held if entry[0].owned]
+        if owners:
+            for file, _ in held:
+                if not file.owned:
+                    rejected.setdefault(name, []).append(
+                        problem(
+                            "name",
+                            kind="name_taken",
+                            message=f"{name} belongs to the package that owns its namespace; "
+                            "this file cannot declare it again",
+                            fix=f"give this {noun} a name in its own namespace",
+                            source=file.origin,
+                        )
+                    )
+        contenders = owners or held
+        if len(contenders) == 1:
+            accepted[name] = contenders[0]
+            continue
+        for file, _ in contenders:
             rejected.setdefault(name, []).append(
                 problem(
                     "name",
@@ -510,8 +507,7 @@ def claim[T](
                     message=f"{name} is declared by more than one {noun} file",
                     fix="give one of them another name; ix refuses both so that neither "
                     "silently wins",
-                    source=origin,
+                    source=file.origin,
                 )
             )
-        return
-    accepted[name] = (file, declared)
+    return accepted
