@@ -76,7 +76,8 @@ MODEL_START = "matrix.model.start"  # runtime, model (as asked)
 MODEL_END = "matrix.model.end"  # runtime, status, name, model, family, provider, finish_reason,
 #   duration_ms; reason and error when it failed; status cancelled when cancelled. No usage:
 #   the session row holds it, and the model runtime's own telemetry counts it
-TOOL_START = "matrix.tool.start"  # tool, call_id?, agent; timed as the runtime saw the call
+TOOL_START = "matrix.tool.start"  # tool, call_id?, agent, arguments? (JSON, content); timed
+#   as the runtime saw the call
 TOOL_END = "matrix.tool.end"  # tool, call_id?, agent, status, duration_ms
 MEASURE = "matrix.measure"  # name, value, unit, kind, attrs
 EVENTS_DROPPED = "matrix.events.dropped"  # count

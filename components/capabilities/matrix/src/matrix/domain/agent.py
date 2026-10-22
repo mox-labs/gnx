@@ -16,6 +16,7 @@ it reached) and raises :class:`~matrix.domain.errors.AgentRuntimeError` with a c
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from datetime import datetime
@@ -333,6 +334,11 @@ class BoundAgent:
             "status": "error" if error else "ok",
             "duration_ms": int((ended - began).total_seconds() * 1000),
         }
+        # The start carries the call's arguments, as JSON: content, as an agent's task is,
+        # which an observer exports only when asked to.
+        begun = about
+        if call.get("input") is not None:
+            begun = {**about, "arguments": json.dumps(call["input"], default=str)}
         start, end = (
             Event(
                 event_name,
@@ -343,7 +349,7 @@ class BoundAgent:
                 component=component,
                 time=at,
             )
-            for event_name, at, fields in ((TOOL_START, began, about), (TOOL_END, ended, finished))
+            for event_name, at, fields in ((TOOL_START, began, begun), (TOOL_END, ended, finished))
         )
         # Inside the session's span, at the times the runtime saw the call start and end.
         with around(observing(self._observers), start) as ending:

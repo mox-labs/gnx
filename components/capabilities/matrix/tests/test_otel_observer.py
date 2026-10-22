@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from typing import Any
 
 import pytest
@@ -380,7 +381,10 @@ async def test_metrics_come_from_the_events() -> None:
 
 class _Session:
     """A runtime that reports what the Claude runtime reports: a provider, and tool calls it
-    saw start and end."""
+    saw start and end, the timed one with ``arguments``."""
+
+    def __init__(self, arguments: dict[str, Any] | None = None) -> None:
+        self.arguments = {"file_path": "notes.md"} if arguments is None else arguments
 
     def check(self, definition: Any) -> None:
         return None
@@ -398,7 +402,7 @@ class _Session:
                 {
                     "name": "Read",
                     "id": "toolu_1",
-                    "input": {},
+                    "input": self.arguments,
                     "started": "2026-10-19T10:00:00+00:00",
                     "ended": "2026-10-19T10:00:02+00:00",
                     "error": False,
@@ -459,6 +463,9 @@ async def test_an_agent_session_is_invoke_agent_and_its_tools_execute_tool() -> 
     assert tool.parent is not None and tool.parent.span_id == invoked.context.span_id
     assert tool.attributes["gen_ai.tool.name"] == "Read"
     assert tool.attributes["gen_ai.tool.call.id"] == "toolu_1"
+    assert tool.attributes["gen_ai.operation.name"] == "execute_tool"
+    # The arguments are content: not on the span without the opt-in.
+    assert "gen_ai.tool.call.arguments" not in tool.attributes
     assert (tool.end_time - tool.start_time) == 2_000_000_000  # timed as the runtime saw it
 
     points = _points(reader)
@@ -590,7 +597,8 @@ class _Leaky:
 async def _leaky_run(observer: OtelObserver) -> dict[str, Any]:
     from matrix import AgentDefinition, BoundAgent
 
-    agent = BoundAgent(AgentDefinition(name="rev"), _Session(), observers=[observer])
+    tools = _Session({"pattern": f"{_SECRET} pattern"})
+    agent = BoundAgent(AgentDefinition(name="rev"), tools, observers=[observer])
     refuses = BoundAgent(AgentDefinition(name="shy"), _Refuses(), observers=[observer])
     _EXPORTER.clear()
     await Executor([observer]).run(wire({"leaky": _Leaky(agent, refuses)}))
@@ -628,6 +636,11 @@ async def test_content_leaves_on_a_span_only_when_asked_for() -> None:
     assert refused.attributes["error.type"] == "refused"
     assert spans["acme.fetch"].attributes["acme.url"] == f"https://user:{_SECRET}@host/x"
     assert _SECRET in str(spans["matrix.release"].status.description)
+    # A tool call's arguments, as the conventions name them: a JSON object, as the runtime
+    # reported it (W4.11: what pydantic-evals' ArgumentCorrectness reads).
+    arguments = spans["execute_tool Read"].attributes["gen_ai.tool.call.arguments"]
+    assert json.loads(arguments) == {"pattern": f"{_SECRET} pattern"}
+    assert "matrix.arguments" not in spans["execute_tool Read"].attributes
 
 
 async def test_the_span_names_are_the_pinned_ones() -> None:

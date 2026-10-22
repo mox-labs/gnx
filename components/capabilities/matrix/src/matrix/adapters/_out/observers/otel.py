@@ -25,16 +25,18 @@ channel that closes before it drained, leaves no span open. An event a component
   ``gen_ai.response.model``, ``gen_ai.provider.name``, ``matrix.finish_reason`` and
   ``error.type``. It carries no usage: the inference spans and counters of each attempt are
   the model runtime's (hardline's ``chat`` spans), which nest under it;
-* a tool call the runtime timed is ``execute_tool {tool}``, with ``gen_ai.tool.name`` and
-  ``gen_ai.tool.call.id``;
+* a tool call the runtime timed is ``execute_tool {tool}``, with ``gen_ai.tool.name``,
+  ``gen_ai.tool.call.id`` and, with ``capture_content``, ``gen_ai.tool.call.arguments``
+  (the arguments as a JSON object, as the runtime reported them);
 * a deferred release is ``matrix.release``;
 * a component's own ``ctx.span`` is a span of that name.
 
 **No content by default.** Span attributes come from an allowlist: the conventions' names
 above, and matrix's own fields that carry no content (statuses, reasons and error kinds,
 counts, times, ids). Of a component's span fields only numbers and booleans are exported,
-with the ``ok``/``error`` status of its ``ctx.span``. An agent's task, any error message
-(an attribute, or a span's status description) and a component's text fields are content:
+with the ``ok``/``error`` status of its ``ctx.span``. An agent's task, a tool call's
+arguments, any error message (an attribute, or a span's status description) and a
+component's text fields are content:
 exported only when ``capture_content`` is set, as the conventions ask ("SHOULD NOT capture
 them by default, but SHOULD provide an option for users to opt in"). ``error.type`` is
 always set when something failed.
@@ -305,6 +307,9 @@ _GENAI = {
 }
 #: The events whose fields the conventions name.
 _CONVENTIONAL = frozenset({AGENT_START, AGENT_END, MODEL_START, MODEL_END, TOOL_START, TOOL_END})
+#: matrix's tool event fields under their conventions' names, which are content: exported
+#: only with ``capture_content`` (the conventions make them opt-in).
+_GENAI_CONTENT = {"arguments": "gen_ai.tool.call.arguments"}
 
 
 #: matrix's own fields that carry no content, exported as ``matrix.<key>``: statuses, reasons
@@ -363,6 +368,9 @@ def _attributes(event: Event, *, content: bool = False) -> dict[str, Any]:
             attributes["gen_ai.response.model"] = value
         elif key in _GENAI and event.name in _CONVENTIONAL:
             attributes[_GENAI[key]] = value
+        elif key in _GENAI_CONTENT and event.name in (TOOL_START, TOOL_END):
+            if content:
+                attributes[_GENAI_CONTENT[key]] = value
         elif content or _no_content(root, key, value):
             attributes[f"{root}.{key}"] = value
     return attributes

@@ -771,9 +771,11 @@ The GenAI semantic conventions as read on 2026-10-19 (repository
   `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` and
   `error.type`; `matrix.model` for a model step's call (no usage: the model runtime's own
   spans count each attempt); `execute_tool {tool}` for each tool call a runtime timed
-  (`claude-sdk` does); `matrix.release`; a component's own `ctx.span`. Each is current in the
-  task doing its work, so a span a library opens there (an HTTP client, hardline) nests under
-  it; each ends with its work, whatever events were dropped. `ctx.emit` opens no span;
+  (`claude-sdk` does), with `gen_ai.tool.name`, and its arguments as
+  `gen_ai.tool.call.arguments` only with `capture_content`; `matrix.release`; a component's
+  own `ctx.span`. Each is current in the task doing its work, so a span a library opens there
+  (an HTTP client, hardline) nests under it; each ends with its work, whatever events were
+  dropped. `ctx.emit` opens no span;
 - metrics: `gen_ai.invoke_workflow.duration`, `gen_ai.invoke_agent.duration`,
   `gen_ai.invoke_agent.tool_calls`, `gen_ai.execute_tool.duration`,
   `gen_ai.client.inference.usage.input_tokens` / `output_tokens` (agent sessions only: a
