@@ -21,6 +21,9 @@ RETRYABLE: frozenset[str] = frozenset({"rate_limit", "timeout", "unavailable"})
 class HardlineError(Exception):
     """Base class for every error hardline raises deliberately."""
 
+    #: The next step that can succeed, when this error knows one more exact than its kind's.
+    fix: str | None = None
+
 
 class ConfigError(HardlineError):
     """A model registry or backend configuration is invalid.
@@ -28,6 +31,10 @@ class ConfigError(HardlineError):
     The message always names the source (file or mapping) and the key path, so a typo in
     YAML is fixed by reading the error, not by reading this package.
     """
+
+    def __init__(self, message: str, *, fix: str | None = None) -> None:
+        super().__init__(message)
+        self.fix = fix
 
 
 class UnknownModelError(HardlineError, KeyError):

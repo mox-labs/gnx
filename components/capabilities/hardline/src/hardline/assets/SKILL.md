@@ -59,7 +59,7 @@ succeed, or `null` when there is none.
 | 0 | — | use the output |
 | 1 | `unknown` | report the message; do not retry blindly |
 | 2 | — | usage: fix the flags (`hardline <command> --help`) |
-| 3 | `config`, `bad_request` | change the input: the model name, the registry row (its options, `base_url`, `api_key`), the secret |
+| 3 | `config`, `bad_request` | change the input: the model name, the registry row (its options, `base_url`, `api_key`), the secret. A redirect lands here: `fix` names the `base_url` to set |
 | 4 | `not_found` | reserved; hardline raises none today |
 | 5 | `rate_limit`, `timeout`, `unavailable` | retry later, after `retry_after` seconds if set |
 | 6 | `auth` | stop and tell the operator the key was rejected |

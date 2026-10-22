@@ -94,6 +94,9 @@ class ModelSpec(BaseModel):
     model: str = Field(min_length=1)
     family: str = Field(pattern=_SLUG)
     base_url: str | None = None
+    #: An http:// or https:// proxy every request of this row goes through. Nothing in the
+    #: environment (``HTTPS_PROXY``) is read: a row with no ``proxy`` connects directly.
+    proxy: str | None = None
     api_key: str | None = None
     local: bool = False
     structured: StructuredMode = "prompt"

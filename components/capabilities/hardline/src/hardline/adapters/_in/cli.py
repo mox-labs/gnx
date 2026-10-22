@@ -120,6 +120,7 @@ def _classify(e: HardlineError) -> tuple[ErrorKind, int, str | None]:
 def error_payload(e: HardlineError) -> tuple[dict[str, Any], int]:
     """The ``{"error": {...}}`` object for ``e`` and the exit code that goes with it."""
     kind, code, fix = _classify(e)
+    fix = e.fix or fix
     backend = e if isinstance(e, BackendError) else None
     error = {
         "kind": kind,
