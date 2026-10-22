@@ -213,7 +213,8 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
     `matrix plan` and `matrix agents`) only finds each tool's module on the import path,
     without running it; a session imports a tool when it first offers it. A module that cannot
     be found is a config problem when the runtime is built, every one listed at once; a
-    function the module does not hold fails the session that offers it as `incapable`.
+    module whose import raises, whatever it raises, or a function the module does not hold,
+    fails the session that offers it as `incapable`.
 - **A model runtime may give pydantic-ai a `Model`: `pydantic_ai_model(model)`**, an optional
   member of the port. The `hardline` runtime gives one on a row it resolves, each request a
   hardline call with the runtime's `max_tokens` and `temperature` as defaults, and an

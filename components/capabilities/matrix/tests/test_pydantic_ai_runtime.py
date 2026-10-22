@@ -394,6 +394,40 @@ async def test_a_tool_that_is_not_in_the_module_it_names_fails_the_session_as_a_
     assert "tools.absent" in str(raised.value)
 
 
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [("raise RuntimeError('boom at import')\n", "RuntimeError"), ("def (\n", "SyntaxError")],
+)
+async def test_a_tool_whose_module_raises_on_import_fails_the_session_as_a_config_fault(
+    body: str, error: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: only an ImportError or AttributeError from importing a tool's module was
+    read as the module not importing; one that raised anything else (a RuntimeError, a
+    SyntaxError) failed the session as a component fault with no reason. Any error its
+    import raises fails the session as ``incapable``, naming the tool and the error."""
+    (tmp_path / "boom_at_import.py").write_text(body)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    runtime = PydanticAiRuntime(
+        _models("never asked"),
+        PydanticAiRuntimeConfig(default_model="q", tools={"boom": "boom_at_import:define"}),
+    )
+    with pytest.raises(AgentRuntimeError) as raised:
+        await runtime.run(_agent(), "define ossify")
+    assert (raised.value.reason, raised.value.kind) == ("incapable", "config")
+    assert "tools.boom" in str(raised.value) and error in str(raised.value)
+
+
+def test_a_tool_in_a_module_of_a_module_is_found_when_built() -> None:
+    """Regression: a module whose parent is loaded but is no package (``os.path``) was read
+    as not found, though it imports, so ``tools: {join: "os.path:join"}`` was refused."""
+    config = _tooled("os", define="os.path:join")
+    config["agent_runtimes"]["p"]["tools"] = {"join": "os.path:join"}
+    box = compose(MatrixConfig.model_validate(config), registry=default_registry(discover=False))
+    runtime = box.agent_runtime("p")
+    assert isinstance(runtime, PydanticAiRuntime)
+    assert runtime.resolved["tools"] == {"join": "os.path:join"}
+
+
 async def test_its_session_row_names_the_model_that_answered_its_usage_and_ids() -> None:
     box = compose(
         MatrixConfig.model_validate(
