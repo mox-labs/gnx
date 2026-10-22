@@ -284,7 +284,7 @@ def _cwd(source: SourceEntry | None) -> Path | None:
 def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[str | None, str]]:
     """(pattern, substituted command) for each invocation the entry makes. recon fills
     ``{url}`` and ``{pattern}``; any other ``{...}`` is the command's own (cargo's
-    ``--format '{p}'``, a jq object) and is passed as written."""
+    ``--format '{p}'``, a jq object, docker's ``'{{.Name}}'``) and is passed as written."""
     settings = _settings(entry)
     if not settings.run:
         return []
@@ -293,7 +293,7 @@ def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[s
     out = []
     for pattern in patterns:
         cmd_vars = {**variables, "pattern": pattern} if pattern is not None else variables
-        out.append((pattern, substitute(settings.run, cmd_vars)))
+        out.append((pattern, substitute(settings.run, cmd_vars, escapes=False)))
     return out
 
 

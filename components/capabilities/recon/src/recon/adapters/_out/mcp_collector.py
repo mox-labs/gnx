@@ -69,7 +69,7 @@ from recon.domain.substitution import find_unresolved, substitute
 from recon.domain.telemetry import MCP_CALL
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Iterable, Iterator
+    from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping
 
     from recon.domain.capture import CaptureLog
     from recon.domain.collector import CollectorContext
@@ -803,7 +803,7 @@ def _check(entry: CollectorEntry) -> list[Problem]:
                     )
                 )
     for key, value in (("arguments", settings.arguments), ("resource", settings.resource)):
-        if value and (unresolved := _placeholders(substitute(value, settings.vars))):
+        if value and (unresolved := _placeholders(value, settings.vars)):
             problems.append(
                 Problem(
                     key,
@@ -815,8 +815,8 @@ def _check(entry: CollectorEntry) -> list[Problem]:
     return problems
 
 
-def _placeholders(value: Any) -> str:
-    return ", ".join(f"{{{name}}}" for name in sorted(set(find_unresolved(value))))
+def _placeholders(value: Any, variables: Mapping[str, str]) -> str:
+    return ", ".join(f"{{{name}}}" for name in sorted(set(find_unresolved(value, variables))))
 
 
 def _check_source(source: SourceEntry) -> list[Problem]:

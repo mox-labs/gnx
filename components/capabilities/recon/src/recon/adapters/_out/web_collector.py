@@ -26,7 +26,7 @@ from recon.domain.collector import CollectorType
 from recon.domain.errors import Problem
 from recon.domain.http import reported_url
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
-from recon.domain.substitution import find_unresolved
+from recon.domain.substitution import find_unresolved, substitute
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -114,7 +114,8 @@ class WebCollector:
 def _url(entry: CollectorEntry, source: SourceEntry) -> str:
     url = source.url.rstrip("/")
     endpoint = _endpoint(entry)
-    return f"{url}{endpoint}" if endpoint else url
+    # A web collector fills no placeholder (the plan refuses one); an escaped brace is one.
+    return f"{url}{substitute(endpoint, {})}" if endpoint else url
 
 
 def _headers(source: SourceEntry, user_agent: str) -> dict[str, str]:
