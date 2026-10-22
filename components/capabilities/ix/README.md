@@ -14,7 +14,7 @@ runs, runs it one trial at a time and reports a verdict: `holds`, `fails` or
 ```bash
 # the ix command
 uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
-# the same, with the claude-sdk runtime for agent sessions
+# the same, with the claude-sdk agent runtime for agent sessions
 uv tool install "ix[claude] @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
 # the library, in a project
 uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
@@ -23,9 +23,9 @@ uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=componen
 ix is installed from its repository at the release's tag. It is on no package index, and the
 project named `ix` on PyPI is another one. ix runs on matrix, a package of the same
 repository: installed from the git URL, uv clones the repository, finds the workspace it
-belongs to and takes matrix from there. The extras are `claude` (the `claude-sdk` runtime:
-Claude Agent SDK sessions), `models` (the `model` runtime: one model call through hardline)
-and `otel` (export of spans over OTLP). A service experiment needs `k6` on `PATH`.
+belongs to and takes matrix from there. The extras are `claude` (the `claude-sdk` agent
+runtime: Claude Agent SDK sessions), `models` (the `hardline` model runtime: one model call
+through hardline) and `otel` (export of spans over OTLP). A service experiment needs `k6` on `PATH`.
 
 ## The experiment model
 
@@ -33,7 +33,7 @@ and `otel` (export of spans over OTLP). A service experiment needs `k6` on `PATH
 |---|---|
 | **experiment** | One YAML file: the question, the genre, the subjects, the probes and the metric that decides. |
 | **genre** | The kind of decision the answer informs: `evaluate` (does it meet a threshold?), `compare` (is the variant better than the control, or no worse?), `regress` (may this change ship against its baseline?), `characterize` (how does it behave across a range?). The genre says what you must set and supplies the rest: repeats, the order of trials, the A/A check, the estimator. |
-| **subject** | A system under test: a program ix starts (`process`), an endpoint that is already up (`http`), or an agent (`agent-session`). In a comparison one subject is the control. |
+| **subject** | A system under test: a program ix starts (`process`), an endpoint that is already up (`http`), an agent (`agent-session`), or a model (`model-call`). In a comparison one subject is the control. |
 | **probe** | What is done to a subject in a trial: HTTP load (`http-load`), or a prompt put to an agent (`prompt`). A probe may carry **truth**, the reference a sensor grades against; the agent never sees it. |
 | **sensor** | What is measured. You name metrics, and each metric names its sensor: `ttfb` comes from `timing`, `tests_passed` from `function-test`. |
 | **factor** | A condition varied on purpose. Every combination of the factors' levels is a **cell**. |
@@ -169,8 +169,8 @@ repeats: 20
 metrics: [tests_score, cost]
 ```
 
-Each trial is a fresh agent session (on the `claude-sdk` runtime, which the subject must
-name: `runtime` has no default, so a model provider is never called implicitly) in a new
+Each trial is a fresh agent session (on the `claude-sdk` agent runtime, which the subject
+must name: `runtime` has no default, so a model provider is never called implicitly) in a new
 temporary working directory. The probe puts the prompt to it, and `function-test` runs the
 truth's test cases against the code in the reply, in a child process. `tests_passed` is a
 pass rate, so it is held to the threshold by its interval: 20 trials that all pass show a
@@ -181,15 +181,16 @@ Work in this order:
 
 1. `ix validate` and `ix plan`. Validate also refuses a session its sensors could not see
    into (`unobservable`): a skill with no `Skill` tool among its `tools`, a tool-reading
-   sensor on the `model` runtime, files to collect that no tool can write. `Runnable` says
+   sensor on a `model-call` subject, files to collect that no tool can write. `Runnable` says
    whether the runtime can start here (`claude-sdk` needs `ix[claude]`, the Claude Code CLI
    and its credentials).
 2. **Dry run.** Give the probe a `mock_response`, a reply whose grade you know, and run
    `ix run <path> --dry-run`: the file as written, with the session on the `mock` runtime
-   and the options only `claude-sdk` takes set aside (the report lists them under
-   `Stood in`). The sensors read the canned reply as they would a model's, so a test case
-   or a grader that grades wrong shows here, for nothing. The report says `Dry run on mock
-   replies: checks the harness, not the agent`, and gives no verdict and no indication.
+   and the real runtime's config (`runtime_options`, `plugins`) set aside (the report
+   lists them under `Stood in`). The sensors read the canned reply as they would a
+   model's, so a test case or a grader that grades wrong shows here, for nothing. The
+   report says `Dry run on mock replies: checks the harness, not the agent`, and gives no
+   verdict and no indication.
 3. **Pilot.** On the real runtime, `ix run <path> --exploratory --repeats N` (N the genre's
    fewest repeats; the file stays as it will be registered), and read the screen at the
    end of the report: a probe that every trial passed, or every trial failed, cannot tell
@@ -246,7 +247,7 @@ judges them. `ix kinds` lists them.
 
 | family | kinds |
 |---|---|
-| subject | `process`, `http`, `agent-session` |
+| subject | `process`, `http`, `agent-session`, `model-call` |
 | probe | `http-load`, `prompt`, `inspect-task` |
 | sensor | `timing`, `memory`, `activation`, `tool-usage`, `function-test`, `outcome`, `text-match`, `usage`, `judge` |
 | environment | `none`, `process`, `compose` |
@@ -257,9 +258,10 @@ A declaration is not an adapter. ix can **run** these:
 |---|---|---|
 | subject | `process` | starts the command for each trial in its own process group, waits for `ready` to answer (or `url` to accept a connection), and kills the group after the trial |
 | subject | `http` | starts nothing: an endpoint that is already up, with optional `headers` and a bearer token read from `auth: env:NAME` |
-| subject | `agent-session` | a fresh session per trial on the matrix runtime its required `runtime` names (`claude-sdk` and `model` call a model provider; `mock` calls no model), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; a `loop` asks again for a self-review or with the tests that failed |
+| subject | `agent-session` | a fresh session per trial on the matrix agent runtime its required `runtime` names (`claude-sdk` calls a model provider; `mock` calls no model; any agent runtime installed, by type URL), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; `runtime_options` are the runtime's config, passed through as written; a `loop` asks again for a self-review or with the tests that failed |
+| subject | `model-call` | one call per trial on the matrix model runtime its required `runtime` names (`hardline` calls a model provider; `mock` calls no model; any model runtime installed), with its `model` resolved before anything starts; no tools, turns or working directory, so `activation`, `tool-usage`, `collect` and a `function-test` `file` are refused on it (`unobservable`) |
 | probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients) or `open` (an arrival `rate`); only the measured part is read, and each request sent in it is waited for until it is answered or its `timeout` (k6's 60s) runs out |
-| probe | `prompt` | puts the prompt to the session and keeps the reply, every tool call, each round's transcript and the files named in `collect` |
+| probe | `prompt` | puts the prompt to the session or the call and keeps the reply; for a session also every tool call, each round's transcript and the files named in `collect` |
 | sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests and dropped arrivals, of those sent and dropped), from what the load probe recorded |
 | sensor | `memory` | `memory_peak`: the highest resident memory of the subject's process group, sampled with `ps` every `interval` while the probe runs |
 | sensor | `activation` | `activated_correctly`: the expected skill fired (a `Skill` tool call naming it whole: `review` is fired by `review` or `plugin:review`, never by `code-review-lite`), or nothing fired for a decoy |
@@ -267,8 +269,8 @@ A declaration is not an adapter. ix can **run** these:
 | sensor | `function-test` | `tests_passed`, `tests_pass_share`, `tests_score`: the truth's test cases run against the code in the reply, or a file the agent wrote, in a child process |
 | sensor | `outcome` | `outcome_score`, `outcome_passed`: the experiment's own grader functions, run in a child process; without one, the share of the truth's `expected_facts` the reply holds |
 | sensor | `text-match` | `text_matched`: the reply starts or ends with, equals, contains, excludes or matches (a regular expression) what the probe's truth or the sensor's options say; no code of your own |
-| sensor | `usage` | tokens, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, and `hit_limit`, as the runtime reported them |
-| sensor | `judge` | a model scores the reply against a rubric; its metrics are reported and never decide |
+| sensor | `usage` | tokens, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, and `hit_limit`, as the runtime reported them; what it did not report (a model call's cost or turns) is left out |
+| sensor | `judge` | a model scores the reply against a rubric, by one call on the model runtime `model_runtime` names or a one-turn session on the agent runtime `agent_runtime` names; its metrics are reported and never decide |
 | environment | `none`, `process` | nothing; or programs started before the trials and stopped when the run ends |
 
 `inspect-task` and `compose` are declared only. An experiment that uses one is still valid:
@@ -280,8 +282,10 @@ its kind as data at the `ix.kind` entry point, and registers the adapter from it
 `matrix.extensions` entry point at ix's point for the family (`ix.subject`, `ix.probe`,
 `ix.sensor`, `ix.environment`) under the kind's type URL. ix resolves every adapter it runs
 that way, its own included, so a new one needs no edit to ix. An adapter declares what it
-needs built: `launcher` to start processes, `runtimes` to run an agent on matrix's runtimes,
-`sessions` to share an agent session between a subject and a probe.
+needs built: `launcher` to start processes, `runtimes` to run an agent or make a model call
+on matrix's runtimes (at its `agent-runtime` or `model-runtime` point), `sessions` to share
+an agent session or a model call between a subject and a probe, by the handle the subject
+offers as its `respondent` facet.
 
 ```python
 def register(registry):
@@ -381,8 +385,9 @@ nothing under `--json`); the report goes to stdout.
   and it exits 14 (`deviations`), never 0, until the registration is amended with a
   reason. A gate cannot pass on a design moved after it was registered.
 - **A dry run gives no verdict.** `ix run <path> --dry-run` runs the experiment as written
-  with every agent session on the `mock` runtime; a subject with no stand-in (a `process`)
-  is refused. A run in which the `mock` runtime answered any trial measured the harness,
+  with every agent session and model call on matrix's `mock` runtime of its port; a subject
+  with no stand-in (a `process`) is refused. A run in which a stand-in (a runtime registered
+  as one, as the mocks are) answered any trial measured the harness,
   not the subject: the report says `Dry run on mock replies: checks the harness, not the
   agent`, with neither a verdict nor an indication, nor a probe screen, and the run is not
   `gated`. A registered run in which a stand-in answered (`runtime: mock` written in) exits
@@ -392,8 +397,9 @@ nothing under `--json`); the report goes to stdout.
   environment that did not come up, or went down between trials) exits 8. `ix report` of a
   run still being written exits 13.
 - **Refused before it starts**: a subject command that is not there, an `auth` variable
-  that is not set, a file an agent subject names that is not there, and an agent runtime
-  that cannot start or cannot play the agent as written. `ix plan` lists them under
+  that is not set, a file an agent subject names that is not there, an agent runtime that
+  cannot start or cannot play the agent as written, and a model runtime that cannot start
+  or cannot resolve the subject's model. `ix plan` lists them under
   `Runnable: no` beforehand; they depend on the host, so they do not stop `ix register`.
 - **Failures have an owner.** A trial the subject failed (it exited, it was not up in time,
   it answered no request successfully within the measured time, it returned a different body; an agent session that
@@ -546,7 +552,7 @@ ix:
 ```
 
 An unknown key is refused, by its path and file. The same read gives the `matrix:` section:
-the observers of a run, and the models a `model` runtime is handed.
+the observers of a run, and the models a `hardline` model runtime is handed.
 
 ix makes spans through the OpenTelemetry API, under the instrumentation scope `ix`:
 `ix.plan`, `ix.run`, `ix.trial` and `ix.sensor`, with each reading as a
