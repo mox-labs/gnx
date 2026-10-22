@@ -9,8 +9,9 @@
 
 [tool.uv.workspace]
 members = ["*"]
-# pytest writes __pycache__ beside conftest.py here, and it is no member.
-exclude = ["__pycache__"]
+# pytest writes __pycache__ beside conftest.py here, and it is no member. _testing holds
+# helpers the members' tests share (the layer check), and is no member either.
+exclude = ["__pycache__", "_testing"]
 
 # uv 0.9+ REQUIRES an explicit source entry for a workspace-internal dependency.
 # A member that declares a bare `matrix` dep fails to resolve without this, with

@@ -60,6 +60,14 @@
 - **An empty table's view keeps the columns its collector's `normalize:` names.** Its view had only `_empty`, so a query that runs on a full archive (`SELECT title FROM papers`) failed with a Binder Error, exit 10, on one whose source returned nothing. The empty sentinel line now keeps the spec's columns (`{"_empty": true, "_columns": [...]}`), and the view has them, with no rows, beside `_empty`. A collector without `normalize:` has no known columns, and its empty table's view is as it was.
 - **Only a directory named as a survey names its archive is an archive.** Any directory under `archive/` counted, so a stray `notes/` sorted after the timestamps, became the latest archive, and every query failed with "no tables". A `meta.yaml` from a newer recon is read for the fields this one knows: a table error with a field it does not know made `status` fail as a defect (exit 1).
 
+### Checks
+
+- `layers.json` maps every module to a layer and runs on every test run: a new module no layer
+  claims fails the suite, an adapter reaches only its own family, and each rule of the map has
+  a planted violation that must be found.
+- Every driving adapter under `adapters/_in`, not only the command line, is held to
+  `recon.__all__`.
+
 ## 0.11.0
 
 ### Changed (breaking)

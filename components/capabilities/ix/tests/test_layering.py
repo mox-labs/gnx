@@ -12,6 +12,18 @@ only by ``ix.composition`` and by the adapters ``ix/adapters/*/matrix_*.py``.
 
 Every import counts, including one under ``TYPE_CHECKING``: a type-only dependency on a
 host is still a dependency on its shape.
+
+``layers.json`` holds every module to a layer, read by the workspace's shared checker as
+slick crafting-aces' ``layer-check.py`` reads it: a module no layer claims fails the suite,
+and each of the map's rules has a planted violation that must be found. Beyond what an
+import shows: only the root calls the registry, whatever the receiver is called; only the
+compose environment names ``docker``; only the launcher reaches matrix's process groups.
+
+What these cannot see, so review still reads for it (the design record keeps the list): a
+module reached by ``importlib`` or through an alias, a registry handed to an adapter and
+called through a verb it shares with ix's own objects (``load``, ``describe``), a process
+started without the launcher (``asyncio.create_subprocess_exec`` is an attribute, not an
+import), logic in a file whose imports are all allowed, and what matrix does at run time.
 """
 
 from __future__ import annotations
@@ -21,7 +33,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import matrix
 import pytest
+from _testing.layers import Plant, check, copy_tree, load, plant, plants
 
 import ix
 
@@ -217,26 +231,72 @@ def test_only_composition_names_a_store() -> None:
     assert {file.relative_to(SRC).as_posix() for file in _files() if stores & names(file)} == set()
 
 
+#: The registry's API: every public method of matrix's ``Registry``, read from the class so a
+#: verb added there is scanned here, less the two it shares with objects ix holds in plenty
+#: (``json.load``, ``matrix.load``, a store's ``load`` and ``describe``).
+REGISTRY_VERBS = frozenset(
+    name
+    for name, member in vars(matrix.Registry).items()
+    if callable(member) and not name.startswith("_")
+) - {"load", "describe"}
+
+
+def _ix_own(receiver: ast.expr) -> bool:
+    """Whether a call's receiver is ix's own API, whose ``register`` is a use case and not
+    the registry's: the package (``ix.register``) or the facade's root (``_root().register``)."""
+    if isinstance(receiver, ast.Name):
+        return receiver.id == "ix"
+    return (
+        isinstance(receiver, ast.Call)
+        and isinstance(receiver.func, ast.Name)
+        and receiver.func.id == "_root"
+    )
+
+
 def _registers(file: Path) -> bool:
-    """Whether ``file`` calls a registry's API to declare or register something."""
-    for node in ast.walk(ast.parse(file.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            method, receiver = node.func.attr, node.func.value
-            if method in {"register_payload", "add_point"} or (
-                method in {"register", "create", "entries"}
-                and isinstance(receiver, ast.Name | ast.Attribute)
-                and (receiver.id if isinstance(receiver, ast.Name) else receiver.attr).lstrip("_")
-                == "registry"
-            ):
-                return True
-    return False
+    """Whether ``file`` calls a registry's API, whatever the receiver is called."""
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in REGISTRY_VERBS
+        and not _ix_own(node.func.value)
+        for node in ast.walk(ast.parse(file.read_text(encoding="utf-8")))
+    )
 
 
 def test_only_composition_calls_the_registry() -> None:
     """The registry will move; ix calls it from ``ix.composition`` alone, so the move is one
     change in one place. An adapter hands over what it builds and never registers it."""
+    assert {"register", "register_payload", "add_point", "create", "entries"} <= REGISTRY_VERBS
     calling = {file.relative_to(SRC).as_posix() for file in _files() if _registers(file)}
     assert calling and all(path.startswith("composition/") for path in calling), calling
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        # ix-tests F11: the old scan counted a call only when its receiver was named registry.
+        'reg.register("component", "acme.v1.probe", build)',
+        'self._r.create("ix.v1.sensor", "acme.v1.probe")',
+        'extensions.add_point("acme.v1.point")',
+        'found = catalog.entries("ix.v1.sensor")',
+        'registry.register_payload("acme.v1.kind", Model)',
+    ],
+)
+def test_a_registry_call_is_found_whatever_the_receiver_is_called(
+    tmp_path: Path, call: str
+) -> None:
+    file = tmp_path / "adapter.py"
+    file.write_text(
+        f"def wire(self, reg, extensions, catalog, registry, build, Model):\n    {call}\n"
+    )
+    assert _registers(file)
+
+
+def test_ix_own_register_is_not_a_registry_call(tmp_path: Path) -> None:
+    file = tmp_path / "front.py"
+    file.write_text("import ix\nix.register(path)\n_root().register(source, base=base)\n")
+    assert not _registers(file)
 
 
 def test_the_scan_for_matrix_catches_a_type_only_import(tmp_path: Path) -> None:
@@ -409,3 +469,113 @@ def test_every_type_reachable_from_a_public_result_is_exported_from_ix_domain() 
     assert reachable <= public, sorted(reachable - public)
     for name in ix.domain.__all__:
         assert getattr(ix.domain, name) is not None
+
+
+# --- the map: every module in a layer, and each rule biting ---------------------------------
+
+PACKAGE = SRC.parents[1]
+MAP = load(PACKAGE)
+
+
+@pytest.fixture
+def tree(tmp_path: Path) -> Path:
+    return copy_tree(PACKAGE, tmp_path)
+
+
+def test_every_module_is_in_a_layer_and_every_dependency_points_inward() -> None:
+    """``layers.json``: no module goes unjudged (ix-tests F11), and the reach of the layers
+    the tests above do not cover is held too: the driven adapters, the matrix adapters, the
+    OpenTelemetry adapter, the matrix components, the built-in data packages."""
+    report = check(MAP, PACKAGE)
+    assert report.errors == []
+    assert report.findings == []
+    assert report.exit_code == 0
+    assert report.files_in_scan == len(list(SRC.rglob("*.py")))
+    assert all(count > 0 for count in report.layers.values()), report.layers
+
+
+@pytest.mark.parametrize("violation", [pytest.param(p, id=p.rule) for p in plants(MAP, PACKAGE)])
+def test_each_rule_of_the_map_bites(tree: Path, violation: Plant) -> None:
+    plant(tree, violation)
+    assert any(violation.finding in f for f in check(MAP, tree).findings), violation.finding
+
+
+def test_a_new_package_no_layer_claims_leaves_the_tree_unjudged(tree: Path) -> None:
+    """The first pass's case: a new top-level package passed every test above."""
+    (tree / "src" / "ix" / "infra").mkdir()
+    (tree / "src" / "ix" / "infra" / "__init__.py").write_text("import opentelemetry\n")
+    report = check(MAP, tree)
+    assert "src/ix/infra/__init__.py is scanned but no layer claims it" in report.errors
+    assert report.exit_code == 2
+
+
+def test_a_layer_whose_file_moved_leaves_the_tree_unjudged(tree: Path) -> None:
+    domain = tree / "src" / "ix" / "domain"
+    (domain / "provenance.py").rename(domain / "origins.py")
+    report = check(MAP, tree)
+    assert "layer domain: glob 'src/ix/domain/provenance.py' matches no file" in report.errors
+    assert report.exit_code == 2
+
+
+# --- docker and the launcher, which the map cannot hold ------------------------------------
+
+
+def _names_docker(file: Path) -> bool:
+    """Whether ``file`` names the ``docker`` program: a string that is exactly its name."""
+    return any(
+        isinstance(node, ast.Constant) and node.value == "docker"
+        for node in ast.walk(ast.parse(file.read_text(encoding="utf-8")))
+    )
+
+
+def _reaches_matrix_process(file: Path) -> bool:
+    """Whether ``file`` reaches ``matrix.process``, the process groups the launcher wraps."""
+    for node in ast.walk(ast.parse(file.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom) and node.module == "matrix":
+            if any(alias.name == "process" for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("matrix.process"):
+            return True
+        elif isinstance(node, ast.Import):
+            if any(alias.name.startswith("matrix.process") for alias in node.names):
+                return True
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr == "process"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "matrix"
+        ):
+            return True
+    return False
+
+
+def test_only_the_compose_environment_names_docker() -> None:
+    """docker is the compose environment's technology, and no other module starts it."""
+    naming = {file.relative_to(SRC).as_posix() for file in _files() if _names_docker(file)}
+    assert naming == {"adapters/_out/compose.py"}
+
+
+def test_only_the_launcher_reaches_matrix_process_groups() -> None:
+    """A child starts in a group of its own and ends with it through ``MatrixLauncher``
+    alone; any other module hands its processes to a ``Launcher`` it is given."""
+    reaching = {
+        file.relative_to(SRC).as_posix() for file in _files() if _reaches_matrix_process(file)
+    }
+    assert reaching == {"adapters/_out/matrix_process.py"}
+
+
+@pytest.mark.parametrize(
+    ("check_", "line"),
+    [
+        (_names_docker, 'argv = ["docker", "ps"]'),
+        (_names_docker, 'BINARY = "docker"'),
+        (_reaches_matrix_process, "from matrix import process"),
+        (_reaches_matrix_process, "from matrix.process import start"),
+        (_reaches_matrix_process, "import matrix.process"),
+        (_reaches_matrix_process, "group = matrix.process"),
+    ],
+)
+def test_docker_and_the_launcher_rules_bite(tmp_path: Path, check_: object, line: str) -> None:
+    file = tmp_path / "adapter.py"
+    file.write_text(f"import matrix\n{line}\n")
+    assert callable(check_) and check_(file)
