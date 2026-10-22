@@ -709,3 +709,53 @@ def test_a_provider_the_program_installed_is_kept_signal_by_signal(
     installed = _installs(monkeypatch, meter=MeterProvider())
     assert export_from_env(env, "9.9") == []
     assert installed == ["traces"]
+
+
+# --- attributes a consumer reads -------------------------------------------------------------
+
+
+def test_a_body_over_max_bytes_fails_its_span_as_body_too_large(server: Any) -> None:
+    """``error.type`` on a request span is the status, the httpx2 class, or
+    ``body_too_large``: a consumer counts refusals by it."""
+    sink = Recorded()
+    port = server.server_address[1]
+    source = SourceEntry(name="s", url=f"http://127.0.0.1:{port}", max_bytes=1)
+    with pytest.raises(CollectionError):
+        _requester(sink).get(source, f"http://127.0.0.1:{port}/ok")
+    [end] = sink.ends("recon.http.request")
+    assert end.status == "error" and end.attributes["error.type"] == "body_too_large"
+
+
+def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
+    """``recon.query`` carries ``recon.rows``, the number of rows the query returned."""
+    from recon.adapters._out.archive_files import ArchiveFiles
+    from recon.adapters._out.duckdb_query import DuckdbQuery
+    from recon.adapters._out.mission_files import MissionFiles
+    from recon.application.use_cases import Recon
+    from recon.composition import load_plugins
+    from tests.recon_fakes import run_survey
+
+    run_survey(
+        {"collectors": [{"name": "t", "type": "cli", "run": 'printf \'{"a": 1}\\n{"a": 2}\\n\''}]},
+        tmp_path,
+    )
+    sink, clock = Recorded(), FixedClock()
+    archives = ArchiveFiles(clock)
+
+    def no_survey(*args: Any) -> Any:
+        raise AssertionError("a query builds no collector")
+
+    querying = Recon(
+        missions=MissionFiles(tmp_path, clock),
+        archives=archives,
+        query=DuckdbQuery(archives),
+        clock=clock,
+        plugins=load_plugins(),
+        build_collectors=no_survey,
+        telemetry=lambda archive: Telemetry([sink], clock),
+        env={},
+        version="0",
+    )
+    querying.query("m", "SELECT a FROM t")
+    [end] = sink.ends("recon.query")
+    assert end.attributes["recon.rows"] == 2

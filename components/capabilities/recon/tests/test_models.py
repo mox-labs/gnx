@@ -32,6 +32,12 @@ class TestAuthConfig:
 
 
 class TestSourceEntry:
+    def test_the_documented_defaults(self) -> None:
+        """The skill's mission schema states these; a mission that sets neither relies on
+        them: 60 s a send, a 50,000,000-byte body."""
+        source = SourceEntry(name="s", url="https://x.test")
+        assert (source.timeout, source.max_bytes) == (60.0, 50_000_000)
+
     def test_minimal(self) -> None:
         src = SourceEntry(name="test", url="https://example.com")
         assert src.type == "api"

@@ -449,3 +449,17 @@ def test_a_layer_whose_file_moved_leaves_the_tree_unjudged(tree: Path) -> None:
         report.errors
     )
     assert report.exit_code == 2
+
+
+def test_the_public_names_are_the_ones_callers_use() -> None:
+    """``import recon``'s names are a contract: removing one breaks a caller. Adding one is
+    compatible, and is added here with the change that adds it."""
+    assert set(recon.__all__) == {
+        "Capture", "CollectionError", "ConfigError", "ConflictError", "ERROR_KINDS",
+        "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "ErrorDocument", "MissionDocument",
+        "NotFoundError", "PROBLEM_KINDS", "PlanDocument", "Problem", "QueryError", "QueryRows",
+        "ReconError", "StatusDocument", "SurveyDocument", "TableOutcome", "TemplatesDocument",
+        "UsageError", "__version__", "capture", "configure_telemetry", "error_document", "init",
+        "plan", "query", "skill", "skill_references", "status", "survey", "survey_failure",
+        "templates",
+    }  # fmt: skip

@@ -156,5 +156,6 @@ class TestWebCollector:
         source = SourceEntry(name="s", url="https://x")
         entry = CollectorEntry(name="t", type="web", source="s")
         records = list(WebCollector(req, conv, DEFAULT_USER_AGENT).collect(entry, source))
-        assert "Content truncated" in records[0]["content"]
-        assert len(records[0]["content"]) < len(huge)
+        content = records[0]["content"]
+        assert content.startswith("x" * 100_000) and not content.startswith("x" * 100_001)
+        assert content.endswith("[Content truncated due to length...]")

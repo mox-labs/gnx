@@ -106,6 +106,22 @@ class TestCliCollector:
         assert str(tmp_path / "missing") in str(excinfo.value)
         assert not (tmp_path / "ran-here").exists()
 
+    def test_a_command_with_no_source_has_300_seconds(self) -> None:
+        """A source's ``timeout`` bounds its commands; a command with no source gets 300 s."""
+        given: list[float] = []
+
+        class Shell:
+            def run_lines(
+                self, cmd: str, cwd: Path | None, timeout: float, **kwargs: Any
+            ) -> Generator[str, None, int]:
+                given.append(timeout)
+                yield '{"a": 1}'
+                return 0
+
+        entry = collector_entry(name="c", type="cli", run="true")
+        list(CliCollector(Shell()).collect(entry, None))
+        assert given == [300.0]
+
     def test_url_with_no_source_to_fill_it_runs_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

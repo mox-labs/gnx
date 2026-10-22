@@ -103,6 +103,13 @@ def _error(result: Result) -> dict[str, Any]:
 # --- survey ---------------------------------------------------------------------------
 
 
+def test_version_prints_the_installed_version() -> None:
+    """``recon --version`` is how a caller checks which recon it drives."""
+    result = _invoke("--version")
+    assert result.exit_code == 0
+    assert result.stdout.strip() == f"recon, version {recon.__version__}"
+
+
 class TestSurvey:
     def test_ok_json_document(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
