@@ -497,4 +497,4 @@ call path (`call_model`), the command's document records (`Catalog`,
 | [The data model](docs/explanation/data-model.md) | Construct, ledger, Run, and how a run is kept on disk |
 | [API reference](docs/reference/api.md) | Every public name, config key, error kind, exit code and CLI command |
 | [SECURITY.md](SECURITY.md) | Agent authority, config as a capability grant, findings |
-| [Design record](docs/design/2026-10-19-record.md) | The judgments behind 0.6.0, each with its test and evidence |
+| [Design record](docs/design/2026-10-19-record.md) | The judgments behind 0.6.0 and 0.7.0, and matrix's claims, each with its test and evidence |
