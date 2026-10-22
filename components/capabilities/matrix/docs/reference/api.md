@@ -796,7 +796,12 @@ from `matrix.models` or hardline's own tiers, and is digested into the fingerpri
 component that calls it. A third, `aclose()`, is async and closes the connections the
 runtime's calls opened in the running event loop; a connection can be closed only in its own
 loop, so a model step defers it to the end of the run that made the calls. The runtime stays
-usable after it. The `hardline` runtime has it.
+usable after it. The `hardline` runtime has it. A fourth, `pydantic_ai_model(model=None)`, gives
+pydantic-ai's `Model` on a model name the runtime resolves (raising `ConfigError` as `check`
+does), its requests made as the runtime makes its own calls, for a caller that runs pydantic-ai
+itself, such as an evaluator's judge; the `Model` has an async `aclose()` for the connections its
+calls opened. The `hardline` runtime has it: the row's requests go through hardline with the
+runtime's `max_tokens` and `temperature` as defaults.
 
 ### Built-in model runtimes
 
@@ -805,7 +810,7 @@ takes the short name.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `hardline` | `matrix.v1.model-runtime.hardline` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. A request's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` resolves it. With `output`, the call is hardline's `extract`, which repairs a reply that does not fit within its bound. Carries hardline's whole record of the call: why it ended, the model that answered, `fallback_from`, usage with cache tokens, the request id, attempts, retries, latency, `params`, `attempt_log`, `turns_digest` and `row`. A reply cut short or refused is returned and said for what it is. Reports tokens, no cost. Has `aclose()` |
+| `hardline` | `matrix.v1.model-runtime.hardline` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. A request's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` resolves it. With `output`, the call is hardline's `extract`, which repairs a reply that does not fit within its bound. Carries hardline's whole record of the call: why it ended, the model that answered, `fallback_from`, usage with cache tokens, the request id, attempts, retries, latency, `params`, `attempt_log`, `turns_digest` and `row`. A reply cut short or refused is returned and said for what it is. Reports tokens, no cost. Has `aclose()` and `pydantic_ai_model()` |
 | `mock` | `matrix.v1.model-runtime.mock` | `responses` (the whole prompt as sent, to a reply), `by_model` (model name to a reply), `default` (reply for an unmatched prompt and model; `None` echoes `mock:<model>:<prompt>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Accepts every model name. Validates a reply against the request's `output` as a real runtime does. A call reports one attempt, no retries, no tokens, its latency and `finish_reason: stop`, and no cost. Records `calls`, each `(model, prompt)` |
 
 Classes: `matrix.adapters._out.runtime.model.HardlineModelRuntime`,

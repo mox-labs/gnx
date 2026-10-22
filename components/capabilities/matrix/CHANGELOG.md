@@ -120,6 +120,13 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Added
 
+- **A model runtime may give pydantic-ai a `Model`: `pydantic_ai_model(model)`**, an optional
+  member of the port. The `hardline` runtime gives one on a row it resolves, each request a
+  hardline call with the runtime's `max_tokens` and `temperature` as defaults, and an `aclose()`
+  for its connections. It is how ix's evaluator judge gets its model from the model runtime the
+  experiment names, from config and nowhere else (W11.2b). The `Model` is the one the
+  `pydantic-ai` agent runtime already used; it now takes default settings.
+
 - **A model step's call path is public: `call_model(runtime, request, *, name, ...)`.** A
   caller that calls a model runtime itself (ix's `model-call` trial and its judge) could record
   the call's session row and nothing else, so its call was no `matrix.model` span and a model
