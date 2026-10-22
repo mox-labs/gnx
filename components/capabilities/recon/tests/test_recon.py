@@ -894,11 +894,15 @@ class TestDeadlines:
         for the work fails the same way on every retry. Then it led with "raise the
         deadline" for every transient exit, where for a 429 or a 5xx a later retry is what
         helps. It says which step goes with which error: the deadline a table's error names,
-        else a later retry."""
+        else a later retry. Then it read as a garden path ("raise a `deadline:` a table's
+        error names"), and a source's ``timeout:`` that is too short, which also fails on
+        every retry, was sent to the later retry: it is raised too."""
         from recon.domain.errors import EXIT_NEXT
 
         said = EXIT_NEXT["transient"]
-        assert said.startswith("raise a `deadline:` a table's error names")
+        assert said.startswith(
+            "if a table's error names a `deadline:` or `timeout:`, raise it (a retry fails too)"
+        )
         assert said.endswith("; else survey again later")
 
     @pytest.mark.parametrize("value", [0, -1, math.nan, math.inf])
