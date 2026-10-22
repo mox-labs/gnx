@@ -21,6 +21,8 @@
 
 - **A fallback that shares its primary's fate is warned of.** A fallback on the same backend and `base_url` as its row fails with it when that server is down. `ModelRuntime.warnings` lists each as a `Problem` of kind `shared_fate`, the runtime logs it once when built, and `hardline check` prints it (`warnings` in `check --json`). New export: `Problem`.
 
+- **A call's failed attempts, fallbacks and answer are told to an observer.** `build_runtime(observer=...)` takes a `CallObserver`, whose `observe(event)` hears `AttemptFailed`, `FellBack` and `Answered` as each happens. It replaces the `hardline` logger's `WARNING` on a fallback and `INFO` on a retry, which no handler of hardline's reached. New exports: `CallObserver`, `CallEvent`, `AttemptFailed`, `FellBack`, `Answered`.
+
 ### Changed (breaking)
 
 - **No provider SDK.** Both wire protocols are spoken directly over httpx2: `openai-compat` (chat completions) and `anthropic` (the Messages API). hardline depends on pydantic, pyyaml and httpx2 only; the `openai` and `anthropic` packages are no longer installed with it.

@@ -315,6 +315,43 @@ class Problem(BaseModel):
     source: str | None = None
 
 
+class AttemptFailed(BaseModel):
+    """A backend call of a logical call failed. ``retry_in_s`` is the wait before the same row
+    is asked again; None when it will not be: the call falls back, or fails."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The row the logical call asked for.
+    requested: str
+    attempt: Attempt
+    retry_in_s: float | None = None
+
+
+class FellBack(BaseModel):
+    """Row ``name`` spent its retries on a transient failure, and the call asks ``to`` next."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    requested: str
+    name: str
+    to: str
+    reason: Reason
+
+
+class Answered(BaseModel):
+    """A logical call answered: ``completion`` is what its caller gets, record and all."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    requested: str
+    completion: Completion
+
+
+#: What a ``CallObserver`` is told about a logical call. An observer ignores a kind it does not
+#: know, so a new kind of event breaks none.
+CallEvent = AttemptFailed | FellBack | Answered
+
+
 @dataclass(frozen=True)
 class Structured[T: BaseModel]:
     """A validated object plus the completion that produced it."""

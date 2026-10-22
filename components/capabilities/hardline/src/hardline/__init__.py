@@ -29,15 +29,20 @@ from hardline.domain.errors import (
 )
 from hardline.domain.ports._out.backend import ModelBackend
 from hardline.domain.ports._out.config_source import ConfigSource
+from hardline.domain.ports._out.observer import CallObserver
 from hardline.domain.ports._out.secrets import SecretResolver
 from hardline.domain.registry import ModelRegistry
 from hardline.domain.runtime import ModelRuntime
 from hardline.domain.types import (
     COMPLETION_TYPE_URL,
     NAMESPACE,
+    Answered,
     Attempt,
+    AttemptFailed,
+    CallEvent,
     CallLimits,
     Completion,
+    FellBack,
     FinishReason,
     Message,
     ModelSpec,
@@ -59,13 +64,18 @@ __all__ = [
     "COMPLETION_TYPE_URL",
     "RETRYABLE",
     "NAMESPACE",
+    "Answered",
     "Attempt",
+    "AttemptFailed",
     "BackendError",
+    "CallEvent",
     "CallLimits",
+    "CallObserver",
     "Completion",
     "ConfigError",
     "ConfigSource",
     "ContractError",
+    "FellBack",
     "FinishReason",
     "Message",
     "ModelBackend",

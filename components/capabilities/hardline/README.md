@@ -166,6 +166,30 @@ A runtime called from a new loop never reuses a connection from another loop. If
 loop ended without `aclose()`, its connections can no longer be closed. They stay open until
 garbage collection, and hardline logs a warning that names the fix.
 
+### Observing a call
+
+What a call does between being asked and answering (each attempt that failed, each fallback)
+is told to an observer, as it happens:
+
+```python
+from hardline import AttemptFailed, CallEvent, FellBack, build_runtime
+
+
+class Fallbacks:
+    def observe(self, event: CallEvent) -> None:
+        if isinstance(event, FellBack):
+            print(f"{event.requested}: {event.name} failed ({event.reason}); asking {event.to}")
+
+
+rt = build_runtime(observer=Fallbacks())
+```
+
+The events are `AttemptFailed` (the row asked, why it failed, and `retry_in_s`, the wait before
+it is asked again, or `None`), `FellBack` (`name` → `to`, and the reason) and `Answered` (the
+`Completion`). An observer ignores a kind it does not know, is called on the call's own task
+and must not block; one that raises is logged and ignored. With none, nothing is told: the
+`Completion` still carries `fallback_from` and the `attempt_log`.
+
 Another composition root wires hardline from a section of its own config:
 
 ```python

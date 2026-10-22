@@ -41,8 +41,12 @@ from hardline.domain.errors import (
 from hardline.domain.ports._out.backend import CheckedBackend, ClosableBackend
 from hardline.domain.structured import json_candidates, retry_instruction, schema_instruction
 from hardline.domain.types import (
+    Answered,
     Attempt,
+    AttemptFailed,
+    CallEvent,
     Completion,
+    FellBack,
     Message,
     ModelSpec,
     Problem,
@@ -57,6 +61,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from hardline.domain.ports._out.backend import ModelBackend
+    from hardline.domain.ports._out.observer import CallObserver
     from hardline.domain.ports._out.secrets import SecretResolver
     from hardline.domain.registry import ModelRegistry
     from hardline.domain.types import Limit
@@ -70,6 +75,13 @@ logger = logging.getLogger("hardline")
 _BACKOFF_BASE_S = 0.5
 _BACKOFF_CAP_S = 8.0
 _RETRY_AFTER_CAP_S = 60.0
+
+
+class _Unobserved:
+    """The default observer: hears nothing."""
+
+    def observe(self, event: CallEvent) -> None:
+        pass
 
 
 @dataclass(frozen=True)
@@ -174,6 +186,7 @@ class ModelRuntime:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: random.Random | None = None,
+        observer: CallObserver | None = None,
     ) -> None:
         problems = []
         for spec in registry:
@@ -216,6 +229,7 @@ class ModelRuntime:
         self._clock = clock
         self._sleep = sleep
         self._rng = rng or random.Random()
+        self._observer: CallObserver = observer or _Unobserved()
 
     @property
     def registry(self) -> ModelRegistry:
@@ -291,9 +305,11 @@ class ModelRuntime:
             log,
             started=started,
         )
-        return self._completion(
+        completion = self._completion(
             spec, answer, log, attempts=1, retries=answer.retries, started=started
         )
+        self._observe(Answered(requested=spec.name, completion=completion))
+        return completion
 
     async def extract(
         self,
@@ -362,6 +378,7 @@ class ModelRuntime:
             completion = self._completion(
                 spec, answer, log, attempts=attempts, retries=retries, started=started
             )
+            self._observe(Answered(requested=spec.name, completion=completion))
             return Structured(value=value, completion=completion)
 
         raise SchemaError(
@@ -438,33 +455,33 @@ class ModelRuntime:
                     reached: tuple[Limit, str] = ("seconds", self._setting(spec, "seconds"))
                     raise self._stopped(spec, reached, cut, log) from None
                 except BackendError as e:
-                    log.append(
-                        Attempt(
-                            name=candidate.name,
-                            reason=e.reason,
-                            latency_ms=self._ms_since(attempt_started),
-                        )
+                    failed = Attempt(
+                        name=candidate.name,
+                        reason=e.reason,
+                        latency_ms=self._ms_since(attempt_started),
                     )
+                    log.append(failed)
                     if not e.retryable:
+                        self._observe(AttemptFailed(requested=spec.name, attempt=failed))
                         _logged(e, log)
                         raise
                     last = e
                     retrying = attempt < candidate.retries
                     delay = self._delay(attempt, e.retry_after) if retrying else 0.0
+                    stop = None
                     if retrying or position < len(chain) - 1:
                         stop = self._limit_reached(spec, started, log, wait=delay)
-                        if stop is not None:
-                            raise self._stopped(spec, stop, e, log) from e
+                    self._observe(
+                        AttemptFailed(
+                            requested=spec.name,
+                            attempt=failed,
+                            retry_in_s=delay if retrying and stop is None else None,
+                        )
+                    )
+                    if stop is not None:
+                        raise self._stopped(spec, stop, e, log) from e
                     if retrying:
                         retries += 1
-                        logger.info(
-                            "model %r: %s; retry %d/%d in %.2fs",
-                            candidate.name,
-                            e.reason,
-                            attempt + 1,
-                            candidate.retries,
-                            delay,
-                        )
                         await self._sleep(delay)
                     continue
                 log.append(
@@ -477,12 +494,14 @@ class ModelRuntime:
                 return _Answer(
                     raw=raw, spec=candidate, request=request, retries=retries, position=position
                 )
-            if candidate is not chain[-1]:
-                logger.warning(
-                    "model %r still failing (%s) after %d retries; falling back",
-                    candidate.name,
-                    last.reason if last else "?",
-                    candidate.retries,
+            if position < len(chain) - 1 and last is not None:
+                self._observe(
+                    FellBack(
+                        requested=spec.name,
+                        name=candidate.name,
+                        to=chain[position + 1].name,
+                        reason=last.reason,
+                    )
                 )
         assert last is not None  # the loop only falls through after a retryable failure
         tried = ", ".join(c.name for c in chain[start:])
@@ -494,6 +513,13 @@ class ModelRuntime:
             retry_after=last.retry_after,
         )
         raise _logged(exhausted, log) from last
+
+    def _observe(self, event: CallEvent) -> None:
+        """Tell the observer; one that raises is logged, never allowed to fail the call."""
+        try:
+            self._observer.observe(event)
+        except Exception as e:  # an observer's fault is not the call's
+            logger.warning("call observer %r failed: %s: %s", self._observer, type(e).__name__, e)
 
     def _limit_reached(
         self, spec: ModelSpec, started: float, log: Sequence[Attempt], *, wait: float = 0.0

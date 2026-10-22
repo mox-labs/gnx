@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from importlib.metadata import EntryPoint
 
     from hardline.domain.ports._out.config_source import ConfigSource
+    from hardline.domain.ports._out.observer import CallObserver
     from hardline.domain.ports._out.secrets import SecretResolver
     from hardline.domain.types import ModelSpec, RawCompletion, Request
 
@@ -212,12 +213,14 @@ def build_runtime(
     label: str = "<mapping>",
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     rng: random.Random | None = None,
+    observer: CallObserver | None = None,
 ) -> ModelRuntime:
     """Wire a ModelRuntime.
 
     ``config`` wins over ``sources``; with neither, tiers are discovered from disk.
-    ``backends`` defaults to built-ins plus entry points; tests pass their own, and inject
-    ``sleep``/``rng`` to observe retry backoff without waiting.
+    ``backends`` defaults to the installed entry points; tests pass their own, and inject
+    ``sleep``/``rng`` to observe retry backoff without waiting. ``observer`` hears each logical
+    call's failed attempts, fallbacks and answer.
     """
     if config is not None:
         tiers: Sequence[ConfigSource] = [MappingConfigSource(dict(config), label=label)]
@@ -233,6 +236,7 @@ def build_runtime(
         schema_retries=schema_retries,
         sleep=sleep,
         rng=rng,
+        observer=observer,
     )
 
 
