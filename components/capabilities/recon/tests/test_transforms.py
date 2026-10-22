@@ -1,5 +1,6 @@
 """The normalize language: path resolution, specs, and the built-in transforms."""
 
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn
@@ -261,10 +262,10 @@ class TestMarkitdown:
     """Test $markitdown transform via markitdown (registered under recon.transforms).
 
     markitdown handles PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP, HTML,
-    images (OCR), audio. Tests cover the roundtrip, the best-effort failure
-    contract (a missing file returns an empty string, does not raise), and the
-    confinement: the value comes from collected data, so it may name only a file under
-    the directories the mission declares, and never a URL.
+    images; not audio. Tests cover the roundtrip, the failure contract (a file it cannot
+    read or convert fails the table, naming it), and the confinement: the value comes from
+    collected data, so it may name only a file under the directories the mission declares,
+    and never a URL.
     """
 
     @pytest.fixture
@@ -460,6 +461,119 @@ class TestAConvertedDocument:
         assert asked == []
         assert capsys.readouterr().out == ""
         assert result.title == "A talk" and "About it" in result.text
+
+
+def _wav() -> bytes:
+    """A second of silence as a WAV file: audio markitdown's speech converter accepts."""
+    import io
+    import struct
+    import wave
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(8000)
+        out.writeframes(struct.pack("<h", 0) * 8000)
+    return buffer.getvalue()
+
+
+class TestAudioIsNeverSentAnywhere:
+    """Regression: markitdown's audio converter uploads the whole recording to Google's
+    speech API (``speech_recognition.Recognizer.recognize_google``): a request outside the
+    requester, its rate limit, its spans and the capture log, to a third party the mission
+    never named. Neither the ``web`` collector's converter nor ``$markitdown`` may reach it.
+
+    The speech client is faked, so a call is seen rather than sent."""
+
+    @pytest.fixture
+    def speech_calls(self, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        calls: list[int] = []
+
+        def recognize_google(self: Any, audio: Any, *args: Any, **kwargs: Any) -> str:
+            calls.append(len(audio.get_wav_data()))
+            return "a transcript"
+
+        monkeypatch.setattr("speech_recognition.Recognizer.recognize_google", recognize_google)
+        return calls
+
+    def test_audio_the_web_collector_fetched_is_not_transcribed(
+        self, speech_calls: list[int]
+    ) -> None:
+        from recon.adapters._out.markitdown_converter import MarkitdownConverter
+        from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
+        from recon.adapters._out.web_collector import WebCollector
+        from recon.domain.http import HttpResponse
+        from recon.domain.models import CollectorEntry, SourceEntry
+
+        class Requester:
+            def get(self, source: SourceEntry, url: str, **kwargs: Any) -> HttpResponse:
+                body = _wav()
+                return HttpResponse(
+                    status_code=200,
+                    headers={"content-type": "audio/x-wav"},
+                    body=body,
+                    text="",
+                    url=url,
+                    content_type="audio/x-wav",
+                )
+
+        collector = WebCollector(Requester(), MarkitdownConverter(), DEFAULT_USER_AGENT)  # type: ignore[arg-type]
+        source = SourceEntry(name="s", type="web", url="https://x.test/talk.wav")
+        entry = CollectorEntry(name="c", type="web", source="s")
+
+        with pytest.raises(CollectionError) as excinfo:
+            list(collector.collect(entry, source))
+
+        assert speech_calls == []
+        assert "audio" in (excinfo.value.fix or "")
+
+    @pytest.mark.parametrize("name", ["talk.wav", "talk.mp3", "talks.zip"])
+    def test_a_local_audio_file_is_not_transcribed(
+        self, speech_calls: list[int], tmp_path: Path, name: str
+    ) -> None:
+        """A zip is converted entry by entry by the same markitdown, so a recording inside
+        one is held to the same rule."""
+        import zipfile
+
+        from recon.adapters._out.markitdown_converter import markitdown_path
+
+        if name.endswith(".zip"):
+            with zipfile.ZipFile(tmp_path / name, "w") as archive:
+                archive.writestr("talk.wav", _wav())
+        else:
+            (tmp_path / name).write_bytes(_wav())
+
+        # Refusing the recording is allowed; sending it anywhere is not.
+        with contextlib.suppress(CollectionError):
+            markitdown_path(name, roots=[tmp_path], base=tmp_path)
+
+        assert speech_calls == []
+
+    def test_markitdown_holds_only_the_converters_recon_audited(self) -> None:
+        """The audit in SECURITY.md (boundary 3) names these; a converter that is added
+        must be read for what it reaches before it is listed here."""
+        from recon.adapters._out.markitdown_converter import confined_markitdown
+
+        held = {type(r.converter).__name__ for r in confined_markitdown()._converters}
+        assert held == {
+            "PlainTextConverter",
+            "ZipConverter",
+            "HtmlConverter",
+            "RssConverter",
+            "WikipediaConverter",
+            "BingSerpConverter",
+            "DocxConverter",
+            "XlsxConverter",
+            "XlsConverter",
+            "PptxConverter",
+            "ImageConverter",
+            "IpynbConverter",
+            "PdfConverter",
+            "OutlookMsgConverter",
+            "EpubConverter",
+            "CsvConverter",
+        }
 
 
 class TestNestedRecords:

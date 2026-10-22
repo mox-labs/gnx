@@ -2,9 +2,9 @@
 
 HTTP is delegated to the injected Requester (shared rate-limited instance);
 conversion is delegated to the injected DocumentConverter (markitdown by
-default — handles HTML, PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP,
-images with OCR, audio transcription). Everything it converts is what the
-Requester fetched: nothing more is fetched for a page.
+default — handles HTML, PDF, DOCX, PPTX, XLSX, EPub, CSV, JSON, XML, ZIP and
+images; not audio). Everything it converts is what the Requester fetched:
+nothing more is fetched for a page, and nothing is sent anywhere.
 
 The collector is format-agnostic: same code path for a web page, a PDF
 URL or a DOCX download. Returns Iterator[dict] —
@@ -120,7 +120,7 @@ def _url(entry: CollectorEntry, source: SourceEntry) -> str:
 def _headers(source: SourceEntry, user_agent: str) -> dict[str, str]:
     return {
         "User-Agent": source.user_agent or user_agent,
-        # Any type: the converter handles PDF, DOCX, images and audio as well as HTML.
+        # Any type: the converter handles PDF, DOCX and images as well as HTML.
         "Accept": "*/*",
     }
 

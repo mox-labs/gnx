@@ -96,8 +96,18 @@ a collected value. It reads only under the mission directory and the catalog's `
 sources (after resolving symlinks and `..`), and it never fetches a URL; either refusal
 fails the table with a config error (R-6).
 
-A `web` collector's page is converted from the bytes the requester fetched and nothing
-else: the converter is never given a URL it would fetch more from by itself (R-12).
+A `web` collector's page, and the file `$markitdown` opens, are converted from their bytes
+and nothing else. recon builds markitdown with a named list of converters, audited for
+markitdown 0.1.5, and none of them reaches the network or starts a process: plain text,
+HTML, ZIP (each entry by the same list), RSS, Wikipedia and Bing result pages (parsed, not
+fetched), DOCX, XLSX, XLS, PPTX, images, notebooks, PDF, Outlook messages, EPub and CSV.
+Left out are the audio converter, which uploads the recording to Google's speech API
+(R-14); the YouTube converter, which asks YouTube for a transcript (R-12); the Azure
+Document Intelligence converter, which uploads the document; markitdown's plugins; and
+exiftool, which markitdown would run on images and audio. The image and PPTX converters
+call a model only when given a client, and recon gives none. A converter a later markitdown
+adds is not registered until it has been read and listed. Audio is therefore not converted:
+it fails the table, naming the document.
 
 ### 4. Capture logs → the capture collector
 
@@ -354,8 +364,9 @@ Given a YouTube watch URL, markitdown's YouTube converter asked YouTube for the 
 transcript itself: a request outside the requester, its rate limit, `max_bytes`, spans and
 the capture log, the class of bypass R-6 closed for `$markitdown`. Its failures were printed
 on stdout, where `--json` writes the document. Fixed: the converter is given the page's
-bytes and content type, and no URL markitdown would fetch more from, so the page converts
-as the HTML it is. Its transcript is not collected.
+bytes and content type, and markitdown is built without its YouTube converter (boundary 3
+lists what it is built with), so the page converts as the HTML it is. Its transcript is not
+collected.
 
 Regression: `test_a_youtube_page_is_converted_from_its_bytes_and_nothing_more_is_fetched` in
 `recon/tests/test_transforms.py`.
@@ -373,6 +384,20 @@ Regression: `test_a_remotes_token_never_follows_a_redirect_off_its_origin`,
 `test_the_sdks_client_follows_no_redirect_itself` and
 `test_fastmcps_own_spans_which_carry_a_tools_error_text_are_not_made` in
 `recon/tests/test_mcp_collector.py`.
+
+### R-14 — audio was uploaded to Google's speech API (fixed)
+
+markitdown's audio converter transcribes a recording with `speech_recognition`'s
+`recognize_google`, which uploads the whole recording to Google. A `web` collector that
+fetched `audio/*`, and `$markitdown` on a local `.wav` or `.mp3` (or one inside a ZIP), sent
+it there: no requester, rate limit, span or capture, to a third party the mission never
+named. R-12 had closed the YouTube converter alone. Fixed: recon no longer builds markitdown
+with every built-in; it registers a named list of converters, audited for what they reach
+(boundary 3), and audio is not among them.
+
+Regression: `TestAudioIsNeverSentAnywhere` in `recon/tests/test_transforms.py`, which fakes
+the speech client and fails if it is called, and
+`test_markitdown_holds_only_the_converters_recon_audited`, which holds the list to the audit.
 
 ## Not covered
 
