@@ -58,9 +58,9 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("matrix config --sources", "the files the config is read from, lowest priority first"),
     ("matrix config", "the merged config"),
     ("matrix check", "compose runtimes and agents, wire the components; calls nothing"),
-    ("matrix plan", "the order of work, effects, agents, spend; every problem at once"),
+    ("matrix plan", "the order of work, effects, agents, agent calls; every problem at once"),
     ("matrix run --input KIND=PATH", "run it; prints the run id and its record's files"),
-    ("matrix runs", "the recorded runs, oldest first: id, status, start, spend, where"),
+    ("matrix runs", "the recorded runs, oldest first: id, status, start, where"),
     ("matrix agents", "the agents the config defines, with their runtimes"),
     ("matrix catalog [--point P]", "every registered extension, and any that failed to load"),
     ("matrix describe TYPE_URL", "one extension: its config schema, needs and effects"),
@@ -87,8 +87,8 @@ CONFIG_KEYS: dict[str, str] = {
     "components": "a list of `{name, type, config}`: the components of a run",
     "inputs": "the kinds the caller supplies when it runs the components",
     "store": "where runs are recorded: `{type, ...options}`; default `jsonl` under `.matrix/runs`",
-    "limits": "concurrency, deadlines, grace, cleanup, `on_failure`, `retry`, `spend_usd` (the "
-    "most a run's agent sessions may spend), per-component overrides",
+    "limits": "concurrency, deadlines, grace, cleanup, `on_failure`, `retry`, per-component "
+    "overrides",
     "models": "a hardline registry handed to every `type: model` runtime without its own",
 }
 
@@ -182,7 +182,6 @@ matrix:
     claimer: {runtime: offline, system_prompt: 'List the claims. Reply with JSON only.'}
     rater: {runtime: offline, system_prompt: 'Rate the claims 1-5. Reply {"score": N} only.'}
   inputs: [acme.v1.diff]
-  limits: {spend_usd: 2.0}        # start no agent session that could pass $2
   components:
     - name: claim
       type: matrix.v1.agent-step
@@ -367,7 +366,7 @@ A `./matrix.yaml` of two agent steps that composes, plans and runs in this build
   or a full model id; on `model`, a hardline registry name.
 
 The order of `components` means nothing: the work is ordered by the kinds. Agent steps and
-runtimes in full: `matrix --skill -r agents`; store, limits, spend and retries: `-r config`."""
+runtimes in full: `matrix --skill -r agents`; store, limits and retries: `-r config`."""
 
 
 def _commands() -> str:
@@ -378,8 +377,8 @@ def _commands() -> str:
 
 {_fence("bash", lines)}
 
-Plan before you run: `plan` is free and reports every problem at once, `run` may call
-models and spend. Each takes `--json` and then prints one document with a `schema` field on
+Plan before you run: `plan` calls nothing and reports every problem at once, `run` may
+call models. Each takes `--json` and then prints one document with a `schema` field on
 stdout (`matrix.v1.config`, `matrix.v1.config-sources`, `matrix.v1.check`, `matrix.v1.plan`,
 `matrix.v1.run`, `matrix.v1.runs`, `matrix.v1.agents`, `matrix.v1.catalog`,
 `matrix.v1.extension`), with its
@@ -419,7 +418,7 @@ JSON line under `--json`:
   means checking stopped early, so fix these and check again.
 - Problem kinds: {kinds}; matrix's own: {own}. A failed run exits `run_failed` with the
   component's error kind in `error.details.cause` (`contract`: it broke what it declares;
-  `component`: it raised; `spend`: the run's spend ceiling refused it an agent session).
+  `component`: it raised).
 - Tolerate an error kind, a problem kind or a field you do not know: each set grows. Refuse
   a `schema` whose major is not `v1`.
 
@@ -430,8 +429,8 @@ JSON line under `--json`:
 
 #: The references ``matrix --skill -r NAME`` prints, and what each holds.
 REFERENCES: dict[str, str] = {
-    "config": "every config key in full: the store, limits, spend and retries, merging, --only",
-    "agents": "agent steps in full, the mock's replies, each runtime's models and budget",
+    "config": "every config key in full: the store, limits and retries, merging, --only",
+    "agents": "agent steps in full, the mock's replies, each runtime's models and limits",
     "running": "plan then run: inputs, run ids, reading a run's record, `matrix runs`, --from",
     "telemetry": "OpenTelemetry from the standard variables, the conventions followed, the "
     "local event log",
@@ -459,7 +458,6 @@ matrix:
     cleanup_s: 30                           # for a cancelled component, or one release
     on_failure: isolate                     # fast (default): stop all; isolate: dependents
     retry: {attempts: 3, backoff_s: 2, errors: [transient]}
-    spend_usd: 5.0                          # start no agent session that could pass $5
     components:
       review: {deadline_s: 1800, retry: {attempts: 5, errors: [rate_limited]}}
 """
@@ -512,20 +510,6 @@ run is not stopping, and the failed attempt handed over no rows: rows are part o
 record and a second attempt would add to them. The wait is `backoff_s * multiplier ** (n -
 1)`, or the `retry_after_s` the failure reported, never more than `max_wait_s`. The key is
 `errors`, not `on`: YAML reads a bare `on` as `true`.
-
-## spend
-
-`spend_usd` is the most a run may spend on agent sessions, in USD, as their runtimes report
-it. Before each session the run holds it to that: a runtime that bounds one session
-(`claude-sdk` with `max_budget_usd`) gets one only if what is spent, what the sessions in
-flight may spend, and that bound stay within the ceiling; a runtime that bounds none gets
-one only while the ceiling is not reached, so the sessions in flight may pass it. A session
-refused never starts, and its step fails with `error.details.cause` `spend`. `run.json`
-records what was spent (`spend_usd`): 0 on the mock, null when no session reported a cost.
-`matrix plan` states the bound (`spend.cost_usd_max`): every session's budget summed, or
-the ceiling when lower; null while a runtime that calls a model bounds no session, and
-`spend.note` says which. The `model` runtime reports tokens,
-not dollars: the ceiling counts nothing for it; bound it with `max_tokens`.
 """
 
 
@@ -538,10 +522,10 @@ def _reference_running() -> str:
 `matrix plan [CONFIG] --json` composes, wires and reports, calling nothing:
 `stages` (what starts together), each component's `requires`, `provides`, `after`,
 `effects` and `attempts`, the `agents` and `runtimes` in use, `effects` for the whole run
-(null when any is unknown, never read as none), `spend` (`agent_calls_min`,
-`agent_calls_max`, `cost_usd_max`: 0.0 when nothing calls a model, null when that is not
-knowable), the `store` and where a run would be recorded, and the `limits`. A problem
-anywhere is the error envelope with every problem.
+(null when any is unknown, never read as none), `agent_calls_min` and `agent_calls_max`
+(one call per agent step at least, one per attempt at most; the max is null when a
+component that is not an agent step may call a model), the `store` and where a run would
+be recorded, and the `limits`. A problem anywhere is the error envelope with every problem.
 
 `matrix run [CONFIG] --input KIND=PATH ... --json` runs it. Each `--input` file holds one
 JSON value a line, the rows of that run-input kind (`-` is standard input, once). It prints
@@ -555,13 +539,12 @@ error.
 ## The record, and how to read it
 
 `matrix run` prints where the record is and its files; `matrix runs` lists every recorded
-run, oldest first, a line each: id, status, start, what it spent in USD (`-` when no session
-reported a cost) and where; with `--json`, `run_id`, `status`, `started`, `ended`,
-`location`, `spend_usd`.
+run, oldest first, a line each: id, status, start and where; with `--json`, `run_id`,
+`status`, `started`, `ended`, `location`.
 With the default store a run is a directory under `.matrix/runs/<run_id>/`:
 
 - `run.json`: the run document, replaced once when the run ends: `status`, `components` (how
-  each ended), `failures`, `spend_usd`, and `tables` (each kind's file and row count);
+  each ended), `failures`, and `tables` (each kind's file and row count);
 - `<kind>.jsonl`: one per kind, each line one row as recorded; an agent step's `response`
   rows are `AgentResponse`s, the task as sent in `task`, the reply in `content`;
 - `matrix.v1.ledger.jsonl`: which component handed each row over, and when;
@@ -595,7 +578,7 @@ import matrix
 plan = matrix.plan_config(config="live.yaml", only=True)
 container = matrix.compose(matrix.load_config(sources=["live.yaml"]))
 run = asyncio.run(container.run({"acme.v1.diff": ["..."]}))
-print(run.status, run.spend_usd, container.location(run.run_id))
+print(run.status, container.location(run.run_id))
 ```
 
 `check_config`, `list_agents` and `list_runs` take the same `(tool, config, *, only)`.
@@ -639,9 +622,10 @@ def _reference_agents() -> str:
   shows each task as sent. `model` is recorded, never used.
 - `claude-sdk` (extra `claude`): Claude Agent SDK sessions with tools. `model`: an alias the
   Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as
-  `claude-sonnet-4-5`); unset, the CLI's default. `max_budget_usd` ends a session once it
-  has spent that (`stop: max_budget_usd`) and is the bound `spend_usd` holds it to;
-  `max_turns` (on the agent) bounds its turns; `permission_mode` defaults to `default`.
+  `claude-sonnet-4-5`); unset, the CLI's default. `max_budget_usd` is the SDK's own option:
+  the SDK ends a session once it has spent that many USD (`stop: max_budget_usd`), and
+  `cost_usd` is what the SDK reported; `max_turns` (on the agent) bounds its turns;
+  `permission_mode` defaults to `default`.
 - `model` (extra `models`): one call through hardline, no tools. `model`: a hardline
   registry name (`matrix.models`, or hardline's own tiers); unset, `default_model`.
   `max_tokens` bounds a reply; it reports no cost.
@@ -691,7 +675,8 @@ The GenAI semantic conventions as read on 2026-10-19 (repository
   `gen_ai.invoke_agent.tool_calls`, `gen_ai.execute_tool.duration`,
   `gen_ai.client.inference.usage.input_tokens` / `output_tokens`; matrix's own where the
   conventions have none: `matrix.component.duration`, `matrix.component.count`,
-  `matrix.component.retries`, `matrix.agent.cost_usd`, `matrix.events.dropped`; and each
+  `matrix.component.retries`, `matrix.agent.cost_usd` (as a runtime reported it),
+  `matrix.events.dropped`; and each
   `ctx.measure` under its own name.
 """
 

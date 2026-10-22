@@ -1,4 +1,4 @@
-"""``matrix plan`` says what a run would do and spend; ``matrix run`` runs it. Both read the
+"""``matrix plan`` says what a run would do; ``matrix run`` runs it. Both read the
 tiers plus a named CONFIG (``-`` is standard input), print one document, and exit by the
 agreed table."""
 
@@ -55,9 +55,11 @@ def _cli(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, Any, str]
 # --- plan -------------------------------------------------------------------------------
 
 
-def test_plan_says_the_order_effects_agents_and_spend_and_runs_nothing(
+def test_plan_says_the_order_effects_agents_and_agent_calls_and_runs_nothing(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Changed requirement: the plan states no spend (spend was removed); the agent-call
+    counts it held are the plan's own."""
     code, plan, _ = _cli(capsys, "plan", "--json")
     assert code == 0 and plan["schema"] == "matrix.v1.plan"
     assert plan["inputs"] == ["acme.v1.diff"] and plan["stages"] == [["review"]]
@@ -67,22 +69,25 @@ def test_plan_says_the_order_effects_agents_and_spend_and_runs_nothing(
     assert plan["agents"] == [
         {"name": "reviewer", "runtime": "offline", "runtime_type": "mock", "model": "m1"}
     ]
-    assert plan["spend"]["agent_calls_min"] == plan["spend"]["agent_calls_max"] == 1
-    assert plan["spend"]["cost_usd_max"] == 0.0
+    assert plan["agent_calls_min"] == plan["agent_calls_max"] == 1
+    assert "spend" not in plan
     assert plan["store"]["location"].endswith(".matrix/runs/RUN_ID")
     assert not (project / ".matrix").exists()  # nothing ran
 
 
-def test_a_model_runtime_s_spend_is_not_knowable(
+def test_the_plan_counts_an_agent_call_for_each_attempt_on_claude_sdk(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Regression: this test was named for the model runtime, configured ``claude-sdk`` and
+    failed where the SDK is not installed. One step, three attempts: one to three calls."""
+    pytest.importorskip("claude_agent_sdk")
     (project / "matrix.yaml").write_text(
         CONFIG.replace('{type: mock, default: \'{"verdict": "ok"}\'}', "{type: claude-sdk}")
         + "  limits: {retry: {attempts: 3}}\n"
     )
     code, plan, _ = _cli(capsys, "plan", "--json")
     assert code == 0
-    assert plan["spend"]["cost_usd_max"] is None and plan["spend"]["agent_calls_max"] == 3
+    assert (plan["agent_calls_min"], plan["agent_calls_max"]) == (1, 3)
     assert "model" in plan["runtimes"][0]["effects"]
 
 
@@ -110,6 +115,17 @@ def test_a_config_that_does_not_compose_leaves_its_components_unchecked(
     (project / "matrix.yaml").write_text(CONFIG.replace("type: mock,", "type: mok,"))
     code, _, err = _cli(capsys, "plan", "--json")
     assert code == 3 and json.loads(err)["error"]["complete"] is False
+
+
+def test_a_spend_ceiling_is_refused_not_ignored(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Regression: spend was removed. A config that still sets ``limits.spend_usd`` would
+    run with no ceiling at all, so the key is a config problem, named where it is."""
+    (project / "matrix.yaml").write_text(CONFIG + "  limits: {spend_usd: 1.0}\n")
+    code, _, err = _cli(capsys, "plan", "--json")
+    (found,) = json.loads(err)["error"]["problems"]
+    assert code == 3 and found["path"] == "matrix.limits.spend_usd"
 
 
 def test_limits_naming_a_component_that_is_not_configured(
@@ -234,6 +250,7 @@ def test_run_names_the_files_of_its_record_and_runs_lists_them(
         ("two", "completed"),
     ]
     assert listed["runs"][0]["location"] == ".matrix/runs/one" and listed["runs"][0]["started"]
+    assert "spend_usd" not in listed["runs"][0]  # spend was removed
     code, text, _ = _cli(capsys, "runs")
     assert code == 0 and text.splitlines()[0].split()[:2] == ["one", "completed"]
 

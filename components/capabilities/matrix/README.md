@@ -339,27 +339,26 @@ other is quarantined, so nothing can replace a built-in by loading first.
 ## Running a config
 
 The config declares a run: its `components`, its `inputs`, where it is recorded (`store`,
-default JSONL under `.matrix/runs`) and its `limits` (deadlines, concurrency, retries, and
-`spend_usd`, the most its agent sessions may spend). Plan it, then run it:
+default JSONL under `.matrix/runs`) and its `limits` (deadlines, concurrency, retries).
+Plan it, then run it:
 
 ```bash
-matrix plan --json                                  # order of work, effects, agents, spend; runs nothing
+matrix plan --json                                  # order of work, effects, agents, agent calls; runs nothing
 matrix run --input acme.v1.diff=diffs.jsonl --json  # one JSON row a line; - is standard input
-matrix runs                                         # every recorded run: id, status, start, spend, where
+matrix runs                                         # every recorded run: id, status, start, where
 matrix run --from 20261019T101500Z-3f2a             # its inputs, reusing what completed unchanged
 matrix plan live.yaml --only                        # one config on its own, none of the tiers
 matrix run live.yaml --only --input acme.v1.diff=diffs.jsonl  # recorded in its store, .matrix/runs by default
 ```
 
 `plan` composes and wires and reports every problem at once, each with its key path and the
-file that set it; its `spend` says how many agent calls a run makes and the most it may cost:
-nothing when nothing calls a model, each session's `max_budget_usd` (a `claude-sdk` runtime
-option) summed, or the `spend_usd` ceiling when that is lower; unknown, with what would bound
-it, while a runtime bounds no session. `run` prints the run id, where the record is, and its
+file that set it, and how many agent calls a run makes (`agent_calls_min`,
+`agent_calls_max`). matrix states no cost and keeps no spending ceiling: a run's cost is not
+something it can measure, so it does not pretend to. `run` prints the run id, where the record is, and its
 files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as
-sent), `matrix.v1.ledger.jsonl` and `events.jsonl`. `run.json` records what the run spent
-(`spend_usd`): 0 on the `mock` runtime, `null` when no session reported a cost (the `model`
-runtime reports none). From Python it is `compose(load_config()).run(inputs)`, and
+sent), `matrix.v1.ledger.jsonl` and `events.jsonl`. Each reply row keeps its tokens, and the cost
+the runtime reported when it reported one (`cost_usd`), as facts of that session. From
+Python it is `compose(load_config()).run(inputs)`, and
 `plan_config(tool="matrix", config=None, *, only=False)` the plan: the first argument is the
 tool, a path goes in `config`.
 
@@ -402,7 +401,7 @@ matrix describe TYPE_URL [--json]             # config schema, needs, effects, o
 matrix config [CONFIG]... [--sources] [--json]  # the merged config and the files it came from
 matrix check [CONFIG]... [--json]           # compose runtimes and agents, wire the components; call nothing
 matrix agents [CONFIG]... [--json]          # the agents a config defines
-matrix plan [CONFIG]... [--json]            # what a run would do and spend; runs nothing
+matrix plan [CONFIG]... [--json]            # what a run would do; runs nothing
 matrix run [CONFIG]... [--input KIND=PATH]... [--run-id ID] [--from RUN_ID] [--json]
 matrix runs [CONFIG]... [--json]            # the recorded runs, oldest first
 ```

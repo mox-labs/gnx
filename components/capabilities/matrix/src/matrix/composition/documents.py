@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from matrix.composition.config import Location
     from matrix.composition.container import Container
     from matrix.domain.component import Wiring
-    from matrix.domain.config import Config, MatrixConfig
+    from matrix.domain.config import Config
     from matrix.domain.registry import Entry, Registry
 
 
@@ -162,23 +162,6 @@ class PlannedRuntime(_Document):
     effects: list[str] | None
 
 
-class Spend(_Document):
-    """What a run would spend, as far as it can be known before it runs."""
-
-    #: Agent sessions: at least one per agent step, at most one per attempt. ``max`` is None
-    #: when a component that is not an agent step may call a model.
-    agent_calls_min: int
-    agent_calls_max: int | None
-    #: The most it can cost in USD: 0.0 when nothing in the run calls a model; the sessions'
-    #: own budgets (``max_budget_usd``) summed, or the ceiling when that is lower; None when
-    #: a session that may call a model has no budget.
-    cost_usd_max: float | None
-    #: ``matrix.limits.spend_usd``: the run starts no agent session that could pass it.
-    ceiling_usd: float | None = None
-    #: How the bound was reached, or what would make one.
-    note: str
-
-
 class RunSummary(_Document):
     run_id: str
     #: ``running``, ``completed``, ``failed``, ``cancelled``, or ``interrupted`` for one whose
@@ -189,8 +172,6 @@ class RunSummary(_Document):
     #: Where its record is: for the JSONL store, the directory holding ``run.json``, a
     #: ``<kind>.jsonl`` per kind, ``matrix.v1.ledger.jsonl`` and ``events.jsonl``.
     location: str
-    #: What its agent sessions reported spending, when they reported it.
-    spend_usd: float | None = None
 
 
 class Runs(_Document):
@@ -223,7 +204,10 @@ class Plan(_Document):
     runtimes: list[PlannedRuntime]
     #: Every effect the components declare; None when any component's are unknown.
     effects: list[str] | None
-    spend: Spend
+    #: Agent sessions: at least one per agent step, at most one per attempt. ``max`` is None
+    #: when a component that is not an agent step may call a model.
+    agent_calls_min: int
+    agent_calls_max: int | None
     store: StorePlan
     limits: dict[str, Any]
     warnings: list[Problem] = []
@@ -418,8 +402,8 @@ def plan_config(
     only: bool = False,
 ) -> Plan:
     """What a run of ``tool``'s configured components would do: the order of work, what each
-    component touches, the agents and runtimes it uses, what it could spend, where it would
-    be recorded. Composes and wires; runs nothing and calls nothing.
+    component touches, the agents and runtimes it uses, how many agent calls it makes, where
+    it would be recorded. Composes and wires; runs nothing and calls nothing.
 
     Raises ConfigError with every problem found (``complete`` False when one kept a check
     from being made).
@@ -467,7 +451,6 @@ def list_runs(
     found = []
     for run_id in store.runs():
         record = store.describe(run_id)
-        spent = record.get("spend_usd")
         found.append(
             RunSummary(
                 run_id=run_id,
@@ -475,7 +458,6 @@ def list_runs(
                 started=record.get("started"),
                 ended=record.get("ended"),
                 location=location_of(store, run_id),
-                spend_usd=spent if isinstance(spent, int | float) else None,
             )
         )
     return Runs(store=store_type_url(loaded.matrix.store.type), runs=found)
@@ -502,8 +484,6 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
     used: dict[str, str] = {}
     calls_min = calls_max = 0
     countable = True  # no component but an agent step may call a model
-    budgeted = 0.0  # what the sessions that may call a model may spend, by their own budgets
-    unbudgeted: set[str] = set()  # runtimes whose sessions may call a model with no budget
     for name in wiring.order():
         component = wiring.components[name]
         entry = entries[name]
@@ -516,12 +496,6 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
             used[agent] = runtime
             calls_min += 1
             calls_max += attempts
-            if effects is None or "model" in effects:
-                budget = getattr(container.runtimes[runtime], "budget_usd", None)
-                if budget is None:
-                    unbudgeted.add(runtime)
-                else:
-                    budgeted += attempts * budget
         elif effects is None or "model" in effects:
             countable = False
         components.append(
@@ -541,7 +515,6 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
         name: _runtime_effects(container, matrix.runtimes[name].type)
         for name in sorted(set(used.values()))
     }
-    free = countable and all(e is not None and "model" not in e for e in runtimes.values())
     declared = wiring.declared_effects()
     return Plan(
         tool=tool,
@@ -563,15 +536,8 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
             for name, effects in runtimes.items()
         ],
         effects=None if declared is None else sorted(declared),
-        spend=_spend(
-            matrix,
-            calls_min,
-            calls_max if countable else None,
-            free=free,
-            budgeted=budgeted if countable and not unbudgeted else None,
-            unbudgeted=sorted(unbudgeted),
-            ceiling=container.limits.spend_usd,
-        ),
+        agent_calls_min=calls_min,
+        agent_calls_max=calls_max if countable else None,
         store=StorePlan(
             type=store_type_url(matrix.store.type),
             location=location_of(container.store, "RUN_ID"),
@@ -579,57 +545,6 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
         limits=container.limits.model_dump(mode="json", exclude_defaults=True),
         warnings=list(container.warnings),
     )
-
-
-def _spend(
-    matrix: MatrixConfig,
-    calls_min: int,
-    calls_max: int | None,
-    *,
-    free: bool,
-    budgeted: float | None,
-    unbudgeted: list[str],
-    ceiling: float | None,
-) -> Spend:
-    """The most a run may spend, and how that was reached or what would bound it."""
-    if free:
-        cost, note = 0.0, "nothing in this run calls a model"
-    elif budgeted is not None:
-        cost = budgeted if ceiling is None else min(ceiling, budgeted)
-        note = "each session that may call a model is bounded by its runtime's max_budget_usd"
-        if ceiling is not None:
-            note += f"; the run starts no session that could pass ${ceiling:.2f}"
-    else:
-        cost = None
-        remedies = [_unbounded(name, matrix.runtimes[name].type) for name in unbudgeted]
-        if calls_max is None:
-            remedies.append("a component that is not an agent step may call a model")
-        note = "not knowable before the run: " + "; ".join(remedies)
-        note += (
-            f"; the run starts no session once ${ceiling:.2f} is spent, but sessions in flight "
-            "may pass it"
-            if ceiling is not None
-            else "; set matrix.limits.spend_usd to stop starting sessions at a ceiling"
-        )
-    return Spend(
-        agent_calls_min=calls_min,
-        agent_calls_max=calls_max,
-        cost_usd_max=cost,
-        ceiling_usd=ceiling,
-        note=note,
-    )
-
-
-def _unbounded(name: str, kind: str) -> str:
-    """Why runtime ``name`` (of type ``kind``) leaves a run's spend unknown, and the remedy."""
-    if runtime_type_url(kind) == runtime_type_url("claude-sdk"):
-        return f"set max_budget_usd on runtime {name!r}"
-    if runtime_type_url(kind) == runtime_type_url("model"):
-        return (
-            f"runtime {name!r} ({kind}) reports no cost, so the record's spend_usd leaves its "
-            "sessions out (null when no session reports one); bound it with max_tokens"
-        )
-    return f"runtime {name!r} ({kind}) bounds no session's spend"
 
 
 def _runtime_effects(container: Container, kind: str) -> list[str] | None:

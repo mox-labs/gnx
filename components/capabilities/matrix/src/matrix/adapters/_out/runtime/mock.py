@@ -8,7 +8,7 @@ an agent step substitutes its inputs), ``by_agent`` keyed by the agent's name, `
 or else an echo, ``mock:<agent>:<task>``, which shows the task each agent was sent. The task
 as sent is also on every response an agent step records (``AgentResponse.task``) and in the
 run's ``matrix.agent.start`` events, and ``calls`` keeps each ``(agent, task)``. A reply
-reports what it cost, ``cost_usd`` 0.0: a run on the mock spent nothing, and records 0.
+reports what it cost, ``cost_usd`` 0.0: the mock calls nothing.
 
 Type URL: ``matrix.v1.runtime.mock``.
 """
@@ -31,7 +31,7 @@ class MockRuntimeConfig(BaseModel):
     agent's name, so each agent step gets its own reply; `default`; else the echo
     `mock:<agent>:<task>`. An agent step with `output` needs a JSON reply. An agent's `model`
     is recorded on its responses, never used; any value is accepted. Each reply costs 0 USD,
-    and says so (`cost_usd: 0.0`), so a run on it records `spend_usd: 0.0`."""
+    and says so (`cost_usd: 0.0`)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -64,7 +64,7 @@ class MockRuntime:
         return AgentResponse(
             content=text,
             num_turns=1,
-            cost_usd=0.0,  # spent nothing, and reports it: a run's spend_usd is 0, not unknown
+            cost_usd=0.0,  # calls nothing, and says so: 0, not unknown
             family=self._config.family,
             model=definition.model,
             stop="completed",

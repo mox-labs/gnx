@@ -30,7 +30,6 @@ from matrix.domain.observer import (
     Event,
     emit,
 )
-from matrix.domain.spend import CURRENT_SPEND
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -167,18 +166,9 @@ class BoundAgent:
     async def run(self, task: str) -> AgentResponse:
         """Run the definition on the runtime. Emits ``matrix.agent.start`` (with the task as
         sent) and ``.end``, and a ``matrix.tool.start``/``.end`` pair for each tool call the
-        runtime timed.
-
-        Inside a run, the session is held to the run's spend ceiling first: raises
-        :class:`~matrix.domain.errors.SpendError`, starting nothing, when it could pass it.
-        """
+        runtime timed."""
         span = uuid.uuid4().hex
         name = self._definition.name
-        spend = CURRENT_SPEND.get()
-        held = 0.0
-        if spend is not None:
-            held = spend.hold(name, getattr(self._runtime, "budget_usd", None))
-        cost: float | None = None
         scope = CURRENT_SPAN.get()
         run_id, parent, component = (
             (scope.run_id, scope.span, scope.component) if scope else (None, None, None)
@@ -213,13 +203,10 @@ class BoundAgent:
                 provider=response.provider,
                 tool_calls=len(response.tool_calls),
             )
-            cost = response.cost_usd
             for call in response.tool_calls:
                 await self._tool(call, span, run_id, component)
             return response
         finally:
-            if spend is not None:
-                spend.settle(held, cost)
             fields["duration_ms"] = int((time.monotonic() - started) * 1000)
             ended = Event(
                 AGENT_END,

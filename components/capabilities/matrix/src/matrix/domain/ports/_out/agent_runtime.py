@@ -10,10 +10,8 @@ session. Content is a sample, never guaranteed; a caller judges it, the runtime 
 cannot honour (a single-call runtime handed tools), so binding refuses it before anything runs.
 A runtime that accepts every definition implements it as a no-op.
 
-Two members are optional, read with ``getattr`` so a runtime written before them works
-unedited: ``warnings`` (problems a reader of its config should see) and ``budget_usd`` (the
-most one session may spend in USD, which a run's spend ceiling holds for each session; absent
-or None, a session has no bound of its own).
+One member is optional, read with ``getattr`` so a runtime written before it works
+unedited: ``warnings`` (problems a reader of its config should see).
 
 A runtime that also logs what its ``warnings`` say logs it on :data:`RUNTIME_LOGGER`, once per
 process, so a caller that builds a runtime per session is not told once per session. A

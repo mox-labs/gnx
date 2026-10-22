@@ -76,7 +76,6 @@ from .domain.errors import (
     RunCancelled,
     RunError,
     RuntimeReason,
-    SpendError,
     StoreError,
     UsageError,
 )
@@ -194,7 +193,6 @@ __all__ = [
     "Runs",
     "RuntimeConfig",
     "RuntimeReason",
-    "SpendError",
     "StoreConfig",
     "StoreError",
     "Telemetry",
