@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from pydantic import BaseModel, ValidationError, field_validator
@@ -20,6 +20,9 @@ from matrix import (
     RunError,
     wire,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 TEXT, UPPER, SCORE, OTHER = "acme.v1.text", "acme.v1.upper", "acme.v1.score", "acme.v1.other"
 
@@ -296,7 +299,7 @@ def test_limits_are_checked_when_made() -> None:
         {"on_failure": "retry"},
     ):
         with pytest.raises(ValidationError):
-            Limits(**bad)  # type: ignore[arg-type]
+            Limits(**bad)
 
 
 async def test_observers_see_the_run_and_one_failing_observer_cannot_stop_it() -> None:
@@ -359,13 +362,15 @@ async def test_a_context_built_by_hand_refuses_the_names_a_run_refuses() -> None
     from matrix import ContractError
 
     ctx = RunContext("r", "c")
-    for call in (
+    wrong: Any = "lots"  # a caller's value of the wrong type, as untyped code passes it
+    calls: tuple[Callable[[], object], ...] = (
         lambda: ctx.emit("tick"),
         lambda: ctx.emit("matrix.tick"),
         lambda: ctx.measure("rss", 1.0),
         lambda: ctx.measure("acme.rss", 1.0, kind="meter"),
-        lambda: ctx.measure("acme.rss", "lots"),
-    ):
+        lambda: ctx.measure("acme.rss", wrong),
+    )
+    for call in calls:
         with pytest.raises(ContractError):
             call()
     with pytest.raises(ContractError):

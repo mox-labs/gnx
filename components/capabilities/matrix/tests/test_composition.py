@@ -23,6 +23,7 @@ from matrix import (
 from matrix.adapters._out.runtime.mock import MockAgentRuntime
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
 
@@ -443,7 +444,7 @@ def test_an_agent_step_s_fingerprint_follows_its_agent_s_definition_and_runtime(
     """The reuse fingerprint covers what an agent is and where it runs: its prompt, model and
     tools, and its runtime's options (data-model.md; mx-tests 11)."""
 
-    def printed(agent: dict[str, object], runtime: dict[str, object]) -> str:
+    def printed(agent: Mapping[str, object], runtime: Mapping[str, object]) -> str:
         container = compose(
             _config(
                 agent_runtimes={"m": {"type": "mock", **runtime}},

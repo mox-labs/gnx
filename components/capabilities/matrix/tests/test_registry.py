@@ -332,11 +332,14 @@ def test_every_built_in_runtime_keeps_its_port() -> None:
 class _NoLoad:
     """A third party's store that forgot ``load``."""
 
-    def open(self, run: object) -> object: ...
+    def open(self, run: object) -> object:
+        raise NotImplementedError
 
-    def describe(self, run_id: str) -> dict[str, object]: ...
+    def describe(self, run_id: str) -> dict[str, object]:
+        raise NotImplementedError
 
-    def runs(self) -> list[str]: ...
+    def runs(self) -> list[str]:
+        raise NotImplementedError
 
 
 class _Silent:

@@ -703,7 +703,6 @@ def test_a_write_cut_short_leaves_no_torn_line_behind(
 ) -> None:
     """A write the disk cut short (a full disk) is taken back before the StoreError is raised,
     so the table never holds half a line while the process lives."""
-    from matrix.adapters._out.stores import jsonl
 
     store = JsonlConstructStore(tmp_path)
     run = Run(run_id="r", construct=Construct([TRIAL]))
@@ -715,7 +714,7 @@ def test_a_write_cut_short_leaves_no_torn_line_behind(
         real(descriptor, data[: len(data) // 2])
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(jsonl.os, "write", half)
+    monkeypatch.setattr(os, "write", half)
     with pytest.raises(StoreError, match="No space left"):
         writer.append(TRIAL, {"seq": 1, "note": "long enough to be cut in half"})
     assert (tmp_path / "r" / f"{TRIAL}.jsonl").read_text() == '{"seq": 0}\n'
@@ -745,8 +744,6 @@ def test_with_fsync_the_run_directory_is_flushed_too(
     flush (mx-src F28)."""
     import stat
 
-    from matrix.adapters._out.stores import jsonl
-
     flushed: list[bool] = []
     real = os.fsync
 
@@ -754,7 +751,7 @@ def test_with_fsync_the_run_directory_is_flushed_too(
         flushed.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
         real(descriptor)
 
-    monkeypatch.setattr(jsonl.os, "fsync", fsync)
+    monkeypatch.setattr(os, "fsync", fsync)
     run = Run(run_id="r", construct=Construct([TRIAL]))
     writer = JsonlConstructStore(tmp_path, fsync=True).open(run)
     assert True in flushed  # the directory, once its files exist
@@ -818,7 +815,6 @@ def test_run_json_is_only_ever_replaced_whole(
 ) -> None:
     """A reader sees the record as it was while running or the finished one, never a mixture:
     ``run.json`` is written to a sibling and renamed into place, at open and at finish."""
-    from matrix.adapters._out.stores import jsonl
 
     renamed: list[tuple[str, str]] = []
     real = os.replace
@@ -827,7 +823,7 @@ def test_run_json_is_only_ever_replaced_whole(
         renamed.append((os.path.basename(source), os.path.basename(target)))
         real(source, target)
 
-    monkeypatch.setattr(jsonl.os, "replace", replace)
+    monkeypatch.setattr(os, "replace", replace)
     run = Run(run_id="r", construct=Construct([TRIAL]))
     JsonlConstructStore(tmp_path).open(run).finish(run)
     assert renamed == [("run.json.tmp", "run.json")] * 2

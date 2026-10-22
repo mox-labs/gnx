@@ -200,7 +200,7 @@ async def test_the_stop_path_rows_and_releases_are_narrated() -> None:
     assert ("matrix.release.end", "good", "released") in told
     assert told[0][0] == "matrix.run.start" and told[-1] == ("matrix.run.end", None, "failed")
     ends = [e.component for e in recorder.events if e.name == "matrix.component.end"]
-    assert sorted(ends) == ["bad", "good", "later"]  # exactly one ending per component
+    assert sorted(ends, key=str) == ["bad", "good", "later"]  # exactly one ending per component
     failed = next(
         e for e in recorder.events if e.name == "matrix.component.end" and e.component == "bad"
     )
@@ -319,6 +319,7 @@ async def test_every_event_matrix_emits_carries_its_pinned_fields() -> None:
         AgentResponse,
         AgentRuntimeError,
         BoundAgent,
+        ComponentLimits,
         Limits,
         ModelStep,
         ModelStepConfig,
@@ -335,7 +336,7 @@ async def test_every_event_matrix_emits_carries_its_pinned_fields() -> None:
             call |= {"started": "2026-10-22T10:00:00+00:00", "ended": "2026-10-22T10:00:01+00:00"}
             return AgentResponse(content="ok", tool_calls=(call,))
 
-    agent = BoundAgent(AgentDefinition(name="rev"), Tools())
+    agent = BoundAgent(AgentDefinition(name="rev", system_prompt=""), Tools())
     kept: list[Any] = []
     tries: list[int] = []
 
@@ -373,7 +374,7 @@ async def test_every_event_matrix_emits_carries_its_pinned_fields() -> None:
     limits = Limits(
         on_failure="isolate",
         retry=Retry(attempts=2, backoff_s=0),
-        components={"slow": {"deadline_s": 0.05, "grace_s": 1}},
+        components={"slow": ComponentLimits(deadline_s=0.05, grace_s=1)},
     )
     with pytest.raises(RunError):  # slow overruns its deadline
         await Executor([recorder]).run(wiring, {PROMPT: "hi"}, limits=limits)

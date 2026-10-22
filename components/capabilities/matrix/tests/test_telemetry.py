@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 import matrix
-from matrix import MatrixConfig, compose, configure_telemetry
+from matrix import MatrixConfig, ObserverConfig, compose, configure_telemetry
 from matrix.adapters._in.cli import main
 from matrix.composition import telemetry
 
@@ -128,7 +128,12 @@ def test_otlp_follows_the_protocol_variable(monkeypatch: pytest.MonkeyPatch) -> 
         ("opentelemetry.exporter.otlp.proto.grpc.trace_exporter", "OTLPSpanExporter", "grpc"),
     ):
         fake = types.ModuleType(module)
-        setattr(fake, name, lambda endpoint=None, label=label: made.append(label) or object())
+
+        def exporter(endpoint: str | None = None, label: str = label) -> object:
+            made.append(label)
+            return object()
+
+        setattr(fake, name, exporter)
         monkeypatch.setitem(sys.modules, module, fake)
     telemetry._otlp("traces", None)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
@@ -182,7 +187,15 @@ def test_an_otel_observer_exports_content_only_when_its_config_says_so(
     monkeypatch.setenv("OTEL_TRACES_EXPORTER", "console")
     assert otel(MatrixConfig()).capture_content is False  # attached by the variables alone
     assert otel(MatrixConfig(observers=("otel",))).capture_content is False
-    asked = MatrixConfig(observers=({"type": "otel", "capture_content": True},))
+    asked = MatrixConfig(
+        observers=(ObserverConfig.model_validate({"type": "otel", "capture_content": True}),)
+    )
     assert otel(asked).capture_content is True
     with pytest.raises(matrix.ConfigError, match="capture_contents"):
-        compose(MatrixConfig(observers=({"type": "otel", "capture_contents": True},)))
+        compose(
+            MatrixConfig(
+                observers=(
+                    ObserverConfig.model_validate({"type": "otel", "capture_contents": True}),
+                )
+            )
+        )
