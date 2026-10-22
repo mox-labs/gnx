@@ -102,7 +102,9 @@ earlier run, by that component, which ends `reused`. A component is reused only 
 completed in that run (`completed` or `reused`; a `stopped` component's rows may be partial),
 its fingerprint (its type and config, and for an agent step its
 agent's definition and runtime) is the same, and every component it depends on is reused
-too: so what it was given then is what it would be given now. Then each row is recorded when its component
+too: so what it was given then is what it would be given now. A reused component whose
+rows its kind's schema now refuses ends `failed` and is not run again; what depends on it is
+skipped. Then each row is recorded when its component
 hands it over (`ctx.provide`) or, for what it returns, when it ends.
 
 When a component fails, the executor stops or skips the others as `Limits.on_failure` says,

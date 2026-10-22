@@ -46,6 +46,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   after a failed append (under `isolate`, or within its grace) could hand over a row,
   have the call return normally, and end `completed`, though the row was only in memory.
   Every append after a failed write-through now raises `StoreError`.
+- **A reused component whose rows are refused ends `failed` and is not run again.** Under
+  `on_failure: isolate`, a component whose stored rows its kind's schema now refused was
+  recorded as failed and then run again, and so were the reused components after it. It now
+  ends `failed` (reason `from run <id>`, none of its rows recorded), a reused component that
+  depends on it is skipped, and the other reused components are still reused.
 - **An input row that cannot be copied is refused before the record opens**, as the other
   input checks are. It used to open the run and leave a `completed` record with no
   components.

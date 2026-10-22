@@ -426,6 +426,66 @@ async def test_reuse_takes_the_prior_inputs_and_refuses_new_ones(tmp_path: Path)
         await compose(config, registry=_registry()).run({TEXT: ["b"]}, reuse_from="first")
 
 
+async def test_rows_that_cannot_be_reused_fail_that_component_and_skip_its_dependents() -> None:
+    """Under ``isolate`` the rest of the run goes on: the component whose stored rows its kind
+    now refuses ends ``failed`` and is not run again, what depends on it is skipped, and an
+    independent reused component is still reused."""
+    from pydantic import BaseModel
+
+    class Row(BaseModel):
+        n: int
+
+    ran: list[str] = []
+
+    class Make:
+        requires = (TEXT,)
+        provides = (UPPER,)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            ran.append("make")
+            return {UPPER: {"n": 1}}
+
+    class Use:
+        requires = (UPPER,)
+        provides = (COUNT,)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            ran.append("use")
+            return {COUNT: 1}
+
+    class Free:
+        requires = (TEXT,)
+        provides = ("acme.v1.free",)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            ran.append("free")
+            return {"acme.v1.free": 1}
+
+    wiring = wire(
+        {"make": Make(), "use": Use(), "free": Free()}, inputs=[TEXT], schemas={UPPER: Row}
+    )
+    reuse = Reuse(
+        run_id="old",
+        rows={
+            "make": {UPPER: ({"n": 1}, {"n": "not a number"})},
+            "use": {COUNT: (2,)},
+            "free": {"acme.v1.free": (3,)},
+        },
+    )
+    with pytest.raises(RunError) as e:
+        await Executor().run(wiring, {TEXT: "a"}, reuse=reuse, limits=Limits(on_failure="isolate"))
+    run = e.value.run
+    assert ran == []
+    assert {name: c.status for name, c in run.components.items()} == {
+        "make": "failed",
+        "use": "skipped",
+        "free": "reused",
+    }
+    assert run.components["use"].reason == "upstream: make"
+    assert [(f.component, f.kind) for f in run.failures] == [("make", "contract")]
+    assert run.rows(UPPER) == () and run.rows(COUNT) == () and run.rows("acme.v1.free") == (3,)
+
+
 async def test_the_executor_refuses_reuse_that_would_not_be_sound() -> None:
     wiring = wire({"upper": Upper(), "count": Count()}, inputs=[TEXT])
     with pytest.raises(ConfigError, match="depends on"):

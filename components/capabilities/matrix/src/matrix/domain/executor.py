@@ -741,20 +741,40 @@ class _Session:
                 )
 
     def _reuse(self, reuse: Reuse) -> None:
-        """Record each reused component's rows as it recorded them, and end it ``reused``."""
+        """Record each reused component's rows as it recorded them, and end it ``reused``.
+
+        A component whose rows cannot be recorded (its kind's schema now refuses one) ends
+        ``failed`` and is not run; a reused component that depends on it is skipped. What
+        comes after follows ``on_failure``, as for any failure: under ``isolate`` the other
+        reused components are still reused.
+        """
+        ended = self._run.components
+        why = f"from run {reuse.run_id}"
         for name in self._wiring.order():
             tables = reuse.rows.get(name)
             if tables is None:
                 continue
+            if self._halted is not None:
+                return  # what is left is skipped with the rest of the run
+            broken = [d for d in self._wiring.depends[name] if ended[d].status not in _DONE]
+            if broken:
+                self._skip(name, f"upstream: {broken[0]}")
+                continue
             try:
                 for kind, rows in tables.items():
                     for row in rows:
-                        self._record(name, kind, row)
+                        _validate(self._wiring, kind, row, where=f"reused {name!r} kind {kind!r}")
+                for kind, rows in tables.items():
+                    for row in rows:
+                        self._record(name, kind, row, checked=True)
             except MatrixError as e:
+                ending = ComponentEnding(status="failed", reason=why)
+                ended[name] = ending
+                self.tell(COMPONENT_END, {**ending.document(), "kind": e.kind}, component=name)
                 self._failed(name, e)
-                return
-            ending = ComponentEnding(status="reused", reason=f"from run {reuse.run_id}")
-            self._run.components[name] = ending
+                continue
+            ending = ComponentEnding(status="reused", reason=why)
+            ended[name] = ending
             self.tell(COMPONENT_END, ending.document(), component=name)
 
     def _finish(self) -> None:

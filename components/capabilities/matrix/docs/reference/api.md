@@ -353,8 +353,10 @@ async Executor.run(
    that is not reused is a `ConfigError`. All of this is checked before anything runs.
 2. With a `store`, the run's record is opened there. A run id that already exists is a
    `StoreError`, raised before anything runs. The inputs are then recorded, by `$input`,
-   and the rows of each reused component, by that component, which ends `reused`. When the
-   store's writer keeps events (the JSONL store writes `events.jsonl`), it is attached as one
+   and the rows of each reused component, by that component, which ends `reused`. A reused
+   component whose rows its kind's schema now refuses ends `failed` (reason `from run <id>`,
+   none of its rows recorded) and is not run again; a reused component that depends on it is
+   skipped, and `on_failure` decides the rest. When the store's writer keeps events (the JSONL store writes `events.jsonl`), it is attached as one
    more observer for the run.
 3. Scheduling is by readiness: a component starts when the providers of every kind it requires
    have finished, subject to `limits.concurrency`. It gets `Inputs` for those kinds, each row
@@ -401,7 +403,7 @@ running component by the same sequence, skips the rest, calls the releases, and 
 | `status` | `"running" \| "completed" \| "failed" \| "cancelled"` | |
 | `started` / `ended` | `datetime` / `datetime \| None` | UTC |
 | `failures` | `list[ComponentFailure]` | `component`, `kind`, `message` per failed component. `component` is `$input` or `$store` when it was the record, not a component, that failed |
-| `components` | `dict[str, ComponentEnding]` | name to how it ended: `status` (`ComponentStatus`: `completed`, `stopped`, `failed`, `cancelled`, `skipped`, `reused`), `reason` when it was stopped (`deadline`, `run_failed`, `cancelled`), skipped (`upstream: <name>`, `policy: fast`, `cancelled`, `store failed`) or reused (`from run <id>`), `duration_ms` (`None` when it never started), `abandoned` when it ignored cancellation, and `attempts` |
+| `components` | `dict[str, ComponentEnding]` | name to how it ended: `status` (`ComponentStatus`: `completed`, `stopped`, `failed`, `cancelled`, `skipped`, `reused`), `reason` when it was stopped (`deadline`, `run_failed`, `cancelled`), skipped (`upstream: <name>`, `policy: fast`, `cancelled`, `store failed`), or reused or failed while being reused (`from run <id>`), `duration_ms` (`None` when it never started), `abandoned` when it ignored cancellation, and `attempts` |
 | `reused_from` | `str \| None` | the run whose rows this one reused |
 | `fingerprints` | `dict[str, str]` | name to a digest of what the component was built from, when the wiring knows it |
 | `releases` | `list[ReleaseOutcome]` | `component`, `status`, `error` per deferred release, in the order called; `status` is `released`, `failed` or `abandoned` |
