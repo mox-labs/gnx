@@ -442,6 +442,8 @@ A run is one matrix run, and matrix's record is the only store:
   ix.v1.bindings.jsonl      what the environment provided
   ix.v1.interaction.jsonl   what happened in each trial, with any failure and its owner
   ix.v1.reading.jsonl       one row per metric per trial
+  matrix.v1.session.jsonl   one row per agent session or model call, failed ones included:
+                            the runtime, the model that answered, usage, ids, attempts
   matrix.v1.ledger.jsonl    which component recorded each row, and when
   events.jsonl              the run's events
   writer.lock               locked by the process writing the run while it lives
@@ -460,6 +462,33 @@ transcript, the files collected, how the session stopped, and its turns, tokens,
 duration. The run's events (`ix.trial.start`, `ix.trial.end`, ...) also reach the observers
 matrix's config names for ix: `observers:` under `matrix:` in any tier
 `matrix config --tool ix --sources` lists.
+
+**From a verdict to the model that answered.** Each interaction names the rows of
+`matrix.v1.session` behind its trial (`sessions`): every agent session (each round of a loop)
+or model call the subject made, failed ones included. Each reading names the rows its sensor
+made (`sessions`: a judge's calls), and joins its interaction on `seq`. A session row holds
+the runtime, the model that answered and its family, the usage, the ids (the runtime's, and
+the OpenTelemetry trace and span the session ran in), the attempts, and whether it failed and
+why. A row's position in its file, from 0, is the number the others name. In DuckDB, with
+`RUN` the run's directory, each judged reading beside the model that answered its trial:
+
+<!-- reading-to-session -->
+```sql
+WITH sessions AS (
+    SELECT ordinality - 1 AS session, runtime, model, family, status
+    FROM read_json_auto('RUN/matrix.v1.session.jsonl') WITH ORDINALITY
+),
+answered AS (
+    SELECT seq, unnest(sessions) AS session
+    FROM read_json_auto('RUN/ix.v1.interaction.jsonl')
+)
+SELECT reading.seq, reading.metric, reading.value, runtime, model, family, status
+FROM read_json_auto('RUN/ix.v1.reading.jsonl') AS reading
+JOIN answered USING (seq)
+JOIN sessions USING (session)
+WHERE reading.metric = 'judged_score'
+ORDER BY reading.seq;
+```
 
 Each file is one JSON document per line, readable with `jq` or DuckDB. An interaction is on
 disk when its trial finishes, so a run that is killed outright keeps every trial it

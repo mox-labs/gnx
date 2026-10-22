@@ -27,7 +27,9 @@ is no adapter between the ports:
   to run cannot shape its scores.
 
 What its runtime reported it cost, where it reports one, is kept beside its runtime and model
-in the readings' ``detail``, a fact about the judge that nothing adds up. In a dry run it
+in the readings' ``detail``, a fact about the judge that nothing adds up. Each of its calls or
+sessions is a row of the run's session table, failed or not, and its readings name them
+(``sessions``). In a dry run it
 stands in on the ``mock`` of its own port, which gives every reply the same score: the
 sensor's path is exercised and no model is called.
 """
@@ -44,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 import matrix
 
 from ix.adapters._out.matrix_agents import AGENT_RUNTIME, MODEL_RUNTIME, STAND_IN
+from ix.adapters._out.matrix_calls import recorded_call
 from ix.domain.kind import placeholders
 from ix.domain.ports import Sensed, StoodIn
 from ix.domain.problem import Problem, problem
@@ -188,7 +191,8 @@ class JudgeSensor:
         runtime = self._runtimes.build(MODEL_RUNTIME, name, config)
         runtime.check(model)
         request = matrix.ModelRequest(prompt=task, system=SYSTEM, model=model)
-        calls: list[matrix.ModelCall] = [await runtime.call(request) for _ in range(repeats)]
+        url = matrix.model_runtime_type_url(name)
+        calls = [await recorded_call(runtime, request, url=url) for _ in range(repeats)]
         return [_Reply(call.text, call.family, call.model, None) for call in calls]
 
     async def _by_agent(
@@ -201,7 +205,8 @@ class JudgeSensor:
             config = {SETTING_SOURCES: [], **config}
         with tempfile.TemporaryDirectory(prefix="ix-judge-") as workdir:
             runtime = self._runtimes.build(AGENT_RUNTIME, name, config, cwd=workdir)
-            judge = matrix.BoundAgent(definition, runtime)
+            url = matrix.agent_runtime_type_url(name)
+            judge = matrix.BoundAgent(definition, runtime, runtime_url=url)
             replies = [await judge.run(task) for _ in range(repeats)]
         return [_Reply(r.content, r.family, r.model, r.cost_usd) for r in replies]
 

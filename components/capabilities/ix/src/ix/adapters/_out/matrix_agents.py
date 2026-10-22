@@ -19,9 +19,11 @@ which is never implicit. The runtime takes the subject's ``runtime_options`` as 
 as written, and the working directory as its ``cwd``; ix maps no option by a runtime's name,
 and the runtime's own config and ``check`` refuse what it cannot take. The session runs its
 definition through a :class:`matrix.BoundAgent`, so matrix reports each session as
-``invoke_agent`` and each tool call it timed as ``execute_tool``; ix adds no span of its own
-for them. A runtime registered as a stand-in (``stand_in``: matrix's ``mock``) gives canned
-replies: its trials are marked ``simulated`` and measure the harness, not the subject.
+``invoke_agent`` and each tool call it timed as ``execute_tool``, and records it as a row of
+the run's session table under its runtime's type URL, failed or not; ix adds no span of its
+own for them, and the trial's interaction names the rows (``sessions``). A runtime
+registered as a stand-in (``stand_in``: matrix's ``mock``) gives canned replies: its trials
+are marked ``simulated`` and measure the harness, not the subject.
 
 **Rounds.** Without a ``loop`` a session is one round: the prompt, and what the agent said
 and did. A ``self-review`` loop asks again with the previous answer until the answer carries
@@ -297,7 +299,9 @@ class Session:
     async def _round(self, task: str, canned: str | None) -> matrix.AgentResponse:
         config = _runtime_config(self.options, self.base, canned=canned if self.simulated else None)
         runtime = self.runtimes.build(AGENT_RUNTIME, self.runtime, config, cwd=str(self.workdir))
-        response: matrix.AgentResponse = await matrix.BoundAgent(self.definition, runtime).run(task)
+        url = matrix.agent_runtime_type_url(self.runtime)
+        bound = matrix.BoundAgent(self.definition, runtime, runtime_url=url)
+        response: matrix.AgentResponse = await bound.run(task)
         return response
 
     async def _failures(self, text: str, feedback: Mapping[str, Any]) -> list[str]:

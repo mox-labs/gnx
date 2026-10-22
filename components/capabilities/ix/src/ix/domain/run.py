@@ -3,8 +3,10 @@
 A **trial** is intent: one probe put to one subject in one cell in one repeat. What happened
 when it was carried out is an **interaction**; what an instrument made of it is a
 **reading**. They join on ``seq``, and are separate tables so that a failed measurement
-never costs an interaction already paid for. :func:`schedule` is a pure function of the
-design, so the plan a person reviewed is the list a run carries out.
+never costs an interaction already paid for. Each names the rows of the run's session table
+behind it (``sessions``): the model calls and agent sessions that answered. :func:`schedule`
+is a pure function of the design, so the plan a person reviewed is the list a run carries
+out.
 
 **Failures have an owner.** ``subject``: the thing under test broke. ``harness``: ix or a
 tool it drives did. ``sensor``: the instrument could not read an interaction that happened.
@@ -113,6 +115,10 @@ class Interaction(Stored):
     #: True when a stand-in answered instead of the subject (a mock runtime): nothing under
     #: test was measured in this trial.
     simulated: bool = False
+    #: The rows of the run's session table (``matrix.v1.session``) behind this trial: every
+    #: agent session and model call the subject made, failed ones included, in order. Each
+    #: names the runtime and the model that answered.
+    sessions: tuple[int, ...] = ()
 
 
 class Reading(Stored):
@@ -136,6 +142,10 @@ class Reading(Stored):
     #: What the sensor said about this trial beyond its numbers (the skill that fired, the
     #: tests that failed), the same for each metric it read from the trial.
     detail: dict[str, Any] = {}
+    #: The rows of the run's session table the sensor made to read this trial (a judge's
+    #: model calls or sessions), the same for each metric it read. The subject's sessions are
+    #: the interaction's, under the same ``seq``.
+    sessions: tuple[int, ...] = ()
 
     @model_validator(mode="after")
     def _inside_its_shape(self) -> Self:

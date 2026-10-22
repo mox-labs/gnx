@@ -11,6 +11,7 @@ import asyncio
 import importlib.metadata
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -944,6 +945,126 @@ class TestTheRunsList:
         assert "spent" not in text and all("spent" not in run for run in document["runs"])
 
 
+class Throttled:
+    """A model runtime whose every call is rate limited after one attempt that answered:
+    what a provider out of quota looks like, with what the attempts cost."""
+
+    def check(self, model: str | None) -> None:
+        return None
+
+    async def call(self, request: matrix.ModelRequest) -> matrix.ModelCall:
+        spent = matrix.TokenUsage(input_tokens=9, output_tokens=2)
+        raise matrix.ModelRuntimeError(
+            "slow down",
+            reason="rate_limited",
+            call=matrix.ModelCall(
+                usage=spent,
+                attempt_log=(
+                    matrix.CallAttempt(name="t", usage=spent, latency_ms=5),
+                    matrix.CallAttempt(name="t", reason="rate_limit", latency_ms=1),
+                ),
+            ),
+        )
+
+
+def _session_rows(report: ix.Report) -> list[dict[str, Any]]:
+    return _rows(report, matrix.SESSION)
+
+
+def _judged_calls(tmp_path: Path) -> ix.Report:
+    """A dry run of a model-call subject judged by a model judge: both on matrix's mock."""
+    lab = _either(
+        tmp_path,
+        {"kind": "model-call", "runtime": "hardline", "model": "nowhere"},
+        sensors=[{"kind": "judge", "model_runtime": "hardline", "rubric": "Helpful."}],
+        metrics=["judged_score"],
+    )
+    return Root(settings=_settings()).run(lab, dry_run=True)
+
+
+class TestAVerdictTracesToTheModelThatAnswered:
+    """Regression (W3.7): ix's own model calls (the model-call subject, the model judge)
+    left no row in the run's session table, and no interaction or reading said which
+    sessions were behind it, so a verdict could not be traced to the model that answered."""
+
+    def test_a_reading_joins_its_interaction_and_each_to_its_session_row(
+        self, tmp_path: Path
+    ) -> None:
+        report = _judged_calls(tmp_path)
+        sessions = _session_rows(report)
+        interactions = {row["seq"]: row for row in _rows(report, "ix.v1.interaction")}
+        judged = [r for r in _rows(report, "ix.v1.reading") if r["metric"] == "judged_score"]
+        assert judged and len(sessions) == 2 * len(interactions)  # a call and a judgement each
+        mock = matrix.model_runtime_type_url("mock")
+        for reading in judged:
+            (by,) = reading["sessions"]  # the judge's call: the reading's own session
+            judge = sessions[by]
+            assert (judge["port"], judge["runtime"], judge["status"]) == (
+                "model-runtime", mock, "completed",
+            )  # fmt: skip
+            interaction = interactions[reading["seq"]]
+            (answered,) = interaction["sessions"]  # the subject's call, behind the trial
+            subject = sessions[answered]
+            assert (subject["runtime"], subject["family"], subject["finish_reason"]) == (
+                mock, "mock", "stop",
+            )  # fmt: skip
+            prompt = interaction["observations"]["response"]["prompt"]
+            assert subject["sent"] == matrix.digest(
+                {"prompt": prompt, "system": None, "model": "nowhere", "output": None}
+            )
+            assert by != answered
+
+    def test_an_agent_sessions_trial_names_the_sessions_its_rounds_ran(
+        self, tmp_path: Path
+    ) -> None:
+        lab = _routing(
+            tmp_path,
+            subjects={
+                "catalog": {
+                    "kind": "agent-session",
+                    "runtime": SCRIPTED,
+                    "loop": {"strategy": "self-review", "rounds": 2},
+                }
+            },
+        )
+        report = Root(registry=_registry(_fires()), settings=_settings()).run(lab, exploratory=True)
+        sessions = _session_rows(report)
+        interactions = _rows(report, "ix.v1.interaction")
+        named = [n for row in interactions for n in row["sessions"]]
+        assert all(len(row["sessions"]) == 2 for row in interactions)  # one per round
+        assert sorted(named) == list(range(len(sessions)))  # each session, once
+        assert {(s["port"], s["runtime"], s["agent"]) for s in sessions} == {
+            ("agent-runtime", SCRIPTED, "catalog")
+        }
+
+    def test_the_readmes_join_reads_a_readings_model_without_ix(self, tmp_path: Path) -> None:
+        duckdb = pytest.importorskip("duckdb")
+        readme = (Path(ix.__file__).resolve().parents[2] / "README.md").read_text()
+        found = re.search(r"<!-- reading-to-session -->\s*```sql\n(.*?)```", readme, re.S)
+        assert found, "the README shows the join from a reading to its session"
+        report = _judged_calls(tmp_path)
+        run = str(Path(report.tables["ix.v1.reading"]).parent)
+        rows = duckdb.sql(found.group(1).replace("RUN", run)).fetchall()
+        assert len(rows) == 10
+        assert {row[3:] for row in rows} == {
+            ("matrix.v1.model-runtime.mock", "nowhere", "mock", "completed")
+        }
+
+    def test_a_call_that_failed_is_a_session_row_its_trial_names(self, tmp_path: Path) -> None:
+        registry = _third_parties()
+        registry.register("model-runtime", "acme.v1.model-runtime.throttled", Throttled)
+        throttled = {"kind": "model-call", "runtime": "acme.v1.model-runtime.throttled"}
+        lab = _either(tmp_path, throttled)
+        report = Root(registry=registry, settings=_settings()).run(lab, exploratory=True)
+        sessions = _session_rows(report)
+        for interaction in _rows(report, "ix.v1.interaction"):
+            assert interaction["failure"]["owner"] == "harness"
+            (behind,) = interaction["sessions"]
+            failed = sessions[behind]
+            assert (failed["status"], failed["reason"]) == ("failed", "rate_limited")
+            assert failed["usage"]["input_tokens"] == 9 and len(failed["attempt_log"]) == 2
+
+
 class TestAJudgesFlags:
     def test_a_judge_of_the_subjects_family_is_flagged_and_what_it_cost_kept(
         self, tmp_path: Path
@@ -978,7 +1099,7 @@ class TestTelemetry:
         root._tracer = OtelTracer("test", tracer_provider=provider)
         lab = _routing(tmp_path, repeats=5)
         root.plan(lab)
-        root.run(lab, exploratory=True)
+        report = root.run(lab, exploratory=True)
         spans = exporter.get_finished_spans()
         assert {span.instrumentation_scope.name for span in spans} == {"ix"}
         names = [span.name for span in spans]
@@ -996,6 +1117,13 @@ class TestTelemetry:
             if e.name == "gen_ai.evaluation.result"
         }
         assert labels == {"activated_correctly", "cost"}
+        # Each session row carries the trace it ran in: the run's, under its trial.
+        sessions = _session_rows(report)
+        assert sessions and {row["trace_id"] for row in sessions} == {
+            f"{run.context.trace_id:032x}"
+        }
+        trials = {f"{span.context.span_id:016x}" for span in spans if span.name == "ix.trial"}
+        assert {row["span_id"] for row in sessions} <= trials
 
     def test_a_telemetry_warning_travels_in_every_json_document(
         self, compare_data: dict[str, Any], write_experiment: Any
