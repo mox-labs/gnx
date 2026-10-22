@@ -187,6 +187,9 @@ class Kind(Record):
     duration: tuple[str, ...] = ()
     #: Sensors only: the expected and observed labels its readings' detail holds.
     confusion: Confusion | None = None
+    #: Environment kinds only: what each service it brings up is bound with (``host``,
+    #: ``port``, ``url``), which a subject's or a probe's option names as ``{<service>.<key>}``.
+    binds: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _coherent(self) -> Kind:
@@ -207,6 +210,8 @@ class Kind(Record):
             raise ValueError("only a probe kind declares duration")
         if self.confusion is not None and family != "sensor":
             raise ValueError("only a sensor kind declares confusion")
+        if self.binds and family != "environment":
+            raise ValueError("only an environment kind declares binds")
         for name in self.duration:
             if name not in self.options or self.options[name].type != "duration":
                 raise ValueError(f"duration names {name!r}, which is not a duration option")
@@ -286,6 +291,29 @@ _EXAMPLES = {
     "path": ", relative to the experiment's directory",
     "paths": ", each relative to the experiment's directory",
 }
+
+
+def services(options: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """The services an environment's options name: the keys of a ``services`` mapping or the
+    items of a list; None when they name none, so which services come up is known only once
+    they are up (a compose file's every service)."""
+    named = options.get("services")
+    if isinstance(named, Mapping):
+        return tuple(str(name) for name in named)
+    if isinstance(named, list | tuple) and named:
+        return tuple(str(name) for name in named)
+    return None
+
+
+def binding_names(kind: Kind | None, options: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """Every ``<service>.<key>`` an environment of ``kind`` written with ``options`` binds;
+    None when its services are not named, so any service may be."""
+    if kind is None or not kind.binds:
+        return ()
+    named = services(options)
+    if named is None:
+        return None
+    return tuple(f"{service}.{key}" for service in named for key in kind.binds)
 
 
 def placed(kind: Kind, options: Mapping[str, Any], base: str) -> dict[str, Any]:

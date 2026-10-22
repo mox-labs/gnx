@@ -32,7 +32,7 @@ from ix.domain.design import (
 from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment, default_estimator
 from ix.domain.genre import CONTROL
 from ix.domain.intervals import MEDIAN_MIN
-from ix.domain.kind import NOTE_PREFIX, placeholders
+from ix.domain.kind import NOTE_PREFIX, binding_names, placeholders
 from ix.domain.problem import Problem, Validation, from_validation_error, problem
 
 if TYPE_CHECKING:
@@ -536,22 +536,37 @@ def _decision(
     return problems
 
 
-def _placeholders(experiment: Experiment) -> list[Problem]:
-    """An inline probe's ``{name}`` must be a factor, or an option every subject sets."""
+def _placeholders(experiment: Experiment, kinds: Kinds) -> list[Problem]:
+    """An inline probe's ``{name}`` must be a factor, an option every subject sets, or what
+    the environment binds a service with (``{db.url}``)."""
     shared = [set(subject.options) for subject in experiment.subjects.values()]
-    bound = sorted(set(experiment.factors) | (set.intersection(*shared) if shared else set()))
+    environment = experiment.environment
+    declared = kinds.get("environment", environment.kind)
+    binds = binding_names(declared, environment.options)
+    bound = sorted(
+        set(experiment.factors)
+        | (set.intersection(*shared) if shared else set())
+        | set(binds or ())
+    )
+
+    def binding(name: str) -> bool:
+        """A ``<service>.<key>`` of an environment whose services are named only once up."""
+        service, _, key = name.rpartition(".")
+        return binds is None and declared is not None and bool(service) and key in declared.binds
+
     problems: list[Problem] = []
     for index, probe in enumerate(experiment.probes):
         for key, value in probe.options.items():
             for name in sorted(set(placeholders(value))):
-                if name not in bound:
+                if name not in bound and not binding(name):
                     problems.append(
                         problem(
                             f"probes.{index}.{key}",
                             kind="unbound_placeholder",
                             message=f"{{{name}}} is bound to nothing",
                             fix=f"declare factors: {{{name}: [...]}}, set {name!r} on every "
-                            "subject, or write the value out",
+                            "subject, name a service the environment binds "
+                            "({<service>.url}), or write the value out",
                             allowed=bound,
                             got=name,
                         )
@@ -786,7 +801,7 @@ def check(
     instruments = select_sensors(experiment, kinds, probes)
     problems += instruments.problems
     problems += _decision(experiment, genre, instruments, probes)
-    problems += _placeholders(experiment)
+    problems += _placeholders(experiment, kinds)
     problems += _probes(experiment, probes, kinds, instruments)
 
     design = (

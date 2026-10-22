@@ -51,7 +51,7 @@ from ix.domain.report import report as build_report
 from ix.domain.run import CALIBRATION, Failure, HarnessError, Interaction, Reading, Target
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
     from ix.domain.experiment import Shape
 
@@ -833,6 +833,75 @@ def _trial_positions(root: Root, file: Path) -> dict[tuple[str, str], list[int]]
         found.setdefault((trial["subject"], trial["role"]), []).append(trial["seq"])
     LOG.clear()
     return found
+
+
+class _Upstream:
+    """An environment that brings up one service and binds how to reach it."""
+
+    async def up(self, environment: Any, *, base: str, scope: Any) -> Any:
+        return {"upstream": {"host": "127.0.0.1", "port": 9, "url": "http://127.0.0.1:9"}}
+
+
+class _Seeing(FakeSubject):
+    """A fake subject that logs what its ``env`` option was filled with."""
+
+    @asynccontextmanager
+    async def reach(self, name: str, subject: Any, *, base: str) -> AsyncIterator[Target]:
+        LOG.append(f"env {subject.options.get('env', {}).get('UPSTREAM')}")
+        async with super().reach(name, subject, base=base) as target:
+            yield target
+
+
+class _Aiming(FakeLoad):
+    """A fake load that logs the target it was given."""
+
+    async def apply(
+        self, options: Mapping[str, Any], target: Target, *, seed: int
+    ) -> Mapping[str, Mapping[str, Any]]:
+        LOG.append(f"target {options['target']}")
+        return await super().apply(options, target, seed=seed)
+
+
+class TestBindingsReachTrials:
+    """Regression (ix-outer 5): an environment's bindings were used only to ask whether it
+    was still up; no subject or probe could name them, so an example hard-coded its
+    upstream's port."""
+
+    def _registry(self) -> Any:
+        registry = fake_registry(subject=_Seeing, probe=_Aiming)
+        registry.register(POINTS["environment"], "ix.v1.environment.process", _Upstream)
+        return registry
+
+    def _data(self, target: str = "{upstream.url}/x") -> dict[str, Any]:
+        data = experiment()
+        data["environment"] = {"kind": "process", "services": {"upstream": {"command": ["up"]}}}
+        for subject in data["subjects"].values():
+            subject["env"] = {**subject["env"], "UPSTREAM": "{upstream.url}"}
+        data["probes"][0]["target"] = target
+        return data
+
+    def test_a_subject_and_a_probe_name_a_service_by_its_bindings(
+        self, write_experiment: Write
+    ) -> None:
+        LOG.clear()
+        root = Root(registry=self._registry())
+        file = write_experiment(self._data())
+        assert root.validate(file).valid
+        report = root.run(file, exploratory=True)
+        assert report.status == "completed"
+        assert {line for line in LOG if line.startswith(("env", "target"))} == {
+            "env http://127.0.0.1:9",
+            "target http://127.0.0.1:9/x",
+        }
+
+    def test_a_service_the_environment_does_not_bring_up_is_bound_to_nothing(
+        self, write_experiment: Write
+    ) -> None:
+        root = Root(registry=self._registry())
+        problems = root.validate(write_experiment(self._data("{elsewhere.url}/x"))).problems
+        assert [(p.path, p.kind, p.got) for p in problems] == [
+            ("probes.0.target", "unbound_placeholder", "elsewhere.url")
+        ]
 
 
 class TestWhatCannotRun:

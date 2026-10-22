@@ -267,6 +267,16 @@ class Target(Stored):
 Bindings = dict[str, dict[str, Any]]
 
 
+def bound(bindings: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """The bindings as the placeholders a subject or a probe names them by: ``{db.url}`` is
+    the ``url`` the environment bound for its service ``db``."""
+    return {
+        f"{service}.{key}": value
+        for service, found in bindings.items()
+        for key, value in found.items()
+    }
+
+
 def cell_key(cell: dict[str, Level]) -> str:
     """A cell as one stable string: ``size=1MiB,rate=80/s``; ``-`` for the cell of no factors."""
     return ",".join(f"{name}={value}" for name, value in cell.items()) or "-"

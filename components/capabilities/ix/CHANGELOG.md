@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added: environment bindings reach the trials
+
+- **A subject or a probe names a service by its bindings.** `{<service>.url}`, `.host` and
+  `.port` in a subject's or a probe's options are filled from what the environment bound
+  for that service, and `validate` accepts them for each service the environment's options
+  name. An environment kind declares the keys it binds (`binds:`). Before, bindings were used
+  only to ask whether the environment was still up.
+- **`environment.process` binds where a service listens**: its new `url` option, or the
+  address of its `ready` URL.
+- **A run whose environment came up without a service the experiment names** fails before
+  any trial (`unbound`), naming what it did bind.
+
+### Fixed
+
+- `environment.process` asks the process it started whether it is still up. It asked
+  `os.kill(pid, 0)` of the stored pid, which read a pid the system had given to another
+  process as the service still up, and raised out of the run for one another user owns.
+
 ### Changed (breaking): requirements in place of effects
 
 Effects were labels nothing checked (Q6). Record section 20 has the reasons.

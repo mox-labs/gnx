@@ -31,7 +31,7 @@ from ix.domain.analysis import ANALYSES, analysis_unsupported
 from ix.domain.design import Design, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError
 from ix.domain.experiment import Experiment, ProbeConfig
-from ix.domain.kind import fill, placed
+from ix.domain.kind import fill, placed, placeholders
 from ix.domain.ports import Liveness, Recorded, Sensed, StandIn, Traced
 from ix.domain.registration import deviations
 from ix.domain.run import (
@@ -42,6 +42,7 @@ from ix.domain.run import (
     RunManifest,
     Trial,
     TrialError,
+    bound,
     schedule,
     schedule_digest,
 )
@@ -428,9 +429,14 @@ async def invoke(
     scope: Scope,
     *,
     hold: list[AsyncExitStack] | None = None,
+    bindings: Bindings | None = None,
 ) -> Interaction:
     """Carry out one trial and say what happened. A failure of an adapter becomes the
     trial's failure; a defect in ix itself raises.
+
+    The subject's options are filled from the trial's cell and the environment's
+    ``bindings`` (``{db.url}``); the probe's from those, the subject's options and what the
+    subject offers.
 
     Order: the subject is reached, then each sensor that must watch begins, then the probe
     is applied; the watchers stop, then the subject is released. The interaction names the
@@ -442,7 +448,10 @@ async def invoke(
     before = _recorded(scope)
     adapters = _adapters(trial, setup, kit)
     subject = setup.experiment.subjects[trial.subject]
-    filled = subject.model_copy(update={"options": fill(subject.options, trial.cell)})
+    services = bound(bindings or {})
+    filled = subject.model_copy(
+        update={"options": fill(subject.options, {**services, **trial.cell})}
+    )
     probe_options = setup.probes[trial.probe].options
     observations: dict[str, dict[str, Any]] = {}
     watching: dict[str, dict[str, Any]] = {}
@@ -461,10 +470,10 @@ async def invoke(
     except Exception as error:
         failure = _failure(error)
     if failure is None:
-        bound = {**filled.options, **target.facets, **trial.cell}
+        known = {**services, **filled.options, **target.facets, **trial.cell}
         try:
             observations = await _apply(
-                adapters.probe, fill(probe_options, bound), target, trial.seed, scope
+                adapters.probe, fill(probe_options, known), target, trial.seed, scope
             )
         except Exception as error:
             failure = _failure(error)
@@ -528,6 +537,13 @@ async def carry_out(
     :class:`HarnessError` ends the run.
     """
     environment = _environment(setup, kit)
+    unbound = _unbound(setup, kit, bindings)
+    if unbound:
+        raise HarnessError(
+            "unbound",
+            f"the environment came up without {', '.join(unbound)}, which the experiment "
+            f"names; it bound {', '.join(sorted(bound(bindings))) or 'nothing'}",
+        )
     open_now: list[AsyncExitStack] = []
 
     async def release_open() -> None:
@@ -549,7 +565,7 @@ async def carry_out(
             cell=dict(trial.cell),
         )
         with _span(scope, "ix.trial", **_trial_attributes(trial, setup)) as span:
-            interaction = await invoke(trial, setup, kit, scope, hold=open_now)
+            interaction = await invoke(trial, setup, kit, scope, hold=open_now, bindings=bindings)
             lost = await environment.lost(bindings) if isinstance(environment, Liveness) else None
             if lost is not None:
                 interaction = interaction.model_copy(
@@ -575,6 +591,26 @@ async def carry_out(
         if lost is not None:
             raise HarnessError("environment_lost", f"the environment went down: {lost}")
     return done
+
+
+def _unbound(setup: Setup, kit: Kit, bindings: Bindings) -> tuple[str, ...]:
+    """Each ``{<service>.<key>}`` (a key the environment's kind binds) the subjects or probes
+    name that the environment, now up, did not bind: validation can hold them only to the
+    services an environment's options list."""
+    environment = schema.url("environment", setup.experiment.environment.kind)
+    declared = kit.kinds.get(environment)
+    keys = set(declared.binds) if declared is not None else set()
+    services = bound(bindings)
+    factors = set(setup.experiment.factors)
+    written = [subject.options for subject in setup.experiment.subjects.values()]
+    written += [probe.options for probe in setup.probes.values()]
+    named = {
+        name
+        for options in written
+        for name in placeholders(options)
+        if "." in name and name.rpartition(".")[2] in keys and name not in factors
+    }
+    return tuple(sorted(name for name in named if name not in services))
 
 
 def _trial_outcome(interaction: Interaction) -> dict[str, Any]:

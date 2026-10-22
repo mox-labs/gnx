@@ -740,8 +740,10 @@ whether it came from the experiment, the genre or ix.
   (`10pp`) or a share (`0.05`), never in percent (`unit_mismatch`), and below the whole range
   (`1`, `100pp`). A rate's threshold is a share strictly between 0 and 1 (`0.9`, not `90%`
   or `90`): one at 0 or 1 or beyond is passed by every rate or by none (`invalid_value`).
-- **Placeholders.** In an inline probe, `{{name}}` is a factor, or an option every subject
-  sets; anything else is `unbound_placeholder`.
+- **Placeholders.** In an inline probe, `{{name}}` is a factor, an option every subject
+  sets, or what the environment binds a service with: `{{<service>.url}}`, `.host`, `.port`
+  (a `process` service's `url`, a `compose` service's published port); anything else is
+  `unbound_placeholder`. A subject's options take a service's bindings and the factors too.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the
   experiment, one file per probe (`.md`, `.yaml`): a markdown file's text is the prompt,
   and its frontmatter keys other than `id` (default: the file's name), `kind` (default

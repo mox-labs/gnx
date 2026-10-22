@@ -286,7 +286,15 @@ class TestEnvironments:
         scope = Scope()
         bindings = await ProcessEnvironment(MatrixLauncher()).up(environment, base=".", scope=scope)
         pid = bindings["upstream"]["pid"]
-        assert bindings == {"upstream": {"pid": pid, "ready": server["ready"]}}
+        assert bindings == {
+            "upstream": {
+                "pid": pid,
+                "host": "127.0.0.1",
+                "port": port,
+                "url": f"http://127.0.0.1:{port}",
+                "ready": server["ready"],
+            }
+        }
         assert _alive(pid) and await answers(server["ready"])
         await scope.release()
         assert not _alive(pid)
@@ -312,6 +320,13 @@ class TestEnvironments:
         finally:
             await scope.release()
         assert await NoEnvironment().lost({}) is None
+
+    async def test_a_pid_it_did_not_start_is_not_read_as_its_service(self) -> None:
+        """Regression (ix-outer 15): liveness was ``os.kill(pid, 0)`` on the stored pid, so a
+        pid the system gave to another live process read as the service still up, and one
+        another user owns raised out of the run. It asks the process it started."""
+        provider = ProcessEnvironment(MatrixLauncher())
+        assert await provider.lost({"upstream": {"pid": os.getpid()}}) == "service upstream exited"
 
     async def test_a_service_that_does_not_come_up_fails_and_is_still_released(self) -> None:
         port = _free_port()

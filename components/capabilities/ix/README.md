@@ -272,7 +272,7 @@ A declaration is not an adapter. ix can **run** these:
 | sensor | `text-match` | `text_matched`: the reply starts or ends with, equals, contains, excludes or matches (a regular expression) what the probe's truth or the sensor's options say; no code of your own |
 | sensor | `usage` | tokens, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, and `hit_limit`, as the runtime reported them; what it did not report (a model call's cost or turns) is left out |
 | sensor | `judge` | a model scores the reply against a rubric, by one call on the model runtime `model_runtime` names or a one-turn session on the agent runtime `agent_runtime` names; its metrics are reported and never decide |
-| environment | `none`, `process` | nothing; or programs started before the trials and stopped when the run ends |
+| environment | `none`, `process` | nothing; or programs started before the trials and stopped when the run ends, each bound with where it listens (`{<service>.url}`, `.host`, `.port`), which a subject's or a probe's options name |
 
 `inspect-task` and `compose` are declared only. An experiment that uses one is still valid:
 `ix validate` warns (`kind_unimplemented`), `ix plan` prints `Runnable: no` with the kinds,
@@ -374,8 +374,10 @@ or `rubric_file`, and any option a kind declares a `path` or `paths`.
 
 ## Running
 
-A run brings the environment up once, then carries out the trials one at a time in the
-order the plan fixed (`plan` and `run` compute the same list, and the plan's digest covers
+A run brings the environment up once, binds each service it brought up with how to reach
+it (a subject's or a probe's option names `{<service>.url}`, `.host`, `.port`; a run whose
+environment comes up without a service the experiment names fails before any trial), then
+carries out the trials one at a time in the order the plan fixed (`plan` and `run` compute the same list, and the plan's digest covers
 it). For each trial: start the subject, let the sensors that must watch begin, apply the
 probe, stop the watchers, stop the subject. The sensors then read every trial that was
 carried out. Progress goes to stderr (a bar on a terminal, one line per trial otherwise,
