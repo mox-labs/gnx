@@ -9,6 +9,7 @@ import contextlib
 import email.utils
 import gzip
 import http.server
+import math
 import re
 import threading
 import time
@@ -17,9 +18,11 @@ from typing import Any
 
 import httpx2
 import pytest
+from pydantic import ValidationError
 
 from recon.adapters._out.http_requester import HttpRequester, classify_http_failure
 from recon.adapters._out.system_clock import SystemClock
+from recon.domain.clock import LONGEST_WAIT
 from recon.domain.deadline import Deadline
 from recon.domain.errors import CollectionError
 from recon.domain.http import HttpResponse
@@ -132,6 +135,18 @@ def _get(base_url: str, path: str, **source_fields: Any) -> HttpResponse:
     source = SourceEntry(name="local", url=base_url, timeout=10, **source_fields)
     clock = SystemClock()
     return HttpRequester(RateLimiter(clock), clock).get(source, f"{base_url}{path}")
+
+
+def test_the_longest_timeout_a_source_may_have_is_one_a_send_takes(base_url: str) -> None:
+    """The bound on ``timeout`` is the platform's own, :data:`LONGEST_WAIT`, not a number
+    picked: a send under it succeeds where 1e12 raised ``OverflowError`` from the socket, and
+    a timeout past it is refused before anything is sent."""
+    source = SourceEntry(name="local", url=base_url, timeout=LONGEST_WAIT)
+    clock = SystemClock()
+    sent = HttpRequester(RateLimiter(clock), clock).get(source, f"{base_url}/small")
+    assert sent.status_code == 200
+    with pytest.raises(ValidationError):
+        SourceEntry(name="local", url=base_url, timeout=math.nextafter(LONGEST_WAIT, math.inf))
 
 
 def test_a_body_within_the_limit_is_returned_whole(base_url: str) -> None:

@@ -15,6 +15,13 @@ if TYPE_CHECKING:
     from recon.domain.models import SourceEntry
 
 
+def wait_for_token(tokens: float, rps: float) -> float:
+    """The seconds until a bucket holding ``tokens`` (fewer than one) at ``rps`` holds one.
+    The longest is an empty bucket's, ``1 / rps``: the plan holds it to what the clock can
+    sleep (:data:`~recon.domain.clock.LONGEST_WAIT`)."""
+    return (1.0 - tokens) / rps
+
+
 class TokenBucket:
     def __init__(self, rps: float, burst: int, clock: Clock) -> None:
         self._rps = rps
@@ -33,7 +40,7 @@ class TokenBucket:
             if self._tokens >= 1.0:
                 self._tokens -= 1.0
                 return
-            wait = (1.0 - self._tokens) / self._rps
+            wait = wait_for_token(self._tokens, self._rps)
             if deadline is not None:
                 deadline.allow_wait(wait)
             self._clock.sleep(wait)

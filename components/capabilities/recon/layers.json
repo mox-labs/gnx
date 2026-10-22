@@ -8,11 +8,12 @@
       "name": "domain",
       "files": ["src/recon/domain/**/*.py"],
       "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "functools",
-                "html", "inspect", "pathlib", "re", "typing", "urllib",
+                "html", "inspect", "pathlib", "re", "threading", "typing", "urllib",
                 "pydantic", "recon.domain"],
       "forbid": ["opentelemetry", "duckdb", "httpx2", "httpx", "markitdown", "yaml", "open"],
       "why": {
         "stdlib": "recon's PURE_STDLIB (tests/test_layering.py): pathlib names a location and datetime is the type the clock port returns; touching the filesystem or reading the clock through them is caught by test_layering's effect scan",
+        "threading": "TIMEOUT_MAX alone, the longest wait the platform's timers take, which the plan holds a source's timeout and rate to (domain/clock.py); the domain starts no thread (test_layering's LAYER_STDLIB)",
         "pydantic": "every published document and config model is a pydantic model",
         "forbid": "the adapters' technologies, YAML, and the builtin open, which no import shows"
       }
