@@ -640,3 +640,36 @@ async def test_an_sdk_error_after_the_result_is_logged_and_the_result_kept(
         response = await _runtime().run(_defn(), "go")
     assert (response.content, response.stop) == ("the answer", "completed")
     assert any("went away" in r.getMessage() for r in caplog.records)
+
+
+async def test_the_cli_is_handed_the_trace_context_of_its_session(monkeypatch) -> None:
+    """With OpenTelemetry active, the ``claude`` CLI the session starts is given the context of
+    the session's own span (``TRACEPARENT``), so the CLI's spans join the run's trace; with no
+    span current it is given none (W4.3)."""
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from matrix.adapters._out.observers.otel import OtelObserver
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    captured = _install(monkeypatch, echo=True)
+    runtime = matrix.default_registry(discover=False).create(
+        "agent-runtime", "matrix.v1.agent-runtime.claude-sdk", needs={"cwd": None}
+    )
+    agent = matrix.BoundAgent(
+        _defn(name="rev"), runtime, observers=[OtelObserver(tracer_provider=provider)]
+    )
+    await agent.run("go")
+    (span,) = [s for s in exporter.get_finished_spans() if s.name == "invoke_agent rev"]
+    context = span.get_span_context()
+    ids = f"{trace.format_trace_id(context.trace_id)}-{trace.format_span_id(context.span_id)}"
+    expected = f"00-{ids}-{context.trace_flags:02x}"
+    assert captured["calls"][0]["options"].env["TRACEPARENT"] == expected
+
+    await runtime.run(_defn(), "no span is current here")
+    assert "TRACEPARENT" not in captured["calls"][1]["options"].env

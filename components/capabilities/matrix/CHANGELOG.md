@@ -117,6 +117,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   without it works unedited. The `otel` observer uses it to make its spans current, so **a
   span a library opens inside matrix's work nests under it** (mx-tests 2): before, a library
   span inside a component or an agent session landed in a separate trace with no parent.
+- **The `claude` CLI joins the run's trace.** With OpenTelemetry active, the `claude-sdk`
+  runtime hands the CLI it starts the trace context current when the session starts
+  (`TRACEPARENT`, `TRACESTATE`) through the SDK's `env` option, so the spans the CLI exports
+  are children of the session's `invoke_agent` span. `matrix.composition.telemetry` gains
+  `trace_environment()`, and `ClaudeSdkRuntime(trace_environment=)` takes it.
 - **A model step's call is a span of work**: `matrix.model.start` and `matrix.model.end`
   events, and the `otel` observer's `matrix.model` span, current while the runtime works, so
   the model runtime's own spans (hardline's `chat` per attempt) nest under it and the session

@@ -46,6 +46,11 @@ duration of a call (M-3); the installed SDK (`claude-agent-sdk >= 0.1.51`) now s
 `CLAUDECODE` from the child's own environment itself, so the runtime has nothing left to do
 there — see M-3, fixed.
 
+When OpenTelemetry is active, the runtime hands the CLI the trace context current when a
+session starts (`TRACEPARENT`, `TRACESTATE`) through the SDK's `env` option, for that child
+only: trace and span ids and the propagators' state, no content. With no span current it hands
+nothing, and the child inherits whatever the process's own environment holds.
+
 `setting_sources: []` is the hermetic setting — no ambient `~/.claude` or project plugin
 config leaks into the subprocess. Any evaluation that claims reproducibility should set it.
 
