@@ -3,17 +3,18 @@
 Row options (all optional)::
 
     options:
-      responses: {"<last user message>": "<text>"}   # keyed replies
+      responses: {"<user message>": "<text>"}   # keyed on the last user turn, else the first
       script: ["first attempt", {error: rate_limit}, "third"]   # in order; last repeats
       default: "fallback text"
       finish_reason: length          # why every reply ends; default stop
       refusal: "I can't help."        # every reply is a refusal saying this
 
 With nothing configured it echoes ``mock:<model>:<first user message>``, which is enough
-to prove wiring. ``script`` exists to plant failures: a first attempt that is not JSON
-and a second that is proves the runtime's repair path; an ``{error: <reason>}`` entry
-raises a BackendError with that reason, which proves retries and fallbacks — all without a
-network. The options are checked when the runtime is composed, like any backend's.
+to prove wiring. Each call's ``request_id`` is ``mock-<row>-<n>``, ``n`` counting the row's
+calls from 1. ``script`` exists to plant failures: a first attempt that is not JSON and a
+second that is proves the runtime's repair path; an ``{error: <reason>}`` entry raises a
+BackendError with that reason, which proves retries and fallbacks — all without a network.
+The options are checked when the runtime is composed, like any backend's.
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ class MockBackend:
     async def complete(
         self, spec: ModelSpec, request: Request, api_key: str | None
     ) -> RawCompletion:
+        call = self._cursor.get(spec.name, 0) + 1  # this call's ordinal, before _pick counts it
         last_user = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
         text = self._pick(spec, request, last_user)
         opts = read_options(_Options, spec)
@@ -68,7 +70,7 @@ class MockBackend:
                 input_tokens=sum(len(m.content.split()) for m in request.messages),
                 output_tokens=len(text.split()),
             ),
-            request_id=f"mock-{spec.name}-{self._cursor.get(spec.name, 0)}",
+            request_id=f"mock-{spec.name}-{call}",
         )
 
     def _pick(self, spec: ModelSpec, request: Request, last_user: str) -> str:

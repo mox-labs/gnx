@@ -118,6 +118,25 @@ async def test_mock_returns_the_declared_shape() -> None:
     assert isinstance(raw, RawCompletion) and raw.text == "mock:m:hi"
 
 
+async def test_mock_says_which_turn_it_echoes_and_names_each_call() -> None:
+    # F12: the docstring said the echo was the last user message; it is the first. And the
+    # request id was whatever the call counter held after the reply was picked; it is now the
+    # call's own ordinal, counted from 1, and says so.
+    backend = MockBackend()
+    spec = _spec(backend="mock", options={"responses": {"later": "keyed on the last turn"}})
+    turns = (
+        Message(role="user", content="first"),
+        Message(role="assistant", content="a"),
+        Message(role="user", content="second"),
+    )
+    request = Request(messages=turns, max_tokens=8)
+    first = await backend.complete(spec, request, None)
+    assert first.text == "mock:m:first" and first.request_id == "mock-q-1"
+    keyed = Request(messages=(*turns, Message(role="user", content="later")), max_tokens=8)
+    second = await backend.complete(spec, keyed, None)
+    assert second.text == "keyed on the last turn" and second.request_id == "mock-q-2"
+
+
 async def test_mock_script_repeats_last_entry() -> None:
     backend = MockBackend()
     spec = _spec(backend="mock", options={"script": ["a", "b"]})
