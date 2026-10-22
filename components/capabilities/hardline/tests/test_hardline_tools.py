@@ -257,7 +257,7 @@ async def test_a_tool_call_is_a_whole_answer_when_tools_were_offered() -> None:
 
 
 async def test_complete_keeps_its_promise_a_tool_call_unasked_for_is_no_answer() -> None:
-    # W3.1's promise for plain `complete`: a reply that ended on a tool call is not a whole
+    # The promise for plain `complete`: a reply that ended on a tool call is not a whole
     # answer. It is one only when the caller offered the tools.
     unasked = Completion(
         name="q", text="", family="x", model="m", backend="b", local=False, usage=Usage(),

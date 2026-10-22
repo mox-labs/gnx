@@ -104,7 +104,7 @@ def _message(*blocks: dict[str, Any], **extra: Any) -> dict[str, Any]:
 
 
 # The contract every installed backend meets is test_hardline_conformance.py's, run through the
-# helper hardline ships (W8.3).
+# helper hardline ships.
 
 
 async def test_mock_returns_the_declared_shape() -> None:
@@ -113,7 +113,7 @@ async def test_mock_returns_the_declared_shape() -> None:
 
 
 async def test_mock_says_which_turn_it_echoes_and_names_each_call() -> None:
-    # F12: the docstring said the echo was the last user message; it is the first. And the
+    # The docstring said the echo was the last user message; it is the first. And the
     # request id was whatever the call counter held after the reply was picked; it is now the
     # call's own ordinal, counted from 1, and says so.
     backend = MockBackend()
@@ -350,7 +350,7 @@ async def test_anthropic_leaves_out_an_assistant_turn_that_says_nothing() -> Non
     ]
 
 
-# --- locations come from the row, never the environment (W7.1) -----------------------
+# --- locations come from the row, never the environment -----------------------
 
 _AMBIENT = {
     "OPENAI_BASE_URL": "http://evil.example/v1",
@@ -384,7 +384,7 @@ async def test_a_row_without_base_url_goes_to_its_backends_default_whatever_the_
     sent_to: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # F6: with no base_url the SDKs read OPENAI_BASE_URL / ANTHROPIC_BASE_URL, and the OpenAI
+    # With no base_url the SDKs read OPENAI_BASE_URL / ANTHROPIC_BASE_URL, and the OpenAI
     # client sent OPENAI_ORG_ID and OPENAI_PROJECT_ID as headers: a row's key went to a host
     # no config named.
     for name, value in _AMBIENT.items():
@@ -446,7 +446,7 @@ def test_a_backend_location_must_be_an_http_url() -> None:
         (503, "unavailable"),
         (504, "unavailable"),
         (529, "unavailable"),
-        # W6.1: no retry can change these. 501 says the server does not implement the request
+        # No retry can change these. 501 says the server does not implement the request
         # and 505 that it refuses the HTTP version: the row points somewhere that cannot serve it.
         (501, "bad_request"),
         (505, "bad_request"),
@@ -473,7 +473,7 @@ async def test_retry_after_header_is_read() -> None:
 
 async def test_a_redirect_is_reported_not_followed() -> None:
     # Following it would send the row's key to wherever the Location points. Changed requirement
-    # (W7.10): a redirect is the row's location to correct, so a config error (exit 3) whose fix
+    # A redirect is the row's location to correct, so a config error (exit 3) whose fix
     # names where to point it, not `unknown` (exit 1, "report a bug").
     moved = "https://127.0.0.1:9/v1/chat/completions"
     wire = Wire(lambda _: httpx2.Response(308, headers={"location": moved}))
@@ -493,7 +493,7 @@ async def test_a_redirect_elsewhere_names_the_location_in_its_fix() -> None:
     assert e.value.fix is not None and "http://elsewhere.example/" in e.value.fix
 
 
-# --- a proxy is named by the row, never taken from the environment (W7.10) -----------------
+# --- a proxy is named by the row, never taken from the environment -----------------
 
 
 @pytest.mark.parametrize("proxy", [None, "http://proxy.local:3128"])
@@ -521,7 +521,7 @@ async def test_a_backend_given_no_transport_reaches_the_workspace_guard(
     backend: Callable[[], ModelBackend], name: str, refused_live_calls: list[str]
 ) -> None:
     """The workspace guard refuses ``_http.network_transport``. This holds that a backend's
-    request is carried by that very name, so the guard is in its path (ix-tests F12): a backend
+    request is carried by that very name, so the guard is in its path: a backend
     that bound the transport some other way would reach the provider past it. The row points
     at a closed loopback port all the same."""
     with pytest.raises(AssertionError, match="a live model session"):
@@ -591,7 +591,7 @@ def test_each_built_in_has_a_timeout_of_its_rows_choosing() -> None:
     assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (90.0,) * 4
 
 
-# --- why a reply ended, and a refusal kept apart from an answer (W3.1) -----------------
+# --- why a reply ended, and a refusal kept apart from an answer -----------------
 
 
 @pytest.mark.parametrize(

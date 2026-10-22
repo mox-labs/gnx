@@ -94,7 +94,7 @@ async def test_extract_validates_on_first_attempt() -> None:
     ],
 )
 async def test_extract_finds_the_answer_after_bracketed_prose(reply: str) -> None:
-    # F10: the first bracketed span was taken as the answer and the valid one discarded, which
+    # The first bracketed span was taken as the answer and the valid one discarded, which
     # cost a repair turn, or a SchemaError with no repairs allowed.
     rt = mock_runtime(
         {"q": {"backend": "mock", "model": "m", "family": "qwen", "options": {"default": reply}}},
@@ -146,7 +146,7 @@ async def test_planted_schema_failure_is_repaired_once() -> None:
     s = await rt.extract("q", "?", Verdict)
     assert s.value.supported is False
     assert s.completion.attempts == 2
-    # F5: this asserted only `> 0`, which the answering attempt alone satisfies. Usage is the
+    # This asserted only `> 0`, which the answering attempt alone satisfies. Usage is the
     # sum of what both calls reported.
     first, second = backend.returned
     assert s.completion.usage == first.usage + second.usage
@@ -273,7 +273,7 @@ async def test_call_overrides_beat_row_defaults() -> None:
     assert seen == [(50, 0.2), (7, 0.0)]
 
 
-# --- the error contract: everything raised on purpose is a HardlineError (F3, F11) -------
+# --- the error contract: everything raised on purpose is a HardlineError -------
 
 
 @pytest.mark.parametrize(
@@ -326,7 +326,7 @@ async def test_a_completion_says_whether_it_is_a_whole_answer(
     assert c.refusal == options.get("refusal")
 
 
-# --- the call's whole record (W3.2) -------------------------------------------------------
+# --- the call's whole record -------------------------------------------------------
 
 
 def _sha256(turns: tuple[Message, ...]) -> str:
@@ -443,7 +443,7 @@ async def test_a_default_location_is_recorded_as_the_backends() -> None:
     }
 
 
-# --- who upgrades first (W10.2, D18) -------------------------------------------------------
+# --- who upgrades first -------------------------------------------------------
 
 
 async def test_a_completion_reads_back_its_own_json_and_refuses_keys_it_does_not_know() -> None:

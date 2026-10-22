@@ -10,9 +10,8 @@ model family hardline has a row for.
 by a hardline runtime and one registry row. It is the adapter between the two message shapes:
 pydantic-ai's requests and responses to hardline's turns and ``Completion``, and pydantic-ai's
 tool definitions to hardline's ``ToolSpec``. It lives in this file, not in hardline: hardline
-depends on pydantic, pyyaml and httpx2 only (Q13) and knows no agent framework, and pydantic-ai
-knows no hardline, so the one module that depends on both, matrix's adapter, translates
-between them. Nothing points back: hardline stays one layer down.
+knows no agent framework, and pydantic-ai knows no hardline, so the one module that depends on
+both, matrix's adapter, translates between them. Nothing points back: hardline stays one layer down.
 
 **What a session can be given** is declared by :class:`PydanticAiRuntimeConfig` and nowhere
 else (``matrix describe`` prints it): the hardline registry (``models``), the row used when a

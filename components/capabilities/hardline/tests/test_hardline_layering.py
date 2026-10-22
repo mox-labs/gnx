@@ -14,7 +14,7 @@ module that is not hardline's own. Three rules, and full coverage:
 * **coverage**: every scanned file belongs to a layer, and no layer's glob matches nothing, since
   a rule over no file passes silently.
 
-Beyond the map, the CLI reaches hardline through ``hardline.__all__`` alone (F14). Each rule has a
+Beyond the map, the CLI reaches hardline through ``hardline.__all__`` alone. Each rule has a
 planted violation below, so a check that stopped biting would fail here.
 
 What this cannot see, so review still reads for it: an adapter reached through a module alias
@@ -61,7 +61,7 @@ def test_every_file_is_in_a_layer_and_every_dependency_points_inward() -> None:
 
 
 def test_the_cli_reaches_hardline_through_its_public_names_alone() -> None:
-    # F14: the CLI imported load_registry from hardline.composition, outside hardline.__all__.
+    # The CLI imported load_registry from hardline.composition, outside hardline.__all__.
     assert _cli_reaches_outside_all(PACKAGE) == []
 
 

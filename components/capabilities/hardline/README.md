@@ -7,8 +7,10 @@ the family that answered, what it cost, and how long it took.
 uvx --from "git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/hardline" hardline models
 ```
 
-hardline depends on pydantic, pyyaml and httpx2, and on no provider SDK: it speaks both wire
-protocols over HTTP itself.
+hardline depends on no provider SDK: it speaks both wire protocols over HTTP itself, on httpx2.
+Its other dependencies are pydantic, pyyaml, the OpenTelemetry API (the library records
+through it alone), and, for the `hardline` command, rich-click and the OpenTelemetry SDK with
+its OTLP exporter.
 
 ## What it is, and what it is not
 
@@ -59,7 +61,8 @@ provider's Retry-After) · `fallbacks` (distinct registry names tried once retri
 [Built-in backends](#built-in-backends)).
 
 **A call has its own bound.** One `extract` can make (schema repairs + 1) × the sum over its
-chain of (`retries` + 1) backend calls, each paid for in tokens and each up to `timeout_s` long.
+chain of (`retries` + 1) backend calls, each paid for in tokens; `timeout_s` bounds each phase of
+one (connecting, sending, each read), not the call as a whole.
 `limits` bounds the whole call, every retry, fallback and repair included, and is unset by
 default:
 
@@ -288,6 +291,10 @@ know, so it upgrades hardline before the program that writes the JSON does.
 | `models --json` | `{"default": str\|null, "models": [ModelSpec without api_key, options]}`, each row's `base_url` filled |
 | `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null}], "warnings": [problem]}` |
 | `complete --json` | the `Completion` without `raw`: `type_url, name, text, family, model, backend, local, usage, request_id, latency_ms, attempts, retries, fallback_from, finish_reason, native_finish_reason, refusal, tool_calls, params, attempt_log, turns_digest, row` |
+
+`complete --json` carries no hardline version: it is a `Completion`, and validates back into
+one, which a key of the CLI's own would break. A program that ledgers the version reads
+`hardline --version` (or `importlib.metadata.version("hardline")` in process).
 
 A `problem` is the record the capability CLIs share: `{"path", "kind", "message", "fix",
 "allowed", "got", "source"}`. `check` warns of a fallback that sends where its primary does

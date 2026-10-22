@@ -37,7 +37,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.8",
     "types-PyYAML",  # gnx + harness parse YAML; strict mypy needs the stubs
-    # The members, each with every dependency it has: no package has extras (Q13), so this
+    # The members, each with every dependency it has: no package has extras, so this
     # group is where the test tools come from.
     "matrix",
     "ix",
