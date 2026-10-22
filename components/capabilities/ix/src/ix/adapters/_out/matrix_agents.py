@@ -42,7 +42,8 @@ observe (a skill that cannot fire because the tool that fires one is not among i
 they go, which tool fires one, and whether it can write files are the runtime's to say, as its
 configured options make it (:class:`matrix.AgentCapabilities`): ix asks, and reads none of its
 options by name and knows no runtime's tool or directory. A runtime that names no place for
-skills is given none, and one that names no skill tool has none read as fired. As a
+skills is given none, and an `activation` sensor on one that names no skill tool (a stand-in
+aside) is refused at validate unless the sensor names the tool itself. As a
 :class:`~ix.domain.ports.StandIn` it puts the session on ``mock`` for a dry run, setting the
 runtime's own options aside.
 
@@ -619,12 +620,17 @@ def _tools(options: SessionOptions, base: str) -> tuple[tuple[str, ...] | None, 
 
 
 def _unobservable(
-    options: SessionOptions, around: Surroundings, does: matrix.AgentCapabilities | None
+    options: SessionOptions,
+    around: Surroundings,
+    does: matrix.AgentCapabilities | None,
+    *,
+    answers: bool = True,
 ) -> list[Problem]:
     """A session written so that what the sensors read can never happen: a run of it would
     report a confident verdict on a harness that could not see the agent. ``does`` is what
     the runtime declares its sessions do, as configured; an answer it does not give (or no
-    declaration) is assumed nothing of."""
+    declaration) is assumed nothing of. ``answers`` is false for a stand-in, or a runtime
+    not registered here: what it leaves unread is not the agent's."""
     path = around.path
     sensors = {sensor.kind: sensor.options for sensor in around.sensors}
     activation = ACTIVATION in sensors
@@ -666,6 +672,7 @@ def _unobservable(
             f"add {skill_tool} to tools: [{', '.join([*tools, skill_tool])}], or leave "
             "'tools' out for every tool",
         )
+    loading = len(problems)  # what follows says whether the session's skills can load
     if activation and not options.skills and not options.plugins and does.settings_skills is False:
         at, change = decided_by("settings_skills", "runtime")
         unobservable(
@@ -691,6 +698,16 @@ def _unobservable(
             "for the skills it is given (skills_dir), so they would not be placed and can "
             "never fire",
             "run the session on a runtime that names where its skills go, or give them as plugins",
+        )
+    if activation and answers and skill_tool is None and len(problems) == loading:
+        named = "names no tool" if declared else "declares nothing of its sessions, so no tool"
+        unobservable(
+            "runtime",
+            f"agent runtime {options.runtime} {named} through which a skill fires "
+            "(skill_tool), so the activation sensor would read every must_trigger probe as "
+            "not fired",
+            "name the tool under the activation sensor's 'tool' option, or run the session on "
+            "a runtime that names its skill tool",
         )
     used = str((sensors.get(TOOL_USAGE) or {}).get("tool") or "")
     if used and tools is not None and used not in tools and "Bash" not in tools:
@@ -737,7 +754,15 @@ class AgentSessionSubject:
             return []
         takes = self._runtimes.takes(AGENT_RUNTIME, parsed.runtime)
         does = self._runtimes.capabilities(AGENT_RUNTIME, parsed.runtime, parsed.runtime_options)
-        return [*_undeclared(parsed, takes, around.path), *_unobservable(parsed, around, does)]
+        undeclared = _undeclared(parsed, takes, around.path)
+        # A runtime registered here, not a stand-in, whose config is not refused: what it
+        # declares (or does not) is what its sessions do.
+        answers = (
+            takes is not None
+            and not undeclared
+            and not self._runtimes.stand_in(AGENT_RUNTIME, parsed.runtime)
+        )
+        return [*undeclared, *_unobservable(parsed, around, does, answers=answers)]
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn:
         """The session on ``mock``: what would be the real runtime's config (its

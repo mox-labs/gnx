@@ -370,11 +370,15 @@ MOUNTING = "acme.v1.agent-runtime.mounting"
 
 
 class MountingConfig(BaseModel):
-    """A third party's agent runtime that mounts plugins, as claude-sdk does."""
+    """A third party's agent runtime that mounts plugins, as claude-sdk does, and fires a
+    skill through ``Skill``, as the scripted runtime does."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     plugins: tuple[dict[str, Any], ...] = ()
+
+    def capabilities(self) -> matrix.AgentCapabilities:
+        return matrix.AgentCapabilities(skill_tool="Skill", skills_dir="acme/skills")
 
 
 def _mounting() -> matrix.Registry:
@@ -562,12 +566,14 @@ class TestAVerdictIsTiedToWhatItJudged:
         registry = _registry(_fires())
         driving = "acme.v1.agent-runtime.over-pydantic"
 
-        def build() -> Scripted:
+        def build(config: ScriptedConfig) -> Scripted:
             runtime = Scripted()
             runtime.answer = _fires()
             return runtime
 
-        registry.register("agent-runtime", driving, build, drives=("pydantic", "acme-gone"))
+        registry.register(
+            "agent-runtime", driving, build, config=ScriptedConfig, drives=("pydantic", "acme-gone")
+        )
         lab = _routing(
             tmp_path, subjects={"catalog": {"kind": "agent-session", "runtime": driving}}
         )
@@ -975,6 +981,44 @@ class TestCapabilitiesAreAsked:
         assert self._validated(tmp_path / "b", session, sensors=[{"kind": "activation"}]) == {
             ("subjects.it.runtime", "unobservable")
         }
+
+
+class SilentConfig(BaseModel):
+    """A third party's agent runtime that declares nothing of what its sessions do."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ToollessConfig(BaseModel):
+    """One that says its sessions load skills from settings, and names no tool that fires
+    one."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    def capabilities(self) -> matrix.AgentCapabilities:
+        return matrix.AgentCapabilities(settings_skills=True)
+
+
+class TestASkillToolNobodyNames:
+    """Regression: ``activation`` on an agent runtime that names no tool through which a
+    skill fires read every ``must_trigger`` probe as not fired, a confident ``fails`` and a
+    perfect score on the decoys, and validate said nothing."""
+
+    @pytest.mark.parametrize("config", [SilentConfig, ToollessConfig])
+    def test_activation_is_unobservable_until_the_tool_is_named(
+        self, tmp_path: Path, config: type[BaseModel]
+    ) -> None:
+        registry = _third_parties()
+        url = "acme.v1.agent-runtime.quiet"
+        registry.register("agent-runtime", url, lambda config: Scripted(), config=config)
+        session = {"kind": "agent-session", "runtime": url}
+        root = Root(registry=registry, settings=_settings())
+        lab = _either(tmp_path / "a", session, routing=True, sensors=[{"kind": "activation"}])
+        found = {(p.path, p.kind) for p in root.validate(lab).problems}
+        assert found == {("subjects.it.runtime", "unobservable")}
+        named = [{"kind": "activation", "tool": "Skill"}]
+        lab = _either(tmp_path / "b", session, routing=True, sensors=named)
+        assert root.validate(lab).problems == ()
 
 
 class ElsewhereConfig(BaseModel):
@@ -1883,12 +1927,12 @@ def _cautious_registry(answer: Callable[[str], matrix.AgentResponse]) -> matrix.
     registry = matrix.default_registry(discover=False)
     register(registry)
 
-    def build() -> Cautious:
+    def build(config: ScriptedConfig) -> Cautious:
         runtime = Cautious()
         runtime.answer = answer
         return runtime
 
-    registry.register("agent-runtime", SCRIPTED, build)
+    registry.register("agent-runtime", SCRIPTED, build, config=ScriptedConfig)
     return registry
 
 

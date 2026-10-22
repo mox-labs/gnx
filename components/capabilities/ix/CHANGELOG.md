@@ -350,6 +350,10 @@ reasons, from §16 on.
   reports what each call returned or raised, on a channel of its own with a per-run token;
   ix compares with the truth. A returned value is compared as JSON carries it; one JSON
   cannot carry fails its case with its `repr`.
+- **`activation` on a runtime that names no skill tool is refused at validate**
+  (`unobservable`), unless the sensor's `tool` names it. It read every `must_trigger` probe
+  as not fired and every decoy as right: a confident `fails` from a harness that could not
+  see a skill fire. A stand-in is not held to it.
 - **Code that exits does not pass a must-raise case.** `raises: Exception` and `raises: any`
   passed on any `BaseException`, so code that called `sys.exit` on every input passed every
   must-raise case. `any` is now `Exception`, and `SystemExit` passes only where it is named.
