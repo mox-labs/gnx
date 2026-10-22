@@ -573,8 +573,9 @@ With the default store a run is a directory under `.matrix/runs/<run_id>/`:
   each ended), `failures`, and `tables` (each kind's file and row count);
 - `<kind>.jsonl`: one per kind, each line one row as recorded; an agent step's `response`
   rows are `AgentResponse`s, the task as sent in `task`, the reply in `content`; a model
-  step's are `ModelCall`s, the prompt as sent in `prompt`, the reply in `text`, and the
-  model that answered, its usage, request id, attempts and latency;
+  step's are `ModelCall`s, the prompt as sent in `prompt`, the reply in `text`, why it
+  ended (`finish_reason`), and the model that answered, its usage, request id, attempts and
+  latency;
 - `matrix.v1.ledger.jsonl`: which component handed each row over, and when;
 - `events.jsonl`: the run's events; `matrix.agent.start` carries each task as sent, so a
   step that failed before recording its reply still shows what it was asked.
@@ -665,11 +666,16 @@ def _reference_agents() -> str:
 - One call: no loop, no tools, no turns. The model name is checked with the runtime when the
   step is built, so an unknown one is a `config` problem at `matrix check`.
 - It provides a `ModelCall` under `response`: `text`, `value` (the structured reply),
-  `prompt` (as sent), `name` and `model` (the registry name and the provider's id of the
-  model that answered), `family`, `backend`, `provider`, `usage` (`input_tokens`,
-  `output_tokens`, `cache_read_tokens`, `cache_write_tokens`), `request_id`, `attempts`,
-  `retries`, `fallback_from` (the model asked for, when a fallback answered), `latency_ms`,
-  and `finish_reason` and `refusal`, which are null until the runtime reports them.
+  `prompt` (as sent), `finish_reason` (`stop`, `length`, `content_filter`, `refusal`,
+  `tool_call`, `other`; null when the runtime does not say), `native_finish_reason`,
+  `refusal`, `name` and `model` (the registry name and the provider's id of the model that
+  answered), `family`, `backend`, `provider`, `usage` (`input_tokens`, `output_tokens`,
+  `cache_read_tokens`, `cache_write_tokens`), `request_id`, `attempts`, `retries`,
+  `fallback_from` (the model asked for, when a fallback answered), `latency_ms`, `params`,
+  `attempt_log`, `turns_digest` and `row` (the registry row that answered).
+- A reply that is not a whole answer (refused, cut at `max_tokens`, withheld, empty) is not
+  provided: the step fails with reason `refused` or `failed`, naming the `finish_reason`, and
+  the fix says what to change (`max_tokens` for a cut reply).
 - With `output`, when a package registered a schema for the kind, the runtime is asked for
   that structure and validates the reply (hardline repairs a reply that does not fit, within
   its bound); the row is the validated value. Without a schema, the reply must be one JSON

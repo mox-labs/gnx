@@ -66,16 +66,35 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   already returned when the stop was requested is `completed`, with no reason. A consumer
   that reads component endings must tolerate the new state, as the vocabulary is open.
 
+- **A model step fails on a reply that is not a whole answer**, where it would have
+  provided it: a refusal, a reply cut at `max_tokens`, withheld by the provider, ended to ask
+  for a tool or for a reason no one named, or empty. It raises `ModelRuntimeError`, reason
+  `refused` (a refusal, `content_filter`) or `failed`, kind `component`, naming the
+  `finish_reason` with a fix for it. A runtime that does not say why its reply ended
+  (`finish_reason: null`) is not taken to have cut it.
+- `ModelCall.usage`, `attempts`, `retries` and `latency_ms` default to `None`, where they
+  defaulted to zeros and `attempts=1`: a constant is not a fact. The `mock` model runtime
+  reports what is true of a canned reply: one attempt, no retries, zero tokens, its latency,
+  and `finish_reason: stop`.
+
 ### Added
 
 - **`matrix.v1.model-step`**: one model call as a component. It names a model runtime and a
   model, renders its `prompt` from its `inputs`, and provides a `ModelCall` (the prompt as
-  sent, the reply, the model that answered, usage with cache tokens, request id, attempts,
-  retries, `fallback_from`, latency; `finish_reason` and `refusal` stay null until the
-  runtime reports them) and, with `output`, the reply as a row of that kind: asked for as the
-  kind's registered schema when there is one. New names: `ModelRuntime`, `ModelRequest`,
-  `ModelCall`, `TokenUsage`, `ModelRuntimeError`, `ModelStep`, `ModelStepConfig`,
-  `MODEL_STEP`, `MODEL_CALL`, `PROMPT`; the needs `model_runtimes` and `schemas`.
+  sent, the reply, and the call's record, below) and, with `output`, the reply as a row of
+  that kind: asked for as the kind's registered schema when there is one. New names:
+  `ModelRuntime`, `ModelRequest`, `ModelCall`, `TokenUsage`, `ModelRuntimeError`,
+  `ModelStep`, `ModelStepConfig`, `MODEL_STEP`, `MODEL_CALL`, `PROMPT`; the needs
+  `model_runtimes` and `schemas`.
+- **A `ModelCall` carries the call's whole record**, as hardline 0.2 reports it: why the reply
+  ended (`finish_reason`: `stop`, `length`, `content_filter`, `refusal`, `tool_call`,
+  `other`; with `native_finish_reason`, the provider's own value, and `refusal`, what the
+  model said when it refused), the model that answered and `fallback_from`, usage with cache
+  tokens summed over every attempt, `request_id`, `attempts`, `retries`, latency, `params`
+  (what was sent: `max_tokens`, `temperature`, how a structure was asked for),
+  `attempt_log` (every backend call, with why each failed), `turns_digest` and `row` (the
+  registry row that answered: its digest and the tier that set each field). New names:
+  `FinishReason`, `RequestParams`, `CallAttempt`, `RegistryRow`.
 - **`stand_in`** on a registry entry, declared at registration (`register(..., stand_in=True)`)
   and shown by `matrix catalog`, `matrix describe` and the plan's runtimes. Both mocks
   declare it, so a caller can tell canned answers from a model's without inferring it from

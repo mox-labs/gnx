@@ -10,11 +10,14 @@ a step is built, so an unknown name is a ``config`` problem at composition, not 
 mid-run. With an ``output`` type the call is hardline's ``extract``: the schema is stated to
 the model, and a reply that does not fit is repaired within hardline's bound.
 
-The call's record carries what hardline reports of the call that answered: the model that
-answered and its family and backend, ``fallback_from`` when a fallback answered, usage with
-cache tokens, the request id, attempts, retries and latency. hardline does not report why
-the model stopped or whether it refused, so ``finish_reason`` and ``refusal`` are None.
-hardline reports tokens, not dollars; bound a reply with ``max_tokens``.
+The call's record carries hardline's whole record of it: why the reply ended
+(``finish_reason``, the provider's own value, and any refusal), the model that answered and
+its family and backend, ``fallback_from`` when a fallback answered, usage with cache tokens
+summed over every attempt, the request id, attempts, retries and latency, what was sent
+(``params``, ``turns_digest``), every backend call made (``attempt_log``) and the registry
+row that answered, with the tier that set each of its fields (``row``). A reply cut at
+``max_tokens``, refused or withheld is returned and said for what it is, as hardline returns
+it. hardline reports tokens, not dollars; bound a reply with ``max_tokens``.
 
 Type URL: ``matrix.v1.model-runtime.hardline``. Requires the ``models`` extra (hardline).
 """
@@ -26,10 +29,16 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from matrix.domain.errors import ConfigError, ModelRuntimeError, RuntimeReason, missing_extra
-from matrix.domain.model_call import ModelCall, TokenUsage
+from matrix.domain.model_call import (
+    CallAttempt,
+    ModelCall,
+    RegistryRow,
+    RequestParams,
+    TokenUsage,
+)
 
 if TYPE_CHECKING:
-    from hardline import Completion
+    from hardline import Completion, Usage
     from hardline import ModelRuntime as Hardline
 
     from matrix.domain.model_call import ModelRequest
@@ -146,26 +155,46 @@ class HardlineModelRuntime:
 
 
 def _record(completion: Completion, value: Any) -> ModelCall:
-    usage = completion.usage
+    params = completion.params
+    row = completion.row
     return ModelCall(
         text=completion.text,
         value=value,
+        finish_reason=completion.finish_reason,
+        native_finish_reason=completion.native_finish_reason,
+        refusal=completion.refusal,
         name=completion.name,
         model=completion.model,
         family=completion.family,
         backend=completion.backend,
         provider=_PROVIDERS.get(completion.backend),
-        usage=TokenUsage(
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            cache_read_tokens=usage.cache_read_tokens,
-            cache_write_tokens=usage.cache_write_tokens,
-        ),
+        usage=_usage(completion.usage),
         request_id=completion.request_id,
         attempts=completion.attempts,
         retries=completion.retries,
         fallback_from=completion.fallback_from,
         latency_ms=completion.latency_ms,
+        params=None if params is None else RequestParams(**params.model_dump()),
+        attempt_log=tuple(
+            CallAttempt(
+                name=attempt.name,
+                reason=attempt.reason,
+                usage=None if attempt.usage is None else _usage(attempt.usage),
+                latency_ms=attempt.latency_ms,
+            )
+            for attempt in completion.attempt_log
+        ),
+        turns_digest=completion.turns_digest,
+        row=None if row is None else RegistryRow(digest=row.digest, rungs=dict(row.rungs)),
+    )
+
+
+def _usage(usage: Usage) -> TokenUsage:
+    return TokenUsage(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
     )
 
 

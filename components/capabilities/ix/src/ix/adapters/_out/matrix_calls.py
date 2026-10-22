@@ -66,6 +66,10 @@ if TYPE_CHECKING:
 
 FUNCTION_TEST = "ix.v1.sensor.function-test"
 
+#: What a call carries of how it was made (what was sent, each attempt, the registry row)
+#: that no sensor reads: the usage facet keeps the facts sensors measure and report.
+_RECORD = frozenset({"native_finish_reason", "params", "attempt_log", "turns_digest", "row"})
+
 #: The sensors a model call leaves nothing to read for, and what each would read.
 NO_TOOLS = {ACTIVATION: "whether a skill fires", TOOL_USAGE: "whether a tool is called"}
 
@@ -112,16 +116,17 @@ class Call:
         response: dict[str, Any] = {"prompt": prompt, "text": call.text, "refusal": call.refusal}
         if call.value is not None:
             response["value"] = call.value
-        tokens = call.usage
+        # A runtime that reports no usage or latency counts as none, as ix has read it.
+        tokens = call.usage or matrix.TokenUsage()
         usage = {
             "runtime": matrix.model_runtime_type_url(self.options.runtime),
-            **call.model_dump(mode="json", exclude={"text", "value", "prompt", "usage"}),
+            **call.model_dump(mode="json", exclude={"text", "value", "prompt", "usage", *_RECORD}),
             "tokens_input": tokens.input_tokens,
             "tokens_output": tokens.output_tokens,
             "tokens_total": tokens.input_tokens + tokens.output_tokens,
             "cache_read_tokens": tokens.cache_read_tokens,
             "cache_write_tokens": tokens.cache_write_tokens,
-            "duration_ms": call.latency_ms,
+            "duration_ms": call.latency_ms or 0,
             "simulated": self.simulated,
         }
         return {"response": response, "usage": usage}

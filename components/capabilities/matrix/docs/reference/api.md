@@ -56,7 +56,11 @@ from matrix import (
     ModelRuntime,
     ModelRequest,
     ModelCall,
+    FinishReason,
     TokenUsage,
+    RequestParams,
+    CallAttempt,
+    RegistryRow,
     ModelStep,
     ModelStepConfig,
     MODEL_STEP,
@@ -683,19 +687,24 @@ never a constant.
 |-------|------|---------|---------|
 | `text` | `str` | `""` | the reply as the model wrote it |
 | `value` | `Any` | `None` | the reply validated against the request's `output`, as JSON data |
+| `finish_reason` | `FinishReason \| None` | `None` | why the reply ended: `stop` (the model ended its turn), `length` (cut at `max_tokens`), `content_filter` (the provider withheld or cut it), `refusal`, `tool_call`, `other`; `None` when the runtime does not say |
+| `native_finish_reason` | `str \| None` | `None` | the provider's own value, verbatim |
+| `refusal` | `str \| None` | `None` | what the model said when it refused |
 | `name` | `str \| None` | `None` | the registry name of the model that answered |
 | `model` | `str \| None` | `None` | the provider's id of the model that answered |
 | `family` | `str \| None` | `None` | the family that answered (`claude`, `qwen`, ...) |
 | `backend` | `str \| None` | `None` | the backend that served it |
 | `provider` | `str \| None` | `None` | by the GenAI conventions' provider names (`anthropic`), when known |
-| `usage` | `TokenUsage` | zeros | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` |
+| `usage` | `TokenUsage \| None` | `None` | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, summed over every backend call that reported usage |
 | `request_id` | `str \| None` | `None` | the provider's id for the request that answered |
-| `attempts` | `int` | `1` | calls made for a structured reply: 1, plus each repair |
-| `retries` | `int` | `0` | transient failures retried, across every attempt and model |
+| `attempts` | `int \| None` | `None` | calls made for a structured reply: 1, plus each repair |
+| `retries` | `int \| None` | `None` | transient failures retried, across every attempt and model |
 | `fallback_from` | `str \| None` | `None` | the model asked for, when a fallback answered instead |
-| `latency_ms` | `int` | `0` | |
-| `finish_reason` | `str \| None` | `None` | why the model stopped writing; `None` until the runtime reports it |
-| `refusal` | `str \| None` | `None` | the model's refusal, when it declined; `None` until the runtime reports it |
+| `latency_ms` | `int \| None` | `None` | |
+| `params` | `RequestParams \| None` | `None` | what was sent to the model that answered: `max_tokens`, `temperature`, `structured` (how a structure was asked for; `None` for a plain call) |
+| `attempt_log` | `tuple[CallAttempt, ...] \| None` | `None` | every backend call made, in order: `name` (the row asked), `reason` (why it failed; `None` for the one that answered), `usage`, `latency_ms` |
+| `turns_digest` | `str \| None` | `None` | `sha256:<hex>` of the turns the answering call was sent, schema instruction and repair turns included |
+| `row` | `RegistryRow \| None` | `None` | the registry row that answered: `digest` (`sha256:<hex>` of its whole spec) and `rungs` (for each field a configuration set, the tier that set it) |
 | `prompt` | `str \| None` | `None` | the prompt as sent; a `model-step` records it, after filling its inputs |
 
 ### `ModelRuntime` (Protocol)
@@ -720,8 +729,8 @@ takes the short name.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `hardline` | `matrix.v1.model-runtime.hardline` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. A request's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` resolves it. With `output`, the call is hardline's `extract`, which repairs a reply that does not fit within its bound. Records the model that answered, `fallback_from`, usage with cache tokens, the request id, attempts, retries and latency; hardline reports no finish reason or refusal, so those are `None`. Reports tokens, no cost |
-| `mock` | `matrix.v1.model-runtime.mock` | `responses` (the whole prompt as sent, to a reply), `by_model` (model name to a reply), `default` (reply for an unmatched prompt and model; `None` echoes `mock:<model>:<prompt>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Accepts every model name. Validates a reply against the request's `output` as a real runtime does. Records `calls`, each `(model, prompt)` |
+| `hardline` | `matrix.v1.model-runtime.hardline` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. A request's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` resolves it. With `output`, the call is hardline's `extract`, which repairs a reply that does not fit within its bound. Carries hardline's whole record of the call: why it ended, the model that answered, `fallback_from`, usage with cache tokens, the request id, attempts, retries, latency, `params`, `attempt_log`, `turns_digest` and `row`. A reply cut short or refused is returned and said for what it is. Reports tokens, no cost. Has `aclose()` |
+| `mock` | `matrix.v1.model-runtime.mock` | `responses` (the whole prompt as sent, to a reply), `by_model` (model name to a reply), `default` (reply for an unmatched prompt and model; `None` echoes `mock:<model>:<prompt>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Accepts every model name. Validates a reply against the request's `output` as a real runtime does. A call reports one attempt, no retries, no tokens, its latency and `finish_reason: stop`, and no cost. Records `calls`, each `(model, prompt)` |
 
 Classes: `matrix.adapters._out.runtime.model.HardlineModelRuntime`,
 `matrix.adapters._out.runtime.mock.MockModelRuntime`.
@@ -750,6 +759,13 @@ as `output` and the row is the validated `value`; without one, the reply must be
 document, as an agent step's, and a reply with none is a `ContractError` quoting it. Rows are
 rendered as an agent step renders them. A model step emits no agent events: its call is in
 its component's span.
+
+A reply that is not a whole answer is never provided: one with a `refusal`, a `finish_reason`
+other than `stop` and `None`, or empty `text`. The step raises `ModelRuntimeError`, reason
+`refused` for a refusal or `content_filter`, `failed` for the rest (`length`, `tool_call`,
+`other`, empty), with `finish_reason` and `native_finish_reason` in its details and a fix for
+that reason; both reasons are kind `component`, not retried. A runtime that does not say why
+its reply ended (`finish_reason` `None`) is not taken to have cut it.
 
 ---
 

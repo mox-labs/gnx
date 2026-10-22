@@ -155,8 +155,8 @@ table without matrix installed. An agent step's reply rows are `AgentResponse`s 
 the task as sent (`task`) beside the reply (`content`), and each `matrix.agent.start` event
 carries it too, so a step that failed before its reply was recorded still shows what it was
 asked. A model step's reply rows are `ModelCall`s: the prompt as sent (`prompt`), the reply
-(`text`, and `value` for a structured one) and the model that answered, its usage, request
-id, attempts and latency. `matrix run` prints these files when the run ends; `matrix runs` lists the runs.
+(`text`, and `value` for a structured one), why it ended (`finish_reason`) and the model that
+answered, its usage, request id, attempts and latency. `matrix run` prints these files when the run ends; `matrix runs` lists the runs.
 
 **While a run is going**, `run.json` says `running`, names the process writing it
 (`writer`: pid and host) and lists each table's file; every table file exists. Each row is one `write` of one whole line to a file opened for

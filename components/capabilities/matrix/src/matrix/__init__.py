@@ -101,7 +101,15 @@ from .domain.executor import (
 )
 from .domain.ids import TypeUrl, check_type_url, is_type_url, parse_type_url, type_url
 from .domain.loading import Accumulate, BesideFile, Loader
-from .domain.model_call import ModelCall, ModelRequest, TokenUsage
+from .domain.model_call import (
+    CallAttempt,
+    FinishReason,
+    ModelCall,
+    ModelRequest,
+    RegistryRow,
+    RequestParams,
+    TokenUsage,
+)
 from .domain.model_step import MODEL_CALL, MODEL_STEP, PROMPT, ModelStep, ModelStepConfig
 from .domain.observer import Event, EventPolicy, Observer, RecordingObserver
 from .domain.ports._out.agent_runtime import RUNTIME_LOGGER, Agent, AgentRuntime
@@ -152,6 +160,7 @@ __all__ = [
     "Agents",
     "BesideFile",
     "BoundAgent",
+    "CallAttempt",
     "Catalog",
     "CheckReport",
     "CompilationError",
@@ -180,6 +189,7 @@ __all__ = [
     "Extension",
     "Extensions",
     "Failure",
+    "FinishReason",
     "Inputs",
     "JsonlConstructStore",
     "LedgerEntry",
@@ -202,7 +212,9 @@ __all__ = [
     "RecordingObserver",
     "Ref",
     "Registry",
+    "RegistryRow",
     "ReleaseOutcome",
+    "RequestParams",
     "Retry",
     "Reuse",
     "Run",

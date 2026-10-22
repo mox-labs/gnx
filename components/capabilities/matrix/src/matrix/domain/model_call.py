@@ -7,18 +7,29 @@ in, a reply comes out. So it has its own request, its own record and its own por
 * **ModelRequest** is what a caller asks: a prompt, optionally a system prompt, a model name
   the runtime resolves, and an ``output`` type when the reply must be that structure.
 * **ModelCall** is what came back: the reply (``text``, and ``value`` when an ``output`` type
-  was asked for) and what the runtime knows of how it was answered: the model that answered,
+  was asked for) and what the runtime knows of how it was answered: why the reply ended
+  (``finish_reason``, with the provider's own value and any refusal), the model that answered,
   which a fallback may make differ from the one asked for (``fallback_from``), usage with
-  cache tokens, the provider's request id, attempts, retries and latency. A fact the runtime
-  does not report is None, never a constant: ``finish_reason`` and ``refusal`` stay None
-  until the runtime reports them.
+  cache tokens, the provider's request id, attempts, retries and latency, what was sent
+  (``params``, ``turns_digest``), every attempt made (``attempt_log``) and the registry row
+  that answered (``row``). A fact the runtime does not report is None, never a constant.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
+
+#: Why a reply ended, in one vocabulary across runtimes (hardline's). The provider's own value
+#: is kept beside it (``native_finish_reason``).
+#:   stop            the model ended its turn
+#:   length          cut off at max_tokens (or the context window)
+#:   content_filter  the provider withheld or cut the reply
+#:   refusal         the model refused; ``refusal`` holds what it said
+#:   tool_call       the model asked for a tool, which a model call does not run
+#:   other           a reason the provider gave that none of these names
+FinishReason = Literal["stop", "length", "content_filter", "refusal", "tool_call", "other"]
 
 
 class TokenUsage(BaseModel):
@@ -33,6 +44,43 @@ class TokenUsage(BaseModel):
     cache_read_tokens: int = 0
     #: Input tokens written to the provider's prompt cache.
     cache_write_tokens: int = 0
+
+
+class RequestParams(BaseModel):
+    """What was sent to the model that answered, after its registry row's defaults."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_tokens: int
+    temperature: float | None = None
+    #: How structured output was asked for (``prompt``, ``json_object``, ``json_schema``);
+    #: None for a plain call.
+    structured: str | None = None
+
+
+class CallAttempt(BaseModel):
+    """One backend call made for a model call: a retry, a fallback or a schema repair."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The registry row asked.
+    name: str
+    #: Why it failed (``rate_limit``, ``unavailable``, ...); None for the call that answered.
+    reason: str | None = None
+    #: What the provider reported; a failed call reports none.
+    usage: TokenUsage | None = None
+    latency_ms: int
+
+
+class RegistryRow(BaseModel):
+    """The registry row that answered, as it was configured: the digest of its whole spec
+    (``sha256:<hex>`` over canonical JSON), and for each field a configuration set, the tier
+    that set it (``matrix.models``, ``cwd ./hardline.yaml``, ``default of backend ...``)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    digest: str
+    rungs: dict[str, str] = {}
 
 
 class ModelRequest(BaseModel):
@@ -59,6 +107,13 @@ class ModelCall(BaseModel):
     #: The reply validated against the request's ``output`` type, as JSON data. None when
     #: the request named none.
     value: Any = None
+    #: Why the reply ended; ``stop`` only when the model ended its turn. None when the
+    #: runtime does not say.
+    finish_reason: FinishReason | None = None
+    #: The provider's own value (``finish_reason``, ``stop_reason``), verbatim.
+    native_finish_reason: str | None = None
+    #: What the model said when it refused; None when it did not refuse.
+    refusal: str | None = None
     #: The registry name of the model that answered.
     name: str | None = None
     #: The provider's id of the model that answered.
@@ -69,19 +124,25 @@ class ModelCall(BaseModel):
     backend: str | None = None
     #: Who served it, as the GenAI conventions name providers (``anthropic``), when known.
     provider: str | None = None
-    usage: TokenUsage = TokenUsage()
+    #: Summed over every backend call made (``attempt_log``) that reported usage.
+    usage: TokenUsage | None = None
     #: The provider's id for the request that answered, when it gave one.
     request_id: str | None = None
     #: Calls made for a structured reply: 1, plus each repair after a reply that did not fit.
-    attempts: int = 1
+    attempts: int | None = None
     #: Transient failures retried, across every attempt and model.
-    retries: int = 0
+    retries: int | None = None
     #: The model asked for, when a fallback answered instead.
     fallback_from: str | None = None
-    latency_ms: int = 0
-    #: Why the model stopped writing, as the provider said. None until the runtime reports it.
-    finish_reason: str | None = None
-    #: The model's refusal, when it declined. None until the runtime reports it.
-    refusal: str | None = None
+    latency_ms: int | None = None
+    #: What was sent to the model that answered.
+    params: RequestParams | None = None
+    #: Every backend call made, in order, with why each failed.
+    attempt_log: tuple[CallAttempt, ...] | None = None
+    #: The digest of the turns the answering call was sent (``sha256:<hex>``): the schema
+    #: instruction and any repair turns included.
+    turns_digest: str | None = None
+    #: The registry row that answered.
+    row: RegistryRow | None = None
     #: The prompt as sent: a ``model-step`` records it here, after filling its inputs.
     prompt: str | None = None
