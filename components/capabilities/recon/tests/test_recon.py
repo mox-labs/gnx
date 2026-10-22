@@ -3,6 +3,7 @@
 import hashlib
 import inspect
 import json
+import math
 import tempfile
 import time
 from collections.abc import Generator, Iterator
@@ -887,9 +888,21 @@ class TestDeadlines:
         assert tables[0].error is not None
         assert "slow's deadline" in tables[0].error.message
 
-    @pytest.mark.parametrize("value", [0, -1])
-    def test_a_deadline_must_be_positive(self, tmp_path: Path, value: int) -> None:
+    @pytest.mark.parametrize("value", [0, -1, math.nan, math.inf])
+    def test_a_deadline_must_be_a_positive_number_of_seconds(
+        self, tmp_path: Path, value: float
+    ) -> None:
+        """Regression: ``deadline: .nan`` passed the plan's ``<= 0`` check and then failed
+        building the config, as a raw ValidationError (exit 1, ``unknown``); ``.inf`` was
+        taken as a bound."""
         with pytest.raises(recon.ConfigError) as excinfo:
             run({"deadline": value, "collectors": [{"name": "c", "type": "cli", "run": "true"}]},
                 tmp_path)  # fmt: skip
         assert [p.path for p in excinfo.value.problems] == ["deadline"]
+
+    @pytest.mark.parametrize("value", [math.nan, math.inf])
+    def test_a_table_s_deadline_must_be_finite(self, tmp_path: Path, value: float) -> None:
+        collector = {"name": "c", "type": "cli", "run": "true", "deadline": value}
+        with pytest.raises(recon.ConfigError) as excinfo:
+            run({"collectors": [collector]}, tmp_path)
+        assert [p.path for p in excinfo.value.problems] == ["collectors.0.deadline"]

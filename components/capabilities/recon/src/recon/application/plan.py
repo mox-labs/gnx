@@ -271,12 +271,14 @@ def _top_level_problems(raw: dict[Any, Any]) -> list[Problem]:
         )
     deadline = raw.get("deadline")
     if deadline is not None and (
-        isinstance(deadline, bool) or not isinstance(deadline, int | float) or deadline <= 0
+        isinstance(deadline, bool)
+        or not isinstance(deadline, int | float)
+        or not 0 < deadline < float("inf")  # NaN compares false either way
     ):
         problems.append(
             Problem(
                 "deadline",
-                "must be a number of seconds above 0",
+                "must be a finite number of seconds above 0",
                 kind="invalid_value",
                 fix="deadline: 600 (the seconds the whole survey may take), or remove it",
                 got=_scalar(deadline),
@@ -727,6 +729,16 @@ def _output_problems(
                 f"output {output!r} is not one file name: it names the table's file in the "
                 f"archive, so it holds no {', no '.join(_NOT_IN_A_FILE_NAME)}",
                 fix="rename the collector (or, for an output <collector>-<source>, the source)",
+                got=output,
+            )
+        )
+    elif not output[:1].isalnum() and not output.startswith("_"):
+        problems.append(
+            Problem(
+                at,
+                f"output {output!r} must start with a letter, a digit or _: it names the "
+                "table's file in the archive, which would otherwise be hidden or empty-named",
+                fix="rename the collector",
                 got=output,
             )
         )

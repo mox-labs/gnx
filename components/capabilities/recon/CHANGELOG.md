@@ -63,6 +63,8 @@
 
 - **Telemetry is exported signal by signal.** Any export variable installed both providers, so a traces endpoint alone also sent metrics to the default endpoint, which logged failures; and only the tracer provider was checked, so a program that installed its own tracer provider got no metrics from recon, and one with its own meter provider had recon try to replace it. A signal is now exported when the shared endpoint, its own endpoint or its exporter asks for it, and only when the program has installed no provider for it.
 
+- **A `deadline:` that is not a finite number of seconds is a plan problem.** `deadline: .nan` passed the plan's check and failed building the config, as `unknown` (exit 1, "report this as a bug"); `.inf` was taken as a bound.
+- **An output name must start with a letter, a digit or `_`.** `name: ""` planned valid and wrote `.jsonl`, a hidden file no query lists, with no warning; `.x` and `-x` were accepted too.
 - **A rate limit or timeout that cannot be kept is a plan problem.** `rate_limit: {rps: 0}` divided by zero on the fourth request and failed the table as `unknown`; `burst: 0` waited forever for a token; a timeout of 0 or less was accepted. `rps` and `timeout` must be above 0 and `burst` at least 1.
 - **A retry draws a rate-limit token, and its wait is on recon's clock.** The token was drawn once per request, before its retries, so a source answering 5xx was sent to three times for one token; the backoff slept on the real clock, out of reach of a test clock and of any bound recon sets.
 

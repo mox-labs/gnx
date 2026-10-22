@@ -128,7 +128,7 @@ class CollectorEntry(BaseModel):
     type_url: str = DEFAULT_RECORDS_TYPE_URL
     extract: str | None = None
     normalize: dict[str, str] | None = None
-    deadline: float | None = Field(default=None, gt=0)
+    deadline: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
     @property
     def settings(self) -> dict[str, Any]:
@@ -167,4 +167,4 @@ class ReconConfig(BaseModel):
     catalog: list[SourceEntry] = []
     collectors: list[CollectorEntry]
     preserve_raw: bool = False
-    deadline: float | None = Field(default=None, gt=0)
+    deadline: float | None = Field(default=None, gt=0, allow_inf_nan=False)

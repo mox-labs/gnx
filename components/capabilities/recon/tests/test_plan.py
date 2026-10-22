@@ -203,6 +203,21 @@ class TestEveryProblemWithAPath:
         assert (problem.path, problem.kind) == ("collectors.0.name", "invalid_value")
         assert problem.got == name
 
+    @pytest.mark.parametrize("name", ["", ".", ".hidden", "-x"])
+    def test_an_output_name_must_start_with_a_letter_a_digit_or_underscore(
+        self, registry: Plugins, name: str
+    ) -> None:
+        """Regression: ``name: ""`` planned valid and wrote ``.jsonl``, a hidden file no
+        query lists, without a word."""
+        plan = _plan({"collectors": [{"name": name, "type": "cli", "run": "true"}]}, registry)
+        [problem] = plan.problems
+        assert (problem.path, problem.kind, problem.got) == (
+            "collectors.0.name",
+            "invalid_value",
+            name,
+        )
+        assert "start with a letter, a digit or _" in problem.message
+
     def test_a_source_name_that_makes_an_output_not_one_file_name_is_a_problem(
         self, registry: Plugins
     ) -> None:
