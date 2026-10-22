@@ -4,6 +4,10 @@ to, whoever wrote it.
 * **Only the types the mission uses are built**, one collector each, from the driven ports the
   composition root binds (:class:`CollectorPorts`); a factory that raises is reported as a
   broken plugin and its tables fail as ``config``, while the others build.
+* **What a survey opens, it closes.** One collector serves every table of its type, so it
+  may hold a session across them (a connection, a stdio server); recon calls its ``close()``
+  once when the survey ends, however it ends, and closes the survey's Requester
+  (:meth:`SurveyCollectors.close`).
 * **A type sees only the environment its mission declares for it**: the ``auth.env`` names of
   the catalog sources its collectors run against (:class:`ScopedEnv`).
 * **``normalize:`` is applied to every type's records**: a type that does not apply it itself
@@ -16,7 +20,7 @@ to, whoever wrote it.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +55,29 @@ class CollectorPorts:
     converter: DocumentConverter
     shell: ShellRunner
     user_agent: str
+
+
+@dataclass
+class SurveyCollectors:
+    """One survey's collectors by type name, the types whose factory raised, and what to end
+    when the survey ends."""
+
+    collectors: dict[str, Collector]
+    failed: list[BrokenPlugin]
+    _ends: list[tuple[str, Callable[[], object]]] = field(default_factory=list)
+
+    def close(self) -> list[BrokenPlugin]:
+        """Close each collector that has a ``close()``, then the survey's Requester, once
+        each, all of them whatever one raises; return the ones that raised."""
+        ends, self._ends = self._ends, []
+        failed = []
+        for name, end in ends:
+            try:
+                end()
+            except Exception as exc:  # one plugin's close must not keep the rest open
+                error = f"close() raised {type(exc).__name__}: {exc}"
+                failed.append(BrokenPlugin(COLLECTORS_GROUP, name, "close()", error))
+        return failed
 
 
 class ScopedEnv(Mapping[str, str]):
@@ -147,23 +174,25 @@ def build_collectors(
     mission_dir: Path,
     config: ReconConfig,
     telemetry: Telemetry,
-) -> tuple[dict[str, Collector], list[BrokenPlugin]]:
-    """One collector for each installed type ``config`` uses, sharing one Requester, and the
-    types whose factory raised. Each factory is handed a ``ScopedEnv`` over ``env`` holding
-    only the variables ``config`` declares for that type's sources."""
+) -> SurveyCollectors:
+    """One collector for each installed type ``config`` uses, sharing one Requester and the
+    survey's ``telemetry``, and the types whose factory raised. Each factory is handed a
+    ``ScopedEnv`` over ``env`` holding only the variables ``config`` declares for that type's
+    sources."""
     transforms = confined_transforms(plugins.transforms, config, mission_dir)
+    requester = ports.requester(telemetry)
     ctx = CollectorContext(
-        requester=ports.requester(telemetry),
+        requester=requester,
         converter=ports.converter,
         shell=ports.shell,
+        telemetry=telemetry,
         transforms=transforms,
         mission_dir=mission_dir,
         env={},
         user_agent=ports.user_agent,
     )
     declared = declared_env(config)
-    collectors: dict[str, Collector] = {}
-    failed: list[BrokenPlugin] = []
+    built = SurveyCollectors({}, [])
     for name in dict.fromkeys(entry.type for entry in config.collectors):
         ct = plugins.collector_types[name]
         scoped = ScopedEnv(env, declared.get(name, ()), name)
@@ -173,7 +202,13 @@ def build_collectors(
             error = f"{type(exc).__name__}: {exc}"
             if isinstance(exc, ReconError) and exc.fix:
                 error += f" (fix: {exc.fix})"
-            failed.append(BrokenPlugin(COLLECTORS_GROUP, name, "create()", error))
+            built.failed.append(BrokenPlugin(COLLECTORS_GROUP, name, "create()", error))
             continue
-        collectors[name] = collector if ct.normalizes else Normalizing(collector, transforms)
-    return collectors, failed
+        close = getattr(collector, "close", None)
+        if callable(close):
+            built._ends.append((name, close))
+        built.collectors[name] = collector if ct.normalizes else Normalizing(collector, transforms)
+    close = getattr(requester, "close", None)
+    if callable(close):
+        built._ends.append(("requester", close))
+    return built

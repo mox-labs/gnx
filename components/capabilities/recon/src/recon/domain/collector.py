@@ -25,12 +25,15 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from pydantic import BaseModel
+
     from recon.domain.capture import CaptureLog
     from recon.domain.converters import DocumentConverter
     from recon.domain.errors import Problem
     from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, SourceEntry
     from recon.domain.shell import ShellRunner
+    from recon.domain.telemetry import Telemetry
 
 #: What running a collector can touch. Reported by ``survey --dry-run`` for every planned
 #: run; a type that declares ``effects=None`` is shown as ``unknown``, never as none.
@@ -48,6 +51,11 @@ class Collector(Protocol):
     ``captures`` is the mission's capture log when ``preserve_raw`` is on, else None. A
     collector that fetches bytes records them there before parsing, so the archive can
     prove what the source returned and be re-normalized without fetching again.
+
+    One collector serves every table of its type in a survey, so it may hold a session
+    across them (a connection, a stdio server it started once). It may then have a
+    ``close()``, an optional member read only when present: recon calls it once when the
+    survey ends, however it ends (finished, failed, interrupted).
     """
 
     def collect(
@@ -64,9 +72,11 @@ class CollectorContext:
     """What a collector type's factory is handed for one survey.
 
     Shared on purpose: one Requester (and so one rate limiter per source) serves every
-    HTTP collector in a run. ``shell`` runs a command. ``mission_dir`` anchors relative
-    paths in a config. ``user_agent`` is what an HTTP collector sends when its source sets
-    none.
+    HTTP collector in a run. ``shell`` runs a command. ``telemetry`` is the survey's: a
+    span opened there (``with ctx.telemetry.span("acme.call", {...}):``) nests under the
+    table's ``recon.collect`` span, in the event log and in OpenTelemetry alike.
+    ``mission_dir`` anchors relative paths in a config. ``user_agent`` is what an HTTP
+    collector sends when its source sets none.
 
     ``env`` is not the process environment. It holds only the variables the mission
     declares for this type: the ``auth.env`` names of the catalog sources its collectors
@@ -76,6 +86,7 @@ class CollectorContext:
     requester: Requester
     converter: DocumentConverter
     shell: ShellRunner
+    telemetry: Telemetry
     transforms: Mapping[str, Transform]
     mission_dir: Path
     env: Mapping[str, str]
@@ -95,17 +106,26 @@ class CollectorType:
     """A registered collector type: how to build it, and what a plan needs to know about it.
 
     - ``create`` builds the collector from the shared context.
+    - ``settings`` is the schema (a pydantic model that forbids unknown keys) of the type's
+      own keys in an entry, beyond the ones recon reads for every type: an entry's other
+      keys (``entry.settings``) are validated against it at plan time, each problem with its
+      path. ``None`` means the type takes no setting of its own, so any other key is
+      unknown. The type parses ``entry.settings`` with it.
+    - ``source_kinds`` are the catalog source kinds (a source's ``type:``) the type adds to
+      the ones installed; a source of any other kind is a plan problem.
     - ``effects`` declares what a run can touch; ``None`` means unknown.
     - ``requires_source`` makes a missing ``source`` (with an empty catalog) a plan error.
     - ``normalizes`` says the collector applies ``entry.normalize`` itself. Left ``False``,
       recon applies the spec to every record the collector yields, so a type cannot forget
       it. Set it only when the spec needs something the records alone do not carry (the
       capture collector's ``_capture`` scope).
-    - ``extracts`` says the collector finds its records at ``entry.extract`` in a body. A
-      survey whose table of this type gets one record holding a list of objects warns that
-      ``extract:`` may be missing, naming the list's path.
+    - ``extracts`` says the collector finds its records at ``entry.extract`` in a body, and
+      only such a type takes ``extract:``. A survey whose table of this type gets one record
+      holding a list of objects warns that ``extract:`` may be missing, naming the list's
+      path.
     - ``check`` returns problems in an entry, with paths relative to it (``run``,
-      ``endpoint``); the planner prefixes ``collectors.<i>.``. Pure: no I/O.
+      ``endpoint``); the planner prefixes ``collectors.<i>.``. It is called only for an
+      entry whose settings ``settings`` accepts. Pure: no I/O.
     - ``describe`` returns what a planned run would do (the URL, the command) for a
       reviewer. Pure: no I/O, no network.
     """
@@ -113,6 +133,8 @@ class CollectorType:
     create: Callable[[CollectorContext], Collector]
     effects: frozenset[Effect] | None
     summary: str = ""
+    settings: type[BaseModel] | None = None
+    source_kinds: frozenset[str] = frozenset()
     requires_source: bool = False
     normalizes: bool = False
     extracts: bool = False

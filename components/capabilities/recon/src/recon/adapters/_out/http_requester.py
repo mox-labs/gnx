@@ -38,6 +38,9 @@ How httpx2 (2.10) is used, each choice checked against its source:
   and ``.netrc`` apply.
 * **The transport** is httpx2's own unless one is given: a test hands the requester an
   ``httpx2.MockTransport``.
+* **One client per survey**, opened on the first request and closed by ``close()``; each
+  request's timeout is set on the request (``build_request(timeout=...)``), and the cookie
+  jar is emptied before each request, so requests share connections and nothing else.
 """
 
 from __future__ import annotations
@@ -56,7 +59,6 @@ from recon.domain.http import HttpResponse, reported_url
 from recon.domain.telemetry import HTTP_REQUEST, Telemetry
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from datetime import datetime
 
     from recon.domain.clock import Clock
@@ -199,17 +201,6 @@ def _same_origin(url: httpx2.URL, origin: httpx2.URL) -> bool:
     return (origin.scheme, _port(origin), url.scheme, _port(url)) == ("http", 80, "https", 443)
 
 
-def _credential_stays_at(origin: httpx2.URL, header: str) -> Callable[[httpx2.Request], None]:
-    """A request hook that removes ``header`` from any request, a redirect included, sent
-    anywhere but ``origin``."""
-
-    def hook(request: httpx2.Request) -> None:
-        if header and not _same_origin(request.url, origin):
-            request.headers.pop(header, None)
-
-    return hook
-
-
 def _span_attributes(
     request: httpx2.Request, source: SourceEntry, resend: int
 ) -> dict[str, str | int | None]:
@@ -288,7 +279,11 @@ def _to_domain(resp: httpx2.Response, body: bytes) -> HttpResponse:
 class HttpRequester:
     """HTTP adapter with rate limiting and retry. Returns HttpResponse VO. ``clock`` dates a
     Retry-After given as an HTTP-date; ``telemetry`` receives a span per attempt;
-    ``transport`` replaces httpx2's network transport (a test's ``MockTransport``)."""
+    ``transport`` replaces httpx2's network transport (a test's ``MockTransport``).
+
+    One requester serves a survey, over one session (a client, so connections are reused
+    between requests to a host) that :meth:`close` ends when the survey does. Requests are
+    sent one at a time; no cookie carries from one to the next."""
 
     def __init__(
         self,
@@ -302,6 +297,35 @@ class HttpRequester:
         self._clock = clock
         self._telemetry = telemetry if telemetry is not None else Telemetry((), clock)
         self._transport = transport
+        self._client: httpx2.Client | None = None
+        #: The request in hand's origin and the source's credential header, which goes to
+        #: that origin only (requests are sent one at a time).
+        self._origin: tuple[httpx2.URL, str] | None = None
+
+    def close(self) -> None:
+        """End the session: its connections close. A later request opens a new one."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def _session(self) -> httpx2.Client:
+        """The one client this requester's requests share, opened on first use."""
+        if self._client is None:
+            self._client = httpx2.Client(
+                follow_redirects=True,
+                event_hooks={"request": [self._credential_stays_at_its_origin]},
+                transport=self._transport,
+            )
+        return self._client
+
+    def _credential_stays_at_its_origin(self, request: httpx2.Request) -> None:
+        """A request hook: the source's ``auth.header`` is removed from any request, a
+        redirect included, sent anywhere but the origin of the one the collector built."""
+        if self._origin is None:
+            return
+        origin, header = self._origin
+        if header and not _same_origin(request.url, origin):
+            request.headers.pop(header, None)
 
     def request(
         self,
@@ -337,23 +361,20 @@ class HttpRequester:
             sleep=self._clock.sleep,
             reraise=True,
         )
-        hooks = {"request": [_credential_stays_at(target, source.auth.header)]}
+        # Sync on purpose: a survey runs its requests one at a time, so async buys nothing.
+        client = self._session()
+        # Each request starts as one alone would: no cookie carries over from another.
+        client.cookies.clear()
+        self._origin = (target, source.auth.header)
+
+        def attempt() -> HttpResponse:
+            request = client.build_request(
+                method, target, headers=headers or {}, json=json_body, timeout=source.timeout
+            )
+            return self._attempt(client, request, source, next(resends))
+
         try:
-            # Sync on purpose: a survey runs its requests one at a time, so async buys nothing.
-            with httpx2.Client(
-                timeout=source.timeout,
-                follow_redirects=True,
-                event_hooks=hooks,
-                transport=self._transport,
-            ) as client:
-
-                def attempt() -> HttpResponse:
-                    request = client.build_request(
-                        method, target, headers=headers or {}, json=json_body
-                    )
-                    return self._attempt(client, request, source, next(resends))
-
-                return retrying(attempt)
+            return retrying(attempt)
         except (httpx2.HTTPStatusError, httpx2.RequestError) as exc:
             status = ""
             snippet = ""

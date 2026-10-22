@@ -725,7 +725,7 @@ class TestDryRunShowsTheRequest:
                 {"name": "works", "type": "api", "source": "oa", "endpoint": "/works",
                  "params": {"search": "state space", "per_page": "1"}},
                 {"name": "issues", "type": "api", "source": "gh", "method": "POST",
-                 "endpoint": "/search?sort=new", "body": {"q": "{q}"}, "params": {"q": "bug"}},
+                 "endpoint": "/search?sort=new", "body": {"q": "{q}"}, "vars": {"q": "bug"}},
             ],
         }  # fmt: skip
         _mission(project, "m", config)
@@ -741,7 +741,7 @@ class TestDryRunShowsTheRequest:
             "https://api.openalex.org/works?per_page=1&search=state+space&api_key=REDACTED"
         )
         assert works["headers"] == {"User-Agent": "me@example.org"}
-        assert issues["url"] == "https://REDACTED:REDACTED@api.github.test/search?sort=new&q=bug"
+        assert issues["url"] == "https://REDACTED:REDACTED@api.github.test/search?sort=new"
         assert issues["headers"]["Authorization"] == "REDACTED"
         assert issues["headers"]["User-Agent"].startswith(f"recon/{recon.__version__} ")
         assert issues["body"] == {"q": "bug"}

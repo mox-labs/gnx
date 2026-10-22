@@ -3,13 +3,15 @@
 No infrastructure dependencies. These flow through the hexagon.
 
 Every model forbids unknown keys: a misspelt ``normalise:`` or ``preserve-raw:`` is a config
-error with a path, not a silently ignored line. The one exception is made by the planner
-before a config reaches these models: a top-level key beginning with ``_`` is dropped.
+error with a path, not a silently ignored line. Two exceptions: a top-level key beginning
+with ``_`` is dropped by the planner before a config reaches these models, and a collector
+entry keeps the keys that are its type's own settings, which the planner validates against
+that type's schema (``CollectorType.settings``), so an unknown one is still a config error.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -55,20 +57,6 @@ class RateLimitConfig(BaseModel):
     burst: int = Field(default=3, ge=1)
 
 
-class CaptureMatch(BaseModel):
-    """Filters a `capture` collector applies to capture-log lines.
-
-    Each field is a shell-style glob (`fnmatch`) matched against the capture's field of the
-    same name; an unset field matches everything.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    source: str | None = None
-    collector: str | None = None
-    kind: str | None = None
-
-
 # --- Source Entry ---
 
 
@@ -79,6 +67,10 @@ class SourceEntry(BaseModel):
     Web sources provide URL + rate limits for page fetching.
     Local sources provide a filesystem path (used as cwd by CLI collectors).
 
+    ``type`` is a source kind: ``api``, ``web``, ``local``, or one an installed collector type
+    adds (``CollectorType.source_kinds``). It is an open string here; whether it is installed
+    is checked at plan time.
+
     ``max_bytes`` bounds one HTTP response body from this source, counted after any
     content-encoding is undone. A larger body fails the table instead of being buffered.
     """
@@ -86,7 +78,7 @@ class SourceEntry(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
-    type: Literal["api", "web", "local"] = "api"
+    type: str = "api"
     url: str
     auth: AuthConfig = AuthConfig()
     rate_limit: RateLimitConfig = RateLimitConfig()
@@ -103,42 +95,30 @@ class CollectorEntry(BaseModel):
 
     `type` names an installed collector type (entry-point group `recon.collectors`). It is
     an open string here; whether it is installed is checked at plan time against what is
-    actually registered. The built-in types use these fields:
+    actually registered.
 
-    - cli: `run`, `patterns`
-    - api: `endpoint`, `params`, `method`, `body`, `response_format`, `extract`
-    - web: `endpoint` (optional, appended to source URL)
-    - capture: `path` (capture log path or glob), `match`, `response_format`, `extract`
-
-    `normalize` applies to every type. `type_url` declares what the output table's records
-    are; it is recorded in the archive's meta.yaml, never injected into the records.
+    The fields here are the ones recon itself reads, for every type: `name`, `type`,
+    `source`, `type_url` (what the output table's records are; recorded in the archive's
+    meta.yaml, never injected into the records), `normalize` (output column to
+    ``path.to.field|$transform``), and `extract` (where the records are in a body, for a type
+    that declares ``extracts``). Every other key is the type's own setting (`run:` for
+    `cli`, `endpoint:` for `api`), kept in :attr:`settings` and validated by the type's own
+    schema at plan time.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="allow")
 
     name: str
     type: str
     source: str | None = None
     type_url: str = DEFAULT_RECORDS_TYPE_URL
-
-    # cli fields
-    run: str | None = None
-    patterns: list[str] | None = None
-
-    # api fields
-    endpoint: str | None = None
-    params: dict[str, str] | None = None
-    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "GET"
-    body: dict[str, Any] | None = None
-    response_format: Literal["json", "xml", "html", "text"] = "json"
     extract: str | None = None
-
-    # capture fields
-    path: str | None = None
-    match: CaptureMatch | None = None
-
-    # shared: field mapping spec (output_col: "path.to.field|$transform")
     normalize: dict[str, str] | None = None
+
+    @property
+    def settings(self) -> dict[str, Any]:
+        """The keys that are the type's own settings, as written."""
+        return dict(self.model_extra or {})
 
     @field_validator("type_url")
     @classmethod

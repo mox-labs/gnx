@@ -156,7 +156,7 @@ Collector types and transforms are extensions, loaded from the entry-point group
 - collector types: `api`, `cli`, `web`, `capture`
 - transforms: `$html2text`, `$inverted_index`, `$join`, `$first`, `$markitdown`
 
-A plugin that fails to load is reported by `recon status` and `survey --dry-run` and does not break the others. To write one: [docs/reference/extending.md](docs/reference/extending.md).
+A plugin that fails to load is reported by `recon status` and `survey --dry-run` and does not break the others. A collector type declares the keys it takes (a schema the plan validates them by), the source kinds it adds, and may hold a session across its tables, which recon closes when the survey ends. To write one: [docs/reference/extending.md](docs/reference/extending.md).
 
 The tests run offline, except the live integration tests against OpenAlex, arXiv, Semantic Scholar and Zenodo, which run only with `RECON_LIVE=1` (`just recon-live`).
 

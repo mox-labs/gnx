@@ -21,6 +21,8 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict
+
 from recon.adapters._out.parsing import parse_line
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
@@ -39,6 +41,20 @@ if TYPE_CHECKING:
 STDERR_TAIL_BYTES = 4096
 
 _READ_CHUNK = 65536
+
+
+class CliSettings(BaseModel):
+    """A ``cli`` collector's own keys: ``run``, the shell command, and ``patterns``, each
+    filling ``{pattern}`` in turn."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run: str | None = None
+    patterns: list[str] | None = None
+
+
+def _settings(entry: CollectorEntry) -> CliSettings:
+    return CliSettings.model_validate(entry.settings)
 
 
 class PopenRunner:
@@ -165,8 +181,9 @@ class CliCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        assert entry.run is not None  # _check requires it, and the plan holds it
-        if source is None and "{url}" in entry.run:
+        run = _settings(entry).run
+        assert run is not None  # _check requires it, and the plan holds it
+        if source is None and "{url}" in run:
             raise CollectionError(
                 f"collector {entry.name!r}: run: uses {{url}}, the source's url, and this run "
                 "has no source; nothing was run",
@@ -254,14 +271,15 @@ def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[s
     """(pattern, substituted command) for each invocation the entry makes. recon fills
     ``{url}`` and ``{pattern}``; any other ``{...}`` is the command's own (cargo's
     ``--format '{p}'``, a jq object) and is passed as written."""
-    if not entry.run:
+    settings = _settings(entry)
+    if not settings.run:
         return []
     variables = {"url": source.url} if source else {}
-    patterns: list[str | None] = list(entry.patterns) if entry.patterns else [None]
+    patterns: list[str | None] = list(settings.patterns) if settings.patterns else [None]
     out = []
     for pattern in patterns:
         cmd_vars = {**variables, "pattern": pattern} if pattern is not None else variables
-        out.append((pattern, substitute(entry.run, cmd_vars)))
+        out.append((pattern, substitute(settings.run, cmd_vars)))
     return out
 
 
@@ -269,7 +287,8 @@ def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[s
 
 
 def _check(entry: CollectorEntry) -> list[Problem]:
-    if not entry.run:
+    settings = _settings(entry)
+    if not settings.run:
         return [
             Problem(
                 "run",
@@ -278,7 +297,7 @@ def _check(entry: CollectorEntry) -> list[Problem]:
                 fix="run: \"rg --json 'TODO'\"",
             )
         ]
-    if "{pattern}" in entry.run and not entry.patterns:
+    if "{pattern}" in settings.run and not settings.patterns:
         return [
             Problem(
                 "patterns",
@@ -304,6 +323,8 @@ collector_type = CollectorType(
     create=lambda ctx: CliCollector(ctx.shell, ctx.transforms),
     effects=frozenset({"subprocess"}),
     summary="shell command → stdout lines (JSON objects or text) → records",
+    settings=CliSettings,
+    source_kinds=frozenset({"local"}),
     normalizes=True,
     check=_check,
     describe=_describe,

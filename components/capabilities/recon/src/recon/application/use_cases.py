@@ -42,20 +42,19 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
+    from recon.application.collectors import SurveyCollectors
     from recon.domain.archives import ArchiveQuery, ArchiveStore
     from recon.domain.clock import Clock
-    from recon.domain.collector import BrokenPlugin, Collector, Plugins
+    from recon.domain.collector import Plugins
     from recon.domain.documents import Capture
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import ReconConfig
     from recon.domain.telemetry import Telemetry
 
-#: Builds one collector per installed type for a mission, reporting through the survey's
-#: telemetry; also returns the types whose factory failed, which a survey reports and whose
-#: tables fail with a config error.
-CollectorFactory = Callable[
-    ["Path", "ReconConfig", "Telemetry"], tuple[dict[str, "Collector"], list["BrokenPlugin"]]
-]
+#: Builds a collector for each installed type a mission uses, reporting through the survey's
+#: telemetry, with the types whose factory failed (which a survey reports and whose tables
+#: fail with a config error), and what to close when the survey ends.
+CollectorFactory = Callable[["Path", "ReconConfig", "Telemetry"], "SurveyCollectors"]
 
 #: The telemetry for one operation: a survey passes the archive it writes, whose event log
 #: is one of the sinks; an operation that writes no archive passes None.
@@ -197,29 +196,39 @@ class Recon:
         telemetry = self._telemetry(archive)
         about = {"recon.mission": name, "recon.archive": archive.name}
         with telemetry.span(SURVEY, about) as span:
-            collectors, failed = self._build_collectors(mission, plan.config, telemetry)
-            for broken in failed:
-                warnings.append(plugin_warning(broken))
-                emit({"kind": "warning", "reason": str(warnings[-1]), "fix": warnings[-1].fix})
-            emit(
-                {
-                    "kind": "start",
-                    "runs": len(plan.runs),
-                    "collectors": len(plan.config.collectors),
-                    "sources": len(plan.config.catalog),
-                }
-            )
-            extracts = {n for n, ct in self._plugins.collector_types.items() if ct.extracts}
-            survey = Survey(
-                self._archives, self._clock, self._version, telemetry, on_event, extracts=extracts
-            )
-            tables = survey.run(
-                plan.config,
-                collectors,
-                archive,
-                started=started,
-                config_sha256=hashlib.sha256(source.text).hexdigest(),
-            )
+            built = self._build_collectors(mission, plan.config, telemetry)
+            try:
+                for broken in built.failed:
+                    warnings.append(plugin_warning(broken))
+                    emit({"kind": "warning", "reason": str(warnings[-1]),
+                          "fix": warnings[-1].fix})  # fmt: skip
+                emit(
+                    {
+                        "kind": "start",
+                        "runs": len(plan.runs),
+                        "collectors": len(plan.config.collectors),
+                        "sources": len(plan.config.catalog),
+                    }
+                )
+                extracts = {n for n, ct in self._plugins.collector_types.items() if ct.extracts}
+                survey = Survey(
+                    self._archives, self._clock, self._version, telemetry, on_event,
+                    extracts=extracts,
+                )  # fmt: skip
+                tables = survey.run(
+                    plan.config,
+                    built.collectors,
+                    archive,
+                    started=started,
+                    config_sha256=hashlib.sha256(source.text).hexdigest(),
+                )
+            finally:
+                # Whatever the survey opened (a collector's session, the requester's
+                # connections) ends with it, however it ends.
+                for broken in built.close():
+                    warnings.append(plugin_warning(broken))
+                    emit({"kind": "warning", "reason": str(warnings[-1]),
+                          "fix": warnings[-1].fix})  # fmt: skip
             failed_tables = [t for t in tables if t.status == "error"]
             span.set("recon.tables", len(tables))
             span.set("recon.tables.failed", len(failed_tables))

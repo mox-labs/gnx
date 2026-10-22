@@ -120,7 +120,7 @@ Documents name their shape in `schema`: `recon.v1.plan`, `recon.v1.survey`, `rec
 preserve_raw: false            # true: keep every fetched body in the archive's capture log
 catalog:                       # where to look; optional
   - name: <source>             # required, unique
-    type: api                  # api | web | local
+    type: api                  # api | web | local, or a kind an installed type adds
     url: <base URL, or a directory for local>   # required
     auth: {env: <VAR>, header: <Header-Name>, param: <query param>, prefix: "Bearer "}
     rate_limit: {rps: 10.0, burst: 3}   # tokens a second (> 0), most held (>= 1)
@@ -133,18 +133,20 @@ collectors:                    # what to ask; required, at least one
     source: <source>           # pin one source; omit to run against every catalog source
     type_url: recon.v1.records # what the records are: <namespace>.v<N>.<kebab-name>
     normalize: {<column>: "<path>|$<transform>"}   # every type; omit to keep records whole
-    # api:     endpoint, params, method (GET | POST | PUT | PATCH | DELETE), body,
-    #          response_format (json | xml), extract
+    extract: <path>            # api and capture: where the records are in a body
+    # Every other key is the type's own:
+    # api:     endpoint, params (the query), vars (fill {placeholders}),
+    #          method (GET | POST | PUT | PATCH | DELETE), body, response_format (json | xml)
     # cli:     run, patterns
     # web:     endpoint
-    # capture: path, match {source, collector, kind}, response_format, extract
+    # capture: path, match {source, collector, kind}, response_format
 ```
 
-These are all the keys there are: an unknown key at the top level, in a source, a collector, `auth`, `rate_limit` or `match` is a plan problem with its path, so a typo like `normalise:` never passes silently. The one exception is a top-level key beginning with `_`, which recon ignores, for notes or a YAML anchor several collectors alias. `params:` values are strings: quote a number (`limit: "20"`).
+These are all the keys there are: an unknown key at the top level, in a source, a collector, `auth`, `rate_limit` or `match` is a plan problem with its path, so a typo like `normalise:` never passes silently. A collector's keys beyond the shared ones are its type's own, checked by that type (`run:` is unknown on an `api` collector), and an installed plugin type may take keys of its own; its source kinds, too. The one exception is a top-level key beginning with `_`, which recon ignores, for notes or a YAML anchor several collectors alias. `params:` values are strings: quote a number (`limit: "20"`).
 
 **Fan-out.** A collector with `source:` runs once and writes the table `<name>`. Without `source:` it runs against every catalog source and writes `<name>-<source>` for each; with no catalog it runs once. Adding a source to a mission therefore adds a run to every unpinned collector: when the catalog's sources are of different types, the plan warns (`fan_out_mixed`) for each unpinned collector; pin it with `source:`.
 
-**Placeholders.** A placeholder is `{name}`, the name a letter or `_` and then letters, digits or `_`, so a regular expression's `\w{3}` or `{2,5}` is not one. In an `api` collector, `{key}` in `endpoint` and in the string values of `body` is filled from `params:`, and every `params:` entry is also sent as a query parameter; a placeholder nothing fills there is a plan problem (`unresolved`), and a `params:` value is sent as written. A `web` collector fills none, so a placeholder in its `endpoint` is a plan problem. In a `cli` collector recon fills `{url}`, the source's `url`, and `{pattern}`, each entry of `patterns:` in turn: `{pattern}` without `patterns:` is a plan problem, and `{url}` in a run with no source fails its table before anything runs. Any other `{...}` in `run:` is the command's own (`cargo tree --format '{p}'`, a jq object) and is passed as written.
+**Placeholders.** A placeholder is `{name}`, the name a letter or `_` and then letters, digits or `_`, so a regular expression's `\w{3}` or `{2,5}` is not one. In an `api` collector, `{key}` in `endpoint` and in the string values of `body` is filled from `vars:`, which are sent nowhere else; `params:` are the query string, each value sent as written. A placeholder nothing fills is a plan problem (`unresolved`), and so is one in a `params:` value. A `web` collector fills none, so a placeholder in its `endpoint` is a plan problem. In a `cli` collector recon fills `{url}`, the source's `url`, and `{pattern}`, each entry of `patterns:` in turn: `{pattern}` without `patterns:` is a plan problem, and `{url}` in a run with no source fails its table before anything runs. Any other `{...}` in `run:` is the command's own (`cargo tree --format '{p}'`, a jq object) and is passed as written.
 
 **Credentials.** `auth.env` names the environment variable holding the secret; the secret never appears in the file. `auth.header` sends it as that header, `auth.param` as that query parameter, with `auth.prefix` in front. An unset variable sends the request without it, and the plan warns. A collector type sees only the variables the mission names this way.
 

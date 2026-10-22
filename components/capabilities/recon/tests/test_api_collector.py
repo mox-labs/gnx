@@ -11,7 +11,7 @@ from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import DEFAULT_USER_AGENT
 from recon.domain.capture import REDACTED
-from recon.domain.errors import CollectionError, NoRecordsError
+from recon.domain.errors import NoRecordsError
 from recon.domain.http import HttpResponse
 from recon.domain.models import AuthConfig, CollectorEntry, SourceEntry
 from recon.domain.normalize import resolve_path, to_records
@@ -253,31 +253,13 @@ class TestCollectThroughRequester:
             source="exa",
             endpoint="/search",
             method="POST",
-            params={"topic": "state space models"},
+            vars={"topic": "state space models"},
             body={"query": "{topic}", "numResults": 10},
             extract="results",
         )
         list(col.collect(entry, source))
         assert req.calls[0]["json_body"] == {"query": "state space models", "numResults": 10}
-
-    def test_missing_placeholder_raises_before_request(self):
-        req = _FakeRequester()  # no canned response; should never be called
-        col = ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT)
-
-        source = SourceEntry(name="exa", url="https://api.exa.ai")
-        entry = CollectorEntry(
-            name="search",
-            type="api",
-            source="exa",
-            endpoint="/search",
-            method="POST",
-            params={"topic": "resolved"},
-            body={"query": "{topic}", "missing": "{nowhere}"},
-            extract="results",
-        )
-        with pytest.raises(CollectionError, match="unresolved placeholder"):
-            list(col.collect(entry, source))
-        assert req.calls == [], "Requester must not be invoked when body has unresolved vars"
+        assert req.calls[0]["params"] == {}, "a value that fills the body is not a query too"
 
 
 class TestUserAgent:
@@ -324,16 +306,20 @@ class TestParams:
         req = self._collect({"format": "json", "query": self.SPARQL})
         assert req.calls[0]["params"] == {"format": "json", "query": self.SPARQL}
 
-    def test_an_unresolved_placeholder_raises_before_the_request(self):
-        req = _FakeRequester()  # no canned response; must never be called
-        source = SourceEntry(name="s", url="https://x")
-        entry = CollectorEntry(
-            name="c", type="api", source="s", endpoint="/q", params={"q": "{topic}", "n": "5"}
-        )
-        with pytest.raises(CollectionError, match=r"params.*\{topic\}") as excinfo:
-            list(ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT).collect(entry, source))
-        assert excinfo.value.kind == "config"
-        assert req.calls == []
+    def test_an_unresolved_placeholder_is_a_plan_problem(self):
+        """Changed requirement: the collector refused at run time what the plan already
+        refuses, so the survey never reaches it."""
+        from recon.application.plan import build_plan
+        from recon.composition import load_plugins
+
+        raw = {
+            "catalog": [{"name": "s", "url": "https://x"}],
+            "collectors": [{"name": "c", "type": "api", "endpoint": "/q",
+                            "params": {"q": "{topic}", "n": "5"}}],
+        }  # fmt: skip
+        [problem] = build_plan(raw, load_plugins(), {}).problems
+        assert (problem.path, problem.kind, problem.got) == ("collectors.0.params.q",
+                                                             "unresolved", "{topic}")  # fmt: skip
 
 
 class TestSubstituteUnified:
@@ -383,3 +369,41 @@ class TestFindUnresolved:
 def test_method_expanded(method, expected):
     entry = CollectorEntry(name="x", type="api", endpoint="/y", method=method)
     assert entry.method == expected
+
+
+class TestParamsAndVars:
+    """Regression: ``params:`` was both the query string and the values for an endpoint's
+    and a body's placeholders, so a value meant for a path or a POST body (a search topic, a
+    target URL) also went out as a query parameter, into the server's access log."""
+
+    def _sent(self, **settings):
+        req = _FakeRequester(_ok_response("[]"))
+        source = SourceEntry(name="s", url="https://x.test")
+        entry = CollectorEntry(name="c", type="api", source="s", **settings)
+        list(ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT).collect(entry, source))
+        return req.calls[0]
+
+    def test_vars_fill_the_endpoint_and_the_body_and_are_sent_nowhere_else(self):
+        sent = self._sent(
+            endpoint="/repos/{owner}/{repo}",
+            method="POST",
+            body={"url": "{target}"},
+            vars={"owner": "o", "repo": "r", "target": "https://t.test/p"},
+            params={"per_page": "5"},
+        )
+        assert sent["url"] == "https://x.test/repos/o/r"
+        assert sent["json_body"] == {"url": "https://t.test/p"}
+        assert sent["params"] == {"per_page": "5"}
+
+    def test_a_placeholder_vars_does_not_fill_is_a_plan_problem(self):
+        from recon.application.plan import build_plan
+        from recon.composition import load_plugins
+
+        raw = {
+            "catalog": [{"name": "s", "url": "https://x.test"}],
+            "collectors": [{"name": "c", "type": "api", "endpoint": "/r/{owner}",
+                            "params": {"owner": "o"}}],
+        }  # fmt: skip
+        [problem] = build_plan(raw, load_plugins(), {}).problems
+        assert (problem.path, problem.kind) == ("collectors.0.endpoint", "unresolved")
+        assert "vars:" in problem.fix

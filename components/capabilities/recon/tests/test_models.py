@@ -68,10 +68,6 @@ class TestSourceEntry:
         with pytest.raises(ValidationError, match=named):
             SourceEntry(name="s", url="https://x", **fields)
 
-    def test_git_type_rejected(self):
-        with pytest.raises(ValidationError):
-            SourceEntry(name="repo", type="git", url="https://github.com/x/y")
-
 
 class TestCollectorEntry:
     def test_cli(self):
@@ -101,11 +97,6 @@ class TestCollectorEntry:
         """Collector types are extensions: whether one is installed is a plan-time check
         against the entry-point group (test_plan.py), not a closed Literal here."""
         assert CollectorEntry(name="x", type="sql").type == "sql"
-
-    def test_unknown_field_is_rejected(self):
-        """A misspelt key (normalise:) must not be silently ignored."""
-        with pytest.raises(ValidationError, match="normalise"):
-            CollectorEntry(name="x", type="cli", run="true", normalise={"a": "b"})
 
     def test_type_url_defaults_to_records(self):
         assert CollectorEntry(name="x", type="cli").type_url == "recon.v1.records"

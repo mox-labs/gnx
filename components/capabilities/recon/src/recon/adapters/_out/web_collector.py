@@ -19,6 +19,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict
+
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.collector import CollectorType
 from recon.domain.errors import Problem
@@ -36,6 +38,18 @@ if TYPE_CHECKING:
     from recon.domain.models import CollectorEntry, SourceEntry
 
 _MAX_CONTENT_CHARS = 100_000
+
+
+class WebSettings(BaseModel):
+    """A ``web`` collector's own key: ``endpoint``, appended to the source's url."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    endpoint: str | None = None
+
+
+def _endpoint(entry: CollectorEntry) -> str | None:
+    return WebSettings.model_validate(entry.settings).endpoint
 
 
 class WebCollector:
@@ -99,7 +113,8 @@ class WebCollector:
 
 def _url(entry: CollectorEntry, source: SourceEntry) -> str:
     url = source.url.rstrip("/")
-    return f"{url}{entry.endpoint}" if entry.endpoint else url
+    endpoint = _endpoint(entry)
+    return f"{url}{endpoint}" if endpoint else url
 
 
 def _headers(source: SourceEntry, user_agent: str) -> dict[str, str]:
@@ -113,7 +128,8 @@ def _headers(source: SourceEntry, user_agent: str) -> dict[str, str]:
 def _check(entry: CollectorEntry) -> list[Problem]:
     """A web collector fills no placeholder, so one in ``endpoint`` would be fetched as
     written."""
-    unresolved = sorted(set(find_unresolved(entry.endpoint or "")))
+    endpoint = _endpoint(entry)
+    unresolved = sorted(set(find_unresolved(endpoint or "")))
     if not unresolved:
         return []
     names = ", ".join(f"{{{name}}}" for name in unresolved)
@@ -124,7 +140,7 @@ def _check(entry: CollectorEntry) -> list[Problem]:
             kind="unresolved",
             fix="write the value into endpoint:, or use an api collector, whose params: fill "
             "an endpoint's placeholders",
-            got=entry.endpoint,
+            got=endpoint,
         )
     ]
 
@@ -144,6 +160,8 @@ collector_type = CollectorType(
     create=lambda ctx: WebCollector(ctx.requester, ctx.converter, ctx.user_agent, ctx.transforms),
     effects=frozenset({"network"}),
     summary="HTTP GET → document converted to markdown → one record",
+    settings=WebSettings,
+    source_kinds=frozenset({"web"}),
     requires_source=True,
     normalizes=True,
     check=_check,

@@ -2,7 +2,8 @@
 #
 # Demonstrates:
 #   • api source with optional header auth
-#   • path-level placeholder substitution ({owner}, {repo})
+#   • path-level placeholder substitution ({owner}, {repo}) from vars:, which are
+#     sent nowhere else; params: are the query string
 #   • multiple collectors hitting one source
 #   • normalize specs unpacking nested JSON
 #
@@ -16,7 +17,7 @@
 #
 # Usage:
 #   recon init gh-audit --template github-audit
-#   # edit the {owner} and {repo} values below (in each collector's params)
+#   # edit the {owner} and {repo} values below (in each collector's vars)
 #   # export GITHUB_TOKEN if you have one
 #   recon survey gh-audit
 
@@ -36,9 +37,10 @@ collectors:
     type: api
     source: github
     endpoint: /repos/{owner}/{repo}/issues
-    params:
+    vars:
       owner: "{owner}"   # <-- edit: repo owner (user or org)
       repo: "{repo}"     # <-- edit: repo name
+    params:
       state: all
       per_page: "20"
       sort: updated
@@ -57,9 +59,10 @@ collectors:
     type: api
     source: github
     endpoint: /repos/{owner}/{repo}/pulls
-    params:
+    vars:
       owner: "{owner}"   # <-- edit
       repo: "{repo}"     # <-- edit
+    params:
       state: all
       per_page: "20"
       sort: updated
@@ -78,9 +81,10 @@ collectors:
     type: api
     source: github
     endpoint: /repos/{owner}/{repo}/releases
-    params:
+    vars:
       owner: "{owner}"   # <-- edit
       repo: "{repo}"     # <-- edit
+    params:
       per_page: "10"
     normalize:
       tag: tag_name

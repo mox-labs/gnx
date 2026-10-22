@@ -389,3 +389,51 @@ def test_a_retry_waits_on_the_clock_port():
         requester.request(source, "GET", "https://api.example.test/x")
     assert clock.slept == [1.0, 2.0], "the backoff before the second and third sends"
     assert time.monotonic() - started < 1, "no real time was slept"
+
+
+# --- one session per survey --------------------------------------------------------------
+
+
+class _KeepAlive(http.server.BaseHTTPRequestHandler):
+    """HTTP/1.1, so a client may send more than one request on a connection; records the
+    client port each request came from."""
+
+    protocol_version = "HTTP/1.1"
+    ports: list[int] = []
+
+    def do_GET(self):
+        _KeepAlive.ports.append(self.client_address[1])
+        body = b"{}"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def test_a_survey_s_requests_share_one_session_which_closing_ends():
+    """Regression: the requester opened a client per request, so nothing was kept between
+    requests (a connection, a session a later collector type would hold). It keeps one
+    session for the survey, and ``close()`` ends it."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _KeepAlive)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _KeepAlive.ports.clear()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        clock = SystemClock()
+        requester = HttpRequester(RateLimiter(clock), clock)
+        source = SourceEntry(name="s", url=base, timeout=10)
+        requester.get(source, f"{base}/a")
+        requester.get(source, f"{base}/b")
+        requester.close()
+        requester.get(source, f"{base}/c")
+        requester.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    first, second, after_close = _KeepAlive.ports
+    assert first == second, "the second request went on the first one's connection"
+    assert after_close != first, "a closed session's connection is not reused"

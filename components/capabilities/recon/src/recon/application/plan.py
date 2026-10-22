@@ -9,13 +9,16 @@ is left unchecked, and the plan says so (``complete`` is false).
 
 Pure: no network, no subprocess, no filesystem; whether a ``local`` source's directory
 exists is asked of the predicate the caller passes. Collector types contribute through their
-``CollectorType.check`` and ``describe`` hooks, which are pure by contract.
+``CollectorType.settings`` schema, which validates an entry's keys beyond the ones recon
+reads, and their ``check`` and ``describe`` hooks, which are pure by contract and see only an
+entry whose settings the schema accepts. A source's kind must be one an installed type adds
+(``CollectorType.source_kinds``).
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args
 
@@ -154,23 +157,31 @@ def build_plan(
         raw.get("collectors"), "collectors", CollectorEntry, problems
     )
     sources = [(i, _anchored(src, base)) for i, src in sources]
+    problems += _source_kind_problems(sources, plugins)
     catalog = _catalog(sources, problems)
     unchecked = _unparsed_names(raw.get("catalog"), catalog) if not sources_whole else set()
 
     runs: list[PlannedRun] = []
     produced_by: dict[str, tuple[int, str]] = {}
     used_sources: set[str] = set()
+    settings_whole = True
     for i, entry in entries:
         ctype = plugins.collector_types.get(entry.type)
-        problems.extend(_entry_problems(i, entry, catalog, plugins, unchecked))
+        found, checked = _entry_problems(i, entry, catalog, plugins, unchecked)
+        problems.extend(found)
+        # Keys a type's schema could not judge (its type unknown, or settings that do not
+        # validate) may hide more problems.
+        settings_whole = settings_whole and (
+            checked is not None or (ctype is None and not entry.settings)
+        )
         for source, output in fan_out(entry, catalog):
             problems.extend(_output_problems(i, output, produced_by))
             for key in _table_keys(output):
                 produced_by.setdefault(key, (i, output))
             if source is not None:
                 used_sources.add(source.name)
-            if ctype is not None:
-                runs.append(_planned_run(entry, output, source, ctype))
+            if ctype is not None and checked is not None:
+                runs.append(_planned_run(checked, output, source, ctype))
 
     if is_directory is not None:
         problems += _directory_problems(sources, used_sources, is_directory, base)
@@ -188,7 +199,7 @@ def build_plan(
         runs=runs,
         problems=problems,
         warnings=warnings,
-        complete=sources_whole and entries_whole,
+        complete=sources_whole and entries_whole and settings_whole,
     )
 
 
@@ -413,12 +424,19 @@ def _entry_problems(
     catalog: Mapping[str, SourceEntry],
     plugins: Plugins,
     unchecked: set[str],
-) -> list[Problem]:
+) -> tuple[list[Problem], CollectorEntry | None]:
+    """The entry's problems, and the entry its type's hooks were run on: without the keys
+    found unknown, so the rest is still checked; None when its settings could not be
+    checked (an unknown type, or settings its schema refuses for more than unknown keys)."""
     at = f"collectors.{i}"
     problems = []
     ctype = plugins.collector_types.get(entry.type)
+    checked: CollectorEntry | None = None
     if ctype is None:
         problems.append(_unknown_type(at, entry.type, plugins))
+    else:
+        found, checked = _settings_problems(at, entry, ctype)
+        problems += found
     if entry.source and entry.source not in catalog:
         if entry.source not in unchecked:
             known = ", ".join(sorted(catalog)) or "(empty catalog)"
@@ -443,11 +461,22 @@ def _entry_problems(
                 "over the catalog)",
             )
         )
-    if ctype is not None:
-        for p in ctype.check(entry):
+    if ctype is not None and checked is not None:
+        for p in ctype.check(checked):
             path = f"{at}.{p.path}" if p.path else at
             problems.append(Problem(path, p.message, p.kind, p.fix, p.got, p.allowed, p.source))
-    if entry.extract and (problem := path_problem(entry.extract)) is not None:
+    if entry.extract and ctype is not None and not ctype.extracts:
+        problems.append(
+            Problem(
+                f"{at}.extract",
+                f"a {entry.type} collector reads no body, so it takes no extract:",
+                kind="unknown_key",
+                fix="remove extract:, or shape the records with normalize:",
+                got=entry.extract,
+                allowed=_entry_keys(ctype),
+            )
+        )
+    elif entry.extract and (problem := path_problem(entry.extract)) is not None:
         problems.append(
             Problem(
                 f"{at}.extract", problem, fix="use at most one * in the path", got=entry.extract
@@ -467,7 +496,86 @@ def _entry_problems(
                 allowed=transforms if unknown else (),
             )
         )
-    return problems
+    return problems, checked
+
+
+def _settings_problems(
+    at: str, entry: CollectorEntry, ctype: CollectorType
+) -> tuple[list[Problem], CollectorEntry | None]:
+    """The problems in the keys that are the type's own, validated by its schema, and the
+    entry to run its hooks on: without the keys found unknown, or None when its settings do
+    not validate even without them."""
+    settings = entry.settings
+    schema = ctype.settings
+    if schema is None:  # the type takes no key of its own: each is unknown
+        problems = [_unknown_key(at, key, value, ctype) for key, value in settings.items()]
+        return problems, _with_settings(entry, {})
+    try:
+        schema.model_validate(settings)
+        return [], entry
+    except ValidationError as exc:
+        problems = [
+            replace(problem, allowed=_entry_keys(ctype))
+            if problem.kind == "unknown_key" and problem.path.count(".") == at.count(".") + 1
+            else problem
+            for problem in _from_pydantic(at, schema, exc)
+        ]
+        known = _without_unknown_keys(settings, exc)
+    try:
+        schema.model_validate(known)
+    except ValidationError:
+        return problems, None
+    return problems, _with_settings(entry, known)
+
+
+def _unknown_key(at: str, key: str, value: Any, ctype: CollectorType) -> Problem:
+    return Problem(
+        f"{at}.{key}",
+        "unknown key: this collector type takes no such setting",
+        kind="unknown_key",
+        fix=f"remove {at}.{key} or correct its spelling",
+        got=_scalar(value),
+        allowed=_entry_keys(ctype),
+    )
+
+
+def _entry_keys(ctype: CollectorType) -> tuple[str, ...]:
+    """Every key an entry of this type may hold: recon's own and the type's settings."""
+    own = set(ctype.settings.model_fields) if ctype.settings is not None else set()
+    shared = set(CollectorEntry.model_fields) - (set() if ctype.extracts else {"extract"})
+    return tuple(sorted(shared | own))
+
+
+def _with_settings(entry: CollectorEntry, settings: dict[str, Any]) -> CollectorEntry:
+    """``entry`` with ``settings`` as its type's own keys."""
+    shared = entry.model_dump(include=set(CollectorEntry.model_fields), exclude_unset=True)
+    return CollectorEntry.model_validate({**shared, **settings})
+
+
+def source_kinds(plugins: Plugins) -> tuple[str, ...]:
+    """The source kinds installed: those the installed collector types add."""
+    return tuple(
+        sorted({kind for ct in plugins.collector_types.values() for kind in ct.source_kinds})
+    )
+
+
+def _source_kind_problems(
+    sources: list[tuple[int, SourceEntry]], plugins: Plugins
+) -> list[Problem]:
+    installed = source_kinds(plugins)
+    return [
+        Problem(
+            f"catalog.{i}.type",
+            f"unknown source kind {src.type!r}; installed: {', '.join(installed) or '(none)'}",
+            kind="name_unknown",
+            fix=f"use one of: {', '.join(installed)}, or install the collector type that adds "
+            f"{src.type!r} sources",
+            got=src.type,
+            allowed=installed,
+        )
+        for i, src in sources
+        if src.type not in installed
+    ]
 
 
 def _unknown_type(at: str, name: str, plugins: Plugins) -> Problem:

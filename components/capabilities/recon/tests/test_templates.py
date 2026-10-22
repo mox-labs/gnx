@@ -89,8 +89,8 @@ class RecordedRequester:
 def _records(template: str, raw: dict[str, Any], fixture: Path, tmp_path: Path) -> list[Any]:
     config = _templates()[template]
     filled = RECORDED_WITH.get(template, {})
-    params = {key: filled.get(key, value) for key, value in (raw.get("params") or {}).items()}
-    entry = CollectorEntry.model_validate({**raw, **({"params": params} if params else {})})
+    values = {key: filled.get(key, value) for key, value in (raw.get("vars") or {}).items()}
+    entry = CollectorEntry.model_validate({**raw, **({"vars": values} if values else {})})
     if entry.type == "capture":
         record_hook_payload(
             FilesystemCaptureLog(tmp_path / "captures", FixedClock()),
