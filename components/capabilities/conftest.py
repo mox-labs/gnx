@@ -46,6 +46,8 @@ EXPECTED_SKIPS: frozenset[str] = frozenset(
         "the full simulation: IX_SLOW=1 pytest -m slow",
         # recon against third-party APIs, which a gate must not depend on: `just recon-live`.
         "calls live APIs; set RECON_LIVE=1 to run",
+        # dao's check of its parser against the real catalog, which lives outside this repo.
+        "the dao corpus is not on this machine",
     }
 )
 
