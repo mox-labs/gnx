@@ -457,6 +457,8 @@ def _entry_problems(
     else:
         found, checked = _settings_problems(at, entry, ctype)
         problems += found
+    if ctype is not None and (mismatch := _kind_problem(at, entry, catalog, ctype, plugins)):
+        problems.append(mismatch)
     if entry.source and entry.source not in catalog:
         if entry.source not in unchecked:
             known = ", ".join(sorted(catalog)) or "(empty catalog)"
@@ -517,6 +519,35 @@ def _entry_problems(
             )
         )
     return problems, checked
+
+
+def _kind_problem(
+    at: str,
+    entry: CollectorEntry,
+    catalog: Mapping[str, SourceEntry],
+    ctype: CollectorType,
+    plugins: Plugins,
+) -> Problem | None:
+    """A problem when the entry is pinned to a source of a kind its type cannot use. A
+    source of a kind nothing installed adds has its own problem, and gets no second one."""
+    source = catalog.get(entry.source) if entry.source else None
+    kinds = ctype.accepts_kinds
+    if source is None or kinds is None or source.type in kinds:
+        return None
+    if source.type not in source_kinds(plugins):
+        return None
+    usable = tuple(name for name, src in catalog.items() if src.type in kinds)
+    named = f"one of: {', '.join(usable)}" if usable else "one you add under catalog:"
+    return Problem(
+        f"{at}.source",
+        f"a {entry.type} collector uses a source of kind {', '.join(sorted(kinds))}, and "
+        f"{source.name!r} is a {source.type} source",
+        kind="invalid_value",
+        fix=f"pin a source of a kind it uses ({named}), or use a collector type for a "
+        f"{source.type} source",
+        got=source.name,
+        allowed=usable,
+    )
 
 
 def _settings_problems(

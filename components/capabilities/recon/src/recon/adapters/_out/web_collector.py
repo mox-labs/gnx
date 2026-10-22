@@ -162,6 +162,7 @@ collector_type = CollectorType(
     summary="HTTP GET → document converted to markdown → one record",
     settings=WebSettings,
     source_kinds=frozenset({"web"}),
+    accepts_kinds=frozenset({"api", "web"}),  # an HTTP endpoint, by either name
     requires_source=True,
     normalizes=True,
     check=_check,

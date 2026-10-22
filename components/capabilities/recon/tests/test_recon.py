@@ -139,18 +139,18 @@ class TestReconRun:
 
     def test_pinned_source_no_fan_out(self) -> None:
         """Collector with source= runs against that source only."""
-        config = ReconConfig.model_validate(
-            {
-                "catalog": [
-                    {"name": "s2", "url": "https://api.semanticscholar.org"},
-                    {"name": "arxiv", "url": "https://export.arxiv.org"},
-                ],
-                "collectors": [
-                    {"name": "test", "type": "cli", "run": "echo hello", "source": "s2"},
-                ],
-            }
-        )
         with tempfile.TemporaryDirectory() as tmp:
+            config = ReconConfig.model_validate(
+                {
+                    "catalog": [
+                        {"name": "s2", "type": "local", "url": tmp},
+                        {"name": "arxiv", "type": "local", "url": tmp},
+                    ],
+                    "collectors": [
+                        {"name": "test", "type": "cli", "run": "echo hello", "source": "s2"},
+                    ],
+                }
+            )
             mission = Path(tmp) / "m"
             mission.mkdir()
             archive, _ = run(config, mission, converter=_NoOpConverter())

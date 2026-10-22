@@ -148,6 +148,10 @@ class CollectorType:
       unknown. The type parses ``entry.settings`` with it.
     - ``source_kinds`` are the catalog source kinds (a source's ``type:``) the type adds to
       the ones installed; a source of any other kind is a plan problem.
+    - ``accepts_kinds`` are the source kinds a collector of the type can be pinned to; a
+      collector pinned to a source of another kind is a plan problem. ``None`` takes a
+      source of any kind (``capture``, which only filters by the source's name, and a type
+      that does not say).
     - ``source_settings`` is the schema (a pydantic model that forbids unknown keys) of the
       keys a source of one of ``source_kinds`` takes beyond the ones every source has: a
       source's other keys (``source.settings``) are validated against it at plan time.
@@ -186,6 +190,7 @@ class CollectorType:
     summary: str = ""
     settings: type[BaseModel] | None = None
     source_kinds: frozenset[str] = frozenset()
+    accepts_kinds: frozenset[str] | None = None
     source_settings: type[BaseModel] | None = None
     requires_source: bool = False
     normalizes: bool = False

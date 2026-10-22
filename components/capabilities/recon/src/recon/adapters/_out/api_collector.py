@@ -264,6 +264,7 @@ collector_type = CollectorType(
     summary="HTTP API request → JSON/XML → records",
     settings=ApiSettings,
     source_kinds=frozenset({"api"}),
+    accepts_kinds=frozenset({"api", "web"}),  # an HTTP endpoint, by either name
     requires_source=True,
     normalizes=True,
     extracts=True,

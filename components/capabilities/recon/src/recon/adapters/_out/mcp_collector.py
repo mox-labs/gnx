@@ -941,6 +941,7 @@ collector_type = CollectorType(
     summary="MCP tool call or resource read → JSON → records",
     settings=McpSettings,
     source_kinds=frozenset({"mcp"}),
+    accepts_kinds=frozenset({"mcp"}),
     source_settings=McpSourceSettings,
     requires_source=True,
     normalizes=True,

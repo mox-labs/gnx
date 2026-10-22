@@ -339,6 +339,9 @@ collector_type = CollectorType(
     summary="shell command → stdout lines (JSON objects or text) → records",
     settings=CliSettings,
     source_kinds=frozenset({"local"}),
+    # A command runs in a local source's directory; any other source would leave it in
+    # recon's working directory.
+    accepts_kinds=frozenset({"local"}),
     normalizes=True,
     check=_check,
     describe=_describe,

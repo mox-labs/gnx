@@ -307,7 +307,7 @@ class TestEveryProblemWithAPath:
         [
             {"type": "web", "endpoint": "/search?q=\\w{3}-\\d{2,4}"},
             {"type": "api", "endpoint": "/search", "params": {"q": "\\w{3}\\d{2,}"}},
-            {"type": "cli", "run": "rg --json '\\w{3}' ."},
+            {"type": "cli", "run": "rg --json '\\w{3}' .", "source": "here"},
         ],
         ids=["web", "api", "cli"],
     )
@@ -316,7 +316,10 @@ class TestEveryProblemWithAPath:
     ) -> None:
         plan = _plan(
             {
-                "catalog": [{"name": "s", "type": "web", "url": "https://s.example.test"}],
+                "catalog": [
+                    {"name": "s", "type": "web", "url": "https://s.example.test"},
+                    {"name": "here", "type": "local", "url": "/tmp"},
+                ],
                 "collectors": [{"name": "c", "source": "s", **collector}],
             },
             registry,
@@ -686,6 +689,46 @@ class TestSourceKinds:
         )
         assert problem.allowed == ("api", "local", "mcp", "web")
         assert "api, local, mcp, web" in problem.message
+
+    @pytest.mark.parametrize(
+        ("source", "collector", "kinds"),
+        [
+            # cli would run in recon's working directory, and survey `ok`
+            ({"type": "web", "url": "https://x.test"}, {"type": "cli", "run": "pwd"}, "local"),
+            # the API's URL would be used as an MCP server's
+            ({"type": "api", "url": "https://x.test"}, {"type": "mcp", "tool": "t"}, "mcp"),
+            ({"type": "local", "url": "/tmp"}, {"type": "api", "endpoint": "/x"}, "api, web"),
+            ({"type": "mcp", "command": "srv"}, {"type": "api", "endpoint": "/x"}, "api, web"),
+            ({"type": "mcp", "command": "srv"}, {"type": "web"}, "api, web"),
+        ],
+    )
+    def test_a_collector_pinned_to_a_source_of_a_kind_its_type_cannot_use_is_a_problem(
+        self, registry: Plugins, source: dict[str, Any], collector: dict[str, Any], kinds: str
+    ) -> None:
+        """Regression: nothing tied a collector type to the kinds of source it can use, so
+        each of these planned valid, and a ``cli`` pinned to a ``web`` source ran in recon's
+        working directory and surveyed ``ok``. Each type declares the kinds it accepts."""
+        raw = {
+            "catalog": [{"name": "s", **source}],
+            "collectors": [{"name": "c", "source": "s", **collector}],
+        }
+        [problem] = _plan(raw, registry).problems
+        assert (problem.path, problem.kind, problem.got) == (
+            "collectors.0.source",
+            "invalid_value",
+            "s",
+        )
+        assert f"uses a source of kind {kinds}" in problem.message
+        assert f"'s' is a {source['type']} source" in problem.message
+
+    def test_a_type_that_declares_no_kinds_takes_a_source_of_any(self, registry: Plugins) -> None:
+        """``capture`` keeps the captures a source's name filters, whatever its kind; a
+        plugin type that declares nothing is not judged."""
+        raw = {
+            "catalog": [{"name": "s", "type": "web", "url": "https://x.test"}],
+            "collectors": [{"name": "c", "type": "capture", "source": "s"}],
+        }
+        assert _plan(raw, registry).valid
 
     def test_a_kind_an_installed_type_adds_plans(self, registry: Plugins) -> None:
         from recon.domain.collector import CollectorType
