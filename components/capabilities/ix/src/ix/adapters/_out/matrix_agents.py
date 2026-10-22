@@ -133,6 +133,9 @@ TOOL_USAGE = "ix.v1.sensor.tool-usage"
 #: What a self-review loop looks for in an answer that it should stop at.
 VERIFIED = "SOLUTION_VERIFIED"
 
+#: The names a round fills in a loop's prompt: the ``binds`` of the kind's ``loop`` option.
+ROUND = ("prompt", "response", "failures", "until")
+
 SELF_REVIEW = (
     "Here is a task and your previous answer to it. Review the answer. If it is correct and "
     "complete, repeat it and end with the line {until}. Otherwise give the corrected answer "
@@ -218,9 +221,9 @@ class Loop(BaseModel):
     @field_validator("until")
     @classmethod
     def _as_text(cls, value: str) -> str:
-        """The loop's options keep each doubled placeholder for the round's filling (the
-        prompt's); ``until`` is not filled, so it is its text here."""
-        result: str = fill(value, {})
+        """The loop's options keep each doubled name a round fills (``{{response}}``) for the
+        round's filling (the prompt's); ``until`` is not filled, so it is its text here."""
+        result: str = fill(value, {name: f"{{{name}}}" for name in ROUND})
         return result
 
 

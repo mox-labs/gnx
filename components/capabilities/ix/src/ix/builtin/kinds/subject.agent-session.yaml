@@ -12,13 +12,13 @@ options:
       mock: canned replies; calls no model
   definition: {type: path, description: "a Claude Code agent file: its body is the system prompt; its tools, model and maxTurns apply unless set here"}
   model: {type: string, description: the model the agent uses}
-  system_prompt: {type: string, description: the system prompt}
+  system_prompt: {type: string, text: true, description: the system prompt}
   tools: {type: list, description: "the tools the agent may call; [] is none at all"}
   max_turns: {type: integer, description: turns after which the session is stopped}
   plugins: {type: paths, description: "plugin folders (relative to the experiment; a * matches several) or {type: local, path}, handed to the runtime as its plugins with every path absolute; a runtime whose config takes none refuses them"}
   skills: {type: paths, description: "skill folders (each holding SKILL.md), copied to where the agent runtime says a session finds its skills (claude-sdk: the session's .claude/skills, read as its project settings)"}
   fixtures: {type: paths, description: "files and folders, relative to the experiment, copied into each trial's working directory before the session starts"}
   setup: {type: command, description: "a command run in the working directory after the fixtures are copied, before the session: [python3, seed.py]; the program, and each file an argument names relative to the experiment, are digested as what was tested"}
-  loop: {type: mapping, binds: [prompt, response, failures, until], description: "more rounds after the first: {strategy: self-review | test-feedback, rounds, prompt, until}; a prompt is the next round's task, with {prompt}, {response}, {until} and, for test-feedback, {failures} filled in each round"}
+  loop: {type: mapping, text: true, binds: [prompt, response, failures, until], description: "more rounds after the first: {strategy: self-review | test-feedback, rounds, prompt, until}; a prompt is the next round's task, with {prompt}, {response}, {until} and, for test-feedback, {failures} filled in each round"}
   runtime_options: {type: mapping, description: "the runtime's own config, passed through as written and checked by the runtime (claude-sdk: permission_mode, setting_sources, fallback_model, max_budget_usd, agents); `matrix describe matrix.v1.agent-runtime.<name>` lists a runtime's"}
 offers: [respondent, workdir]

@@ -2,10 +2,10 @@
 name: recon
 description: "Writes, plans and runs recon missions: one YAML file that names sources (HTTP APIs, shell commands, web pages, MCP servers, capture logs) and what to ask them; recon collects the answers into timestamped JSONL archives and answers SQL over them with DuckDB. This skill should be used when the user asks to \"collect data from an API\", \"build a dataset from several sources\", \"mine a codebase with ripgrep or git log\", \"snapshot an API over time\", \"normalize API responses\", \"query collected records with SQL\", \"collect from an MCP server\", \"capture MCP tool results\", \"write a recon mission\", or runs recon survey, recon query or recon init."
 metadata:
-  version: "0.11.0"
+  version: "0.12.0"
 ---
 
-# recon 0.11.0: collect from many sources into tables SQL can query
+# recon 0.12.0: collect from many sources into tables SQL can query
 
 recon runs a mission: one YAML file that lists sources (the catalog) and what to ask each of them (the collectors). recon checks the file and shows every request, command and MCP call it would make, then fetches, runs or calls them, reshapes each answer into records with a declarative `normalize:` spec, and writes one JSONL table per collector and source into a timestamped archive. `recon query` answers SQL over an archive, so a large result is read a few rows at a time instead of loaded whole. recon uses no model: it runs exactly the file you wrote.
 
@@ -25,7 +25,7 @@ Do not use recon:
 The plugin carries this text; the `recon` command is a separate Python package. Check with `recon --version`. Install with:
 
 ```
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.12.0#subdirectory=components/capabilities/recon"
 ```
 
 If `recon` is missing, say so; do not improvise it with curl and jq, because the archive layout and the query surface are what make the output reusable. A `cli` collector runs whatever program its command names (`rg`, `git`, `gh`), which must be installed too.

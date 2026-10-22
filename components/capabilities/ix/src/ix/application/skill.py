@@ -769,8 +769,14 @@ whether it came from the experiment, the genre or ix.
   environment binds a service with: `{{<service>.url}}`, `.host`, `.port` (a `process`
   service's `url`, a `compose` service's published port). A loop's `prompt` fills
   `{{prompt}}`, `{{response}}`, `{{until}}` and `{{failures}}` itself. Anything else is
-  `unbound_placeholder`. `{{{{name}}}}` is the text `{{name}}`; every other brace is sent as
-  written, so JSON (`{{"a": {{"b": 1}}}}`) or a template (`{{{{ user.name }}}}`) in a prompt
+  `unbound_placeholder`: a problem, except in prompt text (an option `-r kinds` marks
+  `prompt text`, such as a probe's `prompt`, a `system_prompt` or a `loop`), where a name
+  nothing fills is sent as written and is a warning, so code (`print(f"{{user}}")`) can be
+  put to an agent. Read those warnings: a typo (`{{sise}}` for the factor `size`) is one,
+  and names the placeholder it is likely to be. A name a probe takes from some subjects and
+  not others stays a problem. `{{{{name}}}}`, where `name` would be filled there, is the
+  text `{{name}}`; every other brace is sent as written, so JSON (`{{"a": {{"b": 1}}}}`) or
+  a template (`{{{{ user.name }}}}`, or `{{{{user}}}}` where nothing fills `user`) in a prompt
   reaches the agent unchanged.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the
   experiment, one file per probe (`.md`, `.yaml`): a markdown file's text is the prompt,
@@ -844,12 +850,14 @@ def _genres(genres: Genres) -> str:
 
 
 def _option_values(option: Option) -> str:
-    """What an option takes: its closed set, its open choices, or its type."""
+    """What an option takes: its closed set, its open choices, or its type; and whether it
+    is prompt text."""
+    text = ", prompt text" if option.text else ""
     if option.allowed:
-        return f" ({'|'.join(option.allowed)})"
+        return f" ({'|'.join(option.allowed)}{text})"
     if option.choices:
-        return f" ({option.type}: {', '.join(option.choices)} or another)"
-    return f" ({option.type})"
+        return f" ({option.type}: {', '.join(option.choices)} or another{text})"
+    return f" ({option.type}{text})"
 
 
 def _kind_line(kind: Kind, runnable: bool) -> str:

@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Generator
@@ -218,6 +219,49 @@ class TestTimestamps:
         [(published, zoned)] = execute(archive, sql)[1]
         assert published == datetime.datetime(2026, 3, 15, 18, 42, 31)
         assert zoned.tzinfo is not None
+
+    def test_a_utc_timestamp_keeps_its_time_whatever_the_machine_s_zone(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: DuckDB reads ``…Z`` as a timestamp with no zone, and a cast to
+        TIMESTAMPTZ took the machine's zone for it, so 18:42Z came back as 18:42-05:00 in
+        Chicago. Run in a process of its own whose zone is Chicago, so the bug shows on any
+        machine. An explicit offset is still honoured, in the record and in the SQL."""
+        archive = _archive(
+            tmp_path,
+            {
+                "releases": [
+                    {"published": "2026-03-15T18:42:31Z", "edited": "2026-03-15T18:42:31+02:00"}
+                ]
+            },
+        )
+        script = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from recon.adapters._out.archive_files import ArchiveFiles\n"
+            "from recon.adapters._out.duckdb_query import DuckdbQuery\n"
+            "from recon.adapters._out.system_clock import SystemClock\n"
+            "query = DuckdbQuery(ArchiveFiles(SystemClock()))\n"
+            "rows = query.execute(Path(sys.argv[1]), sys.argv[2])\n"
+            "print(*(value.isoformat() for value in rows.rows[0]), sep='\\n')\n"
+        )
+        sql = (
+            "SELECT published::TIMESTAMPTZ, edited::TIMESTAMPTZ, "
+            "'2026-03-15T18:42:31+02:00'::TIMESTAMPTZ FROM releases"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(archive), sql],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, "TZ": "America/Chicago"},
+        )
+        assert result.returncode == 0, result.stderr
+        published, in_record, in_sql = map(datetime.datetime.fromisoformat, result.stdout.split())
+        assert published == datetime.datetime(2026, 3, 15, 18, 42, 31, tzinfo=datetime.UTC)
+        at_plus_two = datetime.datetime(2026, 3, 15, 16, 42, 31, tzinfo=datetime.UTC)
+        assert in_record == at_plus_two
+        assert in_sql == at_plus_two
 
     def test_recon_declares_what_duckdb_needs_and_the_duckdb_it_is_tested_with(self) -> None:
         declared = {r.name: r for r in map(Requirement, requires("recon") or []) if not r.marker}

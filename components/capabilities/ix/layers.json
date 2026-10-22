@@ -1,6 +1,6 @@
 {
   "language": "python",
-  "about": "ix's layers, checked by tests/test_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the reviewed map (scratch/review-2026-10-22/ix-layers.json, at 1580c81) and fitted to ix as it now is: provenance in the domain and its adapter, the compose environment, matrix_calls. The inner layers' allowances copy test_layering.py's allowlists, so the two checks agree. 'why' keys are read by neither checker.",
+  "about": "ix's layers, checked by tests/test_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the map an independent review drew at 1580c81 and fitted to ix as it now is: provenance in the domain and its adapter, the compose environment, matrix_calls. The inner layers' allowances copy test_layering.py's allowlists, so the two checks agree. 'why' keys are read by neither checker.",
   "scan": ["src/ix/**/*.py"],
   "scan_why": "Every Python file in the package, so a new module that no layer claims fails the suite. Tests are out of scan: a test reaches adapters by design.",
   "layers": [
@@ -14,8 +14,8 @@
                 "src/ix/domain/registration.py", "src/ix/domain/report.py",
                 "src/ix/domain/run.py", "src/ix/domain/schema.py",
                 "src/ix/domain/summaries.py", "src/ix/domain/validation.py"],
-      "allow": ["__future__", "collections", "contextlib", "dataclasses", "hashlib", "itertools",
-                "json", "math", "re", "statistics", "string", "typing",
+      "allow": ["__future__", "collections", "contextlib", "dataclasses", "difflib", "hashlib",
+                "itertools", "json", "math", "re", "statistics", "string", "typing",
                 "pydantic", "pydantic_core", "ix.domain"],
       "forbid": ["matrix", "opentelemetry", "open"],
       "why": {
@@ -39,8 +39,8 @@
     {
       "name": "application",
       "files": ["src/ix/application/*.py"],
-      "allow": ["__future__", "asyncio", "collections", "contextlib", "dataclasses", "hashlib",
-                "itertools", "json", "math", "re", "statistics", "string", "typing",
+      "allow": ["__future__", "asyncio", "collections", "contextlib", "dataclasses", "difflib",
+                "hashlib", "itertools", "json", "math", "re", "statistics", "string", "typing",
                 "pydantic", "pydantic_core", "ix.domain", "ix.application"],
       "forbid": ["matrix", "opentelemetry", "open"],
       "why": {

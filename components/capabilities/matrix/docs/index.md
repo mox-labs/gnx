@@ -29,4 +29,4 @@ Start with the README: working components, a recorded run and a working agent.
 
 | Document | What it covers |
 |----------|----------------|
-| [Design record, 2026-10-19](design/2026-10-19-record.md) | The judgments behind 0.6.0: the one loader, the store as a registry point, telemetry on the standard variables, plan and run, and what an agent's first drive from the skill changed (spend, `--only`, the record); each with its test and evidence |
+| [Design record, 2026-10-19](design/2026-10-19-record.md) | The judgments behind 0.6.0 and 0.7.0, with matrix's claims: the one loader, the store as a registry point, telemetry on the standard variables, plan and run, the agent and model runtime ports, and what an agent's first drive from the skill changed (`--only`, the record); each with its test and evidence |

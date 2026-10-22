@@ -55,6 +55,7 @@ PURE_STDLIB = frozenset(
         "collections",
         "contextlib",
         "dataclasses",
+        "difflib",
         "hashlib",
         "itertools",
         "json",

@@ -25,7 +25,7 @@ measures from.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError, model_validator
@@ -54,9 +54,11 @@ OptionType = Literal[
 ]
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_.-]*"
-#: A placeholder (group 2), or one doubled (group 1), which is its own text: ``{{name}}`` is
-#: ``{name}``. Every other brace, doubled or not, is text as written, so a prompt holding
-#: JSON (``{"a": {"b": 1}}``) or a template (``{{ user.name }}``) is sent as it was written.
+#: A placeholder (group 2), or one doubled (group 1). A doubled one whose name is filled
+#: there is its own text: ``{{name}}`` is ``{name}``. Every other brace, doubled or not, is
+#: text as written, so a prompt holding JSON (``{"a": {"b": 1}}``) or a template
+#: (``{{ user.name }}``, ``{{user}}`` where nothing fills ``user``) is sent as it was written;
+#: so is a ``{name}`` nothing fills, which validation refuses outside prompt text.
 _PLACEHOLDER = re.compile(rf"\{{\{{({_NAME})\}}\}}|\{{({_NAME})\}}")
 #: A value that is one placeholder and nothing else: filled, it becomes the level itself.
 _WHOLE = re.compile(rf"\{{({_NAME})\}}")
@@ -70,7 +72,8 @@ NOTE_PREFIX = "x-"
 
 def placeholders(value: Any) -> list[str]:
     """Every ``{name}`` in the strings of ``value``, in order of appearance; a doubled one
-    (``{{name}}``) is text, not one."""
+    (``{{name}}``) is text, not one: its own (``{name}``) where ``name`` is filled, else as
+    written."""
     if isinstance(value, str):
         return [name for _, name in _PLACEHOLDER.findall(value) if name]
     if isinstance(value, Mapping):
@@ -80,13 +83,20 @@ def placeholders(value: Any) -> list[str]:
     return []
 
 
-def fill(value: Any, bound: Mapping[str, Any], *, escaped: bool = False) -> Any:
+def fill(
+    value: Any,
+    bound: Mapping[str, Any],
+    *,
+    escaped: bool = False,
+    later: Collection[str] = (),
+) -> Any:
     """``value`` with each ``{name}`` that ``bound`` knows replaced by its level, in every
     string at any depth of mappings and lists. A string that is one placeholder and nothing
     else becomes the level itself, with its type (``"{t}"`` filled with 0.5 is 0.5); one
-    inside more text is written into it. A doubled placeholder (``{{name}}``) becomes its
-    text (``{name}``), unless ``escaped`` keeps it doubled for a later filling; an unknown
-    name, and every other brace, stays as written."""
+    inside more text is written into it. A doubled placeholder (``{{name}}``) whose name
+    ``bound`` knows becomes its text (``{name}``); one a later filling fills (``later``, or
+    every one when ``escaped``) stays doubled for it. An unknown name, doubled or not, and
+    every other brace, stays as written."""
     if isinstance(value, str):
         whole = _WHOLE.fullmatch(value)
         if whole is not None and whole.group(1) in bound:
@@ -95,29 +105,43 @@ def fill(value: Any, bound: Mapping[str, Any], *, escaped: bool = False) -> Any:
         def replaced(match: re.Match[str]) -> str:
             text, name = match.group(1), match.group(2)
             if text is not None:
-                return match.group(0) if escaped else f"{{{text}}}"
+                undoubled = text in bound and not escaped and text not in later
+                return f"{{{text}}}" if undoubled else match.group(0)
             return str(bound[name]) if name in bound else match.group(0)
 
         return _PLACEHOLDER.sub(replaced, value)
     if isinstance(value, Mapping):
-        return {key: fill(item, bound, escaped=escaped) for key, item in value.items()}
+        return {key: fill(item, bound, escaped=escaped, later=later) for key, item in value.items()}
     if isinstance(value, list | tuple):
-        return [fill(item, bound, escaped=escaped) for item in value]
+        return [fill(item, bound, escaped=escaped, later=later) for item in value]
     return value
 
 
-def per_cell(options: Mapping[str, Any], factors: Mapping[str, tuple[Level, ...]]) -> list[Any]:
+def per_cell(
+    options: Mapping[str, Any],
+    factors: Mapping[str, tuple[Level, ...]],
+    *,
+    text: Collection[str] = (),
+) -> list[Any]:
     """``options`` filled for each cell of ``factors``, as a trial in that cell has them
     but with each doubled placeholder kept doubled: an adapter asked about them (a preflight,
     a review) reads a placeholder that is left as one only a trial fills (an environment's
-    binding), and a literal ``{{name}}`` as text. Each distinct filling once, in the order
-    of the cells."""
+    binding), and an escaped ``{{name}}`` as text. In an option that is prompt text
+    (``text``), every ``{name}`` left is doubled too: no setting is read from it, and code
+    in a prompt (``f"{user}"``) is text. Each distinct filling once, in the order of the
+    cells."""
     found: list[Any] = []
     for cell in cells(dict(factors)):
         filled = fill(options, cell, escaped=True)
+        filled = {key: _as_text(value) if key in text else value for key, value in filled.items()}
         if filled not in found:
             found.append(filled)
     return found
+
+
+def _as_text(value: Any) -> Any:
+    """``value`` with each ``{name}`` in it doubled, the text it is to an adapter."""
+    return fill(value, {name: f"{{{{{name}}}}}" for name in placeholders(value)}, escaped=True)
 
 
 def seconds(value: Any) -> float | None:
@@ -208,6 +232,11 @@ class Option(Record):
     #: The placeholders the adapter fills in this option's value itself, at run time (a
     #: loop's ``{prompt}`` and ``{response}``): validation reads them as bound.
     binds: tuple[str, ...] = ()
+    #: The value is prompt text, sent to a model as text (a prompt, a system prompt, a
+    #: rubric), not a setting. A ``{name}`` in it that nothing fills is sent as written,
+    #: since a prompt may hold code (``f"{user}"``), and validation warns of it rather
+    #: than refusing it.
+    text: bool = False
     description: str = ""
 
 
@@ -271,6 +300,11 @@ class Kind(Record):
     def label(self) -> str:
         """The name an experiment writes: short for a built-in, the type URL otherwise."""
         return schema.short(self.name)
+
+    @property
+    def text_options(self) -> tuple[str, ...]:
+        """The options whose value is prompt text (``text``)."""
+        return tuple(name for name, option in self.options.items() if option.text)
 
     def required(self, options: Mapping[str, Any]) -> tuple[str, ...]:
         """The options that must be written beside this kind, given the ``options`` that are."""

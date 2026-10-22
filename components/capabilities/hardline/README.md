@@ -4,7 +4,7 @@ One port for every model family. Messages in; text or a validated object out; ta
 the family that answered, what it cost, and how long it took.
 
 ```bash
-uvx --from "git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/hardline" hardline models
+uvx --from "git+https://github.com/mox-labs/gnx@hardline-v0.2.0#subdirectory=components/capabilities/hardline" hardline models
 ```
 
 hardline depends on no provider SDK: it speaks both wire protocols over HTTP itself, on httpx2.

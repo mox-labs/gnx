@@ -2,32 +2,30 @@
 
 All notable changes to matrix. Versions follow semver; before 1.0 a minor may break.
 
-## Unreleased
-
-### Removed (breaking): effects
-
-Effects were labels nothing checked (Q6). Removed: `Entry.effects` and the `effects` argument
-of `Registry.register` (passing it is a `TypeError`, so an extension that still does is
-quarantined); `Wiring.effects`, `Wiring.declared_effects()` and the `effects` argument of
-`wire`; and the `effects` of `matrix.v1.catalog`, `matrix.v1.extension` and `matrix.v1.plan`
-(each component's, each runtime's and the run's), with the `effects:` column of `matrix plan`.
-The plan's `agent_calls_max` and `model_calls_max` are null when a component that is neither
-an agent step nor a model step needs `agents` or `model_runtimes`; before, when one declared
-the `model` effect or none at all. Record section 17 has the reasons.
+## 0.7.0 — 2026-10-22
 
 ### Removed (breaking)
 
-- **Extras** (Q13). `claude`, `models`, `otel` and `dev` are gone: the Claude Agent SDK, the
-  OpenTelemetry SDK and both OTLP exporters are dependencies, as hardline and pydantic-ai
-  already were, each imported only when what uses it is built. A requirement that names an
-  extra (`matrix[otel] @ ...`) now fails to resolve: drop the brackets. An install that lacks
-  one of them (a broken environment) reports it as the problem kind `dependency_missing`
-  (was `extra_missing`), with a fix that reinstalls matrix; `missing_extra` and
-  `install_extra` in `matrix.domain.errors` are `missing_dependency` and `reinstall`. The
-  workspace's `dev` dependency group carries the test tools.
+- **Effects.** They were labels nothing checked. Removed: `Entry.effects` and the `effects`
+  argument of `Registry.register` (passing it is a `TypeError`, so an extension that still
+  does is quarantined); `Wiring.effects`, `Wiring.declared_effects()` and the `effects`
+  argument of `wire`; and the `effects` of `matrix.v1.catalog`, `matrix.v1.extension` and
+  `matrix.v1.plan` (each component's, each runtime's and the run's), with the `effects:`
+  column of `matrix plan`. The plan's `agent_calls_max` and `model_calls_max` are null when a
+  component that is neither an agent step nor a model step needs `agents` or
+  `model_runtimes`; before, when one declared the `model` effect or none at all. The design
+  record (section 17) has the reasons.
+- **Extras.** `claude`, `models`, `otel` and `dev` are gone: the Claude Agent SDK, hardline
+  (`>=0.2,<0.3`), `pydantic-ai-slim`, the OpenTelemetry SDK and both OTLP exporters are
+  dependencies, each imported only when what uses it is built, so `import matrix` loads none
+  of them. A requirement that names an extra (`matrix[otel] @ ...`) now fails to resolve: drop
+  the brackets. An install that lacks one of them (a broken environment) reports it as the
+  problem kind `dependency_missing` (was `extra_missing`), with a fix that reinstalls matrix;
+  `missing_extra` and `install_extra` in `matrix.domain.errors` are `missing_dependency` and
+  `reinstall`. The test tools are in the repository's `dev` dependency group.
 - **Spend.** matrix cannot measure what a run costs: it sees only what each runtime reports,
-  and the `model` runtime reports tokens, not dollars. So the spend ceiling and everything
-  built on it are gone, and nothing replaces them:
+  and a model runtime reports tokens, not dollars. So the spend ceiling and everything built
+  on it are gone, and nothing replaces them:
   - `limits.spend_usd`: a config that still sets it is refused at that key, not run uncapped;
   - the `spend` error kind and `SpendError` (`EXITS_AS` and `RunError.kind` no longer name it;
     spend had no exit code of its own);
@@ -35,18 +33,14 @@ the `model` effect or none at all. Record section 17 has the reasons.
   - `spend_usd` on `Run`, in `run.json`, on `RunSummary` and in `matrix runs`;
   - the optional `budget_usd` runtime member, and the `claude-sdk` runtime's property of that
     name.
-- What stays: each session's tokens and the cost a runtime reported (`AgentResponse.cost_usd`,
+
+  What stays: each session's tokens and the cost a runtime reported (`AgentResponse.cost_usd`,
   the `matrix.agent.cost_usd` metric), as facts of that session. The `claude-sdk` runtime's
   `max_budget_usd` stays as the SDK's own option, passed as it stands; its stop is still
   recorded (`stop: max_budget_usd`).
 
 ### Changed (breaking)
 
-- **One owner per token.** matrix's `gen_ai.client.inference.usage.*` counters count agent
-  sessions only. A model call's tokens are counted by the model runtime that made it
-  (hardline counts each attempt) and kept on the call's session row; the `matrix.model` span
-  carries no usage. A dashboard that summed matrix's counters for model steps reads them
-  from hardline's now.
 - **Agent runtimes and model runtimes are two ports.** An agent session (a loop, tools,
   turns) and one model call had shared one port, one registry point and one reply, and the
   model runtime filled `num_turns=1` and `stop: completed` with constants. Now:
@@ -57,9 +51,9 @@ the `model` effect or none at all. Record section 17 has the reasons.
     `runtime_type_url` and `RUNTIME_PREFIX` are `agent_runtime_type_url` and
     `model_runtime_type_url` (with `AGENT_RUNTIME_PREFIX`, `MODEL_RUNTIME_PREFIX`).
   - The config key `matrix.runtimes` is two: `matrix.agent_runtimes` (`claude-sdk`,
-    `pydantic-ai`, `mock`) and `matrix.model_runtimes` (`hardline`, `mock`). A config that still writes `runtimes`
-    is refused at that key. `agents.<name>.runtime` names an agent runtime; one that names a
-    model runtime is refused, with the fix.
+    `pydantic-ai`, `mock`) and `matrix.model_runtimes` (`hardline`, `mock`). A config that
+    still writes `runtimes` is refused at that key. `agents.<name>.runtime` names an agent
+    runtime; one that names a model runtime is refused, with the fix.
   - The `model` runtime is the `hardline` model runtime (`HardlineModelRuntime`, was
     `ModelAgentRuntime`). It runs no agents: a model call is a `matrix.v1.model-step`.
     `MockRuntime` is `MockAgentRuntime`, and `MockModelRuntime` is its model counterpart.
@@ -73,14 +67,43 @@ the `model` effect or none at all. Record section 17 has the reasons.
     agent session. Its record is the step's `ModelCall` row.
   - Two steps that provide their reply as one kind are "steps" in the clash's message, agent
     and model steps alike.
+- **The agent-call counts are the plan's own**: `agent_calls_min` and `agent_calls_max`, where
+  they were in its `spend` record. `matrix plan` prints them as `agent calls: N to M`.
+- **One owner per token.** matrix's `gen_ai.client.inference.usage.*` counters count agent
+  sessions only. A model call's tokens are counted by the model runtime that made it
+  (hardline counts each attempt) and kept on the call's session row; the `matrix.model` span
+  carries no usage. A dashboard that summed matrix's counters for model calls reads them
+  from hardline's now.
 - **What a `claude-sdk` session can be given is declared by its config, and checked.**
   `setting_sources` takes only `user`, `project` and `local`; each of `plugins` is
   `{type: local, path}`; `skills` (names, or `all`) is new, passed as the SDK's own option.
   An option outside the config fails at its key at composition. At binding, the runtime
   refuses a definition whose `tools` leave out `Skill` when it has `skills`, and any option
   the installed SDK's own dataclasses do not have, saying how to fix it.
-- The agent-call counts move from the plan's `spend` record to the plan itself:
-  `agent_calls_min`, `agent_calls_max`. `matrix plan` prints them as `agent calls: N to M`.
+- **The `claude-sdk` runtime's reply is the session's result.** `content` joined every text
+  block of every turn and ignored the SDK's `ResultMessage.result`, so an agent that thought
+  aloud and then answered in JSON broke its step's `output`. `content` is the result now
+  (empty when the session stopped at a limit, which has none), and every text block is the
+  new `transcript`.
+- **`tokens_input` counts the prompt cache's tokens.** It was Anthropic's `input_tokens`,
+  which leaves out the tokens read from and written to the cache: under Claude Code's caching,
+  12 where the session read 90,000. It is their sum now, and `cache_read_tokens` and
+  `cache_write_tokens` say how many of each.
+- **`AgentResponse.model` is the model that answered**, as the SDK's `model_usage` names it
+  (the one that wrote the final reply, when it names several), not the definition's `model`,
+  which was the model asked for and `None` when the CLI's default answered.
+- **A fact a runtime did not report is `None`, not 0.** `AgentResponse.tokens_input`,
+  `tokens_output`, `duration_ms` and `num_turns` default to `None`, where they defaulted to
+  0: a constant is not a fact. A `claude-sdk` result without usage was recorded as 0 input
+  and 0 output tokens, and absent cache counts as 0; they are `None` now, and input tokens
+  are the sum of what was reported.
+- **A reply row keeps the reply; its session's facts move to the session table.** The
+  `AgentResponse` an agent step provides keeps the reply and what a consumer acts on
+  (`content`, `transcript`, `tool_calls`, `stop`, `finish_reason`, `family`, the task as
+  sent) and points at its row of `matrix.v1.session` (`session`); every fact that row holds
+  is `null` on the reply row (`as_reply()`). A model step's `ModelCall` row is kept the same
+  way. What a runtime returns, and so what `BoundAgent.run` and a direct `ModelRuntime.call`
+  give a caller, still carries every fact.
 - **A component that returns after it was asked to stop ends `stopped`**, not `completed`.
   Another component's failure or the run's cancellation asks the running components to stop,
   and the protocol tells them to return what they have; that may be partial. Its rows are
@@ -89,178 +112,148 @@ the `model` effect or none at all. Record section 17 has the reasons.
   carries a stop's `reason`, which is how earlier records wrote one. A component that had
   already returned when the stop was requested is `completed`, with no reason. A consumer
   that reads component endings must tolerate the new state, as the vocabulary is open.
+- **Reuse fingerprints change shape**, so a record written by an earlier release is not
+  reused by `--from` (see Fixed: the fingerprint covers every need a component is handed).
 
-- **A model step fails on a reply that is not a whole answer**, where it would have
-  provided it: a refusal, a reply cut at `max_tokens`, withheld by the provider, ended to ask
-  for a tool or for a reason no one named, or empty. It raises `ModelRuntimeError`, reason
-  `refused` (a refusal, `content_filter`) or `failed`, kind `component`, naming the
-  `finish_reason` with a fix for it. A runtime that does not say why its reply ended
-  (`finish_reason: null`) is not taken to have cut it.
-- **A reply row keeps the reply; its session's facts move to the session table.** The
-  `AgentResponse` an agent step provides and the `ModelCall` a model step provides keep the
-  reply and what a consumer acts on (`content` or `text`, `transcript`, `tool_calls`, `stop`,
-  `finish_reason`, `refusal`, `family`, the task or prompt as sent) and point at their row of
-  `matrix.v1.session` (`session`); every fact that row holds is `null` on the reply row
-  (`as_reply()`). What a runtime returns, and so what `BoundAgent.run` and a direct
-  `ModelRuntime.call` give a caller, still carries every fact.
-- `AgentResponse.tokens_input`, `tokens_output`, `duration_ms` and `num_turns` default to
-  `None`, where they defaulted to 0: a constant is not a fact.
-- Every run has a `matrix.v1.session` table, as it has a ledger: `Construct.kinds()`, the
-  stores' `tables` and a run directory list it, with no rows when no session ran.
-- The model step needs `model_runtime_entries` (each composed model runtime's registry entry),
-  for its session rows.
-- **The `claude-sdk` runtime's reply is the session's result.** `content` joined every text
-  block of every turn and ignored the SDK's `ResultMessage.result`, so an agent that thought
-  aloud and then answered in JSON broke its step's `output`. `content` is the result now (empty
-  when the session stopped at a limit, which has none), and every text block is the new
-  `transcript`.
-- **`tokens_input` counts the prompt cache's tokens.** It was Anthropic's `input_tokens`,
-  which leaves out the tokens read from and written to the cache: under Claude Code's caching,
-  12 where the session read 90,000. It is their sum now, and `cache_read_tokens` and
-  `cache_write_tokens` say how many of each.
-- **`AgentResponse.model` is the model that answered**, as the SDK's `model_usage` names it
-  (the one that wrote the final reply, when it names several), not the definition's `model`,
-  which was the model asked for and `None` when the CLI's default answered.
-- `ModelCall.usage`, `attempts`, `retries` and `latency_ms` default to `None`, where they
-  defaulted to zeros and `attempts=1`: a constant is not a fact. The `mock` model runtime
-  reports what is true of a canned reply: one attempt, no retries, zero tokens, its latency,
-  and `finish_reason: stop`.
+### Changed
+
+- **Console span export is batched**, as every other span exporter is. With
+  `OTEL_TRACES_EXPORTER=console` (or `configure_telemetry(console=True)`), spans went through
+  a `SimpleSpanProcessor`, which writes to stderr as each span ends; now that spans end on the
+  task doing the work, a full stderr pipe would stall it.
 
 ### Added
 
-- **What an agent runtime's sessions do is data it declares: `AgentCapabilities`.** Whether a
-  session loads skills from settings or from its working directory, which tool fires a skill
-  (`skill_tool`) and where a session's skills must be placed (`skills_dir`), whether its tools
-  can write files, the config that keeps it from reading the machine it runs on, and the config
-  key that decides each. A runtime's config class declares them (`capabilities()`), and
-  `Entry.capabilities(config)` asks. `claude-sdk` answers from `setting_sources` and
-  `permission_mode`, and names `Skill` and `.claude/skills`; `pydantic-ai` declares that it
-  loads no skills, the `mock` declares
-  nothing. A caller (ix) asks the runtime instead of reading Claude Code's option names
-  (W2.9).
+- **`matrix.v1.model-step`**: one model call as a component. It names a model runtime and a
+  model, renders its `prompt` from its `inputs`, and provides a `ModelCall` (the prompt as
+  sent, the reply, and the call's record, below) and, with `output`, the reply as a row of
+  that kind: asked for as the kind's registered schema when there is one.
+  - Its model is checked with its runtime when the step is built, so an unknown model is a
+    `config` problem (exit 3) at composition, `matrix check` and `matrix plan`, naming the
+    models the registry has.
+  - It fails on a reply that is not a whole answer, where it would have provided it: a
+    refusal, a reply cut at `max_tokens`, withheld by the provider, ended to ask for a tool or
+    for a reason no one named, or empty. It raises `ModelRuntimeError`, reason `refused` (a
+    refusal, `content_filter`) or `failed`, kind `component`, naming the `finish_reason` with
+    a fix for it. A runtime that does not say why its reply ended (`finish_reason: null`) is
+    not taken to have cut it.
+  - It defers its runtime's `aclose()` (an optional `ModelRuntime` member, which the
+    `hardline` runtime has) to the end of the run that made the calls, in that run's loop, so
+    a run leaves no connection open.
 
-- **A model runtime may give pydantic-ai a `Model`: `pydantic_ai_model(model)`**, an optional
-  member of the port. The `hardline` runtime gives one on a row it resolves, each request a
-  hardline call with the runtime's `max_tokens` and `temperature` as defaults, and an `aclose()`
-  for its connections. It is how ix's evaluator judge gets its model from the model runtime the
-  experiment names, from config and nowhere else (W11.2b). The `Model` is the one the
-  `pydantic-ai` agent runtime already used; it now takes default settings. Inside a run each
-  call it makes is a row of the session table, with the fields a model step's call has, failed
-  and cancelled ones too, under the runtime's type URL and `drives`
-  (`HardlineModelRuntime(..., runtime_url=, drives=)`, which composition passes); its `sent`
-  digests the call's row, turns and tools.
+  New names: `ModelRuntime`, `ModelRequest`, `ModelCall`, `TokenUsage`, `ModelRuntimeError`,
+  `ModelStep`, `ModelStepConfig`, `MODEL_STEP`, `MODEL_CALL`, `PROMPT`; the needs
+  `model_runtimes`, `model_runtime_entries` (each composed model runtime's registry entry,
+  for its session rows) and `schemas`.
+- **A `ModelCall` carries the call's whole record**, as hardline 0.2 reports it: why the reply
+  ended (`finish_reason`: `stop`, `length`, `content_filter`, `refusal`, `tool_call`,
+  `other`; with `native_finish_reason`, the provider's own value, and `refusal`, what the
+  model said when it refused), the model that answered and `fallback_from`, who served it
+  (`provider`: the registry row's `provider:`, else the backend's name, such as
+  `openai-compat`, as hardline's own `gen_ai.provider.name` does), usage with cache tokens
+  summed over every attempt, `request_id`, `attempts`, `retries`, latency, `params` (what was
+  sent: `max_tokens`, `temperature`, how a structure was asked for), `attempt_log` (every
+  backend call, with why each failed), `turns_digest` and `row` (the registry row that
+  answered: its digest and the tier that set each field). A fact the runtime did not report
+  is `None`; the `mock` model runtime reports what is true of a canned reply: one attempt, no
+  retries, zero tokens, its latency, and `finish_reason: stop`. New names: `FinishReason`,
+  `RequestParams`, `CallAttempt`, `RegistryRow`.
+- **A model step's call path is public: `call_model(runtime, request, *, name, ...)`**, for a
+  caller that calls a model runtime itself (ix's `model-call` trial and its judge). It is the
+  step's own path: the `matrix.model.start` and `matrix.model.end` events, the `otel`
+  observer's `matrix.model` span, current while the runtime works so the runtime's own spans
+  (hardline's `chat` per attempt) nest under it, each observer's `around` entered while the
+  runtime works, and the session row whether the call replied, failed or was cancelled.
+  `call_sent(request)` gives the `sent` digest of a call's request, as a model step computes
+  it.
+- **The session table, `matrix.v1.session`**: one row per agent session or model call a
+  component runs inside a run, written through the Construct like any row, durably and in
+  ledger order. Every run has the table, as it has a ledger: `Construct.kinds()`, the stores'
+  `tables` and a run directory list it, with no rows when no session ran.
+  - A row holds the runtime's type URL and what it drives, the model that answered, how it
+    stopped and why its reply ended, usage, the reported cost, the runtime's ids and the
+    OpenTelemetry trace and span the session ended in (`Container.executor()` reads them;
+    matrix mints none), fallback and attempts, and `sent`, a digest of what was sent.
+  - A session or call that failed or was cancelled is a row too, as it was asked for and may
+    have spent tokens: `status` is `completed`, `failed` or `cancelled`, with `reason` (the
+    runtime's classified reason, or `cancelled`) and `error` (its message). The row holds what
+    the runtime's error carried, through two new, defaulted attributes:
+    `ModelRuntimeError.call`, a `ModelCall` with what the runtime knew of the failed call
+    (the `hardline` model runtime fills it with hardline's `attempt_log` and `usage`), and
+    `AgentRuntimeError.response`, an `AgentResponse` with what the runtime knew of the failed
+    session (`claude-sdk` fills it from a result that says the session failed: its id, usage,
+    cost, turns and model). `BoundAgent` and the model step record a failed session before
+    re-raising; the row is the failed component's, and no ledger entry names it.
+  - A `BoundAgent` and a model step record their own rows; a component that calls a model
+    runtime itself records with `record_session(call_session(...))`. `agent_session` and
+    `call_session` take `error=` (an exception, or the `CancelledError`), and their record
+    may be `None`.
+  - `LedgerEntry.sessions` names the session rows behind each row: those its component ran
+    since its previous hand-over. `RunContext.sessions()` gives a component those rows, for
+    one that wants a row to name the sessions behind it (ix's interactions and readings).
+  - `data-model.md` joins a board row to its sessions in DuckDB, and the tests run that query.
 
-- **A model step's call path is public: `call_model(runtime, request, *, name, ...)`.** A
-  caller that calls a model runtime itself (ix's `model-call` trial and its judge) could record
-  the call's session row and nothing else, so its call was no `matrix.model` span and a model
-  runtime's own spans (hardline's `chat`) had no call span to nest under (W7.12). `call_model`
-  is the step's own path: the `matrix.model.start`/`.end` events, each observer's `around`
-  entered while the runtime works, and the session row whether the call replied, failed or was
-  cancelled. The model step now makes its call through it.
-
-- **A tool call's arguments, as content.** `matrix.tool.start` carries the call's input as
-  JSON (`arguments`), and the `otel` observer exports it as `gen_ai.tool.call.arguments` on
-  the `execute_tool` span only with `capture_content`, as the conventions make it opt-in.
-  It is what span-reading evaluators such as pydantic-evals' `ArgumentCorrectness` read.
-
+  New names: `Session`, `SESSION`, `digest`, `agent_session`, `call_session`,
+  `record_session`; `BoundAgent(runtime_url=, drives=)`, `Executor(trace=)`.
 - **A second agent runtime, `pydantic-ai`** (`matrix.v1.agent-runtime.pydantic-ai`): a
   pydantic-ai agent loop whose every model call goes through hardline, so a session runs on
   hardline's registry rows, retries, fallbacks, call limits, record and telemetry, in any
   model family hardline has a row for. Its config is what a session can be given: `models` (a
   hardline registry; else `matrix.models`), `default_model`, `tools` (name to
-  `module:function`, a Python function imported when the runtime is built), `temperature`,
-  `max_tokens`. An agent's `tools` choose from the runtime's (unset: all; `[]`: none), and
-  `max_turns` bounds its model calls (`stop: max_turns`). `check` refuses, at binding, a tool
-  the runtime does not have, a model hardline cannot resolve, and tools on a row whose backend
-  cannot call them. Its session row names the model that answered last, its finish reason, the
-  usage summed over every call and pydantic-ai's run id; it reports no cost. A hardline failure
-  is an `AgentRuntimeError` with its reason, carrying what the session had spent.
-  pydantic-ai's own instrumentation is switched off on every agent, so it records no prompt or
-  reply. It drives `pydantic-ai-slim` and `hardline`.
+  `module:function`), `temperature`, `max_tokens`. An agent's `tools` choose from the
+  runtime's (unset: all; `[]`: none), and `max_turns` bounds its model calls
+  (`stop: max_turns`). `check` refuses, at binding, a tool the runtime does not have, a model
+  hardline cannot resolve, and tools on a row whose backend cannot call them. Its session row
+  names the model that answered last, its finish reason, the usage summed over every call and
+  pydantic-ai's run id; it reports no cost. A hardline failure is an `AgentRuntimeError` with
+  its reason, carrying what the session had spent. pydantic-ai's own instrumentation is
+  switched off on every agent, so it records no prompt or reply. It drives `pydantic-ai-slim`
+  and `hardline`.
+  - **Composing a config runs no tool's module.** Building the runtime (and so `matrix check`,
+    `matrix plan` and `matrix agents`) only finds each tool's module on the import path,
+    without running it; a session imports a tool when it first offers it. A module that cannot
+    be found is a config problem when the runtime is built, every one listed at once; a
+    function the module does not hold fails the session that offers it as `incapable`.
+- **A model runtime may give pydantic-ai a `Model`: `pydantic_ai_model(model)`**, an optional
+  member of the port. The `hardline` runtime gives one on a row it resolves, each request a
+  hardline call with the runtime's `max_tokens` and `temperature` as defaults, and an
+  `aclose()` for its connections. It is how ix's evaluator judge gets its model from the model
+  runtime the experiment names, from config and nowhere else, and the `Model` the
+  `pydantic-ai` agent runtime uses. Inside a run each call it makes is a row of the session
+  table, with the fields a model step's call has, failed and cancelled ones too, under the
+  runtime's type URL and `drives` (`HardlineModelRuntime(..., runtime_url=, drives=)`, which
+  composition passes); its `sent` digests the call's row, turns and tools.
 - **An agent runtime may say who already counts its model calls' tokens**: the optional
   member `usage_counted_by` (`pydantic-ai` declares `hardline`). `BoundAgent` puts it on
   `matrix.agent.end`, and the `otel` observer then adds that session's tokens to no counter;
   its `invoke_agent` span and session row keep them. One agent run on hardline counts each
   token once.
-- **`pydantic-ai-slim` and `hardline` are default dependencies.** Each is imported only inside
-  the adapter that uses it, so `import matrix` loads neither. The `models` extra stays, naming
-  hardline again, until every extra goes.
-
-- **The observable behaviours callers rely on are listed** (the design record, §16): the run
-  layout and its file and table names, `run.json`'s keys, every `matrix.*` event and the
-  fields it always carries, the span and metric names, and the exit kinds. Each is pinned by
-  a test or marked not contract, and the sixteen stated contracts no test held (mx-tests
-  finding 11) now each have one.
+- **What an agent runtime's sessions do is data it declares: `AgentCapabilities`.** Whether a
+  session loads skills from settings or from its working directory, which tool fires a skill
+  (`skill_tool`) and where a session's skills must be placed (`skills_dir`), whether its tools
+  can write files, the config that keeps it from reading the machine it runs on, and the
+  config key that decides each. A runtime's config class declares them (`capabilities()`),
+  and `Entry.capabilities(config)` asks. `claude-sdk` answers from `setting_sources` and
+  `permission_mode`, and names `Skill` and `.claude/skills`; `pydantic-ai` declares that it
+  loads no skills; the `mock` declares nothing. A caller (ix) asks the runtime instead of
+  reading Claude Code's option names.
 - **An observer may have `around(event)`**, an optional member entered synchronously in the
   task doing the work, around each span of work matrix starts: a run, a component, a
   `ctx.span`, an agent session, a model step's call, a timed tool call and a deferred
   release. What entering it gives back, when callable, is handed the span's end event before
   the block exits. It must not block; what it raises is logged and skipped. An observer
   without it works unedited. The `otel` observer uses it to make its spans current, so **a
-  span a library opens inside matrix's work nests under it** (mx-tests 2): before, a library
-  span inside a component or an agent session landed in a separate trace with no parent.
+  span a library opens inside matrix's work nests under it**: before, a library span inside a
+  component or an agent session landed in a separate trace with no parent.
 - **The `claude` CLI joins the run's trace.** With OpenTelemetry active, the `claude-sdk`
   runtime hands the CLI it starts the trace context current when the session starts
   (`TRACEPARENT`, `TRACESTATE`) through the SDK's `env` option, so the spans the CLI exports
   are children of the session's `invoke_agent` span. `matrix.composition.telemetry` gains
   `trace_environment()`, and `ClaudeSdkRuntime(trace_environment=)` takes it.
-- **A model step's call is a span of work**: `matrix.model.start` and `matrix.model.end`
-  events, and the `otel` observer's `matrix.model` span, current while the runtime works, so
-  the model runtime's own spans (hardline's `chat` per attempt) nest under it and the session
-  row names it. It carries no usage: each attempt's inference spans and counters are the
-  model runtime's own.
-- **A session or call that was cancelled is a row of `matrix.v1.session` too**, `status:
-  cancelled` (`Session.status` gains the value), reason `cancelled`, with the runtime, the
-  agent, the trace and span it ran in, and `sent`. It was asked for and may have spent tokens;
-  it was left out. `agent_session` and `call_session` take the `CancelledError` as `error=`.
-- **A session that failed is a row of `matrix.v1.session` too.** A model call that exhausted
-  its retries, or an agent session that failed, was asked for and may have spent tokens; only
-  completed ones were recorded. `Session` gains `status` (`completed`, or `failed`), `reason`
-  (the runtime's classified reason) and `error` (its message). The row holds what the
-  runtime's error carried, through two new, defaulted attributes:
-  - `ModelRuntimeError.call`: a `ModelCall` with what the runtime knew of the failed call. The
-    `hardline` model runtime fills it with hardline's `attempt_log` and `usage`.
-  - `AgentRuntimeError.response`: an `AgentResponse` with what the runtime knew of the failed
-    session. `claude-sdk` fills it from a result that says the session failed: its id, usage,
-    cost, turns and model.
-
-  `agent_session` and `call_session` take `error=`, and their record may be `None`. `BoundAgent`
-  and the model step record a failed session before re-raising; the row is the failed
-  component's, and no ledger entry names it.
-- **`RunContext.sessions()`**: the rows of `matrix.v1.session` the component has run since it
-  last handed a row over, the ones its next row's ledger entry will name. A component that
-  wants a row to name the sessions behind it (ix's interactions and readings) reads them here.
-- **`call_sent(request)`**: the `sent` digest of a model call's request, as a model step
-  computes it, for a component that records a call it made itself.
-
-- **`matrix.v1.model-step`**: one model call as a component. It names a model runtime and a
-  model, renders its `prompt` from its `inputs`, and provides a `ModelCall` (the prompt as
-  sent, the reply, and the call's record, below) and, with `output`, the reply as a row of
-  that kind: asked for as the kind's registered schema when there is one. New names:
-  `ModelRuntime`, `ModelRequest`, `ModelCall`, `TokenUsage`, `ModelRuntimeError`,
-  `ModelStep`, `ModelStepConfig`, `MODEL_STEP`, `MODEL_CALL`, `PROMPT`; the needs
-  `model_runtimes` and `schemas`.
-- **A `ModelCall` carries the call's whole record**, as hardline 0.2 reports it: why the reply
-  ended (`finish_reason`: `stop`, `length`, `content_filter`, `refusal`, `tool_call`,
-  `other`; with `native_finish_reason`, the provider's own value, and `refusal`, what the
-  model said when it refused), the model that answered and `fallback_from`, usage with cache
-  tokens summed over every attempt, `request_id`, `attempts`, `retries`, latency, `params`
-  (what was sent: `max_tokens`, `temperature`, how a structure was asked for),
-  `attempt_log` (every backend call, with why each failed), `turns_digest` and `row` (the
-  registry row that answered: its digest and the tier that set each field). New names:
-  `FinishReason`, `RequestParams`, `CallAttempt`, `RegistryRow`.
-- **The session table, `matrix.v1.session`**: one row per agent session or model call a
-  component runs inside a run, written through the Construct like any row, durably and in
-  ledger order. A row holds the runtime's type URL and what it drives, the model that
-  answered, how it stopped and why its reply ended, usage, the reported cost, the runtime's
-  ids and the OpenTelemetry trace and span the session ended in (`Container.executor()` reads
-  them; matrix mints none), fallback and attempts, and `sent`, a digest of what was sent. A
-  `BoundAgent` and a model step record their own; a component that calls a model runtime
-  itself records with `record_session(call_session(...))`. `LedgerEntry.sessions` names the
-  session rows behind each row: those its component ran since its previous hand-over.
-  `data-model.md` joins a board row to its sessions in DuckDB, and the tests run that query.
-  New names: `Session`, `SESSION`, `digest`, `agent_session`, `call_session`,
-  `record_session`; `BoundAgent(runtime_url=, drives=)`, `Executor(trace=)`.
+- **A tool call's arguments, as content.** `matrix.tool.start` carries the call's input as
+  JSON (`arguments`), and the `otel` observer exports it as `gen_ai.tool.call.arguments` on
+  the `execute_tool` span only with `capture_content`, as the conventions make it opt-in.
+  It is what span-reading evaluators such as pydantic-evals' `ArgumentCorrectness` read.
 - `AgentResponse` gains `transcript`, `cache_read_tokens`, `cache_write_tokens`,
   `finish_reason` and `native_finish_reason` (the SDK's `stop_reason`, read in the model
   call's vocabulary) and `session_id`, which the `claude-sdk` runtime fills.
@@ -272,19 +265,41 @@ the `model` effect or none at all. Record section 17 has the reasons.
   nothing it declares.
 - **`stand_in`** on a registry entry, declared at registration (`register(..., stand_in=True)`)
   and shown by `matrix catalog`, `matrix describe` and the plan's runtimes. Both mocks
-  declare it, so a caller can tell canned answers from a model's without inferring it from
-  `effects`.
+  declare it, so a caller can tell canned answers from a model's without inferring it from a
+  runtime's name.
+- **The observable behaviours callers rely on are listed** in the design record (section 16):
+  the run layout and its file and table names, `run.json`'s keys, every `matrix.*` event and
+  the fields it always carries, the span and metric names, and the exit kinds. Each is pinned
+  by a test or marked not contract.
 
 ### Fixed
 
-- **Console span export no longer writes on the task doing the work.** With
-  `OTEL_TRACES_EXPORTER=console` (or `configure_telemetry(console=True)`), spans went through a
-  `SimpleSpanProcessor`, so ending one wrote to stderr inside the `otel` observer's `around`,
-  where an observer must do no I/O that can wait; a full stderr pipe stalled the work. Every
-  span exporter is now batched, the console's included.
-- **A claude-sdk session's unreported usage is None, not 0.** A result without usage was
-  recorded as 0 input and 0 output tokens, and absent cache counts as 0, though a fact the
-  runtime did not report is None. Input tokens are the sum of what was reported.
+- **Security: no content leaves through OpenTelemetry by default.** The `otel` observer
+  exported every event field as a span attribute, so each agent's task (`matrix.task`), error
+  messages (`matrix.error`, and the span's status description) and every field a component
+  passed to `ctx.span` went to whatever endpoint `OTEL_*` named. Span attributes now come from
+  an allowlist: the GenAI conventions' names, matrix's statuses, reasons, error kinds, counts,
+  times and ids, and a component's number and boolean span fields. `error.type` stays.
+  Content is exported only with the observer's new `capture_content` option
+  (`observers: [{type: otel, capture_content: true}]`), as the conventions ask. A
+  component's string span fields are dropped unless it is set.
+- **Security: SECURITY.md names the working directory as an ambient route to a capability
+  grant.** Every command, and every tool on matrix, reads `./matrix.yaml` and `./<tool>.yaml`
+  from where it runs, so an untrusted checkout's config chooses permission modes, plugins, a
+  model `base_url` that receives every prompt, the store root and observers. It says how to
+  see the files read (`matrix config --sources`) and how to read only the named ones
+  (`--only`); a test holds the list to the tiers the code reads.
+- **No OpenTelemetry span is left open.** The `otel` observer opened a span on each delivered
+  `*.start` event and closed it on the matching `*.end`, so an end event the bounded queue
+  dropped, or a queue the run left before it drained, left the span open for the life of the
+  process and never exported; and an event a component emitted with `ctx.emit` under a name
+  ending `.start` (ix's `ix.trial.start`), which has a span id of its own and no end, opened a
+  span nothing ended. Spans are now opened and ended through `around`, with their work;
+  `on_event` makes metrics only, and `ctx.emit` opens no span.
+- **A cancelled agent session ends `cancelled`.** `matrix.agent.end` carried no `status` when
+  the session was cancelled, so its `invoke_agent` span ended without an error and the
+  duration metric had no `error.type`. It now says `status: cancelled`, and the `otel`
+  observer gives every ending that was cancelled (session, component, run) an `error.type`.
 - **A malformed model registry is a config problem, exit 3.** hardline's own `ConfigError`
   escaped the `hardline` model runtime and the `pydantic-ai` agent runtime, so a typo in
   `matrix.models` exited 1 as kind `unknown`, telling the reader to report a bug in matrix.
@@ -292,27 +307,13 @@ the `model` effect or none at all. Record section 17 has the reasons.
   or under the runtime's own `models`), once however many runtimes read it, with the file
   that set it. Every problem a runtime's builder raises (a `tools.<name>` that does not
   import) is placed under the runtime's key the same way.
-- **A model call names who served it.** `ModelCall.provider`, and the session row's, were set
-  for hardline's `anthropic` backend alone, so a row served by ollama or any other
-  OpenAI-compatible server said nobody served it. The `hardline` model runtime and the
-  `pydantic-ai` agent runtime now name the registry row's `provider:`, and the backend's name
-  (`openai-compat`) for a row that names none, as hardline's own `gen_ai.provider.name` does.
-- **A hardline that adds a request param no longer fails every model step.** The `hardline`
-  model runtime built its `RequestParams` from all of hardline's (`**params.model_dump()`),
-  which refuse a key they do not know, so hardline's new `params.tools` failed each step with
-  `extra_forbidden`. It maps them field by field, as the design record said it did.
-- **`run.json` says how many events were dropped** (`events_dropped`, also in
-  `Run.document()`): the record is finished after the event queue has drained, so it counts
-  them all. A reader of `events.jsonl` could not tell the file was incomplete, since the
-  `matrix.events.dropped` event can itself be lost (mx-src F16). `matrix.run.end` is now sent
-  before the record is finished: a store that then cannot finish it makes the run `failed`,
-  which only the `Run` and the caller's error say.
-- **Nothing points readers at the events for a fact.** The skill told an agent to read a
-  failed step's task from `events.jsonl` with `jq`, and `matrix run` described the file as
-  "each agent's task as sent": the channel is lossy, so the fact might not be there. Events
-  are now called lossy wherever the record is described, and the docs say the one thing the
-  tables do not hold in full: what a step that failed was asked (its session row has `sent`,
-  a digest).
+- **A runtime that does not keep its port is refused, by name.** A third party's runtime that
+  built something else made composition raise a bare `AttributeError` (the `unknown` defect,
+  exit 1), and one with `check` but no `run` composed and failed only when an agent ran on it.
+  The registry now holds whatever is registered at `agent-runtime` or `model-runtime` to that
+  point's port: a class when it is registered, and what an entry builds when it is built.
+  Either is a `config` error naming each member that is missing or not async. A package may
+  give its own point a port: `add_point(point, port=...)`.
 - **Stores and observers are held to their ports at registration**, as runtimes are: a
   class registered at `store` or `observer` that lacks a required member is a `ConfigError`
   naming it, and so is whatever an entry builds there. A store without `load` composed and
@@ -322,23 +323,82 @@ the `model` effect or none at all. Record section 17 has the reasons.
   type URLs; any other point is its first declarer's. Another distribution that declares an
   owned point again, or gives it a port, is refused and quarantined whole. Any extension could
   declare another's point before.
-- **A context built by hand refuses what a run refuses** (mx-src F24): a bad event,
-  measure or span name, a measure kind outside the three, a value that is not a number. A
-  component's unit test could not catch a name the run would refuse.
-- **`check_type_url` refuses the `slick` namespace** (F25), and so the registry does; only
+- **`check_type_url` refuses the `slick` namespace**, and so the registry does; only
   `type_url` did, though `slick.*` is reserved.
-- **The `jsonl` observer opens its file on the first event and closes it when a run ends**
-  (F18). Composing it created the file and its folders, so `matrix check` and `matrix plan`,
-  which call nothing, touched the filesystem, and nothing ever closed it.
-- **An accumulated config list keeps its files** (F22): a problem with an entry of
+- **A context built by hand refuses what a run refuses**: a bad event, measure or span name,
+  a measure kind outside the three, a value that is not a number. A component's unit test
+  could not catch a name the run would refuse.
+- **An accumulated config list keeps its files**: a problem with an entry of
   `matrix.definitions` names the file that listed it, a tier that wrote it as a string is a
   `wrong_shape` problem instead of being silently overwritten by the other tiers, and an entry
   that is a mapping no longer crashes the merge (`TypeError: unhashable type`).
-- **A release that raises a `BaseException` does not skip the releases still owed** (F17):
+- **The `jsonl` observer opens its file on the first event and closes it when a run ends.**
+  Composing it created the file and its folders, so `matrix check` and `matrix plan`, which
+  call nothing, touched the filesystem, and nothing ever closed it.
+- **A step's template is checked when the step is built.** A placeholder that names no input,
+  an input the template never uses, a positional `{}` and unbalanced braces are each a
+  `config` problem at `matrix check`, `matrix plan` and composition, with every other
+  problem. Before, a typo composed, wired and planned, and failed only when the run reached
+  the step, after its upstream work.
+- **The `claude-sdk` runtime's inline subagents work.** `agents` was forwarded as plain
+  dicts, which the SDK converts with `dataclasses.asdict` once the CLI has started, so every
+  session with a subagent failed. Each is now the SDK's `AgentDefinition`, with typed keys:
+  `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`.
+- **The `claude-sdk` runtime closes the SDK's message stream** however reading it ends
+  (`aclosing`), where closing it, and so the CLI process, was left to the garbage collector.
+  Its error mapping is now tested: a missing CLI is `incapable`, a timeout `timeout`, and an
+  SDK error after the result arrived is logged with the result kept.
+- **The mock runtime reports no cost.** It reported `cost_usd: 0.0`. A reported cost is
+  provenance, what a provider said, and a mock is not a provider, so it is now `None`.
+- **The reuse fingerprint covers every need a component is handed.** It held a component's
+  type and config, and an agent step's definition and runtime config, so a run from a record
+  reused old answers after `matrix.models` (or hardline's own tiers) pointed a name at another
+  model or endpoint, after the working directory changed, or after the agents changed under a
+  component that needs `agents`. It now digests each need: an agent step's agent and every
+  agent for another component that needs them, each by definition, runtime config and needs,
+  and what its runtime resolved (a model registry); `models`; `cwd` (the process's when none
+  was given). Runtimes gain an optional `resolved` member for this.
+- **Reused rows reach downstream components in the type a fresh run gives them.** A row of a
+  kind with a registered schema is now recorded as an instance of that schema, whether it was
+  handed over as one, as a dict, or read back from a store by `--from`. A consumer written
+  against a fresh run (`row.score`) used to fail only on resume, given a dict. The rows of
+  such a kind in `Run.rows` and the memory store are models now, where a dict handed over
+  used to stay a dict; on disk they are the schema's JSON, defaults included.
+- **A reused component whose rows are refused ends `failed` and is not run again.** Under
+  `on_failure: isolate`, a component whose stored rows its kind's schema now refused was
+  recorded as failed and then run again, and so were the reused components after it. It now
+  ends `failed` (reason `from run <id>`, none of its rows recorded), a reused component that
+  depends on it is skipped, and the other reused components are still reused.
+- **A run's record no longer says `completed` when the executor raised.** A schema validator
+  that raised something pydantic does not wrap (a `TypeError`) escaped the executor raw: the
+  other components were left running, releases ran under them, and `run.json` said
+  `completed`. Any error from checking or recording a component's rows is now a
+  `ContractError` that fails that component, and whatever else escapes the run marks it
+  `failed` before it reaches the caller.
+- **After a store fails, `ctx.provide` raises every time.** A component still running
+  after a failed append (under `isolate`, or within its grace) could hand over a row,
+  have the call return normally, and end `completed`, though the row was only in memory.
+  Every append after a failed write-through now raises `StoreError`.
+- **An input row that cannot be copied is refused before the record opens**, as the other
+  input checks are. It used to open the run and leave a `completed` record with no
+  components.
+- **A release that raises a `BaseException` does not skip the releases still owed.**
   `SystemExit` from a synchronous release escaped, so later releases were never called and
   the record never finished. It is recorded as failed, the rest are called, the record is
   finished, and then it is raised. The docs that said every release is bounded by
   `cleanup_s` now say a synchronous one is not.
+- **`run.json` says how many events were dropped** (`events_dropped`, also in
+  `Run.document()`): the record is finished after the event queue has drained, so it counts
+  them all. A reader of `events.jsonl` could not tell the file was incomplete, since the
+  `matrix.events.dropped` event can itself be lost. `matrix.run.end` is now sent before the
+  record is finished: a store that then cannot finish it makes the run `failed`, which only
+  the `Run` and the caller's error say.
+- **Nothing points readers at the events for a fact.** The skill told an agent to read a
+  failed step's task from `events.jsonl` with `jq`, and `matrix run` described the file as
+  "each agent's task as sent": the channel is lossy, so the fact might not be there. Events
+  are now called lossy wherever the record is described, and the docs say the one thing the
+  tables do not hold in full: what a step that failed was asked (its session row has `sent`,
+  a digest).
 - **A killed run reads without matrix.** A cut-short last line broke `jq` (exit 5) and
   DuckDB (`Malformed JSON`), though matrix's own reader skipped it, and `interrupted` was
   only what `describe` computed: `run.json` said `running` for ever. Now the first matrix
@@ -350,6 +410,11 @@ the `model` effect or none at all. Record section 17 has the reasons.
   the run as `interrupted` from its whole lines, as before, so `describe`, `load` and
   `--from` still work. The reader locks the run's directory, not the writer's lock file, so a
   second reader meanwhile waits for it instead of reading the run as `running`.
+- **The JSONL store writes nested values as JSON.** A model inside a dict row, a set, a
+  dataclass or a nested datetime was written as its `str()`, so jq, DuckDB, `load()` and reuse
+  all read the wrong value. Rows are now written with pydantic's `to_jsonable_python`; a row
+  holding anything it cannot write is refused with a `ContractError` naming where in the row
+  it is, before its ledger entry or anything else is written, and the record goes on.
 - **A write the disk cuts short is taken back** before the `StoreError`, so a live run's
   table never holds half a line.
 - **`runs()` skips a damaged record**, logging it on `matrix.store`. One unreadable
@@ -357,128 +422,12 @@ the `model` effect or none at all. Record section 17 has the reasons.
 - **`fsync=True` flushes the run's directory too**, once its files are made and once
   `run.json` is renamed in: a file's own flush does not make its name durable.
 - **A store root that is a file is said to be one**, not reported as "run already exists".
-- **No OpenTelemetry span is left open.** The `otel` observer opened a span on each delivered
-  `*.start` event and closed it on the matching `*.end`, so an end event the bounded queue
-  dropped, or a queue the run left before it drained, left the span open for the life of the
-  process and never exported; and an event a component emitted with `ctx.emit` under a name
-  ending `.start` (ix's `ix.trial.start`), which has a span id of its own and no end, opened a
-  span nothing ended. Spans are now opened and ended through `around`, with their work;
-  `on_event` makes metrics only, and `ctx.emit` opens no span.
-- **The `claude-sdk` runtime closes the SDK's message stream** however reading it ends
-  (`aclosing`), where closing it, and so the CLI process, was left to the garbage collector.
-  Its error mapping is now tested: a missing CLI is `incapable`, a timeout `timeout`, and an
-  SDK error after the result arrived is logged with the result kept.
-- **A model step closes its runtime's connections.** hardline keeps one client per event loop
-  and can close it only in that loop, and nothing called its `aclose()`: every run left its
-  connections open, and the next loop to use the runtime logged that they had been. A model
-  step now defers its runtime's `aclose()` (an optional `ModelRuntime` member, which the
-  `hardline` runtime has) to the end of the run that made the calls, in that run's loop. The
-  `models` extra now requires `hardline>=0.2,<0.3`.
-- **A runtime that does not keep its port is refused, by name.** A third party's runtime that
-  built something else made composition raise a bare `AttributeError` (the `unknown` defect,
-  exit 1), and one with `check` but no `run` composed and failed only when an agent ran on it.
-  The registry now holds whatever is registered at `agent-runtime` or `model-runtime` to that
-  point's port: a class when it is registered, and what an entry builds when it is built.
-  Either is a `config` error naming each member that is missing or not async. A package may
-  give its own point a port: `add_point(point, port=...)`.
-- **An unknown model is refused before anything runs.** It got through composition, `matrix
-  check` and `matrix plan`, then failed at run time as `component` (exit 8). A model step now
-  checks its model with its runtime when it is built: `config` (exit 3), naming the models
-  the registry has.
-- **The `claude-sdk` runtime's inline subagents work.** `agents` was forwarded as plain
-  dicts, which the SDK converts with `dataclasses.asdict` once the CLI has started, so every
-  session with a subagent failed. Each is now the SDK's `AgentDefinition`, with typed keys:
-  `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`.
-- **A step's template is checked when the step is built.** A placeholder that
-  names no input, an input the template never uses, a positional `{}` and unbalanced braces
-  are each a `config` problem at `matrix check`, `matrix plan` and composition, with every
-  other problem. Before, a typo composed, wired and planned, and failed only when the run
-  reached the step, after its upstream work.
-- **Reused rows reach downstream components in the type a fresh run gives them.** A row of a
-  kind with a registered schema is now recorded as an instance of that schema, whether it was
-  handed over as one, as a dict, or read back from a store by `--from`. A consumer written
-  against a fresh run (`row.score`) used to fail only on resume, given a dict. The rows of
-  such a kind in `Run.rows` and the memory store are models now, where a dict handed over
-  used to stay a dict; on disk they are the schema's JSON, defaults included.
-- **The JSONL store writes nested values as JSON.** A model inside a dict row, a set, a
-  dataclass or a nested datetime was written as its `str()`, so jq, DuckDB, `load()` and reuse
-  all read the wrong value. Rows are now written with pydantic's `to_jsonable_python`; a row
-  holding anything it cannot write is refused with a `ContractError` naming where in the row
-  it is, before its ledger entry or anything else is written, and the record goes on.
-- **The reuse fingerprint covers every need a component is handed.** It held a component's
-  type and config, and an agent step's definition and runtime config, so a run from a record
-  reused old answers after `matrix.models` (or hardline's own tiers) pointed a name at another
-  model or endpoint, after the working directory changed, or after the agents changed under a
-  component that needs `agents`. It now digests each need: an agent step's agent and every
-  agent for another component that needs them, each by definition, runtime config and needs,
-  and what its runtime resolved (the `model` runtime's registry); `models`; `cwd` (the
-  process's when none was given). Fingerprints change shape, so a record written before this
-  release is not reused. Runtimes gain an optional `resolved` member for this.
-- **A cancelled agent session ends `cancelled`.** `matrix.agent.end` carried no `status` when
-  the session was cancelled, so its `invoke_agent` span ended without an error and the
-  duration metric had no `error.type`. It now says `status: cancelled`, and the otel observer
-  gives every ending that was cancelled (session, component, run) an `error.type`.
 - **`Retry` honours `retry_after_s=0`.** An error's own hint of `0` ("retry now") was read as
   no hint, and the policy backed off instead (or took a different value from the error's
   details).
 - **`process.start` keeps a pending cancellation.** Cancelled while a child was being started
   whose start then failed (no such program), the caller got the start's error in place of
   the cancellation.
-- **The mock runtime reports no cost.** It reported `cost_usd: 0.0`. A reported cost is
-  provenance, what a provider said, and a mock is not a provider, so it is now `None`.
-- **A run's record no longer says `completed` when the executor raised.** A schema validator
-  that raised something pydantic does not wrap (a `TypeError`) escaped the executor raw: the
-  other components were left running, releases ran under them, and `run.json` said
-  `completed`. Any error from checking or recording a component's rows is now a
-  `ContractError` that fails that component, and whatever else escapes the run marks it
-  `failed` before it reaches the caller.
-- **After a store fails, `ctx.provide` raises every time.** A component still running
-  after a failed append (under `isolate`, or within its grace) could hand over a row,
-  have the call return normally, and end `completed`, though the row was only in memory.
-  Every append after a failed write-through now raises `StoreError`.
-- **A reused component whose rows are refused ends `failed` and is not run again.** Under
-  `on_failure: isolate`, a component whose stored rows its kind's schema now refused was
-  recorded as failed and then run again, and so were the reused components after it. It now
-  ends `failed` (reason `from run <id>`, none of its rows recorded), a reused component that
-  depends on it is skipped, and the other reused components are still reused.
-- **An input row that cannot be copied is refused before the record opens**, as the other
-  input checks are. It used to open the run and leave a `completed` record with no
-  components.
-
-### Security
-
-- **`matrix check` and `plan` run no tool's module.** The `pydantic-ai` runtime imported every
-  configured tool when it was built, so composing a config (`check`, `plan`, `agents`) ran
-  each tool's module and its packages while saying nothing was called; with the working
-  directory's config tiers, checking an untrusted checkout could run its code. Building the
-  runtime now only finds each module on the import path, without running it; a session
-  imports a tool when it first offers it. A module that cannot be found is still a config
-  problem when the runtime is built, every one listed at once; a function the module does not
-  hold fails the session that offers it as `incapable`.
-- **SECURITY.md names the working directory as an ambient route to a capability grant**
-  (mx-src F31): every command, and every tool on matrix, reads `./matrix.yaml` and
-  `./<tool>.yaml` from where it runs, so an untrusted checkout's config chooses permission
-  modes, plugins, a model `base_url` that receives every prompt, the store root and
-  observers. It says how to see the files read (`matrix config --sources`) and how to read
-  only the named ones (`--only`); a test holds the list to the tiers the code reads.
-- **No content leaves through OpenTelemetry by default.** The `otel` observer exported every
-  event field as a span attribute, so each agent's task (`matrix.task`), error messages
-  (`matrix.error`, and the span's status description) and every field a component passed to
-  `ctx.span` went to whatever endpoint `OTEL_*` named. Span attributes now come from an
-  allowlist: the GenAI conventions' names, matrix's statuses, reasons, error kinds, counts,
-  times and ids, and a component's number and boolean span fields. `error.type` stays.
-  Content is exported only with the observer's new `capture_content` option
-  (`observers: [{type: otel, capture_content: true}]`), as the conventions ask. A
-  component's string span fields are dropped unless it is set.
-
-### Checks
-
-- `layers.json` runs on every test run (`tests/test_architecture.py`), with full coverage: a
-  file no layer claims, or a layer whose file moved, fails the suite. Relative imports are
-  judged like absolute ones, OpenTelemetry is held to the `otel` observer and the root's
-  telemetry module, and each rule of the map has a planted violation that must be found.
-- The type URL check finds a slash-form type URL of any version and a split on `/` outside
-  `matrix.domain.ids`, where it searched for `.v1/` alone.
 
 ## 0.6.0
 

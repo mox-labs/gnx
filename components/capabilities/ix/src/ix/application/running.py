@@ -427,13 +427,13 @@ class _Adapters:
 
 
 def _filled(subject: SubjectConfig, values: Mapping[str, Any], kit: Kit) -> dict[str, Any]:
-    """A subject's options filled with ``values``. An option the adapter fills again itself
-    (its kind ``binds`` placeholders: a loop's ``{response}``) keeps each doubled
-    placeholder doubled, so that it is un-doubled once, by the adapter's filling."""
+    """A subject's options filled with ``values``. In an option the adapter fills again
+    itself (its kind ``binds`` placeholders: a loop's ``{response}``), each doubled one of
+    those names stays doubled, so that it is un-doubled once, by the adapter's filling."""
     kind = kit.kinds.get(schema.url("subject", subject.kind))
-    again = {name for name, option in kind.options.items() if option.binds} if kind else set()
+    again = {name: option.binds for name, option in kind.options.items()} if kind else {}
     return {
-        key: fill(value, values, escaped=key in again) for key, value in subject.options.items()
+        key: fill(value, values, later=again.get(key, ())) for key, value in subject.options.items()
     }
 
 

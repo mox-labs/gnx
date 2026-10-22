@@ -603,6 +603,7 @@ class Root:
                 checked.design,
                 checked.probes,
                 str(Path(opened.base).resolve()),
+                opened.vocabulary.kinds,
             )
             made = use_cases.make_plan(
                 self._digested(opened.examined, opened.vocabulary, opened.base),
@@ -685,15 +686,16 @@ class Root:
     # --- running ---
 
     def _preflight(
-        self, experiment: Experiment, design: Design, probes: ProbeSet, base: str
+        self, experiment: Experiment, design: Design, probes: ProbeSet, base: str, declared: Kinds
     ) -> tuple[tuple[Required, ...], tuple[Problem, ...]]:
         """What a run needs of this host, from every adapter in use that is a
         :class:`~ix.domain.ports.Preflight` (a subject, probe, sensor or environment), each
         checked now; and what the runtimes they build warn of (a permissive
         ``permission_mode``), each at ``<entry>.runtime_options.<option>``: an entry's
         runtime options are its runtime's config. Each cell's options are asked as its
-        trials will have them, so a factor on one option hides nothing. An adapter that
-        cannot be built has nothing to check: that is told as a kind with no adapter."""
+        trials will have them, so a factor on one option hides nothing, and its prompt text as
+        text (``declared``: the kinds, which say which options are). An adapter that cannot
+        be built has nothing to check: that is told as a kind with no adapter."""
         adapters: dict[str, object] = {}
         found: list[tuple[str, Requirement]] = []
         cautions: list[Problem] = []
@@ -703,7 +705,9 @@ class Root:
             adapter = adapters[kind]
             if not isinstance(adapter, Preflight):
                 continue
-            for options in per_cell(written, experiment.factors):
+            entry = declared.kinds.get(kind)
+            text = entry.text_options if entry else ()
+            for options in per_cell(written, experiment.factors, text=text):
                 with self._runtimes.listening() as heard:
                     found += [
                         (where, needed) for needed in adapter.requirements(options, base=base)
@@ -810,7 +814,11 @@ class Root:
             observers = _with_otel(observers)
             keep_spans()
         requirements, cautions = self._preflight(
-            prepared.experiment, prepared.design, prepared.probes, directory
+            prepared.experiment,
+            prepared.design,
+            prepared.probes,
+            directory,
+            opened.vocabulary.kinds,
         )
         running.check_startable(requirements)
         manifest = prepared.manifest.model_copy(

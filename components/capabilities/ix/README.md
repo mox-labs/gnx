@@ -13,9 +13,9 @@ runs, runs it one trial at a time and reports a verdict: `holds`, `fails` or
 
 ```bash
 # the ix command
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.6.0#subdirectory=components/capabilities/ix"
 # the library, in a project
-uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix"
+uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.6.0#subdirectory=components/capabilities/ix"
 ```
 
 ix is installed from its repository at the release's tag. It is on no package index, and the
@@ -320,9 +320,15 @@ def register(registry):
   reviewed as its trials will have them. A probe's options, inline or from a file, are
   filled with the levels, the subject's options and its facets: a factor, an option every
   subject sets, or a facet every subject's kind offers (`{pid}`). A loop's `prompt` fills
-  `{prompt}`, `{response}`, `{until}` and `{failures}` itself. `{{name}}` is the text
-  `{name}`; every other brace is sent as written, so a prompt holding JSON
-  (`{"a": {"b": 1}}`) or a template (`{{ user.name }}`) reaches the agent unchanged;
+  `{prompt}`, `{response}`, `{until}` and `{failures}` itself. In prompt text, an option
+  its kind declares `text: true` (a probe's `prompt`, a `system_prompt`, a `loop`), a name
+  nothing fills is sent as written and is a warning, not a problem, so a prompt can hold
+  code (`print(f"{user}")`); the warning names the placeholder a typo is likely to be
+  (`{sise}` for the factor `size`). A name a probe takes from some subjects and not others
+  is refused there too, since the subjects would be put different prompts. `{{name}}`, where `name` would be filled there, is the text `{name}`;
+  every other brace is sent as written, so a prompt holding JSON (`{"a": {"b": 1}}`) or a
+  template (`{{ user.name }}`, or `{{user}}` where nothing fills `user`) reaches the agent
+  unchanged;
 - **a model-judged metric never decides.** Whether a metric is judged is the sensor's
   declaration, not the author's. A judged metric is refused as `primary` and as a guardrail
   in every genre with a verdict (`judged_gate`); it can be reported under `metrics:`.

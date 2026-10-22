@@ -19,7 +19,7 @@ For the full argument, see [docs/explanation/capability.md](docs/explanation/cap
 recon is a package in the [gnx](https://github.com/mox-labs/gnx) repository, installed from it at the release's tag; it is not on a package index:
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.12.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
@@ -173,7 +173,7 @@ The tests run offline, except the live integration tests against OpenAlex, arXiv
 - [docs/how-to/capture-mcp-results.md](docs/how-to/capture-mcp-results.md) — capture MCP tool results with a hook and query them
 - [docs/reference/extending.md](docs/reference/extending.md) — adding a collector type or a transform
 - [docs/reference/capture-format.md](docs/reference/capture-format.md) — the capture log format (`recon.v1.capture`), for a tool that writes captures
-- [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0
+- [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0 and 0.12.0, and recon's claims
 - [CHANGELOG.md](CHANGELOG.md)
 - `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format` for the references. The plugin's copy is generated from it (`just recon-skill`).
 

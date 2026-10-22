@@ -1,6 +1,6 @@
 [project]
 name = "ix"
-version = "0.5.0"
+version = "0.6.0"
 description = "Experiments on agents and services: one file with a genre, validated, planned, registered, run and reported"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -26,7 +26,7 @@ dependencies = [
     # [tool.uv.sources] resolves it, from a checkout and from a git URL alike. Bounded to the
     # minor ix is built against: before 1.0 a matrix minor may break. matrix brings every agent
     # and model runtime, and the OpenTelemetry SDK and OTLP exporters: there are no extras.
-    "matrix>=0.6,<0.7",
+    "matrix>=0.7,<0.8",
     # Pydantic's maintained continuation of httpx, the stack's one HTTP client; bounded to
     # the major tested.
     "httpx2>=2.10,<3",

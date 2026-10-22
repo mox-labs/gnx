@@ -26,9 +26,9 @@ and runs what a config declares from the command line: `matrix plan`, then `matr
 
 ```bash
 # the library, in a project
-uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.6.0#subdirectory=components/capabilities/matrix"
+uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.7.0#subdirectory=components/capabilities/matrix"
 # the matrix command
-uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.6.0#subdirectory=components/capabilities/matrix"
+uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.7.0#subdirectory=components/capabilities/matrix"
 ```
 
 matrix is installed from its repository at the release's tag; it is not on a package index,
@@ -497,4 +497,4 @@ call path (`call_model`), the command's document records (`Catalog`,
 | [The data model](docs/explanation/data-model.md) | Construct, ledger, Run, and how a run is kept on disk |
 | [API reference](docs/reference/api.md) | Every public name, config key, error kind, exit code and CLI command |
 | [SECURITY.md](SECURITY.md) | Agent authority, config as a capability grant, findings |
-| [Design record](docs/design/2026-10-19-record.md) | The judgments behind 0.6.0, each with its test and evidence |
+| [Design record](docs/design/2026-10-19-record.md) | The judgments behind 0.6.0 and 0.7.0, and matrix's claims, each with its test and evidence |

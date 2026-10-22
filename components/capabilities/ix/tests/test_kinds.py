@@ -19,6 +19,7 @@ from pydantic import ValidationError
 import ix
 from ix.adapters._out.matrix_documents import KIND_GROUP, KindFiles
 from ix.composition import type_url_problem
+from ix.domain import schema
 from ix.domain.design import select_sensors
 from ix.domain.experiment import Experiment, probe_set
 from ix.domain.kind import (
@@ -28,6 +29,7 @@ from ix.domain.kind import (
     check_options,
     fill,
     kinds,
+    per_cell,
     placeholders,
     seconds,
 )
@@ -286,12 +288,42 @@ class TestOptions:
         assert fill("{unknown}", bound) == "{unknown}"
 
     def test_a_doubled_placeholder_is_the_text_of_the_placeholder(self) -> None:
-        """``{{name}}``, where ``name`` is a placeholder's name, is the text ``{name}``: no
+        """``{{name}}``, where ``name`` is filled there, is the text ``{name}``: no
         placeholder, and filled to that text whatever ``name`` is bound to."""
         assert placeholders("{{x}} and {y} and {{ z }}") == ["y"]
         assert fill("{{y}}", {"y": 1}) == "{y}"
         assert fill("{{y}} is {y}", {"y": 1}) == "{y} is 1"
-        assert fill(["{{db.url}}", {"k": "{{y}}"}], {"y": 1}) == ["{db.url}", {"k": "{y}"}]
+        assert fill(["{{db.url}}", {"k": "{{y}}"}], {"y": 1, "db.url": "u"}) == [
+            "{db.url}",
+            {"k": "{y}"},
+        ]
+
+    def test_a_doubled_name_nothing_fills_there_is_left_as_written(self) -> None:
+        """Regression: ``{{user}}`` became ``{user}`` whatever ``user`` was, so a Mustache or
+        Handlebars line was altered. A name that is not filled in that place is not an
+        escape."""
+        assert fill("Hello {{user}}, {{y}}", {"y": 1}) == "Hello {{user}}, {y}"
+        assert fill(["{{db.url}}", {"k": "{{user}}"}], {"y": 1}) == [
+            "{{db.url}}",
+            {"k": "{{user}}"},
+        ]
+
+    def test_a_round_un_doubles_what_the_loop_option_binds(self, builtin_kinds: Kinds) -> None:
+        """The session's loop un-doubles the names the kind says it fills: were they to
+        differ, an escape would be kept doubled by the run and never un-doubled."""
+        from ix.adapters._out.matrix_agents import ROUND
+
+        session = builtin_kinds.get("subject", "agent-session")
+        assert session is not None
+        assert set(ROUND) == set(session.options["loop"].binds)
+
+    def test_a_name_filled_later_stays_doubled_for_that_filling(self) -> None:
+        """An option its adapter fills again (a loop's ``{response}``) keeps ``{{response}}``
+        doubled, so the adapter's filling is the one that makes it text; a name filled now
+        is text now."""
+        written = "{{response}} at {{y}} for {{user}}"
+        assert fill(written, {"y": 1}, later=("response",)) == "{{response}} at {y} for {{user}}"
+        assert fill(written, {"y": 1}, escaped=True) == written
 
     @pytest.mark.parametrize(
         "written",
@@ -312,6 +344,32 @@ class TestOptions:
         bound = {"a": 9, "name": "N", "user.name": "U", "x": 3}
         assert placeholders(written) == []
         assert fill(written, bound) == written
+
+    def test_the_options_a_model_reads_as_text_are_declared_so(self, builtin_kinds: Kinds) -> None:
+        """Which options are prompt text is the kind's declaration (``text``), not a list of
+        names in ix: there an unbound ``{name}`` is sent as written and only warned of."""
+        declared = {
+            (schema.short(kind.name), name)
+            for kind in builtin_kinds.kinds.values()
+            for name in kind.text_options
+        }
+        assert declared == {
+            ("agent-session", "system_prompt"),
+            ("agent-session", "loop"),
+            ("model-call", "system_prompt"),
+            ("prompt", "prompt"),
+            ("prompt", "mock_response"),
+            ("judge", "rubric"),
+        }
+
+    def test_in_prompt_text_a_name_left_unfilled_is_text_to_an_adapter(self) -> None:
+        """Each cell's options, as a preflight reads them: in prompt text, a ``{name}`` the
+        cell leaves is written doubled, the text it is to an adapter, so code in a prompt
+        does not read as a placeholder a trial fills; in any other option it stays one."""
+        options = {"system_prompt": 'f"{user}" at {size}', "command": ["x", "{db.url}"]}
+        (cell,) = per_cell(options, {"size": ("s",)}, text=("system_prompt",))
+        assert cell == {"system_prompt": 'f"{{user}}" at s', "command": ["x", "{db.url}"]}
+        assert placeholders(cell) == ["db.url"]
 
     def test_a_kind_cannot_make_an_option_depend_on_one_it_does_not_take(self) -> None:
         declared = {
@@ -663,22 +721,31 @@ class TestRequirements:
         assert not plan.runnable
 
     @pytest.mark.parametrize(
-        "system_prompt", ["reply in plain text", "reply as {{json}}", 'reply as {"a": {"b": 1}}']
+        "written",
+        [
+            {"system_prompt": "reply in plain text"},
+            {"system_prompt": "reply as {{json}}"},
+            {"system_prompt": 'reply as {"a": {"b": 1}}'},
+            {"system_prompt": 'reply as print(f"{user}")'},
+            {"loop": {"strategy": "self-review", "rounds": 2, "prompt": "You said {response}"}},
+        ],
     )
     def test_a_literal_brace_leaves_the_preflight_on(
-        self, tmp_path: Path, system_prompt: str
+        self, tmp_path: Path, written: dict[str, Any]
     ) -> None:
         """Regression: the plan filled each cell's options un-doubling ``{{json}}`` into
         ``{json}``, which the adapter read as a placeholder a trial fills, so it checked
         nothing: the plan said runnable with no requirement, and the run started without the
-        fixture it names. A literal brace is text; the preflight still asks."""
+        fixture it names. A literal brace is text; the preflight still asks. So is prompt
+        text: a ``{user}`` nothing fills, sent as written, and a loop's ``{response}``, which
+        the session fills, not the trial."""
         data = {
             "name": "brace",
             "question": "Does a literal brace switch the preflight off?",
             "genre": "evaluate",
             "subjects": {
                 "canned": {"kind": "agent-session", "runtime": "mock",
-                           "system_prompt": system_prompt, "fixtures": ["no-such-folder"]},
+                           "fixtures": ["no-such-folder"], **written},
             },
             "probes": [
                 {"id": "greet", "kind": "prompt", "prompt": "Greet me.",

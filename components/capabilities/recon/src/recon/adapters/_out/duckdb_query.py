@@ -51,8 +51,11 @@ def _confine(conn: Any, readable: Path) -> None:
     external access off cannot be undone, and the lock stops the extension settings from
     being switched back. Spilling to disk is off: DuckDB adds its temp directory (``.tmp/``
     under the working directory) to the directories SQL may read, so a query could read
-    whatever is there; a query that would spill fails for memory instead."""
+    whatever is there; a query that would spill fails for memory instead. The time zone is
+    UTC: DuckDB reads ``…Z`` as a timestamp with no zone, and a cast to TIMESTAMPTZ would
+    otherwise take the machine's zone for it; a time with an explicit offset keeps it."""
     root = str(readable).replace("'", "''")
+    conn.execute("SET TimeZone='UTC'")
     conn.execute("SET temp_directory=''")
     conn.execute(f"SET allowed_directories=['{root}']")
     conn.execute("SET autoinstall_known_extensions=false")
