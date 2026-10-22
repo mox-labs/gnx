@@ -8,9 +8,10 @@ to it.
 An agent's ``model`` is passed to the SDK as it stands: an alias the Claude Code CLI knows
 (``haiku``, ``sonnet``, ``opus``) or a full model id (the SDK's own examples:
 ``claude-sonnet-4-5``, ``claude-opus-4-5``); unset, the CLI's default model.
-``max_budget_usd`` bounds what one session may spend: the SDK's own option of that name,
-which ends the session with ``stop: max_budget_usd`` once it is passed, and the per-session
-bound a run's spend ceiling (``matrix.limits.spend_usd``) holds for each session.
+``max_budget_usd`` is the SDK's own option of that name, passed to it as it stands: the SDK
+ends a session once it has spent that, and the response says so (``stop: max_budget_usd``).
+matrix counts nothing against it. ``cost_usd`` on a response is the SDK's own report
+(``total_cost_usd``), kept as a fact of the session.
 
 Type URL: ``matrix.v1.runtime.claude-sdk``. Requires the ``claude`` extra.
 """
@@ -56,9 +57,8 @@ class ClaudeSdkRuntimeConfig(BaseModel):
     """Claude Agent SDK sessions (a config that reaches this is a capability grant: see the
     package's SECURITY.md). An agent's `model` on this runtime is an alias the Claude Code CLI
     knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the
-    CLI's default. `max_budget_usd` is the most one session may spend, in USD: the SDK ends
-    the session there (`stop: max_budget_usd`), and `matrix.limits.spend_usd` counts it as
-    each session's bound."""
+    CLI's default. `max_budget_usd` is the SDK's own option, passed as it stands: the SDK
+    ends a session once it has spent that many USD (`stop: max_budget_usd`)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -75,8 +75,8 @@ class ClaudeSdkRuntimeConfig(BaseModel):
     plugins: list[dict[str, Any]] = []
     #: A model alias or id the SDK falls back to when the agent's model is unavailable.
     fallback_model: str | None = None
-    #: The most one session may spend, in USD: the SDK's ``max_budget_usd``. ``None``: no
-    #: bound per session, and a run's spend ceiling cannot hold a session to one.
+    #: The SDK's ``max_budget_usd``, passed as it stands: the SDK ends a session once it has
+    #: spent that many USD. ``None``: not passed, so the SDK's default applies.
     max_budget_usd: float | None = Field(default=None, gt=0)
     #: Inline subagents, forwarded as the SDK's ``agents`` option.
     agents: dict[str, Any] | None = None
@@ -105,11 +105,6 @@ class ClaudeSdkRuntime:
     @property
     def config(self) -> ClaudeSdkRuntimeConfig:
         return self._config
-
-    @property
-    def budget_usd(self) -> float | None:
-        """The most one session may spend, in USD (``max_budget_usd``), or None."""
-        return self._config.max_budget_usd
 
     @property
     def warnings(self) -> tuple[Problem, ...]:

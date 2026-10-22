@@ -33,11 +33,11 @@ def test_every_error_kind_has_an_exit_code_and_a_payload() -> None:
     so a detail can never overwrite ``kind``, ``message`` or ``fix``. Changed requirement
     (S6): one kind per code, as ``exit-codes.json`` agrees: ``contract`` and ``component``
     exit as ``run_failed``, ``store`` has its own code, and ``unknown`` is only a bug.
-    Changed requirement: an agent session refused by the run's spend ceiling (``spend``) is a
-    finer kind of failed run too."""
+    Changed requirement: spend was removed, and with it the ``spend`` kind."""
     assert set(EXIT_CODES) | set(EXITS_AS) == set(get_args(ErrorKind)) | {"ok"}
     assert len(set(EXIT_CODES.values())) == len(EXIT_CODES)  # one kind per code
-    assert EXITS_AS == {"contract": "run_failed", "component": "run_failed", "spend": "run_failed"}
+    assert EXITS_AS == {"contract": "run_failed", "component": "run_failed"}
+    assert "spend" not in get_args(ErrorKind)
     error = ConfigError("bad", fix="do this", path="a.b")
     assert error.payload() == {
         "schema": "matrix.v1.error",

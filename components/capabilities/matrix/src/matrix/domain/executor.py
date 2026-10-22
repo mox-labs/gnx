@@ -64,7 +64,6 @@ from matrix.domain.observer import (
 )
 from matrix.domain.ports._out.construct_store import events_of
 from matrix.domain.problems import problem
-from matrix.domain.spend import CURRENT_SPEND, Spend
 
 if TYPE_CHECKING:
     from matrix.domain.ports._out.construct_store import ConstructStore, RunWriter
@@ -148,10 +147,6 @@ class Limits(BaseModel):
     ``on_failure``: ``fast`` (the default) stops every running component and skips the rest
     as soon as one fails; ``isolate`` skips only the components that depend on the failed one
     and lets the others finish. The run ends ``failed`` either way.
-
-    ``spend_usd`` is the most the run may spend on agent sessions, in USD, as the runtimes
-    report it: a session that could pass it is not started, and the component that asked for
-    it fails with kind ``spend`` (:mod:`matrix.domain.spend`). ``None``: no ceiling.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -162,7 +157,6 @@ class Limits(BaseModel):
     cleanup_s: float = Field(default=30.0, gt=0)
     on_failure: Literal["fast", "isolate"] = "fast"
     retry: Retry = Retry()
-    spend_usd: float | None = Field(default=None, gt=0)
     components: dict[str, ComponentLimits] = {}
 
     def of(self, name: str) -> tuple[float | None, float, float]:
@@ -269,9 +263,6 @@ class Run(BaseModel):
     #: name -> what the component was built from, as a digest, when the wiring knows it: what
     #: a later run compares before it reuses the component's rows.
     fingerprints: dict[str, str] = {}
-    #: What the run's agent sessions cost in USD, as their runtimes reported it; None when
-    #: none reported a cost.
-    spend_usd: float | None = None
     _construct: Construct = PrivateAttr()
 
     def __init__(self, *, construct: Construct, **fields: Any) -> None:
@@ -303,8 +294,6 @@ class Run(BaseModel):
             found["reused_from"] = self.reused_from
         if self.fingerprints:
             found["fingerprints"] = dict(self.fingerprints)
-        if self.spend_usd is not None:
-            found["spend_usd"] = self.spend_usd
         return found
 
 
@@ -675,8 +664,6 @@ class _Session:
         self.releases: list[tuple[str, Release, float]] = []
         #: The first failure, which :class:`RunError` reports as the cause.
         self.first: tuple[str, MatrixError] | None = None
-        #: What the run's agent sessions have spent, against ``limits.spend_usd``.
-        self.spend = Spend(limits.spend_usd)
 
     def cancel(self) -> None:
         """Ask the run to stop: every running component is stop-requested, the rest skipped."""
@@ -709,7 +696,6 @@ class _Session:
             # still reaches the caller, but it did not stop any component.
             cancelled = self._cancelled
             await self._release()
-            run.spend_usd = self.spend.spent_usd if self.spend.counted else None
             run.ended = datetime.now(UTC)
             run.status = "cancelled" if cancelled else "failed" if run.failures else "completed"
             self._finish()
@@ -934,7 +920,7 @@ class _Session:
             }
         )
         scope = SpanScope(self.run_id, step.span, step.name, self._channel)
-        task = asyncio.ensure_future(_call(step.component, inputs, step.context, scope, self.spend))
+        task = asyncio.ensure_future(_call(step.component, inputs, step.context, scope))
         step.progress.begin()
         sent = await self._await_with_stop_path(step, task)
         return self._ending(step, task, sent=sent)
@@ -1145,11 +1131,8 @@ class _Session:
         )
 
 
-async def _call(
-    component: Component, inputs: Inputs, ctx: RunContext, scope: SpanScope, spend: Spend
-) -> Any:
+async def _call(component: Component, inputs: Inputs, ctx: RunContext, scope: SpanScope) -> Any:
     CURRENT_SPAN.set(scope)  # this task's own context: an agent it calls reports as its child
-    CURRENT_SPEND.set(spend)  # and is held to the run's spend ceiling
     return await component.run(inputs, ctx)
 
 

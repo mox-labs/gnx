@@ -228,8 +228,7 @@ def test_the_config_example_composes_and_checks(
     assert checked["agents"] == ["claimer", "rater"]
     assert main(["plan", "--json"]) == 0
     planned = json.loads(capsys.readouterr().out)
-    assert planned["spend"]["cost_usd_max"] == 0.0  # the mock runtime calls no model
-    assert planned["spend"]["ceiling_usd"] == 2.0
+    assert planned["agent_calls_min"] == planned["agent_calls_max"] == 2
     (tmp_path / "diffs.jsonl").write_text('"- a\\n+ b"\n')
     assert main(["run", "--input", "acme.v1.diff=diffs.jsonl", "--json"]) == 0
     ran = json.loads(capsys.readouterr().out)
@@ -278,6 +277,26 @@ def test_the_retry_example_is_valid_config() -> None:
     assert "`errors`" in matrix.skill("config")
 
 
+def test_every_max_option_the_skill_names_exists() -> None:
+    """Moved from the spend tests when spend was removed: each ``max_*`` option the config and
+    agents references name is a field of a runtime, an agent, the limits or a retry."""
+    from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig
+    from matrix.adapters._out.runtime.model import ModelAgentRuntimeConfig
+    from matrix.domain.config import AgentConfig
+
+    text = matrix.skill("config") + matrix.skill("agents")
+    named = set(re.findall(r"\b(max_[a-z_]+)\b", text))
+    fields = {
+        *ClaudeSdkRuntimeConfig.model_fields,
+        *ModelAgentRuntimeConfig.model_fields,
+        *AgentConfig.model_fields,
+        *matrix.Limits.model_fields,
+        *matrix.Retry.model_fields,
+    }
+    assert {"max_budget_usd", "max_turns", "max_tokens"} <= named
+    assert named <= fields, named - fields
+
+
 def test_the_loading_reference_names_only_exported_api() -> None:
     named = set(re.findall(r"matrix\.([A-Za-z_]+)\(", matrix.skill("loading")))
     assert named and named <= set(matrix.__all__), named - set(matrix.__all__)
@@ -296,7 +315,7 @@ def test_the_running_reference_python_runs_as_written(
     (tmp_path / "live.yaml").write_text(CONFIG_EXAMPLE)
     exec(compile(block, "running-reference", "exec"), {})  # noqa: S102
     (record,) = (tmp_path / ".matrix" / "runs").iterdir()
-    assert json.loads((record / "run.json").read_text())["spend_usd"] == 0.0
+    assert json.loads((record / "run.json").read_text())["status"] == "completed"
 
 
 def test_the_only_example_names_where_the_record_goes() -> None:

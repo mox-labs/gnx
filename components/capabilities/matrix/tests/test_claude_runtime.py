@@ -309,6 +309,21 @@ class TestSessionEnding:
         with pytest.raises(AgentRuntimeError, match="error_during_execution.*tool crashed"):
             await _runtime().run(_defn(), "hi")
 
+    async def test_a_budget_limit_is_reported_not_raised(self, monkeypatch):
+        """``max_budget_usd`` is the SDK's own stop; matrix records it as the reason the
+        session ended and counts nothing against it."""
+        _install(
+            monkeypatch,
+            _FakeAssistantMessage([_FakeTextBlock("partial")]),
+            _FakeResultMessage(subtype="error_max_budget_usd", is_error=True, total_cost_usd=0.5),
+        )
+        response = await _runtime(max_budget_usd=0.5).run(_defn(), "hi")
+        assert (response.stop, response.cost_usd, response.content) == (
+            "max_budget_usd",
+            0.5,
+            "partial",
+        )
+
     async def test_an_api_error_names_the_status(self, monkeypatch):
         from matrix import AgentRuntimeError
 
@@ -367,3 +382,14 @@ def test_a_permissive_mode_is_a_warning_composition_carries(fake_sdk) -> None:
         "bypassPermissions",
     )
     assert _runtime().warnings == ()
+
+
+def test_max_budget_usd_reaches_the_real_sdk_options() -> None:
+    """Moved from the spend tests when spend was removed: the SDK's own options carry
+    ``max_budget_usd``, checked against the installed SDK, and it is left out when unset."""
+    sdk = pytest.importorskip("claude_agent_sdk")
+    from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime, ClaudeSdkRuntimeConfig
+
+    runtime = ClaudeSdkRuntime(ClaudeSdkRuntimeConfig(max_budget_usd=0.5))
+    assert sdk.ClaudeAgentOptions(**runtime.options(_defn())).max_budget_usd == 0.5
+    assert "max_budget_usd" not in ClaudeSdkRuntime().options(_defn())

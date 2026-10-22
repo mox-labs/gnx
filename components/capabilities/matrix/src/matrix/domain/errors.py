@@ -3,8 +3,8 @@
 Every error carries a **kind**, what the caller can do about it, so nobody parses messages.
 :data:`EXIT_CODES` maps each kind a command exits with to its code, :data:`EXIT_MEANINGS`
 says what each means and :data:`EXIT_NEXT` what to do about it. The codes are those agreed in
-``components/capabilities/exit-codes.json``, and the tests hold this table to it. Three kinds
-are finer than an exit: ``contract``, ``component`` and ``spend`` exit as ``run_failed``
+``components/capabilities/exit-codes.json``, and the tests hold this table to it. Two kinds
+are finer than an exit: ``contract`` and ``component`` exit as ``run_failed``
 (:data:`EXITS_AS`).
 
 Every error also carries a ``fix`` (one actionable sentence, or None), ``problems`` (each a
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from matrix.domain.problems import Problem
 
 ErrorKind = Literal[
-    "usage", "config", "not_found", "contract", "component", "spend", "run_failed", "store",
+    "usage", "config", "not_found", "contract", "component", "run_failed", "store",
     "transient", "auth", "interrupted", "unknown",
 ]  # fmt: skip
 
@@ -48,13 +48,11 @@ EXIT_CODES: dict[str, int] = {
     "interrupted": 130,
 }
 
-#: Error kinds that exit under another kind's code: a component that broke its contract,
-#: raised, or was refused an agent session by the run's spend ceiling, fails the run. The
-#: envelope keeps the finer kind (``error.details.cause``).
+#: Error kinds that exit under another kind's code: a component that broke its contract or
+#: raised fails the run. The envelope keeps the finer kind (``error.details.cause``).
 EXITS_AS: dict[str, str] = {
     "contract": "run_failed",
     "component": "run_failed",
-    "spend": "run_failed",
 }
 
 #: What each kind in :data:`EXIT_CODES` means.
@@ -66,8 +64,7 @@ EXIT_MEANINGS: dict[str, str] = {
     "not_found": "a name, type URL, file or run that is not registered, configured or there",
     "transient": "unavailable, rate-limited or timed out",
     "auth": "credentials missing or refused",
-    "run_failed": "the run ran and a component failed: it raised, broke what it declares, or "
-    "was refused an agent session by the spend ceiling",
+    "run_failed": "the run ran and a component failed: it raised or broke what it declares",
     "store": "the run's record could not be written or read",
     "interrupted": "the command was interrupted (Ctrl-C, SIGTERM) before it finished",
 }
@@ -246,14 +243,6 @@ class ComponentError(MatrixError):
     kind: ErrorKind = "component"
 
 
-class SpendError(MatrixError):
-    """An agent session was not started: it could have taken the run past its spend ceiling
-    (``matrix.limits.spend_usd``). ``details`` holds ``agent``, ``spent_usd``, ``held_usd``,
-    ``ceiling_usd`` and, when the runtime bounds a session, ``budget_usd``."""
-
-    kind: ErrorKind = "spend"
-
-
 class StoreError(MatrixError):
     """The run's record could not be kept or read back: a write failed, a run id is already
     taken, or a stored record contradicts itself. A run whose record cannot be kept fails."""
@@ -341,10 +330,10 @@ class RunError(MatrixError):
 
     @property
     def kind(self) -> ErrorKind:  # type: ignore[override]
-        """``run_failed`` when a component raised, broke its contract or was refused an agent
-        session by the spend ceiling; otherwise the cause's own kind, whose remedy differs
-        (``store``, ``transient``, ``auth``, ``config``)."""
-        if self.cause_kind in ("contract", "component", "spend", "unknown"):
+        """``run_failed`` when a component raised or broke its contract; otherwise the
+        cause's own kind, whose remedy differs (``store``, ``transient``, ``auth``,
+        ``config``)."""
+        if self.cause_kind in ("contract", "component", "unknown"):
             return "run_failed"
         return self.cause_kind
 

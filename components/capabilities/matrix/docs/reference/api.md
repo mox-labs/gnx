@@ -116,7 +116,6 @@ from matrix import (
     ContractError,
     ComponentError,
     StoreError,
-    SpendError,
     AgentRuntimeError,
     RunError,
     RunCancelled,
@@ -305,7 +304,6 @@ from config.
 | `cleanup_s` | `30.0` | how long a cancelled component, or one deferred release, has to finish before it is abandoned (`> 0`) |
 | `on_failure` | `"fast"` | `fast`: the first failure stops every running component and skips the rest. `isolate`: only components that depend on the failed one are skipped |
 | `retry` | `Retry()` | the retry policy of every component; the default runs each once |
-| `spend_usd` | `None` | the most the run's agent sessions may spend, in USD, as their runtimes report it (`> 0`): a session that could pass it is not started (see below). `None`: no ceiling |
 | `components` | `{}` | name to `ComponentLimits(deadline_s, grace_s, cleanup_s, retry)`; a field left `None` inherits the run's |
 
 `limits.of(name)` is `(deadline_s, grace_s, cleanup_s)` for a component and
@@ -321,15 +319,6 @@ there). It waits `backoff_s * multiplier ** (n - 1)` after attempt `n`, or the
 `Retry-After`), never more than `max_wait_s`. A wait ends early when the run stops. Each
 retry is a `matrix.component.retry` event, and `ComponentEnding.attempts` counts them. The
 field is `errors`, not `on`: YAML reads a bare `on` key as `true`.
-
-`spend_usd` is held by the executor, which keeps each run's spend and makes every agent a
-component calls inside the run ask before a session starts. A runtime that bounds one session
-(`budget_usd`: the `claude-sdk` runtime's `max_budget_usd`) gets it only when what the run has
-spent, what the sessions in flight may still spend, and that bound stay within the ceiling; a
-runtime that bounds none gets it only while the ceiling is not reached, so sessions in flight
-may pass it. A session refused raises `SpendError` without starting, and its component fails
-with kind `spend`. A session's reported `cost_usd` is counted when it ends; one that reports
-none, or fails, counts its runtime's bound, or nothing. `Run.spend_usd` records the total.
 
 ### `Executor`
 
@@ -377,9 +366,8 @@ async Executor.run(
    kind); a component past its deadline is a `ComponentError` saying so, with
    `details["reason"] == "timeout"`. A failure its retry policy covers is run again first.
    Each failure is recorded in `run.failures`, and `RunError` is raised from the first: its
-   `kind` is `run_failed` when a component raised, broke its contract or was refused an
-   agent session by the spend ceiling (`cause_kind` keeps `component`, `contract` or
-   `spend`), and the cause's own kind otherwise (`store`, `transient`, `auth`, `config`); its
+   `kind` is `run_failed` when a component raised or broke its contract (`cause_kind` keeps
+   `component` or `contract`), and the cause's own kind otherwise (`store`, `transient`, `auth`, `config`); its
    `fix` is the cause's. A component whose provider did not complete is `skipped`.
 6. Stopping a component is one sequence, whatever the cause (`deadline`, `run_failed`,
    `cancelled`): `ctx.stopping` is set; the component has `grace_s` to return, and what it
@@ -411,14 +399,13 @@ running component by the same sequence, skips the rest, calls the releases, and 
 | `fingerprints` | `dict[str, str]` | name to a digest of what the component was built from, when the wiring knows it |
 | `releases` | `list[ReleaseOutcome]` | `component`, `status`, `error` per deferred release, in the order called; `status` is `released`, `failed` or `abandoned` |
 | `events_dropped` | `int` | events no observer received |
-| `spend_usd` | `float \| None` | what the run's agent sessions cost, as their runtimes reported it (0.0 on the `mock`, which reports a cost of 0); `None` when none reported a cost (the `model` runtime reports none) |
 | `rows(kind)` | `-> tuple[Any, ...]` | the rows of `kind` |
 | `document()` | `-> dict` | the run as a `matrix.v1.run` document, without its tables |
 
 `Run` and its three parts are pydantic models, exported from `matrix`. The parts are frozen,
 and each `document()` is the dict `run.document()` holds for it (a key of `ComponentEnding`
-is left out when it says nothing; `reused_from`, `fingerprints` and `spend_usd` appear in the
-run's document when set). The component and run states are open vocabularies: a reader must
+is left out when it says nothing; `reused_from` and `fingerprints` appear in the run's
+document when set). The component and run states are open vocabularies: a reader must
 tolerate one it does not know.
 
 ### `Reuse`
@@ -540,7 +527,7 @@ The runtime-neutral record of one session. Frozen.
 | `tool_calls` | `tuple[dict, ...]` | `()` | `{name, input}` per call; a runtime that sees calls happen adds `id`, `started`, `ended` (ISO times) and `error`, and each becomes an `execute_tool` span |
 | `tokens_input`, `tokens_output` | `int` | `0` | |
 | `duration_ms` | `int` | `0` | |
-| `cost_usd` | `float \| None` | `None` | when the backend reports it |
+| `cost_usd` | `float \| None` | `None` | the cost the backend reported, when it reports one: a fact of the session, which matrix neither limits nor estimates |
 | `num_turns` | `int` | `0` | |
 | `family` | `str \| None` | `None` | model family that answered (`claude`, `qwen`, ...), stamped by the runtime |
 | `provider` | `str \| None` | `None` | who served it, by the GenAI conventions' provider names (`anthropic`), when known |
@@ -555,9 +542,8 @@ The runtime-neutral record of one session. Frozen.
 | `check` | `(definition) -> None` | **Required.** Raises `ConfigError` for a definition the runtime cannot honour. A runtime that accepts everything implements it as a no-op |
 | `run` | `async (definition, task: str) -> AgentResponse` | Returns a response whose `stop` says why the session ended, or raises `AgentRuntimeError` with a `reason`. Never an empty normal response for a failed session |
 
-Two members are optional, read with `getattr`: `warnings` (problems a reader of its config
-should see) and `budget_usd` (the most one session may spend in USD, which `spend_usd` holds
-each session to; absent or `None` is no bound).
+One member is optional, read with `getattr`: `warnings` (problems a reader of its config
+should see).
 
 A runtime that also logs what its `warnings` say logs it at WARNING on the logger named
 `RUNTIME_LOGGER` (`matrix.runtime`), once per process, so a caller that builds a runtime per
@@ -572,8 +558,7 @@ logger: the `matrix` command does, and so does ix.
 `runtime.check(definition)`, so a refusal happens at binding. Properties `name`,
 `definition`, `runtime`. `run(task)` emits `matrix.agent.start` (with the `task` as sent)
 and `matrix.agent.end`, and a `matrix.tool.start` / `matrix.tool.end` pair, at the runtime's
-own times, for each tool call it timed. Inside a run, it first holds the session to the run's
-`spend_usd`, raising `SpendError` without starting it when it could pass the ceiling.
+own times, for each tool call it timed.
 
 ### Built-in runtimes
 
@@ -581,9 +566,9 @@ Registered at the `runtime` point. In config, `type:` takes the short name.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `claude-sdk` | `matrix.v1.runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (`[]` is hermetic), `plugins` (relative `path` resolved against `cwd`), `fallback_model`, `max_budget_usd` (the most one session may spend: the SDK's own option, and the runtime's `budget_usd`), `agents` | `cwd` | Extra `[claude]`. Accepts every definition. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call |
-| `model` | `matrix.v1.runtime.model` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. An agent's `model` is a hardline registry name; unset, `default_model`, then the registry's default. One call, no tool loop: `check` refuses a definition that declares tools. Reports no cost, so `spend_usd` counts nothing for it |
-| `mock` | `matrix.v1.runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | Offline. Accepts every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports `cost_usd` 0.0, so a run on it records `spend_usd: 0.0`. Records `calls`, each `(agent, task)` |
+| `claude-sdk` | `matrix.v1.runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (`[]` is hermetic), `plugins` (relative `path` resolved against `cwd`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` | `cwd` | Extra `[claude]`. Accepts every definition. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call |
+| `model` | `matrix.v1.runtime.model` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. An agent's `model` is a hardline registry name; unset, `default_model`, then the registry's default. One call, no tool loop: `check` refuses a definition that declares tools. Reports tokens, no cost (`cost_usd` is `None`) |
+| `mock` | `matrix.v1.runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | Offline. Accepts every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports `cost_usd` 0.0. Records `calls`, each `(agent, task)` |
 
 Classes: `matrix.adapters._out.runtime.claude_sdk.ClaudeSdkRuntime`,
 `matrix.adapters._out.runtime.model.ModelAgentRuntime`,
@@ -916,7 +901,7 @@ saw. The conventions' names where they define one:
 | `gen_ai.client.inference.usage.input_tokens`, `..._output_tokens` | counter, `{token}` | `gen_ai.agent.name`, `gen_ai.provider.name`, `gen_ai.response.model`, `gen_ai.token.modality=unknown` (a session's total mixes whatever it exchanged) |
 
 and matrix's own where they define none: `matrix.component.duration` (histogram, s),
-`matrix.component.count`, `matrix.component.retries`, `matrix.agent.cost_usd` (USD),
+`matrix.component.count`, `matrix.component.retries`, `matrix.agent.cost_usd` (USD, as runtimes reported it),
 `matrix.events.dropped`, each by `matrix.component` and `matrix.status` where they apply;
 and the name given to each `ctx.measure`, of the measure's kind, with its scalar `attrs` and
 `matrix.component`.
@@ -1203,8 +1188,8 @@ tier; `UsageError` when there are none).
 | `config_view(tool="matrix", config=None, *, only=False)` | `ConfigView` (`matrix.v1.config`): `tool`, `sources`, the merged `matrix` section | `ConfigError` |
 | `check_config(tool="matrix", config=None, *, only=False)` | `CheckReport` (`matrix.v1.check`): `ok`, `runtimes`, `agents`, `observers` (a count), `components` in one valid order of work, `sources`, `warnings` | what `compose` and `wire` raise; `complete` is false when the config did not compose and has components to wire |
 | `list_agents(tool="matrix", config=None, *, only=False)` | `Agents` (`matrix.v1.agents`): each agent's name, runtime, runtime_type, model, tools, description; `warnings` | what `compose` raises |
-| `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `effects`, `agent`, `runtime`, `attempts`), `agents` and `runtimes` in use, `effects`, `spend` (`agent_calls_min`, `agent_calls_max`, `cost_usd_max`: 0.0 when nothing calls a model, every session's `max_budget_usd` times its attempts summed, or `ceiling_usd` when lower, and null while a runtime that may call a model bounds no session; `ceiling_usd`, `limits.spend_usd`; `note`, how the bound was reached or which runtime keeps it unknown, and for a runtime that reports no cost, that the record's `spend_usd` leaves its sessions out), `store` (`type`, `location` with `RUN_ID` for the id), `limits` (what differs from the defaults), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
-| `list_runs(tool="matrix", config=None, *, only=False)` | `Runs` (`matrix.v1.runs`): `store` (its type URL) and `runs`, oldest first, each `run_id`, `status` (`interrupted` for one whose writer is gone), `started`, `ended`, `location`, `spend_usd`. Builds only the store: runtimes and agents are not built | `ConfigError` when the store cannot be built, `StoreError` when it cannot be read |
+| `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `effects`, `agent`, `runtime`, `attempts`), `agents` and `runtimes` in use, `effects`, `agent_calls_min` (one per agent step) and `agent_calls_max` (one per attempt; null when a component that is not an agent step may call a model), `store` (`type`, `location` with `RUN_ID` for the id), `limits` (what differs from the defaults), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
+| `list_runs(tool="matrix", config=None, *, only=False)` | `Runs` (`matrix.v1.runs`): `store` (its type URL) and `runs`, oldest first, each `run_id`, `status` (`interrupted` for one whose writer is gone), `started`, `ended`, `location`. Builds only the store: runtimes and agents are not built | `ConfigError` when the store cannot be built, `StoreError` when it cannot be read |
 
 `registry` defaults to `default_registry()`.
 
@@ -1245,13 +1230,13 @@ The exit codes are the ones the capability tools agree on, one kind per code:
 | `not_found` | 4 | a name, type URL, file or run that is not there |
 | `transient` | 5 | unavailable, rate-limited or timed out: retry later, or give the component a retry policy |
 | `auth` | 6 | credentials missing or refused |
-| `run_failed` | 8 | the run ran and a component failed: it raised, broke what it declares, or was refused an agent session by the spend ceiling |
+| `run_failed` | 8 | the run ran and a component failed: it raised or broke what it declares |
 | `store` | 9 | the run's record could not be written or read: fix the store |
 | `interrupted` | 130 | interrupted (Ctrl-C, SIGTERM) before it finished: run it again |
 
 `EXIT_CODES` is this mapping, plus `ok` (0) for success; `EXIT_MEANINGS` says what each
-means and `EXIT_NEXT` what to do next. Three error kinds are finer than an exit: `contract`,
-`component` and `spend` exit as `run_failed` (`EXITS_AS`). `ErrorKind` is the literal type of the kinds.
+means and `EXIT_NEXT` what to do next. Two error kinds are finer than an exit: `contract` and
+`component` exit as `run_failed` (`EXITS_AS`). `ErrorKind` is the literal type of the kinds.
 
 | Class | Kind | Also | Raised when |
 |-------|------|------|-------------|
@@ -1263,9 +1248,8 @@ means and `EXIT_NEXT` what to do next. Three error kinds are finer than an exit:
 | `ContractError` | `contract` | | a row is of a kind its component does not provide, or fails its kind's schema; or a run input does |
 | `ComponentError` | `component` | | a component raised or passed its deadline; the original exception is the cause |
 | `StoreError` | `store` | | a row or a run could not be kept, a run id is taken, or a stored record contradicts itself |
-| `SpendError` | `spend` | | an agent session was not started: it could have taken the run past `limits.spend_usd`; `details` hold `agent`, `spent_usd`, `held_usd`, `ceiling_usd` and the runtime's `budget_usd` |
 | `AgentRuntimeError` | from `reason` | | an agent session failed |
-| `RunError` | `run_failed`, or the cause's | | a run failed; `run` is the partial `Run`, `component` the name of the first to fail, `cause_kind` its error's kind (`details["cause"]`), `construct` the partial Construct. `kind` is `run_failed` when the cause is `contract`, `component`, `spend` or `unknown`, and the cause's kind otherwise (`store`, `transient`, `auth`, `config`); `fix` is the cause's |
+| `RunError` | `run_failed`, or the cause's | | a run failed; `run` is the partial `Run`, `component` the name of the first to fail, `cause_kind` its error's kind (`details["cause"]`), `construct` the partial Construct. `kind` is `run_failed` when the cause is `contract`, `component` or `unknown`, and the cause's kind otherwise (`store`, `transient`, `auth`, `config`); `fix` is the cause's |
 
 `RunCancelled` is not a `MatrixError`: it is an `asyncio.CancelledError` (so asyncio and
 callers treat it as the cancellation it is) with one addition, `run`, the partial `Run`. Its
@@ -1307,9 +1291,9 @@ Data goes to stdout, diagnostics to stderr. Nothing prompts.
 | `matrix config [CONFIG]... [--sources]` | the merged `matrix` section and the files consulted (`matrix.v1.config`); with `--sources`, only the files (`matrix.v1.config-sources`) |
 | `matrix check [CONFIG]...` | composes runtimes and agents, wires the configured components, and reports what composed (`matrix.v1.check`) |
 | `matrix agents [CONFIG]...` | each agent's name, runtime, runtime type, model, tools and description (`matrix.v1.agents`) |
-| `matrix plan [CONFIG]...` | what a run would do and spend, every problem at once; runs nothing (`matrix.v1.plan`) |
+| `matrix plan [CONFIG]...` | what a run would do, with its agent calls, every problem at once; runs nothing (`matrix.v1.plan`) |
 | `matrix run [CONFIG]... [--input KIND=PATH]... [--run-id ID] [--from RUN_ID]` | runs the configured components; prints the run id, where it is recorded and, for a store that keeps files, each file of the record (`matrix.v1.run`, with `location`, `warnings` and the record's `tables`) |
-| `matrix runs [CONFIG]...` | the runs the configured store keeps, oldest first: id, status, start, what it spent (`$0.0123`, or `-` when no session reported a cost), location (`matrix.v1.runs`) |
+| `matrix runs [CONFIG]...` | the runs the configured store keeps, oldest first: id, status, start, location (`matrix.v1.runs`) |
 | `matrix --version` | `matrix, version X` |
 | `matrix --skill [-r NAME]` | the skill an agent reads (`matrix.skill()`), or one of its references (`config`, `agents`, `running`, `telemetry`, `loading`) |
 
@@ -1326,8 +1310,8 @@ that fails prints its
 OpenTelemetry SDK when the `OTEL_*` variables ask for export, and on a terminal shows
 progress on stderr. `matrix` with no command prints its help and exits 0.
 
-Plan before you run: `plan` is free and reports every problem at once; `run` may call models
-and spend.
+Plan before you run: `plan` calls nothing and reports every problem at once; `run` may call
+models.
 
 ```console
 $ matrix plan

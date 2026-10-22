@@ -9,8 +9,8 @@ the agent defined and the agent measured would differ, and nothing downstream wo
 
 An agent's ``model`` here is a name in the hardline registry (``matrix.models``, or
 hardline's own tiers), not an SDK alias; unset, ``default_model``, then the registry's
-default. hardline reports tokens, not dollars, so a run's spend ceiling counts nothing for
-these sessions; bound them with ``max_tokens``.
+default. hardline reports tokens, not dollars, so a response's ``cost_usd`` is None; bound a
+reply with ``max_tokens``.
 
 Type URL: ``matrix.v1.runtime.model``. Requires the ``models`` extra (hardline).
 """
@@ -33,8 +33,8 @@ if TYPE_CHECKING:
 class ModelAgentRuntimeConfig(BaseModel):
     """One model call through hardline. An agent's `model` on this runtime is a model name in
     the hardline registry (`models`, `matrix.models`, or hardline's own tiers); unset,
-    `default_model`, then the registry's default. Sessions report tokens, not cost, so
-    `matrix.limits.spend_usd` cannot count them: bound them with `max_tokens`."""
+    `default_model`, then the registry's default. Sessions report tokens, not cost: bound a
+    reply with `max_tokens`."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

@@ -4,6 +4,28 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ## Unreleased
 
+### Removed (breaking)
+
+- **Spend.** matrix cannot measure what a run costs: it sees only what each runtime reports,
+  and the `model` runtime reports tokens, not dollars. So the spend ceiling and everything
+  built on it are gone, and nothing replaces them:
+  - `limits.spend_usd`: a config that still sets it is refused at that key, not run uncapped;
+  - the `spend` error kind and `SpendError` (`EXITS_AS` and `RunError.kind` no longer name it;
+    spend had no exit code of its own);
+  - the plan's `spend` record (`cost_usd_max`, `ceiling_usd`, `note`);
+  - `spend_usd` on `Run`, in `run.json`, on `RunSummary` and in `matrix runs`;
+  - the optional `budget_usd` runtime member, and the `claude-sdk` runtime's property of that
+    name.
+- What stays: each session's tokens and the cost a runtime reported (`AgentResponse.cost_usd`,
+  the `matrix.agent.cost_usd` metric), as facts of that session. The `claude-sdk` runtime's
+  `max_budget_usd` stays as the SDK's own option, passed as it stands; its stop is still
+  recorded (`stop: max_budget_usd`).
+
+### Changed (breaking)
+
+- The agent-call counts move from the plan's `spend` record to the plan itself:
+  `agent_calls_min`, `agent_calls_max`. `matrix plan` prints them as `agent calls: N to M`.
+
 ### Security
 
 - **No content leaves through OpenTelemetry by default.** The `otel` observer exported every

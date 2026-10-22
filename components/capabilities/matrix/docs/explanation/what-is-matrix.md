@@ -257,12 +257,12 @@ set the value it is about.
 
 The config also declares a run: its components and inputs, where it is recorded (`store`,
 chosen from the registry like a runtime) and the limits it keeps. `matrix plan` composes and
-wires it and says what a run would do and spend, calling nothing; `matrix run` runs it, and
-`matrix runs` lists what was recorded and what each run spent. What a run may spend is bounded twice: a `claude-sdk`
-runtime's `max_budget_usd` ends one session at its limit, and `limits.spend_usd` stops the
-run starting any agent session that could take it past the ceiling, counting what each
-session reports. The executor holds that ceiling, not the components: an agent a component
-calls inside a run asks the run before its session starts.
+wires it and says what a run would do, calling nothing; `matrix run` runs it, and
+`matrix runs` lists what was recorded. matrix keeps no spending ceiling and states no cost
+for a run: what a run costs depends on providers matrix does not see, so it cannot measure
+it. What a session reports is kept as a fact of that session (its tokens, and `cost_usd`
+when the runtime reports one), and a runtime may bound its own sessions with its own option
+(the `claude-sdk` runtime passes the SDK's `max_budget_usd`).
 
 ## One loader
 

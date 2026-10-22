@@ -126,7 +126,7 @@ The stores:
 
 ```
 <root>/<run_id>/run.json                {"schema": "matrix.v1.run", run_id, status, started,
-                                         ended, components, failures, releases, spend_usd?,
+                                         ended, components, failures, releases,
                                          "tables": {kind: {"file", "rows"}}}
 <root>/<run_id>/<kind>.jsonl            one row per line: the typed record itself
 <root>/<run_id>/matrix.v1.ledger.jsonl  one line per row landed: seq, kind, row, component, time
