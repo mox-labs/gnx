@@ -8,6 +8,12 @@ caller can tell a stand-in's answers from a model's without reading anything els
 Everything, built-ins included, arrives as an :class:`Extension`. One that fails to load or
 register is **quarantined**: recorded in :attr:`Registry.failures`, and the rest load.
 
+**A point may have a port.** What is registered at ``agent-runtime`` must keep the
+:class:`AgentRuntime` port, and at ``model-runtime`` the :class:`ModelRuntime` port: a class
+is held to it when it is registered, and whatever an entry builds when it is built, so a
+runtime that lacks a member is a ``ConfigError`` naming it, not an ``AttributeError`` the
+first time a caller reaches for it.
+
 **Namespaces have owners.** A distribution owns the type URLs whose root segment is its own
 name (``matrix`` owns ``matrix.*``). When two extensions register one type URL, the owner
 keeps it whichever loads first, and the other is quarantined whole. Between two non-owners
@@ -16,6 +22,7 @@ the first in name order keeps it and the second is refused, naming both.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -23,6 +30,8 @@ from pydantic import BaseModel, ValidationError
 
 from matrix.domain.errors import ConfigError, NotFoundError, invalid
 from matrix.domain.ids import parse_type_url
+from matrix.domain.ports._out.agent_runtime import AgentRuntime
+from matrix.domain.ports._out.model_runtime import ModelRuntime
 from matrix.domain.problems import from_validation_error, problem
 
 if TYPE_CHECKING:
@@ -39,6 +48,29 @@ MATRIX_POINTS = (
     "observer",
     "store",
 )
+
+#: The port each of matrix's points holds what is registered there to.
+MATRIX_PORTS: dict[str, type] = {"agent-runtime": AgentRuntime, "model-runtime": ModelRuntime}
+
+
+def _breaks(found: Any, port: type) -> list[str]:
+    """What ``found`` (a class, or what one built) lacks of ``port``: each member that is
+    missing or not callable, and each the port awaits that is not a coroutine function."""
+    lacking = []
+    for name in sorted(getattr(port, "__protocol_attrs__", ())):
+        member = getattr(found, name, None)
+        if not callable(member):
+            lacking.append(f"no {name}")
+        elif inspect.iscoroutinefunction(getattr(port, name)) and not (
+            inspect.iscoroutinefunction(member)
+        ):
+            lacking.append(f"{name} is not async")
+    return lacking
+
+
+def _port_fix(port: type) -> str:
+    members = ", ".join(sorted(getattr(port, "__protocol_attrs__", ())))
+    return f"implement {members} as the {port.__name__} port declares them"
 
 
 @dataclass(frozen=True)
@@ -109,15 +141,20 @@ class Extension:
 @dataclass
 class Registry:
     points: set[str] = field(default_factory=lambda: set(MATRIX_POINTS))
+    #: The port a point holds its entries to, for the points that have one.
+    ports: dict[str, type] = field(default_factory=lambda: dict(MATRIX_PORTS))
     failures: list[Failure] = field(default_factory=list)
     _entries: dict[tuple[str, str], Entry] = field(default_factory=dict)
     _origin: str = "(direct)"
     #: The entry point name of each distribution loaded so far.
     _extensions: dict[str, str] = field(default_factory=dict)
 
-    def add_point(self, point: str) -> Registry:
-        """Declare an extension point owned by the caller."""
+    def add_point(self, point: str, *, port: type | None = None) -> Registry:
+        """Declare an extension point owned by the caller; with ``port``, a Protocol that
+        whatever is registered there must keep."""
         self.points.add(point)
+        if port is not None:
+            self.ports[point] = port
         return self
 
     def register(
@@ -135,8 +172,8 @@ class Registry:
     ) -> Registry:
         """Register ``build(config, **needs)`` (or ``build(**needs)`` when untyped).
 
-        Raises ConfigError for an unknown point, a type URL without a version segment, or a
-        duplicate.
+        Raises ConfigError for an unknown point, a type URL without a version segment, a
+        duplicate, or a class that does not keep its point's port.
         """
         if point not in self.points:
             raise _UnknownPointError(
@@ -144,6 +181,15 @@ class Registry:
                 fix="register at an existing point, or have its owner declare it",
             )
         parse_type_url(type_url, where=f"{point} registration")
+        port = self.ports.get(point)
+        if port is not None and isinstance(build, type):
+            lacking = _breaks(build, port)
+            if lacking:
+                raise ConfigError(
+                    f"{point} {type_url!r}: {build.__name__} does not keep the {port.__name__} "
+                    f"port: {', '.join(lacking)}",
+                    fix=_port_fix(port),
+                )
         key = (point, type_url)
         existing = self._entries.get(key)
         if existing is not None:
@@ -223,7 +269,8 @@ class Registry:
 
         ``where`` is the key path of the config in its document (``matrix.agent_runtimes.fast``):
         every problem's path starts with it. Raises NotFoundError for a type URL nothing
-        registered, and ConfigError listing every problem with the config.
+        registered, and ConfigError listing every problem with the config, or when what was
+        built does not keep its point's port.
         """
         entry = self.entry(point, type_url)
         available = dict(needs or {})
@@ -249,7 +296,7 @@ class Registry:
                         for key in sorted(config)
                     ],
                 )
-            return entry.build(**given)
+            return self._kept(entry, entry.build(**given), where)
         try:
             validated = entry.config.model_validate(dict(config or {}))
         except ValidationError as e:
@@ -258,7 +305,19 @@ class Registry:
                 from_validation_error(e, prefix=where),
                 fix=f"see `matrix describe {type_url}` for its config schema",
             ) from None
-        return entry.build(validated, **given)
+        return self._kept(entry, entry.build(validated, **given), where)
+
+    def _kept(self, entry: Entry, built: Any, where: str) -> Any:
+        """``built``, when it keeps the port of ``entry``'s point; ConfigError when not."""
+        port = self.ports.get(entry.point)
+        lacking = [] if port is None else _breaks(built, port)
+        if port is not None and lacking:
+            raise ConfigError(
+                f"{where or entry.type_url}: {entry.type_url} built a {type(built).__name__}, "
+                f"which is not a {port.__name__}: {', '.join(lacking)}",
+                fix=f"{_port_fix(port)}; {entry.type_url} is registered by {entry.origin}",
+            )
+        return built
 
     def payload_schemas(self) -> dict[str, type[BaseModel]]:
         return {
@@ -297,6 +356,7 @@ class Registry:
     def _load(self, extension: Extension) -> Exception | None:
         before = dict(self._entries)
         points = set(self.points)
+        ports = dict(self.ports)
         failures = len(self.failures)
         self._origin = extension.origin
         self._extensions[extension.origin] = extension.name
@@ -305,6 +365,7 @@ class Registry:
         except Exception as e:
             self._entries = before  # all-or-nothing
             self.points = points
+            self.ports = ports
             del self.failures[failures:]
             return e
         finally:

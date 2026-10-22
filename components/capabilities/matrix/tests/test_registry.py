@@ -244,3 +244,80 @@ def test_a_type_url_without_a_version_segment_is_refused_at_registration() -> No
         Registry().register("component", "acme.scorer", lambda: None)
     assert "version segment" in raised.value.message
     assert raised.value.details["value"] == "acme.scorer"
+
+
+# --- a runtime is held to its port ---------------------------------------------------------
+
+
+class _NoRun:
+    """A third party's agent runtime that forgot ``run``."""
+
+    def check(self, definition: object) -> None: ...
+
+
+class _SyncCall:
+    """A third party's model runtime whose ``call`` is not awaitable."""
+
+    def check(self, model: str | None) -> None: ...
+
+    def call(self, request: object) -> object: ...
+
+
+@pytest.mark.parametrize(
+    ("point", "cls", "said"),
+    [("agent-runtime", _NoRun, "run"), ("model-runtime", _SyncCall, "call")],
+)
+def test_a_runtime_class_that_breaks_its_port_is_refused_when_registered(
+    point: str, cls: type, said: str
+) -> None:
+    """Regression (mx-tests 3): one with ``check`` but no ``run`` composed cleanly and failed
+    only when an agent ran on it."""
+    with pytest.raises(ConfigError, match=said) as e:
+        Registry().register(point, f"acme.v1.{point}.x", cls)
+    assert e.value.fix
+
+
+@pytest.mark.parametrize("point", ["agent-runtime", "model-runtime"])
+def test_a_runtime_built_as_something_else_is_a_config_error_not_an_attribute_error(
+    point: str,
+) -> None:
+    """Regression (mx-tests 3): a factory that built ``object()`` made compose raise a bare
+    ``AttributeError`` with no kind, which the command reported as a defect (exit 1)."""
+    registry = Registry().register(point, f"acme.v1.{point}.x", lambda: object())
+    with pytest.raises(ConfigError, match="not a") as e:
+        registry.create(point, f"acme.v1.{point}.x", where="matrix.x")
+    assert e.value.exit_code == 3 and "matrix.x" in str(e.value)
+
+
+def test_a_broken_runtime_fails_composition_at_its_key() -> None:
+    from matrix import MatrixConfig, compose
+
+    registry = default_registry(discover=False)
+    registry.register("agent-runtime", "acme.v1.agent-runtime.broken", lambda: object())
+    config = {
+        "agent_runtimes": {"b": {"type": "acme.v1.agent-runtime.broken"}},
+        "agents": {"a": {"runtime": "b", "system_prompt": "x"}},
+    }
+    with pytest.raises(ConfigError) as e:
+        compose(MatrixConfig.model_validate(config), registry=registry)
+    assert [p.path for p in e.value.problems] == ["matrix.agent_runtimes.b"]
+    assert e.value.complete is False  # the agent on it was not checked
+
+
+def test_every_built_in_runtime_keeps_its_port() -> None:
+    """Built through the registry, which holds each to its port as it builds it."""
+    pytest.importorskip("hardline")
+    pytest.importorskip("claude_agent_sdk")
+    from matrix import AgentRuntime, ModelRuntime
+
+    registry = default_registry(discover=False)
+    ports = {"agent-runtime": AgentRuntime, "model-runtime": ModelRuntime}
+    needs = {
+        "cwd": None,
+        "models": {"models": {"q": {"backend": "mock", "model": "q", "family": "q"}}},
+    }
+    for point, port in ports.items():
+        entries = registry.entries(point)
+        assert entries
+        for entry in entries:
+            assert isinstance(registry.create(point, entry.type_url, needs=needs), port)

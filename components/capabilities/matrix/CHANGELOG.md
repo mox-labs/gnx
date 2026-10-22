@@ -83,6 +83,13 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **A runtime that does not keep its port is refused, by name.** A third party's runtime that
+  built something else made composition raise a bare `AttributeError` (the `unknown` defect,
+  exit 1), and one with `check` but no `run` composed and failed only when an agent ran on it.
+  The registry now holds whatever is registered at `agent-runtime` or `model-runtime` to that
+  point's port: a class when it is registered, and what an entry builds when it is built.
+  Either is a `config` error naming each member that is missing or not async. A package may
+  give its own point a port: `add_point(point, port=...)`.
 - **An unknown model is refused before anything runs.** It got through composition, `matrix
   check` and `matrix plan`, then failed at run time as `component` (exit 8). A model step now
   checks its model with its runtime when it is built: `config` (exit 3), naming the models

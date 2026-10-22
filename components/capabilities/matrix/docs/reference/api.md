@@ -785,17 +785,20 @@ called with the registry, and anything it raises, importing included, quarantine
 
 | Method | Signature | Behaviour |
 |--------|-----------|-----------|
-| `add_point` | `(point) -> Registry` | Declares an extension point |
-| `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta", stand_in=False) -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
+| `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point; with `port`, a Protocol whatever is registered there must keep |
+| `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta", stand_in=False) -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
 | `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the first line of the model's docstring |
 | `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
 | `entries` | `(point=None) -> list[Entry]` | Sorted by point, then type URL |
 | `__contains__` | `((point, type_url)) -> bool` | |
-| `create` | `(point, type_url, config=None, *, needs=None, where="<config>") -> Any` | Validates `config` and builds the entry with the needs it declared. `NotFoundError` for an unregistered type URL; `ConfigError` for a missing need, for config given to an untyped entry, or for invalid config (each problem as a key path under `where`) |
+| `create` | `(point, type_url, config=None, *, needs=None, where="<config>") -> Any` | Validates `config` and builds the entry with the needs it declared. `NotFoundError` for an unregistered type URL; `ConfigError` for a missing need, for config given to an untyped entry, for invalid config (each problem as a key path under `where`), or when what it built does not keep its point's port |
 | `payload_schemas` | `() -> dict[str, type[BaseModel]]` | Every `payload-type` entry that is a pydantic model |
 | `load` | `(extensions: Iterable[Extension]) -> Registry` | Loads the extensions, in name order (see below) |
 
-Attributes: `points: set[str]`, `failures: list[Failure]`.
+Attributes: `points: set[str]`, `ports: dict[str, type]` (point to the Protocol its entries
+keep: `agent-runtime` to `AgentRuntime`, `model-runtime` to `ModelRuntime`),
+`failures: list[Failure]`. A port is held by its members: each must be there and callable,
+and one the port awaits must be a coroutine function.
 
 `load_extensions(registry, group="matrix.extensions") -> Registry` loads every entry point in
 the group into `registry`: each entry point's value is `register(registry) -> None`.

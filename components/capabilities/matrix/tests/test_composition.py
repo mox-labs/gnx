@@ -12,7 +12,6 @@ import pytest
 
 from matrix import (
     AgentDefinition,
-    AgentRuntime,
     BoundAgent,
     ConfigError,
     MatrixConfig,
@@ -21,7 +20,7 @@ from matrix import (
     compose,
     default_registry,
 )
-from matrix.adapters._out.runtime.mock import MockAgentRuntime, MockModelRuntime
+from matrix.adapters._out.runtime.mock import MockAgentRuntime
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -371,19 +370,6 @@ def test_extension_runtime_registers_by_entry_point(monkeypatch: pytest.MonkeyPa
     assert isinstance(container.agent_runtime("s"), MockAgentRuntime)
     entry = container.registry.entry("agent-runtime", "acme.v1.agent-runtime.strands")
     assert entry.origin == "acme-strands"
-
-
-def test_every_builtin_runtime_satisfies_the_port() -> None:
-    from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime
-    from matrix.adapters._out.runtime.model import HardlineModelRuntime
-
-    for cls in (ClaudeSdkRuntime, MockAgentRuntime):
-        assert callable(getattr(cls, "run", None)), cls
-        assert callable(getattr(cls, "check", None)), cls  # check is required by the port
-    for cls in (HardlineModelRuntime, MockModelRuntime):
-        assert callable(getattr(cls, "call", None)), cls
-        assert callable(getattr(cls, "check", None)), cls
-    assert isinstance(MockAgentRuntime(), AgentRuntime)
 
 
 def test_bind_puts_a_held_definition_on_a_configured_runtime_with_the_observers(
