@@ -27,7 +27,6 @@ from hardline.adapters._in.cli import error_payload
 from hardline.adapters._out.anthropic_native import AnthropicBackend
 from hardline.adapters._out.mock import MockBackend
 from hardline.adapters._out.openai_compat import OpenAICompatBackend
-from hardline.composition import discover_backends
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -104,14 +103,8 @@ def _message(*blocks: dict[str, Any], **extra: Any) -> dict[str, Any]:
     }
 
 
-# --- the contract test: every installed backend, same assertions ---------------------
-
-
-@pytest.mark.parametrize("name", sorted(discover_backends()))
-def test_every_backend_satisfies_the_port(name: str) -> None:
-    backend = discover_backends()[name]
-    assert isinstance(backend, ModelBackend)
-    assert isinstance(backend.structured_modes, frozenset) and "prompt" in backend.structured_modes
+# The contract every installed backend meets is test_hardline_conformance.py's, run through the
+# helper hardline ships (W8.3).
 
 
 async def test_mock_returns_the_declared_shape() -> None:

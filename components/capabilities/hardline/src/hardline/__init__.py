@@ -16,6 +16,7 @@ Not an agent runtime: no tool loop, no permissions, no trajectory. Those live on
 from importlib.metadata import PackageNotFoundError, version
 
 from hardline.composition import build_runtime, discover_backends, discover_sources, load_registry
+from hardline.conformance import answer_problems, backend_problems
 from hardline.domain.errors import (
     RETRYABLE,
     BackendError,
@@ -97,6 +98,8 @@ __all__ = [
     "UnknownModelError",
     "Usage",
     "__version__",
+    "answer_problems",
+    "backend_problems",
     "build_runtime",
     "discover_backends",
     "discover_sources",

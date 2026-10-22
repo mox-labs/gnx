@@ -63,6 +63,17 @@
       }
     },
     {
+      "name": "conformance",
+      "files": ["src/hardline/conformance.py"],
+      "allow": ["__future__", "inspect", "typing", "hardline.domain.ports", "hardline.domain.types"],
+      "forbid": ["os", "logging", "opentelemetry", "yaml", "httpx", "httpx2"],
+      "why": {
+        "inspect": "whether complete and aclose are coroutine functions",
+        "hardline.domain.ports, hardline.domain.types": "the port it checks against, and the shapes a call must return",
+        "not an adapter or the root": "it checks a backend it is handed, and names none"
+      }
+    },
+    {
       "name": "driving",
       "files": ["src/hardline/adapters/_in/**/*.py", "src/hardline/skill.py"],
       "allow": ["*", "hardline"],

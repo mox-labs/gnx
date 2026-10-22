@@ -278,8 +278,9 @@ and two of hardline's: `shared_fate` (a warning) and `secret_unresolved`.
 
 ## Extend
 
-A backend is two members — a `structured_modes` frozenset and an async `complete(spec,
-request, api_key) -> RawCompletion` — and one entry point. Three more are optional:
+A backend is two members — a `structured_modes` frozenset that holds `prompt`, and an async
+`complete(spec, request, api_key) -> RawCompletion` — and one entry point. Three more are
+optional:
 
 - `check(spec) -> Sequence[str]`: what is wrong with a row for this backend, each problem
   starting with its key (`options.region: ...`). The runtime calls it for every row when it is
@@ -289,7 +290,32 @@ request, api_key) -> RawCompletion` — and one entry point. Three more are opti
   row.
 
 `RawCompletion`'s `finish_reason`, `native_finish_reason` and `refusal` default to `None`, so a
-backend that does not set them still satisfies the port; its replies are then never `answered`.
+backend that does not set them still satisfies the port's types; its replies are then never
+`answered`.
+
+hardline ships the port's requirements as a check, to run in a backend's own tests against the
+installed hardline:
+
+```python
+from hardline import ModelSpec, answer_problems, backend_problems
+
+
+def test_conforms() -> None:
+    assert backend_problems(BedrockBackend()) == []
+
+
+async def test_answers() -> None:
+    spec = ModelSpec(
+        name="t", backend="bedrock", model="m", family="x", base_url="http://127.0.0.1:9"
+    )
+    assert await answer_problems(BedrockBackend(transport=...), spec) == []
+```
+
+`backend_problems` reads the members: `structured_modes` a frozenset of known modes with
+`prompt`, `complete` async, and `check`, `aclose` and `default_base_url` well formed when
+present. `answer_problems` makes one call for a row the backend can serve, and requires its
+`check` to accept the row and `complete` to return a `RawCompletion` with a `finish_reason`.
+Each returns what is wrong, empty when nothing is.
 
 ```toml
 [project.entry-points."hardline.backends"]
@@ -299,8 +325,7 @@ bedrock = "my_pkg.bedrock:BedrockBackend"
 The entry-point name is what a registry row puts in `backend:`. hardline's own backends are
 entry points too. Each is loaded on its own: one that cannot be loaded, is not a backend, or
 shares its name with another fails the rows that name it, with a `ConfigError` saying why, and
-no other row. `tests/test_hardline_backends.py::test_every_backend_satisfies_the_port` runs
-over every installed backend.
+no other row. hardline's own tests hold every installed backend to `backend_problems`.
 
 ## Built-in backends
 

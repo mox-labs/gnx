@@ -25,6 +25,8 @@
 
 - **OpenTelemetry, on the GenAI semantic conventions.** `build_runtime` wraps every backend so that each backend call is one `chat {model}` span (CLIENT, under the caller's span, so a retry or a fallback is a sibling) and records `gen_ai.client.inference.duration` and the `gen_ai.client.inference.usage.*` token counters; its default observer counts `hardline.retries` and `hardline.fallbacks`. hardline owns the inference counters for the calls it makes. No content is recorded, and there is no option to record it. The API only: nothing is recorded until the application installs an SDK. `build_runtime` takes `tracer_provider` and `meter_provider`. hardline now depends on `opentelemetry-api`.
 
+- **A backend's author can check it against the installed hardline**: `backend_problems(backend)` reads the port's members (`structured_modes` a frozenset of known modes holding `prompt`, an async `complete`, and the optional `check`, `aclose` and `default_base_url` well formed), and `await answer_problems(backend, spec)` makes one call and requires a `RawCompletion` with a `finish_reason`. The requirements were a test in hardline's repository, which no wheel carries, and it checked only that the members existed. The port's docstring now states them.
+
 ### Changed (breaking)
 
 - **No provider SDK.** Both wire protocols are spoken directly over httpx2: `openai-compat` (chat completions) and `anthropic` (the Messages API). hardline depends on pydantic, pyyaml and httpx2 only; the `openai` and `anthropic` packages are no longer installed with it.
