@@ -134,6 +134,19 @@ class TestTheNumbers:
             searched = intervals._bisect(lambda alpha, s=span, b=bound: s(alpha)[0] > b)
             assert span.above(bound) == pytest.approx(searched, rel=1e-6)
 
+    @pytest.mark.parametrize("units", [100, 10_000])
+    def test_a_pooled_rate_level_is_the_search_level_at_any_number_of_units(
+        self, units: int
+    ) -> None:
+        """Regression: with thousands of units per trial the score test over every unit
+        gives a level of exactly 0, and the clustered level stopped there, skipping the t
+        test at the effective sample size. A count then held ``< 0.2`` while its own 95%
+        interval contained 0.2."""
+        span = intervals.clustered_rate([0, 0, 0, 0, units * 4 // 10], [units] * 5)
+        searched = intervals._bisect(lambda alpha: span(alpha)[1] < 0.2)
+        assert span.below(0.2) == pytest.approx(searched, rel=1e-6)
+        assert span.below(0.2) > 0.05 and span(0.05)[1] > 0.2
+
     def test_the_search_stops_at_its_floor(self) -> None:
         assert intervals._bisect(lambda alpha: False) == math.inf
         assert intervals._bisect(lambda alpha: True) == intervals.LEVEL_FLOOR
@@ -580,6 +593,30 @@ class TestCountsMediansAndTheCheck:
             {"buffered": (0, 1000), "streaming": (50, 1000)}, metric="error_rate"
         ).analyze()
         assert found.findings[0].decisions[1].outcome == "fails" and found.outcome == "fails"
+
+    def test_an_error_rate_bursting_in_one_trial_of_many_requests_does_not_hold(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: nine clean trials and one with 4000 errors in 10000 requests held a
+        bound of 20%, decided at 0, while the printed interval reached above 20%. The
+        trials, not the requests, are what vary here, and they do not rule 20% out."""
+        tables = self._guarded(
+            compare_data,
+            vocabulary,
+            {"metric": "error_rate", "threshold": {"op": "<", "value": 0.2}},
+        )
+        tables.measure({"buffered": (0, 10_000), "streaming": (0, 10_000)}, metric="error_rate")
+        burst = max(trial.seq for trial in tables.trials if trial.subject == "streaming")
+        tables.readings = [
+            reading.model_copy(update={"statistics": {"events": 4000.0, "units": 10_000.0}})
+            if reading.seq == burst and reading.metric == "error_rate"
+            else reading
+            for reading in tables.readings
+        ]
+        guardrail = tables.analyze().findings[0].decisions[1]
+        assert guardrail.interval is not None and guardrail.interval.high > 0.2
+        assert guardrail.outcome == "inconclusive"
+        assert guardrail.decided_at is not None and guardrail.decided_at > 0.05
 
     def test_a_rate_compared_in_points(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary

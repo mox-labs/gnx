@@ -386,7 +386,11 @@ def clustered_rate(events: Sequence[int], units: Sequence[int]) -> Span:
 
     def level(bound: float, *, low: bool) -> float:
         found = _score_level(rate, total, bound, None, low=low)
-        if effective is None or math.isinf(effective) or not math.isfinite(found) or found == 0:
+        # Over thousands of units the score test's level is often exactly 0; the t test at
+        # the effective size still applies then. Only a bound outside (0, 1) skips it.
+        if effective is None or math.isinf(effective) or not math.isfinite(found):
+            return found
+        if not 0 < bound < 1:
             return found
         return max(found, _score_level(rate, effective, bound, df, low=low))
 

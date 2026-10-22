@@ -29,6 +29,14 @@
   `ix.run.halted` event and the trials component's `provides` entry are gone. A run is
   `interrupted` (exit 12) only when it is stopped.
 
+### Fixed
+
+- **A count's threshold decision at many units per trial.** Over thousands of units the
+  score test's level is exactly 0, and the decision stopped there instead of also reading
+  the t test at Korn and Graubard's effective sample size. A count could then hold `< 0.2`
+  while its own printed 95% interval contained 0.2. The level is now the larger of the two
+  whenever the bound lies inside (0, 1), as the interval is.
+
 ### Kept
 
 - What a runtime reports a session cost stays a fact about the session: `cost_usd` in its
