@@ -351,7 +351,8 @@ SHAPE_MARK = "# The shape of the file, not a file to validate."
 VALUE_FORMS: dict[str, tuple[str, tuple[str, ...]]] = {
     "duration": ("a number and a unit (ms, s, m, h), or a bare number of seconds",
                  ("500ms", "60s", "2m", "1h", "90")),
-    "rate": ("arrivals per second or per minute, or a bare number per second; at least one",
+    "rate": ("a whole number of arrivals per second or per minute, or a bare number per "
+             "second; at least one (2.5/s is 150/m)",
              ("80/s", "600/m", "20")),
     "margin": ("relative to the control, in percentage points, or a bare number in the "
                "metric's unit", ("5%", "10pp", "0.5")),

@@ -299,6 +299,19 @@ class TestFileProblems:
         assert {p.kind for p in problems} == {"invalid_value"}
         assert all(p.fix and "correct the value" not in p.fix for p in problems)
 
+    @pytest.mark.parametrize("levels", [[1, "1"], [True, "True"], [0.5, "0.5"]])
+    def test_levels_that_name_one_cell_are_one_level_repeated(
+        self, compare_data: dict[str, Any], levels: list[Any]
+    ) -> None:
+        """Regression: levels were told apart by ``repr``, and cells by ``str``, so ``1``
+        and ``"1"`` were accepted and their blocks merged into one cell, keeping one trial
+        of each block silently."""
+        experiment, problems = parse({**compare_data, "factors": {"size": levels}})
+        assert experiment is None
+        (problem,) = problems
+        assert (problem.path, problem.kind) == ("factors", "invalid_value")
+        assert "repeats a level" in problem.message
+
     def test_subjects_written_as_a_list(self, compare_data: dict[str, Any]) -> None:
         """A likely slip, answered with the shape that fixes it."""
         compare_data["subjects"] = [{"name": "buffered", "kind": "process"}]

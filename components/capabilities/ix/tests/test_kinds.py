@@ -20,7 +20,16 @@ from ix.adapters._out.matrix_documents import KIND_GROUP, KindFiles
 from ix.composition import type_url_problem
 from ix.domain.design import select_sensors
 from ix.domain.experiment import Experiment, probe_set
-from ix.domain.kind import EFFECTS, EffectName, Kind, Kinds, check_options, kinds, seconds
+from ix.domain.kind import (
+    EFFECTS,
+    EffectName,
+    Kind,
+    Kinds,
+    arrivals,
+    check_options,
+    kinds,
+    seconds,
+)
 from ix.domain.schema import DeclarationFile
 from ix.domain.validation import check, parse
 
@@ -236,6 +245,20 @@ class TestOptions:
         assert problem.got == value and problem.fix
         if load.options[option].allowed:
             assert problem.allowed == load.options[option].allowed
+
+    @pytest.mark.parametrize("value", ["2.5/s", "0.6/s", "1.5"])
+    def test_a_rate_of_part_arrivals_is_refused_not_rounded(
+        self, value: str, builtin_kinds: Kinds
+    ) -> None:
+        """Regression: ``2.5/s`` ran as 2/s and ``0.6/s`` as 1/s, with no notice, so the
+        stimulus differed from what the author registered."""
+        load = builtin_kinds.get("probe", "http-load")
+        assert load is not None
+        options = {"target": "http://x", "load_model": "open", "rate": value, "duration": "60s"}
+        (problem,) = check_options(load, options, "probes.0")
+        assert (problem.path, problem.kind) == ("probes.0.rate", "option_invalid")
+        assert "150/m" in problem.fix
+        assert arrivals("150/m") == (150, "m") and arrivals("3.0/s") == (3, "s")
 
     def test_a_placeholder_is_typed_when_it_is_filled_not_before(
         self, builtin_kinds: Kinds

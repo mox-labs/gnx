@@ -77,6 +77,13 @@
   `ValueError` from every validate and plan of every experiment that named the genre. Such
   a genre file is now refused when it loads (`genre_invalid`); a literal brace is written
   doubled.
+- **Factor levels that read the same in a cell are one level.** Levels were told apart by
+  `repr` and cells by `str`, so `1` and `"1"` were accepted and their blocks merged into
+  one cell, keeping one trial of each block silently. Such levels are refused
+  (`invalid_value`).
+- **A rate of part arrivals is refused, not rounded.** `2.5/s` ran as 2/s and `0.6/s` as
+  1/s, with no notice. A `rate` is a whole number of arrivals per second or per minute
+  (`option_invalid`, whose fix says `2.5/s` is `150/m`).
 
 ### Kept
 

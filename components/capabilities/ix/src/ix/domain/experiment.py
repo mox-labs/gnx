@@ -396,8 +396,12 @@ class Experiment(Record):
         for name, levels in factors.items():
             if not levels:
                 raise ValueError(f"factor {name!r} has no levels; give at least one")
-            if len(set(map(repr, levels))) != len(levels):
-                raise ValueError(f"factor {name!r} repeats a level")
+            # Told apart as a cell names them (cell_key), so 1 and "1" are one level.
+            if len(set(map(str, levels))) != len(levels):
+                raise ValueError(
+                    f"factor {name!r} repeats a level: levels that read the same in a cell "
+                    "(1 and '1') are one"
+                )
         return factors
 
     @field_validator("metrics")
