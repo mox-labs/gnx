@@ -27,6 +27,7 @@ from matrix.adapters._out.stores.jsonl import (
     JsonlStoreConfig,
     MemoryConstructStore,
 )
+from matrix.composition import telemetry
 from matrix.domain.agent import AgentResponse
 from matrix.domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
 from matrix.domain.component import LEDGER
@@ -78,7 +79,7 @@ def _claude_sdk(config: ClaudeSdkRuntimeConfig, *, cwd: str | None = None) -> Cl
 
     if config.cwd is None and cwd is not None:
         config = config.model_copy(update={"cwd": cwd})
-    return ClaudeSdkRuntime(config)
+    return ClaudeSdkRuntime(config, trace_environment=telemetry.trace_environment)
 
 
 def _hardline(

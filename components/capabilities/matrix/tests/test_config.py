@@ -195,3 +195,22 @@ class TestLoadConfig:
         by_path = {p.path: p for p in e.value.problems}
         assert by_path["matrix.limits.retry.attempts"].kind == "invalid_value"
         assert "rate_limited" in by_path["matrix.limits.retry.errors.0"].allowed
+
+
+def test_security_names_every_tier_read_from_where_a_command_runs(tmp_path, monkeypatch):
+    """The working directory's config files are an ambient route to a capability grant, and
+    SECURITY.md says which (mx-src F31): every file read from the directory a command runs
+    in, and every variable that adds one, is named there."""
+    from pathlib import Path
+
+    from matrix.composition.config import discover_sources
+
+    monkeypatch.setenv("MATRIX_CONFIG", str(tmp_path / "shared.yaml"))
+    (tmp_path / "shared.yaml").write_text("{}")
+    security = (Path(__file__).parents[1] / "SECURITY.md").read_text()
+    for path in discover_sources("acme", project_root=tmp_path):
+        if path.parent == tmp_path and path.name != "shared.yaml":
+            name = path.name.replace("acme", "<tool>")
+            assert f"`./{name}`" in security, name
+    assert "`$MATRIX_CONFIG`" in security and "`$<TOOL>_CONFIG`" in security
+    assert "matrix config --sources" in security

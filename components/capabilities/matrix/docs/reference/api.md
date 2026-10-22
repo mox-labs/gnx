@@ -168,7 +168,8 @@ matrix.v1.agent-runtime.claude-sdk     ix.v1.sensor.activation     matrix.v1.age
 - `/` is not part of the grammar.
 - One of slick's component-kind names (`capability`, `skill`, `flow`, `agent`) is never a
   whole segment.
-- `slick.*` is reserved; `type_url` refuses to mint into it.
+- `slick.*` is reserved: `type_url` refuses to mint into it, and `check_type_url` (so the
+  registry) refuses it.
 - A URL matrix mints carries one version segment (`v1`, `v1alpha1`, `v2beta1`) after at least
   one namespace segment and before the resource.
 
@@ -179,7 +180,7 @@ what they are given to the grammar and to the version segment: a kind or an entr
 | Name | Signature | Behaviour |
 |------|-----------|-----------|
 | `is_type_url` | `(url: str) -> bool` | True if `url` is valid under the grammar |
-| `check_type_url` | `(url: str, *, where: str = "") -> str` | Returns `url`, or raises `ConfigError` saying why it is invalid, prefixed with `where` |
+| `check_type_url` | `(url: str, *, where: str = "") -> str` | Returns `url`, or raises `ConfigError` saying why it is invalid, prefixed with `where`. Refuses the `slick` namespace, and so does everything that checks a type URL (`parse_type_url`, the registry) |
 | `parse_type_url` | `(url: str, *, where: str = "") -> TypeUrl` | Splits at the version segment; `ConfigError` if there is none |
 | `type_url` | `(namespace: str, version: str \| int, resource: str) -> str` | Builds and validates; an `int` version becomes `v<N>`; refuses the `slick` namespace |
 | `TypeUrl` | `NamedTuple(namespace, version, resource)` | `str()` joins it back |
@@ -252,7 +253,9 @@ A name given to `emit`, `measure` or `span` is dotted lower-case with at least t
 and not under `matrix.*`; anything else is a `ContractError`. After the component has ended
 every one of these calls is ignored, and the first is reported as `matrix.component.late`. A
 `RunContext` built by hand (`RunContext("run", "name")`, for testing a component alone)
-accepts every call and does nothing with it.
+keeps nothing, but refuses what a run refuses: a bad event, measure or span name, a measure
+`kind` outside `gauge`, `counter`, `histogram`, or a value that is not a number, each a
+`ContractError`. So a component's unit test catches what the run would.
 
 ### `wire`
 
@@ -415,8 +418,11 @@ async Executor.run(
    kind `store`, whatever `on_failure` says. No row is appended to that record after the
    failed one, nor kept in the run's Construct: a later `ctx.provide` raises `StoreError`.
 8. When the run ends, every release registered with `ctx.defer` is called, last registered
-   first, each bounded by `cleanup_s`, whatever the run's status. A synchronous release runs
-   on the event loop and is not bounded. Then the store's record is finished. An error that
+   first, an async one bounded by `cleanup_s`, whatever the run's status. A synchronous
+   release runs on the event loop and is not bounded. A release that raises anything,
+   `SystemExit` included, is recorded as failed and the rest are still called; one that is
+   not an `Exception` is raised again once the record is finished. Then the store's record is
+   finished. An error that
    escapes the executor itself (a defect, or a store's error that is not a `StoreError`)
    reaches the caller after the same steps, and the record says `failed`, never
    `completed`.
@@ -438,7 +444,7 @@ running component by the same sequence, skips the rest, calls the releases, and 
 | `reused_from` | `str \| None` | the run whose rows this one reused |
 | `fingerprints` | `dict[str, str]` | name to a digest of what the component was built from, when the wiring knows it |
 | `releases` | `list[ReleaseOutcome]` | `component`, `status`, `error` per deferred release, in the order called; `status` is `released`, `failed` or `abandoned` |
-| `events_dropped` | `int` | events no observer received |
+| `events_dropped` | `int` | events no observer received; in `document()`, and so in `run.json`: the record is finished after the queue is drained, so it counts them all |
 | `rows(kind)` | `-> tuple[Any, ...]` | the rows of `kind` |
 | `document()` | `-> dict` | the run as a `matrix.v1.run` document, without its tables |
 
@@ -525,7 +531,7 @@ A fact the runtime did not report is `None`.
 | Name | Signature | Does |
 |------|-----------|------|
 | `digest` | `(value) -> str` | `sha256:<hex>` over canonical JSON (keys sorted, no whitespace, UTF-8): the session row's `sent` |
-| `agent_session` | `(response, *, agent, sent, runtime=None, drives=(), error=None) -> Session` | the session row of an agent session, from its `AgentResponse`. For a session that failed, `error` is the exception and `response` what it carried (`AgentRuntimeError.response`, or `None`): the row is `status: failed` with the error's `reason` and message |
+| `agent_session` | `(response, *, agent, sent, runtime=None, drives=(), error=None) -> Session` | the session row of an agent session, from its `AgentResponse`. For a session that failed, `error` is the exception and `response` what it carried (`AgentRuntimeError.response`, or `None`): the row is `status: failed` with the error's `reason` and message. For one that was cancelled, `error` is the `CancelledError`: the row is `status: cancelled`, reason `cancelled` |
 | `call_session` | `(call, *, sent, runtime=None, drives=(), error=None) -> Session` | the session row of a model call, from its `ModelCall`. For a call that failed, `error` is the exception and `call` what it carried (`ModelRuntimeError.call`, or `None`) |
 | `call_sent` | `(request: ModelRequest) -> str` | the `sent` digest of a model call's request, as a model step computes it: of its prompt, system prompt, model and output schema |
 | `record_session` | `(session) -> int \| None` | records it in the run of the component running in this task, durably and in ledger order; its row, or `None` outside a run. The rows that component hands over next name it |
@@ -561,7 +567,7 @@ large or external value. matrix records it and does nothing else with it.
 | `writer.finish(run) -> str` | records the final state atomically; returns where the record is |
 | `store.load(run_id) -> Construct` | the record of a run in any state; `torn` reports entries with no row |
 | `store.describe(run_id) -> dict` | the `matrix.v1.run` document with each table's size. A run that never finished reads `running`, or `interrupted` when the store can tell its writer is gone |
-| `store.runs() -> list[str]` | run ids, oldest first |
+| `store.runs() -> list[str]` | run ids, oldest first. The JSONL store skips, and logs on `matrix.store`, a directory whose `run.json` cannot be read |
 | `writer.events() -> Observer \| None` | optional: a sink for the run's events kept with its record; the executor closes it after the run |
 | `store.location(run_id) -> str` | optional: where the run's record is, or would be |
 
@@ -572,7 +578,12 @@ and is located by the run id.
 
 `JsonlConstructStore(root, *, fsync=False)` keeps a directory per run: `run.json`, one
 `<kind>.jsonl` per table whose lines are the rows, and `events.jsonl`. `fsync=True` flushes
-each row to the disk. Each row is written as pydantic's `to_jsonable_python` makes it (nested
+each row to the disk, and the run's directory when its files are made and when `run.json` is
+renamed in. A write the disk cuts short is taken back before the `StoreError`. A run whose
+writer, on this host, is gone is finished by the first `describe` or `load` that finds it so:
+each file's cut-short last line moved aside to `<file>.torn`, and `run.json` replaced with
+`status: interrupted`, the row counts and `torn`, so `interrupted` is on disk and every file
+reads whole without matrix (`data-model.md`, "Keeping a run"). Each row is written as pydantic's `to_jsonable_python` makes it (nested
 models, dataclasses, sets, tuples, datetimes); a row holding anything else is refused with a
 `ContractError` naming where in the row, before anything is written for it, so the record
 goes on. `MemoryConstructStore()` keeps runs in a dict, rows as given. Both are
@@ -663,7 +674,7 @@ takes the short name.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `claude-sdk` | `matrix.v1.agent-runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | Extra `[claude]`. The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call. The reply is the session's result, every text block its `transcript`. `model` is the one the SDK's `model_usage` names, or, when it names several, the one that wrote the final reply. `tokens_input` adds the cache's tokens to Anthropic's `input_tokens`, which leaves them out. Keeps the session id and the SDK's `stop_reason` (`native_finish_reason`, mapped to `finish_reason`) |
+| `claude-sdk` | `matrix.v1.agent-runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | Extra `[claude]`. The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call. The reply is the session's result, every text block its `transcript`. `model` is the one the SDK's `model_usage` names, or, when it names several, the one that wrote the final reply. `tokens_input` adds the cache's tokens to Anthropic's `input_tokens`, which leaves them out. Keeps the session id and the SDK's `stop_reason` (`native_finish_reason`, mapped to `finish_reason`). With OpenTelemetry active, hands the CLI the trace context current when the session starts (`TRACEPARENT`, `TRACESTATE`, through the SDK's `env`), so the CLI's spans join the run's trace under the session's `invoke_agent` |
 | `mock` | `matrix.v1.agent-runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Plays every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports no cost (`cost_usd` is `None`): no provider reported one. Records `calls`, each `(agent, task)` |
 
 Classes: `matrix.adapters._out.runtime.claude_sdk.ClaudeSdkRuntime`,
@@ -824,8 +835,9 @@ whether or not its reply is whole, and the `ModelCall` it provides is the reply 
 (`as_reply()`): the prompt as sent (`prompt`), the reply, and `session`, the call's row. With `output`, when the registry holds a schema for the kind, the request names it
 as `output` and the row is the validated `value`; without one, the reply must be one JSON
 document, as an agent step's, and a reply with none is a `ContractError` quoting it. Rows are
-rendered as an agent step renders them. A model step emits no agent events: its call is in
-its component's span.
+rendered as an agent step renders them. A model step emits no agent events: its call is a
+`matrix.model.start` / `matrix.model.end` pair, and the `otel` observer's `matrix.model`
+span, current while the runtime works.
 
 A reply that is not a whole answer is never provided: one with a `refusal`, a `finish_reason`
 other than `stop` and `None`, or empty `text`. The step raises `ModelRuntimeError`, reason
@@ -872,7 +884,7 @@ called with the registry, and anything it raises, importing included, quarantine
 
 | Method | Signature | Behaviour |
 |--------|-----------|-----------|
-| `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point; with `port`, a Protocol whatever is registered there must keep |
+| `add_point` | `(point, *, port=None) -> Registry` | Declares an extension point, owned by the distribution declaring it; with `port`, a Protocol whatever is registered there must keep. `ConfigError` when another distribution owns the point already |
 | `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta", stand_in=False, drives=()) -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, a class `build` that does not keep its point's port (naming each member it lacks), or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
 | `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the first line of the model's docstring |
 | `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
@@ -883,9 +895,17 @@ called with the registry, and anything it raises, importing included, quarantine
 | `load` | `(extensions: Iterable[Extension]) -> Registry` | Loads the extensions, in name order (see below) |
 
 Attributes: `points: set[str]`, `ports: dict[str, type]` (point to the Protocol its entries
-keep: `agent-runtime` to `AgentRuntime`, `model-runtime` to `ModelRuntime`),
-`failures: list[Failure]`. A port is held by its members: each must be there and callable,
-and one the port awaits must be a coroutine function.
+keep: `agent-runtime` to `AgentRuntime`, `model-runtime` to `ModelRuntime`, `store` to
+`ConstructStore`, `observer` to `Observer`), `owners: dict[str, str]` (point to the
+distribution that declared it: `matrix` for matrix's own, `(direct)` for one declared by the
+code composing the registry), `failures: list[Failure]`. A port is held by its required
+members: each must be there and callable, and one the port awaits must be a coroutine
+function; a port's optional members (an observer's `around`, a store's `events` and
+`location`) are not required. A point under a distribution's name (`ix.subject`) belongs to
+that distribution whoever declared it first: an impostor that did is quarantined whole, as for
+type URLs. Any other point belongs to the distribution that declared it first. Another that
+declares an owned point again, with or without a port, is refused and quarantined whole; the
+owner, and code composing the registry directly, may.
 
 `load_extensions(registry, group="matrix.extensions") -> Registry` loads every entry point in
 the group into `registry`: each entry point's value is `register(registry) -> None`.
@@ -998,8 +1018,10 @@ are only ever added.
 
 Names are namespaced, root first. matrix owns `matrix.*`; a component emits under its own
 root, and an observer treats a name it does not know as opaque. A `*.start`/`*.end` pair
-shares a `span`. An agent called from inside a component reports that component's span as its
-`parent` and its run id as its `run_id`; called outside a run, both are `None`.
+matrix emits for a span of work shares a `span`; an event a component emits with `ctx.emit`
+is one event, whatever its name ends with. An agent called from inside a component reports
+that component's span as its `parent` and its run id as its `run_id`; called outside a run,
+both are `None`.
 
 | Event | `span` / `parent` | `fields` |
 |-------|-------------------|----------|
@@ -1015,6 +1037,8 @@ shares a `span`. An agent called from inside a component reports that component'
 | `matrix.release.end` | same / run id | `status` (`released`, `failed`, `abandoned`), `error` |
 | `matrix.agent.start` | new id / the calling span | `agent`, `model`, `task` (the task as sent) |
 | `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`; or `status="error"`, `error`, `reason`, `kind`; or, when the session was cancelled, `status="cancelled"`, `reason="cancelled"` |
+| `matrix.model.start` | new id / the calling span | `runtime` (the step's model runtime), `model` (as asked; `None` for the runtime's default) |
+| `matrix.model.end` | same / the calling span | `runtime`, `duration_ms`, then `status="completed"`, `name`, `model`, `family`, `provider`, `finish_reason` (the model that answered); or `status="failed"`, `error`, `reason`, `kind`; or `status="cancelled"`, `reason="cancelled"`. No usage: the session row holds it |
 | `matrix.tool.start` | new id / the agent's span | `agent`, `tool`, `call_id`; timed when the runtime saw the call start |
 | `matrix.tool.end` | same / the agent's span | `agent`, `tool`, `call_id`, `status` (`ok`, `error`), `duration_ms`; timed when the runtime saw its result |
 | `matrix.measure` | new id / the calling span | `name`, `value`, `unit`, `kind`, `attrs` |
@@ -1025,14 +1049,31 @@ Events about a component carry its name in `component`.
 
 ### `Observer` (Protocol), `EventPolicy` and `RecordingObserver`
 
-`Observer` is `on_event(event: Event)`, a plain function or a coroutine function.
+`Observer` is `on_event(event: Event)`, a plain function or a coroutine function, and one
+optional member, read with `getattr` so an observer without it works unedited:
+
+```python
+def around(self, event: Event) -> AbstractContextManager[Callable[[Event], None] | None] | None: ...
+```
+
+matrix enters `around` **synchronously, in the task doing the work**, around each span of
+work it starts: a run, a component (all its attempts), a `ctx.span`, an agent session, a
+model step's call, a tool call a runtime timed, and a deferred release. `event` is the
+span's start event. What entering it gives back, when callable, is handed the span's end
+event before the block exits. The start and the end also reach `on_event` through the queue.
+This is how the `otel` observer makes its span current, so a span a library opens inside the
+work nests under it, and ends every span it opened whatever the queue drops. Since it runs in
+the work's task, `around` must not block; what it raises entering, ending or leaving is logged
+and skipped, and it cannot swallow the work's own exception. It is the one part of an observer
+that can slow a run.
 
 Events are delivered by a dispatcher task from a bounded queue, never on the emitting task.
 `EventPolicy(queue: int = 4096, drain_s: float = 10.0)` sets the bound, and how long the
-executor waits at the end of a run for the queue to empty. What follows from that:
+executor waits at the end of a run for the queue to empty. What follows from that, for `on_event`:
 
 - emitting never waits. When the queue is full the event is dropped and counted; the next
-  event delivered is preceded by `matrix.events.dropped`, and `Run.events_dropped` has the
+  event delivered is preceded by `matrix.events.dropped`, and `Run.events_dropped` (and
+  `run.json`'s `events_dropped`) has the
   total;
 - an observer that raises is logged and skipped;
 - an observer that never returns holds up the dispatcher, not the run: later events are
@@ -1057,7 +1098,10 @@ instead of a "started" line; `NO_COLOR` and `TERM=dumb` are honoured.
 
 `matrix.v1.observer.jsonl`, config `path` (omitted or `-` for stderr; a file is appended to).
 One event document per line, flushed as written, so the stream can be followed while the run
-is going.
+is going. A file is opened, with its folders, when the first event arrives (building the
+observer touches nothing, so `matrix check` and `matrix plan` write nothing), and closed once a
+run's `matrix.run.end` is written; the next event opens it again. `closed` says whether it
+holds the file open; `close()` closes it now.
 
 ### The `otel` observer
 
@@ -1075,7 +1119,8 @@ attach takes the default.
 - the conventions' names in the table below;
 - matrix's own fields that carry no content, as `matrix.<field>`: `status`, `reason`,
   `kind`, `abandoned`, `attempts`, `rows`, `duration_ms`, `reused_from`, `family`,
-  `tool_calls`, `cost_usd`, and the ids `matrix.run.id` and `matrix.component`;
+  `tool_calls`, `cost_usd`, a model call's `runtime`, `name` and `finish_reason`, and the ids
+  `matrix.run.id` and `matrix.component`;
 - of the fields a component passes to `ctx.span`, the numbers and booleans, under its root
   (`acme.rows`), and the `ok`/`error` status matrix gives the span at its end
   (`acme.status`). A string can hold anything, so a component's string field is content.
@@ -1098,8 +1143,14 @@ every name at status Development, building on semantic conventions v1.44.0. The 
 gives no schema URL yet, so matrix's tracer sets none. When the conventions are released,
 the names here are re-checked against that release.
 
-Spans, one per `*.start`/`*.end` pair, parented as the events are and timed by the events'
-own times (not when the observer received them):
+Spans, one per span of work, opened through `around` (above): in the task doing the work,
+**current** there while it goes on, and timed by the events' own times. So a span a library
+opens through the OpenTelemetry API inside the work (an instrumented HTTP client, a model
+runtime's own spans) is its child, in the run's trace, and the run's span is the child of
+whatever span was current where the run was awaited. A span ends with its work, from the end
+event matrix hands `around`: an end event the queue drops, or a queue the run leaves before it
+drained, leaves no span open. `on_event` makes metrics only, and an event a component emits
+with `ctx.emit` opens no span, whatever its name ends with.
 
 | Span | Kind | Attributes |
 |------|------|------------|
@@ -1107,6 +1158,7 @@ own times (not when the observer received them):
 | `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.duration_ms`, `matrix.attempts`, `matrix.abandoned`; `matrix.kind` and `error.type` (the error's kind, or the stop's reason for one cancelled) when it failed or was cancelled. The conventions have no step |
 | `matrix.release` | INTERNAL | `matrix.component`, `matrix.status`; `error.type` when it failed. With content: `matrix.error` |
 | `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed, and `error.type=cancelled` when the session was cancelled. With content: `matrix.task`, `matrix.error` |
+| `matrix.model` (a model step's call) | INTERNAL | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `matrix.component`, `matrix.runtime`, `matrix.name` (the registry row that answered), `matrix.family`, `matrix.finish_reason`, `matrix.status`, `matrix.duration_ms`; `matrix.reason`, `matrix.kind` and `error.type` when it failed or was cancelled. With content: `matrix.error`. The conventions have no operation for one logical call, which may span retries and fallbacks; it carries no usage, since each attempt's inference span is the model runtime's own and nests under it |
 | `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`, `matrix.status`, `matrix.duration_ms`; `error.type=tool_error` when the tool reported an error |
 | a component's `ctx.span(name)` | INTERNAL | `matrix.component`; its number and boolean fields and its status under its root (`acme.rows`, `acme.status`, `acme.duration_ms`). With content: its string fields too |
 
@@ -1119,13 +1171,21 @@ saw. The conventions' names where they define one:
 | `gen_ai.invoke_agent.duration` | histogram, s | `gen_ai.agent.name`, `gen_ai.provider.name`, `gen_ai.response.model`, `error.type` |
 | `gen_ai.invoke_agent.tool_calls` | histogram, `{tool_call}` | `gen_ai.agent.name`, ... |
 | `gen_ai.execute_tool.duration` | histogram, s | `gen_ai.tool.name`, `gen_ai.agent.name`, `error.type` |
-| `gen_ai.client.inference.usage.input_tokens`, `..._output_tokens` | counter, `{token}` | `gen_ai.agent.name`, `gen_ai.provider.name`, `gen_ai.response.model`, `gen_ai.token.modality=unknown` (a session's total mixes whatever it exchanged) |
+| `gen_ai.client.inference.usage.input_tokens`, `..._output_tokens` | counter, `{token}` | `gen_ai.agent.name`, `gen_ai.provider.name`, `gen_ai.response.model`, `gen_ai.token.modality=unknown` (a session's total mixes whatever it exchanged). Agent sessions only: see below |
 
 and matrix's own where they define none: `matrix.component.duration` (histogram, s),
 `matrix.component.count`, `matrix.component.retries`, `matrix.agent.cost_usd` (USD, as runtimes reported it),
 `matrix.events.dropped`, each by `matrix.component` and `matrix.status` where they apply;
 and the name given to each `ctx.measure`, of the measure's kind, with its scalar `attrs` and
 `matrix.component`.
+
+**One owner per token.** matrix's inference counters count agent sessions only, whose tokens
+no model runtime's call carries. A model call's tokens are counted by the model runtime that
+made it (hardline counts each attempt, on the same instruments), never by matrix: the call's
+session row holds them, and the `matrix.model` span carries no usage. So nothing is counted
+twice. The case this does not cover is an agent runtime whose model calls go through hardline
+itself: none does yet, and one that does must leave its session's tokens off the response it
+reports, or be counted twice.
 
 ### `configure_telemetry` and the `OTEL_*` variables
 
@@ -1236,7 +1296,9 @@ about.
 
 Merge rules: mappings merge key by key, later tiers winning, so `agent_runtimes`,
 `model_runtimes` and `agents` hold every tier's entries; lists replace, except `matrix.definitions`, whose directories
-accumulate across tiers, each relative directory resolved against the file that declared it.
+accumulate across tiers, each relative directory resolved against the file that declared it,
+and a problem with one names the file that listed it. A tier that writes `definitions` as
+anything but a list is a `wrong_shape` problem at its file, not overwritten by the others.
 An agent defined in two of them is one `name_taken` problem at `matrix.definitions`, and an
 agent that would use it is not checked (`complete` false).
 

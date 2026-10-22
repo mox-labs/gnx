@@ -579,24 +579,28 @@ With the default store a run is a directory under `.matrix/runs/<run_id>/`:
   step's are `ModelCall`s, the prompt as sent in `prompt`, the reply in `text`, why it
   ended (`finish_reason`); each points at its session row (`session`);
 - `matrix.v1.session.jsonl`: one line per agent session or model call, a failed one
-  included: `status` (`completed`, or `failed` with its `reason` and `error`), `runtime`, the
+  included: `status` (`completed`; `failed` with its `reason` and `error`; or `cancelled`),
+  `runtime`, the
   model that answered, `stop`, `finish_reason`, `usage` (`input_tokens` counts the cache's),
   `cost_usd`, `session_id`, `request_id`, `trace_id` and `span_id`, `fallback_from`,
   `attempts`, `attempt_log`, and `sent` (a digest of what was sent). The line's position
   (from 0) is the row a reply's `session` names;
 - `matrix.v1.ledger.jsonl`: which component handed each row over, when, and the session
   rows behind it (`sessions`);
-- `events.jsonl`: the run's events; `matrix.agent.start` carries each task as sent, so a
-  step that failed before recording its reply still shows what it was asked.
+- `events.jsonl`: the run's events, telemetry: lossy by design (`events_dropped` in
+  `run.json` says how many are missing), so never read a fact from it. What a step that
+  failed was asked is not in the tables in full: its session row has `sent`, a digest.
 
 ```bash
 jq . .matrix/runs/RUN_ID/run.json
 jq -c '{task, content, session}' .matrix/runs/RUN_ID/acme.v1.claim-reply.jsonl
 jq -c '{status, reason, runtime, model, stop, usage}' .matrix/runs/RUN_ID/matrix.v1.session.jsonl
-jq -c 'select(.name == "matrix.agent.start") | .fields' .matrix/runs/RUN_ID/events.jsonl
 ```
 
-A run killed mid-way keeps every row it had recorded and reads `interrupted`.
+A run killed mid-way keeps every row it had recorded. The first matrix command that reads
+it (`matrix runs` will) writes `interrupted` into its `run.json` and moves any cut-short last
+line aside to `<file>.torn`, so `jq` reads every file whole. Reading a run that is still
+going, skip a line cut short mid-write: `jq -cR 'fromjson? // empty' FILE`.
 
 ## Starting from a recorded run
 
@@ -739,7 +743,8 @@ def _reference_telemetry() -> str:
 A run recorded by the JSONL store keeps its events beside its tables, `events.jsonl`, one
 `matrix.v1.event` a line, flushed as written. The `console` observer (on a terminal, `matrix
 run` adds it) shows progress on stderr; `observers: [jsonl]` streams events to stderr or a
-file. Events are telemetry: lossy under load, never the result.
+file. Events are telemetry: lossy by design (dropped when the bounded queue is full, counted in
+`events_dropped` in `run.json`), never the result. Read facts from the tables.
 
 ## OpenTelemetry
 
@@ -764,15 +769,19 @@ The GenAI semantic conventions as read on 2026-10-19 (repository
 `open-telemetry/semantic-conventions-genai`, no release tagged, status Development), scope
 `matrix`:
 
-- spans: `invoke_workflow` (a run), `matrix.component` (a model step's call is inside its
-  component's span: a call is not an agent session), `invoke_agent {agent}` with
+- spans: `invoke_workflow` (a run), `matrix.component`, `invoke_agent {agent}` with
   `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`,
   `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` and
-  `error.type`; `execute_tool {tool}` for each tool call a runtime timed (`claude-sdk` does);
-  a component's own `ctx.span`;
+  `error.type`; `matrix.model` for a model step's call (no usage: the model runtime's own
+  spans count each attempt); `execute_tool {tool}` for each tool call a runtime timed
+  (`claude-sdk` does); `matrix.release`; a component's own `ctx.span`. Each is current in the
+  task doing its work, so a span a library opens there (an HTTP client, hardline) nests under
+  it; each ends with its work, whatever events were dropped. `ctx.emit` opens no span;
 - metrics: `gen_ai.invoke_workflow.duration`, `gen_ai.invoke_agent.duration`,
   `gen_ai.invoke_agent.tool_calls`, `gen_ai.execute_tool.duration`,
-  `gen_ai.client.inference.usage.input_tokens` / `output_tokens`; matrix's own where the
+  `gen_ai.client.inference.usage.input_tokens` / `output_tokens` (agent sessions only: a
+  model call's tokens are counted by the model runtime, hardline, per attempt, and are on the
+  call's session row; nothing is counted twice); matrix's own where the
   conventions have none: `matrix.component.duration`, `matrix.component.count`,
   `matrix.component.retries`, `matrix.agent.cost_usd` (as a runtime reported it),
   `matrix.events.dropped`; and each

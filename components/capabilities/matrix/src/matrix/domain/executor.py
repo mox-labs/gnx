@@ -12,7 +12,10 @@ entries of the rows it hands over next name those sessions.
 **One stop path.** Whatever stops a component (its deadline, another's failure, the run's
 cancellation), it is asked to stop (``ctx.stopping``), given ``grace_s`` to return, then
 cancelled and given ``cleanup_s``, then abandoned. When the run ends, however it ends, every
-deferred release is called, last first, each bounded by ``cleanup_s``.
+deferred release is called, last first: an async one bounded by ``cleanup_s``, a synchronous
+one run to its end, which nothing in the event loop can bound. A release that raises anything,
+``SystemExit`` included, is recorded as failed and the rest are still called; what is not an
+``Exception`` is raised again once the record is finished.
 """
 
 from __future__ import annotations
@@ -51,7 +54,6 @@ from matrix.domain.observer import (
     COMPONENT_STOPPING,
     CURRENT_SPAN,
     MEASURE,
-    MEASURE_KINDS,
     RELEASE_END,
     RELEASE_START,
     ROW_APPEND,
@@ -62,7 +64,9 @@ from matrix.domain.observer import (
     EventPolicy,
     Observer,
     SpanScope,
+    around,
     check_event_name,
+    check_measure,
 )
 from matrix.domain.ports._out.construct_store import events_of
 from matrix.domain.problems import problem
@@ -296,6 +300,7 @@ class Run(BaseModel):
             "components": {name: ending.document() for name, ending in self.components.items()},
             "failures": [failure.document() for failure in self.failures],
             "releases": [release.document() for release in self.releases],
+            "events_dropped": self.events_dropped,
         }
         if self.reused_from is not None:
             found["reused_from"] = self.reused_from
@@ -621,15 +626,7 @@ class _Hooks:
     def measure(
         self, name: str, value: float, *, unit: str, kind: str, attrs: dict[str, Any]
     ) -> None:
-        check_event_name(name, what="measure")
-        if kind not in MEASURE_KINDS:
-            raise ContractError(
-                f"measure {name!r}: kind {kind!r} is not one of {', '.join(MEASURE_KINDS)}"
-            )
-        if isinstance(value, bool) or not isinstance(value, int | float):
-            raise ContractError(
-                f"measure {name!r}: value must be a number, got {type(value).__name__}"
-            )
+        check_measure(name, value, kind)
         if not self._late("measure"):
             fields = {"name": name, "value": value, "unit": unit, "kind": kind, "attrs": attrs}
             self._session.emit(
@@ -648,23 +645,33 @@ class _Hooks:
             yield
             return
         span = uuid.uuid4().hex
-        self._session.emit(
+        begun = self._session.emit(
             f"{name}.start", span=span, fields=fields, component=self._name, parent=scope.span
         )
         token = CURRENT_SPAN.set(replace(scope, span=span))
         started = time.monotonic()
         status = "ok"
-        try:
-            yield
-        except BaseException:
-            status = "error"
-            raise
-        finally:
-            CURRENT_SPAN.reset(token)
-            ended = {"status": status, "duration_ms": int((time.monotonic() - started) * 1000)}
-            self._session.emit(
-                f"{name}.end", span=span, fields=ended, component=self._name, parent=scope.span
-            )
+        with around(self._session.observers(), begun) as end:
+            try:
+                yield
+            except BaseException:
+                status = "error"
+                raise
+            finally:
+                CURRENT_SPAN.reset(token)
+                ended = {
+                    "status": status,
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                }
+                end(
+                    self._session.emit(
+                        f"{name}.end",
+                        span=span,
+                        fields=ended,
+                        component=self._name,
+                        parent=scope.span,
+                    )
+                )
 
 
 class _Session:
@@ -718,54 +725,62 @@ class _Session:
         fields: dict[str, Any] = {"components": list(self._wiring.components)}
         if reuse is not None:
             fields["reused_from"] = reuse.run_id
-        self.emit(RUN_START, span=run.run_id, fields=fields, parent=None)
+        begun = self.emit(RUN_START, span=run.run_id, fields=fields, parent=None)
         #: What escaped the run, if anything did: matrix's own defect, or an error nobody
         #: classified. The run then did not complete, whatever its failures say.
         escaped: BaseException | None = None
+        #: What a release raised that is not an Exception, raised once the record is kept.
+        unbound: BaseException | None = None
         try:
-            try:
-                for kind, rows in supplied.items():
-                    for row in rows:
-                        self._record(INPUT, kind, row)
-            except StoreError as e:
-                self._failed(INPUT, e)
-            if reuse is not None and self._halted is None:
-                self._reuse(reuse)
-            await self._schedule()
-        except BaseException as e:
-            escaped = e
-            raise
+            # The run's span is current in this task, and so in every component's, which
+            # this task starts.
+            with around(self.observers(), begun) as end:
+                try:
+                    try:
+                        for kind, rows in supplied.items():
+                            for row in rows:
+                                self._record(INPUT, kind, row)
+                    except StoreError as e:
+                        self._failed(INPUT, e)
+                    if reuse is not None and self._halted is None:
+                        self._reuse(reuse)
+                    await self._schedule()
+                except BaseException as e:
+                    escaped = e
+                    raise
+                finally:
+                    # Settled before the releases run: a cancellation that arrives while
+                    # they do still reaches the caller, but it did not stop any component.
+                    cancelled = self._cancelled or isinstance(escaped, asyncio.CancelledError)
+                    unbound = await self._release()
+                    run.ended = datetime.now(UTC)
+                    run.status = (
+                        "cancelled"
+                        if cancelled
+                        else "failed"
+                        if run.failures or escaped is not None
+                        else "completed"
+                    )
+                    ended = {
+                        "status": run.status,
+                        "rows": len(run.construct),
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                    }
+                    end(self.emit(RUN_END, span=run.run_id, fields=ended, parent=None))
         finally:
-            # Settled before the releases run: a cancellation that arrives while they do
-            # still reaches the caller, but it did not stop any component.
-            cancelled = self._cancelled or isinstance(escaped, asyncio.CancelledError)
-            await self._release()
-            run.ended = datetime.now(UTC)
-            run.status = (
-                "cancelled"
-                if cancelled
-                else "failed"
-                if run.failures or escaped is not None
-                else "completed"
-            )
-            self._finish()
-            self.emit(
-                RUN_END,
-                span=run.run_id,
-                fields={
-                    "status": run.status,
-                    "rows": len(run.construct),
-                    "duration_ms": int((time.monotonic() - started) * 1000),
-                },
-                parent=None,
-            )
-            run.events_dropped = await self._channel.close()
-            if run.events_dropped:
-                logger.warning(
-                    "run %s: %d events were dropped before any observer received them",
-                    run.run_id,
-                    run.events_dropped,
-                )
+            # The record is finished last, so it counts every event no observer received.
+            try:
+                run.events_dropped = await self._channel.close()
+                if run.events_dropped:
+                    logger.warning(
+                        "run %s: %d events were dropped before any observer received them",
+                        run.run_id,
+                        run.events_dropped,
+                    )
+            finally:
+                self._finish()
+        if unbound is not None:  # a release's SystemExit (say), once the record is kept
+            raise unbound
 
     def _reuse(self, reuse: Reuse) -> None:
         """Record each reused component's rows as it recorded them, and end it ``reused``.
@@ -880,44 +895,47 @@ class _Session:
             self._skip(name, self._halted)
             self._wake.set()
             return
-        self.tell(COMPONENT_START, {}, component=name, span=step.span)
-        started = time.monotonic()
-        retry = self._limits.retry_of(name)
-        attempt = 1
-        while True:
-            try:
-                outcome = await self._attempt(step)
-            except MatrixError as e:
-                outcome = _Outcome("failed", e)
-            finally:
-                step.progress.end()
-                step.hooks.close()
-            if step.progress.broke is not None:
-                outcome = _Outcome("failed", step.progress.broke, outcome.abandoned)
-            wait = self._retry_wait(step, outcome, retry, attempt)
-            if wait is None or not await self._waited(name, step, outcome, attempt, wait):
-                break
-            attempt += 1
-            step = self._restart(step)
-        if outcome.abandoned:
-            logger.warning(
-                "component %r ignored cancellation for %ss and was abandoned; it may still be "
-                "running",
-                name,
-                step.cleanup_s,
+        begun = self.tell(COMPONENT_START, {}, component=name, span=step.span)
+        # The component's span is current in this task, and so in each attempt's task, which
+        # this task starts: one span for all of its attempts.
+        with around(self.observers(), begun) as end:
+            started = time.monotonic()
+            retry = self._limits.retry_of(name)
+            attempt = 1
+            while True:
+                try:
+                    outcome = await self._attempt(step)
+                except MatrixError as e:
+                    outcome = _Outcome("failed", e)
+                finally:
+                    step.progress.end()
+                    step.hooks.close()
+                if step.progress.broke is not None:
+                    outcome = _Outcome("failed", step.progress.broke, outcome.abandoned)
+                wait = self._retry_wait(step, outcome, retry, attempt)
+                if wait is None or not await self._waited(name, step, outcome, attempt, wait):
+                    break
+                attempt += 1
+                step = self._restart(step)
+            if outcome.abandoned:
+                logger.warning(
+                    "component %r ignored cancellation for %ss and was abandoned; it may still "
+                    "be running",
+                    name,
+                    step.cleanup_s,
+                )
+            ending = ComponentEnding(
+                status=outcome.status,
+                reason=step.progress.reason,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                abandoned=outcome.abandoned,
+                attempts=attempt,
             )
-        ending = ComponentEnding(
-            status=outcome.status,
-            reason=step.progress.reason,
-            duration_ms=int((time.monotonic() - started) * 1000),
-            abandoned=outcome.abandoned,
-            attempts=attempt,
-        )
-        self._run.components[name] = ending
-        fields = ending.document()
-        if outcome.error is not None:
-            fields["kind"] = outcome.error.kind
-        self.tell(COMPONENT_END, fields, component=name, span=step.span)
+            self._run.components[name] = ending
+            fields = ending.document()
+            if outcome.error is not None:
+                fields["kind"] = outcome.error.kind
+            end(self.tell(COMPONENT_END, fields, component=name, span=step.span))
         if outcome.error is not None:
             self._failed(name, outcome.error)
         self._wake.set()
@@ -1196,33 +1214,46 @@ class _Session:
         self._run.components[name] = ComponentEnding(status="skipped", reason=why)
         self.tell(COMPONENT_END, {"status": "skipped", "reason": why}, component=name)
 
-    async def _release(self) -> None:
-        """Call every deferred release, last registered first, each under its own bound."""
+    async def _release(self) -> BaseException | None:
+        """Call every deferred release, last registered first, an async one under its own
+        bound. Returns the first thing a release raised that is not an ``Exception``, to be
+        raised once the record is finished; the releases after it are still called."""
+        unbound: BaseException | None = None
         while self.releases:
             name, release, bound = self.releases.pop()
             span = uuid.uuid4().hex
-            self.tell(RELEASE_START, {}, component=name, span=span)
-            status: Literal["released", "failed", "abandoned"] = "released"
-            error: str | None = None
-            try:
-                pending = release()
-                if inspect.isawaitable(pending):
-                    task = asyncio.ensure_future(pending)
-                    await asyncio.wait({task}, timeout=bound)
-                    if not task.done():
-                        task.cancel()
-                        task.add_done_callback(_retrieve)
-                        status, error = "abandoned", f"still running after {bound}s"
-                    elif task.cancelled():
-                        status, error = "failed", "CancelledError"
-                    elif (raised := task.exception()) is not None:
-                        status, error = "failed", f"{type(raised).__name__}: {raised}"
-            except Exception as e:
-                status, error = "failed", f"{type(e).__name__}: {e}"
-            if error is not None:
-                logger.warning("a release deferred by %r %s: %s", name, status, error)
-            self._run.releases.append(ReleaseOutcome(component=name, status=status, error=error))
-            self.tell(RELEASE_END, {"status": status, "error": error}, component=name, span=span)
+            begun = self.tell(RELEASE_START, {}, component=name, span=span)
+            with around(self.observers(), begun) as end:
+                status: Literal["released", "failed", "abandoned"] = "released"
+                error: str | None = None
+                try:
+                    pending = release()
+                    if inspect.isawaitable(pending):
+                        task = asyncio.ensure_future(pending)
+                        await asyncio.wait({task}, timeout=bound)
+                        if not task.done():
+                            task.cancel()
+                            task.add_done_callback(_retrieve)
+                            status, error = "abandoned", f"still running after {bound}s"
+                        elif task.cancelled():
+                            status, error = "failed", "CancelledError"
+                        elif (raised := task.exception()) is not None:
+                            status, error = "failed", f"{type(raised).__name__}: {raised}"
+                except BaseException as e:  # anything: the releases still owed are called
+                    status, error = "failed", f"{type(e).__name__}: {e}"
+                    if not isinstance(e, Exception):
+                        unbound = unbound or e
+                if error is not None:
+                    logger.warning("a release deferred by %r %s: %s", name, status, error)
+                outcome = ReleaseOutcome(component=name, status=status, error=error)
+                self._run.releases.append(outcome)
+                fields = {"status": status, "error": error}
+                end(self.tell(RELEASE_END, fields, component=name, span=span))
+        return unbound
+
+    def observers(self) -> tuple[Observer, ...]:
+        """The run's observers: who sees its events, and whose ``around`` its work enters."""
+        return self._channel.observers()
 
     def emit(
         self,
@@ -1232,25 +1263,26 @@ class _Session:
         fields: dict[str, Any],
         component: str | None = None,
         parent: str | None,
-    ) -> None:
+    ) -> Event:
         """Put one event on the run's channel, under the span ``parent`` (None: under
-        nothing, which only the run's own events are)."""
-        self._channel.emit(
-            Event(
-                name,
-                span=span,
-                run_id=self.run_id,
-                parent=parent,
-                fields=fields,
-                component=component,
-            )
+        nothing, which only the run's own events are). Returns it."""
+        event = Event(
+            name,
+            span=span,
+            run_id=self.run_id,
+            parent=parent,
+            fields=fields,
+            component=component,
         )
+        self._channel.emit(event)
+        return event
 
     def tell(
         self, name: str, fields: dict[str, Any], *, component: str | None, span: str | None = None
-    ) -> None:
-        """Put one event about the run's work on its channel, under the run's own span."""
-        self.emit(
+    ) -> Event:
+        """Put one event about the run's work on its channel, under the run's own span.
+        Returns it."""
+        return self.emit(
             name,
             span=span or uuid.uuid4().hex,
             fields=fields,

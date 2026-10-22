@@ -23,6 +23,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Changed (breaking)
 
+- **One owner per token.** matrix's `gen_ai.client.inference.usage.*` counters count agent
+  sessions only. A model call's tokens are counted by the model runtime that made it
+  (hardline counts each attempt) and kept on the call's session row; the `matrix.model` span
+  carries no usage. A dashboard that summed matrix's counters for model steps reads them
+  from hardline's now.
 - **Agent runtimes and model runtimes are two ports.** An agent session (a loop, tools,
   turns) and one model call had shared one port, one registry point and one reply, and the
   model runtime filled `num_turns=1` and `stop: completed` with constants. Now:
@@ -104,6 +109,33 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Added
 
+- **The observable behaviours callers rely on are listed** (the design record, §16): the run
+  layout and its file and table names, `run.json`'s keys, every `matrix.*` event and the
+  fields it always carries, the span and metric names, and the exit kinds. Each is pinned by
+  a test or marked not contract, and the sixteen stated contracts no test held (mx-tests
+  finding 11) now each have one.
+- **An observer may have `around(event)`**, an optional member entered synchronously in the
+  task doing the work, around each span of work matrix starts: a run, a component, a
+  `ctx.span`, an agent session, a model step's call, a timed tool call and a deferred
+  release. What entering it gives back, when callable, is handed the span's end event before
+  the block exits. It must not block; what it raises is logged and skipped. An observer
+  without it works unedited. The `otel` observer uses it to make its spans current, so **a
+  span a library opens inside matrix's work nests under it** (mx-tests 2): before, a library
+  span inside a component or an agent session landed in a separate trace with no parent.
+- **The `claude` CLI joins the run's trace.** With OpenTelemetry active, the `claude-sdk`
+  runtime hands the CLI it starts the trace context current when the session starts
+  (`TRACEPARENT`, `TRACESTATE`) through the SDK's `env` option, so the spans the CLI exports
+  are children of the session's `invoke_agent` span. `matrix.composition.telemetry` gains
+  `trace_environment()`, and `ClaudeSdkRuntime(trace_environment=)` takes it.
+- **A model step's call is a span of work**: `matrix.model.start` and `matrix.model.end`
+  events, and the `otel` observer's `matrix.model` span, current while the runtime works, so
+  the model runtime's own spans (hardline's `chat` per attempt) nest under it and the session
+  row names it. It carries no usage: each attempt's inference spans and counters are the
+  model runtime's own.
+- **A session or call that was cancelled is a row of `matrix.v1.session` too**, `status:
+  cancelled` (`Session.status` gains the value), reason `cancelled`, with the runtime, the
+  agent, the trace and span it ran in, and `sent`. It was asked for and may have spent tokens;
+  it was left out. `agent_session` and `call_session` take the `CancelledError` as `error=`.
 - **A session that failed is a row of `matrix.v1.session` too.** A model call that exhausted
   its retries, or an agent session that failed, was asked for and may have spent tokens; only
   completed ones were recorded. `Session` gains `status` (`completed`, or `failed`), `reason`
@@ -168,6 +200,65 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **`run.json` says how many events were dropped** (`events_dropped`, also in
+  `Run.document()`): the record is finished after the event queue has drained, so it counts
+  them all. A reader of `events.jsonl` could not tell the file was incomplete, since the
+  `matrix.events.dropped` event can itself be lost (mx-src F16). `matrix.run.end` is now sent
+  before the record is finished: a store that then cannot finish it makes the run `failed`,
+  which only the `Run` and the caller's error say.
+- **Nothing points readers at the events for a fact.** The skill told an agent to read a
+  failed step's task from `events.jsonl` with `jq`, and `matrix run` described the file as
+  "each agent's task as sent": the channel is lossy, so the fact might not be there. Events
+  are now called lossy wherever the record is described, and the docs say the one thing the
+  tables do not hold in full: what a step that failed was asked (its session row has `sent`,
+  a digest).
+- **Stores and observers are held to their ports at registration**, as runtimes are: a
+  class registered at `store` or `observer` that lacks a required member is a `ConfigError`
+  naming it, and so is whatever an entry builds there. A store without `load` composed and
+  failed at `--from`; an observer without `on_event` was logged as failing on every event.
+- **Extension points have owners** (`Registry.owners`): matrix owns its own; a point under a
+  distribution's name (`ix.subject`) is that distribution's whoever declared it first, as for
+  type URLs; any other point is its first declarer's. Another distribution that declares an
+  owned point again, or gives it a port, is refused and quarantined whole. Any extension could
+  declare another's point before.
+- **A context built by hand refuses what a run refuses** (mx-src F24): a bad event,
+  measure or span name, a measure kind outside the three, a value that is not a number. A
+  component's unit test could not catch a name the run would refuse.
+- **`check_type_url` refuses the `slick` namespace** (F25), and so the registry does; only
+  `type_url` did, though `slick.*` is reserved.
+- **The `jsonl` observer opens its file on the first event and closes it when a run ends**
+  (F18). Composing it created the file and its folders, so `matrix check` and `matrix plan`,
+  which call nothing, touched the filesystem, and nothing ever closed it.
+- **An accumulated config list keeps its files** (F22): a problem with an entry of
+  `matrix.definitions` names the file that listed it, a tier that wrote it as a string is a
+  `wrong_shape` problem instead of being silently overwritten by the other tiers, and an entry
+  that is a mapping no longer crashes the merge (`TypeError: unhashable type`).
+- **A release that raises a `BaseException` does not skip the releases still owed** (F17):
+  `SystemExit` from a synchronous release escaped, so later releases were never called and
+  the record never finished. It is recorded as failed, the rest are called, the record is
+  finished, and then it is raised. The docs that said every release is bounded by
+  `cleanup_s` now say a synchronous one is not.
+- **A killed run reads without matrix.** A cut-short last line broke `jq` (exit 5) and
+  DuckDB (`Malformed JSON`), though matrix's own reader skipped it, and `interrupted` was
+  only what `describe` computed: `run.json` said `running` for ever. Now the first matrix
+  reader that finds a run's writer gone (on this host) finishes its record: each file's
+  cut-short last line is moved aside to `<file>.torn`, and `run.json` is replaced with
+  `status: interrupted`, the row counts and `torn`. `data-model.md` gives the `jq` and DuckDB
+  recipes for a run still going, and the tests run them.
+- **A write the disk cuts short is taken back** before the `StoreError`, so a live run's
+  table never holds half a line.
+- **`runs()` skips a damaged record**, logging it on `matrix.store`. One unreadable
+  `run.json` made `runs()`, `matrix runs` and `list_runs` fail.
+- **`fsync=True` flushes the run's directory too**, once its files are made and once
+  `run.json` is renamed in: a file's own flush does not make its name durable.
+- **A store root that is a file is said to be one**, not reported as "run already exists".
+- **No OpenTelemetry span is left open.** The `otel` observer opened a span on each delivered
+  `*.start` event and closed it on the matching `*.end`, so an end event the bounded queue
+  dropped, or a queue the run left before it drained, left the span open for the life of the
+  process and never exported; and an event a component emitted with `ctx.emit` under a name
+  ending `.start` (ix's `ix.trial.start`), which has a span id of its own and no end, opened a
+  span nothing ended. Spans are now opened and ended through `around`, with their work;
+  `on_event` makes metrics only, and `ctx.emit` opens no span.
 - **The `claude-sdk` runtime closes the SDK's message stream** however reading it ends
   (`aclosing`), where closing it, and so the CLI process, was left to the garbage collector.
   Its error mapping is now tested: a missing CLI is `incapable`, a timeout `timeout`, and an
@@ -251,6 +342,12 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Security
 
+- **SECURITY.md names the working directory as an ambient route to a capability grant**
+  (mx-src F31): every command, and every tool on matrix, reads `./matrix.yaml` and
+  `./<tool>.yaml` from where it runs, so an untrusted checkout's config chooses permission
+  modes, plugins, a model `base_url` that receives every prompt, the store root and
+  observers. It says how to see the files read (`matrix config --sources`) and how to read
+  only the named ones (`--only`); a test holds the list to the tiers the code reads.
 - **No content leaves through OpenTelemetry by default.** The `otel` observer exported every
   event field as a span attribute, so each agent's task (`matrix.task`), error messages
   (`matrix.error`, and the span's status description) and every field a component passed to

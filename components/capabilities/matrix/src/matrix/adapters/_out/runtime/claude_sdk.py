@@ -29,6 +29,13 @@ Anthropic's ``input_tokens`` leaves out; ``cache_read_tokens`` and ``cache_write
 how many. The session id and the SDK's ``stop_reason`` (as ``native_finish_reason``, and
 mapped to ``finish_reason``) are kept.
 
+**The CLI joins the run's trace.** Given ``trace_environment`` (composition gives it one that
+reads OpenTelemetry), each session hands the ``claude`` CLI it starts the trace context
+current when the session starts (``TRACEPARENT``, ``TRACESTATE``) through the SDK's ``env``
+option, so the spans the CLI exports are children of the session's ``invoke_agent`` span. With
+no span current it hands nothing. The SDK lets an explicit ``env`` win over its own injection,
+so this does not depend on which SDK version does that.
+
 Type URL: ``matrix.v1.agent-runtime.claude-sdk``. Requires the ``claude`` extra.
 """
 
@@ -51,7 +58,7 @@ from matrix.domain.ports._out.agent_runtime import RUNTIME_LOGGER
 from matrix.domain.problems import Problem, problem
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
 
     from matrix.domain.agent import AgentDefinition
     from matrix.domain.model_call import FinishReason
@@ -156,9 +163,16 @@ class ClaudeSdkRuntimeConfig(BaseModel):
 
 
 class ClaudeSdkRuntime:
-    """Runs AgentDefinitions as Claude Agent SDK sessions."""
+    """Runs AgentDefinitions as Claude Agent SDK sessions. ``trace_environment`` returns the
+    environment variables that carry the current trace context to a child process (see the
+    module docstring); without it the CLI is handed none."""
 
-    def __init__(self, config: ClaudeSdkRuntimeConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ClaudeSdkRuntimeConfig | None = None,
+        *,
+        trace_environment: Callable[[], Mapping[str, str]] | None = None,
+    ) -> None:
         try:
             import claude_agent_sdk  # noqa: F401
         except ImportError as e:
@@ -166,6 +180,7 @@ class ClaudeSdkRuntime:
                 "claude", needed_by="the claude-sdk runtime", module="claude_agent_sdk"
             ) from e
         self._config = config or ClaudeSdkRuntimeConfig()
+        self._trace_environment = trace_environment
         mode = self._config.permission_mode
         if mode in _PERMISSIVE_MODES and mode not in _LOGGED:
             _LOGGED.add(mode)
@@ -287,6 +302,9 @@ class ClaudeSdkRuntime:
         from claude_agent_sdk import query
 
         options = self.sdk_options(definition)
+        carried = self._trace_environment() if self._trace_environment is not None else {}
+        if carried:  # the CLI's spans join the trace of the span current here, the session's
+            options = dataclasses.replace(options, env={**options.env, **carried})
         # Closed here however reading ends, not by the garbage collector: closing the stream
         # is what ends the CLI process. The SDK types it as an iterator; it is a generator.
         stream = cast("AsyncGenerator[Any, None]", query(prompt=task, options=options))
