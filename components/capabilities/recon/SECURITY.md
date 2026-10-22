@@ -192,7 +192,9 @@ first. It is not given a shell, and not recon's environment: it gets the SDK's s
 (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) and the variables its `env:` gives,
 each written as is or as an `env:NAME` reference the mission declares. Its stderr goes to a
 temporary file; the end of it is quoted in a failed table's error, in `meta.yaml`. It is
-stopped when the survey (or the dry run) ends, however it ends.
+stopped when the survey (or the dry run) ends, however it ends. It runs in the project
+root, not recon's working directory, so a server given `.` reads the same tree wherever
+recon is run from.
 
 **A remote server receives its own credential only.** Its `token` (`env:NAME` or
 `file:PATH`, never the secret itself, which the plan refuses) is sent as `Authorization:

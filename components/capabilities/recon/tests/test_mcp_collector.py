@@ -284,6 +284,23 @@ def test_the_server_gets_its_env_references_and_the_capture_never_holds_them(
     assert "s3cret-value" not in body and "«redacted by recon»" in body
 
 
+def test_a_stdio_server_runs_in_the_project_root_wherever_recon_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a stdio server ran in recon's working directory, so the template's
+    filesystem server, given ".", read another tree when a survey was run from a
+    subdirectory. It runs in the project root, against which a ``local`` source's relative
+    url resolves too: the same directories wherever recon is run from."""
+    project = tmp_path / "project"
+    elsewhere = project / "src" / "deep"
+    elsewhere.mkdir(parents=True)
+    monkeypatch.chdir(elsewhere)
+    archive, [table] = _survey(project, [_call("who", "whoami")])
+    assert table.status == "ok", table.error
+    [row] = _rows(archive, "who")
+    assert Path(row["cwd"]).resolve() == project.resolve()
+
+
 # --- rate limit and telemetry ------------------------------------------------------------------
 
 

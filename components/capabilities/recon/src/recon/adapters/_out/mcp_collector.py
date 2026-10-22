@@ -10,11 +10,12 @@ A source names its server:
 
 * **stdio**: ``command``, ``args`` and ``env``. The server is started on the first table that
   uses it, serves every other table of the survey, and is stopped by ``close()`` when the
-  survey ends. It runs in recon's working directory with the SDK's short list of inherited
-  variables (``HOME``, ``LOGNAME``, ``PATH``, ``SHELL``, ``TERM``, ``USER``) and what ``env``
-  gives: each value is written as is, or is ``env:NAME``, a variable of recon's environment
-  the mission thereby declares (an unset one is left out). Its stderr goes to a temporary
-  file, whose end an error quotes.
+  survey ends. It runs in the project root (``ctx.project_dir``, where a ``local`` source's
+  relative url is anchored too), not recon's working directory, with the SDK's short list of
+  inherited variables (``HOME``, ``LOGNAME``, ``PATH``, ``SHELL``, ``TERM``, ``USER``) and
+  what ``env`` gives: each value is written as is, or is ``env:NAME``, a variable of recon's
+  environment the mission thereby declares (an unset one is left out). Its stderr goes to a
+  temporary file, whose end an error quotes.
 * **remote** (Streamable HTTP): ``url``, with ``token`` (``env:NAME``, or ``file:PATH``
   relative to the mission's directory), sent as ``Authorization: Bearer``, or
   ``headers_helper``, a command run once per survey whose stdout is a JSON object of headers.
@@ -306,8 +307,15 @@ class McpCollector:
             server.stderr = tempfile.TemporaryFile(  # noqa: SIM115
                 "w+", encoding="utf-8", errors="replace"
             )
+            # In the project root, not recon's working directory: a server given "." reads
+            # the same tree wherever recon is run from.
+            project = self._ctx.project_dir
             transport: Any = StdioTransport(
-                settings.command, list(settings.args), env=env, log_file=server.stderr
+                settings.command,
+                list(settings.args),
+                env=env,
+                cwd=str(project) if project is not None else None,
+                log_file=server.stderr,
             )
         else:
             headers = self._remote_headers(settings, source, server)

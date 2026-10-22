@@ -83,9 +83,14 @@ def prose() -> str:
 
 @FIXTURE.tool(structured_output=False)
 def whoami() -> str:
-    """Who answers: the process, and what its environment holds."""
+    """Who answers: the process, the directory it runs in, and what its environment holds."""
     return json.dumps(
-        {"pid": os.getpid(), "token": os.environ.get("FIXTURE_TOKEN"), "home": "HOME" in os.environ}
+        {
+            "pid": os.getpid(),
+            "cwd": os.getcwd(),
+            "token": os.environ.get("FIXTURE_TOKEN"),
+            "home": "HOME" in os.environ,
+        }
     )
 
 

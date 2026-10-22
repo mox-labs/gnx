@@ -163,13 +163,16 @@ def root(
             sinks.insert(0, archives.event_log(archive))
         return Telemetry(sinks, clock)
 
+    missions = MissionFiles(project.resolve() if project else project_root(Path.cwd()), clock)
     return Recon(
-        missions=MissionFiles(project.resolve() if project else project_root(Path.cwd()), clock),
+        missions=missions,
         archives=archives,
         query=DuckdbQuery(archives),
         clock=clock,
         plugins=plugins,
-        build_collectors=partial(build_collectors, plugins, ports, process_env),
+        build_collectors=partial(
+            build_collectors, plugins, ports, process_env, project=missions.project
+        ),
         telemetry=telemetry,
         env=process_env,
         version=__version__,

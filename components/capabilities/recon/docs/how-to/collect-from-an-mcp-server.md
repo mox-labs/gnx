@@ -19,7 +19,7 @@ catalog:
     timeout: 120
 ```
 
-It is started on the first table that uses it, serves every other table of the survey, and is stopped when the survey ends, however it ends. It runs in recon's working directory, with your user's rights, and with little of your environment: `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`, and what `env:` gives it. A credential it needs is named, never written:
+It is started on the first table that uses it, serves every other table of the survey, and is stopped when the survey ends, however it ends. It runs in the project root (the directory holding `.recon/`), wherever you run recon from, with your user's rights, and with little of your environment: `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`, and what `env:` gives it. A credential it needs is named, never written:
 
 ```yaml
     env:

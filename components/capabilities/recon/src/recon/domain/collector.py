@@ -101,11 +101,15 @@ class CollectorContext:
     ``deadline`` is the survey's: what is left of the survey's and the table's bounds in
     time (``remaining()``, ``limit(seconds)``, ``check()``), which a type that waits or runs
     a command keeps to, as the requester does. ``mission_dir`` anchors relative paths in a
-    config. ``user_agent`` is what an HTTP collector sends when its source sets none.
+    config. ``project_dir`` is the project root, against which a ``local`` source's relative
+    url resolves, and where a process the mission starts without naming a directory runs;
+    ``None`` in a context recon did not build, for the working directory.
+    ``user_agent`` is what an HTTP collector sends when its source sets none.
 
     ``env`` is not the process environment. It holds only the variables the mission
     declares for this type: the ``auth.env`` names of the catalog sources its collectors
-    run against. Reading any other name raises a config error that says where to declare it.
+    run against, and the variables their kinds read (``CollectorType.source_env``). Reading
+    any other name raises a config error that says where to declare it.
     """
 
     requester: Requester
@@ -118,6 +122,7 @@ class CollectorContext:
     mission_dir: Path
     env: Mapping[str, str]
     user_agent: str
+    project_dir: Path | None = None
 
 
 def _no_problems(entry: CollectorEntry) -> list[Problem]:
