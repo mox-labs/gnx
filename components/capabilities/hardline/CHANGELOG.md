@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Why a reply ended, and a refusal kept apart from an answer.** `RawCompletion` and `Completion` gain `finish_reason` (`stop`, `length`, `content_filter`, `refusal`, `tool_call`, `other`, or `None` when the provider did not say), `native_finish_reason` (the provider's own value, verbatim) and `refusal` (what the model said when it refused). Each protocol's own reasons are mapped: OpenAI's `finish_reason` and `message.refusal`, Anthropic's `stop_reason`. All three default, so a backend written before them works unedited.
+- **The promise for `complete`, written down**: a reply cut at `max_tokens`, refused, withheld or empty is returned and said for what it is, never raised and never looking like a whole answer. `Completion.answered` is true only when the model ended its turn, did not refuse, and said something. `hardline complete` without `--json` prints a note on stderr beside such a reply, and still exits 0.
+- `Completion.raw` keeps each choice's index and finish reason (OpenAI-compatible), where it dropped `choices` whole; message content is still never in it.
+- The mock backend takes `finish_reason` and `refusal` options, to plant a truncated or refused reply.
 - **`ModelRuntime.aclose()`, and `async with runtime`.** Either closes the connections that the backends opened in the running event loop. The runtime stays usable afterwards. A backend that holds connections defines its own async `aclose()`, which the runtime calls; a backend without one is left alone.
 
 ### Changed (breaking)

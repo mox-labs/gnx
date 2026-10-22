@@ -405,3 +405,70 @@ def test_each_built_in_has_a_timeout_of_its_rows_choosing() -> None:
 
     timeout = client_timeout(_spec(timeout_s=90.0))
     assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (90.0,) * 4
+
+
+# --- why a reply ended, and a refusal kept apart from an answer (W3.1) -----------------
+
+
+@pytest.mark.parametrize(
+    ("native", "finish_reason"),
+    [
+        ("stop", "stop"),
+        ("length", "length"),
+        ("content_filter", "content_filter"),
+        ("tool_calls", "tool_call"),
+        ("function_call", "tool_call"),
+        ("eos", "other"),
+        (None, None),
+    ],
+)
+async def test_openai_compat_reports_why_the_reply_ended(
+    native: str | None, finish_reason: str | None
+) -> None:
+    # Before: finish_reason was dropped and `raw` excluded `choices`, so a reply cut at
+    # max_tokens looked like a whole one.
+    wire = _answer(_chat("partial", finish_reason=native))
+    raw = await OpenAICompatBackend(wire.transport).complete(_spec(), _request(), None)
+    assert (raw.finish_reason, raw.native_finish_reason) == (finish_reason, native)
+    assert raw.refusal is None
+    assert raw.raw["choices"] == [{"index": 0, "finish_reason": native}]  # no content
+
+
+async def test_openai_compat_keeps_a_refusal_apart_from_the_text() -> None:
+    # Before: text was `content or ""`, so a refusal arrived as an empty answer with no trace.
+    wire = _answer(_chat(None, message={"role": "assistant", "content": None, "refusal": "No."}))
+    raw = await OpenAICompatBackend(wire.transport).complete(_spec(), _request(), None)
+    assert (raw.text, raw.refusal) == ("", "No.")
+    assert (raw.finish_reason, raw.native_finish_reason) == ("refusal", "stop")
+
+
+@pytest.mark.parametrize(
+    ("native", "finish_reason"),
+    [
+        ("end_turn", "stop"),
+        ("stop_sequence", "stop"),
+        ("max_tokens", "length"),
+        ("model_context_window_exceeded", "length"),
+        ("tool_use", "tool_call"),
+        ("pause_turn", "other"),
+        ("refusal", "refusal"),
+    ],
+)
+async def test_anthropic_reports_why_the_reply_ended(native: str, finish_reason: str) -> None:
+    # Before: stop_reason survived only inside the untyped `raw`.
+    wire = _answer(_message(stop_reason=native))
+    raw = await AnthropicBackend(wire.transport).complete(
+        _spec(backend="anthropic"), _request(), "k"
+    )
+    assert (raw.finish_reason, raw.native_finish_reason) == (finish_reason, native)
+    assert (raw.refusal is not None) == (native == "refusal")
+    assert raw.raw["stop_reason"] == native
+
+
+async def test_the_mock_reports_a_finish_reason_a_row_chooses() -> None:
+    spec = _spec(backend="mock", options={"finish_reason": "length"})
+    raw = await MockBackend().complete(spec, _request(), None)
+    assert raw.finish_reason == "length"
+    assert (
+        await MockBackend().complete(_spec(backend="mock"), _request(), None)
+    ).finish_reason == ("stop")

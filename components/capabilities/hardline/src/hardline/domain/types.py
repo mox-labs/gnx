@@ -33,6 +33,16 @@ Role = Literal["system", "user", "assistant"]
 #:   json_schema  the provider is handed the schema (OpenAI ``response_format`` json_schema)
 StructuredMode = Literal["prompt", "json_object", "json_schema"]
 
+#: Why a reply ended, in one vocabulary across providers. The provider's own value is kept
+#: beside it (``native_finish_reason``).
+#:   stop            the model ended its turn
+#:   length          cut off at max_tokens (or the context window)
+#:   content_filter  the provider withheld or cut the reply
+#:   refusal         the model refused; ``refusal`` holds what it said
+#:   tool_call       the model asked for a tool, which hardline does not run
+#:   other           a reason the provider gave that none of these names
+FinishReason = Literal["stop", "length", "content_filter", "refusal", "tool_call", "other"]
+
 _SLUG = r"^[a-z0-9][a-z0-9._-]*$"
 _SECRET_SCHEMES = ("env:", "file:")
 
@@ -138,6 +148,12 @@ class RawCompletion(BaseModel):
     model: str
     usage: Usage = Usage()
     request_id: str | None = None
+    #: None when the provider did not say.
+    finish_reason: FinishReason | None = None
+    #: The provider's own value (``finish_reason``, ``stop_reason``), verbatim.
+    native_finish_reason: str | None = None
+    #: What the model said when it refused, when the provider marks a refusal; else None.
+    refusal: str | None = None
     raw: dict[str, Any] = {}
 
 
@@ -147,6 +163,12 @@ class Completion(BaseModel):
     ``name``, ``family``, ``model`` and ``backend`` describe the model that **answered**. When
     a fallback answered, ``fallback_from`` names the model that was asked for — the family
     may differ, and an out-of-family judgement must use the one that answered.
+
+    A reply that is not a whole answer never looks like one. ``finish_reason`` is ``stop``
+    only when the provider said the model ended its turn; a reply cut at ``max_tokens`` is
+    ``length``, a refusal is ``refusal`` with ``refusal`` set, a withheld one
+    ``content_filter``. ``answered`` is true only for a whole answer, and is what to check
+    before taking ``text`` as one.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -167,7 +189,22 @@ class Completion(BaseModel):
     #: Transient-failure retries spent across all attempts and models.
     retries: int = 0
     fallback_from: str | None = None
+    #: Why the answering reply ended; see the class docstring. None when the provider did not say.
+    finish_reason: FinishReason | None = None
+    #: The provider's own value, verbatim.
+    native_finish_reason: str | None = None
+    #: What the model said when it refused; None when it did not refuse.
+    refusal: str | None = None
     raw: dict[str, Any] = {}
+
+    @property
+    def answered(self) -> bool:
+        """A whole answer: the model ended its turn, did not refuse, and said something.
+
+        False for a reply cut at ``max_tokens``, refused, withheld, empty, or one whose
+        provider did not say why it ended.
+        """
+        return self.finish_reason == "stop" and self.refusal is None and bool(self.text)
 
 
 @dataclass(frozen=True)

@@ -519,3 +519,41 @@ def test_schema_instruction_leads_with_a_fill_in_template() -> None:
     text = schema_instruction(Verdict.model_json_schema())
     assert '{"supported": <boolean>, "reason": <string>}' in text
     assert "do not repeat it" in text
+
+
+@pytest.mark.parametrize(
+    ("options", "note"),
+    [
+        ({"default": "half", "finish_reason": "length"}, "max_tokens"),
+        ({"default": "", "refusal": "I won't."}, "refused"),
+        ({"default": ""}, "empty"),
+    ],
+)
+def test_cli_complete_says_when_the_reply_is_not_a_whole_answer(
+    options: dict[str, Any],
+    note: str,
+    cli_config: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Printed alone, a truncated or refused reply reads as the model's answer.
+    _write(
+        tmp_path / "hardline.yaml",
+        {"models": {"q": {"backend": "mock", "model": "m", "family": "x", "options": options}}},
+    )
+    assert main(["complete", "q", "hi"]) == 0
+    out, err = capsys.readouterr()
+    assert out == options["default"] + "\n"
+    assert err.startswith("hardline: ") and note in err
+
+
+def test_cli_complete_json_carries_why_the_reply_ended(
+    cli_config: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["complete", "", "hello", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert (out["finish_reason"], out["native_finish_reason"], out["refusal"]) == (
+        "stop",
+        "stop",
+        None,
+    )

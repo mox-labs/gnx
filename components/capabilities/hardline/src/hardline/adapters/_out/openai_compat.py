@@ -31,6 +31,20 @@ from hardline.domain.types import ModelSpec, RawCompletion, Request, Usage
 if TYPE_CHECKING:
     import httpx2
 
+    from hardline.domain.types import FinishReason
+
+#: The protocol's finish reasons, in hardline's vocabulary. Anything else is ``other``.
+_FINISH: dict[str, FinishReason] = {
+    "stop": "stop",
+    "length": "length",
+    "content_filter": "content_filter",
+    "tool_calls": "tool_call",
+    "function_call": "tool_call",
+}
+
+#: Keys of a choice that carry the reply's content, which ``raw`` never holds.
+_CONTENT_KEYS = frozenset({"message", "delta", "text", "logprobs"})
+
 
 class _Options(BaseModel):
     """The ``options`` this backend reads; any other key is refused."""
@@ -46,10 +60,12 @@ class _Options(BaseModel):
 
 class _Message(BaseModel):
     content: str | list[Any] | None = None
+    refusal: str | None = None
 
 
 class _Choice(BaseModel):
     message: _Message = _Message()
+    finish_reason: str | None = None
 
 
 class _PromptDetails(BaseModel):
@@ -113,11 +129,13 @@ class OpenAICompatBackend:
                 reason="unknown",
             ) from None
 
-        text = _text(reply.choices[0].message.content) if reply.choices else ""
+        choice = reply.choices[0] if reply.choices else _Choice()
+        native = choice.finish_reason
+        refusal = choice.message.refusal
         usage = reply.usage or _Usage()
         details = usage.prompt_tokens_details or _PromptDetails()
         return RawCompletion(
-            text=text,
+            text=_text(choice.message.content),
             model=reply.model or spec.model,
             usage=Usage(
                 input_tokens=usage.prompt_tokens or 0,
@@ -125,8 +143,30 @@ class OpenAICompatBackend:
                 cache_read_tokens=details.cached_tokens or 0,
             ),
             request_id=reply.id,
-            raw={key: value for key, value in data.items() if key != "choices"},
+            finish_reason=(
+                "refusal"
+                if refusal is not None
+                else _FINISH.get(native, "other")
+                if native is not None
+                else None
+            ),
+            native_finish_reason=native,
+            refusal=refusal,
+            raw=_metadata(data),
         )
+
+
+def _metadata(data: dict[str, Any]) -> dict[str, Any]:
+    """The reply without its content: each choice keeps its index and finish reason."""
+    raw = dict(data)
+    choices = raw.get("choices")
+    if isinstance(choices, list):
+        raw["choices"] = [
+            {key: value for key, value in c.items() if key not in _CONTENT_KEYS}
+            for c in choices
+            if isinstance(c, dict)
+        ]
+    return raw
 
 
 def _text(content: str | list[Any] | None) -> str:

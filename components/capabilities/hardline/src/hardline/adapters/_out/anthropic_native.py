@@ -26,6 +26,18 @@ from hardline.domain.types import ModelSpec, RawCompletion, Request, Usage
 if TYPE_CHECKING:
     import httpx2
 
+    from hardline.domain.types import FinishReason
+
+#: The API's stop reasons, in hardline's vocabulary. Anything else is ``other``.
+_FINISH: dict[str, FinishReason] = {
+    "end_turn": "stop",
+    "stop_sequence": "stop",
+    "max_tokens": "length",
+    "model_context_window_exceeded": "length",
+    "tool_use": "tool_call",
+    "refusal": "refusal",
+}
+
 #: The Messages API version this adapter is written against.
 API_VERSION = "2023-06-01"
 
@@ -60,6 +72,7 @@ class _Reply(BaseModel):
     id: str | None = None
     model: str | None = None
     content: list[_Block] = []
+    stop_reason: str | None = None
     usage: _Usage | None = None
 
 
@@ -114,8 +127,10 @@ class AnthropicBackend:
             ) from None
 
         usage = reply.usage or _Usage()
+        text = "".join(block.text or "" for block in reply.content if block.type == "text")
+        native = reply.stop_reason
         return RawCompletion(
-            text="".join(block.text or "" for block in reply.content if block.type == "text"),
+            text=text,
             model=reply.model or spec.model,
             usage=Usage(
                 input_tokens=usage.input_tokens or 0,
@@ -124,5 +139,9 @@ class AnthropicBackend:
                 cache_write_tokens=usage.cache_creation_input_tokens or 0,
             ),
             request_id=reply.id,
+            finish_reason=_FINISH.get(native, "other") if native is not None else None,
+            native_finish_reason=native,
+            # The API marks a refusal by its stop reason and says nothing apart from the text.
+            refusal=text if native == "refusal" else None,
             raw={key: value for key, value in data.items() if key != "content"},
         )

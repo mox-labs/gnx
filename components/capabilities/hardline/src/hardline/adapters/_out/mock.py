@@ -6,6 +6,8 @@ Row options (all optional)::
       responses: {"<last user message>": "<text>"}   # keyed replies
       script: ["first attempt", {error: rate_limit}, "third"]   # in order; last repeats
       default: "fallback text"
+      finish_reason: length          # why every reply ends; default stop
+      refusal: "I can't help."        # every reply is a refusal saying this
 
 With nothing configured it echoes ``mock:<model>:<first user message>``, which is enough
 to prove wiring. ``script`` exists to plant failures: a first attempt that is not JSON
@@ -20,7 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 from hardline.adapters._out._options import option_problems, read_options
 from hardline.domain.errors import BackendError, Reason
-from hardline.domain.types import ModelSpec, RawCompletion, Request, Usage
+from hardline.domain.types import FinishReason, ModelSpec, RawCompletion, Request, Usage
 
 
 class _ScriptedError(BaseModel):
@@ -37,6 +39,8 @@ class _Options(BaseModel):
     responses: dict[str, str] = {}
     script: list[str | _ScriptedError] = []
     default: str | None = None
+    finish_reason: FinishReason = "stop"
+    refusal: str | None = None
 
 
 class MockBackend:
@@ -53,9 +57,13 @@ class MockBackend:
     ) -> RawCompletion:
         last_user = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
         text = self._pick(spec, request, last_user)
+        opts = read_options(_Options, spec)
         return RawCompletion(
             text=text,
             model=spec.model,
+            finish_reason="refusal" if opts.refusal is not None else opts.finish_reason,
+            native_finish_reason=opts.finish_reason,
+            refusal=opts.refusal,
             usage=Usage(
                 input_tokens=sum(len(m.content.split()) for m in request.messages),
                 output_tokens=len(text.split()),

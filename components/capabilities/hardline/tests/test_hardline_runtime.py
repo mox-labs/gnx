@@ -262,3 +262,28 @@ async def test_a_bad_call_argument_is_a_config_error(call: dict[str, Any], match
 def test_a_negative_schema_retries_is_a_config_error() -> None:
     with pytest.raises(ConfigError, match="schema_retries"):
         mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}}, schema_retries=-1)
+
+
+# --- the promise for `complete`: a reply that is not a whole answer never looks like one --
+
+
+@pytest.mark.parametrize(
+    ("options", "answered"),
+    [
+        ({"default": "an answer"}, True),
+        ({"default": "an answ", "finish_reason": "length"}, False),
+        ({"default": "", "finish_reason": "stop"}, False),
+        ({"default": "", "refusal": "I can't help with that."}, False),
+        ({"default": "filtered", "finish_reason": "content_filter"}, False),
+    ],
+)
+async def test_a_completion_says_whether_it_is_a_whole_answer(
+    options: dict[str, Any], answered: bool
+) -> None:
+    rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x", "options": options}})
+    c = await rt.complete("q", "hi")
+    assert c.answered is answered
+    assert c.finish_reason == (
+        "refusal" if "refusal" in options else options.get("finish_reason", "stop")
+    )
+    assert c.refusal == options.get("refusal")

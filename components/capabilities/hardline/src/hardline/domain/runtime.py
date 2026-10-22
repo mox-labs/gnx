@@ -214,7 +214,13 @@ class ModelRuntime:
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> Completion:
-        """One call, text out. ``model=None`` uses the registry default."""
+        """One call, text out. ``model=None`` uses the registry default.
+
+        Whatever the provider sent is returned, and said for what it is: a reply cut at
+        ``max_tokens``, refused, withheld or empty is a Completion whose ``answered`` is false,
+        with ``finish_reason`` and ``refusal`` saying why. It is never raised, and never looks
+        like a whole answer.
+        """
         _check_overrides(max_tokens, temperature)
         spec = self._registry.get(model)
         turns = _as_messages(messages, system)
@@ -389,5 +395,8 @@ class ModelRuntime:
             attempts=attempts,
             retries=retries,
             fallback_from=requested.name if spec.name != requested.name else None,
+            finish_reason=raw.finish_reason,
+            native_finish_reason=raw.native_finish_reason,
+            refusal=raw.refusal,
             raw=raw.raw,
         )
