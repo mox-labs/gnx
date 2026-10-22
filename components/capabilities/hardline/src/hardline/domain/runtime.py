@@ -75,6 +75,7 @@ class _Answer:
     spec: ModelSpec  # the model that answered
     request: Request  # what it was sent
     retries: int
+    position: int  # where in the requested row's chain the answering row is
 
 
 def _total(log: Sequence[Attempt]) -> Usage:
@@ -281,6 +282,10 @@ class ModelRuntime:
         last_text = ""
         last_error = ""
         attempts = 0
+        # A repair goes on from the row that answered: the rows before it in the chain have just
+        # failed, and asking them again would pay for that failure twice and could mix replies
+        # from two models in one conversation.
+        position = 0
         for _ in range(self._schema_retries + 1):
             attempts += 1
             sent = tuple(turns)
@@ -288,7 +293,8 @@ class ModelRuntime:
             def build(s: ModelSpec, sent: tuple[Message, ...] = sent) -> Request:
                 return self._request(s, sent, schema, max_tokens, temperature)
 
-            answer = await self._call(spec, build, log)
+            answer = await self._call(spec, build, log, start=position)
+            position = answer.position
             retries += answer.retries
             last_text = answer.raw.text
             try:
@@ -331,16 +337,24 @@ class ModelRuntime:
         )
 
     async def _call(
-        self, spec: ModelSpec, build: Callable[[ModelSpec], Request], log: list[Attempt]
+        self,
+        spec: ModelSpec,
+        build: Callable[[ModelSpec], Request],
+        log: list[Attempt],
+        *,
+        start: int = 0,
     ) -> _Answer:
         """One logical call: retries on ``spec``, then each fallback, until one answers.
 
-        Each backend call is appended to ``log``; a BackendError raised from here carries it.
+        ``start`` skips the rows of the chain before it. Each backend call is appended to
+        ``log``; a BackendError raised from here carries it.
         """
         retries = 0
         last: BackendError | None = None
         chain = [spec, *(self._registry.get(name) for name in spec.fallbacks)]
-        for candidate in chain:
+        for position, candidate in enumerate(chain):
+            if position < start:
+                continue
             request = build(candidate)
             for attempt in range(candidate.retries + 1):
                 attempt_started = self._clock()
@@ -378,7 +392,9 @@ class ModelRuntime:
                         latency_ms=self._ms_since(attempt_started),
                     )
                 )
-                return _Answer(raw=raw, spec=candidate, request=request, retries=retries)
+                return _Answer(
+                    raw=raw, spec=candidate, request=request, retries=retries, position=position
+                )
             if candidate is not chain[-1]:
                 logger.warning(
                     "model %r still failing (%s) after %d retries; falling back",
@@ -387,10 +403,10 @@ class ModelRuntime:
                     candidate.retries,
                 )
         assert last is not None  # the loop only falls through after a retryable failure
-        tried = ", ".join(c.name for c in chain)
+        tried = ", ".join(c.name for c in chain[start:])
         exhausted = BackendError(
             f"model {spec.name!r}: transient failures exhausted retries"
-            + (f" and fallbacks ({tried})" if len(chain) > 1 else "")
+            + (f" and fallbacks ({tried})" if len(chain) - start > 1 else "")
             + f". Last: {last}",
             reason=last.reason,
             retry_after=last.retry_after,

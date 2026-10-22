@@ -222,6 +222,28 @@ async def test_a_schema_failure_carries_what_it_cost() -> None:
     assert e.value.usage.output_tokens == 1 + 2
 
 
+async def test_a_schema_repair_goes_on_from_the_row_that_answered() -> None:
+    # W6.1: each schema attempt restarted the chain at the primary that had just failed, so a
+    # repair paid for the primary's failures again and could mix replies from two models.
+    class Verdict(BaseModel):
+        ok: bool
+
+    rt = mock_runtime(
+        {
+            "a": _row([{"error": "unavailable"}], retries=0, fallbacks=["b"]),
+            "b": _row(["not json", '{"ok": true}']),
+        },
+        sleep=Sleeps(),
+    )
+    s = await rt.extract("a", "?", Verdict)
+    assert [(t.name, t.reason) for t in s.completion.attempt_log] == [
+        ("a", "unavailable"),
+        ("b", None),
+        ("b", None),
+    ]
+    assert (s.completion.name, s.completion.fallback_from, s.completion.attempts) == ("b", "a", 2)
+
+
 def test_a_repeated_fallback_is_refused() -> None:
     # F11: `[b, b]` was accepted, so b was retried twice in full and the warning for the first
     # b was suppressed.
