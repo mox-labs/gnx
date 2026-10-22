@@ -759,3 +759,33 @@ def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
     querying.query("m", "SELECT a FROM t")
     [end] = sink.ends("recon.query")
     assert end.attributes["recon.rows"] == 2
+
+
+def test_a_log_written_inside_recons_work_reads_recons_span_as_current() -> None:
+    """A log written while recon works (a plugin's own ``logging`` call) is joined to the
+    span recon has open: a log bridge stamps each record with the current span's context,
+    which inside recon's work is recon's span. Read here as a bridge reads it, through
+    ``trace.get_current_span()``, since the SDK's own logging handler is deprecated."""
+    import logging
+
+    from opentelemetry import trace
+
+    provider, exporter = _sdk()
+    stamped: list[tuple[int, int]] = []
+
+    class Bridge(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            context = trace.get_current_span().get_span_context()
+            stamped.append((context.trace_id, context.span_id))
+
+    logger = logging.getLogger("some.plugin")
+    bridge = Bridge()
+    logger.addHandler(bridge)
+    try:
+        telemetry = Telemetry([OtelEvents("9.9", tracer_provider=provider)], FixedClock())
+        with telemetry.span("recon.collect"):
+            logger.warning("a plugin speaks")
+    finally:
+        logger.removeHandler(bridge)
+    [span] = exporter.get_finished_spans()
+    assert stamped == [(span.get_span_context().trace_id, span.get_span_context().span_id)]
