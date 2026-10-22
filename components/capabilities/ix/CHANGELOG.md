@@ -1,5 +1,21 @@
 # Changelog — ix
 
+## Unreleased
+
+### Added
+
+- **Validate warns of a placeholder nothing will fill.** Nothing fills an environment's
+  options or a sensor's, nor un-doubles an escape in them, so `${{HOME}}` in an
+  `environment.process` command passed validate and then broke the shell (the run failed
+  `environment_lost`), and a `text-match`'s `contains: '{size}'` was compared as that text
+  whatever the cell's level. Each `{name}` there that a trial fills elsewhere (a factor, a
+  subject's option or facet, a service's binding) and each `{{name}}` is now an
+  `unbound_placeholder` warning. A `{name}` nothing fills (a shell's `${HOME}`) is not.
+- **A typo inside an escape is warned of.** In prompt text a doubled name nothing fills is
+  sent as written, so `{{sise}}` for the factor `size` reached the agent with no word. One
+  near a name that is filled there is now a warning naming it; a template's name near none
+  (`{{user}}`) is still sent as written without one.
+
 ## 0.6.0 — 2026-10-22
 
 `docs/design/2026-10-19-record.md` has the reasons for this release's changes, from §16 on.
@@ -144,8 +160,10 @@
     `unbound_placeholder`.
   - A name a probe takes from some subjects and not others is refused, written `{name}` or
     `{{name}}`: the subjects would be put different prompts.
-  - In any other option `{{name}}` is the text `{name}`, as before: `setup: [sh, -c,
-    'echo ${{HOME}}']` runs `echo ${HOME}`.
+  - In a subject's or a probe's other options `{{name}}` is the text `{name}`, as before:
+    `setup: [sh, -c, 'echo ${{HOME}}']` runs `echo ${HOME}`. An environment's options and
+    a sensor's are neither filled nor un-doubled, as before: both forms are sent as
+    written.
   - A loop's prompt, filled twice, un-doubles each escape once, by the filling that knows
     its name.
 
