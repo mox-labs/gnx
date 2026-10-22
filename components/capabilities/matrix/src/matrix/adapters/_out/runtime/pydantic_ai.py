@@ -67,7 +67,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from matrix.domain.agent import AgentResponse
+from matrix.domain.agent import AgentCapabilities, AgentResponse
 from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason
 from matrix.domain.problems import problem
 
@@ -106,6 +106,12 @@ class PydanticAiRuntimeConfig(BaseModel):
     tools: dict[str, str] = Field(default_factory=dict)
     temperature: float | None = Field(default=None, ge=0)
     max_tokens: int | None = Field(default=None, gt=0)
+
+    def capabilities(self) -> AgentCapabilities:
+        """A session loads no skill, from settings or its working directory: pydantic-ai has
+        none. It reads nothing of the machine beyond its config, so nothing keeps it out.
+        Whether its tools write files is the functions' own to say."""
+        return AgentCapabilities(settings_skills=False, project_skills=False)
 
 
 class PydanticAiRuntime:

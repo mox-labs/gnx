@@ -52,6 +52,7 @@ from matrix import (
     AgentDefinition,
     AgentResponse,
     AgentRuntime,
+    AgentCapabilities,
     RUNTIME_LOGGER,
     BoundAgent,
     AgentStep,
@@ -649,6 +650,24 @@ name of what already counts the inference tokens of the runtime's model calls (`
 declares `hardline`). `BoundAgent` puts it on `matrix.agent.end`, and the `otel` observer then
 adds the session's tokens to no counter; its span and its session row keep them.
 
+**What its sessions do is data the runtime declares**, so a caller asks it instead of
+reading its options by name: the runtime's config class may define `capabilities(self) ->
+AgentCapabilities`, which `Entry.capabilities(config)` asks of a config. `AgentCapabilities`
+(frozen, unknown fields rejected) answers, each `None` where the runtime does not say:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `settings_skills` | `bool \| None` | a session loads skills from settings (this machine's, the user's, the project's), beyond those it is given as plugins |
+| `project_skills` | `bool \| None` | a session loads the skills in its working directory (`.claude/skills`) |
+| `writes_files` | `bool \| None` | a session's tools can write files |
+| `hermetic` | `dict[str, Any]` | config that keeps a session from reading the machine it runs on beyond what it is given, for a caller to lay under its own; `{}`: nothing to add |
+| `set_by` | `dict[str, str]` | the config key that decides each answer, by the answer's name |
+
+`claude-sdk` answers from `setting_sources` (unset: the CLI's own default, not claimed) and
+`permission_mode` (`plan` writes nothing), with `hermetic` `{setting_sources: []}`.
+`pydantic-ai` loads no skills, from anywhere, and needs nothing to keep the machine out. The
+`mock` declares nothing.
+
 A runtime that also logs what its `warnings` say logs it at WARNING on the logger named
 `RUNTIME_LOGGER` (`matrix.runtime`), once per process, so a caller that builds a runtime per
 session is not told once per session. A program that reports `warnings` itself quiets that
@@ -883,6 +902,9 @@ declare their own with `add_point`, named under their own root (ix declares `ix.
 | `drives` | `tuple[str, ...]` | the distributions it drives, by their installed names: `claude-sdk` drives `claude-agent-sdk`, `pydantic-ai` drives `pydantic-ai-slim` and `hardline`, the `hardline` model runtime `hardline`. What a record of the versions behind a run reads, rather than a table of runtime names. Default `()` |
 
 `entry.describe()` returns all of it as a JSON-ready dict, with `config` as a JSON schema.
+`entry.capabilities(config)` is what an agent runtime declares its sessions do when built
+with `config` (see `AgentRuntime`): `None` when it declares nothing, or when its config
+refuses `config`.
 
 `Failure(*, extension, origin, error)` records an extension that failed to load or a
 refused registration: `extension` is its entry point's name, `origin` its distribution.

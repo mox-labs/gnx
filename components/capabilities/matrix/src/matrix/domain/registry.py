@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from matrix.domain.agent import AgentCapabilities
 from matrix.domain.errors import ConfigError, NotFoundError, invalid
 from matrix.domain.ids import parse_type_url
 from matrix.domain.observer import Observer
@@ -106,6 +107,21 @@ class Entry:
     #: The distributions it drives, by their installed names (``claude-agent-sdk``): what a
     #: record of the versions behind a run reads, rather than a table of runtime names.
     drives: tuple[str, ...] = ()
+
+    def capabilities(self, config: Mapping[str, Any]) -> AgentCapabilities | None:
+        """What sessions on this runtime do when it is built with ``config``, as its config
+        class declares (a method ``capabilities()`` returning :class:`AgentCapabilities`).
+        None when it declares nothing, or when ``config`` is not one it takes: building the
+        runtime says why."""
+        if self.config is None:
+            return None
+        try:
+            given = self.config.model_validate(dict(config))
+        except ValidationError:
+            return None
+        declare = getattr(given, "capabilities", None)
+        declared = declare() if callable(declare) else None
+        return declared if isinstance(declared, AgentCapabilities) else None
 
     def describe(self) -> dict[str, Any]:
         """A JSON-ready description: what an agent reads to decide whether to use it."""

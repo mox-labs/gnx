@@ -54,7 +54,7 @@ from .composition.documents import (
     plan_config,
 )
 from .composition.telemetry import Telemetry, configure_telemetry
-from .domain.agent import AgentDefinition, AgentResponse, BoundAgent
+from .domain.agent import AgentCapabilities, AgentDefinition, AgentResponse, BoundAgent
 from .domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
 from .domain.component import LEDGER, Component, Inputs, RunContext, Wiring, wire
 from .domain.config import (
@@ -167,6 +167,7 @@ __all__ = [
     "TASK",
     "Accumulate",
     "Agent",
+    "AgentCapabilities",
     "AgentConfig",
     "AgentDefinition",
     "AgentResponse",

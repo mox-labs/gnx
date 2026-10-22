@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from matrix.domain.agent import AgentResponse
+from matrix.domain.agent import AgentCapabilities, AgentResponse
 from matrix.domain.errors import AgentRuntimeError, ConfigError, RuntimeReason, missing_extra
 from matrix.domain.ports._out.agent_runtime import RUNTIME_LOGGER
 from matrix.domain.problems import Problem, problem
@@ -160,6 +160,25 @@ class ClaudeSdkRuntimeConfig(BaseModel):
     max_budget_usd: float | None = Field(default=None, gt=0)
     #: Inline subagents by name, each the SDK's ``AgentDefinition``.
     agents: dict[str, SubagentConfig] | None = None
+
+    def capabilities(self) -> AgentCapabilities:
+        """What a session does under this config. ``setting_sources`` decides which skills
+        it loads: from settings when it lists any source, from its working directory's
+        ``.claude/skills`` when it lists ``project``; unset, the CLI's own default decides,
+        which is not claimed. ``permission_mode: plan`` writes nothing. ``setting_sources:
+        []`` keeps this machine's settings, CLAUDE.md and hooks out."""
+        sources = self.setting_sources
+        return AgentCapabilities(
+            settings_skills=None if sources is None else bool(sources),
+            project_skills=None if sources is None else "project" in sources,
+            writes_files=False if self.permission_mode == "plan" else None,
+            hermetic={"setting_sources": []},
+            set_by={
+                "settings_skills": "setting_sources",
+                "project_skills": "setting_sources",
+                "writes_files": "permission_mode",
+            },
+        )
 
 
 class ClaudeSdkRuntime:
