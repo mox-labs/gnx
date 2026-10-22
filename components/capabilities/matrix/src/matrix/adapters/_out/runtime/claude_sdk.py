@@ -388,9 +388,11 @@ def _stream_error(error: Exception, agent: str) -> AgentRuntimeError:
 
 def _response(definition: AgentDefinition, transcript: _Transcript) -> AgentResponse:
     """The response of a session that has a result. Raises :class:`AgentRuntimeError` when
-    the result says the session failed."""
+    the result says the session failed, carrying what the result says of it (``response``):
+    its id, usage, cost, turns and the model that answered."""
     result = transcript.result
     stop = _stop(result)
+    response = _facts(transcript, stop)
     if stop is None:
         detail = "; ".join(getattr(result, "errors", None) or []) or "no detail"
         status = getattr(result, "api_error_status", None)
@@ -399,9 +401,16 @@ def _response(definition: AgentDefinition, transcript: _Transcript) -> AgentResp
             + (f", HTTP {status}" if status else "")
             + f"): {detail}",
             reason=_http_reason(status),
+            response=response,
             agent=definition.name,
             status=status,
         )
+    return response
+
+
+def _facts(transcript: _Transcript, stop: str | None) -> AgentResponse:
+    """What a session's result message says, whether the session ended or failed."""
+    result = transcript.result
     usage = getattr(result, "usage", None)
     usage = usage if isinstance(usage, dict) else {}
     cache_read = int(usage.get("cache_read_input_tokens") or 0)

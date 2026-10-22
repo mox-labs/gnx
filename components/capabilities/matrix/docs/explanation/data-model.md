@@ -92,6 +92,7 @@ a session.
 | Field | Meaning |
 |-------|---------|
 | `port` | `agent-runtime` (a session) or `model-runtime` (one call) |
+| `status`, `reason`, `error` | `completed` when the runtime replied, whatever the reply; `failed` when it raised instead, with the reason it classified (`rate_limited`, `timeout`, ...; null for an error it did not classify) and the error's message |
 | `runtime`, `drives` | the runtime's type URL and the distributions it drives, when the caller knew them |
 | `agent` | the agent's name, for a session |
 | `name`, `model`, `family`, `provider`, `backend` | the model that answered: its registry name (a model call), the provider's id, its family, who served it |
@@ -107,6 +108,12 @@ a session.
 
 A fact the runtime did not report is null, never a constant.
 
+**A session that failed is a row too.** It was asked for, and it may have spent tokens and
+made attempts: a model call that exhausted its retries, an agent session whose result says it
+failed. Its row says `failed` and why, and holds what the runtime's error carried of it: for
+the `hardline` model runtime every attempt made and the usage they reported (`attempt_log`,
+`usage`), for `claude-sdk` the session's id, usage, cost and turns when its result arrived.
+
 **A reply row points at its session row.** The `AgentResponse` an agent step provides, and the
 `ModelCall` a model step provides, keep the reply and what a consumer acts on (`content` or
 `text`, `transcript`, `tool_calls`, `stop`, `finish_reason`, `family`, the task or prompt as
@@ -120,7 +127,8 @@ names no session, since none ran there.
 entries of the rows it hands over next (`ctx.provide`, or what it returns), so a step's reply
 and its `output` row both name the session that produced them. A session whose component
 failed before it handed anything over is in the table under that component's name, and named
-by no entry: a model step whose reply was refused or cut short is one.
+by no entry: a model step whose reply was refused or cut short is one, and so is a session
+that failed.
 
 **Reading it without matrix.** Three files join a board row to the sessions behind it: the
 kind's table, the ledger, and the session table. A row's identity is its position in its file,

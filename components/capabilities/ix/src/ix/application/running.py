@@ -32,7 +32,7 @@ from ix.domain.design import Design, kinds_in_use, missing_adapters
 from ix.domain.errors import ConfigError, UnregisteredError
 from ix.domain.experiment import Experiment, ProbeConfig
 from ix.domain.kind import fill, placed
-from ix.domain.ports import Liveness, Preflight, Sensed, StandIn, Traced
+from ix.domain.ports import Liveness, Preflight, Recorded, Sensed, StandIn, Traced
 from ix.domain.registration import deviations
 from ix.domain.run import (
     Failure,
@@ -96,6 +96,18 @@ class _Quiet:
 
     def event(self, name: str, /, **attributes: Any) -> None:
         return None
+
+
+def _recorded(scope: Scope | None) -> tuple[int, ...]:
+    """The session rows recorded on the scope's behalf since it last handed a row over; none
+    when it is not :class:`Recorded`."""
+    return scope.sessions() if isinstance(scope, Recorded) else ()
+
+
+def _since(before: tuple[int, ...], scope: Scope | None) -> tuple[int, ...]:
+    """The session rows recorded on the scope's behalf since it held ``before``."""
+    held = set(before)
+    return tuple(row for row in _recorded(scope) if row not in held)
 
 
 @contextmanager
@@ -429,11 +441,13 @@ async def invoke(
     trial's failure; a defect in ix itself raises.
 
     Order: the subject is reached, then each sensor that must watch begins, then the probe
-    is applied; the watchers stop, then the subject is released. ``hold`` holds the stack of
-    whatever is open from the moment the trial starts until that stack has been closed, so
-    that a caller whose trial was cancelled mid-flight can still release it.
+    is applied; the watchers stop, then the subject is released. The interaction names the
+    session rows recorded meanwhile, when the scope is :class:`Recorded`. ``hold`` holds the
+    stack of whatever is open from the moment the trial starts until that stack has been
+    closed, so that a caller whose trial was cancelled mid-flight can still release it.
     """
     started = kit.clock_ns()
+    before = _recorded(scope)
     adapters = _adapters(trial, setup, kit)
     subject = setup.experiment.subjects[trial.subject]
     filled = subject.model_copy(update={"options": fill(subject.options, trial.cell)})
@@ -483,6 +497,7 @@ async def invoke(
         watched={kind: dict(seen) for kind, seen in watching.items()},
         failure=failure,
         simulated=simulated,
+        sessions=_since(before, scope),
     )
 
 
@@ -729,7 +744,9 @@ async def sense(
     """Every reading of every interaction that was carried out without a failure.
 
     One reading per metric the design names, from the sensor the design selected for it. A
-    sensor that raises gives each of its metrics a ``sensor`` failure. It needs only the
+    sensor that raises gives each of its metrics a ``sensor`` failure. Each reading names
+    the session rows its sensor made while reading the interaction (a judge's calls), when
+    the scope is :class:`Recorded`. It needs only the
     stored tables, so it can be run again over a run that ended before it got this far.
     """
     planned = {trial.seq: trial for trial in trials}
@@ -750,7 +767,9 @@ async def sense(
                 **{"ix.run.id": setup.manifest.run, "ix.sensor": selected.kind},
                 **{"ix.trial.seq": interaction.seq, "ix.subject": interaction.subject},
             ) as span:
+                before = _recorded(scope)
                 measured = await _measure(kit.sensors[selected.kind], interaction, truth, options)
+                sessions = _since(before, scope)
                 for name in selected.metrics:
                     metric = setup.design.metric(name)
                     if metric is None:
@@ -758,7 +777,8 @@ async def sense(
                     given = measured if isinstance(measured, Failure) else measured.values.get(name)
                     detail = {} if isinstance(measured, Failure) else measured.detail
                     _evaluated(span, name, given)
-                    readings.append(_reading(interaction, selected.kind, metric, given, detail))
+                    reading = _reading(interaction, selected.kind, metric, given, detail)
+                    readings.append(reading.model_copy(update={"sessions": sessions}))
     if scope is not None:
         scope.emit(SENSE_END, readings=len(readings), interactions=len(interactions))
     return readings

@@ -115,7 +115,7 @@ hardline knows:
 | `name`, `family`, `model`, `backend`, `local` | the row that **answered**; `fallback_from` names the one asked for, when a fallback answered |
 | `params` | what that row was sent: `max_tokens`, `temperature`, the structured mode (`None` for `complete`) |
 | `attempt_log` | every backend call, in order: the row asked, why it failed (`None` for the answer), the usage it reported, its latency |
-| `usage` | the sum of the usage in `attempt_log`; a failed call reports none, so it adds nothing |
+| `usage` | the sum of the usage in `attempt_log`; a failed call reports none, so it adds nothing. `input_tokens` is every input token, the cache's included, on every backend; `cache_read_tokens` and `cache_write_tokens` say how many of them the provider's cache served or took |
 | `turns_digest` | the digest of the turns the answering call was sent, `extract`'s schema instruction and repair turns included |
 | `row` | the answering row's digest, and for each field a configuration set, the tier that set it (`cwd ./hardline.yaml`, `matrix.models`, `default of backend openai-compat`) |
 | `request_id`, `latency_ms`, `attempts`, `retries` | the provider's id for the answer; wall time; schema attempts; transient retries |

@@ -34,15 +34,21 @@ FinishReason = Literal["stop", "length", "content_filter", "refusal", "tool_call
 
 class TokenUsage(BaseModel):
     """Tokens one call cost, as the provider counted them. Cache fields are 0 where the
-    provider reports none."""
+    provider reports none.
+
+    ``input_tokens`` is every input token, those read from and written to the cache included,
+    as the GenAI conventions count ``gen_ai.usage.input_tokens`` and as an agent session's
+    ``tokens_input`` counts them; the cache fields say how many of them, and are never added
+    to it again."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    #: Every input token, the cache's included.
     input_tokens: int = 0
     output_tokens: int = 0
-    #: Input tokens served from the provider's prompt cache.
+    #: Of ``input_tokens``, those served from the provider's prompt cache.
     cache_read_tokens: int = 0
-    #: Input tokens written to the provider's prompt cache.
+    #: Of ``input_tokens``, those written to the provider's prompt cache.
     cache_write_tokens: int = 0
 
 

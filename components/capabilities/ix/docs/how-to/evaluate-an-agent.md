@@ -305,7 +305,8 @@ difference, its 95% interval, the method, and the level it was decided at. Besid
 Every trial is on disk under `lab/parse-duration/.ix/runs/<run>/`: `ix.v1.interaction.jsonl`
 keeps each trial's prompt, reply, tool calls, each round's transcript, the files collected,
 how the session stopped, and its turns, tokens, cost and duration; `ix.v1.reading.jsonl`
-holds each reading with the sensor's detail.
+holds each reading with the sensor's detail. Each interaction names its rows of
+`matrix.v1.session.jsonl` (`sessions`), which hold the model that answered each session.
 
 ## Whether a skill fires
 

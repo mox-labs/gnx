@@ -17,12 +17,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from matrix import (
-    Executor,
     JsonlConstructStore,
     Limits,
     MatrixError,
     RunError,
-    cancel_on_signals,
     compose,
 )
 from matrix import NotFoundError as MatrixNotFoundError
@@ -99,7 +97,9 @@ async def execute(
             container = compose(config, registry=registry, context=needs)
             wiring = container.wire()
             relay = [] if on_event is None else [_Relay(on_event)]
-            await Executor([*container.observers, *relay], interrupts=cancel_on_signals).run(
+            # matrix's executor for the composed run: signals become the run's cancellation,
+            # and each session row records the trace and span it ended in.
+            await container.executor(relay).run(
                 wiring,
                 {schema.RUN: manifest, schema.TRIAL: list(trials)},
                 store=JsonlConstructStore(root),

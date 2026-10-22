@@ -203,6 +203,36 @@ async def test_an_agent_session_is_invoke_agent_and_its_tools_execute_tool() -> 
     assert points["gen_ai.execute_tool.duration"]
 
 
+class _Cached:
+    """A runtime whose session read most of its input from the prompt cache."""
+
+    def check(self, definition: Any) -> None:
+        return None
+
+    async def run(self, definition: Any, task: str) -> Any:
+        from matrix import AgentResponse
+
+        return AgentResponse(
+            content="done", tokens_input=100, cache_read_tokens=60, cache_write_tokens=10
+        )
+
+
+async def test_input_tokens_are_counted_once_with_the_cache_inside_them() -> None:
+    """``tokens_input`` already holds the cache's tokens, as the conventions' input tokens
+    do; the counter adds it as it stands and never adds the cache counts again."""
+    from matrix import AgentDefinition, BoundAgent
+
+    observer = _observer()
+    agent = BoundAgent(AgentDefinition(name="cached"), _Cached(), observers=[observer])
+    _EXPORTER.clear()
+    await Executor([observer]).run(wire({"ask": _Asks(agent)}))
+    tokens = _points()["gen_ai.client.inference.usage.input_tokens"]
+    (counted,) = [p for p in tokens if p.attributes.get("gen_ai.agent.name") == "cached"]
+    assert counted.value == 100
+    invoked = {s.name: s for s in _EXPORTER.get_finished_spans()}["invoke_agent cached"]
+    assert invoked.attributes["gen_ai.usage.input_tokens"] == 100
+
+
 async def test_a_failed_session_carries_its_error_type() -> None:
     from matrix import AgentDefinition, BoundAgent, RunError
 

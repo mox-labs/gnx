@@ -166,12 +166,14 @@ async def test_openai_compat_token_param_is_configurable() -> None:
     assert wire.body["max_completion_tokens"] == 64 and "max_tokens" not in wire.body
 
 
-async def test_openai_compat_reads_prompt_cache_tokens() -> None:
+async def test_openai_compat_input_tokens_include_the_cache() -> None:
+    # The protocol's prompt_tokens already counts the cached tokens it details, which is what
+    # the GenAI conventions ask of gen_ai.usage.input_tokens. They are kept, not added again.
     body = _chat()
     body["usage"]["prompt_tokens_details"] = {"cached_tokens": 7}
     wire = _answer(body)
     raw = await OpenAICompatBackend(wire.transport).complete(_spec(), _request(), None)
-    assert raw.usage.cache_read_tokens == 7
+    assert (raw.usage.input_tokens, raw.usage.cache_read_tokens) == (11, 7)
 
 
 async def test_openai_compat_sends_no_key_it_was_not_given(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -218,7 +220,10 @@ async def test_anthropic_maps_request_and_response() -> None:
     assert (raw.model, raw.request_id) == ("claude-x", "msg_1")
 
 
-async def test_anthropic_reports_cache_tokens() -> None:
+async def test_anthropic_input_tokens_include_the_cache() -> None:
+    # The API's input_tokens counts only the tokens after the last cache breakpoint; the ones
+    # read from and written to the cache are reported apart. input_tokens means one thing on
+    # every backend: every input token, the cache's included.
     usage = {
         "input_tokens": 3,
         "output_tokens": 1,
@@ -229,6 +234,7 @@ async def test_anthropic_reports_cache_tokens() -> None:
     raw = await AnthropicBackend(wire.transport).complete(
         _spec(backend="anthropic"), _request(), "k"
     )
+    assert raw.usage.input_tokens == 3 + 40 + 9
     assert (raw.usage.cache_read_tokens, raw.usage.cache_write_tokens) == (40, 9)
 
 

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added: a verdict traces to the model that answered
+
+`docs/design/2026-10-19-record.md` §19 has the reasons.
+
+- **Each interaction and reading names the sessions behind it.** `Interaction.sessions` holds
+  the rows of the run's `matrix.v1.session` table behind the trial: every agent session
+  (each round of a loop) and model call the subject made, failed ones included.
+  `Reading.sessions` holds the rows its sensor made to read the trial: a judge's calls or
+  sessions. A reading joins its interaction on `seq`, and each row says which runtime and
+  which model answered, its usage and ids, and whether it failed and why. The README shows
+  the join in DuckDB, and `ix --skill -r running` with `jq`.
+- **ix's own model calls are recorded.** The `model-call` subject and a judge on a model
+  runtime made their calls outside matrix's session table; each call is now a row of it,
+  failed or not, as a model step's is. Agent sessions, the judge's included, are recorded
+  under their runtime's type URL.
+- **Session rows carry the trace they ran in.** A run's executor is matrix's composed one, so
+  with OpenTelemetry active each session row holds the trace and span ids of the trial or
+  sensor it ran under.
+
 ### Added: a verdict is tied to what it judged
 
 The experiment's digest covers its document, which names the subject's files by path. Now

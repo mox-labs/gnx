@@ -6,9 +6,9 @@ which tool applies a stimulus (:class:`Probe`), how a measurement is taken
 :class:`Scope` is all ix assumes of whatever runs its work. The rest are optional, so an
 adapter need not answer what it cannot tell: a subject or a sensor may also be a
 :class:`Review` and a :class:`StandIn`, a subject a :class:`Preflight`, an environment a
-:class:`Liveness`, and a scope :class:`Traced`. Without one there is nothing to check, to
-stand in or to trace, and the run proceeds. A kind's options, effects, facets and metrics
-are data (:mod:`ix.domain.kind`), not part of these ports.
+:class:`Liveness`, and a scope :class:`Traced` and :class:`Recorded`. Without one there is
+nothing to check, to stand in, to trace or to name, and the run proceeds. A kind's options,
+effects, facets and metrics are data (:mod:`ix.domain.kind`), not part of these ports.
 
 Each port is named for what it is to a run; what an experiment writes for one is its config
 (:class:`~ix.domain.experiment.SubjectConfig`, ``ProbeConfig``, ``SensorConfig``,
@@ -89,6 +89,18 @@ class Span(Protocol):
 
     def event(self, name: str, /, **attributes: Any) -> None:
         """Record that something happened inside the span."""
+        ...
+
+
+@runtime_checkable
+class Recorded(Protocol):
+    """Optional for a :class:`Scope`: the model sessions recorded on its behalf. Whatever
+    runs ix keeps a table of the agent sessions and model calls its adapters made, failed
+    ones included (matrix's ``matrix.v1.session``); this names their rows, so an interaction
+    or a reading can say which sessions are behind it."""
+
+    def sessions(self) -> tuple[int, ...]:
+        """The rows recorded since the scope last handed a row over, in the order made."""
         ...
 
 

@@ -597,6 +597,10 @@ class _Hooks:
             return None
         return self._session.record_session(self._name, row)
 
+    def sessions(self) -> tuple[int, ...]:
+        """The session rows the component ran since its last hand-over."""
+        return self._session.since(self._name)
+
     def defer(self, release: Release) -> None:
         if not callable(release):
             raise TypeError(f"defer() takes a callable, got {type(release).__name__}")
@@ -1093,7 +1097,7 @@ class _Session:
             for kind, value in result.items()
             for row in _rows(value)
         ]
-        behind = tuple(self._sessions.get(name, ()))
+        behind = self.since(name)
         for kind, row in returned:
             self._record(name, kind, row, checked=True, sessions=behind)
         self._sessions.pop(name, None)
@@ -1109,12 +1113,17 @@ class _Session:
                 declared=sorted(step.provides),
             )
         try:
-            self._record(name, kind, row, sessions=tuple(self._sessions.get(name, ())))
+            self._record(name, kind, row, sessions=self.since(name))
         except StoreError as e:
             step.progress.record_store_failure(e)
             self._halt("store failed", "run_failed")
             raise
         self._sessions.pop(name, None)
+
+    def since(self, name: str) -> tuple[int, ...]:
+        """The session rows component ``name`` ran since its last hand-over: those the next
+        row it hands over names."""
+        return tuple(self._sessions.get(name, ()))
 
     def record_session(self, name: str, row: Session) -> int:
         """Record a session component ``name`` ran, with the trace it ended in; durable when

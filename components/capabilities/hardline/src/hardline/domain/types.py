@@ -121,15 +121,23 @@ class Request(BaseModel):
 
 
 class Usage(BaseModel):
-    """Tokens one call (or a sum of calls) cost. Cache fields are 0 where unreported."""
+    """Tokens one call (or a sum of calls) cost. Cache fields are 0 where unreported.
+
+    ``input_tokens`` is every input token, the ones read from and written to the provider's
+    cache included, on every backend: the GenAI semantic conventions' meaning for
+    ``gen_ai.usage.input_tokens``, whose cache counts "SHOULD be included" in it. The two cache
+    fields say how many of ``input_tokens`` the cache served or took, and are never added to it
+    again. A backend whose provider reports them apart (Anthropic's Messages API) adds them in.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    #: Every input token, the cache's included.
     input_tokens: int = 0
     output_tokens: int = 0
-    #: Input tokens served from the provider's prompt cache.
+    #: Of ``input_tokens``, those served from the provider's prompt cache.
     cache_read_tokens: int = 0
-    #: Input tokens written to the provider's prompt cache.
+    #: Of ``input_tokens``, those written to the provider's prompt cache.
     cache_write_tokens: int = 0
 
     def __add__(self, other: Usage) -> Usage:

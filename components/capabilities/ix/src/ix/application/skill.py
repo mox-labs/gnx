@@ -950,6 +950,13 @@ then the report (`ix.v1.report`) on stdout.
   settings): one JSONL file per table
   (`ix.v1.trial`, `ix.v1.interaction`, `ix.v1.reading`, ...), written as the run goes. A
   trial is on disk when it finishes, so a run that is killed keeps what it had.
+- **From a reading to the model that answered.** A reading joins its interaction on `seq`.
+  Each interaction's `sessions`, and each reading's (a judge's own calls), are row numbers,
+  from 0, in `matrix.v1.session.jsonl`: one row per agent session or model call, failed
+  ones included, with the runtime, the model that answered and its `family`, `usage`, the
+  ids, `attempt_log`, and `status` (`failed` with its `reason`). `jq -c '{{seq, sessions}}'
+  ix.v1.interaction.jsonl` lists them; `sed -n "$((N + 1))p" matrix.v1.session.jsonl` reads
+  row N.
 - **What a verdict is about** is in the manifest (`ix.v1.run`) and the report: the digest
   of each file the subjects and sensors name (`contents`: paths and digests, never what
   the files hold), the git commit and whether a tracked file differed from it
@@ -1185,7 +1192,9 @@ After it, on stderr, the exit code, what it means and the next step (`exit` in `
 A runtime warning, such as a permissive `permission_mode`, is said once per run, in
 `warnings`. Each trial's record keeps the prompt, the reply, every
 tool call, each round's transcript, how the session stopped, its turns, tokens, cost and
-duration (`ix.v1.interaction`), and the run's events (`events.jsonl`).
+duration (`ix.v1.interaction`), the rows of `matrix.v1.session` behind it (`sessions`: the
+model that answered each round), and the run's events (`events.jsonl`). The `running`
+reference shows how to follow a reading to them.
 
 ## What runs here, and what it can touch
 

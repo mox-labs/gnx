@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from matrix.domain.errors import AgentRuntimeError
 from matrix.domain.model_call import FinishReason  # noqa: TC001 -- pydantic reads it
 from matrix.domain.observer import (
     AGENT_END,
@@ -195,7 +196,8 @@ class BoundAgent:
 
     Inside a run, each session it runs is recorded in the run's ``matrix.v1.session`` table,
     with ``runtime_url`` (the runtime's type URL) and ``drives`` (its registry entry's) when
-    the binder knows them, and the response it returns points at that row (``session``).
+    the binder knows them, and the response it returns points at that row (``session``). A
+    session that fails is recorded too, as failed, before its error is raised.
     """
 
     def __init__(
@@ -257,6 +259,7 @@ class BoundAgent:
         except Exception as e:
             fields.update(status="error", error=str(e), reason=getattr(e, "reason", None))
             fields["kind"] = getattr(e, "kind", type(e).__name__)
+            self._record(task, None if not isinstance(e, AgentRuntimeError) else e.response, e)
             raise
         else:
             fields.update(
@@ -271,7 +274,8 @@ class BoundAgent:
             )
             for call in response.tool_calls:
                 await self._tool(call, span, run_id, component)
-            return self._recorded(response, task)
+            row = self._record(task, response)
+            return response if row is None else response.model_copy(update={"session": row})
         finally:
             fields["duration_ms"] = int((time.monotonic() - started) * 1000)
             ended = Event(
@@ -284,20 +288,23 @@ class BoundAgent:
             )
             await emit(self._observers, ended)
 
-    def _recorded(self, response: AgentResponse, task: str) -> AgentResponse:
-        """``response``, pointing at its session row once the run it is part of records it."""
+    def _record(
+        self, task: str, response: AgentResponse | None, error: Exception | None = None
+    ) -> int | None:
+        """Record the session in the run this is part of, whether it replied or failed; its
+        row, or None outside a run."""
         definition = self._definition
         sent = digest({"definition": definition.model_dump(mode="json"), "task": task})
-        row = record_session(
+        return record_session(
             agent_session(
                 response,
                 agent=definition.name,
                 sent=sent,
                 runtime=self._runtime_url,
                 drives=self._drives,
+                error=error,
             )
         )
-        return response if row is None else response.model_copy(update={"session": row})
 
     async def _tool(
         self, call: dict[str, Any], parent: str, run_id: str | None, component: str | None

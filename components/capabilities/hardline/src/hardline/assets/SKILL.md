@@ -36,7 +36,9 @@ hardline complete qwen3-8b --json "..."                   # full Completion as J
 `attempt_log`, `turns_digest`, `row`). Report the `family` when a second model's answer is used
 as evidence: a check by the same family as the author is not an independent check. When
 `fallback_from` is set, the model that answered is not the one asked for — use the `family`
-that actually answered, not the one in `fallback_from`.
+that actually answered, not the one in `fallback_from`. `usage.input_tokens` counts every input
+token, the cache's included; `cache_read_tokens` and `cache_write_tokens` are part of it, not
+added to it.
 
 **Is it an answer?** Only when `finish_reason` is `"stop"`, `refusal` is `null` and `text` is not
 empty. `"length"` means the reply was cut at `max_tokens` (raise `--max-tokens` and ask again);

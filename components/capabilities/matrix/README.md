@@ -135,8 +135,9 @@ holds while it lives. Provenance is one more table,
 the ledger (`matrix.v1.ledger`): which component handed each row over, when, and in what
 order. A ledger entry is written before its row, so a kill can leave an entry with no row but
 never a row nothing accounts for; a reader reports such an entry as torn. Every agent session
-and model call a component runs is a row of one more table, `matrix.v1.session`: the
-runtime, the model that answered, why it stopped, usage, ids (the runtime's, and the
+and model call a component runs, a failed one included, is a row of one more table,
+`matrix.v1.session`: whether it failed and why, the runtime, the model that answered, why it
+stopped, usage, ids (the runtime's, and the
 OpenTelemetry trace and span it ended in), fallback and attempts, and a digest of what was
 sent. A step's reply row points at it (`session`), and the ledger entry of every row a
 component hands over names the sessions behind it. `docs/explanation/data-model.md` joins the

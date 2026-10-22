@@ -10,6 +10,11 @@ here, one row per session, beside the board rows the session produced:
 * the **ledger entry** of every row a component hands over names the sessions that
   component ran since its previous hand-over (``LedgerEntry.sessions``).
 
+A session that **failed** is a row too (``status: failed``, with its ``reason`` and
+``error``): it was asked for, and it may have spent tokens and made attempts. The row holds
+what the runtime's error carried of it (:attr:`ModelRuntimeError.call`,
+:attr:`AgentRuntimeError.response`), and is the failed component's, like any of its sessions.
+
 Like the ledger, the table is matrix's own: no component provides or requires it. It is
 written through the Construct like any table, durably and in ledger order, by whatever ran
 the session inside a run: a :class:`~matrix.domain.agent.BoundAgent`, or a model step.
@@ -40,7 +45,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from matrix.domain.agent import AgentResponse
-    from matrix.domain.model_call import ModelCall
+    from matrix.domain.model_call import ModelCall, ModelRequest
 
 SESSION = "matrix.v1.session"
 
@@ -55,6 +60,14 @@ class Session(BaseModel):
 
     #: Which port ran it: ``agent-runtime`` (a session) or ``model-runtime`` (one call).
     port: Literal["agent-runtime", "model-runtime"]
+    #: ``failed`` when the runtime raised instead of replying; ``completed`` when it replied,
+    #: whatever the reply (``stop`` and ``finish_reason`` say how it ended).
+    status: Literal["completed", "failed"] = "completed"
+    #: Why it failed, as the runtime classified it (``rate_limited``, ``timeout``, ...); None
+    #: when it did not fail, or the runtime raised an error it did not classify.
+    reason: str | None = None
+    #: The error's message, when it failed.
+    error: str | None = None
     #: The runtime's type URL (``matrix.v1.agent-runtime.claude-sdk``), when the caller knew it.
     runtime: str | None = None
     #: The distributions the runtime drives (its registry entry's ``drives``).
@@ -113,15 +126,44 @@ def digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def call_sent(request: ModelRequest) -> str:
+    """The ``sent`` digest of a model call's request: of its prompt, system prompt, model
+    and output schema. A caller that records a call it made itself digests its request with
+    this, as a model step does, so equal requests have equal digests whoever made them."""
+    output = request.output
+    return digest(
+        {
+            "prompt": request.prompt,
+            "system": request.system,
+            "model": request.model,
+            "output": None if output is None else output.model_json_schema(),
+        }
+    )
+
+
 def agent_session(
-    response: AgentResponse,
+    response: AgentResponse | None,
     *,
     agent: str,
     sent: str,
     runtime: str | None = None,
     drives: tuple[str, ...] = (),
+    error: Exception | None = None,
 ) -> Session:
-    """The session row of an agent session, from what its runtime reported."""
+    """The session row of an agent session, from what its runtime reported.
+
+    For a session that failed, pass the ``error`` and what the runtime knew of the session
+    (the error's ``response``, when it is an :class:`AgentRuntimeError` that carries one;
+    else None): the row says it failed, and why."""
+    if response is None:
+        return Session(
+            port="agent-runtime",
+            runtime=runtime,
+            drives=drives,
+            agent=agent,
+            sent=sent,
+            **_failure(error),
+        )
     reported = (
         response.tokens_input,
         response.tokens_output,
@@ -154,13 +196,28 @@ def agent_session(
         turns=response.num_turns,
         session_id=response.session_id,
         sent=sent,
+        **_failure(error),
     )
 
 
 def call_session(
-    call: ModelCall, *, sent: str, runtime: str | None = None, drives: tuple[str, ...] = ()
+    call: ModelCall | None,
+    *,
+    sent: str,
+    runtime: str | None = None,
+    drives: tuple[str, ...] = (),
+    error: Exception | None = None,
 ) -> Session:
-    """The session row of a model call, from what its runtime reported."""
+    """The session row of a model call, from what its runtime reported.
+
+    For a call that failed, pass the ``error`` and what the runtime knew of the call (the
+    error's ``call``, when it is a :class:`ModelRuntimeError` that carries one: for hardline,
+    every attempt made and the usage they reported; else None): the row says it failed, and
+    why."""
+    if call is None:
+        return Session(
+            port="model-runtime", runtime=runtime, drives=drives, sent=sent, **_failure(error)
+        )
     return Session(
         port="model-runtime",
         runtime=runtime,
@@ -184,7 +241,21 @@ def call_session(
         turns_digest=call.turns_digest,
         row=call.row,
         sent=sent,
+        **_failure(error),
     )
+
+
+def _failure(error: Exception | None) -> dict[str, Any]:
+    """A failed session's ``status``, ``reason`` and ``error``; nothing for one that replied."""
+    if error is None:
+        return {}
+    reason = getattr(error, "reason", None)
+    message = getattr(error, "message", None)
+    return {
+        "status": "failed",
+        "reason": reason if isinstance(reason, str) else None,
+        "error": message if isinstance(message, str) else f"{type(error).__name__}: {error}",
+    }
 
 
 #: Records a session in the run of the component running in this task and returns its row,
