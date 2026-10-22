@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import pytest
@@ -211,6 +212,21 @@ async def test_hardline_failures_keep_whose_problem_they_are(
     with pytest.raises(ModelRuntimeError) as e:
         await HardlineModelRuntime(models).call(ModelRequest(prompt="hi", model="x"))
     assert e.value.reason == reason
+
+
+def test_a_runtime_handed_the_registry_still_says_when_hardline_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Moving a handed registry's problems to ``matrix.models`` must not cost an error that
+    has no problems its facts: a missing hardline is still ``dependency_missing``."""
+    monkeypatch.setitem(sys.modules, "hardline", None)  # importing it now fails
+    config = MatrixConfig.model_validate(
+        {"models": MODELS, "model_runtimes": {"h": {"type": "hardline"}}}
+    )
+    with pytest.raises(ConfigError) as raised:
+        compose(config, registry=default_registry(discover=False))
+    (found,) = raised.value.problems
+    assert (found.path, found.kind) == ("matrix.model_runtimes.h", "dependency_missing")
 
 
 async def test_a_failed_call_is_a_classified_model_runtime_error() -> None:

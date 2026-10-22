@@ -626,14 +626,15 @@ def build_runtimes(
             built[name] = registry.create(point, url, options, needs=needs, where=at)
         except MatrixError as e:
             handed = models_at and options.get("models") is None and needs.get("models")
-            found.add(_rerooted(e, f"{at}.models", models_at) if handed else e, at)
+            found.add(_rerooted(e, f"{at}.models", models_at) if handed and e.problems else e, at)
     if problems is None and found.found:
         raise invalid(f"the {point}s cannot be built", found.found)
     return built
 
 
 def _rerooted(error: MatrixError, path: str, to: str) -> MatrixError:
-    """``error`` with each problem at ``path`` (or under it) moved to ``to``."""
+    """``error``'s problems, each at ``path`` (or under it) moved to ``to``: what
+    :meth:`_Problems.add` reads of an error that has problems."""
     moved = [
         p.model_copy(update={"path": to + p.path[len(path) :]})
         if p.path == path or p.path.startswith(f"{path}.")
