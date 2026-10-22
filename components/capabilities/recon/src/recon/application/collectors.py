@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from recon.domain.capture import CaptureLog
     from recon.domain.collector import Collector, Plugins, Transform
     from recon.domain.converters import DocumentConverter
+    from recon.domain.deadline import Deadline
     from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
     from recon.domain.shell import ShellRunner
@@ -48,10 +49,11 @@ class CollectorPorts:
     """The driven ports every survey's collectors are built over, bound once by the root.
 
     ``requester`` builds the survey's one Requester (one rate limit per source, one span per
-    request in the survey's telemetry); ``user_agent`` is what an HTTP collector sends when
+    request in the survey's telemetry, every send and wait inside its deadline);
+    ``user_agent`` is what an HTTP collector sends when
     its source sets none."""
 
-    requester: Callable[[Telemetry], Requester]
+    requester: Callable[[Telemetry, Deadline], Requester]
     converter: DocumentConverter
     shell: ShellRunner
     user_agent: str
@@ -174,18 +176,20 @@ def build_collectors(
     mission_dir: Path,
     config: ReconConfig,
     telemetry: Telemetry,
+    deadline: Deadline,
 ) -> SurveyCollectors:
     """One collector for each installed type ``config`` uses, sharing one Requester and the
     survey's ``telemetry``, and the types whose factory raised. Each factory is handed a
     ``ScopedEnv`` over ``env`` holding only the variables ``config`` declares for that type's
     sources."""
     transforms = confined_transforms(plugins.transforms, config, mission_dir)
-    requester = ports.requester(telemetry)
+    requester = ports.requester(telemetry, deadline)
     ctx = CollectorContext(
         requester=requester,
         converter=ports.converter,
         shell=ports.shell,
         telemetry=telemetry,
+        deadline=deadline,
         transforms=transforms,
         mission_dir=mission_dir,
         env={},

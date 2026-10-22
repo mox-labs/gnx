@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from recon.domain.clock import Clock
     from recon.domain.collector import Transform
     from recon.domain.converters import DocumentConverter
+    from recon.domain.deadline import Deadline
     from recon.domain.errors import Problem
     from recon.domain.http import Requester
     from recon.domain.shell import ShellRunner
@@ -63,8 +64,9 @@ TRANSFORMS_GROUP = "recon.transforms"
 
 type Discover = Callable[[str], Iterable[EntryPoint]]
 
-#: Builds a survey's Requester, reporting through the survey's telemetry.
-type RequesterFactory = Callable[[Telemetry], Requester]
+#: Builds a survey's Requester, reporting through the survey's telemetry and keeping to its
+#: deadline.
+type RequesterFactory = Callable[[Telemetry, Deadline], Requester]
 
 
 def _discover(group: str) -> list[EntryPoint]:
@@ -173,12 +175,12 @@ def root(
     )
 
 
-def _http_requester(clock: Clock, telemetry: Telemetry) -> Requester:
+def _http_requester(clock: Clock, telemetry: Telemetry, deadline: Deadline) -> Requester:
     """The survey's Requester over httpx2, imported only when a survey runs, so planning and
     status never import it."""
     from recon.adapters._out.http_requester import HttpRequester
 
-    return HttpRequester(RateLimiter(clock), clock, telemetry)
+    return HttpRequester(RateLimiter(clock), clock, telemetry, deadline=deadline)
 
 
 def configure_telemetry(env: Mapping[str, str] | None = None) -> list[Problem]:

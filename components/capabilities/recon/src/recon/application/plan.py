@@ -193,6 +193,7 @@ def build_plan(
             catalog=[src for _, src in sources],
             collectors=[entry for _, entry in entries],
             preserve_raw=raw.get("preserve_raw", False),
+            deadline=raw.get("deadline"),
         )
     return Plan(
         config=config,
@@ -260,6 +261,19 @@ def _top_level_problems(raw: dict[Any, Any]) -> list[Problem]:
                 "empty: list at least one collector",
                 kind="missing_key",
                 fix="add at least one entry under `collectors:`",
+            )
+        )
+    deadline = raw.get("deadline")
+    if deadline is not None and (
+        isinstance(deadline, bool) or not isinstance(deadline, int | float) or deadline <= 0
+    ):
+        problems.append(
+            Problem(
+                "deadline",
+                "must be a number of seconds above 0",
+                kind="invalid_value",
+                fix="deadline: 600 (the seconds the whole survey may take), or remove it",
+                got=_scalar(deadline),
             )
         )
     if not isinstance(raw.get("preserve_raw", False), bool):

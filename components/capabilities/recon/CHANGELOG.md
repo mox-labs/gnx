@@ -20,7 +20,11 @@
 - **`CollectorContext` carries the survey's `telemetry`**, so a plugin type that does its own I/O opens spans that nest under its table's.
 - **A survey's collectors and requester are closed when it ends**, however it ends. One collector serves every table of its type, so it may hold a session across them (a stdio server); recon calls its optional `close()` once. The requester keeps one HTTP session per survey (connections are reused between requests; no cookie carries over) and closes it.
 
+- **A survey and each table can be bounded in time.** `deadline:` at the top of a mission bounds the whole survey, and `deadline:` on a collector each of its tables, in seconds. Requests, waits for the rate limit or a retry, and commands are cut to what is left; a table cut short, and every table not started by the survey's deadline, fails as `transient` with a fix naming the `deadline:` to raise. `CollectorContext.deadline` gives a plugin type the same bound.
+
 ### Fixed
+
+- **A source's `timeout` bounds each send in wall time.** It was httpx's per-phase timeout, so a server that sent its body a byte at a time within it held the table, and every table after it, for as long as it liked: a source with `timeout: 2` sending a 40-byte body one byte every 0.5 s took 19.9 s and succeeded. The body is now read against the timeout, chunk by chunk; the same request fails as `transient` in 9.2 s (three sends of 2 s and the backoff between them), and in 5.2 s under a table `deadline: 5`.
 
 - **The hook route's `tool_input` is documented as kept whole.** The capture log's docs said a credential never reaches it, which held only for what recon fetches itself: a `PostToolUse` payload's `tool_input` is stored as given, so a key an MCP tool takes as an argument is in the log. SECURITY.md (boundary 5) and the capture format now say so; recon does not guess at which arguments are keys.
 

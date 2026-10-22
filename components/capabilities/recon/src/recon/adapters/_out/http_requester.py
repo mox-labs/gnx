@@ -30,8 +30,12 @@ How httpx2 (2.10) is used, each choice checked against its source:
 
 * **Redirects are followed** (``follow_redirects=True``; httpx2's default is not to), up to
   its default 20, and the request hook sees every hop, so the credential rule above holds.
-* **Timeouts are httpx2's, per phase**: ``source.timeout`` bounds connecting, each read and
-  each write, not the request as a whole.
+* **Timeouts.** httpx2's are per phase (connecting, each read, each write), so a body
+  trickled within one would take as long as the server liked. ``source.timeout`` is given to
+  httpx2 per phase and also bounds each send's wall time, checked chunk by chunk as the body
+  is read; past it the send fails as a read timeout (``transient``, retried). A deadline
+  the mission set (:mod:`recon.domain.deadline`) shortens both when less is left, and a wait
+  for a token, a backoff or a Retry-After that would end past it fails the request at once.
 * **TLS** is verified against the operating system's trust store, through ``truststore``,
   which httpx2 uses by default.
 * **The environment is trusted** (``trust_env``, the default): a proxy, ``SSL_CERT_FILE``
@@ -62,6 +66,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from recon.domain.clock import Clock
+    from recon.domain.deadline import Deadline
     from recon.domain.models import SourceEntry
     from recon.domain.ratelimit import RateLimiter
 
@@ -171,17 +176,46 @@ class _StatusError(httpx2.HTTPStatusError):
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
+class _SendBudget:
+    """The wall time one send may take, from connecting to its body's last byte: the
+    source's ``timeout``, or what is left of the deadline when that is less. httpx2's own
+    timeouts are per phase, so the body is read against this, chunk by chunk."""
+
+    def __init__(self, clock: Clock, timeout: float, deadline: Deadline | None) -> None:
+        self._clock = clock
+        self._started = clock.monotonic()
+        self._deadline = deadline
+        self.seconds = deadline.limit(timeout) if deadline is not None else timeout
+        self._by_deadline = self.seconds < timeout
+
+    def check(self, request: httpx2.Request) -> None:
+        """Raise once the send has run past its budget: the deadline's error when the
+        deadline set it, else a read timeout, which is retried as any timeout is."""
+        if self._clock.monotonic() - self._started <= self.seconds:
+            return
+        if self._by_deadline and self._deadline is not None:
+            raise self._deadline.exceeded()
+        raise httpx2.ReadTimeout(
+            f"the response took longer than its source's timeout ({self.seconds:g}s)",
+            request=request,
+        )
+
+
 def _send(
-    client: httpx2.Client, request: httpx2.Request, source: SourceEntry, clock: Clock
+    client: httpx2.Client,
+    request: httpx2.Request,
+    source: SourceEntry,
+    clock: Clock,
+    budget: _SendBudget,
 ) -> HttpResponse:
     resp = client.send(request, stream=True)
     try:
         if not resp.is_success:
-            snippet = _decode(resp, _read(resp, _ERROR_SNIPPET_BYTES))
+            snippet = _decode(resp, _read(resp, _ERROR_SNIPPET_BYTES, budget))
             asked = _seconds_asked(resp.headers.get("retry-after", "").strip(), clock.now())
             raise _StatusError(resp, snippet, asked)
         url = reported_url(str(request.url).split("?", 1)[0], source.auth.param)
-        body = _read_bounded(resp, source, url)
+        body = _read_bounded(resp, source, url, budget)
         return _to_domain(resp, body)
     finally:
         resp.close()
@@ -214,17 +248,20 @@ def _span_attributes(
     }
 
 
-def _read(resp: httpx2.Response, limit: int) -> bytes:
+def _read(resp: httpx2.Response, limit: int, budget: _SendBudget) -> bytes:
     """The first ``limit`` bytes of the body; the rest is left unread."""
     buffer = bytearray()
     for chunk in resp.iter_bytes():
+        budget.check(resp.request)
         buffer += chunk
         if len(buffer) >= limit:
             break
     return bytes(buffer[:limit])
 
 
-def _read_bounded(resp: httpx2.Response, source: SourceEntry, url: str) -> bytes:
+def _read_bounded(
+    resp: httpx2.Response, source: SourceEntry, url: str, budget: _SendBudget
+) -> bytes:
     """The whole body, or a CollectionError once it is known to exceed ``max_bytes``.
 
     A declared Content-Length over the limit is refused before a byte is read. Otherwise
@@ -238,6 +275,7 @@ def _read_bounded(resp: httpx2.Response, source: SourceEntry, url: str) -> bytes
     chunks: list[bytes] = []
     size = 0
     for chunk in resp.iter_bytes():
+        budget.check(resp.request)
         size += len(chunk)
         if size > limit:
             raise _too_large(source, url)
@@ -291,9 +329,11 @@ class HttpRequester:
         clock: Clock,
         telemetry: Telemetry | None = None,
         *,
+        deadline: Deadline | None = None,
         transport: httpx2.BaseTransport | None = None,
     ) -> None:
         self._rate_limiter = rate_limiter
+        self._deadline = deadline
         self._clock = clock
         self._telemetry = telemetry if telemetry is not None else Telemetry((), clock)
         self._transport = transport
@@ -358,7 +398,7 @@ class HttpRequester:
             stop=stop_after_attempt(3),
             wait=_retry_wait,
             retry=retry_if_exception(_is_retryable),
-            sleep=self._clock.sleep,
+            sleep=self._wait,
             reraise=True,
         )
         # Sync on purpose: a survey runs its requests one at a time, so async buys nothing.
@@ -368,10 +408,14 @@ class HttpRequester:
         self._origin = (target, source.auth.header)
 
         def attempt() -> HttpResponse:
+            if self._deadline is not None:
+                self._deadline.check()
+            self._rate_limiter.acquire(source, self._deadline)
+            budget = _SendBudget(self._clock, source.timeout, self._deadline)
             request = client.build_request(
-                method, target, headers=headers or {}, json=json_body, timeout=source.timeout
+                method, target, headers=headers or {}, json=json_body, timeout=budget.seconds
             )
-            return self._attempt(client, request, source, next(resends))
+            return self._attempt(client, request, source, next(resends), budget)
 
         try:
             return retrying(attempt)
@@ -387,6 +431,11 @@ class HttpRequester:
                 status = f" (httpx2.{type(exc).__name__}: {exc})"
             kind = classify_http_failure(exc)
             fix = _REQUEST_FIX.get(type(exc), _HTTP_FIX[kind])
+            if isinstance(exc, httpx2.TimeoutException):
+                fix = (
+                    f"the source was slower than its timeout ({source.timeout:g}s): raise "
+                    f"timeout: on source {source.name!r}, or retry the survey later"
+                )
             wait = _retry_after(exc)
             shown = reported_url(url, source.auth.param)
             if wait is not None and wait > _MAX_RETRY_AFTER_S:
@@ -396,18 +445,28 @@ class HttpRequester:
                 msg = f"HTTP request failed after retries: {shown}{status}"
             raise CollectionError(msg + snippet, kind=kind, fix=fix) from exc
 
+    def _wait(self, seconds: float) -> None:
+        """A wait before a retry, on the clock; one that would end past the deadline fails
+        the request now instead."""
+        if self._deadline is not None:
+            self._deadline.allow_wait(seconds)
+        self._clock.sleep(seconds)
+
     def _attempt(
-        self, client: httpx2.Client, request: httpx2.Request, source: SourceEntry, resend: int
+        self,
+        client: httpx2.Client,
+        request: httpx2.Request,
+        source: SourceEntry,
+        resend: int,
+        budget: _SendBudget,
     ) -> HttpResponse:
-        """One send of ``request``, as one client span, once the source's rate limit lets it
-        go: a resend draws a token as the first send did."""
-        self._rate_limiter.acquire(source)
+        """One send of ``request``, as one client span."""
         attributes = _span_attributes(request, source, resend)
         with self._telemetry.span(HTTP_REQUEST, attributes, kind="client") as span:
             # Each send names its own span as the parent of whatever the server records.
             request.headers.update(self._telemetry.trace_headers(span))
             try:
-                response = _send(client, request, source, self._clock)
+                response = _send(client, request, source, self._clock, budget)
             except _StatusError as exc:
                 code = exc.response.status_code
                 span.set("http.response.status_code", code)

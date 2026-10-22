@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from recon.domain.capture import CaptureLog
     from recon.domain.converters import DocumentConverter
+    from recon.domain.deadline import Deadline
     from recon.domain.errors import Problem
     from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, SourceEntry
@@ -75,8 +76,10 @@ class CollectorContext:
     HTTP collector in a run. ``shell`` runs a command. ``telemetry`` is the survey's: a
     span opened there (``with ctx.telemetry.span("acme.call", {...}):``) nests under the
     table's ``recon.collect`` span, in the event log and in OpenTelemetry alike.
-    ``mission_dir`` anchors relative paths in a config. ``user_agent`` is what an HTTP
-    collector sends when its source sets none.
+    ``deadline`` is the survey's: what is left of the survey's and the table's bounds in
+    time (``remaining()``, ``limit(seconds)``, ``check()``), which a type that waits or runs
+    a command keeps to, as the requester does. ``mission_dir`` anchors relative paths in a
+    config. ``user_agent`` is what an HTTP collector sends when its source sets none.
 
     ``env`` is not the process environment. It holds only the variables the mission
     declares for this type: the ``auth.env`` names of the catalog sources its collectors
@@ -87,6 +90,7 @@ class CollectorContext:
     converter: DocumentConverter
     shell: ShellRunner
     telemetry: Telemetry
+    deadline: Deadline
     transforms: Mapping[str, Transform]
     mission_dir: Path
     env: Mapping[str, str]

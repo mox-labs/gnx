@@ -73,6 +73,8 @@ class SourceEntry(BaseModel):
 
     ``max_bytes`` bounds one HTTP response body from this source, counted after any
     content-encoding is undone. A larger body fails the table instead of being buffered.
+    ``timeout`` bounds, in seconds of wall time, one send of a request (from connecting to
+    its body's last byte) and a ``cli`` command.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -100,10 +102,10 @@ class CollectorEntry(BaseModel):
     The fields here are the ones recon itself reads, for every type: `name`, `type`,
     `source`, `type_url` (what the output table's records are; recorded in the archive's
     meta.yaml, never injected into the records), `normalize` (output column to
-    ``path.to.field|$transform``), and `extract` (where the records are in a body, for a type
-    that declares ``extracts``). Every other key is the type's own setting (`run:` for
-    `cli`, `endpoint:` for `api`), kept in :attr:`settings` and validated by the type's own
-    schema at plan time.
+    ``path.to.field|$transform``), `extract` (where the records are in a body, for a type
+    that declares ``extracts``) and `deadline` (the seconds each of its tables may take).
+    Every other key is the type's own setting (`run:` for `cli`, `endpoint:` for `api`),
+    kept in :attr:`settings` and validated by the type's own schema at plan time.
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
@@ -114,6 +116,7 @@ class CollectorEntry(BaseModel):
     type_url: str = DEFAULT_RECORDS_TYPE_URL
     extract: str | None = None
     normalize: dict[str, str] | None = None
+    deadline: float | None = Field(default=None, gt=0)
 
     @property
     def settings(self) -> dict[str, Any]:
@@ -142,6 +145,9 @@ class ReconConfig(BaseModel):
       - Audit: prove what the server actually said
       - Experimentation: try a different normalize spec on the same snapshot
     Default is off because raw captures roughly double disk usage per mission.
+
+    `deadline` is the seconds the whole survey may take; a table it cuts, and every table
+    not started by then, fails as ``transient``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -149,3 +155,4 @@ class ReconConfig(BaseModel):
     catalog: list[SourceEntry] = []
     collectors: list[CollectorEntry]
     preserve_raw: bool = False
+    deadline: float | None = Field(default=None, gt=0)

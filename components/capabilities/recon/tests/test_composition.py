@@ -19,6 +19,7 @@ from recon.composition import (
     load_transforms,
 )
 from recon.domain.collector import CollectorType
+from recon.domain.deadline import Deadline
 from recon.domain.errors import CollectionError
 from recon.domain.models import ReconConfig
 from recon.domain.telemetry import Telemetry
@@ -30,7 +31,7 @@ QUIET = Telemetry([], SystemClock())
 
 #: Ports to build collectors over that reach nothing: no test here sends a request.
 PORTS = CollectorPorts(
-    requester=lambda telemetry: ScriptedRequester({}),
+    requester=lambda telemetry, deadline: ScriptedRequester({}),
     converter=None,  # type: ignore[arg-type]
     shell=PopenRunner(),
     user_agent=DEFAULT_USER_AGENT,
@@ -38,7 +39,7 @@ PORTS = CollectorPorts(
 
 
 def build_collectors(registry, mission_dir, config, telemetry, *, env):
-    return build(registry, PORTS, env, mission_dir, config, telemetry)
+    return build(registry, PORTS, env, mission_dir, config, telemetry, Deadline(SystemClock()))
 
 
 def test_builtins_register_through_the_entry_point_groups():

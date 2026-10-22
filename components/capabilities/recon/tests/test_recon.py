@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import json
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -803,3 +804,46 @@ class TestNoPlausibleEmptyTable:
         config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "late"}]})
         _archive, [table] = run(config, tmp_path, plugins=plugins_with(late=Late()))
         assert table.status == "error"
+
+
+class TestDeadlines:
+    """Regression: nothing bounded a survey or a table in time, so one slow source held up
+    every table after it, for as long as it liked."""
+
+    def test_a_survey_s_deadline_fails_the_table_it_cuts_and_starts_no_other(self, tmp_path):
+        config = {
+            "deadline": 1,
+            "collectors": [
+                {"name": "first", "type": "cli", "run": "sleep 5"},
+                {"name": "second", "type": "cli", "run": "echo never"},
+            ],
+        }
+        started = time.monotonic()
+        archive, tables = run(config, tmp_path)
+        assert time.monotonic() - started < 3
+        assert [(t.name, t.status) for t in tables] == [("first", "error"), ("second", "error")]
+        for table in tables:
+            assert table.error.kind == "transient" and "deadline" in table.error.fix
+        assert "survey's deadline" in tables[1].error.message
+        assert "not started" in tables[1].error.message
+        assert (archive / ".incomplete").exists()
+
+    def test_a_table_s_deadline_fails_that_table_alone(self, tmp_path):
+        config = {
+            "collectors": [
+                {"name": "slow", "type": "cli", "run": "sleep 5", "deadline": 0.5},
+                {"name": "quick", "type": "cli", "run": "echo hi"},
+            ],
+        }
+        started = time.monotonic()
+        _archive, tables = run(config, tmp_path)
+        assert time.monotonic() - started < 3
+        assert [(t.name, t.status) for t in tables] == [("slow", "error"), ("quick", "ok")]
+        assert "slow's deadline" in tables[0].error.message
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_a_deadline_must_be_positive(self, tmp_path, value):
+        with pytest.raises(recon.ConfigError) as excinfo:
+            run({"deadline": value, "collectors": [{"name": "c", "type": "cli", "run": "true"}]},
+                tmp_path)  # fmt: skip
+        assert [p.path for p in excinfo.value.problems] == ["deadline"]

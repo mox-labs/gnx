@@ -17,6 +17,7 @@ from recon.application.captures import record_hook_payload
 from recon.application.plan import Plan, build_plan, plugin_warning
 from recon.application.survey import EventCallback, Survey
 from recon.domain.archives import ARCHIVE_ID_FORMAT
+from recon.domain.deadline import Deadline
 from recon.domain.documents import (
     ArchiveStatus,
     BrokenPluginInfo,
@@ -54,7 +55,7 @@ if TYPE_CHECKING:
 #: Builds a collector for each installed type a mission uses, reporting through the survey's
 #: telemetry, with the types whose factory failed (which a survey reports and whose tables
 #: fail with a config error), and what to close when the survey ends.
-CollectorFactory = Callable[["Path", "ReconConfig", "Telemetry"], "SurveyCollectors"]
+CollectorFactory = Callable[["Path", "ReconConfig", "Telemetry", "Deadline"], "SurveyCollectors"]
 
 #: The telemetry for one operation: a survey passes the archive it writes, whose event log
 #: is one of the sinks; an operation that writes no archive passes None.
@@ -195,8 +196,9 @@ class Recon:
         archive = self._archives.create(mission, started.strftime(ARCHIVE_ID_FORMAT))
         telemetry = self._telemetry(archive)
         about = {"recon.mission": name, "recon.archive": archive.name}
+        deadline = Deadline(self._clock)
         with telemetry.span(SURVEY, about) as span:
-            built = self._build_collectors(mission, plan.config, telemetry)
+            built = self._build_collectors(mission, plan.config, telemetry, deadline)
             try:
                 for broken in built.failed:
                     warnings.append(plugin_warning(broken))
@@ -213,7 +215,7 @@ class Recon:
                 extracts = {n for n, ct in self._plugins.collector_types.items() if ct.extracts}
                 survey = Survey(
                     self._archives, self._clock, self._version, telemetry, on_event,
-                    extracts=extracts,
+                    extracts=extracts, deadline=deadline,
                 )  # fmt: skip
                 tables = survey.run(
                     plan.config,

@@ -118,13 +118,14 @@ Documents name their shape in `schema`: `recon.v1.plan`, `recon.v1.survey`, `rec
 ```yaml
 # Every key a mission file can hold, with its default; | separates the values allowed.
 preserve_raw: false            # true: keep every fetched body in the archive's capture log
+deadline: 600                  # optional: seconds the whole survey may take (> 0)
 catalog:                       # where to look; optional
   - name: <source>             # required, unique
     type: api                  # api | web | local, or a kind an installed type adds
     url: <base URL, or a directory for local>   # required
     auth: {env: <VAR>, header: <Header-Name>, param: <query param>, prefix: "Bearer "}
     rate_limit: {rps: 10.0, burst: 3}   # tokens a second (> 0), most held (>= 1)
-    timeout: 60                # seconds per request (> 0)
+    timeout: 60                # seconds a send may take, first byte to last (> 0)
     max_bytes: 50000000        # largest response body; a larger one fails the table
     user_agent: <string>       # default: recon/<version> (+https://github.com/mox-labs/gnx)
 collectors:                    # what to ask; required, at least one
@@ -134,6 +135,7 @@ collectors:                    # what to ask; required, at least one
     type_url: recon.v1.records # what the records are: <namespace>.v<N>.<kebab-name>
     normalize: {<column>: "<path>|$<transform>"}   # every type; omit to keep records whole
     extract: <path>            # api and capture: where the records are in a body
+    deadline: 120              # optional: seconds each of its tables may take (> 0)
     # Every other key is the type's own:
     # api:     endpoint, params (the query), vars (fill {placeholders}),
     #          method (GET | POST | PUT | PATCH | DELETE), body, response_format (json | xml)
@@ -159,7 +161,9 @@ These are all the keys there are: an unknown key at the top level, in a source, 
 | `web` | one HTTP GET, converted to markdown by content type (HTML, PDF, DOCX, ...) | one `{url, title, content, status_code, content_type}`; `content` stops at 100,000 characters |
 | `capture` | reads capture logs (default `captures/captures.jsonl` in the mission; a glob works); fetches nothing; fanned out over a catalog, each run keeps the captures whose `source` is that source's name; a run that read captures and kept none is warned (`captures_unmatched`) | each object in each matching body, parsed by its content type: JSON, XML, or text lines as `cli` parses them |
 
-A `cli` command without a source times out after 300 seconds, otherwise after the source's `timeout`; the command and everything it started are then killed. A failed command's error ends with the last of its stderr. The command's stdin is empty, so a tool that reads stdin when it has no path argument gets nothing from it: give it an explicit path (`rg --json TODO .`). With `patterns:`, each record carries the `_pattern` that produced it.
+A `cli` command without a source times out after 300 seconds, otherwise after the source's `timeout`; the command and everything it started are then killed.
+
+**Bounds in time.** A source's `timeout` bounds each send of a request in wall time, from connecting to the body's last byte, so a server that trickles its body cannot hold a table for longer; a send past it is retried like any timeout. `deadline:` at the top bounds the whole survey and `deadline:` on a collector each of its tables: a request, a wait for the rate limit or a retry, and a command are all cut to what is left, a table cut short fails as `transient` (exit 5) with a fix naming the `deadline:` to raise, every table not started by the survey's deadline fails the same way, and the archive is still finished, marked incomplete. A failed command's error ends with the last of its stderr. The command's stdin is empty, so a tool that reads stdin when it has no path argument gets nothing from it: give it an explicit path (`rg --json TODO .`). With `patterns:`, each record carries the `_pattern` that produced it.
 
 ## Normalize
 

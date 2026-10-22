@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
     from recon.domain.capture import CaptureLog
     from recon.domain.collector import Transform
+    from recon.domain.deadline import Deadline
     from recon.domain.models import CollectorEntry, SourceEntry
     from recon.domain.shell import ShellRunner
 
@@ -170,9 +171,11 @@ class CliCollector:
         self,
         runner: ShellRunner | None = None,
         transforms: Mapping[str, Transform] = BUILTIN_TRANSFORMS,
+        deadline: Deadline | None = None,
     ) -> None:
         self._runner = runner if runner is not None else PopenRunner()
         self._transforms = transforms
+        self._deadline = deadline
 
     def collect(
         self,
@@ -205,8 +208,19 @@ class CliCollector:
         transforms = bound(self._transforms, base=cwd) if cwd is not None else self._transforms
         try:
             for pattern, cmd in commands:
-                lines = self._runner.run_lines(cmd, cwd, timeout, capture_path=capture_path)
-                exit_codes.append((yield from self._records(lines, entry, pattern, transforms)))
+                # A deadline shorter than the command's timeout cuts it: the error says so.
+                limit = timeout
+                if self._deadline is not None:
+                    self._deadline.check()
+                    limit = self._deadline.limit(timeout)
+                lines = self._runner.run_lines(cmd, cwd, limit, capture_path=capture_path)
+                try:
+                    exit_codes.append((yield from self._records(lines, entry, pattern, transforms)))
+                except CollectionError as exc:
+                    cut = self._deadline is not None and self._deadline.remaining() == 0
+                    if cut and limit < timeout and self._deadline is not None:
+                        raise self._deadline.exceeded() from exc
+                    raise
         finally:
             if captures is not None:
                 # Finalize even on mid-iteration abandonment: preserves partial captures
@@ -320,7 +334,7 @@ def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, An
 
 
 collector_type = CollectorType(
-    create=lambda ctx: CliCollector(ctx.shell, ctx.transforms),
+    create=lambda ctx: CliCollector(ctx.shell, ctx.transforms, ctx.deadline),
     effects=frozenset({"subprocess"}),
     summary="shell command → stdout lines (JSON objects or text) → records",
     settings=CliSettings,

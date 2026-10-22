@@ -18,10 +18,11 @@ import pytest
 
 from recon.adapters._out.http_requester import HttpRequester, classify_http_failure
 from recon.adapters._out.system_clock import SystemClock
+from recon.domain.deadline import Deadline
 from recon.domain.errors import CollectionError
 from recon.domain.models import SourceEntry
 from recon.domain.ratelimit import RateLimiter
-from tests.recon_fakes import FixedClock
+from tests.recon_fakes import FixedClock, HurriedClock
 
 
 def _status_error(code: int) -> httpx2.HTTPStatusError:
@@ -356,7 +357,7 @@ class _CountingLimiter:
     def __init__(self) -> None:
         self.drawn = 0
 
-    def acquire(self, source):
+    def acquire(self, source, deadline=None):
         self.drawn += 1
 
 
@@ -437,3 +438,85 @@ def test_a_survey_s_requests_share_one_session_which_closing_ends():
     first, second, after_close = _KeepAlive.ports
     assert first == second, "the second request went on the first one's connection"
     assert after_close != first, "a closed session's connection is not reused"
+
+
+# --- bounds in time --------------------------------------------------------------------
+
+
+class _Trickle(http.server.BaseHTTPRequestHandler):
+    """A 200 whose 20-byte body comes one byte every 0.25 s: within any per-read timeout."""
+
+    def do_GET(self):
+        body = b"[" + b" " * 18 + b"]"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        with contextlib.suppress(OSError):  # the client hangs up once it has waited enough
+            for i in range(len(body)):
+                self.wfile.write(body[i : i + 1])
+                self.wfile.flush()
+                time.sleep(0.25)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture(scope="module")
+def trickle():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Trickle)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+    server.server_close()
+
+
+def test_a_source_s_timeout_bounds_each_send_in_wall_time(trickle):
+    """Regression: ``timeout`` bounded each read, not the request, so a body trickled within
+    it took as long as the server liked (5 s here, any time at all in general)."""
+    clock = HurriedClock()  # retries' backoff is skipped, the sends' wall time is real
+    requester = HttpRequester(RateLimiter(clock), clock)
+    source = SourceEntry(name="slow", url=trickle, timeout=1)
+    started = time.monotonic()
+    with pytest.raises(CollectionError) as excinfo:
+        requester.get(source, f"{trickle}/x")
+    assert time.monotonic() - started < 3 * 1 + 1.5, "three sends of at most ~1 s each"
+    assert excinfo.value.kind == "transient" and "timeout" in excinfo.value.fix
+
+
+def test_a_deadline_ends_a_request_whatever_its_timeout(trickle):
+    clock = HurriedClock()
+    deadline = Deadline(clock)
+    requester = HttpRequester(RateLimiter(clock), clock, deadline=deadline)
+    source = SourceEntry(name="slow", url=trickle, timeout=60)
+    started = time.monotonic()
+    with (
+        deadline.bound(1.0, "table t's deadline", "raise deadline: on collector 't'"),
+        pytest.raises(CollectionError) as excinfo,
+    ):
+        requester.get(source, f"{trickle}/x")
+    assert time.monotonic() - started < 2
+    assert excinfo.value.kind == "transient"
+    assert "table t's deadline" in str(excinfo.value) and "deadline:" in excinfo.value.fix
+
+
+def test_a_wait_past_the_deadline_is_not_waited():
+    """A Retry-After, a backoff or a rate-limit wait that would end past the deadline fails
+    the request at once rather than sleep into it."""
+    clock = FixedClock()
+    deadline = Deadline(clock)
+    answer = httpx2.MockTransport(lambda r: httpx2.Response(503, headers={"Retry-After": "30"}))
+    requester = HttpRequester(RateLimiter(clock), clock, deadline=deadline, transport=answer)
+    source = SourceEntry(name="s", url="https://api.example.test")
+    with deadline.bound(10, "the survey's deadline", "raise deadline:"):
+        with pytest.raises(CollectionError, match="the survey's deadline"):
+            requester.request(source, "GET", "https://api.example.test/x")
+        assert clock.slept == []
+        slow = SourceEntry(name="slow", url="https://api.example.test",
+                           rate_limit={"rps": 0.01, "burst": 1})  # fmt: skip
+        fine = httpx2.MockTransport(lambda r: httpx2.Response(200))
+        quick = HttpRequester(RateLimiter(clock), clock, deadline=deadline, transport=fine)
+        quick.request(slow, "GET", "https://api.example.test/x")
+        with pytest.raises(CollectionError, match="the survey's deadline"):
+            quick.request(slow, "GET", "https://api.example.test/x")  # the next token: 100 s
+        assert clock.slept == []
