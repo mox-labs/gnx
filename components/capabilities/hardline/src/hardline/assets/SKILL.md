@@ -15,8 +15,9 @@ hardline check           # validates every tier and resolves every api_key refer
 hardline check --json    # {"ok", "tiers": [...], "models": [{"name", "ok", "problem", ...}]}
 ```
 
-`check` exits 0 only when every row would get past composition and find its key. A key the
-provider then rejects is only discovered by a call (exit 6).
+`check` exits 0 only when every row would get past composition and find its key: a valid row,
+options its backend reads, an http(s) `base_url`, a key reference where the backend needs one.
+A key the provider then rejects is only discovered by a call (exit 6).
 
 If `hardline models` lists nothing, no registry exists yet. Do not invent one — ask the operator
 which models they run.
@@ -31,10 +32,17 @@ hardline complete qwen3-8b --json "..."                   # full Completion as J
 ```
 
 `--json` output carries `family`, `model`, `backend`, `local`, `usage`, `latency_ms`, `attempts`,
-`retries`, `fallback_from`. Report the `family` when a second model's answer is used as
-evidence: a check by the same family as the author is not an independent check. When
+`retries`, `fallback_from`, `finish_reason`, `refusal`, and the call's record (`params`,
+`attempt_log`, `turns_digest`, `row`). Report the `family` when a second model's answer is used
+as evidence: a check by the same family as the author is not an independent check. When
 `fallback_from` is set, the model that answered is not the one asked for — use the `family`
 that actually answered, not the one in `fallback_from`.
+
+**Is it an answer?** Only when `finish_reason` is `"stop"`, `refusal` is `null` and `text` is not
+empty. `"length"` means the reply was cut at `max_tokens` (raise `--max-tokens` and ask again);
+`refusal` set means the model refused; `null` means the provider did not say. Do not use such a
+reply as the model's answer. Without `--json`, the CLI writes a `hardline:` note on stderr
+beside it; the exit is still 0.
 
 ## When a command fails
 
@@ -47,7 +55,7 @@ succeed, or `null` when there is none.
 | 0 | — | use the output |
 | 1 | `unknown` | report the message; do not retry blindly |
 | 2 | — | usage: fix the flags (`hardline <command> --help`) |
-| 3 | `config`, `bad_request` | change the input: the model name, the registry row, the secret |
+| 3 | `config`, `bad_request` | change the input: the model name, the registry row (its options, `base_url`, `api_key`), the secret |
 | 4 | `not_found` | reserved; hardline raises none today |
 | 5 | `rate_limit`, `timeout`, `unavailable` | retry later, after `retry_after` seconds if set |
 | 6 | `auth` | stop and tell the operator the key was rejected |
@@ -75,8 +83,11 @@ models:
     family: qwen
     local: true
   haiku:
-    backend: anthropic
+    backend: anthropic                  # sends to https://api.anthropic.com unless base_url says
     model: claude-haiku-4-5-20251001
     family: claude
     api_key: file:~/.secrets/claude-api  # a reference; literal keys are rejected
 ```
+
+A row with no `base_url` sends to its backend's default; nothing in the environment changes
+that. `hardline models --json` shows each row's `base_url`.

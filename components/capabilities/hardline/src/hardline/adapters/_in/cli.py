@@ -28,7 +28,12 @@ import json
 import sys
 from typing import TYPE_CHECKING, Any, Literal
 
-from hardline.composition import build_runtime, discover_sources, load_registry
+from hardline.composition import (
+    build_runtime,
+    discover_backends,
+    discover_sources,
+    load_registry,
+)
 from hardline.domain.errors import (
     BackendError,
     ConfigError,
@@ -39,6 +44,8 @@ from hardline.domain.errors import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from hardline.domain.types import Completion
 
 
 EXIT_OK = 0
@@ -145,7 +152,7 @@ def _positive_int(text: str) -> int:
 
 
 def _cmd_models(args: argparse.Namespace) -> int:
-    registry = load_registry(discover_sources())
+    registry = load_registry(discover_sources(), discover_backends())
     if args.json:
         hidden = {"api_key", "options"}
         listing = [spec.model_dump(mode="json", exclude=hidden) for spec in registry]
@@ -219,9 +226,28 @@ async def _complete(args: argparse.Namespace) -> int:
         )
     if args.json:
         print(completion.model_dump_json(indent=2, exclude={"raw"}))
-    else:
-        print(completion.text)
+        return 0
+    print(completion.text)
+    if not completion.answered:
+        # Printed alone, a cut-off or refused reply would read as the model's answer.
+        print(f"hardline: {_not_answered(completion)}", file=sys.stderr)
     return 0
+
+
+def _not_answered(c: Completion) -> str:
+    """Why ``c`` is not a whole answer, for the stderr note beside its text."""
+    reason = f"(finish_reason={c.finish_reason}, provider: {c.native_finish_reason})"
+    if c.refusal is not None:
+        return f"the model refused {reason}" + (f": {c.refusal}" if c.refusal else "")
+    if c.finish_reason == "length":
+        return f"the reply was cut off at max_tokens {reason}"
+    if c.finish_reason == "content_filter":
+        return f"the provider withheld or cut the reply {reason}"
+    if c.finish_reason is None:
+        return "the provider did not say why the reply ended"
+    if not c.text:
+        return f"the reply is empty {reason}"
+    return f"the reply ended without a whole answer {reason}"
 
 
 def _parser() -> argparse.ArgumentParser:
