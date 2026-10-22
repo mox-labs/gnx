@@ -9,7 +9,8 @@ Two optional members. A backend whose rows can be wrong in ways it alone knows (
 runtime calls it for every row when it is built, so a row that would fail its first call fails
 composition instead, and ``hardline check`` with it. A backend that holds connections defines
 ``aclose()`` (``ClosableBackend``), and the runtime's own ``aclose()`` calls it; the mock has
-none to close.
+none to close. And a backend that serves one provider declares ``default_base_url``, which the
+composition root writes into each of its rows that names no ``base_url``.
 
 Structural typing: an adapter satisfies this without importing hardline's classes, the
 same way a matrix Component does.

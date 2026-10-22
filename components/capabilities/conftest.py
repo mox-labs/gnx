@@ -5,12 +5,13 @@ each call where a session reaches a model, beneath every runtime and backend tha
 
 * the Claude Agent SDK's ``query`` and ``ClaudeSDKClient.connect``, which start the
   ``claude`` CLI (matrix's ``claude-sdk`` runtime, and so an ix ``agent-session``);
-* the Anthropic and OpenAI SDKs' message and chat-completion calls, which hardline's
-  backends make (matrix's ``model`` runtime, and an ix ``judge``).
+* hardline's network transport, which its provider backends open for every request they
+  send (matrix's ``model`` runtime, and an ix ``judge``). hardline speaks to providers over
+  HTTP itself, with no provider SDK.
 
-A test that fakes one of these is untouched: a fake SDK module, or a backend handed a fake
-client, is not the object refused. Refusing the runtimes' own ``run`` instead would refuse
-matrix's tests of those runtimes, which run them over fakes.
+A test that fakes one of these is untouched: a fake SDK module, or a backend handed an httpx2
+``MockTransport``, is not the object refused. Refusing the runtimes' own ``run`` instead would
+refuse matrix's tests of those runtimes, which run them over fakes.
 
 A refused call raises, and the code under test may catch that and carry on (ix records it
 as a trial the harness failed). So the test also fails at teardown whenever a call was
@@ -34,10 +35,7 @@ if TYPE_CHECKING:
 LIVE_CALLS: tuple[tuple[str, str], ...] = (
     ("claude_agent_sdk", "query"),
     ("claude_agent_sdk", "ClaudeSDKClient.connect"),
-    ("anthropic.resources.messages", "Messages.create"),
-    ("anthropic.resources.messages", "AsyncMessages.create"),
-    ("openai.resources.chat.completions", "Completions.create"),
-    ("openai.resources.chat.completions", "AsyncCompletions.create"),
+    ("hardline.adapters._out._http", "network_transport"),
 )
 
 

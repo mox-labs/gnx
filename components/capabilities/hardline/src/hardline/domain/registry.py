@@ -93,6 +93,17 @@ class ModelRegistry:
         default = data.get("default")
         return cls(specs, default=str(default) if default is not None else None)
 
+    def with_locations(self, defaults: Mapping[str, str]) -> ModelRegistry:
+        """This registry with ``defaults[backend]`` written into each row that names no
+        ``base_url``, so every row records where it sends."""
+        specs = {
+            name: spec.model_copy(update={"base_url": defaults[spec.backend]})
+            if spec.base_url is None and spec.backend in defaults
+            else spec
+            for name, spec in self._specs.items()
+        }
+        return ModelRegistry(specs, default=self._default)
+
     def get(self, name: str | None = None) -> ModelSpec:
         """Look up a model by name, or the default when ``name`` is None."""
         key = name if name is not None else self._default

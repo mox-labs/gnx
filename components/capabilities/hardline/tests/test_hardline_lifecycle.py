@@ -1,6 +1,6 @@
 """A runtime's connections belong to the event loop that opened them.
 
-These run the provider SDKs' real clients and connection pools against a keep-alive server on
+These run hardline's real HTTP transport and connection pool against a keep-alive server on
 127.0.0.1 in this process: no network, no model. A runtime used from two ``asyncio.run`` calls
 must answer each once, and ``aclose()`` in each loop must leave no connection open.
 """
@@ -16,26 +16,45 @@ import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 
+import httpx2
 import pytest
-from anthropic.resources.messages import AsyncMessages
 from hardline_helpers import DictSecrets
-from openai.resources.chat.completions import AsyncCompletions
 
-from hardline import Completion, ModelRuntime, ModelSpec, RawCompletion, Request, build_runtime
+from hardline import (
+    BackendError,
+    Completion,
+    ModelRuntime,
+    ModelSpec,
+    RawCompletion,
+    Request,
+    build_runtime,
+)
+from hardline.adapters._out import _http
 from hardline.adapters._out.anthropic_native import AnthropicBackend
 from hardline.adapters._out.openai_compat import OpenAICompatBackend
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Iterator
 
-# The workspace guard (conftest.py) replaces these two calls in every test, so that no test
-# reaches a live model. They are taken here, at import, before it runs, and given back below
-# only to a client whose base_url is this file's loopback server: what is under test is the
-# SDKs' own connection pools, which a fake client would not have.
-_REAL_CREATE: dict[type, Callable[..., Awaitable[Any]]] = {
-    AsyncCompletions: AsyncCompletions.create,
-    AsyncMessages: AsyncMessages.create,
-}
+# The workspace guard (conftest.py) refuses hardline's network transport in every test, so that
+# no test reaches a live model. It is taken here, at import, before the guard runs, and given
+# back below only for requests to this file's loopback server: what is under test is the real
+# transport's connection pool, which a MockTransport does not have.
+_REAL_TRANSPORT = _http.network_transport
+
+
+class _LoopbackOnly(httpx2.AsyncBaseTransport):
+    def __init__(self) -> None:
+        self._inner = _REAL_TRANSPORT()
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        if request.url.host != "127.0.0.1":
+            raise AssertionError(f"a lifecycle test reached {request.url.host}, not its server")
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
 
 _OPENAI_REPLY = {
     "id": "chatcmpl-1",
@@ -73,12 +92,13 @@ class _Server:
                 self.rfile.read(int(self.headers["content-length"]))
                 served.append(self.path)
                 reply = _ANTHROPIC_REPLY if self.path.endswith("/messages") else _OPENAI_REPLY
-                body = json.dumps(reply).encode()
-                self.send_response(200)
+                status = 503 if self.path.startswith("/down/") else 200
+                body = json.dumps(reply if status == 200 else {"error": {"message": "down"}})
+                self.send_response(status)
                 self.send_header("content-type", "application/json")
                 self.send_header("content-length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                self.wfile.write(body.encode())
 
             def log_message(self, *args: Any) -> None:
                 pass
@@ -97,22 +117,14 @@ class _Server:
 @pytest.fixture
 def server(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Server]:
     srv = _Server()
-    for resource, real in _REAL_CREATE.items():
-
-        async def loopback_only(self: Any, *args: Any, _real: Any = real, **kwargs: Any) -> Any:
-            host = self._client.base_url.host
-            if host != "127.0.0.1":
-                raise AssertionError(f"a lifecycle test reached {host}, not its loopback server")
-            return await _real(self, *args, **kwargs)
-
-        monkeypatch.setattr(resource, "create", loopback_only)
+    monkeypatch.setattr(_http, "network_transport", _LoopbackOnly)
     yield srv
     srv.close()
 
 
-def _runtime(backend: str, url: str) -> ModelRuntime:
-    """One row on ``backend`` with retries 0: a failed attempt is the caller's failure."""
-    row: dict[str, Any] = {"backend": backend, "model": "m", "family": "x", "retries": 0}
+def _runtime(backend: str, url: str, retries: int = 0) -> ModelRuntime:
+    """One row on ``backend``; with retries 0 a failed attempt is the caller's failure."""
+    row: dict[str, Any] = {"backend": backend, "model": "m", "family": "x", "retries": retries}
     if backend == "anthropic":
         row |= {"base_url": url, "api_key": "env:K"}
     else:
@@ -121,7 +133,12 @@ def _runtime(backend: str, url: str) -> ModelRuntime:
         {"models": {"q": row}},
         backends={"openai-compat": OpenAICompatBackend(), "anthropic": AnthropicBackend()},
         secrets=DictSecrets({"env:K": "loopback-key"}),
+        sleep=_no_sleep,
     )
+
+
+async def _no_sleep(seconds: float) -> None:
+    pass
 
 
 BACKENDS = ["openai-compat", "anthropic"]
@@ -169,6 +186,19 @@ def test_a_runtime_closed_in_each_loop_leaves_no_connection_open(
     assert len(server.requests) == 2
     assert [str(w.message) for w in caught if issubclass(w.category, ResourceWarning)] == []
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_no_retry_hides_behind_the_runtimes_own(backend: str, server: _Server) -> None:
+    # The provider SDKs retried a 5xx themselves unless told not to. httpx2 retries no status,
+    # and the transport is built with no connection retries: a row's `retries` is the only
+    # policy, so one retry is two requests at the server.
+    rt = _runtime(backend, f"{server.url}/down", retries=1)
+    async with rt:
+        with pytest.raises(BackendError) as e:
+            await rt.complete("q", "hi")
+    assert e.value.reason == "unavailable"
+    assert len(server.requests) == 2
 
 
 async def test_aclose_reaches_every_backend_that_holds_connections() -> None:

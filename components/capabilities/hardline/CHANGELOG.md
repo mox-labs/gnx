@@ -8,6 +8,13 @@
 
 ### Changed (breaking)
 
+- **No provider SDK.** Both wire protocols are spoken directly over httpx2: `openai-compat` (chat completions) and `anthropic` (the Messages API). hardline depends on pydantic, pyyaml and httpx2 only; the `openai` and `anthropic` packages are no longer installed with it.
+- **A row's location comes from its config only.** With no `base_url`, the SDKs read `OPENAI_BASE_URL` or `ANTHROPIC_BASE_URL`, and the OpenAI client sent `OPENAI_ORG_ID` and `OPENAI_PROJECT_ID` as headers, so a row's key could go to a host no config named. Nothing reads them now. The composition root writes each backend's default (`https://api.openai.com/v1`, `https://api.anthropic.com`) into a row that names none, so `hardline models` and every row record where they send. A backend that serves one provider declares `default_base_url`.
+- **No proxy or certificate variable changes where a request goes or what it trusts**: clients ignore `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE` and `SSL_CERT_DIR`. TLS is verified against the system trust store (truststore).
+- **A keyless `openai-compat` row sends no `Authorization` header**, where the SDK needed a placeholder key.
+- **A redirect is reported, not followed**, as a `BackendError` naming the `Location`: following it would send the row's key along.
+- **A `base_url` must be an http:// or https:// URL**, checked when the runtime is composed.
+- Provider errors carry the provider's own message (`error.message`), with the key scrubbed, and name the row's location; `api.openai.com` is no longer named for a row that does not send there.
 - **hardline's own backends register through its own `hardline.backends` entry points**, like a third party's, and the hard-coded table is gone. `discover_backends()` no longer takes `include_entry_points`; it returns exactly the installed entry points.
 - **A broken backend plugin fails only the rows that name it.** An entry point that cannot be loaded, does not produce a `ModelBackend`, or shares its name with another used to abort composition for every row, the first two with an exception that was not a `HardlineError`. Each is now loaded on its own and kept as a stand-in that names the fault: a row naming it fails composition with a `ConfigError`, and a warning is logged.
 - **Backend options are checked when the runtime is composed.** A backend may define `check(spec)`, returning what is wrong with a row; the runtime calls it for every row. Each built-in backend reads its `options` through a model of its own and refuses any key it does not read, so `hardline check` fails a row that would fail its first call. A mock `script` naming an unknown error reason is refused there too.

@@ -8,14 +8,13 @@ authors = [
     { name = "yzavyas", email = "yza.vyas@gmail.com" }
 ]
 
-# The two provider SDKs are core, not extras: the OpenAI wire protocol is the one hardline
-# adopts (mlx_lm.server, ollama, vLLM and Gemini's compatibility endpoint all speak it),
-# and Anthropic is the one native adapter. Both are small; both are imported lazily.
+# No provider SDK: both wire protocols (OpenAI-compatible chat completions, Anthropic's
+# Messages API) are spoken directly over httpx2, so nothing reads a location or a credential
+# from the environment behind a registry row's back. httpx2 is bounded to the major tested.
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
-    "openai>=1.40",
-    "anthropic>=0.40",
+    "httpx2>=2.10,<3",
 ]
 
 [project.optional-dependencies]

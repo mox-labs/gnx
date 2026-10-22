@@ -176,9 +176,24 @@ def merge_tiers(sources: Sequence[ConfigSource]) -> tuple[dict[str, Any], dict[s
     return merged, origins, "; ".join(consulted) or "(no sources)"
 
 
-def load_registry(sources: Sequence[ConfigSource]) -> ModelRegistry:
+def load_registry(
+    sources: Sequence[ConfigSource], backends: Mapping[str, ModelBackend] | None = None
+) -> ModelRegistry:
+    """The merged tiers as a registry. Given the ``backends``, each row that names no
+    ``base_url`` gets its backend's ``default_base_url``, so the row records where it sends."""
     merged, origins, consulted = merge_tiers(sources)
-    return ModelRegistry.from_config(merged, source=consulted, origins=origins)
+    registry = ModelRegistry.from_config(merged, source=consulted, origins=origins)
+    return registry if backends is None else registry.with_locations(default_locations(backends))
+
+
+def default_locations(backends: Mapping[str, ModelBackend]) -> dict[str, str]:
+    """Backend name -> the ``default_base_url`` it declares, for the backends that declare one."""
+    found: dict[str, str] = {}
+    for name, backend in backends.items():
+        url = getattr(backend, "default_base_url", None)
+        if isinstance(url, str):
+            found[name] = url
+    return found
 
 
 def build_runtime(
@@ -204,9 +219,10 @@ def build_runtime(
         tiers = sources
     else:
         tiers = discover_sources()
+    found = backends if backends is not None else discover_backends()
     return ModelRuntime(
-        load_registry(tiers),
-        backends if backends is not None else discover_backends(),
+        load_registry(tiers, found),
+        found,
         secrets if secrets is not None else EnvFileSecretResolver(),
         schema_retries=schema_retries,
         sleep=sleep,
@@ -218,6 +234,7 @@ __all__ = [
     "BACKEND_GROUP",
     "CONFIG_ENV",
     "build_runtime",
+    "default_locations",
     "discover_backends",
     "discover_sources",
     "load_registry",

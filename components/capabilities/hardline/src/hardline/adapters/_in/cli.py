@@ -28,7 +28,12 @@ import json
 import sys
 from typing import TYPE_CHECKING, Any, Literal
 
-from hardline.composition import build_runtime, discover_sources, load_registry
+from hardline.composition import (
+    build_runtime,
+    discover_backends,
+    discover_sources,
+    load_registry,
+)
 from hardline.domain.errors import (
     BackendError,
     ConfigError,
@@ -145,7 +150,7 @@ def _positive_int(text: str) -> int:
 
 
 def _cmd_models(args: argparse.Namespace) -> int:
-    registry = load_registry(discover_sources())
+    registry = load_registry(discover_sources(), discover_backends())
     if args.json:
         hidden = {"api_key", "options"}
         listing = [spec.model_dump(mode="json", exclude=hidden) for spec in registry]
