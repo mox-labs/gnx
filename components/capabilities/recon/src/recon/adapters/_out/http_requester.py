@@ -15,7 +15,14 @@ is one, ``http.response.status_code``; ``http.request.resend_count`` on a retry;
 ``error.type`` on a failure: the status code, the httpx exception class
 (``httpx.ConnectError``), or ``body_too_large``. ``url.full`` carries no credentials: user
 information, the source's ``auth.param`` and the convention's signature parameters are
-``REDACTED``. A redirect httpx follows stays inside its attempt's span.
+``REDACTED``, as they are in an error's message; a failed attempt's span message is the
+status, the exception class or the size refusal, never the URL. A redirect httpx follows
+stays inside its attempt's span.
+
+A source's credential goes only to the origin its request was built for. httpx drops an
+``Authorization`` header when a redirect leaves the origin; recon drops the source's own
+``auth.header`` (``x-api-key``) by the same rule, so a redirect to another host, port or
+scheme (other than http to https on the same host) is followed without the key.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from recon.domain.http import HttpResponse, reported_url
 from recon.domain.telemetry import HTTP_REQUEST, Telemetry
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import datetime
 
     from recon.domain.clock import Clock
@@ -145,10 +153,36 @@ def _send(
             snippet = _decode(resp, _read(resp, _ERROR_SNIPPET_BYTES))
             asked = _seconds_asked(resp.headers.get("retry-after", "").strip(), clock.now())
             raise _StatusError(resp, snippet, asked)
-        body = _read_bounded(resp, source, str(request.url).split("?", 1)[0])
+        url = reported_url(str(request.url).split("?", 1)[0], source.auth.param)
+        body = _read_bounded(resp, source, url)
         return _to_domain(resp, body)
     finally:
         resp.close()
+
+
+def _port(url: httpx.URL) -> int | None:
+    return url.port or _DEFAULT_PORTS.get(url.scheme)
+
+
+def _same_origin(url: httpx.URL, origin: httpx.URL) -> bool:
+    """Whether ``url`` is at ``origin``, or is its upgrade from http to https on the same
+    host: where httpx itself keeps an ``Authorization`` header across a redirect."""
+    if url.host != origin.host:
+        return False
+    if (url.scheme, _port(url)) == (origin.scheme, _port(origin)):
+        return True
+    return (origin.scheme, _port(origin), url.scheme, _port(url)) == ("http", 80, "https", 443)
+
+
+def _credential_stays_at(origin: httpx.URL, header: str) -> Callable[[httpx.Request], None]:
+    """A request hook that removes ``header`` from any request, a redirect included, sent
+    anywhere but ``origin``."""
+
+    def hook(request: httpx.Request) -> None:
+        if header and not _same_origin(request.url, origin):
+            request.headers.pop(header, None)
+
+    return hook
 
 
 def _span_attributes(
@@ -158,7 +192,7 @@ def _span_attributes(
     return {
         "http.request.method": request.method,
         "server.address": url.host,
-        "server.port": url.port or _DEFAULT_PORTS.get(url.scheme),
+        "server.port": _port(url),
         "url.full": reported_url(str(url), source.auth.param),
         "http.request.resend_count": resend or None,
     }
@@ -261,11 +295,14 @@ class HttpxRequester:
             retry=retry_if_exception(_is_retryable),
             reraise=True,
         )
+        # Merged, not passed as params=, which would replace a query the URL has.
+        target = httpx.URL(url).copy_merge_params(params or {})
+        hooks = {"request": [_credential_stays_at(target, source.auth.header)]}
         try:
             # Sync on purpose: a survey runs its requests one at a time, so async buys nothing.
-            with httpx.Client(timeout=source.timeout, follow_redirects=True) as client:
-                # Merged, not passed as params=, which would replace a query the URL has.
-                target = httpx.URL(url).copy_merge_params(params or {})
+            with httpx.Client(
+                timeout=source.timeout, follow_redirects=True, event_hooks=hooks
+            ) as client:
                 request = client.build_request(
                     method, target, headers=headers or {}, json=json_body
                 )
@@ -281,11 +318,12 @@ class HttpxRequester:
             kind = classify_http_failure(exc)
             fix = _HTTP_FIX[kind]
             wait = _retry_after(exc)
+            shown = reported_url(url, source.auth.param)
             if wait is not None and wait > _MAX_RETRY_AFTER_S:
-                msg = f"HTTP request refused: {url}{status}; the server asks for {wait:g}s"
+                msg = f"HTTP request refused: {shown}{status}; the server asks for {wait:g}s"
                 fix = f"retry the survey after {wait:g}s; lower the source's rate_limit"
             else:
-                msg = f"HTTP request failed after retries: {url}{status}"
+                msg = f"HTTP request failed after retries: {shown}{status}"
             raise CollectionError(msg + snippet, kind=kind, fix=fix) from exc
 
     def _attempt(
@@ -302,10 +340,10 @@ class HttpxRequester:
                 span.fail(str(code), f"HTTP {code}")
                 raise
             except httpx.TransportError as exc:
-                span.fail(f"httpx.{type(exc).__name__}", str(exc) or type(exc).__name__)
+                span.fail(f"httpx.{type(exc).__name__}", type(exc).__name__)
                 raise
-            except _TooLargeError as exc:
-                span.fail("body_too_large", str(exc))
+            except _TooLargeError:
+                span.fail("body_too_large", "the response body is larger than max_bytes")
                 raise
             span.set("http.response.status_code", response.status_code)
             return response

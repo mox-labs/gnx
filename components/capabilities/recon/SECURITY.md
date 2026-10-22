@@ -55,6 +55,11 @@ a query parameter (`auth.param`), or both. Two consequences:
 - The secret is attached to requests to **whatever URL that source declares**. A config
   that points a credentialed source at an attacker's host exfiltrates the credential. The
   URL and the credential are chosen by the same file. The dry-run plan shows each URL.
+- The secret goes only to the origin of the request a collector built. A redirect to
+  another host, port or scheme is followed without the source's `auth.header`, as httpx
+  follows one without `Authorization`; an upgrade from http to https on the same host keeps
+  it (R-9). A key sent as `auth.param` is part of the URL: a redirect carries it on only
+  when the server writes it into the new location.
 - Secrets are never written to the JSONL output and never logged. Request headers are
   never persisted. In captures, response headers are persisted with credential-bearing
   values redacted (R-2), and an `auth.param` value is redacted from the captured URL (R-4).
@@ -112,12 +117,13 @@ The connection is confined before any SQL runs: `allowed_directories` is the mis
 `archive/` directory, extension auto-install and auto-load are off, external access is
 off (DuckDB does not allow turning it back on), and the configuration is locked. A query
 reads its own and earlier archives of the same mission and nothing else; `INSTALL`, `LOAD`
-and URLs are refused (R-7).
+and URLs are refused (R-7). DuckDB lets SQL write wherever it may read, so a query runs only
+statements DuckDB's parser types as SELECT; `COPY ... TO`, `ATTACH`, `CREATE`, `EXPORT` and
+every other statement are refused before any of the SQL runs (R-10).
 
-What this does **not** do: it does not make a query read-only inside that directory. SQL
-can still write a file under the mission's `archive/` (`COPY ... TO`, `ATTACH`), and can
-use DuckDB's spill directory (`.tmp/` under the working directory). And it does nothing
-about the text itself: a `content` column from the web is untrusted wherever it is read.
+What this does **not** do: a large sort or join can still use DuckDB's spill directory
+(`.tmp/` under the working directory). And it does nothing about the text itself: a
+`content` column from the web is untrusted wherever it is read.
 
 ### 7. Telemetry → the archive's event log, and an OTLP endpoint
 
@@ -128,13 +134,15 @@ attributes are chosen so that neither destination receives a secret or a body: n
 request body or response body is an attribute, and `url.full` has its user information,
 the source's `auth.param` value and the signature parameters of the HTTP conventions
 (`X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `sig`, `X-Goog-Signature`)
-replaced by `REDACTED`. A span that failed carries only the first line of its error: the
-URL a collector asked for, to which `auth.param` is added later, and never the quoted
-response body that follows (R-8).
+replaced by `REDACTED`. A span that failed carries its error's kind and a message in recon's
+own words, never the error's text, which can quote a command, a URL or SQL (R-11). A failed
+table's error, its command or URL included, stays in the archive's `meta.yaml`, and a URL
+in an error message has its user information and `auth.param` value `REDACTED` there too.
 
 What this does **not** do: a secret a mission puts anywhere else in a URL (in a path, or in
 a query parameter that is not its source's `auth.param`) is recorded as written, as it is
-in the dry-run plan and `meta.yaml`. A `cli` collector's commands are not attributes. The
+in the dry-run plan and `meta.yaml`. A `cli` collector's commands are neither attributes
+nor span messages. The
 endpoint the variables name receives the mission's URLs, table and collector names, and
 record counts: point it at a collector you trust with them.
 
@@ -243,13 +251,51 @@ Regression: `test_a_request_is_a_client_span_with_the_required_attributes` and
 `test_a_transport_failure_names_its_exception_and_credentials_in_the_url_are_redacted` in
 `recon/tests/test_telemetry.py`.
 
+### R-9 — a source's own auth header followed a redirect to another host (fixed)
+
+httpx drops `Authorization` when a redirect leaves the origin, and nothing else. A source
+whose key goes in its own header (`x-api-key`, as Exa, Serper and Semantic Scholar take
+it) sent that key to whatever host its API redirected to. Fixed by dropping the source's
+`auth.header` from every request sent outside the origin of the one the collector built,
+by the rule httpx applies to `Authorization`. The redirect is still followed rather than
+refused: an API that sends a download to a storage or CDN host with a signed URL needs no
+key there, and refusing would fail that table for no gain.
+
+Regression: `test_a_redirect_to_another_origin_does_not_carry_the_sources_credential` and
+`test_a_redirect_within_the_origin_keeps_the_credential` in
+`recon/tests/test_http_requester.py`.
+
+### R-10 — a query could write into the mission's archives (fixed)
+
+The confinement of R-7 lets SQL write wherever it may read, so `COPY (...) TO`, `ATTACH`
+and `EXPORT` wrote files under `archive/`: over an archive's `meta.yaml`, or a planted
+`.jsonl` that the next query read as a table. Fixed by running only statements DuckDB's
+parser types as SELECT; any other is a `query` error that names it, and nothing in the SQL
+runs.
+
+Regression: `TestOnlyReads` in `recon/tests/test_query.py`, and
+`test_no_query_the_skill_teaches_is_refused_as_a_write` in `recon/tests/test_skill.py`.
+
+### R-11 — a failed span exported a command and a URL's credentials (fixed)
+
+R-8 kept a failed span's message to the first line of its error, and that line could be
+the whole problem: a failed `cli` command's error begins with the command, and a failed
+request's with its URL, user information included. Both reached the OTLP endpoint as the
+span's status, and the event log, so a secret inlined in `run:` (R-3) left the machine
+when its command failed. Fixed: a failed span's message describes the failure in recon's
+own words (the table failed, and its kind; the status code; the exception class) and
+quotes nothing; the error's text stays in `meta.yaml`. A URL in an error message is
+reported as `url.full` is, with user information and `auth.param` `REDACTED`.
+
+Regression: `test_a_failure_exports_no_command_and_no_credential_in_a_url` in
+`recon/tests/test_telemetry.py`, which runs `recon survey` with an OTLP receiver.
+
 ## Not covered
 
 - No sandboxing of collector commands. See boundary 1.
 - No egress allowlist. A source may point anywhere.
 - No TLS pinning; recon uses the platform trust store.
 - Declared collector effects are not enforced.
-- A query can write files under the mission's `archive/` directory. See boundary 6.
 
 ## Reporting
 

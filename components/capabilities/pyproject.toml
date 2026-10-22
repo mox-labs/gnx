@@ -32,7 +32,6 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.8",
     "types-PyYAML",  # gnx + harness parse YAML; strict mypy needs the stubs
-    "pytz>=2024.1",  # required by DuckDB TIMESTAMPTZ (recon)
     "opentelemetry-sdk>=1.20",  # matrix's telemetry tests install an SDK provider
     # The `claude` extra: matrix's SDK runtime is typechecked and tested here, and no other
     # member brings the SDK in.
