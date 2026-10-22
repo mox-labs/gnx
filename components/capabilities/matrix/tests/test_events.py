@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -13,11 +13,15 @@ from matrix import (
     EventPolicy,
     Executor,
     Inputs,
+    JsonlConstructStore,
     RecordingObserver,
     RunContext,
     RunError,
     wire,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 OUT = "acme.v1.out"
 
@@ -247,3 +251,23 @@ def test_an_event_document_is_versioned_and_json_ready() -> None:
         "component": "m",
         "fields": {"n": 1},
     }
+
+
+async def test_the_events_no_observer_received_are_counted_in_the_run_s_record(
+    tmp_path: Path,
+) -> None:
+    """A reader of ``events.jsonl`` can tell it is incomplete only from ``run.json``: a
+    ``matrix.events.dropped`` event may itself be lost (mx-src F16)."""
+    stuck = Stuck()
+
+    async def body(ctx: Any) -> str:
+        await stuck.entered.wait()
+        return "v"
+
+    store = JsonlConstructStore(tmp_path)
+    executor = Executor([stuck], events=EventPolicy(drain_s=0.01))
+    run = await executor.run(wire({"a": Step(body, provides=OUT)}), store=store, run_id="r")
+    assert run.events_dropped > 0
+    recorded = json.loads((tmp_path / "r" / "run.json").read_text())
+    assert recorded["events_dropped"] == run.events_dropped
+    assert store.describe("r")["events_dropped"] == run.events_dropped

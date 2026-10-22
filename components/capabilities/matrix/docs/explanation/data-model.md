@@ -180,7 +180,7 @@ The observed state of one execution, kept apart from the wiring, which a run nev
 | `failures` | `list[ComponentFailure]` | `component`, `kind`, `message` for each component that failed |
 | `components` | `dict[str, ComponentEnding]` | name to `status`, `reason`, `duration_ms`, `abandoned`, `attempts`: how each component ended |
 | `releases` | `list[ReleaseOutcome]` | `component`, `status`, `error` for each deferred release, in the order called |
-| `events_dropped` | `int` | events no observer received |
+| `events_dropped` | `int` | events no observer received; in `run.json` too, since the record is finished after the queue is drained |
 | `reused_from` | `str \| None` | the run whose rows this one reused |
 | `fingerprints` | `dict[str, str]` | name to a digest of what each component was built from |
 
@@ -236,17 +236,24 @@ The stores:
 <root>/<run_id>/matrix.v1.session.jsonl one line per agent session or model call (a Session)
 <root>/<run_id>/matrix.v1.ledger.jsonl  one line per row landed: seq, kind, row, component, time,
                                          sessions
-<root>/<run_id>/events.jsonl            the run's events, one matrix.v1.event a line (telemetry)
+<root>/<run_id>/events.jsonl            the run's events, one matrix.v1.event a line: telemetry,
+                                         lossy, never the result
 <root>/<run_id>/writer.lock             held (flock) by the writing process while it lives
 ```
 
 One kind per file means one schema per file, so `jq` or DuckDB's `read_json_auto` reads a
 table without matrix installed. An agent step's reply rows are `AgentResponse`s that carry
-the task as sent (`task`) beside the reply (`content`), and each `matrix.agent.start` event
-carries it too, so a step that failed before its reply was recorded still shows what it was
-asked. A model step's reply rows are `ModelCall`s: the prompt as sent (`prompt`), the reply
+the task as sent (`task`) beside the reply (`content`). A model step's reply rows are `ModelCall`s: the prompt as sent (`prompt`), the reply
 (`text`, and `value` for a structured one) and why it ended (`finish_reason`). Both point at
 their session row (`session`), which holds the model that answered, its usage and ids. `matrix run` prints these files when the run ends; `matrix runs` lists the runs.
+
+**Events are not part of the record.** `events.jsonl` is telemetry kept beside it: an event
+that did not fit the bounded queue, or that was still in it when the run stopped waiting, is
+not there. `run.json` says how many (`events_dropped`), which is how a reader knows the file
+is incomplete. No fact is read from it. What a step that failed was asked is the one thing
+the record does not hold in full: its session row has `sent`, a digest of the definition and
+task (or the prompt), and the `matrix.agent.start` event carries the task as sent when it was
+delivered.
 
 **While a run is going**, `run.json` says `running`, names the process writing it
 (`writer`: pid and host) and lists each table's file; every table file exists. Each row is one `write` of one whole line to a file opened for

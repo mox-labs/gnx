@@ -59,7 +59,8 @@ EVENT_SCHEMA = "matrix.v1.event"
 
 #: The names matrix emits, and the fields each carries beyond ``component``.
 RUN_START = "matrix.run.start"  # components
-RUN_END = "matrix.run.end"  # status, rows, duration_ms
+RUN_END = "matrix.run.end"  # status, rows, duration_ms. Sent before the record is finished:
+#   a store that then cannot finish it makes the run failed, which only the Run says
 COMPONENT_START = "matrix.component.start"
 COMPONENT_STOPPING = "matrix.component.stopping"  # reason
 COMPONENT_END = "matrix.component.end"  # status, reason?, duration_ms?, kind?, abandoned?

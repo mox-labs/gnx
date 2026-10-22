@@ -36,8 +36,9 @@ process cannot make a dead run read as running; the reader holds the same lock w
 finishes the record, so two readers finish it once. A dead run on another host stays
 ``running``: matrix does not guess.
 
-**Events** are telemetry kept beside the record: lossy under load, flushed line by line, and
-never read back as data. Results are read from the tables.
+**Events** are telemetry kept beside the record: lossy by design (``run.json``'s
+``events_dropped`` counts what is missing), flushed line by line, and never read back as data.
+Results are read from the tables.
 
 Type URLs: ``matrix.v1.store.jsonl`` (config: ``root``, default ``.matrix/runs`` under the
 working directory; ``fsync``) and ``matrix.v1.store.memory``.

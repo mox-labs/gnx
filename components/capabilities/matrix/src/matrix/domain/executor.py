@@ -297,6 +297,7 @@ class Run(BaseModel):
             "components": {name: ending.document() for name, ending in self.components.items()},
             "failures": [failure.document() for failure in self.failures],
             "releases": [release.document() for release in self.releases],
+            "events_dropped": self.events_dropped,
         }
         if self.reused_from is not None:
             found["reused_from"] = self.reused_from
@@ -763,7 +764,6 @@ class _Session:
                         if run.failures or escaped is not None
                         else "completed"
                     )
-                    self._finish()
                     ended = {
                         "status": run.status,
                         "rows": len(run.construct),
@@ -771,13 +771,17 @@ class _Session:
                     }
                     end(self.emit(RUN_END, span=run.run_id, fields=ended, parent=None))
         finally:
-            run.events_dropped = await self._channel.close()
-            if run.events_dropped:
-                logger.warning(
-                    "run %s: %d events were dropped before any observer received them",
-                    run.run_id,
-                    run.events_dropped,
-                )
+            # The record is finished last, so it counts every event no observer received.
+            try:
+                run.events_dropped = await self._channel.close()
+                if run.events_dropped:
+                    logger.warning(
+                        "run %s: %d events were dropped before any observer received them",
+                        run.run_id,
+                        run.events_dropped,
+                    )
+            finally:
+                self._finish()
 
     def _reuse(self, reuse: Reuse) -> None:
         """Record each reused component's rows as it recorded them, and end it ``reused``.

@@ -195,6 +195,18 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **`run.json` says how many events were dropped** (`events_dropped`, also in
+  `Run.document()`): the record is finished after the event queue has drained, so it counts
+  them all. A reader of `events.jsonl` could not tell the file was incomplete, since the
+  `matrix.events.dropped` event can itself be lost (mx-src F16). `matrix.run.end` is now sent
+  before the record is finished: a store that then cannot finish it makes the run `failed`,
+  which only the `Run` and the caller's error say.
+- **Nothing points readers at the events for a fact.** The skill told an agent to read a
+  failed step's task from `events.jsonl` with `jq`, and `matrix run` described the file as
+  "each agent's task as sent": the channel is lossy, so the fact might not be there. Events
+  are now called lossy wherever the record is described, and the docs say the one thing the
+  tables do not hold in full: what a step that failed was asked (its session row has `sent`,
+  a digest).
 - **A killed run reads without matrix.** A cut-short last line broke `jq` (exit 5) and
   DuckDB (`Malformed JSON`), though matrix's own reader skipped it, and `interrupted` was
   only what `describe` computed: `run.json` said `running` for ever. Now the first matrix

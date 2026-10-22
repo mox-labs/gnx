@@ -438,7 +438,7 @@ running component by the same sequence, skips the rest, calls the releases, and 
 | `reused_from` | `str \| None` | the run whose rows this one reused |
 | `fingerprints` | `dict[str, str]` | name to a digest of what the component was built from, when the wiring knows it |
 | `releases` | `list[ReleaseOutcome]` | `component`, `status`, `error` per deferred release, in the order called; `status` is `released`, `failed` or `abandoned` |
-| `events_dropped` | `int` | events no observer received |
+| `events_dropped` | `int` | events no observer received; in `document()`, and so in `run.json`: the record is finished after the queue is drained, so it counts them all |
 | `rows(kind)` | `-> tuple[Any, ...]` | the rows of `kind` |
 | `document()` | `-> dict` | the run as a `matrix.v1.run` document, without its tables |
 
@@ -1058,7 +1058,8 @@ Events are delivered by a dispatcher task from a bounded queue, never on the emi
 executor waits at the end of a run for the queue to empty. What follows from that, for `on_event`:
 
 - emitting never waits. When the queue is full the event is dropped and counted; the next
-  event delivered is preceded by `matrix.events.dropped`, and `Run.events_dropped` has the
+  event delivered is preceded by `matrix.events.dropped`, and `Run.events_dropped` (and
+  `run.json`'s `events_dropped`) has the
   total;
 - an observer that raises is logged and skipped;
 - an observer that never returns holds up the dispatcher, not the run: later events are

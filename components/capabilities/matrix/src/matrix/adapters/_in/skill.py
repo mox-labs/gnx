@@ -587,14 +587,14 @@ With the default store a run is a directory under `.matrix/runs/<run_id>/`:
   (from 0) is the row a reply's `session` names;
 - `matrix.v1.ledger.jsonl`: which component handed each row over, when, and the session
   rows behind it (`sessions`);
-- `events.jsonl`: the run's events; `matrix.agent.start` carries each task as sent, so a
-  step that failed before recording its reply still shows what it was asked.
+- `events.jsonl`: the run's events, telemetry: lossy by design (`events_dropped` in
+  `run.json` says how many are missing), so never read a fact from it. What a step that
+  failed was asked is not in the tables in full: its session row has `sent`, a digest.
 
 ```bash
 jq . .matrix/runs/RUN_ID/run.json
 jq -c '{task, content, session}' .matrix/runs/RUN_ID/acme.v1.claim-reply.jsonl
 jq -c '{status, reason, runtime, model, stop, usage}' .matrix/runs/RUN_ID/matrix.v1.session.jsonl
-jq -c 'select(.name == "matrix.agent.start") | .fields' .matrix/runs/RUN_ID/events.jsonl
 ```
 
 A run killed mid-way keeps every row it had recorded. The first matrix command that reads
@@ -743,7 +743,8 @@ def _reference_telemetry() -> str:
 A run recorded by the JSONL store keeps its events beside its tables, `events.jsonl`, one
 `matrix.v1.event` a line, flushed as written. The `console` observer (on a terminal, `matrix
 run` adds it) shows progress on stderr; `observers: [jsonl]` streams events to stderr or a
-file. Events are telemetry: lossy under load, never the result.
+file. Events are telemetry: lossy by design (dropped when the bounded queue is full, counted in
+`events_dropped` in `run.json`), never the result. Read facts from the tables.
 
 ## OpenTelemetry
 

@@ -229,10 +229,13 @@ run = asyncio.run(Executor([events]).run(wiring, {TEXT: ["hello"]}))  # the wiri
 
 In config they go under `matrix.observers`, and `compose(...).executor()` has them attached.
 
-Events are telemetry, not data. They pass through a bounded queue, so an observer that is
-slow, stuck or broken cannot hold a run up; when the queue is full events are dropped and
-counted (`run.events_dropped`, and a `matrix.events.dropped` event). Read results from the
-`Run` or the store, never from the stream.
+Events are telemetry, not data: **lossy by design**. They pass through a bounded queue, so an
+observer that is slow, stuck or broken cannot hold a run up; when the queue is full events are
+dropped and counted (`run.events_dropped`, `events_dropped` in `run.json`, and a
+`matrix.events.dropped` event, which can itself be lost). So `events.jsonl` may be incomplete.
+Read every fact from the `Run` or the store (its tables, `run.json`), never from the stream.
+An observer's optional `around`, entered in the task doing the work, is the one part that
+can slow a run, so it must not block.
 
 ## Agents
 
@@ -383,7 +386,7 @@ file that set it, and how many agent sessions and model calls a run makes
 something it can measure, so it does not pretend to. `run` prints the run id, where the record is, and its
 files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as
 sent, a model step's the prompt), `matrix.v1.session.jsonl`, `matrix.v1.ledger.jsonl` and
-`events.jsonl`. Each session row keeps its tokens, and the cost the runtime reported when it
+`events.jsonl` (telemetry: lossy, never the result). Each session row keeps its tokens, and the cost the runtime reported when it
 reported one (`cost_usd`), as facts of that session. From
 Python it is `compose(load_config()).run(inputs)`, and
 `plan_config(tool="matrix", config=None, *, only=False)` the plan: the first argument is the
