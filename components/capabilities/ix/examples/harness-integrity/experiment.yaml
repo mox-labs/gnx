@@ -4,7 +4,7 @@
 #   ix run examples/harness-integrity --exploratory
 #
 # Every probe carries a canned answer (mock_response), which matrix's mock runtime gives
-# back: nothing is spent and no model answers, so the report says "Dry run" and gives no
+# back: no model answers, so the report says "Dry run" and gives no
 # verdict. What it shows is what the real sensors made of answers whose grades are known:
 # the correct solution passes every test, the partial one passes the weighted share its
 # tiers give it, the one that raises scores 0 and is recorded rather than crashing the run,
@@ -28,4 +28,3 @@ metrics: [tests_score, tests_pass_share, outcome_score, turns]
 sensors:
   - {kind: outcome, graders: graders.py}
 repeats: 5
-spend: {ceiling: 0}

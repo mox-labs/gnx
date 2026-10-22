@@ -7,7 +7,7 @@ to be relied on. For a service: is the new build no slower than the old one, doe
 99% of requests at 80 a second, how does its memory grow with the size of a request.
 
 You write the question, the systems and the measurement that decides it in one YAML file.
-ix checks the file, shows what a run would do and cost, freezes the design before anything
+ix checks the file, shows what a run would do, freezes the design before anything
 runs, runs it one trial at a time and reports a verdict: `holds`, `fails` or
 `inconclusive`. The exit code is the verdict, so a run can gate a merge or a release.
 
@@ -45,14 +45,14 @@ and `otel` (export of spans over OTLP). A service experiment needs `k6` on `PATH
 
 ```bash
 ix validate <path>     # every problem at once, nothing run; exits 3 when the file is invalid
-ix plan <path>         # the decision, the trials, the effects, the spend; runs nothing
+ix plan <path>         # the decision, the trials, the effects; runs nothing
 ix register <path>     # freeze the design beside the file, before any run
 ix run <path>          # carry it out; the exit code is the verdict
 ix report <path>       # the latest run's report again, computed from its record
 ```
 
-`validate` and `plan` cost nothing. Read the plan before you register: its `Effects` and
-`Spend` are what a run will do. Register before you run: the registration is what the
+`validate` and `plan` run nothing. Read the plan before you register: its `Trials` and
+`Effects` are what a run will do. Register before you run: the registration is what the
 verdict is held to, so a margin cannot move once the numbers are in. `ix run` refuses an
 experiment that is not registered (exit 15); `--exploratory` runs it anyway and gives no
 verdict. A run exits 0 when the verdict holds, 10 when it fails and 11 when it is
@@ -60,7 +60,7 @@ inconclusive.
 
 The other commands: `ix deviations <path>` (what changed since registration; exit 14 when
 anything did), `ix runs <path>` (each run kept beside the experiment: when it started,
-whether it was gated, exploratory or a dry run, its verdict or indication, what it spent),
+whether it was gated, exploratory or a dry run, its verdict or indication, its trials),
 `ix genres` and
 `ix kinds` (what is installed), and `ix --skill` (the skill an agent reads; `-r NAME` prints
 one of its references). A path is the experiment file, a directory holding
@@ -114,7 +114,6 @@ Trials:       2 subjects x 1 cell x 1 probe x 10 repeats = 20, + 10 A/A = 30
 Duration:     about 2m (30 trials, probe time only; setup and teardown add to it)
 Effects:      process: starts a process on this machine  (subjects.baseline, subjects.candidate, probes.0)
               network: sends requests over the network  (probes.0)
-Spend:        not estimated (no per_trial cost declared and no earlier run that reported one)
 Registration: none
 ```
 
@@ -168,23 +167,21 @@ primary: {metric: tests_passed}
 threshold: {op: ">=", value: 0.8}
 repeats: 20
 metrics: [tests_score, cost]
-spend: {ceiling: 1.00, per_trial: 0.02}
 ```
 
 Each trial is a fresh agent session (on the `claude-sdk` runtime, which the subject must
-name: `runtime` has no default, so spending is never implicit) in a new temporary working
-directory. The probe puts the prompt to it, and `function-test` runs the truth's test cases
-against the code in the reply, in a child process. `tests_passed` is a pass rate, so it is
-held to the threshold by its interval: 20 trials that all pass show a rate above 0.8, and 10
-could not. A run calls a model and spends money, so the experiment
-sets a ceiling, and the run stops starting trials before the next could take it past.
+name: `runtime` has no default, so a model provider is never called implicitly) in a new
+temporary working directory. The probe puts the prompt to it, and `function-test` runs the
+truth's test cases against the code in the reply, in a child process. `tests_passed` is a
+pass rate, so it is held to the threshold by its interval: 20 trials that all pass show a
+rate above 0.8, and 10 could not. `cost` is what each session's runtime reported it cost,
+read as a fact like its tokens; nothing limits a run by it.
 
 Work in this order:
 
 1. `ix validate` and `ix plan`. Validate also refuses a session its sensors could not see
    into (`unobservable`): a skill with no `Skill` tool among its `tools`, a tool-reading
-   sensor on the `model` runtime, files to collect that no tool can write. `Spend` is the
-   declared cost per trial times the trials until a run has measured one; `Runnable` says
+   sensor on the `model` runtime, files to collect that no tool can write. `Runnable` says
    whether the runtime can start here (`claude-sdk` needs `ix[claude]`, the Claude Code CLI
    and its credentials).
 2. **Dry run.** Give the probe a `mock_response`, a reply whose grade you know, and run
@@ -197,13 +194,12 @@ Work in this order:
    fewest repeats; the file stays as it will be registered), and read the screen at the
    end of the report: a probe that every trial passed, or every trial failed, cannot tell
    one subject from another. A pilot too small for even every trial passing to show a
-   pass rate's threshold says so under `Best case`. `ix plan` then estimates the spend
-   from what a trial cost.
+   pass rate's threshold says so under `Best case`.
 4. `ix register`, then `ix run`.
 
 `examples/harness-integrity` is a dry run as checked in: four probes with canned answers of
 known worth, graded by `function-test` and by `outcome` with the experiment's own graders.
-`ix run examples/harness-integrity --exploratory` spends nothing. A check of the reply's text
+`ix run examples/harness-integrity --exploratory` calls no model. A check of the reply's text
 (it starts with, contains, matches) needs no graders: the `text-match` sensor reads it from
 the probe's truth (`starts_with: BANANA`). `examples/catalog-routing`
 asks whether the right skill fires for a real ask and stays quiet for a decoy, with its
@@ -261,7 +257,7 @@ A declaration is not an adapter. ix can **run** these:
 |---|---|---|
 | subject | `process` | starts the command for each trial in its own process group, waits for `ready` to answer (or `url` to accept a connection), and kills the group after the trial |
 | subject | `http` | starts nothing: an endpoint that is already up, with optional `headers` and a bearer token read from `auth: env:NAME` |
-| subject | `agent-session` | a fresh session per trial on the matrix runtime its required `runtime` names (`claude-sdk` and `model` spend; `mock` spends nothing), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; a `loop` asks again for a self-review or with the tests that failed |
+| subject | `agent-session` | a fresh session per trial on the matrix runtime its required `runtime` names (`claude-sdk` and `model` call a model provider; `mock` calls no model), in a new temporary working directory seeded from `fixtures`, `skills` and a `setup` command, removed after the trial; a `loop` asks again for a self-review or with the tests that failed |
 | probe | `http-load` | runs k6 for `warmup` then `duration`, with `load_model: closed` (`concurrency` clients) or `open` (an arrival `rate`); only the measured part is read |
 | probe | `prompt` | puts the prompt to the session and keeps the reply, every tool call, each round's transcript and the files named in `collect` |
 | sensor | `timing` | `latency`, `ttfb`, `throughput`, and `error_rate` as a count (failed requests of those sent), from what the load probe recorded |
@@ -306,9 +302,7 @@ def register(registry):
   does not pass silently;
 - **a model-judged metric never decides.** Whether a metric is judged is the sensor's
   declaration, not the author's. A judged metric is refused as `primary` and as a guardrail
-  in every genre with a verdict (`judged_gate`); it can be reported under `metrics:`;
-- a run that would spend money needs a ceiling: `spend.ceiling`, or `spend_cap` in ix's
-  settings (`spend_unbounded`).
+  in every genre with a verdict (`judged_gate`); it can be reported under `metrics:`.
 
 A metric decision has two reductions: `statistic` reduces one trial's reading to a number
 (the p99 of a latency histogram) and `estimator` combines the trials (their mean; the rate
@@ -388,13 +382,6 @@ nothing under `--json`); the report goes to stdout.
   is refused. A run in which the `mock` runtime answered any trial measured the harness,
   not the subject: the report says `Dry run on mock replies: checks the harness, not the
   agent`, with neither a verdict nor an indication, nor a probe screen.
-- **Spend.** A run with a ceiling adds up what each session reported it cost, and stops
-  starting trials once the next could take it past the ceiling (the dearest trial so far,
-  or `per_trial` if that is more). A runtime that reports no cost (`model`) is held to
-  `per_trial`, or stopped after its first trial when there is none. A run stopped this way
-  exits 12 with its report, which says why (`halt`). A judge spends against the same
-  ceiling: once the ceiling would not cover it, it is not asked, and its readings fail
-  (`spend_ceiling`).
 - **Stopping.** Ctrl-C (or SIGTERM) stops the trial in flight, kills the process groups the
   run started, and exits 12 with the partial report. A run the harness could not finish (an
   environment that did not come up, or went down between trials) exits 8. `ix report` of a
@@ -428,7 +415,6 @@ A run is one matrix run, and matrix's record is the only store:
   ix.v1.bindings.jsonl      what the environment provided
   ix.v1.interaction.jsonl   what happened in each trial, with any failure and its owner
   ix.v1.reading.jsonl       one row per metric per trial
-  ix.v1.halt.jsonl          why the run stopped starting trials, when its ceiling stopped it
   matrix.v1.ledger.jsonl    which component recorded each row, and when
   events.jsonl              the run's events
   writer.lock               locked by the process writing the run while it lives
@@ -529,8 +515,7 @@ between two samples is missed.
 
 ### Not built
 
-Trials run one at a time; there is no concurrency. A spend ceiling is checked between
-trials, so one trial can take a run past it. A subject left running by a run that was
+Trials run one at a time; there is no concurrency. A subject left running by a run that was
 killed outright is not found and stopped later: in the next run, each trial of a subject
 whose address already answers is recorded as a harness failure (`address_in_use`) instead
 of being measured. The sensors cannot be run again over a stored run and written back.
@@ -545,7 +530,6 @@ experiment:
 ```yaml
 ix:
   runs: ~/ix-runs       # where every run is kept; absent: .ix/runs beside each experiment
-  spend_cap: 5.00       # the ceiling of a run that spends and whose experiment sets none
 ```
 
 An unknown key is refused, by its path and file. The same read gives the `matrix:` section:
@@ -645,15 +629,15 @@ over.
 | 15 | `unregistered` | ix run needs a registration, or --exploratory |
 | 130 | `interrupted` | the command itself was interrupted (Ctrl-C) before it finished: run it again |
 
-`run_interrupted` (12) is a run that was stopped and reported: `ix run` stopped by Ctrl-C,
-or by its spend ceiling, exits 12 with its report. `interrupted` (130) is any other command
+`run_interrupted` (12) is a run that was stopped and reported: `ix run` stopped by Ctrl-C
+or SIGTERM exits 12 with its report. `interrupted` (130) is any other command
 cut short by Ctrl-C, which prints the error envelope instead.
 
 ## Documentation
 
 | Document | What it covers |
 |----------|----------------|
-| [Evaluating an agent](docs/how-to/evaluate-an-agent.md) | An agent evaluation end to end: the subject, probes in files, sensors, a dry run, a pilot, spend, the judge, and reading the report |
+| [Evaluating an agent](docs/how-to/evaluate-an-agent.md) | An agent evaluation end to end: the subject, probes in files, sensors, a dry run, a pilot, the judge, and reading the report |
 | `ix --skill` | The skill an agent reads, with frontmatter so it is a `SKILL.md` as printed: what ix is for and when not to use it, install and prerequisites, a quick start that runs, the commands in order, the errors and exit codes with what to do next. Generated from what is installed |
 | `ix --skill -r NAME` | One reference the skill lists: `experiment` (every key and value form), `genres`, `kinds`, `running` (registration, running, the verdict), `agents` (an agent evaluation end to end), `problems` |
 | [Design record, 2026-10-19](docs/design/2026-10-19-record.md) | Why the verdict's statistics are what they are: each method with its source, and the simulations before and after |

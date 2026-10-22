@@ -820,7 +820,6 @@ class TestTheComponents:
         assert wiring.providers == {
             schema.BINDINGS: "environment",
             schema.INTERACTION: "trials",
-            schema.HALT: "trials",
             schema.READING: "sense",
         }
 

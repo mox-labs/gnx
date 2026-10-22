@@ -3,8 +3,8 @@ without running anything.
 
 A plan is a pure function of the experiment, its design, its probe set and the kinds it
 names. It states the decision first (the question, the hypothesis rendered from the genre,
-the guardrails, the form of the verdict), then what a run costs: the trials with their
-arithmetic, the estimated duration, the effects and the spend.
+the guardrails, the form of the verdict), then what a run takes: the trials with their
+arithmetic, the estimated duration and the effects.
 
 **The digest.** ``digest`` identifies what a run would do. It is over the experiment's
 operative digest, the design, the probe set, the effects, the trial count and the list of
@@ -39,7 +39,7 @@ from ix.domain.schema import Record, canonical
 
 if TYPE_CHECKING:
     from ix.domain.design import Design
-    from ix.domain.experiment import Experiment, ProbeSet, Spend
+    from ix.domain.experiment import Experiment, ProbeSet
     from ix.domain.genre import Genre
     from ix.domain.kind import Kinds
 
@@ -125,27 +125,6 @@ class Duration(Record):
         return f"about {human} ({self.basis})"
 
 
-class SpendEstimate(Record):
-    """What a run is expected to spend, the ceiling it is held to, and where each came from.
-
-    ``estimated`` is what the trials of the latest finished run of the experiment cost on
-    average times the trials (``source: measured``), or, before any run reported a cost, the
-    experiment's ``per_trial`` times the trials (``declared``): a cost measured on this
-    experiment is better evidence than a guess made before it ran. ``ceiling_source`` is
-    ``experiment`` (its ``spend.ceiling``) or ``settings`` (ix's ``spend_cap``, for a run
-    that spends and whose experiment sets none).
-    """
-
-    estimated: float | None
-    ceiling: float | None
-    currency: str
-    basis: str
-    ceiling_source: Literal["experiment", "settings", ""] = ""
-    #: What ``estimated`` rests on: ``measured`` (an earlier run), ``declared``
-    #: (``spend.per_trial``), or nothing.
-    source: Literal["measured", "declared", ""] = ""
-
-
 class RegistrationStatus(Record):
     """Where the experiment stands against its registration."""
 
@@ -211,7 +190,6 @@ class Plan(Record):
     order: OrderPlan
     sensors: tuple[SelectedSensor, ...]
     effects: tuple[Effect, ...]
-    spend: SpendEstimate
     registration: RegistrationStatus = RegistrationStatus()
     #: The smallest effect a run of this plan can detect, when an earlier run says how much
     #: the primary varies. Not part of the digest: it changes with the runs, not the plan.
@@ -257,44 +235,6 @@ def count_trials(experiment: Experiment, design: Design, probes: int) -> Trials:
         calibration=calibration,
         total=measured + calibration,
     )
-
-
-def estimate_spend(
-    spend: Spend | None,
-    trials: int,
-    *,
-    spend_cap: float | None = None,
-    observed: tuple[float, str] | None = None,
-) -> SpendEstimate:
-    """The estimated cost of ``trials`` trials: from ``observed``, the mean cost of a trial
-    in an earlier run and that run's id, or else from the author's per-trial figure. The
-    ceiling is the experiment's, or ``spend_cap`` when it sets none."""
-    currency = spend.currency if spend is not None else "USD"
-    ceiling = spend.ceiling if spend is not None else None
-    source: Literal["experiment", "settings", ""] = "experiment" if ceiling is not None else ""
-    if ceiling is None and spend_cap is not None:
-        ceiling, source = spend_cap, "settings"
-    per_trial = spend.per_trial if spend is not None else None
-    estimated: float | None = None
-    rests_on: Literal["measured", "declared", ""] = ""
-    if observed is not None:
-        mean, run_id = observed
-        estimated, rests_on = round(mean * trials, 6), "measured"
-        basis = f"{trials} trials x {mean:.4g}, the mean cost of a trial measured in run {run_id}"
-        if per_trial is not None:
-            basis += f"; the declared per_trial of {per_trial:g} is set aside"
-    elif per_trial is not None:
-        estimated, rests_on = round(per_trial * trials, 6), "declared"
-        basis = (
-            f"{trials} trials x {per_trial:g} declared per trial, a guess until a run measures "
-            "it: pilot with `ix run --exploratory` and plan again"
-        )
-    else:
-        basis = "no per_trial cost declared and no earlier run that reported one"
-    return SpendEstimate(
-        estimated=estimated, ceiling=ceiling, currency=currency, basis=basis,
-        ceiling_source=source, source=rests_on,
-    )  # fmt: skip
 
 
 def effects(
@@ -505,8 +445,6 @@ def plan(
     registration: RegistrationStatus | None = None,
     adapters: frozenset[str] | None = None,
     spread: Spread | None = None,
-    spend_cap: float | None = None,
-    observed_cost: tuple[float, str] | None = None,
 ) -> Plan:
     """The plan of a valid experiment. Runs nothing and reads nothing.
 
@@ -540,9 +478,6 @@ def plan(
         order=_order(design, alternating),
         sensors=design.sensors,
         effects=plan_effects,
-        spend=estimate_spend(
-            experiment.spend, trials.total, spend_cap=spend_cap, observed=observed_cost
-        ),
         registration=registration or RegistrationStatus(),
         provenance=design.provenance,
         unimplemented=tuple(

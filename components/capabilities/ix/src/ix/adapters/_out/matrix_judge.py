@@ -15,10 +15,10 @@ judge can be trusted here:
   flag too. Both flags are read whenever the sensor is in use.
 
 The judge runs with no tools and one turn, on the runtime its ``runtime`` names: there is
-no default, because two of them spend money and spending is never implicit. Its spend is
-reported with its readings, so a run's ceiling holds it too. In a dry run it stands in on
-``mock``, which gives every reply the same score: the sensor's path is exercised and nothing
-is spent.
+no default, because two of them call a model provider, which is never implicit. What its
+runtime reported it cost is kept beside its runtime and model in the readings' ``detail``,
+a fact about the judge that nothing adds up. In a dry run it stands in on ``mock``, which
+gives every reply the same score: the sensor's path is exercised and no model is called.
 """
 
 from __future__ import annotations
@@ -148,8 +148,12 @@ class JudgeSensor:
             detail={
                 "scores": scores,
                 "reasons": [reason for _, reason in scored],
-                "judge": {"runtime": name, "model": replies[0].model, "family": mine},
+                "judge": {
+                    "runtime": name,
+                    "model": replies[0].model,
+                    "family": mine,
+                    "cost_usd": round(sum(costs), 6) if costs else None,
+                },
                 "subject_family": theirs,
             },
-            cost_usd=round(sum(costs), 6) if costs else None,
         )

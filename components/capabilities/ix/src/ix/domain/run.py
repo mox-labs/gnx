@@ -32,10 +32,6 @@ if TYPE_CHECKING:
 #: The role of the control's second sample under A/A calibration.
 CALIBRATION = "calibration"
 
-#: The key under which a facet a probe leaves behind reports what applying it cost, in the
-#: experiment's spend currency. A run adds these up and holds them to its spend ceiling.
-COST = "cost_usd"
-
 Owner = Literal["subject", "harness", "sensor"]
 
 #: How a run ended. ``interrupted`` covers a stop request (Ctrl-C, SIGTERM) and a process
@@ -61,8 +57,6 @@ class TrialError(Exception):
     def __init__(self, reason: str, message: str = "") -> None:
         super().__init__(message or reason)
         self.reason = reason
-        #: What the trial spent before it failed, where that is known.
-        self.cost_usd: float | None = None
 
 
 class SubjectError(TrialError):
@@ -114,9 +108,6 @@ class Interaction(Stored):
     watched: dict[str, dict[str, Any]] = {}
     #: Set when the trial could not be carried out. A failed trial is a row, never a gap.
     failure: Failure | None = None
-    #: What the trial cost, as the facets the probe left behind reported it (:data:`COST`);
-    #: None when none reported a cost.
-    cost_usd: float | None = None
     #: True when a stand-in answered instead of the subject (a mock runtime): nothing under
     #: test was measured in this trial.
     simulated: bool = False
@@ -143,9 +134,6 @@ class Reading(Stored):
     #: What the sensor said about this trial beyond its numbers (the skill that fired, the
     #: tests that failed), the same for each metric it read from the trial.
     detail: dict[str, Any] = {}
-    #: What taking the reading cost (a model asked to judge), on the first of the readings
-    #: a sensor took from one trial, so that it is counted once.
-    cost_usd: float | None = None
 
     def number(self, statistic: str) -> float | None:
         """This trial's reading as one number under ``statistic``, or None when it has none.
@@ -213,12 +201,6 @@ class RunManifest(Stored):
     #: What the run warned of before it started: a runtime that lets the agent use tools
     #: without asking. Said once per run, however many sessions were built.
     warnings: tuple[Problem, ...] = ()
-    #: Whether a kind the run uses spends money (declares the ``spend`` effect).
-    spends: bool = False
-    #: The most the run may spend, and where that came from: ``experiment`` (its
-    #: ``spend.ceiling``) or ``settings`` (ix's ``spend_cap``). None: no ceiling.
-    spend_ceiling: float | None = None
-    spend_ceiling_source: str = ""
     started_at: str = ""
     ix_version: str = ""
 
@@ -315,24 +297,9 @@ class RunRecord:
     errors: tuple[str, ...] = ()
     #: Each table's kind and the file that holds it, for a reader with ``jq`` or SQL.
     tables: Mapping[str, str] = field(default_factory=dict)
-    #: Set when the run stopped starting trials before its schedule was done.
-    halt: Halt | None = None
 
 
 class BindingsRow(Stored):
     """What the environment provided: the one row of ``ix.v1.bindings``."""
 
     services: dict[str, dict[str, Any]] = {}
-
-
-class Halt(Stored):
-    """Why a run stopped starting trials before its schedule was done: the one row of
-    ``ix.v1.halt``, written only when that happened."""
-
-    #: ``spend_ceiling``: the next trial could have taken the run past its ceiling.
-    reason: str
-    message: str
-    #: The trials carried out before it stopped, and the spend so far.
-    carried_out: int = 0
-    spent: float = 0.0
-    ceiling: float | None = None

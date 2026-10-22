@@ -30,7 +30,6 @@ from ix.domain.experiment import (
     ProbeFile,
     SensorConfig,
     Shape,
-    Spend,
     SubjectConfig,
     Threshold,
 )
@@ -43,7 +42,6 @@ from ix.domain.plan import (
     PlannedProbes,
     RegistrationStatus,
     Sensitivity,
-    SpendEstimate,
     Trials,
 )
 from ix.domain.ports import (
@@ -69,7 +67,6 @@ from ix.domain.report import RunSummary, TrialCounts
 from ix.domain.run import (
     Bindings,
     Failure,
-    Halt,
     HarnessError,
     Interaction,
     Reading,
@@ -77,7 +74,7 @@ from ix.domain.run import (
     Target,
     Trial,
 )
-from ix.domain.summaries import ConfusionTable, LabelScore, ProbeScreen, Spent
+from ix.domain.summaries import ConfusionTable, LabelScore, ProbeScreen
 
 __all__ = [
     "Amendment",
@@ -100,7 +97,6 @@ __all__ = [
     "Flag",
     "GenreDesign",
     "Guardrail",
-    "Halt",
     "HarnessError",
     "Interaction",
     "Interval",
@@ -138,9 +134,6 @@ __all__ = [
     "Shape",
     "SourcedValue",
     "Span",
-    "Spend",
-    "SpendEstimate",
-    "Spent",
     "Spread",
     "StandIn",
     "StoodIn",

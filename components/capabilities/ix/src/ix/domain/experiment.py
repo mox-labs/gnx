@@ -315,14 +315,6 @@ class EnvironmentConfig(Record):
         return _fold(data, frozenset({"kind", "effects", "options"}))
 
 
-class Spend(Record):
-    """The most a run may cost, and the author's estimate of one trial's cost."""
-
-    ceiling: float | None = Field(default=None, ge=0)
-    per_trial: float | None = Field(default=None, ge=0)
-    currency: str = "USD"
-
-
 def _shape_slip(error_type: str, message: str) -> PydanticCustomError:
     """A value of the wrong shape, with the sentence that fixes it. The error type is one a
     loader reads as ``wrong_shape``."""
@@ -367,7 +359,6 @@ class Experiment(Record):
 
     repeats: int | None = Field(default=None, ge=1)
     seed: int | None = Field(default=None, ge=0)
-    spend: Spend | None = None
 
     @field_validator("subjects", mode="before")
     @classmethod

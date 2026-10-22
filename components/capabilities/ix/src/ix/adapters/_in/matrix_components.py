@@ -2,8 +2,7 @@
 
 matrix drives ix through them: ``environment`` provides ``ix.v1.bindings``; ``trials``
 requires them and provides ``ix.v1.interaction``, one row as each trial finishes, so a
-killed run keeps every trial it finished, and ``ix.v1.halt`` when it stopped starting
-trials early (its spend ceiling); ``sense`` requires the interactions and provides
+killed run keeps every trial it finished; ``sense`` requires the interactions and provides
 ``ix.v1.reading``. ``ix.v1.run`` (the manifest) and ``ix.v1.trial`` (the schedule) are run
 inputs. Each component needs :data:`NEED`, the :class:`~ix.application.running.Kit` of
 adapters the run uses, and passes its matrix context on as the run's scope, traced by the
@@ -16,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from ix.application import running
 from ix.domain import schema
-from ix.domain.run import BindingsRow, Halt, Interaction, Reading, RunManifest, Trial
+from ix.domain.run import BindingsRow, Interaction, Reading, RunManifest, Trial
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -53,7 +52,6 @@ PAYLOADS: dict[str, type[Stored]] = {
     schema.BINDINGS: BindingsRow,
     schema.INTERACTION: Interaction,
     schema.READING: Reading,
-    schema.HALT: Halt,
 }
 
 
@@ -108,7 +106,7 @@ class TrialsComponent:
     """Carries out the schedule, one trial at a time, in order."""
 
     requires = (schema.RUN, schema.TRIAL, schema.BINDINGS)
-    provides = (schema.INTERACTION, schema.HALT)
+    provides = (schema.INTERACTION,)
 
     def __init__(self, kit: Kit) -> None:
         self._kit = kit
@@ -122,7 +120,6 @@ class TrialsComponent:
             bindings=bindings,
             scope=_scope(ctx, self._kit),
             land=lambda interaction: ctx.provide(schema.INTERACTION, interaction),
-            halt=lambda halt: ctx.provide(schema.HALT, halt),
         )
 
 
@@ -170,7 +167,7 @@ COMPONENTS: dict[str, tuple[Callable[..., object], str]] = {
     TRIALS: (
         _carry_out,
         "Carries out an experiment's trials in schedule order; provides ix.v1.interaction, "
-        "one row as each trial finishes, and ix.v1.halt when its spend ceiling stops it",
+        "one row as each trial finishes",
     ),
     SENSE: (_sense, "Reads each interaction with the experiment's sensors; provides ix.v1.reading"),
 }

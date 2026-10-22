@@ -12,7 +12,7 @@ the directory, however the trial ended.
 
 **What runs the agent is matrix's.** A session builds its runtime from the registry by name
 (``claude-sdk``, ``model``, ``mock``, or any runtime installed). The subject must name it:
-there is no default, because two of them spend money and spending is never implicit. The
+there is no default, because two of them call a model provider, which is never implicit. The
 runtime takes the subject's options as its config and the working directory as its ``cwd``,
 and the session runs its definition through a :class:`matrix.BoundAgent`, so matrix reports
 each session as ``invoke_agent`` and each tool call it timed as ``execute_tool``; ix adds no
@@ -59,7 +59,7 @@ from ix.adapters._out.python_checks import code_in, run_cases
 from ix.domain.kind import fill, placeholders, seconds
 from ix.domain.ports import StoodIn
 from ix.domain.problem import Problem, problem
-from ix.domain.run import COST, HarnessError, SubjectError, Target
+from ix.domain.run import HarnessError, SubjectError, Target
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
@@ -143,7 +143,8 @@ class SessionOptions(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    #: Required, with no default: two runtimes spend money, so a subject names its own.
+    #: Required, with no default: two runtimes call a model provider, so a subject names its
+    #: own.
     runtime: str
     definition: str | None = None
     model: str | None = None
@@ -240,15 +241,6 @@ class Round:
     feedback: list[str] = field(default_factory=list)
 
 
-class RoundsError(Exception):
-    """A session that failed after some rounds had run: what those rounds spent."""
-
-    def __init__(self, error: BaseException, cost_usd: float | None) -> None:
-        super().__init__(str(error))
-        self.error = error
-        self.cost_usd = cost_usd
-
-
 def _cost(rounds: Sequence[Round]) -> float | None:
     """What ``rounds`` cost, as their runtime reported it; None when none reported a cost."""
     known = [r.response.cost_usd for r in rounds if r.response.cost_usd is not None]
@@ -297,34 +289,28 @@ class Session:
         feedback: Mapping[str, Any] | None = None,
     ) -> list[Round]:
         """Put ``prompt`` to the agent, and again as the loop says. ``canned`` is the reply
-        the ``mock`` runtime gives; ``feedback`` the tests a test-feedback loop runs.
-
-        Raises :class:`RoundsError` holding the runtime's error and what the rounds before
-        it spent."""
+        the ``mock`` runtime gives; ``feedback`` the tests a test-feedback loop runs."""
         loop = self.options.loop
         rounds: list[Round] = []
         task = prompt
-        try:
-            for number in range(1, (loop.rounds if loop else 1) + 1):
-                response = await self._round(task, canned)
-                rounds.append(Round(number, task, response))
-                if loop is None or number == loop.rounds:
+        for number in range(1, (loop.rounds if loop else 1) + 1):
+            response = await self._round(task, canned)
+            rounds.append(Round(number, task, response))
+            if loop is None or number == loop.rounds:
+                break
+            values = {"prompt": prompt, "response": response.content, "until": loop.until}
+            if loop.strategy == "self-review":
+                if loop.until in response.content:
                     break
-                values = {"prompt": prompt, "response": response.content, "until": loop.until}
-                if loop.strategy == "self-review":
-                    if loop.until in response.content:
-                        break
-                    task = fill(loop.prompt or SELF_REVIEW, values)
-                else:
-                    failures = await self._failures(response.content, feedback or {})
-                    if not failures:
-                        break
-                    rounds[-1].feedback = failures
-                    task = fill(
-                        loop.prompt or TEST_FEEDBACK, {**values, "failures": "\n".join(failures)}
-                    )
-        except Exception as error:
-            raise RoundsError(error, _cost(rounds)) from error
+                task = fill(loop.prompt or SELF_REVIEW, values)
+            else:
+                failures = await self._failures(response.content, feedback or {})
+                if not failures:
+                    break
+                rounds[-1].feedback = failures
+                task = fill(
+                    loop.prompt or TEST_FEEDBACK, {**values, "failures": "\n".join(failures)}
+                )
         return rounds
 
 
@@ -683,8 +669,8 @@ class PromptProbe:
                 canned=None if canned is None else str(canned),
                 feedback=options.get("feedback"),
             )
-        except RoundsError as failed:
-            raise _owned(failed.error, failed.cost_usd) from failed.error
+        except Exception as error:
+            raise _owned(error) from error
         last = rounds[-1].response
         calls = [call for r in rounds for call in r.response.tool_calls]
         response = {
@@ -705,7 +691,7 @@ class PromptProbe:
             "tokens_input": tokens_in,
             "tokens_output": tokens_out,
             "tokens_total": tokens_in + tokens_out,
-            COST: _cost(rounds),
+            "cost_usd": _cost(rounds),
             "turns": sum(r.response.num_turns for r in rounds),
             "tool_calls": len(calls),
             "duration_ms": sum(r.response.duration_ms for r in rounds),
@@ -716,7 +702,7 @@ class PromptProbe:
         return {"response": response, "usage": usage}
 
 
-def _owned(error: BaseException, cost_usd: float | None) -> Exception:
+def _owned(error: BaseException) -> Exception:
     """The trial failure ``error`` is: the harness's for an infrastructure reason or an
     apparatus fault, the subject's for a session that ran and broke or was refused."""
     if isinstance(error, HarnessError | SubjectError):
@@ -728,5 +714,4 @@ def _owned(error: BaseException, cost_usd: float | None) -> Exception:
         failure = HarnessError("runtime", f"the session's runtime could not be built: {error}")
     else:
         failure = HarnessError("error", f"{type(error).__name__}: {error}")
-    failure.cost_usd = cost_usd
     return failure

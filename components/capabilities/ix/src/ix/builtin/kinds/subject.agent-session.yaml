@@ -5,11 +5,11 @@ options:
   runtime:
     type: string
     required: true
-    description: "the matrix runtime that runs the agent: one of the choices, or any runtime installed. There is no default, so spending is never implicit"
+    description: "the matrix runtime that runs the agent: one of the choices, or any runtime installed. There is no default, so a model provider is never called implicitly"
     choices:
-      claude-sdk: the Claude Agent SDK, with tools; spends
-      model: one call through hardline, no tools; spends
-      mock: canned replies; spends nothing
+      claude-sdk: the Claude Agent SDK, with tools; calls a model provider
+      model: one call through hardline, no tools; calls a model provider
+      mock: canned replies; calls no model
   definition: {type: path, description: "a Claude Code agent file: its body is the system prompt; its tools, model and maxTurns apply unless set here"}
   model: {type: string, description: the model the agent uses}
   system_prompt: {type: string, description: the system prompt}
@@ -23,5 +23,5 @@ options:
   setup: {type: list, description: "a command run in the working directory after the fixtures are copied, before the session: [python3, seed.py]"}
   loop: {type: mapping, description: "more rounds after the first: {strategy: self-review | test-feedback, rounds, prompt, until}"}
   runtime_options: {type: mapping, description: "further options of the runtime's own config (model: temperature, max_tokens; claude-sdk: fallback_model)"}
-effects: [spend, tools, process, filesystem]
+effects: [tools, process, filesystem]
 offers: [agent, workdir]

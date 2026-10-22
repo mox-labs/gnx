@@ -1,5 +1,42 @@
 # Changelog — ix
 
+## Unreleased
+
+### Removed (breaking)
+
+- **Spend.** ix no longer limits or estimates what a run costs. The ceiling was checked only
+  between trials, rested on whatever cost an adapter chose to report (the `model` runtime
+  reports none), and counted calls matrix already accounts for; it is gone, and not
+  replaced. `docs/design/2026-10-19-record.md` §11 has the reasons.
+  - An experiment's `spend:` (`ceiling`, `per_trial`, `currency`) is an unknown key, and
+    `spend_cap` in ix's settings is refused. Delete both.
+  - The problems `spend_unbounded` and `spend_over_ceiling` are gone, and `spend` is no
+    longer a key a genre's `must_set` may name.
+  - The `spend` effect is gone: `agent-session` declares `tools, process, filesystem`, and
+    `judge` declares none. A registration of an agent experiment made before this release
+    differs from its plan, so amend it.
+  - The plan has no `spend` (`SpendEstimate`), the report no `spend` (`Spent`), and
+    `ix runs` no spent total (`RunSummary.spent`).
+  - The run manifest has no `spends`, `spend_ceiling` or `spend_ceiling_source`; the
+    interaction and the reading have no `cost_usd`; `TrialError` carries no cost; the spans
+    have no `ix.trial.cost_usd` or `ix.sensor.cost_usd`, and the `ix.trial.end` event no
+    `cost_usd`.
+  - `Sensed.cost_usd` is gone from the `Sensor` port, and the port's spend contract with
+    it.
+  - `ix.domain` no longer exports `Spend`, `SpendEstimate`, `Spent` or `Halt`.
+- **The halt.** Spend was its only cause, so a run no longer stops short of its schedule
+  on its own: the `ix.v1.halt` table and its row, `RunRecord.halt`, `Report.halt`, the
+  `ix.run.halted` event and the trials component's `provides` entry are gone. A run is
+  `interrupted` (exit 12) only when it is stopped.
+
+### Kept
+
+- What a runtime reports a session cost stays a fact about the session: `cost_usd` in its
+  `usage`, read by the `usage` sensor's `cost` metric. A judge's reported cost moves into
+  its readings' `detail`, beside its runtime and model. Nothing adds either up.
+- The Claude Agent SDK's own `max_budget_usd`, given in `runtime_options`, still ends a
+  `claude-sdk` session (`stop: max_budget_usd`, read as `hit_limit`).
+
 ## 0.5.0 — 2026-10-19
 
 ix runs agent evaluations as well as service comparisons, and the statistics behind a
