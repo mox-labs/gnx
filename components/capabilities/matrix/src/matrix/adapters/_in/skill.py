@@ -462,7 +462,7 @@ matrix:
     concurrency: 4                          # components at once; default: as wired
     deadline_s: 600                         # each component, from its start
     grace_s: 5                              # to return after a stop request
-    cleanup_s: 30                           # for a cancelled component, or one release
+    cleanup_s: 30                           # a cancelled component, or one async release
     on_failure: isolate                     # fast (default): stop all; isolate: dependents
     retry: {attempts: 3, backoff_s: 2, errors: [transient]}
     components:

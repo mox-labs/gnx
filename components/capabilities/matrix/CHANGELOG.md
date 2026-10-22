@@ -56,8 +56,8 @@ the `model` effect or none at all. Record section 17 has the reasons.
     `matrix.v1.agent-runtime.<name>` and `matrix.v1.model-runtime.<name>`.
     `runtime_type_url` and `RUNTIME_PREFIX` are `agent_runtime_type_url` and
     `model_runtime_type_url` (with `AGENT_RUNTIME_PREFIX`, `MODEL_RUNTIME_PREFIX`).
-  - The config key `matrix.runtimes` is two: `matrix.agent_runtimes` (`claude-sdk`, `mock`)
-    and `matrix.model_runtimes` (`hardline`, `mock`). A config that still writes `runtimes`
+  - The config key `matrix.runtimes` is two: `matrix.agent_runtimes` (`claude-sdk`,
+    `pydantic-ai`, `mock`) and `matrix.model_runtimes` (`hardline`, `mock`). A config that still writes `runtimes`
     is refused at that key. `agents.<name>.runtime` names an agent runtime; one that names a
     model runtime is refused, with the fix.
   - The `model` runtime is the `hardline` model runtime (`HardlineModelRuntime`, was

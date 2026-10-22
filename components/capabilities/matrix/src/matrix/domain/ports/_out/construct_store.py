@@ -25,13 +25,13 @@ Contract:
 * ``describe(run_id)`` is the run's document (``matrix.v1.run``): status, times, how each
   component ended, and each table's kind and size. A run that never finished reads
   ``running``, or ``interrupted`` when the store can tell its writer is gone.
+* ``runs()`` lists run ids, oldest first. A missing run is a NotFoundError naming those
+  that exist. Anything the store cannot write or read back is a StoreError.
 * ``location(run_id)``, optional, is where the run's record is (a path, or the id), whether
   or not it exists yet: what a caller prints. A store without it is located by the run id.
 
 The two optional members were added after the others: a store written before them keeps
 working, and :func:`events_of` and :func:`location_of` read them for a caller.
-* ``runs()`` lists run ids, oldest first. A missing run is a NotFoundError naming those
-  that exist. Anything the store cannot write or read back is a StoreError.
 """
 
 from __future__ import annotations
