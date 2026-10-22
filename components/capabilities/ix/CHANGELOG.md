@@ -1,9 +1,8 @@
 # Changelog — ix
 
-## Unreleased
+## 0.6.0 — 2026-10-22
 
-What this release changes, as it now stands. `docs/design/2026-10-19-record.md` has the
-reasons, from §16 on.
+`docs/design/2026-10-19-record.md` has the reasons for this release's changes, from §16 on.
 
 ### Removed (breaking)
 
@@ -30,6 +29,11 @@ reasons, from §16 on.
   - `Sensed.cost_usd` is gone from the `Sensor` port, and the port's spend contract with
     it.
   - `ix.domain` no longer exports `Spend`, `SpendEstimate`, `Spent` or `Halt`.
+  - What a runtime reports a session cost stays a fact about the session: `cost_usd` in its
+    `usage`, read by the `usage` sensor's `cost` metric. A judge's reported cost is in its
+    readings' `detail`, beside its runtime and model. Nothing adds either up. The Claude
+    Agent SDK's own `max_budget_usd`, given in `runtime_options`, still ends a `claude-sdk`
+    session (`stop: max_budget_usd`, read as `hit_limit`).
 - **The halt.** Spend was its only cause, so a run no longer stops short of its schedule on
   its own: the `ix.v1.halt` table and its row, `RunRecord.halt`, `Report.halt`, the
   `ix.run.halted` event and the trials component's `provides` entry are gone. A run is
@@ -90,6 +94,10 @@ reasons, from §16 on.
     tool. Skills given to a session on a runtime that names no place for them, or that
     loads none (`pydantic-ai`), are `unobservable`. A runtime that declares nothing has no
     skills placed and none read as fired.
+  - `activation` on a runtime that names no skill tool is refused at validate
+    (`unobservable`), unless the sensor's `tool` names it, rather than reading every
+    `must_trigger` probe as not fired and every decoy as right. A stand-in is not held to
+    it.
   - A judge on an agent runtime runs in a fresh temporary directory, removed after, given
     the config its runtime declares keeps the machine out (claude-sdk: `setting_sources:
     []`) under its own `runtime_options`. On claude-sdk it ran in ix's own directory with
@@ -116,9 +124,10 @@ reasons, from §16 on.
     raised. `ix validate` warns of it (`kind_unimplemented`, with the reason), `ix plan`
     says `Runnable: no` with it, and `ix run` refuses it naming it. Every other kind, and
     every experiment that does not use it, is unaffected.
-- **httpx2 in place of httpx.** A subject's and a service's readiness checks go through
-  httpx2, the stack's one HTTP client, and ix no longer depends on httpx, so an install
-  carries one HTTP stack.
+- **A `Traced` scope reports outcomes through `evaluated` and `failed`**, in place of
+  `event`: a third-party scope implements the two methods. Only ix's OpenTelemetry tracer
+  names the GenAI conventions; the spans it exports are unchanged, and bringing the
+  environment up is now the span `ix.environment`, under `ix.run`.
 - **A count's estimator is `rate`.** A `count` metric took the genre's estimator, so the
   plan, the registration and each decision said `mean` while the analysis pooled it as a
   rate. Like a boolean, it now resolves to `rate` (`source: ix`), from the one default the
@@ -259,17 +268,18 @@ reasons, from §16 on.
 - **No proxy variable reroutes a readiness probe.** A started program's `ready` URL was asked
   through an httpx client that read `HTTP_PROXY` and its kin, so with a proxy set and no
   `NO_PROXY` a probe of a program on 127.0.0.1 went to the proxy, and a program that was up was
-  never seen to be. The probe is on httpx2, the workspace's one HTTP stack, with `trust_env`
-  off; ix depends on `httpx2` in place of `httpx`.
+  never seen to be. A subject's and a service's readiness checks now go through httpx2, with
+  `trust_env` off, and ix depends on `httpx2` in place of `httpx`, so an install carries one
+  HTTP stack.
 - **A prompt reaches the agent as it was written.** Every `{{` and `}}` in a subject's or a
   probe's options was un-doubled, so nested JSON and Handlebars or Mustache templates
   (`{{user}}`) were sent altered, while the registration digested the text as written. Only
   `{{name}}` where `name` would be filled there is an escape now. A loop's prompt, filled
   twice, un-doubles each escape once, by the filling that knows its name.
 - **A literal brace leaves the preflight on**, and a subject with a mapping option
-  (`runtime_options`, a `loop`) is preflighted. The plan treated `{{json}}` in an option, and
-  before that any `{`, as a placeholder a trial fills, and checked nothing: it said runnable
-  and the run started without the fixture the session names.
+  (`runtime_options`, a `loop`) is preflighted. The plan treated any `{` in an option as a
+  placeholder a trial fills, and checked nothing: it said runnable and the run started
+  without the fixture the session names.
 - **One extension whose adapter raises while it is built no longer breaks every command.**
   Only a `MatrixError` was read as "cannot be built", so a third party's constructor that
   raised anything else made `validate`, `plan`, `register`, `run` and `kinds` raise for
@@ -363,10 +373,6 @@ reasons, from §16 on.
   reports what each call returned or raised, on a channel of its own with a per-run token;
   ix compares with the truth. A returned value is compared as JSON carries it; one JSON
   cannot carry fails its case with its `repr`.
-- **`activation` on a runtime that names no skill tool is refused at validate**
-  (`unobservable`), unless the sensor's `tool` names it. It read every `must_trigger` probe
-  as not fired and every decoy as right: a confident `fails` from a harness that could not
-  see a skill fire. A stand-in is not held to it.
 - **Code that exits does not pass a must-raise case.** `raises: Exception` and `raises: any`
   passed on any `BaseException`, so code that called `sys.exit` on every input passed every
   must-raise case. `any` is now `Exception`, and `SystemExit` passes only where it is named.
@@ -382,7 +388,7 @@ reasons, from §16 on.
   its declaration and then ran without it. The run, the preflight and a report now use the
   kinds the experiment was validated against.
 - **A registration is written whole or not at all**: beside the record, then moved over it,
-  with the mode a plain write gives, and the process's umask is never changed to learn it.
+  with the mode a plain write gives.
 - **A reworded note leaves the plan alone.** An `x-` note is outside the plan and probe-set
   digests, as the question and descriptions are; it stays in the experiment's own digest.
 - **A margin or threshold removed or added is named** as a deviation of its own, with both
@@ -396,37 +402,11 @@ reasons, from §16 on.
   current directory (each `.ix/runs` of an experiment at most 6 directories below it;
   hidden folders and `node_modules` are not entered), or those under the settings' `runs`.
 - **Each run is read once**, latest first where only the latest is wanted.
-- **The telemetry conventions are named in the tracer only.** The run path says
-  `Span.evaluated` and `Span.failed`, and `otel_tracing.py` names the GenAI conventions; the
-  spans are unchanged. A third-party `Traced` scope implements the two methods in place of
-  `event`. Bringing the environment up is the span `ix.environment`, under `ix.run`.
-- **The "files are data" test can fail**: it uses a YAML tag that creates a file under an
-  unsafe loader (and checks that it does), for a genre file, a kind file and the experiment
-  file.
 - **What ix says matches what it does.** The skill and `ix --help` no longer say ix shows
   what a run would cost; the skill says `-` runs with `--dry-run` as well as
   `--exploratory`; SECURITY.md says a report runs no code, a plan's preflight builds
   runtimes and starts `docker info`, a dry run brings the environment up for real, and what
   ix's and matrix's spans carry.
-
-### Kept
-
-- What a runtime reports a session cost stays a fact about the session: `cost_usd` in its
-  `usage`, read by the `usage` sensor's `cost` metric. A judge's reported cost is in its
-  readings' `detail`, beside its runtime and model. Nothing adds either up.
-- The Claude Agent SDK's own `max_budget_usd`, given in `runtime_options`, still ends a
-  `claude-sdk` session (`stop: max_budget_usd`, read as `hit_limit`).
-
-### Checks
-
-- `layers.json` maps every module to a layer and runs on every test run: a new module no
-  layer claims fails the suite, and each rule of the map has a planted violation that must
-  be found.
-- The registry scan finds a registry call whatever its receiver is called, with the verbs
-  read from matrix's `Registry`.
-- docker is named by the compose environment alone, and matrix's process groups are reached
-  by the launcher alone.
-- Tests reach ix through the seams it declares, not its private names.
 
 ## 0.5.0 — 2026-10-19
 
