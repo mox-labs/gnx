@@ -428,6 +428,18 @@ def test_a_tool_in_a_module_of_a_module_is_found_when_built() -> None:
     assert runtime.resolved["tools"] == {"join": "os.path:join"}
 
 
+def test_a_tool_in_a_module_whose_import_is_blocked_is_refused_when_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A module set to None in ``sys.modules`` cannot be imported, so it is not found."""
+    monkeypatch.setitem(sys.modules, "blocked_tools", None)
+    config = _tooled("os")
+    config["agent_runtimes"]["p"]["tools"] = {"t": "blocked_tools:t"}
+    with pytest.raises(ConfigError) as raised:
+        compose(MatrixConfig.model_validate(config), registry=default_registry(discover=False))
+    assert [p.path for p in raised.value.problems] == ["matrix.agent_runtimes.p.tools.t"]
+
+
 async def test_its_session_row_names_the_model_that_answered_its_usage_and_ids() -> None:
     box = compose(
         MatrixConfig.model_validate(

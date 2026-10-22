@@ -359,7 +359,7 @@ def _unfound(name: str, reference: str) -> Problem | None:
 def _findable(module: str) -> bool:
     """Whether ``module`` can be found on the import path, without running it or the packages
     it is in: each package is searched by the locations its spec names, not by importing it."""
-    if module in sys.modules:  # already run, whatever holds it (``os.path`` in ``os``)
+    if sys.modules.get(module) is not None:  # already run, whatever holds it (``os.path``)
         return True
     path: Sequence[str] | None = None
     parts = module.split(".")
