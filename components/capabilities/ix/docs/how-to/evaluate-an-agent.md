@@ -513,10 +513,11 @@ refuses a second (`name_taken`).
 `ArgumentCorrectness`, `MaxToolCalls`, `MaxModelRequests` and `HasMatchingSpan` read the
 spans matrix makes of the session: `execute_tool` for each tool call the runtime timed
 (`claude-sdk` does). The spans are captured from the OpenTelemetry SDK in ix's own process,
-so set the `OTEL_*` variables that ask for export (an `OTEL_EXPORTER_OTLP_ENDPOINT`, or
-`OTEL_TRACES_EXPORTER=console`): `ix` then installs the SDK, and matrix's `otel` observer is
-on the run. A tool call's arguments are on its span only when the observer captures content,
-which `ArgumentCorrectness` needs:
+and a run with such an evaluator keeps them there with nothing to set: it puts matrix's `otel`
+observer on the run, and uses the tracer provider installed (the one `ix` installs when the
+`OTEL_*` variables ask for export, which exports them too), or installs one with no exporter
+when there is none, so nothing leaves the process. A tool call's arguments are on its span
+only when the observer captures content, which `ArgumentCorrectness` needs:
 
 ```yaml
 # ./matrix.yaml
@@ -524,8 +525,10 @@ matrix:
   observers: [{type: otel, capture_content: true}]
 ```
 
-Without the spans the reading fails, and says which of the two is missing. pydantic-evals'
-own answer then, false or 0, would read as an agent that called no tool. The spans are kept
+Without the spans the reading fails, and says why (no OpenTelemetry SDK installed, or a
+session that reported nothing as spans). pydantic-evals' own answer then, false or 0, would
+read as an agent that called no tool. A judge's own model calls are made while the sensors
+read, after the trial's spans were kept, so they never count among the trial's. The spans are kept
 in each trial's interaction, so `ix report` reads them later without OpenTelemetry.
 
 **An evaluator that calls a model** (`LLMJudge`, `GEval`) is a judge: its metrics are

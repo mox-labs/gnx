@@ -35,6 +35,16 @@ row `model` names, each request a hardline call, from `matrix.models` or the sen
 `runtime_options` and from nowhere else. A model runtime that gives none is still
 `Runnable: no`, saying so. The judge's connections close when its reading ends.
 
+### Added: span evaluators read spans with nothing exported
+
+A span evaluator (`ToolCorrectness`, `MaxToolCalls`, ...) had spans only when the `OTEL_*`
+variables asked for export; with nothing set, each reading failed (W11.2b). A run whose
+sensors read spans now puts matrix's `otel` observer on itself and uses the tracer provider
+installed, exporters and all, or installs one with no exporter when there is none: the
+evaluator reads the trial's spans and nothing leaves the process. A sensor says it reads
+spans by being a `SpanReader` (new optional port). A program that installs its own provider
+does so before running an experiment. ix now depends on `opentelemetry-sdk`.
+
 ### Added: an agent session on matrix's `pydantic-ai` runtime
 
 An `agent-session` subject names matrix's second agent runtime, `runtime: pydantic-ai`, as it

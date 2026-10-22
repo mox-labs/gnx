@@ -7,7 +7,8 @@ which tool applies a stimulus (:class:`Probe`), how a measurement is taken
 adapter need not answer what it cannot tell: a subject or a sensor may also be a
 :class:`Review` and a :class:`StandIn`, any adapter a :class:`Preflight`, an environment a
 :class:`Liveness`, and a scope :class:`Traced` and :class:`Recorded`. Without one there is
-nothing to check, to stand in, to trace or to name, and the run proceeds. A kind's options,
+nothing to check, to stand in, to trace or to name, and the run proceeds. A sensor may also be
+a :class:`SpanReader`, so a run keeps the spans it reads. A kind's options,
 facets and metrics are data (:mod:`ix.domain.kind`), not part of these ports.
 
 The four kind ports are runtime-checkable: each is the port of its family's extension point,
@@ -264,6 +265,16 @@ class Sensor(Protocol):
         option its kind declares a ``path`` already resolved against the experiment's
         directory."""
         ...
+
+
+@runtime_checkable
+class SpanReader(Protocol):
+    """Optional for a :class:`Sensor`: whether it reads the spans a trial leaves in this
+    process (a session's tool calls, its model requests), as its ``watch`` keeps them. A run
+    whose sensors read them keeps them in the process, exporting none unless export was
+    asked for."""
+
+    def reads_spans(self, options: Mapping[str, Any]) -> bool: ...
 
 
 @runtime_checkable

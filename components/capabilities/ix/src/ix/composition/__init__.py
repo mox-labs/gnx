@@ -45,6 +45,7 @@ from matrix import (
     default_registry,
     load_config,
     model_runtime_type_url,
+    observer_type_url,
     store_type_url,
 )
 
@@ -61,7 +62,7 @@ from ix.adapters._out.matrix_errors import carried_over, converted
 from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.adapters._out.matrix_runs import Runs as RunRecords
 from ix.adapters._out.matrix_runs import execute
-from ix.adapters._out.otel_tracing import OtelTracer
+from ix.adapters._out.otel_tracing import OtelTracer, keep_spans
 from ix.adapters._out.provenance import checkout, contents, installed
 from ix.adapters._out.registration_file import RegistrationFile
 from ix.application import experiments as use_cases
@@ -78,7 +79,7 @@ from ix.domain.experiment import Experiment
 from ix.domain.genre import Genres, genres
 from ix.domain.kind import KIND_FAMILIES, Kinds, kinds, per_cell
 from ix.domain.plan import required
-from ix.domain.ports import Preflight
+from ix.domain.ports import Preflight, SpanReader
 from ix.domain.problem import InvalidExperimentError
 from ix.domain.provenance import Provenance, RuntimeOrigin, named_files
 from ix.domain.report import Report, Runs
@@ -86,7 +87,7 @@ from ix.domain.report import report as build_report
 from ix.domain.report import summary as summarize
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterator, Mapping
+    from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 
     from matrix import ConstructStore, Entry
 
@@ -787,6 +788,10 @@ class Root:
             overridden=overridden,
         )
         kit = self._kit(prepared.kinds, opened.vocabulary.kinds)
+        observers = self._settings().matrix.observers
+        if _reads_spans(prepared.design, kit):
+            observers = _with_otel(observers)
+            keep_spans()
         requirements, cautions = self._preflight(
             prepared.experiment, prepared.design, prepared.probes, directory
         )
@@ -802,9 +807,7 @@ class Root:
                 execute(
                     store=records.store,
                     registry=self._registry,
-                    config=MatrixConfig.model_validate(
-                        {**COMPOSITION, "observers": self._settings().matrix.observers}
-                    ),
+                    config=MatrixConfig.model_validate({**COMPOSITION, "observers": observers}),
                     needs={NEED: kit},
                     manifest=manifest,
                     trials=prepared.trials,
@@ -907,6 +910,26 @@ class Root:
                 yield summarize(build_report(record))
             except IxError:
                 yield RunRecords.summary(record)  # another ix's: its id, state and counts
+
+
+def _reads_spans(design: Design, kit: Kit) -> bool:
+    """Whether a sensor of the run reads the spans its trials leave: one that is a
+    :class:`~ix.domain.ports.SpanReader` and says so of its options."""
+    return any(
+        isinstance(sensor := kit.sensors.get(selected.kind), SpanReader)
+        and sensor.reads_spans(selected.options)
+        for selected in design.sensors
+    )
+
+
+def _with_otel(observers: Sequence[Any]) -> tuple[Any, ...]:
+    """The run's observers, with matrix's ``otel`` among them: the spans a sensor reads are
+    the ones it reports. One the settings name already, with its options, is kept as it is."""
+    otel = observer_type_url("otel")
+    named = {
+        observer_type_url(entry if isinstance(entry, str) else entry.type) for entry in observers
+    }
+    return tuple(observers) if otel in named else (*observers, "otel")
 
 
 def _runs_under(directory: str) -> list[str]:

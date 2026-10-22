@@ -1231,10 +1231,11 @@ are in the reading's detail. One `evaluator` entry per experiment: a second is
 - **Reading the spans**: `ToolCorrectness`, `TrajectoryMatch` (an `eval_score`),
   `ArgumentCorrectness`, `MaxToolCalls`, `MaxModelRequests`, `HasMatchingSpan`, on matrix's
   `execute_tool` span of each tool call the runtime timed (`claude-sdk` does). They are
-  captured from the OpenTelemetry SDK in ix's process, so set `OTEL_TRACES_EXPORTER` or an
-  `OTEL_EXPORTER_OTLP_ENDPOINT`: ix then installs the SDK and matrix's `otel` observer is on
-  the run. `ArgumentCorrectness` also needs `observers: [{{type: otel, capture_content:
-  true}}]` under `matrix:` in the settings, since a call's arguments are content. Without
+  captured from the OpenTelemetry SDK in ix's process, with nothing to set: the run puts
+  matrix's `otel` observer on itself and keeps the spans in the process, exporting them only
+  when the `OTEL_*` variables ask. `ArgumentCorrectness` also needs
+  `observers: [{{type: otel, capture_content: true}}]` under `matrix:` in the settings, since a
+  call's arguments are content. Without
   the spans the reading fails and says why; it never reads as no tool called. A dry run on
   `mock` has no tool calls to read.
 - **Calling a model**: `LLMJudge` and `GEval` give `judged_eval_passed` and

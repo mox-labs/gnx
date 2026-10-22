@@ -22,6 +22,8 @@ from matrix.adapters._out.observers.otel import OtelObserver
 from opentelemetry import trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_evals.evaluators import llm_as_a_judge
@@ -313,7 +315,9 @@ class TestWithoutTheTrialsSpans:
         options = _agentic("ToolCorrectness", expected_tools=["Read"])
         with pytest.raises(NoSpansError, match="none were captured") as raised:
             await _read(options, trial)
-        assert "OTEL_TRACES_EXPORTER" in str(raised.value)
+        # Changed requirement (W11.2b): a run keeps its spans in process, so the way to have
+        # them is the SDK, not export.
+        assert "opentelemetry-sdk" in str(raised.value)
         # HasMatchingSpan raises where ToolCorrectness answers False: the same reason either way
         query = _agentic("HasMatchingSpan", query={"name_contains": "execute_tool"})
         with pytest.raises(NoSpansError, match="none were captured"):
@@ -322,11 +326,11 @@ class TestWithoutTheTrialsSpans:
     async def test_spans_with_none_from_the_trial_fail_the_reading(
         self, provider: TracerProvider
     ) -> None:
-        """An SDK, and nothing reported the session as spans (matrix's otel observer was
-        not on the run)."""
+        """An SDK, and nothing reported the session as spans (here, the session never ran
+        inside the watch)."""
         seen = await _watched_run(provider, run=False)
         assert seen["spans"] == []
-        with pytest.raises(NoSpansError, match="matrix.observers"):
+        with pytest.raises(NoSpansError, match="the trial left none"):
             await _read(_agentic("MaxToolCalls", max_calls=5), _trial("x", watched=seen))
 
     async def test_a_trial_the_sensor_did_not_watch_says_so(self) -> None:
@@ -463,6 +467,14 @@ def _experiment(tmp_path: Path, **changes: Any) -> Path:
     folder.mkdir(exist_ok=True)
     (folder / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
     return folder
+
+
+def _rows(report: ix.Report, table: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in Path(report.tables[table]).read_text().splitlines()]
+
+
+def _readings(report: ix.Report) -> list[dict[str, Any]]:
+    return _rows(report, "ix.v1.reading")
 
 
 def _problems(root: Root, lab: Path) -> list[tuple[str, str]]:
@@ -607,18 +619,104 @@ class TestPlanAndRun:
         # Each trial's spans are its own: one session, not every session so far.
         assert sum(s["name"].startswith("invoke_agent") for s in watched["spans"]) == 1
 
-    def test_without_the_spans_each_reading_fails_with_the_reason(self, tmp_path: Path) -> None:
-        """No otel observer on the run and no SDK: every reading is a sensor failure saying
-        why, and none reads as an agent that called no tool."""
+    def test_with_no_export_the_spans_are_kept_in_process_and_none_leaves(
+        self, tmp_path: Path
+    ) -> None:
+        """W11.2b. Before, a span evaluator had spans only when the ``OTEL_*`` variables asked
+        for export (the command installs the SDK, and matrix attaches its ``otel`` observer,
+        only then): with nothing configured each reading failed. Now a run whose sensors read
+        spans installs a tracer provider with no exporter and attaches matrix's observer, so
+        the evaluator reads the trial's spans and nothing leaves the process."""
         report = Root(registry=_registry(), settings=_settings()).run(
             _experiment(tmp_path), exploratory=True
         )
-        readings = [
-            json.loads(line)
-            for line in Path(report.tables["ix.v1.reading"]).read_text().splitlines()
+        readings = _readings(report)
+        assert len(readings) == 5
+        assert all(r["value"] is True and r["detail"]["spans"] == 5 for r in readings)
+        installed = trace.get_tracer_provider()
+        assert isinstance(installed, TracerProvider)
+        # Its one processor is pydantic-evals' capture, which keeps a trial's spans in memory
+        # for the sensor: no exporter.
+        exporters = [
+            type(getattr(processor, "span_exporter", None)).__name__
+            for processor in installed._active_span_processor._span_processors
         ]
+        assert exporters == ["_ContextInMemorySpanExporter"]
+
+    def test_with_export_configured_the_installed_provider_is_used(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The command installed the SDK from the ``OTEL_*`` variables: the run's spans go to
+        that provider's exporter, as asked, and the evaluator reads them there; no second
+        provider is installed."""
+        monkeypatch.setenv("OTEL_TRACES_EXPORTER", "otlp")
+        exported = InMemorySpanExporter()
+        configured = TracerProvider()
+        configured.add_span_processor(SimpleSpanProcessor(exported))
+        trace.set_tracer_provider(configured)
+        report = Root(registry=_registry(), settings=_settings()).run(
+            _experiment(tmp_path), exploratory=True
+        )
+        assert trace.get_tracer_provider() is configured
+        assert all(r["value"] is True for r in _readings(report))
+        names = [span.name for span in exported.get_finished_spans()]
+        assert names.count("invoke_agent agent") == 5 and names.count("execute_tool Grep") == 5
+
+    def test_a_judges_spans_never_join_the_tree_an_evaluator_reads(self, tmp_path: Path) -> None:
+        """The subject is one model call per trial, on a hardline row; a judge reads each reply
+        on another hardline row. The judge's model calls are spans too (``matrix.model``,
+        hardline's ``chat``), made while the sensors read, after the trial's spans were
+        kept: MaxModelRequests counts the subject's one request, never the judge's."""
+        rows = {
+            "answerer": {"backend": "mock", "model": "a-1", "family": "answering",
+                         "options": {"default": "Fixed: main now returns 0."}},
+            "grader": {"backend": "mock", "model": "g-1", "family": "grading",
+                       "options": {"default": '{"score": 0.9, "reason": "fixed"}'}},
+        }  # fmt: skip
+        settings = matrix.Config[IxSettings](
+            client=IxSettings(), matrix=matrix.MatrixConfig(models={"models": rows})
+        )
+        lab = _experiment(
+            tmp_path,
+            subjects={"agent": {"kind": "model-call", "runtime": "hardline",
+                                "model": "answerer"}},
+            sensors=[{"kind": "evaluator", "evaluator": "MaxModelRequests",
+                      "arguments": {"max_requests": 1}},
+                     {"kind": "judge", "rubric": "Says it fixed main.",
+                      "model_runtime": "hardline", "model": "grader"}],
+            metrics=["judged_score"],
+        )  # fmt: skip
+        report = Root(registry=_registry(), settings=settings).run(lab, exploratory=True)
+        readings = _readings(report)
+        counted = [r for r in readings if r["metric"] == "eval_passed"]
+        assert len(counted) == 5 and all(r["value"] is True for r in counted)
+        assert all(
+            "1 model request(s)" in r["detail"]["results"]["MaxModelRequests"]["reason"]
+            for r in counted
+        )
+        judged = [r for r in readings if r["metric"] == "judged_score"]
+        assert len(judged) == 5 and all(r["value"] == 0.9 for r in judged)
+        for interaction in _rows(report, "ix.v1.interaction"):
+            spans = interaction["watched"][KIND]["spans"]
+            rows_called = {s["attributes"].get("hardline.row") for s in spans} - {None}
+            assert rows_called == {"answerer"}
+            (call,) = [s for s in spans if s["name"] == "matrix.model"]
+            (chat,) = [s for s in spans if s["name"].startswith("chat ")]
+            assert chat["parent_span_id"] == call["span_id"]  # under the call that made it
+
+    def test_with_no_sdk_to_install_each_reading_fails_with_the_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the OpenTelemetry SDK no provider can be installed: every reading is a
+        sensor failure saying why, and none reads as an agent that called no tool."""
+        monkeypatch.setitem(sys.modules, "opentelemetry.sdk.trace", None)
+        report = Root(registry=_registry(), settings=_settings()).run(
+            _experiment(tmp_path), exploratory=True
+        )
+        readings = _readings(report)
         assert readings and all(r["value"] is None for r in readings)
-        assert all("reads the trial's spans" in r["failure"]["message"] for r in readings)
+        assert all("none were captured" in r["failure"]["message"] for r in readings)
+        assert all("opentelemetry-sdk" in r["failure"]["message"] for r in readings)
 
     def test_a_dry_run_of_a_judge_evaluator_calls_no_model(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -670,3 +768,18 @@ def test_the_kind_says_what_a_judge_sends() -> None:
         "pydantic-evals' own default model is never used"
         in kind.options["model_runtime"].description
     )
+
+
+def test_the_evaluators_said_to_read_no_span_never_reach_for_one() -> None:
+    """Which of pydantic-evals' evaluators read the trial's spans is ix's word
+    (``READS_NO_SPANS``), checked here against the release installed: each it names never
+    touches the span tree in its code, and each other one does. One that starts or stops
+    reading spans in a later release fails here, not at a run."""
+    import inspect
+
+    from ix.adapters._out.evaluators import READS_NO_SPANS, _registry
+
+    for name, cls in _registry().items():
+        assert ("span_tree" in inspect.getsource(cls)) == (name not in READS_NO_SPANS), name
+    assert _sensor().reads_spans({"evaluator": "ToolCorrectness"})
+    assert not _sensor().reads_spans({"evaluator": "LLMJudge"})

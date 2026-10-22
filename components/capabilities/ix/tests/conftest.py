@@ -67,6 +67,18 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_tracer_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test starts with no OpenTelemetry tracer provider installed, and leaves none
+    behind: a run whose sensors read spans installs one in the process (W11.2b), and
+    OpenTelemetry lets a process install one only once."""
+    from opentelemetry import trace
+    from opentelemetry.util._once import Once
+
+    monkeypatch.setattr(trace, "_TRACER_PROVIDER", None)
+    monkeypatch.setattr(trace, "_TRACER_PROVIDER_SET_ONCE", Once())
+
+
 @pytest.fixture(scope="session")
 def builtin_genres() -> Genres:
     """ix's four genres, read from the package (no entry-point discovery)."""

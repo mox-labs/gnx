@@ -15,13 +15,16 @@ the trials out, and this sensor hands each one to an evaluator as pydantic-evals
   session, and whatever a model runtime or a library reports inside them. They are kept in
   the interaction (``watched``), so a run read back later is read the same way.
 
-**Without an SDK there are no spans.** ix's command installs the SDK when the ``OTEL_*``
-variables ask for export, and matrix's ``otel`` observer is on a run then, or when the
-settings name it. With no SDK tracer provider installed, or with spans captured and not one
-of them from the trial, an evaluator that reads the span tree has nothing to read: its
-reading fails, with that reason. pydantic-evals' own span evaluators answer ``False`` or
-``0.0`` then, which would read as an agent that called no tool; the sensor does not let that
-through. An evaluator that reads no span (``Equals``) reads as usual.
+**The spans need no export.** The sensor is a :class:`~ix.domain.ports.SpanReader`: it says
+whether its evaluator reads spans (every evaluator but those known to read none, so one
+pydantic-evals adds is taken to). A run whose sensors read spans keeps them in the process: the
+composition root uses the tracer provider installed (the command's, when the ``OTEL_*``
+variables ask for export), installs one with no exporter when there is none, and puts matrix's
+``otel`` observer on the run. Without the OpenTelemetry SDK nothing can be installed, and with
+spans captured and not one of them from the trial there is nothing to read either: a reading
+of the span tree then fails, with that reason. pydantic-evals' own span evaluators answer
+``False`` or ``0.0`` then, which would read as an agent that called no tool; the sensor does
+not let that through. An evaluator that reads no span (``Equals``) reads as usual.
 
 **Which metric.** An evaluator gives assertions (true or false), scores (numbers) and labels
 (text), each under a name. ``eval_passed`` is whether every assertion held, and
@@ -82,6 +85,12 @@ JUDGED = "judged_"
 
 #: The options that say where a judge evaluator's model comes from.
 JUDGE_OPTIONS = ("model_runtime", "model", "runtime_options")
+
+#: pydantic-evals' evaluators that read no span: the reply, the probe's truth, its duration,
+#: or a model's judgement of them. Any other is taken to read the trial's spans.
+READS_NO_SPANS = frozenset(
+    {"Equals", "EqualsExpected", "Contains", "IsInstance", "MaxDuration", "LLMJudge", "GEval"}
+)
 
 #: Why a trial's spans are not there, when the watch kept none and said nothing.
 UNWATCHED = "no spans were kept for this trial: the evaluator sensor did not watch it"
@@ -431,6 +440,11 @@ class EvaluatorSensor:
             ),
         )
 
+    def reads_spans(self, options: Mapping[str, Any]) -> bool:
+        """Whether the evaluator ``options`` name reads the trial's spans: every one but those
+        known to read none; a name still to be filled in is taken to."""
+        return str(options.get("evaluator", "")) not in READS_NO_SPANS
+
     # --- reading a trial ---
 
     def watch(
@@ -547,14 +561,14 @@ def _spans_read(context: Any, spans: SpanTree | SpanTreeRecordingError) -> int |
     if isinstance(spans, SpanTreeRecordingError):
         raise NoSpansError(
             f"the evaluator reads the trial's spans, and none were captured: {spans.message} "
-            "ix installs an OpenTelemetry SDK when the OTEL_* variables ask for export "
-            "(OTEL_TRACES_EXPORTER, an OTEL_EXPORTER_OTLP_ENDPOINT)"
+            "A run whose sensors read spans keeps them in this process, on the tracer provider "
+            "installed or one it installs, which needs the OpenTelemetry SDK (opentelemetry-sdk)"
         )
     if not spans.nodes_by_id:
         raise NoSpansError(
             "the evaluator reads the trial's spans, and the trial left none: nothing reported "
-            "the session as spans. matrix's otel observer is on a run when the OTEL_* "
-            "variables ask for export, or when the settings name it under matrix.observers"
+            "the session as spans, though matrix's otel observer is on every run whose sensors "
+            "read them"
         )
     return len(spans.nodes_by_id)
 
