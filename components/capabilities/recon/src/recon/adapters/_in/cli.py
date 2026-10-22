@@ -333,6 +333,8 @@ def _print_event(event: dict[str, Any]) -> None:
             err.print(f"[dim]    fix: {escape(event['fix'])}[/]")
     elif kind == "archive_warning":
         err.print(f"[yellow]  warning: archive: {escape(event['reason'])}[/]")
+        if event.get("fix"):
+            err.print(f"[dim]    fix: {escape(event['fix'])}[/]")
 
 
 # --- status ------------------------------------------------------------------------------

@@ -181,6 +181,40 @@ class TestSurvey:
         assert tables["ok"]["status"] == "ok", "every table's status is still reported"
         assert [tables[f"t{i}"]["error"]["kind"] for i in range(len(kinds))] == kinds
 
+    @pytest.mark.parametrize("step", ["write_meta", "mark_complete"])
+    def test_an_archive_that_could_not_be_finished_is_incomplete_and_fails(
+        self, project, monkeypatch, step
+    ):
+        """Regression: a survey whose ``meta.yaml`` or completion step failed (a full disk)
+        said ``status: ok`` and exited 0, and under --json the one word of it, an event,
+        went nowhere; the archive stayed incomplete and only a later query said so."""
+
+        def fails(self, archive, *args):
+            raise OSError(28, "No space left on device")
+
+        unfinished = type("Unfinished", (composition.ArchiveFiles,), {step: fails})
+        monkeypatch.setattr(composition, "ArchiveFiles", unfinished)
+        _mission(project, "m", OK_CONFIG)
+        result = _invoke("survey", "m", "--json")
+
+        assert result.exit_code == 8
+        doc = _doc(result)
+        assert doc["status"] == "incomplete"
+        assert [t["status"] for t in doc["tables"]] == ["ok"]
+        [warning] = [w for w in doc["warnings"] if w["kind"] == "archive_unfinished"]
+        assert "No space left on device" in warning["message"]
+        assert warning["kind"] in recon.PROBLEM_KINDS
+        error = _error(result)
+        assert error["kind"] == "run_failed"
+        assert "could not be finished" in error["message"]
+        assert error["details"] == {"archive": doc["archive"], "failed": []}
+        assert (Path(doc["archive"]) / ".incomplete").exists()
+
+        human = _invoke("survey", "m")
+        assert human.exit_code == 8
+        assert "No space left on device" in human.stderr
+        assert "error (run_failed):" in human.stderr
+
     def test_no_config_is_not_found(self, project):
         result = _invoke("survey", "nope", "--json")
         assert result.exit_code == 4

@@ -14,7 +14,9 @@ Tables run one at a time, in config order, each collector against each of its so
 catalog order. A table that fails is recorded with its error and the rest still run. The
 archive is created incomplete and marked complete only after ``meta.yaml`` is written with
 every table succeeded, so a survey that fails a table, is interrupted or is killed leaves an
-archive that reads incomplete. Each table is a ``recon.collect`` span.
+archive that reads incomplete. A survey that cannot write ``meta.yaml`` or mark the archive
+complete is not ``finished``, and says why in an ``archive_unfinished`` warning. Each table
+is a ``recon.collect`` span.
 
 A table of a type that reads ``extract:`` (``CollectorType.extracts``) that gets exactly one
 record holding a list of objects, with neither ``extract:`` nor ``normalize:`` shaping it,
@@ -74,7 +76,9 @@ class Survey:
     """One survey's run: the ports it writes through and the tables it has recorded.
 
     ``extracts`` names the collector types that read ``extract:``; ``warnings`` collects
-    what the run found worth saying about tables that succeeded."""
+    what the run found worth saying about tables that succeeded, and about an archive it
+    could not finish. ``finished`` is false when ``meta.yaml`` could not be written or the
+    archive could not be marked complete, so it reads incomplete whatever its tables did."""
 
     def __init__(
         self,
@@ -93,6 +97,7 @@ class Survey:
         self._on_event = on_event
         self._extracts = frozenset(extracts)
         self.warnings: list[Problem] = []
+        self.finished = True
 
     def run(
         self,
@@ -124,7 +129,15 @@ class Survey:
             if all(table.status == "ok" for table in tables):
                 self._archives.mark_complete(archive)
         except OSError as exc:
-            self._emit({"kind": "archive_warning", "reason": f"archive not finished: {exc}"})
+            self.finished = False
+            warning = Problem(
+                "",
+                f"the archive could not be finished, so it reads incomplete: {exc}",
+                kind="archive_unfinished",
+                fix="free space in the archive's directory, or make it writable, then survey again",
+            )
+            self.warnings.append(warning)
+            self._emit({"kind": "archive_warning", "reason": warning.message, "fix": warning.fix})
         return tables
 
     def _run_entry(

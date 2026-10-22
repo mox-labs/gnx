@@ -69,8 +69,8 @@ EXIT_MEANINGS: dict[str, str] = {
     "archive is kept, marked incomplete",
     "auth": "a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete",
     "conflict": "init, or survey -c, would overwrite a different mission config",
-    "run_failed": "a table failed, and not only on credentials or transiently; the archive "
-    "is kept, marked incomplete",
+    "run_failed": "a table failed, and not only on credentials or transiently, or the archive "
+    "could not be finished; the archive is kept, marked incomplete",
     "query": "the SQL failed, or reached outside the mission's archives",
     "interrupted": "the command was interrupted (Ctrl-C or SIGTERM) before it finished; a "
     "survey's archive is marked incomplete",
@@ -88,7 +88,8 @@ EXIT_NEXT: dict[str, str] = {
     "auth": "set the variable the failing source's auth.env names to a valid key, then "
     "survey again",
     "conflict": "add --replace to overwrite it, or choose another mission name",
-    "run_failed": "read each failed table's error and fix its cause, then plan and survey again",
+    "run_failed": "read each failed table's error, or the archive_unfinished warning, and fix "
+    "its cause, then plan and survey again",
     "query": "correct the SQL as the error's `fix` says; for a missing table, it names the "
     "tables there are",
     "interrupted": "run the command again",
@@ -118,6 +119,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "extract_missing",
     # a table's file that SQL cannot read as a table
     "table_unreadable",
+    # the survey could not write meta.yaml or mark its archive complete
+    "archive_unfinished",
 )
 
 

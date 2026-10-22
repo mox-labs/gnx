@@ -176,9 +176,10 @@ class Recon:
         replace: bool = False,
         on_event: EventCallback | None = None,
     ) -> SurveyDocument:
-        """Plan, then run every table and write one archive. A survey whose tables failed
-        still returns its document (``status: incomplete``);
-        :func:`~recon.domain.documents.survey_failure` says what the failures add up to.
+        """Plan, then run every table and write one archive. A survey whose tables failed,
+        or whose archive could not be finished, still returns its document (``status:
+        incomplete``); :func:`~recon.domain.documents.survey_failure` says what that adds up
+        to.
         Each table written that SQL cannot read is a ``table_unreadable`` warning, so it is
         found here rather than by the first query."""
         source, plan, copy_to = self._prepare(name, config, replace)
@@ -224,6 +225,8 @@ class Recon:
             span.set("recon.records", sum(t.records for t in tables))
             if (kind := failure_kind(tables)) is not None:
                 span.fail(kind, f"{len(failed_tables)} of {len(tables)} table(s) failed")
+            elif not survey.finished:
+                span.fail("run_failed", "the archive could not be finished")
             warnings += survey.warnings
             for unreadable in self._query.unreadable(archive):
                 warnings.append(unreadable)
@@ -232,7 +235,7 @@ class Recon:
         return SurveyDocument(
             mission=name,
             archive=str(archive),
-            status="incomplete" if failed_tables else "ok",
+            status="incomplete" if failed_tables or not survey.finished else "ok",
             tables=tables,
             warnings=[w.document() for w in warnings + _dropped(telemetry)],
         )

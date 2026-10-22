@@ -648,6 +648,21 @@ class TestAnUnfinishedArchiveReadsIncomplete:
         assert table.status == "ok"
         assert (archive / ".incomplete").exists()
         assert [e["kind"] for e in events if e["kind"] == "archive_warning"] == ["archive_warning"]
+        # The survey says so itself, not only to a callback a caller may not pass.
+        assert not survey.finished
+        [warning] = survey.warnings
+        assert warning.kind == "archive_unfinished" and "disk full" in warning.message
+
+    def test_a_finished_survey_says_so(self, tmp_path):
+        clock = SystemClock()
+        archives = ArchiveFiles(clock)
+        config = ReconConfig.model_validate(
+            {"collectors": [{"name": "t", "type": "cli", "run": "echo '{\"a\": 1}'"}]}
+        )
+        archive = archives.create(tmp_path, "a")
+        survey = Survey(archives, clock, recon.__version__, Telemetry([], clock))
+        survey.run(config, _collectors(), archive, started=clock.now())
+        assert survey.finished and survey.warnings == []
 
 
 class TestOneRecordHoldingTheRecords:
