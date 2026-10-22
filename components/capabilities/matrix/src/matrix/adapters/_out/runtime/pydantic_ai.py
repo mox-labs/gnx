@@ -25,8 +25,9 @@ cannot call them. A definition's ``tools`` choose from the runtime's: ``None`` i
 **What a response carries.** The reply (``content``) is the run's output; every text the model
 wrote along the way is the ``transcript``; each tool call is timed from the response that asked
 for it to the request that carried its result, and ``error`` when the tool failed or its
-arguments were refused. ``model``, ``family``, ``finish_reason`` and ``native_finish_reason`` are
-those of the call that answered last, hardline's ``Completion``; usage is summed over every call
+arguments were refused. ``model``, ``family``, ``provider``, ``finish_reason`` and
+``native_finish_reason`` are those of the call that answered last, hardline's ``Completion``
+(``provider`` its row's ``provider:``, else its backend's name); usage is summed over every call
 of the session, each already summed over its attempts; ``num_turns`` counts the calls;
 ``session_id`` is pydantic-ai's run id. No cost: hardline reports tokens, and pydantic-ai's own
 price estimate is not a provider's report (Q1).
@@ -301,6 +302,13 @@ def hardline_model(
     return _model_class()(models, row, _Session(), dict(settings or {}) or None)
 
 
+def served_by(models: Hardline, completion: Completion) -> str:
+    """Who served ``completion``, as the GenAI conventions name providers: its registry row's
+    ``provider``, or else its backend's name, as hardline's own ``gen_ai.provider.name`` is. An
+    OpenAI-compatible backend cannot tell which server answered; the row's author can."""
+    return models.registry.get(completion.name).provider or completion.backend
+
+
 def _imported(name: str, reference: str) -> Callable[..., Any]:
     """The function ``module:function`` names: a ConfigError at ``tools.<name>`` when it does
     not import or is not callable."""
@@ -332,9 +340,11 @@ def _imported(name: str, reference: str) -> Callable[..., Any]:
 
 @dataclass
 class _Session:
-    """What one session's model calls answered, in order: hardline's Completions."""
+    """What one session's model calls answered, in order: hardline's Completions, and who
+    served the last of them."""
 
     calls: list[Completion] = field(default_factory=list)
+    provider: str | None = None
 
     def response(
         self,
@@ -376,7 +386,7 @@ class _Session:
             native_finish_reason=None if last is None else last.native_finish_reason,
             family=None if last is None else last.family,
             model=None if last is None else last.model,
-            provider=None if last is None else _PROVIDERS.get(last.backend),
+            provider=self.provider,
             tokens_input=usage.input_tokens,
             tokens_output=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens,
@@ -422,10 +432,6 @@ def _tool_calls(messages: Sequence[ModelMessage]) -> tuple[dict[str, Any], ...]:
                         asked.update(ended=answer.timestamp.isoformat(), error=failed)
     return tuple(calls)
 
-
-#: hardline backends that speak to one provider, by the GenAI conventions' provider name. An
-#: OpenAI-compatible backend may front any provider, so it names none.
-_PROVIDERS: dict[str, str] = {"anthropic": "anthropic"}
 
 _BACKEND_REASONS: dict[str, RuntimeReason] = {
     "rate_limit": "rate_limited",
@@ -541,6 +547,7 @@ def _model_class() -> Callable[
                 tools=tools,
             )
             self.session.calls.append(completion)
+            provider = self.session.provider = served_by(self._hardline, completion)
             parts: list[Any] = [TextPart(completion.text)] if completion.text else []
             parts.extend(
                 ToolCallPart(call.name, call.arguments, tool_call_id=call.id)
@@ -556,7 +563,7 @@ def _model_class() -> Callable[
                     cache_write_tokens=usage.cache_write_tokens,
                 ),
                 model_name=completion.model,
-                provider_name=completion.backend,
+                provider_name=provider,
                 provider_response_id=completion.request_id,
                 finish_reason=cast("Any", _FINISH.get(completion.finish_reason or "")),
             )

@@ -6,15 +6,21 @@ import pytest
 from pydantic import BaseModel
 
 from matrix import (
+    MODEL_STEP,
+    PROMPT,
+    SESSION,
     AgentDefinition,
     AgentRuntime,
     ConfigError,
+    MatrixConfig,
     ModelCall,
     ModelRequest,
     ModelRuntime,
     ModelRuntimeError,
     RequestParams,
     TokenUsage,
+    compose,
+    default_registry,
 )
 from matrix.adapters._out.runtime.mock import (
     MockAgentRuntime,
@@ -28,6 +34,7 @@ MODELS = {
     "models": {
         "q": {"backend": "mock", "model": "qwen-8b", "family": "qwen", "local": True},
         "h": {"backend": "mock", "model": "haiku", "family": "claude"},
+        "served": {"backend": "mock", "model": "llama-3", "family": "llama", "provider": "ollama"},
         "down": {
             "backend": "mock",
             "model": "flaky-1",
@@ -97,6 +104,28 @@ async def test_a_call_carries_hardline_s_whole_record() -> None:
     assert call.row is not None and call.row.digest.startswith("sha256:")
     assert call.row.rungs["model"] == "matrix.models"
     assert not hasattr(call, "num_turns") and not hasattr(call, "stop")
+
+
+async def test_the_provider_is_the_row_s_or_else_its_backend_s_on_the_call_and_its_row() -> None:
+    """Regression (W7.11): ``provider`` was set for the ``anthropic`` backend alone, so a call
+    served by ollama, or any row of an OpenAI-compatible backend, said nobody served it. It is
+    now the registry row's ``provider:``, and the backend's name for a row that names none, as
+    hardline's own ``gen_ai.provider.name`` is; the session row a model step records says the
+    same."""
+    assert (await _hardline().call(ModelRequest(prompt="x", model="served"))).provider == "ollama"
+    assert (await _hardline().call(ModelRequest(prompt="x"))).provider == "mock"
+    box = compose(
+        MatrixConfig.model_validate(
+            {"models": MODELS, "model_runtimes": {"m": {"type": "hardline"}}}
+        ),
+        registry=default_registry(discover=False),
+    )
+    for model, provider in [("served", "ollama"), ("q", "mock")]:
+        step = {"runtime": "m", "model": model}
+        wiring = box.wire([{"name": "ask", "type": MODEL_STEP, "config": step}], inputs=[PROMPT])
+        run = await box.executor().run(wiring, {PROMPT: "hello"})
+        (session,) = run.rows(SESSION)
+        assert (session.name, session.provider) == (model, provider)
 
 
 async def test_a_reply_that_is_not_a_whole_answer_says_why() -> None:

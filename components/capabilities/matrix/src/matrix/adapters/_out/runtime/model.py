@@ -16,7 +16,8 @@ for pydantic-ai's ``Model`` on a row this runtime resolves, with its ``max_token
 
 The call's record carries hardline's whole record of it: why the reply ended
 (``finish_reason``, the provider's own value, and any refusal), the model that answered and
-its family and backend, ``fallback_from`` when a fallback answered, usage with cache tokens
+its family, backend and provider (the row's ``provider:``, else the backend's name, as
+hardline's telemetry names it), ``fallback_from`` when a fallback answered, usage with cache tokens
 summed over every attempt, the request id, attempts, retries and latency, what was sent
 (``params``, ``turns_digest``), every backend call made (``attempt_log``) and the registry
 row that answered, with the tier that set each of its fields (``row``). A call that fails
@@ -34,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
+from matrix.adapters._out.runtime.pydantic_ai import served_by
 from matrix.domain.errors import ConfigError, ModelRuntimeError, RuntimeReason, missing_extra
 from matrix.domain.model_call import (
     CallAttempt,
@@ -171,10 +173,10 @@ class HardlineModelRuntime:
                 reason="failed",
                 model=model,
             ) from e
-        return _record(completion, value)
+        return _record(completion, value, served_by(self._runtime, completion))
 
 
-def _record(completion: Completion, value: Any) -> ModelCall:
+def _record(completion: Completion, value: Any, provider: str) -> ModelCall:
     params = completion.params
     row = completion.row
     return ModelCall(
@@ -187,7 +189,7 @@ def _record(completion: Completion, value: Any) -> ModelCall:
         model=completion.model,
         family=completion.family,
         backend=completion.backend,
-        provider=_PROVIDERS.get(completion.backend),
+        provider=provider,
         usage=_usage(completion.usage),
         request_id=completion.request_id,
         attempts=completion.attempts,
@@ -242,10 +244,6 @@ def _usage(usage: Usage) -> TokenUsage:
         cache_write_tokens=usage.cache_write_tokens,
     )
 
-
-#: hardline backends that speak to one provider, by the GenAI conventions' provider name. An
-#: OpenAI-compatible backend may front any provider, so it names none.
-_PROVIDERS: dict[str, str] = {"anthropic": "anthropic"}
 
 _BACKEND_REASONS: dict[str, RuntimeReason] = {
     "rate_limit": "rate_limited",

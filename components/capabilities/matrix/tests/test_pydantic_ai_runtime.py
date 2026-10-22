@@ -163,7 +163,9 @@ async def test_an_agent_calls_its_tool_through_hardline_end_to_end_on_the_wire()
     assert (response.stop, response.finish_reason, response.native_finish_reason) == (
         "completed", "stop", "stop",
     )  # fmt: skip
-    assert (response.model, response.family, response.provider) == ("qwen-served", "qwen", None)
+    assert (response.model, response.family, response.provider) == (
+        "qwen-served", "qwen", "openai-compat",
+    )  # fmt: skip
     assert (response.tokens_input, response.tokens_output, response.num_turns) == (100, 17, 2)
     assert response.cost_usd is None  # hardline reports tokens; nothing estimates a cost
     assert response.session_id
@@ -472,3 +474,12 @@ async def test_a_hardline_model_runtime_gives_a_pydantic_ai_model_on_a_row_it_na
     await model.aclose()
     with pytest.raises(ConfigError, match="cannot resolve the model"):
         runtime.pydantic_ai_model("unknown")
+
+
+async def test_a_session_names_the_provider_its_row_names() -> None:
+    """W7.11: the row's ``provider:`` is who served the session; without one, its backend's
+    name stands in (above)."""
+    runtime = PydanticAiRuntime(
+        _models("Bone.", provider="ollama"), PydanticAiRuntimeConfig(default_model="q")
+    )
+    assert (await runtime.run(_agent(), "Define ossify.")).provider == "ollama"

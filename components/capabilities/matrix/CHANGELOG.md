@@ -263,6 +263,11 @@ the `model` effect or none at all. Record section 17 has the reasons.
 
 ### Fixed
 
+- **A model call names who served it.** `ModelCall.provider`, and the session row's, were set
+  for hardline's `anthropic` backend alone, so a row served by ollama or any other
+  OpenAI-compatible server said nobody served it. The `hardline` model runtime and the
+  `pydantic-ai` agent runtime now name the registry row's `provider:`, and the backend's name
+  (`openai-compat`) for a row that names none, as hardline's own `gen_ai.provider.name` does.
 - **A hardline that adds a request param no longer fails every model step.** The `hardline`
   model runtime built its `RequestParams` from all of hardline's (`**params.model_dump()`),
   which refuse a key they do not know, so hardline's new `params.tools` failed each step with
