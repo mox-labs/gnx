@@ -27,12 +27,14 @@ def test_typo_names_source_and_key_path() -> None:
     assert "./hardline.yaml" in msg and "models.q.famly" in msg
 
 
-def test_error_attributed_to_the_tier_that_defined_the_row() -> None:
+def test_error_attributed_to_the_tier_that_set_the_field() -> None:
     with pytest.raises(ConfigError) as e:
         ModelRegistry.from_config(
             {"models": {"q": {**ROW, "max_tokens": 0}}},
             source="merged",
-            origins={"q": "/home/u/.hardline/config.yaml"},
+            origins={
+                "q": {"model": "./hardline.yaml", "max_tokens": "/home/u/.hardline/config.yaml"}
+            },
         )
     assert "/home/u/.hardline/config.yaml: models.q.max_tokens" in str(e.value)
 

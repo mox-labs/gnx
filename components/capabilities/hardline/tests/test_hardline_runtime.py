@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+import hashlib
+import json
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from hardline_helpers import DictSecrets, mock_runtime
@@ -10,15 +12,23 @@ from pydantic import BaseModel
 
 from hardline import (
     COMPLETION_TYPE_URL,
+    ConfigError,
     ContractError,
     Message,
     ModelRegistry,
     ModelRuntime,
+    ModelSpec,
     RawCompletion,
+    Request,
+    RequestParams,
     SchemaError,
     build_runtime,
 )
 from hardline.adapters._out.mock import MockBackend
+from hardline.adapters._out.yaml_source import YamlConfigSource
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class Verdict(BaseModel):
@@ -76,8 +86,49 @@ async def test_extract_validates_on_first_attempt() -> None:
     assert s.completion.attempts == 1
 
 
-async def test_planted_schema_failure_is_repaired_once() -> None:
+@pytest.mark.parametrize(
+    "reply",
+    [
+        'Answer [1] below: {"supported": true, "reason": "r"}',
+        'Use the {reason} field: {"supported": true, "reason": "r"}',
+    ],
+)
+async def test_extract_finds_the_answer_after_bracketed_prose(reply: str) -> None:
+    # F10: the first bracketed span was taken as the answer and the valid one discarded, which
+    # cost a repair turn, or a SchemaError with no repairs allowed.
     rt = mock_runtime(
+        {"q": {"backend": "mock", "model": "m", "family": "qwen", "options": {"default": reply}}},
+        schema_retries=0,
+    )
+    s = await rt.extract("q", "?", Verdict)
+    assert s.value == Verdict(supported=True, reason="r") and s.completion.attempts == 1
+
+
+class Reported(MockBackend):
+    """The mock, keeping every RawCompletion it returned and every request it was sent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.returned: list[RawCompletion] = []
+        self.sent: list[Request] = []
+
+    async def complete(
+        self, spec: ModelSpec, request: Request, api_key: str | None
+    ) -> RawCompletion:
+        self.sent.append(request)
+        raw = await super().complete(spec, request, api_key)
+        self.returned.append(raw)
+        return raw
+
+
+def _reported(models: dict[str, Any], **kw: Any) -> tuple[ModelRuntime, Reported]:
+    backend = Reported()
+    rt = build_runtime({"models": models}, backends={"mock": backend}, secrets=DictSecrets(), **kw)
+    return rt, backend
+
+
+async def test_planted_schema_failure_is_repaired_once() -> None:
+    rt, backend = _reported(
         {
             "q": {
                 "backend": "mock",
@@ -95,7 +146,11 @@ async def test_planted_schema_failure_is_repaired_once() -> None:
     s = await rt.extract("q", "?", Verdict)
     assert s.value.supported is False
     assert s.completion.attempts == 2
-    assert s.completion.usage.output_tokens > 0  # summed across both attempts
+    # F5: this asserted only `> 0`, which the answering attempt alone satisfies. Usage is the
+    # sum of what both calls reported.
+    first, second = backend.returned
+    assert s.completion.usage == first.usage + second.usage
+    assert s.completion.usage.output_tokens == 4 + 5  # "Sure! It is supported." + the object
 
 
 async def test_schema_failure_after_retries_raises_with_evidence() -> None:
@@ -216,3 +271,170 @@ async def test_call_overrides_beat_row_defaults() -> None:
     await rt.complete("q", "a")
     await rt.complete("q", "a", max_tokens=7, temperature=0.0)
     assert seen == [(50, 0.2), (7, 0.0)]
+
+
+# --- the error contract: everything raised on purpose is a HardlineError (F3, F11) -------
+
+
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [
+        ({"messages": []}, "at least one message"),
+        ({"max_tokens": 0}, "max_tokens"),
+        ({"temperature": -1.0}, "temperature"),
+        ({"temperature": float("nan")}, "temperature"),
+    ],
+)
+async def test_a_bad_call_argument_is_a_config_error(call: dict[str, Any], match: str) -> None:
+    # Before: a bare ValueError (no messages), a pydantic ValidationError (max_tokens=0), and a
+    # negative temperature sent to the provider. None of them is caught by `except HardlineError`.
+    rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}})
+    kwargs = {"messages": "hi", **call}
+    for method in (rt.complete, lambda *a, **k: rt.extract(*a, output=Verdict, **k)):
+        with pytest.raises(ConfigError, match=match):
+            await method("q", **kwargs)
+
+
+def test_a_negative_schema_retries_is_a_config_error() -> None:
+    with pytest.raises(ConfigError, match="schema_retries"):
+        mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x"}}, schema_retries=-1)
+
+
+# --- the promise for `complete`: a reply that is not a whole answer never looks like one --
+
+
+@pytest.mark.parametrize(
+    ("options", "answered"),
+    [
+        ({"default": "an answer"}, True),
+        ({"default": "an answ", "finish_reason": "length"}, False),
+        ({"default": "", "finish_reason": "stop"}, False),
+        ({"default": "", "refusal": "I can't help with that."}, False),
+        ({"default": "filtered", "finish_reason": "content_filter"}, False),
+    ],
+)
+async def test_a_completion_says_whether_it_is_a_whole_answer(
+    options: dict[str, Any], answered: bool
+) -> None:
+    rt = mock_runtime({"q": {"backend": "mock", "model": "m", "family": "x", "options": options}})
+    c = await rt.complete("q", "hi")
+    assert c.answered is answered
+    assert c.finish_reason == (
+        "refusal" if "refusal" in options else options.get("finish_reason", "stop")
+    )
+    assert c.refusal == options.get("refusal")
+
+
+# --- the call's whole record (W3.2) -------------------------------------------------------
+
+
+def _sha256(turns: tuple[Message, ...]) -> str:
+    """The documented turns digest, computed here independently of hardline's own."""
+    pairs = [[m.role, m.content] for m in turns]
+    encoded = json.dumps(pairs, separators=(",", ":"), ensure_ascii=False).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+async def test_extract_records_the_turns_actually_sent_repair_turns_included() -> None:
+    rt, backend = _reported(
+        {
+            "q": {
+                "backend": "mock",
+                "model": "m",
+                "family": "x",
+                "options": {"script": ["not json", '{"supported": true, "reason": "r"}']},
+            }
+        }
+    )
+    s = await rt.extract("q", "?", Verdict, system="be strict")
+    answered = backend.sent[-1].messages
+    assert [m.role for m in answered] == ["system", "user", "user", "assistant", "user"]
+    assert s.completion.turns_digest == _sha256(answered)
+
+
+async def test_complete_records_the_turns_it_sent() -> None:
+    rt, backend = _reported({"q": {"backend": "mock", "model": "m", "family": "x"}})
+    c = await rt.complete("q", "hi", system="s")
+    assert c.turns_digest == _sha256(backend.sent[-1].messages)
+
+
+async def test_the_record_holds_the_params_the_answering_row_was_sent() -> None:
+    # The caller passed nothing; the answering row's defaults were sent, and only hardline knows.
+    rt = mock_runtime(
+        {
+            "a": {
+                "backend": "mock",
+                "model": "m",
+                "family": "x",
+                "retries": 0,
+                "fallbacks": ["b"],
+                "options": {"script": [{"error": "unavailable"}]},
+            },
+            "b": {
+                "backend": "mock",
+                "model": "m",
+                "family": "y",
+                "max_tokens": 77,
+                "temperature": 0.3,
+            },
+        }
+    )
+    c = await rt.complete("a", "hi")
+    assert c.params == RequestParams(max_tokens=77, temperature=0.3, structured=None)
+
+
+@pytest.mark.parametrize("mode", ["prompt", "json_object", "json_schema"])
+async def test_the_record_holds_the_structured_mode_used(mode: str) -> None:
+    rt = mock_runtime(
+        {
+            "q": {
+                "backend": "mock",
+                "model": "m",
+                "family": "x",
+                "structured": mode,
+                "options": {"default": '{"supported": true, "reason": "r"}'},
+            }
+        }
+    )
+    s = await rt.extract("q", "?", Verdict, max_tokens=9, temperature=0.0)
+    assert s.completion.params == RequestParams(max_tokens=9, temperature=0.0, structured=mode)
+
+
+async def test_the_record_names_the_row_its_digest_and_the_tier_of_each_field(
+    tmp_path: Path,
+) -> None:
+    user = tmp_path / "user.yaml"
+    user.write_text("models:\n  q: {backend: mock, model: m, family: x, max_tokens: 10}\n")
+    project = tmp_path / "proj.yaml"
+    project.write_text("models:\n  q: {max_tokens: 20}\n")
+    rt = build_runtime(
+        sources=[YamlConfigSource(user, rung="user"), YamlConfigSource(project, rung="cwd")],
+        backends={"mock": MockBackend()},
+    )
+    c = await rt.complete("q", "hi")
+    assert c.row is not None
+    assert c.row.rungs == {
+        "backend": f"user {user}",
+        "model": f"user {user}",
+        "family": f"user {user}",
+        "max_tokens": f"cwd {project}",
+    }
+    spec = rt.registry.get("q")
+    canonical = json.dumps(spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    assert c.row.digest == "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+async def test_a_default_location_is_recorded_as_the_backends() -> None:
+    from hardline.adapters._out.openai_compat import OpenAICompatBackend
+
+    rt = build_runtime(
+        {"models": {"o": {"backend": "openai-compat", "model": "m", "family": "x"}}},
+        backends={"openai-compat": OpenAICompatBackend()},
+        label="matrix.models",
+    )
+    assert rt.registry.record("o").rungs == {
+        "backend": "matrix.models",
+        "model": "matrix.models",
+        "family": "matrix.models",
+        "base_url": "default of backend openai-compat",
+    }
