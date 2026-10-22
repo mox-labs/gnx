@@ -266,6 +266,49 @@ class TestEveryProblemWithAPath:
         )
         assert plan.valid, plan.problems
 
+    def test_a_web_endpoint_placeholder_is_a_problem(self, registry):
+        """Regression: a web collector fills no placeholder, and ``/page/{slug}`` was
+        fetched literally with a valid plan."""
+        plan = _plan(
+            {
+                "catalog": [{"name": "docs", "type": "web", "url": "https://docs.example.test"}],
+                "collectors": [{"name": "p", "type": "web", "endpoint": "/page/{slug}"}],
+            },
+            registry,
+        )
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.0.endpoint", "unresolved")
+        assert "{slug}" in problem.message
+
+    @pytest.mark.parametrize(
+        "collector",
+        [
+            {"type": "web", "endpoint": "/search?q=\\w{3}-\\d{2,4}"},
+            {"type": "api", "endpoint": "/search", "params": {"q": "\\w{3}\\d{2,}"}},
+            {"type": "cli", "run": "rg --json '\\w{3}' ."},
+        ],
+        ids=["web", "api", "cli"],
+    )
+    def test_a_regex_quantifier_is_not_a_placeholder(self, registry, collector):
+        plan = _plan(
+            {
+                "catalog": [{"name": "s", "type": "web", "url": "https://s.example.test"}],
+                "collectors": [{"name": "c", "source": "s", **collector}],
+            },
+            registry,
+        )
+        assert plan.valid, plan.problems
+
+    def test_braces_a_command_owns_are_passed_as_written(self, registry):
+        """In ``run:`` recon fills ``{url}`` and ``{pattern}``; any other ``{...}`` is the
+        command's own (cargo's ``--format '{p} {f}'``, a jq object) and is not checked."""
+        plan = _plan(
+            {"collectors": [{"name": "c", "type": "cli", "run": "cargo tree --format '{p} {f}'"}]},
+            registry,
+        )
+        assert plan.valid, plan.problems
+        assert plan.runs[0].detail["commands"] == ["cargo tree --format '{p} {f}'"]
+
     def test_unresolved_body_placeholder_is_caught_before_a_request(self, registry):
         plan = _plan(
             {

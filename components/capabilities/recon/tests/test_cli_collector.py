@@ -100,6 +100,15 @@ class TestCliCollector:
         assert str(tmp_path / "missing") in str(excinfo.value)
         assert not (tmp_path / "ran-here").exists()
 
+    def test_url_with_no_source_to_fill_it_runs_nothing(self, tmp_path, monkeypatch):
+        """Regression: ``{url}`` with no source was run literally."""
+        monkeypatch.chdir(tmp_path)
+        entry = CollectorEntry(name="u", type="cli", run="touch ran {url}")
+        with pytest.raises(CollectionError) as excinfo:
+            list(CliCollector().collect(entry, None))
+        assert excinfo.value.kind == "config" and "{url}" in str(excinfo.value)
+        assert not (tmp_path / "ran").exists()
+
     def test_normalize(self):
         entry = CollectorEntry(
             name="norm",

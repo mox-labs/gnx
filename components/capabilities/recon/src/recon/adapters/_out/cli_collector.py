@@ -168,6 +168,13 @@ class CliCollector:
         if not entry.run:
             msg = f"Collector '{entry.name}' has type=cli but no 'run' field"
             raise CollectionError(msg, kind="config", fix='run: "<the shell command>"')
+        if source is None and "{url}" in entry.run:
+            raise CollectionError(
+                f"collector {entry.name!r}: run: uses {{url}}, the source's url, and this run "
+                "has no source; nothing was run",
+                kind="config",
+                fix="pin a catalog source with source:, or take {url} out of run:",
+            )
 
         cwd = _cwd(source)
         timeout = source.timeout if source else 300.0
@@ -239,7 +246,9 @@ def _cwd(source: SourceEntry | None) -> Path | None:
 
 
 def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[str | None, str]]:
-    """(pattern, substituted command) for each invocation the entry makes."""
+    """(pattern, substituted command) for each invocation the entry makes. recon fills
+    ``{url}`` and ``{pattern}``; any other ``{...}`` is the command's own (cargo's
+    ``--format '{p}'``, a jq object) and is passed as written."""
     if not entry.run:
         return []
     variables = {"url": source.url} if source else {}
