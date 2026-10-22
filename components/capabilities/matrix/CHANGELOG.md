@@ -83,6 +83,12 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Fixed
 
+- **A model step closes its runtime's connections.** hardline keeps one client per event loop
+  and can close it only in that loop, and nothing called its `aclose()`: every run left its
+  connections open, and the next loop to use the runtime logged that they had been. A model
+  step now defers its runtime's `aclose()` (an optional `ModelRuntime` member, which the
+  `hardline` runtime has) to the end of the run that made the calls, in that run's loop. The
+  `models` extra now requires `hardline>=0.2,<0.3`.
 - **A runtime that does not keep its port is refused, by name.** A third party's runtime that
   built something else made composition raise a bare `AttributeError` (the `unknown` defect,
   exit 1), and one with `check` but no `run` composed and failed only when an agent ran on it.

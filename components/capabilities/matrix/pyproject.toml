@@ -52,7 +52,7 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "opentelemetry-sdk>=1.23"]
 claude = ["claude-agent-sdk>=0.1.51"]
 # The `model` agent runtime: any model family hardline has a registry row for. Bounded to the
 # minor matrix is built against: before 1.0 a hardline minor may break.
-models = ["hardline>=0.1,<0.2"]
+models = ["hardline>=0.2,<0.3"]
 # The SDK and both OTLP exporters (http/protobuf, the spec's default, and grpc), which the
 # standard OTEL_* variables select.
 otel = [

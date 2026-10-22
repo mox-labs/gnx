@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -176,3 +178,45 @@ def test_a_model_step_s_fingerprint_follows_its_runtime_s_config() -> None:
     two = container(reply="b").wire(_step({}), inputs=[PROMPT]).fingerprints["rate"]
     assert one != two
     assert one == container(reply="a").wire(_step({}), inputs=[PROMPT]).fingerprints["rate"]
+
+
+def test_a_model_step_closes_its_runtime_s_connections_in_the_loop_that_made_them(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Regression (W6.8): hardline keeps a model client per event loop and can close it only
+    in that loop, while it runs. Nothing in matrix called hardline's ``aclose()``, so each
+    run left its clients open, and the next loop to use the runtime logged that the last one
+    had ended with them open. A model step now closes its runtime's connections when the run
+    that made the calls ends, in that run's loop."""
+    hardline = pytest.importorskip("hardline")
+    httpx2 = pytest.importorskip("httpx2")
+    from hardline.adapters._out.openai_compat import OpenAICompatBackend
+
+    from matrix import Executor, wire
+    from matrix.adapters._out.runtime.model import HardlineModelRuntime
+
+    def reply(request: Any) -> Any:
+        return httpx2.Response(
+            200,
+            json={
+                "id": "r-1",
+                "model": "q-1",
+                "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+
+    row = {"backend": "openai-compat", "model": "q-1", "family": "q", "base_url": "http://q/v1"}
+    runtime = HardlineModelRuntime(
+        hardline.build_runtime(
+            config={"default": "q", "models": {"q": row}},
+            backends={"openai-compat": OpenAICompatBackend(transport=httpx2.MockTransport(reply))},
+        )
+    )
+    step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": runtime})
+    wiring = wire({"rate": step}, inputs=[PROMPT])
+    caplog.set_level(logging.WARNING, logger="hardline")
+    for _ in range(2):  # two event loops, as two `asyncio.run`s of a host make
+        run = asyncio.run(Executor().run(wiring, {PROMPT: "rate it"}))
+        assert run.rows(MODEL_CALL)[0].text == "ok"
+    assert not [r for r in caplog.records if "left open" in r.getMessage()]

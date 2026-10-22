@@ -708,7 +708,10 @@ never a constant.
 The optional members `warnings` and `resolved` are read as on an agent runtime; the `hardline`
 runtime's `resolved` is its registry (`default` and each model's row, without `api_key`), read
 from `matrix.models` or hardline's own tiers, and is digested into the fingerprint of every
-component that calls it.
+component that calls it. A third, `aclose()`, is async and closes the connections the
+runtime's calls opened in the running event loop; a connection can be closed only in its own
+loop, so a model step defers it to the end of the run that made the calls. The runtime stays
+usable after it. The `hardline` runtime has it.
 
 ### Built-in model runtimes
 

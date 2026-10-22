@@ -76,6 +76,11 @@ class HardlineModelRuntime:
     def models(self) -> Hardline:
         return self._runtime
 
+    async def aclose(self) -> None:
+        """Close the connections hardline opened in the running event loop. The runtime
+        stays usable; a later call opens new ones."""
+        await self._runtime.aclose()
+
     @property
     def resolved(self) -> dict[str, Any]:
         """The registry this runtime resolved, from ``models`` or hardline's own tiers: what
