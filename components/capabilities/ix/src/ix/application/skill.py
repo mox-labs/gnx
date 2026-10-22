@@ -1004,7 +1004,8 @@ then the report (`ix.v1.report`) on stdout.
   cannot play its agent (the plan's `requirements`, each with `holds`, `why` and `fix`).
 - **A dry run gives no verdict.** `ix run <path> --dry-run` runs the file as written
   with every agent session and model call on matrix's `mock` runtime of its port (`ix
-  --skill -r agents`); a subject with no stand-in (a `process`) is refused. A run in which
+  --skill -r agents`); a subject with no stand-in (a `process`) is refused, and the
+  environment is brought up for real (a `compose` stack, a `process` service). A run in which
   a stand-in answered any trial, this way or with `runtime: mock` written in, measured the
   harness, not the subject: the
   report says `Dry run on mock replies` and gives neither a verdict nor an indication, and

@@ -741,6 +741,18 @@ class TestExamplesAndLab:
         assert needs["'k6' on PATH"] == ("probes.0",)
         assert any("environment" in by for by in needs.values())
 
+    def test_the_plan_the_readme_shows_is_what_ix_plan_prints(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the README's sample plan carried a digest from an earlier design."""
+        readme = (PACKAGE / "README.md").read_text(encoding="utf-8")
+        (sample,) = re.findall(r"```\n(delay-slower .*?)```", readme, re.S)
+        monkeypatch.chdir(PACKAGE)
+        printed = _run("plan", "examples/delay-server/slower.yaml").stdout.splitlines()
+        for line in sample.splitlines():
+            if line != "...":
+                assert line in printed, line
+
     def test_the_experiment_the_readme_shows_validates(self, tmp_path: Path) -> None:
         readme = (PACKAGE / "README.md").read_text(encoding="utf-8")
         blocks = [b for b in re.findall(r"```yaml\n(.*?)```", readme, re.S) if "genre:" in b]

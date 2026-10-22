@@ -55,7 +55,11 @@ criteria, with the prompt when its `include_input` is set and the probe's `expec
 when its `include_expected_output` is, to the model provider of the model runtime the
 sensor's `model_runtime` names, and never to pydantic-evals' default model (an `evaluator`
 sensor whose arguments name a `model` is refused by `ix validate`); and spans to an
-OpenTelemetry endpoint when the `OTEL_*` variables name one. The `evaluator` sensor's other
+OpenTelemetry endpoint when the `OTEL_*` variables name one. ix's own spans carry ids,
+names, numbers and outcomes (and the message of an exception that ends one), never a prompt
+or a reply; matrix's spans carry a session's
+content (prompts, replies, tool arguments) only when its `otel` observer is told to capture
+it (`capture_content`). The `evaluator` sensor's other
 evaluators send nothing: they read what the run recorded.
 
 ## Trust boundaries
@@ -152,7 +156,10 @@ matrix builds the session and owns its authority: matrix's SECURITY.md has the d
 with no tools and no working directory, and the `mock` runtimes call no model. `ix run
 --dry-run` puts every session, every call and a judge on the `mock` runtime of its port,
 so it calls no model; it still copies the fixtures and skills, runs a subject's `setup`
-command and runs the code the sensors run (section 8), as a real run would. Which runtime
+command and runs the code the sensors run (section 8), as a real run would. **A dry run
+brings the environment up for real**: no environment has a stand-in, so a `process`
+environment starts its services' commands, and a `compose` environment pulls or builds its
+images and starts its containers (section 13), exactly as `ix run` does. Which runtime
 stands in is what its registration declares (`stand_in`), never read from its name.
 
 ### 8. Code runs in a child process that is not a sandbox

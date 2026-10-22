@@ -105,7 +105,7 @@ and the sensor from the metric: `timing` provides `latency`. `ix plan` shows eac
 where it came from, the decision first:
 
 ```
-delay-slower  compare (ix.v1.genre.compare)  plan 377ee022f5a4
+delay-slower  compare (ix.v1.genre.compare)  plan 7ec2dd8efab9
 Question:     Is a server that waits 50% longer per request faster than the one it would replace?
 Decides:      candidate is better than baseline on latency p50
 Comparison:   superiority
@@ -421,7 +421,9 @@ nothing under `--json`); the report goes to stdout.
   reason. A gate cannot pass on a design moved after it was registered.
 - **A dry run gives no verdict.** `ix run <path> --dry-run` runs the experiment as written
   with every agent session and model call on matrix's `mock` runtime of its port; a subject
-  with no stand-in (a `process`) is refused. A run in which a stand-in (a runtime registered
+  with no stand-in (a `process`) is refused. The environment has no stand-in: a dry run
+  brings it up for real (a `compose` stack's containers, a `process` environment's
+  services). A run in which a stand-in (a runtime registered
   as one, as the mocks are) answered any trial measured the harness,
   not the subject: the report says `Dry run on mock replies: checks the harness, not the
   agent`, with neither a verdict nor an indication, nor a probe screen, and the run is not
@@ -777,6 +779,6 @@ cut short by Ctrl-C, which prints the error envelope instead.
 | [Evaluating an agent](docs/how-to/evaluate-an-agent.md) | An agent evaluation end to end: the subject, probes in files, sensors, a dry run, a pilot, the judge, and reading the report |
 | `ix --skill` | The skill an agent reads, with frontmatter so it is a `SKILL.md` as printed: what ix is for and when not to use it, install and prerequisites, a quick start that runs, the commands in order, the errors and exit codes with what to do next. Generated from what is installed |
 | `ix --skill -r NAME` | One reference the skill lists: `experiment` (every key and value form), `genres`, `kinds`, `running` (registration, running, the verdict), `agents` (an agent evaluation end to end), `problems` |
-| [Design record, 2026-10-19](docs/design/2026-10-19-record.md) | Why the verdict's statistics are what they are: each method with its source, and the simulations before and after |
+| [Design record, 2026-10-19](docs/design/2026-10-19-record.md) | Every design judgment ix rests on, one row each with its test and evidence: the verdict's statistics with their sources and simulations, the agent path, the runtime ports, what a verdict is tied to, requirements in place of effects, environments, the layer map, the evaluator sensor, and the owner's rulings they follow |
 | [CHANGELOG.md](CHANGELOG.md) | What each release changed |
 | [SECURITY.md](SECURITY.md) | What ix reads, writes, starts, runs and sends |

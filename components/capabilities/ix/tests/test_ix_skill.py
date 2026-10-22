@@ -109,8 +109,8 @@ class TestTheSkillIsASkill:
 
     def test_every_install_line_pins_this_release_s_tag(self) -> None:
         """ix is installed from its repository, never a package index: every install line, in
-        the skill, the README, the how-to and the repository's README, names the tag of the
-        release they describe, so a version bump without the tag fails here."""
+        the skill, the README, SECURITY.md, the how-to and the repository's README, names the
+        tag of the release they describe, so a version bump without the tag fails here."""
         source = (
             f"git+https://github.com/mox-labs/gnx@ix-v{ix.__version__}"
             "#subdirectory=components/capabilities/ix"
@@ -119,12 +119,13 @@ class TestTheSkillIsASkill:
         texts = {"skill": _skill()}
         for file in (
             package / "README.md",
+            package / "SECURITY.md",
             package / "docs" / "how-to" / "evaluate-an-agent.md",
             package.parents[2] / "README.md",
         ):
             if file.is_file():  # the repository's README, when run from the repository
                 texts[str(file)] = file.read_text(encoding="utf-8")
-        assert len(texts) in (3, 4), list(texts)
+        assert len(texts) in (4, 5), list(texts)
         for name, text in texts.items():
             lines = [
                 line
