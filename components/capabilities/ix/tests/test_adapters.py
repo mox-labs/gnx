@@ -115,6 +115,26 @@ class TestReadiness:
         assert await answers(f"http://127.0.0.1:{_free_port()}/healthz") is False
         assert await answers("not a url") is False
 
+    async def test_no_proxy_variable_reroutes_the_readiness_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The probe was an httpx client with trust_env on, so HTTP_PROXY with no NO_PROXY sent a
+        # loopback probe through the proxy: a program that was up was never seen to be.
+        async def reply(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY"):
+            monkeypatch.setenv(name, f"http://127.0.0.1:{_free_port()}")
+        for name in ("NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(name, raising=False)
+        server = await asyncio.start_server(reply, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        async with server:
+            assert await answers(f"http://127.0.0.1:{port}/healthz") is True
+
 
 class TestProcessSubject:
     async def test_it_is_up_when_reached_and_gone_when_released(self) -> None:

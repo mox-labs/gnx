@@ -65,11 +65,11 @@ async def test_an_httpx2_client_outside_hardlines_transport_is_refused(
 
 
 async def test_pydantic_ais_own_provider_client_is_refused(refused_live_calls: list[str]) -> None:
-    # The client pydantic-ai hands a provider whose SDK still takes httpx. No provider SDK is
-    # installed today, so a provider cannot be built; the client it would be given can.
-    from pydantic_ai.models import create_async_http_client
+    # The client a pydantic-ai provider builds when it is given none. No provider SDK is
+    # installed today, so a provider cannot be built; the client it would build can.
+    from pydantic_ai.models import create_async_httpx2_client
 
-    async with create_async_http_client() as client:
+    async with create_async_httpx2_client() as client:
         with pytest.raises(WRAPPED):
             await client.get(URL)
     _refused(refused_live_calls, REMOTE)
