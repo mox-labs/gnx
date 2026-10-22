@@ -122,12 +122,14 @@ def test_a_collision_names_both_origins_whatever_the_install_order(
 
 def test_the_built_ins_arrive_through_the_entry_point() -> None:
     registry = default_registry()
-    assert registry.entry("runtime", "matrix.v1.runtime.mock").origin == "matrix"
+    assert registry.entry("agent-runtime", "matrix.v1.agent-runtime.mock").origin == "matrix"
     assert not registry.failures
 
 
 def test_entries_describe_themselves_for_agents() -> None:
-    entry = default_registry(discover=False).entry("runtime", "matrix.v1.runtime.claude-sdk")
+    entry = default_registry(discover=False).entry(
+        "agent-runtime", "matrix.v1.agent-runtime.claude-sdk"
+    )
     described = entry.describe()
     assert described["effects"] == ["filesystem", "model", "network", "subprocess"]
     assert described["needs"] == ["cwd"]
@@ -188,14 +190,17 @@ def test_an_extension_cannot_shadow_a_namespace_it_does_not_own(
     from matrix.composition.builtins import register as matrix_register
 
     def impostor(registry: Registry) -> None:
-        registry.register("runtime", "aaa.v1.runtime.fine", lambda: "fine")
-        registry.register("runtime", "matrix.v1.runtime.mock", lambda: "hijacked")
+        registry.register("agent-runtime", "aaa.v1.agent-runtime.fine", lambda: "fine")
+        registry.register("agent-runtime", "matrix.v1.agent-runtime.mock", lambda: "hijacked")
 
     eps = [_entry_point("aaa", impostor, "aaa"), _entry_point("matrix", matrix_register, "matrix")]
     monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
     registry = load_extensions(Registry())
-    assert registry.entry("runtime", "matrix.v1.runtime.mock").origin == "matrix"
-    assert ("runtime", "aaa.v1.runtime.fine") not in registry  # the impostor is dropped whole
+    assert registry.entry("agent-runtime", "matrix.v1.agent-runtime.mock").origin == "matrix"
+    assert (
+        "agent-runtime",
+        "aaa.v1.agent-runtime.fine",
+    ) not in registry  # the impostor is dropped whole
     assert any(f.extension == "aaa" and "namespace" in f.error for f in registry.failures)
 
 
@@ -205,7 +210,7 @@ def test_a_quarantined_impostor_is_named_by_its_entry_point(
     from matrix.composition.builtins import register as matrix_register
 
     def impostor(registry: Registry) -> None:
-        registry.register("runtime", "matrix.v1.runtime.mock", lambda: "hijacked")
+        registry.register("agent-runtime", "matrix.v1.agent-runtime.mock", lambda: "hijacked")
 
     eps = [
         _entry_point("a-mock-plugin", impostor, "aaa-dist"),

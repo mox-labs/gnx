@@ -23,6 +23,32 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 
 ### Changed (breaking)
 
+- **Agent runtimes and model runtimes are two ports.** An agent session (a loop, tools,
+  turns) and one model call had shared one port, one registry point and one reply, and the
+  model runtime filled `num_turns=1` and `stop: completed` with constants. Now:
+  - `AgentRuntime` (`check(definition)`, `run`) hosts sessions; `ModelRuntime`
+    (`check(model)`, `call(ModelRequest) -> ModelCall`) makes one call.
+  - The registry point `runtime` is two: `agent-runtime` and `model-runtime`, with type URLs
+    `matrix.v1.agent-runtime.<name>` and `matrix.v1.model-runtime.<name>`.
+    `runtime_type_url` and `RUNTIME_PREFIX` are `agent_runtime_type_url` and
+    `model_runtime_type_url` (with `AGENT_RUNTIME_PREFIX`, `MODEL_RUNTIME_PREFIX`).
+  - The config key `matrix.runtimes` is two: `matrix.agent_runtimes` (`claude-sdk`, `mock`)
+    and `matrix.model_runtimes` (`hardline`, `mock`). A config that still writes `runtimes`
+    is refused at that key. `agents.<name>.runtime` names an agent runtime; one that names a
+    model runtime is refused, with the fix.
+  - The `model` runtime is the `hardline` model runtime (`HardlineModelRuntime`, was
+    `ModelAgentRuntime`). It runs no agents: a model call is a `matrix.v1.model-step`.
+    `MockRuntime` is `MockAgentRuntime`, and `MockModelRuntime` is its model counterpart.
+  - `Container.runtimes` and `Container.runtime(name)` are `agent_runtimes`,
+    `agent_runtime(name)`, `model_runtimes` and `model_runtime(name)`.
+  - `matrix.v1.check` has `agent_runtimes` and `model_runtimes` in place of `runtimes`;
+    `matrix.v1.plan` has `agent_runtimes` and `model_runtimes` (each with `stand_in`) in
+    place of `runtimes`, `model_calls_min` and `model_calls_max` beside the agent counts, and
+    a component's `model` for a model step. `matrix check` and `matrix plan` print both.
+  - A model call emits no `matrix.agent.*` events and no `invoke_agent` span: it is not an
+    agent session. Its record is the step's `ModelCall` row.
+  - Two steps that provide their reply as one kind are "steps" in the clash's message, agent
+    and model steps alike.
 - **What a `claude-sdk` session can be given is declared by its config, and checked.**
   `setting_sources` takes only `user`, `project` and `local`; each of `plugins` is
   `{type: local, path}`; `skills` (names, or `all`) is new, passed as the SDK's own option.
@@ -40,13 +66,32 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   already returned when the stop was requested is `completed`, with no reason. A consumer
   that reads component endings must tolerate the new state, as the vocabulary is open.
 
+### Added
+
+- **`matrix.v1.model-step`**: one model call as a component. It names a model runtime and a
+  model, renders its `prompt` from its `inputs`, and provides a `ModelCall` (the prompt as
+  sent, the reply, the model that answered, usage with cache tokens, request id, attempts,
+  retries, `fallback_from`, latency; `finish_reason` and `refusal` stay null until the
+  runtime reports them) and, with `output`, the reply as a row of that kind: asked for as the
+  kind's registered schema when there is one. New names: `ModelRuntime`, `ModelRequest`,
+  `ModelCall`, `TokenUsage`, `ModelRuntimeError`, `ModelStep`, `ModelStepConfig`,
+  `MODEL_STEP`, `MODEL_CALL`, `PROMPT`; the needs `model_runtimes` and `schemas`.
+- **`stand_in`** on a registry entry, declared at registration (`register(..., stand_in=True)`)
+  and shown by `matrix catalog`, `matrix describe` and the plan's runtimes. Both mocks
+  declare it, so a caller can tell canned answers from a model's without inferring it from
+  `effects`.
+
 ### Fixed
 
+- **An unknown model is refused before anything runs.** It got through composition, `matrix
+  check` and `matrix plan`, then failed at run time as `component` (exit 8). A model step now
+  checks its model with its runtime when it is built: `config` (exit 3), naming the models
+  the registry has.
 - **The `claude-sdk` runtime's inline subagents work.** `agents` was forwarded as plain
   dicts, which the SDK converts with `dataclasses.asdict` once the CLI has started, so every
   session with a subagent failed. Each is now the SDK's `AgentDefinition`, with typed keys:
   `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`.
-- **An agent step's task template is checked when the step is built.** A placeholder that
+- **A step's template is checked when the step is built.** A placeholder that
   names no input, an input the template never uses, a positional `{}` and unbalanced braces
   are each a `config` problem at `matrix check`, `matrix plan` and composition, with every
   other problem. Before, a typo composed, wired and planned, and failed only when the run

@@ -1,5 +1,8 @@
 """AgentRuntime: hosts one agent session for a definition and a task.
 
+An agent session has a loop and may have tools and turns. One model call, with none of
+these, is the other port: :class:`~matrix.domain.ports._out.model_runtime.ModelRuntime`.
+
 **Assumes** a definition that passed ``check`` and a task string. **Guarantees** exactly one
 of: an :class:`AgentResponse` whose ``stop`` says why the session ended, or an
 :class:`AgentRuntimeError` with a ``reason`` (``unavailable``, ``rate_limited``, ``timeout``,
@@ -7,14 +10,15 @@ of: an :class:`AgentResponse` whose ``stop`` says why the session ended, or an
 session. Content is a sample, never guaranteed; a caller judges it, the runtime does not.
 
 ``check(definition)`` is required: it raises ``ConfigError`` for a definition the runtime
-cannot honour (a single-call runtime handed tools), so binding refuses it before anything runs.
-A runtime that accepts every definition implements it as a no-op.
+cannot play (skills its tools leave no way to use, an option its SDK does not have), so
+binding refuses it before anything runs. A runtime that plays every definition implements it
+as a no-op.
 
 Two members are optional, read with ``getattr`` so a runtime written before them works
 unedited: ``warnings`` (problems a reader of its config should see), and ``resolved``: JSON
 data for what the runtime settled when it was built, beyond its own config, that decides how
-it answers (the model runtime's registry, read from hardline's tiers). Composition digests it
-into the reuse fingerprint of every component that runs an agent on it.
+it answers. Composition digests it into the reuse fingerprint of every component that runs
+an agent on it.
 
 A runtime that also logs what its ``warnings`` say logs it on :data:`RUNTIME_LOGGER`, once per
 process, so a caller that builds a runtime per session is not told once per session. A

@@ -52,6 +52,16 @@ from matrix import (
     AGENT_STEP,
     AGENT_RESPONSE,
     TASK,
+    # model calls
+    ModelRuntime,
+    ModelRequest,
+    ModelCall,
+    TokenUsage,
+    ModelStep,
+    ModelStepConfig,
+    MODEL_STEP,
+    MODEL_CALL,
+    PROMPT,
     # registry
     Registry,
     Entry,
@@ -59,7 +69,8 @@ from matrix import (
     Failure,
     default_registry,
     load_extensions,
-    runtime_type_url,
+    agent_runtime_type_url,
+    model_runtime_type_url,
     observer_type_url,
     store_type_url,
     # observers
@@ -117,6 +128,7 @@ from matrix import (
     ComponentError,
     StoreError,
     AgentRuntimeError,
+    ModelRuntimeError,
     RunError,
     RunCancelled,
     ErrorKind,
@@ -139,7 +151,7 @@ Everything is registered and typed under a type URL: dot-separated segments, eac
 kebab-case (`[a-z0-9]+(-[a-z0-9]+)*`), compared by equality and never dereferenced.
 
 ```
-matrix.v1.runtime.claude-sdk     ix.v1.sensor.activation     matrix.v1.agent-response
+matrix.v1.agent-runtime.claude-sdk     ix.v1.sensor.activation     matrix.v1.agent-response
 ```
 
 - `/` is not part of the grammar.
@@ -166,9 +178,9 @@ from matrix import ConfigError, is_type_url, parse_type_url, type_url
 
 type_url("ix", 1, "sensor.activation")  # 'ix.v1.sensor.activation'
 parse_type_url(
-    "matrix.v1.runtime.claude-sdk"
-)  # TypeUrl(namespace='matrix', version='v1', resource='runtime.claude-sdk')
-is_type_url("matrix.v1/runtime.mock")  # False: '/' is not part of the grammar
+    "matrix.v1.agent-runtime.claude-sdk"
+)  # TypeUrl(namespace='matrix', version='v1', resource='agent-runtime.claude-sdk')
+is_type_url("matrix.v1/agent-runtime.mock")  # False: '/' is not part of the grammar
 is_type_url("acme.v1.agent.reviewer")  # False: 'agent' is one of slick's kind names
 ```
 
@@ -531,7 +543,7 @@ What an agent is. Frozen pydantic model, unknown fields rejected.
 | `name` | `str` | required | `^[A-Za-z0-9][A-Za-z0-9._-]*$` |
 | `description` | `str` | `""` | |
 | `system_prompt` | `str` | `""` | |
-| `model` | `str \| None` | `None` | Interpreted by the runtime: an SDK alias or model id for `claude-sdk`, a hardline registry name for `model`. `None` is the runtime's default |
+| `model` | `str \| None` | `None` | Interpreted by the runtime: an SDK alias or model id for `claude-sdk`. `None` is the runtime's default |
 | `tools` | `tuple[str, ...] \| None` | `None` | `None` is the runtime's default toolset; `()` is **no tools**, never collapsed into the default |
 | `max_turns` | `int \| None` | `None` | `>= 1`; `None` is the runtime's default |
 | `metadata` | `dict[str, Any]` | `{}` | Keys a source carried that no runtime interprets; kept, never read for behaviour |
@@ -558,15 +570,13 @@ The runtime-neutral record of one session. Frozen.
 
 | Method | Signature | Contract |
 |--------|-----------|----------|
-| `check` | `(definition) -> None` | **Required.** Raises `ConfigError` for a definition the runtime cannot honour. A runtime that accepts everything implements it as a no-op |
+| `check` | `(definition) -> None` | **Required.** Raises `ConfigError` for a definition the runtime cannot play. A runtime that plays everything implements it as a no-op |
 | `run` | `async (definition, task: str) -> AgentResponse` | Returns a response whose `stop` says why the session ended, or raises `AgentRuntimeError` with a `reason`. Never an empty normal response for a failed session |
 
 Two members are optional, read with `getattr`: `warnings` (problems a reader of its config
 should see), and `resolved`, JSON data for what the runtime settled when it was built, beyond
 its own config, that decides how it answers. Composition digests `resolved` into the reuse
-fingerprint of every component that runs an agent on the runtime; the `model` runtime's is
-its registry (`default` and each model's row, without `api_key`), read from `matrix.models`
-or hardline's own tiers.
+fingerprint of every component that runs an agent on the runtime.
 
 A runtime that also logs what its `warnings` say logs it at WARNING on the logger named
 `RUNTIME_LOGGER` (`matrix.runtime`), once per process, so a caller that builds a runtime per
@@ -583,19 +593,18 @@ logger: the `matrix` command does, and so does ix.
 and `matrix.agent.end`, and a `matrix.tool.start` / `matrix.tool.end` pair, at the runtime's
 own times, for each tool call it timed.
 
-### Built-in runtimes
+### Built-in agent runtimes
 
-Registered at the `runtime` point. In config, `type:` takes the short name.
+Registered at the `agent-runtime` point. In config, under `matrix.agent_runtimes`, `type:`
+takes the short name.
 
 | `type` | Type URL | Config fields | Needs | Notes |
 |--------|----------|---------------|-------|-------|
-| `claude-sdk` | `matrix.v1.runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | Extra `[claude]`. The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call |
-| `model` | `matrix.v1.runtime.model` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. An agent's `model` is a hardline registry name; unset, `default_model`, then the registry's default. One call, no tool loop: `check` refuses a definition that declares tools. Reports tokens, no cost (`cost_usd` is `None`) |
-| `mock` | `matrix.v1.runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | Offline. Accepts every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports no cost (`cost_usd` is `None`): no provider reported one. Records `calls`, each `(agent, task)` |
+| `claude-sdk` | `matrix.v1.agent-runtime.claude-sdk` | `permission_mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`; default `default`), `cwd`, `setting_sources` (each `user`, `project` or `local`; `[]` is hermetic), `plugins` (each `{type: local, path}`; a relative `path` resolved against `cwd`), `skills` (names, or `all`), `fallback_model`, `max_budget_usd` (the SDK's own option, passed as it stands: the SDK ends a session once it has spent that many USD, `stop: max_budget_usd`), `agents` (inline subagents by name, each `description`, `prompt`, `tools`, `disallowed_tools`, `model`, `skills`, `max_turns`, passed as the SDK's `AgentDefinition`) | `cwd` | Extra `[claude]`. The config is the whole of what a session can be given; an option outside it fails at its key. `check` refuses a definition whose `tools` leave out `Skill` when the runtime has `skills`, and any option the installed SDK's own dataclasses lack, with the remedy. An agent's `model` is an alias the Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's default. `bypassPermissions` and `dontAsk` log a WARNING on `RUNTIME_LOGGER`, once per process, and are a `permissive` warning in every document the `matrix` command prints. Stamps `family="claude"`, `provider="anthropic"`, and times each tool call |
+| `mock` | `matrix.v1.agent-runtime.mock` | `responses` (the whole task as sent, to a reply), `by_agent` (agent name to a reply), `default` (reply for an unmatched task and agent; `None` echoes `mock:<agent>:<task>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Plays every definition; an agent's `model` is recorded, never used. The first of `responses`, `by_agent`, `default` that matches replies. Each reply reports no cost (`cost_usd` is `None`): no provider reported one. Records `calls`, each `(agent, task)` |
 
 Classes: `matrix.adapters._out.runtime.claude_sdk.ClaudeSdkRuntime`,
-`matrix.adapters._out.runtime.model.ModelAgentRuntime`,
-`matrix.adapters._out.runtime.mock.MockRuntime`.
+`matrix.adapters._out.runtime.mock.MockAgentRuntime`.
 
 ### Agent definition files
 
@@ -649,11 +658,104 @@ get JSON, and so is one that fails the kind's schema.
 
 ---
 
+## Model calls
+
+A model call is one request to one model: no loop, no tools, no turns. It has its own port,
+record and step, beside the agent's.
+
+### `ModelRequest`
+
+What a caller asks. Frozen, unknown fields rejected.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `prompt` | `str` | required | |
+| `model` | `str \| None` | `None` | a name the runtime resolves (a hardline registry name); `None` is its default |
+| `system` | `str \| None` | `None` | |
+| `output` | `type[BaseModel] \| None` | `None` | the structure the reply must have; the runtime validates the reply against it and returns it as `value`, or raises |
+
+### `ModelCall`
+
+The runtime-neutral record of one call. Frozen. A fact the runtime does not report is `None`,
+never a constant.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `text` | `str` | `""` | the reply as the model wrote it |
+| `value` | `Any` | `None` | the reply validated against the request's `output`, as JSON data |
+| `name` | `str \| None` | `None` | the registry name of the model that answered |
+| `model` | `str \| None` | `None` | the provider's id of the model that answered |
+| `family` | `str \| None` | `None` | the family that answered (`claude`, `qwen`, ...) |
+| `backend` | `str \| None` | `None` | the backend that served it |
+| `provider` | `str \| None` | `None` | by the GenAI conventions' provider names (`anthropic`), when known |
+| `usage` | `TokenUsage` | zeros | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` |
+| `request_id` | `str \| None` | `None` | the provider's id for the request that answered |
+| `attempts` | `int` | `1` | calls made for a structured reply: 1, plus each repair |
+| `retries` | `int` | `0` | transient failures retried, across every attempt and model |
+| `fallback_from` | `str \| None` | `None` | the model asked for, when a fallback answered instead |
+| `latency_ms` | `int` | `0` | |
+| `finish_reason` | `str \| None` | `None` | why the model stopped writing; `None` until the runtime reports it |
+| `refusal` | `str \| None` | `None` | the model's refusal, when it declined; `None` until the runtime reports it |
+| `prompt` | `str \| None` | `None` | the prompt as sent; a `model-step` records it, after filling its inputs |
+
+### `ModelRuntime` (Protocol)
+
+| Method | Signature | Contract |
+|--------|-----------|----------|
+| `check` | `(model: str \| None) -> None` | **Required.** Raises `ConfigError` for a model name the runtime cannot resolve (an unknown one, or none where there is no default), so a step that names it is refused when it is built |
+| `call` | `async (request: ModelRequest) -> ModelCall` | Returns the call's record, or raises `ModelRuntimeError` with a `reason`. With `output`, `value` is the validated reply, or it raises |
+
+The optional members `warnings` and `resolved` are read as on an agent runtime; the `hardline`
+runtime's `resolved` is its registry (`default` and each model's row, without `api_key`), read
+from `matrix.models` or hardline's own tiers, and is digested into the fingerprint of every
+component that calls it.
+
+### Built-in model runtimes
+
+Registered at the `model-runtime` point. In config, under `matrix.model_runtimes`, `type:`
+takes the short name.
+
+| `type` | Type URL | Config fields | Needs | Notes |
+|--------|----------|---------------|-------|-------|
+| `hardline` | `matrix.v1.model-runtime.hardline` | `models` (a hardline registry section; filled from `matrix.models` when absent), `default_model`, `temperature`, `max_tokens` | `models` | Extra `[models]`. A request's `model` is a hardline registry name; unset, `default_model`, then the registry's default. `check` resolves it. With `output`, the call is hardline's `extract`, which repairs a reply that does not fit within its bound. Records the model that answered, `fallback_from`, usage with cache tokens, the request id, attempts, retries and latency; hardline reports no finish reason or refusal, so those are `None`. Reports tokens, no cost |
+| `mock` | `matrix.v1.model-runtime.mock` | `responses` (the whole prompt as sent, to a reply), `by_model` (model name to a reply), `default` (reply for an unmatched prompt and model; `None` echoes `mock:<model>:<prompt>`), `family` (default `mock`) | | A stand-in (`stand_in`). Offline. Accepts every model name. Validates a reply against the request's `output` as a real runtime does. Records `calls`, each `(model, prompt)` |
+
+Classes: `matrix.adapters._out.runtime.model.HardlineModelRuntime`,
+`matrix.adapters._out.runtime.mock.MockModelRuntime`.
+
+### `matrix.v1.model-step`
+
+A registered `component` that makes one call on a configured model runtime. Constants:
+`MODEL_STEP = "matrix.v1.model-step"`, `MODEL_CALL = "matrix.v1.model-call"`,
+`PROMPT = "matrix.v1.prompt"`. Needs `model_runtimes` and `schemas`.
+
+`ModelStepConfig` (unknown keys rejected):
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `runtime` | `str` | required | a name under `matrix.model_runtimes` |
+| `model` | `str \| None` | `None` | a name the runtime resolves, checked with its `check` when the step is built; `None` is its default |
+| `system` | `str \| None` | `None` | the system prompt, as written |
+| `inputs` | `dict[str, str]` | `{"prompt": "matrix.v1.prompt"}` | placeholder name to kind; the kinds are the step's `requires` |
+| `prompt` | `str \| None` | `None` | template with `{placeholder}`s, checked against `inputs` when the step is built, as an agent step's `task`. `None` is allowed only with exactly one input, whose rows are the prompt |
+| `response` | `str` | `matrix.v1.model-call` | the kind the `ModelCall` is provided as; one step per kind in a run |
+| `output` | `str \| None` | `None` | a kind; the reply, provided as one row of it |
+
+It provides `response`, and `output` when set. The `ModelCall` carries the prompt as sent
+(`prompt`). With `output`, when the registry holds a schema for the kind, the request names it
+as `output` and the row is the validated `value`; without one, the reply must be one JSON
+document, as an agent step's, and a reply with none is a `ContractError` quoting it. Rows are
+rendered as an agent step renders them. A model step emits no agent events: its call is in
+its component's span.
+
+---
+
 ## The registry
 
 ### Extension points and entries
 
-Points matrix declares: `runtime`, `component`, `payload-type`, `observer`, `store`. Other packages
+Points matrix declares: `agent-runtime`, `model-runtime`, `component`, `payload-type`,
+`observer`, `store`. Other packages
 declare their own with `add_point`, named under their own root (ix declares `ix.sensor`).
 
 `Entry` (frozen):
@@ -664,11 +766,12 @@ declare their own with `add_point`, named under their own root (ix declares `ix.
 | `type_url` | `str` | |
 | `build` | `Callable` | called as `build(validated_config, **needs)`, or `build(**needs)` when `config` is `None`. For `payload-type`, the model itself |
 | `config` | `type[BaseModel] \| None` | the model its settings validate against |
-| `needs` | `frozenset[str]` | shared things composition must hand it: `agents`, `models`, `cwd`, keys of `compose(context=...)`, and for a component `name`, its name in the run |
+| `needs` | `frozenset[str]` | shared things composition must hand it: `agents`, `model_runtimes`, `schemas` (kind to its registered model), `models`, `cwd`, keys of `compose(context=...)`, and for a component `name`, its name in the run |
 | `effects` | `frozenset[str] \| None` | what it may touch: `network`, `subprocess`, `filesystem`, `model`. `None` is unknown, not none |
 | `summary` | `str` | |
 | `stability` | `"stable" \| "beta" \| "experimental"` | default `beta` |
 | `origin` | `str` | the distribution that registered it; `(direct)` for a direct call |
+| `stand_in` | `bool` | whether it stands in for the real thing (the mock runtimes): its answers are canned, not a model's. Declared, never inferred from `effects`. Default `False` |
 
 `entry.describe()` returns all of it as a JSON-ready dict, with `config` as a JSON schema.
 
@@ -683,7 +786,7 @@ called with the registry, and anything it raises, importing included, quarantine
 | Method | Signature | Behaviour |
 |--------|-----------|-----------|
 | `add_point` | `(point) -> Registry` | Declares an extension point |
-| `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta") -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
+| `register` | `(point, type_url, build, *, config=None, needs=(), effects=None, summary="", stability="beta", stand_in=False) -> Registry` | `ConfigError` for an undeclared point, an invalid type URL or one without a version segment, or a type URL already registered at that point (naming both origins), unless namespace ownership resolves it (see below) |
 | `register_payload` | `(type_url, model, summary="") -> Registry` | Registers a pydantic model at `payload-type`; summary defaults to the first line of the model's docstring |
 | `entry` | `(point, type_url) -> Entry` | `NotFoundError` listing what is registered at that point |
 | `entries` | `(point=None) -> list[Entry]` | Sorted by point, then type URL |
@@ -714,7 +817,8 @@ the group into `registry`: each entry point's value is `register(registry) -> No
 `matrix.extensions` entry point loaded. `discover=False` loads only matrix's built-ins, under
 the origin `matrix`.
 
-`runtime_type_url(name)` maps `claude-sdk` to `matrix.v1.runtime.claude-sdk`;
+`agent_runtime_type_url(name)` maps `claude-sdk` to `matrix.v1.agent-runtime.claude-sdk`;
+`model_runtime_type_url(name)` maps `hardline` to `matrix.v1.model-runtime.hardline`;
 `observer_type_url(name)` maps `otel` to `matrix.v1.observer.otel`. A name containing `.` is
 returned unchanged.
 
@@ -722,12 +826,16 @@ Matrix's own entries:
 
 | Point | Type URL | Needs | Effects |
 |-------|----------|-------|---------|
-| `runtime` | `matrix.v1.runtime.claude-sdk` | `cwd` | `model`, `network`, `subprocess`, `filesystem` |
-| `runtime` | `matrix.v1.runtime.model` | `models` | `model`, `network` |
-| `runtime` | `matrix.v1.runtime.mock` | | none |
+| `agent-runtime` | `matrix.v1.agent-runtime.claude-sdk` | `cwd` | `model`, `network`, `subprocess`, `filesystem` |
+| `agent-runtime` | `matrix.v1.agent-runtime.mock` (stand-in) | | none |
+| `model-runtime` | `matrix.v1.model-runtime.hardline` | `models` | `model`, `network` |
+| `model-runtime` | `matrix.v1.model-runtime.mock` (stand-in) | | none |
 | `component` | `matrix.v1.agent-step` | `agents` | unknown |
+| `component` | `matrix.v1.model-step` | `model_runtimes`, `schemas` | unknown |
 | `payload-type` | `matrix.v1.agent-response` | | |
+| `payload-type` | `matrix.v1.model-call` | | |
 | `payload-type` | `matrix.v1.task` | | |
+| `payload-type` | `matrix.v1.prompt` | | |
 | `payload-type` | `matrix.v1.ledger` | | |
 | `payload-type` | `matrix.v1.ref` | | |
 | `observer` | `matrix.v1.observer.console` | | none |
@@ -1036,8 +1144,8 @@ sit above tier 6, in the order named, and with `--only` they are read alone, non
 tiers. Absent files read as empty. Every problem names the file that set the value it is
 about.
 
-Merge rules: mappings merge key by key, later tiers winning, so `runtimes` and `agents` hold
-every tier's entries; lists replace, except `matrix.definitions`, whose directories
+Merge rules: mappings merge key by key, later tiers winning, so `agent_runtimes`,
+`model_runtimes` and `agents` hold every tier's entries; lists replace, except `matrix.definitions`, whose directories
 accumulate across tiers, each relative directory resolved against the file that declared it.
 An agent defined in two of them is one `name_taken` problem at `matrix.definitions`, and an
 agent that would use it is not checked (`complete` false).
@@ -1049,14 +1157,15 @@ The `matrix:` section. Frozen, unknown keys rejected.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `definitions` | `tuple[str, ...]` | `()` | directories of `*.md` agent files |
-| `runtimes` | `dict[str, RuntimeConfig]` | `{}` | named runtimes |
+| `agent_runtimes` | `dict[str, RuntimeConfig]` | `{}` | named agent runtimes: sessions with a loop and tools, what `agents` bind to |
+| `model_runtimes` | `dict[str, RuntimeConfig]` | `{}` | named model runtimes: one call each, what a `model-step` names |
 | `observers` | `tuple[str \| ObserverConfig, ...]` | `()` | each a short name (`console`, `jsonl`, `otel`) or type URL, or `{type, ...options}` for one that takes config |
 | `agents` | `dict[str, AgentConfig]` | `{}` | named agents |
 | `components` | `tuple[ComponentConfig, ...]` | `()` | the components of a run, each `{name, type, config}`. Their order of work is inferred; the order here means nothing |
 | `inputs` | `tuple[str, ...]` | `()` | the kinds a caller supplies when it runs `components` |
 | `store` | `StoreConfig` | `{type: jsonl}` | where runs are recorded: `type` (`jsonl`, `memory`, or a registered store's type URL) plus that store's options; `jsonl` keeps runs under `root` (default `.matrix/runs`, relative to the working directory) |
 | `limits` | `Limits` | `Limits()` | the bounds and retry policy every run keeps; see [`Limits`](#limits-componentlimits-and-retry) |
-| `models` | `dict \| None` | `None` | a hardline registry section (`{default?, models: {...}}`) handed to every `model` runtime that has none. `None` lets hardline read its own tiers |
+| `models` | `dict \| None` | `None` | a hardline registry section (`{default?, models: {...}}`) handed to every `hardline` model runtime that has none. `None` lets hardline read its own tiers |
 
 `RuntimeConfig` and `StoreConfig`: `type` (a built-in short name or a full type URL) plus that
 extension's own options as extra keys, validated by its config model.
@@ -1065,7 +1174,8 @@ extension's own options as extra keys, validated by its config model.
 (the type URL of a registered `component`), `config` (that component's own settings,
 validated by its config model).
 
-`AgentConfig` (unknown keys rejected): `runtime` (required, a name under `runtimes`),
+`AgentConfig` (unknown keys rejected): `runtime` (required, a name under `agent_runtimes`;
+one under `model_runtimes` is refused, with the fix: a model call is a `model-step`),
 `definition` (a loaded definition's name; defaults to the agent's own key), and overrides
 `description`, `system_prompt`, `model`, `tools`, `max_turns`. An agent with no loaded
 definition must give `system_prompt` inline.
@@ -1078,15 +1188,21 @@ matrix:
     models:
       qwen3-8b: {backend: openai-compat, base_url: "http://127.0.0.1:8080/v1",
                  model: mlx-community/Qwen3-8B-4bit, family: qwen, local: true}
-  runtimes:
+  agent_runtimes:
     sdk:   {type: claude-sdk, permission_mode: default, setting_sources: []}
-    local: {type: model}
+  model_runtimes:
+    local: {type: hardline}
   observers:
     - {type: jsonl, path: runs/events.jsonl}
   agents:
     reviewer: {runtime: sdk}                                    # agents/reviewer.md
-    triage:   {runtime: local, definition: reviewer, tools: [], model: qwen3-8b}
-    greeter:  {runtime: local, system_prompt: "Say hello."}
+  inputs: [acme.v1.diff]
+  components:
+    - {name: review, type: matrix.v1.agent-step,
+       config: {agent: reviewer, inputs: {diff: acme.v1.diff}, task: "Review:\n{diff}"}}
+    - {name: triage, type: matrix.v1.model-step,
+       config: {runtime: local, model: qwen3-8b, inputs: {diff: acme.v1.diff},
+                prompt: "Is this change risky? {diff}"}}
   store: {type: jsonl, root: runs}
   limits:
     deadline_s: 900
@@ -1156,10 +1272,11 @@ compose(
 ) -> Container
 ```
 
-Builds, in order: observers (and `otel` when the variables ask for export), runtimes (each
-resolved by type through the registry, options validated by its config model), the store,
-definitions (every `*.md` in each `definitions` directory, read by the loader, plus
-`definitions`), and agents (each runtime's `check` runs here). Makes no model or tool call,
+Builds, in order: observers (and `otel` when the variables ask for export), agent runtimes
+and model runtimes (each resolved by type at its own point, options validated by its config
+model), the store, definitions (every `*.md` in each `definitions` directory, read by the
+loader, plus `definitions`), and agents (each agent runtime's `check` runs here). A model
+step's model is checked by its model runtime when `Container.wire` builds the step. Makes no model or tool call,
 and installs no telemetry provider.
 
 - `registry` defaults to `default_registry()`.
@@ -1169,8 +1286,8 @@ and installs no telemetry provider.
 - `context` supplies shared needs, such as `{"cwd": "/path"}`, to extensions that declare them.
 
 Every problem is reported at once, in one `ConfigError`, each with its key path, the legal
-values and, for a config from `load_config`, the file that set it. An agent whose runtime is
-configured but could not be built is not checked, and the error's `complete` is false. A
+values and, for a config from `load_config`, the file that set it. An agent whose agent
+runtime is configured but could not be built is not checked, and the error's `complete` is false. A
 registry without matrix's built-ins has no default store: the container then has none unless
 the config names one.
 
@@ -1179,16 +1296,17 @@ the config names one.
 | Name | Returns |
 |------|---------|
 | `config`, `registry` | what it was composed from |
-| `runtimes`, `definitions`, `agents` | name to object |
+| `agent_runtimes`, `model_runtimes`, `definitions`, `agents` | name to object |
 | `observers` | `tuple[Observer, ...]` |
 | `store` | the `ConstructStore` `matrix.store` built; `ConfigError` when there is none |
 | `limits` | `matrix.limits`, a `Limits` |
 | `warnings` | `tuple[Problem, ...]`: a permissive runtime, export asked for without its extra |
 | `agent(name)` | `BoundAgent`; `NotFoundError` listing configured agents |
-| `runtime(name)` | `AgentRuntime`; `NotFoundError` listing configured runtimes |
-| `bind(definition, runtime)` | a `BoundAgent` on the configured runtime named `runtime`, with the container's observers |
-| `needs()` | the shared needs: `agents`, `models`, `cwd`, plus `context` keys |
-| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas, each component's declared `effects` (an `agent-step` has its agent's runtime's) and its `fingerprint`: a digest of its type, its config and each need it is handed (an `agent-step`'s own agent, every agent for another component that needs `agents`, `models`, and `cwd`, the process's when none was given), where an agent counts by its definition, its runtime's config and needs, and the runtime's optional `resolved` (the `model` runtime's registry, from `matrix.models` or hardline's own tiers). A need a host adds through `context` is not in it, nor is the code. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
+| `agent_runtime(name)` | `AgentRuntime`; `NotFoundError` listing configured agent runtimes |
+| `model_runtime(name)` | `ModelRuntime`; `NotFoundError` listing configured model runtimes |
+| `bind(definition, runtime)` | a `BoundAgent` on the configured agent runtime named `runtime`, with the container's observers |
+| `needs()` | the shared needs: `agents`, `model_runtimes`, `schemas`, `models`, `cwd`, plus `context` keys |
+| `wire(components=None, *, inputs=None)` | a `Wiring`. Each `{name, type, config}` entry (a `ComponentConfig` or a mapping) is built from the registry's `component` entries and the result wired, with the registry's payload schemas, each component's declared `effects` (an `agent-step` has its agent's runtime's, a `model-step` its model runtime's) and its `fingerprint`: a digest of its type, its config and each need it is handed (an `agent-step`'s own agent, a `model-step`'s own model runtime, every agent or model runtime for another component that needs them, `models`, and `cwd`, the process's when none was given), where an agent counts by its definition, its runtime's config and needs, and the runtime's optional `resolved`, and a model runtime by its config, needs and `resolved` (the `hardline` runtime's registry, from `matrix.models` or hardline's own tiers). A need a host adds through `context` is not in it, nor are `schemas` or the code. Both arguments default to the config's `matrix.components` and `matrix.inputs`, and then problem paths start `matrix.`. Entries that cannot be built and wiring problems are reported together, in one `CompilationError`. A component that declares the need `name` is handed its own |
 | `executor(observers=())` | an `Executor` with the container's observers (and these), given `cancel_on_signals` |
 | `async run(inputs=None, *, run_id=None, reuse_from=None, observers=())` | runs the configured components in the configured store within the configured limits; `run_id` defaults to `<UTC time>-<4 hex digits>`. `reuse_from` takes that run's inputs and reuses what it can |
 | `reuse(run_id, wiring=None)` | the `Reuse` a run of `wiring` may take from the recorded run |
@@ -1205,13 +1323,13 @@ tier; `UsageError` when there are none).
 
 | Function | Record (`schema`) | Raises |
 |----------|-------------------|--------|
-| `catalog(point=None, *, registry=None)` | `Catalog` (`matrix.v1.catalog`): `entries` (point, type_url, summary, stability, origin, needs, effects, configurable) and `failures` (extension, origin, error) | `UsageError` when `point` is not a declared point, with the points in `details["allowed"]` |
+| `catalog(point=None, *, registry=None)` | `Catalog` (`matrix.v1.catalog`): `entries` (point, type_url, summary, stability, origin, needs, effects, stand_in, configurable) and `failures` (extension, origin, error) | `UsageError` when `point` is not a declared point, with the points in `details["allowed"]` |
 | `describe_extension(type_url, *, registry=None)` | `Extensions` (`matrix.v1.extension`): one entry per point it is registered at, with its `config` JSON schema | `NotFoundError` listing the registered type URLs |
 | `config_sources(tool="matrix", config=None, *, only=False)` | `ConfigSources` (`matrix.v1.config-sources`): `sources`, lowest priority first | `ConfigError` |
 | `config_view(tool="matrix", config=None, *, only=False)` | `ConfigView` (`matrix.v1.config`): `tool`, `sources`, the merged `matrix` section | `ConfigError` |
-| `check_config(tool="matrix", config=None, *, only=False)` | `CheckReport` (`matrix.v1.check`): `ok`, `runtimes`, `agents`, `observers` (a count), `components` in one valid order of work, `sources`, `warnings` | what `compose` and `wire` raise; `complete` is false when the config did not compose and has components to wire |
+| `check_config(tool="matrix", config=None, *, only=False)` | `CheckReport` (`matrix.v1.check`): `ok`, `agent_runtimes`, `model_runtimes`, `agents`, `observers` (a count), `components` in one valid order of work, `sources`, `warnings` | what `compose` and `wire` raise; `complete` is false when the config did not compose and has components to wire |
 | `list_agents(tool="matrix", config=None, *, only=False)` | `Agents` (`matrix.v1.agents`): each agent's name, runtime, runtime_type, model, tools, description; `warnings` | what `compose` raises |
-| `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `effects`, `agent`, `runtime`, `attempts`), `agents` and `runtimes` in use, `effects`, `agent_calls_min` (one per agent step) and `agent_calls_max` (one per attempt; null when a component that is not an agent step may call a model), `store` (`type`, `location` with `RUN_ID` for the id), `limits` (what differs from the defaults), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
+| `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `effects`, `agent`, `runtime`, `model` (a model step's), `attempts`), `agents`, `agent_runtimes` and `model_runtimes` in use (each `name`, `type`, `effects`, `stand_in`), `effects`, `agent_calls_min` and `model_calls_min` (one per agent step, one per model step) and `agent_calls_max` and `model_calls_max` (one per attempt; null when a component that is neither may call a model), `store` (`type`, `location` with `RUN_ID` for the id), `limits` (what differs from the defaults), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
 | `list_runs(tool="matrix", config=None, *, only=False)` | `Runs` (`matrix.v1.runs`): `store` (its type URL) and `runs`, oldest first, each `run_id`, `status` (`interrupted` for one whose writer is gone), `started`, `ended`, `location`. Builds only the store: runtimes and agents are not built | `ConfigError` when the store cannot be built, `StoreError` when it cannot be read |
 
 `registry` defaults to `default_registry()`.
@@ -1229,7 +1347,7 @@ when checking stopped before every problem was found) and `details` (the error's
 ```json
 {"schema": "matrix.v1.error",
  "error": {"kind": "config", "message": "...", "fix": "...", "complete": true,
-           "problems": [{"path": "matrix.runtimes.m.type", "kind": "name_unknown",
+           "problems": [{"path": "matrix.agent_runtimes.m.type", "kind": "name_unknown",
                          "message": "...", "fix": "...", "allowed": ["mock"],
                          "got": "nope", "source": "./matrix.yaml"}],
            "details": {}}}
@@ -1272,6 +1390,7 @@ means and `EXIT_NEXT` what to do next. Two error kinds are finer than an exit: `
 | `ComponentError` | `component` | | a component raised or passed its deadline; the original exception is the cause |
 | `StoreError` | `store` | | a row or a run could not be kept, a run id is taken, or a stored record contradicts itself |
 | `AgentRuntimeError` | from `reason` | | an agent session failed |
+| `ModelRuntimeError` | from `reason` | | a model call failed |
 | `RunError` | `run_failed`, or the cause's | | a run failed; `run` is the partial `Run`, `component` the name of the first to fail, `cause_kind` its error's kind (`details["cause"]`), `construct` the partial Construct. `kind` is `run_failed` when the cause is `contract`, `component` or `unknown`, and the cause's kind otherwise (`store`, `transient`, `auth`, `config`); `fix` is the cause's |
 
 `RunCancelled` is not a `MatrixError`: it is an `asyncio.CancelledError` (so asyncio and
@@ -1279,8 +1398,8 @@ callers treat it as the cancellation it is) with one addition, `run`, the partia
 `run.status` is `cancelled`, or `completed`/`failed` when the cancellation arrived as the run
 was already ending.
 
-`AgentRuntimeError(message, *, reason="failed", fix=None, retry_after_s=None, **details)`
-maps its `reason` (`RuntimeReason`) to a kind; a reason matrix does not know maps to
+`AgentRuntimeError(message, *, reason="failed", fix=None, retry_after_s=None, **details)`,
+and `ModelRuntimeError` with the same arguments, maps its `reason` (`RuntimeReason`) to a kind; a reason matrix does not know maps to
 `component`. `retryable` is true for the transient ones; `retry_after_s` is the backend's own
 hint, which a retry policy honours:
 
@@ -1290,9 +1409,9 @@ hint, which a retry policy honours:
 | `rate_limited` | `transient` | |
 | `timeout` | `transient` | |
 | `auth` | `auth` | credentials missing or refused |
-| `incapable` | `config` | the runtime cannot honour the definition, or a program it runs is not installed (the Claude Code CLI) |
+| `incapable` | `config` | the runtime cannot honour the definition or the request (a model it cannot resolve), or a program it runs is not installed (the Claude Code CLI) |
 | `refused` | `component` | the model declined |
-| `failed` | `component` | the session ran and broke |
+| `failed` | `component` | the session or call ran and broke |
 
 ```python
 from matrix import AgentRuntimeError
@@ -1314,7 +1433,7 @@ Data goes to stdout, diagnostics to stderr. Nothing prompts.
 | `matrix config [CONFIG]... [--sources]` | the merged `matrix` section and the files consulted (`matrix.v1.config`); with `--sources`, only the files (`matrix.v1.config-sources`) |
 | `matrix check [CONFIG]...` | composes runtimes and agents, wires the configured components, and reports what composed (`matrix.v1.check`) |
 | `matrix agents [CONFIG]...` | each agent's name, runtime, runtime type, model, tools and description (`matrix.v1.agents`) |
-| `matrix plan [CONFIG]...` | what a run would do, with its agent calls, every problem at once; runs nothing (`matrix.v1.plan`) |
+| `matrix plan [CONFIG]...` | what a run would do, with its agent and model calls, every problem at once; runs nothing (`matrix.v1.plan`) |
 | `matrix run [CONFIG]... [--input KIND=PATH]... [--run-id ID] [--from RUN_ID]` | runs the configured components; prints the run id, where it is recorded and, for a store that keeps files, each file of the record (`matrix.v1.run`, with `location`, `warnings` and the record's `tables`) |
 | `matrix runs [CONFIG]...` | the runs the configured store keeps, oldest first: id, status, start, location (`matrix.v1.runs`) |
 | `matrix --version` | `matrix, version X` |
@@ -1339,10 +1458,10 @@ models.
 ```console
 $ matrix plan
 error (config): the config does not compose (2 problems):
-  matrix.runtimes.m.type: 'nope' is not a registered runtime (/work/matrix.yaml)
-    fix: use one of the registered runtimes, or install the package providing it
-  matrix.agents.greeter.runtime: 'sdk' is not a configured runtime (/work/matrix.yaml)
-    fix: name a runtime defined under matrix.runtimes
+  matrix.agent_runtimes.m.type: 'nope' is not a registered agent-runtime (/work/matrix.yaml)
+    fix: use one of the registered agent-runtimes, or install the package providing it
+  matrix.agents.greeter.runtime: 'sdk' is not a configured agent runtime (/work/matrix.yaml)
+    fix: name an agent runtime defined under matrix.agent_runtimes
 fix: fix each problem listed: its path names the key, its fix what to write
 $ echo $?
 3

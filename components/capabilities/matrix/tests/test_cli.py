@@ -95,11 +95,11 @@ def test_shared_and_tool_tiers_in_order(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_the_shared_file_feeds_every_tool(tmp_path: Path) -> None:
     shared = tmp_path / "matrix.yaml"
-    shared.write_text("matrix:\n  runtimes:\n    m: {type: mock}\n")
+    shared.write_text("matrix:\n  agent_runtimes:\n    m: {type: mock}\n")
     tool = tmp_path / "ix.yaml"
     tool.write_text("matrix:\n  agents:\n    a: {runtime: m, system_prompt: hi}\n")
     config = load_config(None, "ix", sources=[shared, tool])
-    assert set(config.matrix.runtimes) == {"m"} and set(config.matrix.agents) == {"a"}
+    assert set(config.matrix.agent_runtimes) == {"m"} and set(config.matrix.agents) == {"a"}
     assert config.sources == (str(shared), str(tool))
 
 
@@ -117,12 +117,12 @@ def test_catalog_lists_built_ins_as_json(capsys: pytest.CaptureFixture[str]) -> 
     code, data, _ = _cli(capsys, "catalog", "--json")
     assert code == 0 and data["schema"] == "matrix.v1.catalog"
     urls = {e["type_url"] for e in data["entries"]}
-    assert {"matrix.v1.runtime.mock", "matrix.v1.agent-step"} <= urls
+    assert {"matrix.v1.agent-runtime.mock", "matrix.v1.agent-step"} <= urls
     assert data["failures"] == []
 
 
 def test_describe_shows_the_config_schema(capsys: pytest.CaptureFixture[str]) -> None:
-    code, data, _ = _cli(capsys, "describe", "matrix.v1.runtime.mock", "--json")
+    code, data, _ = _cli(capsys, "describe", "matrix.v1.agent-runtime.mock", "--json")
     assert code == 0 and data["entries"][0]["config"]["properties"]["default"]
 
 
@@ -133,7 +133,7 @@ def test_describe_unknown_is_not_found_with_a_json_error(
     assert code == 4
     error = json.loads(err)["error"]
     assert error["kind"] == "not_found" and error["details"]["value"] == "acme.v1.nothing"
-    assert "matrix.v1.runtime.mock" in error["details"]["allowed"]
+    assert "matrix.v1.agent-runtime.mock" in error["details"]["allowed"]
 
 
 def test_catalog_of_an_unknown_point_is_a_usage_error_listing_the_points(
@@ -144,7 +144,9 @@ def test_catalog_of_an_unknown_point_is_a_usage_error_listing_the_points(
     assert (code, data) == (2, None)
     error = json.loads(err)["error"]
     assert error["kind"] == "usage" and error["details"]["value"] == "bogus"
-    assert {"runtime", "component", "payload-type", "observer"} <= set(error["details"]["allowed"])
+    assert {"agent-runtime", "model-runtime", "component", "payload-type", "observer"} <= set(
+        error["details"]["allowed"]
+    )
 
 
 def test_check_composes_without_calling_anything(
@@ -153,14 +155,15 @@ def test_check_composes_without_calling_anything(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     (tmp_path / "matrix.yaml").write_text(
-        "matrix:\n  runtimes:\n    m: {type: mock}\n"
+        "matrix:\n  agent_runtimes:\n    m: {type: mock}\n"
         "  agents:\n    a: {runtime: m, system_prompt: hi}\n"
         "  inputs: [matrix.v1.task]\n"
         "  components:\n"
         "    - {name: ask, type: matrix.v1.agent-step, config: {agent: a}}\n"
     )
     code, data, _ = _cli(capsys, "check", "--json")
-    assert code == 0 and data["agents"] == ["a"] and data["runtimes"] == ["m"]
+    assert code == 0 and data["agents"] == ["a"] and data["agent_runtimes"] == ["m"]
+    assert data["model_runtimes"] == []
     assert data["components"] == ["ask"]
     code, data, _ = _cli(capsys, "agents", "--json")
     assert data["agents"][0]["runtime_type"] == "mock"
@@ -173,14 +176,14 @@ def test_a_bad_config_exits_3_with_the_key_path(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    (tmp_path / "matrix.yaml").write_text("matrix:\n  runtimes:\n    m: {type: nope}\n")
+    (tmp_path / "matrix.yaml").write_text("matrix:\n  agent_runtimes:\n    m: {type: nope}\n")
     code, _, err = _cli(capsys, "check", "--json")
     assert code == 3
     error = json.loads(err)["error"]
     assert error["kind"] == "config" and "runtimes.m.type" in error["message"] and error["fix"]
     (found,) = error["problems"]
     assert (found["path"], found["kind"], found["got"]) == (
-        "matrix.runtimes.m.type",
+        "matrix.agent_runtimes.m.type",
         "name_unknown",
         "nope",
     )
@@ -203,7 +206,7 @@ def test_check_reports_components_that_do_not_wire(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     (tmp_path / "matrix.yaml").write_text(
-        "matrix:\n  runtimes:\n    m: {type: mock}\n"
+        "matrix:\n  agent_runtimes:\n    m: {type: mock}\n"
         "  agents:\n    a: {runtime: m, system_prompt: hi}\n"
         "  components:\n"
         "    - {name: ask, type: matrix.v1.agent-step, config: {agent: a}}\n"

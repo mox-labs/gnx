@@ -1,7 +1,9 @@
 """The registry: extension points, and the implementations registered at each.
 
 An **entry** is one implementation at one point, under a type URL. Its ``effects`` say what
-it may touch; ``None`` means unknown, which is never read as "none".
+it may touch; ``None`` means unknown, which is never read as "none". An entry that stands in
+for the real thing (a mock runtime: canned replies, no model) declares ``stand_in``, so a
+caller can tell a stand-in's answers from a model's without reading anything else into it.
 
 Everything, built-ins included, arrives as an :class:`Extension`. One that fails to load or
 register is **quarantined**: recorded in :attr:`Registry.failures`, and the rest load.
@@ -29,7 +31,14 @@ if TYPE_CHECKING:
 Stability = Literal["stable", "beta", "experimental"]
 
 #: The points matrix owns. Packages add theirs with :meth:`Registry.add_point`.
-MATRIX_POINTS = ("runtime", "component", "payload-type", "observer", "store")
+MATRIX_POINTS = (
+    "agent-runtime",
+    "model-runtime",
+    "component",
+    "payload-type",
+    "observer",
+    "store",
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +52,8 @@ class Entry:
     summary: str = ""
     stability: Stability = "beta"
     origin: str = "(direct)"
+    #: Whether it stands in for the real thing: a mock's canned answers, not a model's.
+    stand_in: bool = False
 
     def describe(self) -> dict[str, Any]:
         """A JSON-ready description: what an agent reads to decide whether to use it."""
@@ -54,6 +65,7 @@ class Entry:
             "origin": self.origin,
             "needs": sorted(self.needs),
             "effects": None if self.effects is None else sorted(self.effects),
+            "stand_in": self.stand_in,
             "config": None if self.config is None else self.config.model_json_schema(),
         }
 
@@ -119,6 +131,7 @@ class Registry:
         effects: frozenset[str] | set[str] | tuple[str, ...] | None = None,
         summary: str = "",
         stability: Stability = "beta",
+        stand_in: bool = False,
     ) -> Registry:
         """Register ``build(config, **needs)`` (or ``build(**needs)`` when untyped).
 
@@ -164,6 +177,7 @@ class Registry:
             summary=summary,
             stability=stability,
             origin=self._origin,
+            stand_in=stand_in,
         )
         return self
 
@@ -207,7 +221,7 @@ class Registry:
     ) -> Any:
         """Validate ``config`` and build the entry, handing it the needs it declared.
 
-        ``where`` is the key path of the config in its document (``matrix.runtimes.fast``):
+        ``where`` is the key path of the config in its document (``matrix.agent_runtimes.fast``):
         every problem's path starts with it. Raises NotFoundError for a type URL nothing
         registered, and ConfigError listing every problem with the config.
         """

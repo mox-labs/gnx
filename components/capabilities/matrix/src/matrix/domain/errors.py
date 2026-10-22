@@ -265,14 +265,12 @@ _REASON_KIND: dict[str, ErrorKind] = {
 }
 
 
-class AgentRuntimeError(MatrixError):
-    """An agent runtime could not complete a session, with a classified ``reason``.
-
-    ``reason`` says whose problem it is, so a harness can keep infrastructure failures out of
-    an agent's score: ``unavailable``/``rate_limited``/``timeout`` are worth retrying,
-    ``auth`` needs credentials, ``incapable`` means the runtime cannot honour the definition
-    (a config fault), ``refused`` means the model declined, and ``failed`` means the session
-    ran and broke. Every runtime raises this for an execution failure, whatever its backend.
+class _ClassifiedError(MatrixError):
+    """A runtime's failure with a classified ``reason``: whose problem it is, so a harness can
+    keep infrastructure failures out of an agent's or a model's score.
+    ``unavailable``/``rate_limited``/``timeout`` are worth retrying, ``auth`` needs
+    credentials, ``incapable`` means the runtime cannot honour what it was asked (a config
+    fault), ``refused`` means the model declined, and ``failed`` means it ran and broke.
 
     ``retry_after_s`` is the backend's own hint (a ``Retry-After``), when it gave one; a retry
     policy waits that long, up to its cap.
@@ -300,6 +298,16 @@ class AgentRuntimeError(MatrixError):
     @property
     def retryable(self) -> bool:
         return self.kind == "transient"
+
+
+class AgentRuntimeError(_ClassifiedError):
+    """An agent runtime could not complete a session, with a classified ``reason``. Every
+    agent runtime raises this for an execution failure, whatever its backend."""
+
+
+class ModelRuntimeError(_ClassifiedError):
+    """A model runtime could not complete a call, with a classified ``reason``. Every model
+    runtime raises this for an execution failure, whatever its backend."""
 
 
 class RunError(MatrixError):

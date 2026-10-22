@@ -1,0 +1,178 @@
+"""One model call as a component: what a model step requires, provides and refuses."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from pydantic import BaseModel
+
+from matrix import (
+    MODEL_CALL,
+    MODEL_STEP,
+    PROMPT,
+    CompilationError,
+    ConfigError,
+    Inputs,
+    MatrixConfig,
+    ModelCall,
+    ModelStep,
+    ModelStepConfig,
+    NotFoundError,
+    RunContext,
+    RunError,
+    compose,
+    default_registry,
+)
+from matrix.adapters._out.runtime.mock import MockModelRuntime, MockModelRuntimeConfig
+
+CLAIMS = "acme.v1.claims"
+RATING = "acme.v1.rating"
+
+
+class Rating(BaseModel):
+    score: int
+
+
+def container(reply: str = '{"score": 4}', **more: Any) -> Any:
+    return compose(
+        MatrixConfig.model_validate(
+            {"model_runtimes": {"m": {"type": "mock", "default": reply}}, **more}
+        ),
+        registry=default_registry(discover=False),
+    )
+
+
+def _step(config: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{"name": "rate", "type": MODEL_STEP, "config": {"runtime": "m", **config}}]
+
+
+async def test_a_model_step_renders_its_prompt_and_records_the_call() -> None:
+    box = container()
+    wiring = box.wire(
+        _step({"inputs": {"claims": CLAIMS}, "prompt": "Rate:\n{claims}", "system": "Be fair."}),
+        inputs=[CLAIMS],
+    )
+    assert wiring.components["rate"].requires == {CLAIMS}
+    assert wiring.components["rate"].provides == {MODEL_CALL}
+    run = await box.executor().run(wiring, {CLAIMS: "b is added"})
+    (call,) = run.rows(MODEL_CALL)
+    assert isinstance(call, ModelCall)
+    assert (call.prompt, call.text, call.family) == ("Rate:\nb is added", '{"score": 4}', "mock")
+    assert box.model_runtime("m").calls == [(None, "Rate:\nb is added")]
+
+
+async def test_an_output_with_a_registered_schema_is_asked_for_as_that_structure() -> None:
+    box = container()
+    box.registry.register_payload(RATING, Rating)
+    wiring = box.wire(_step({"model": "judge", "output": RATING}), inputs=[PROMPT])
+    run = await box.executor().run(wiring, {PROMPT: "rate it"})
+    assert run.rows(RATING) == (Rating(score=4),)
+    assert run.rows(MODEL_CALL)[0].value == {"score": 4}
+
+
+async def test_an_output_without_a_schema_is_read_as_one_json_document() -> None:
+    box = container(reply='Here:\n```json\n{"score": 2}\n```')
+    wiring = box.wire(_step({"output": RATING}), inputs=[PROMPT])
+    run = await box.executor().run(wiring, {PROMPT: "rate it"})
+    assert run.rows(RATING) == ({"score": 2},)
+
+
+async def test_a_reply_without_json_breaks_the_declared_output() -> None:
+    box = container(reply="a four, I'd say")
+    wiring = box.wire(_step({"output": RATING}), inputs=[PROMPT])
+    with pytest.raises(RunError) as e:
+        await box.executor().run(wiring, {PROMPT: "rate it"})
+    assert (e.value.kind, e.value.cause_kind) == ("run_failed", "contract")
+    assert "a four" in str(e.value) and "register a schema" in (e.value.fix or "")
+
+
+def test_an_unknown_model_is_refused_when_the_step_is_built() -> None:
+    """Regression (mx-src F12): with the model runtime, an unknown model name got through
+    compose, `matrix check` and `matrix plan`, then failed at run time as ``component``
+    (exit 8). The step checks it with its runtime when it is built: ``config`` (exit 3)."""
+    pytest.importorskip("hardline")
+    box = compose(
+        MatrixConfig.model_validate(
+            {
+                "models": {"models": {"q": {"backend": "mock", "model": "q", "family": "qwen"}}},
+                "model_runtimes": {"fast": {"type": "hardline"}},
+            }
+        ),
+        registry=default_registry(discover=False),
+    )
+    step = [{"name": "rate", "type": MODEL_STEP, "config": {"runtime": "fast", "model": "no-such"}}]
+    with pytest.raises(CompilationError) as e:
+        box.wire(step, inputs=[PROMPT])
+    (found,) = e.value.problems
+    assert found.path == "components.rate.config" and "no-such" in found.message
+    assert e.value.exit_code == 3 and "q" in (found.fix or "")
+    ok = [{"name": "rate", "type": MODEL_STEP, "config": {"runtime": "fast", "model": "q"}}]
+    box.wire(ok, inputs=[PROMPT])
+
+
+@pytest.mark.parametrize(
+    ("prompt", "said"),
+    [("Rate:\n{claim}", "'claim'"), ("Rate them", "'claims'"), ("Rate {}", "positional")],
+)
+def test_a_prompt_template_is_checked_against_its_inputs_when_the_step_is_built(
+    prompt: str, said: str
+) -> None:
+    with pytest.raises(ConfigError, match=said):
+        ModelStep(
+            ModelStepConfig(runtime="m", inputs={"claims": CLAIMS}, prompt=prompt),
+            model_runtimes={"m": MockModelRuntime()},
+        )
+
+
+def test_an_unknown_model_runtime_names_the_composed_ones() -> None:
+    with pytest.raises(NotFoundError, match="Composed: m"):
+        ModelStep(ModelStepConfig(runtime="ghost"), model_runtimes={"m": MockModelRuntime()})
+
+
+def test_several_inputs_need_a_prompt_template() -> None:
+    with pytest.raises(ConfigError, match="no prompt template"):
+        ModelStep(
+            ModelStepConfig(runtime="m", inputs={"a": CLAIMS, "b": RATING}),
+            model_runtimes={"m": MockModelRuntime()},
+        )
+
+
+async def test_a_single_input_is_the_prompt_as_it_stands() -> None:
+    mock = MockModelRuntime(MockModelRuntimeConfig(responses={"hello": "hi"}))
+    step = ModelStep(ModelStepConfig(runtime="m"), model_runtimes={"m": mock})
+    out = await step.run(Inputs({PROMPT: ("hello",)}), RunContext("r", "s"))
+    assert out[MODEL_CALL].text == "hi" and step.requires == {PROMPT}
+
+
+def test_an_agent_bound_to_a_model_runtime_is_refused_with_the_step_that_fits() -> None:
+    """A model call has no loop and no tools: an agent cannot run on one."""
+    with pytest.raises(ConfigError) as e:
+        container(agents={"a": {"runtime": "m", "system_prompt": "x"}})
+    (found,) = e.value.problems
+    assert found.path == "matrix.agents.a.runtime" and "a model runtime" in found.message
+    assert "model-step" in (found.fix or "")
+
+
+def test_two_model_steps_each_name_the_kind_of_their_reply() -> None:
+    box = container()
+    step = {"type": MODEL_STEP, "config": {"runtime": "m"}}
+    with pytest.raises(CompilationError, match="a kind has one provider") as e:
+        box.wire([{"name": "one", **step}, {"name": "two", **step}], inputs=[PROMPT])
+    (clash,) = e.value.problems
+    assert (clash.path, clash.got) == ("components.two.config.response", MODEL_CALL)
+
+
+def test_a_model_step_carries_its_runtime_s_effects_and_the_mock_is_a_stand_in() -> None:
+    box = container()
+    wiring = box.wire(_step({}), inputs=[PROMPT])
+    assert wiring.effects == {"rate": frozenset()}
+    assert box.registry.entry("model-runtime", "matrix.v1.model-runtime.mock").stand_in
+    assert not box.registry.entry("model-runtime", "matrix.v1.model-runtime.hardline").stand_in
+
+
+def test_a_model_step_s_fingerprint_follows_its_runtime_s_config() -> None:
+    one = container(reply="a").wire(_step({}), inputs=[PROMPT]).fingerprints["rate"]
+    two = container(reply="b").wire(_step({}), inputs=[PROMPT]).fingerprints["rate"]
+    assert one != two
+    assert one == container(reply="a").wire(_step({}), inputs=[PROMPT]).fingerprints["rate"]

@@ -179,7 +179,14 @@ def test_the_install_lines_name_this_release_by_its_tag() -> None:
 
 
 def test_the_points_and_needs_are_what_composition_hands_over() -> None:
-    assert Registry().points == {"component", "observer", "payload-type", "runtime", "store"}
+    assert Registry().points == {
+        "agent-runtime",
+        "component",
+        "model-runtime",
+        "observer",
+        "payload-type",
+        "store",
+    }
     container = compose(MatrixConfig())
     assert set(NEEDS) == set(container.needs()) | {"name"}
 
@@ -225,10 +232,16 @@ def test_the_config_example_composes_and_checks(
     assert main(["check", "--json"]) == 0
     checked = json.loads(capsys.readouterr().out)
     assert checked["components"] == ["claim", "rate"]
-    assert checked["agents"] == ["claimer", "rater"]
+    assert checked["agents"] == ["claimer"]
+    assert checked["agent_runtimes"] == checked["model_runtimes"] == ["offline"]
     assert main(["plan", "--json"]) == 0
     planned = json.loads(capsys.readouterr().out)
-    assert planned["agent_calls_min"] == planned["agent_calls_max"] == 2
+    assert planned["agent_calls_min"] == planned["agent_calls_max"] == 1
+    assert planned["model_calls_min"] == planned["model_calls_max"] == 1
+    assert [r["stand_in"] for r in planned["agent_runtimes"] + planned["model_runtimes"]] == [
+        True,
+        True,
+    ]
     (tmp_path / "diffs.jsonl").write_text('"- a\\n+ b"\n')
     assert main(["run", "--input", "acme.v1.diff=diffs.jsonl", "--json"]) == 0
     ran = json.loads(capsys.readouterr().out)
@@ -237,13 +250,23 @@ def test_the_config_example_composes_and_checks(
     assert json.loads((record / "acme.v1.rating.jsonl").read_text()) == {"score": 4}
     claim = json.loads((record / "acme.v1.claim-reply.jsonl").read_text())
     assert claim["task"] == "Claims in:\n- a\n+ b"
+    call = json.loads((record / "matrix.v1.model-call.jsonl").read_text())
+    assert call["prompt"].startswith("Rate:\n") and call["text"] == '{"score": 4}'
 
 
-def test_the_agents_reference_step_is_a_valid_agent_step() -> None:
-    (block,) = _fenced(matrix.skill("agents"), "yaml")
-    (step,) = yaml.safe_load(block)
+def test_the_agents_reference_steps_are_valid_steps() -> None:
+    agent_block, model_block = _fenced(matrix.skill("agents"), "yaml")
+    (step,) = yaml.safe_load(agent_block)
     config = matrix.AgentStepConfig.model_validate(step["config"])
     assert (config.response, config.output) == ("acme.v1.claim-reply", "acme.v1.claims")
+    (step,) = yaml.safe_load(model_block)
+    assert step["type"] == matrix.MODEL_STEP
+    model = matrix.ModelStepConfig.model_validate(step["config"])
+    assert (model.runtime, model.response, model.output) == (
+        "fast",
+        "acme.v1.rate-call",
+        "acme.v1.rating",
+    )
 
 
 def test_every_reference_the_skill_lists_prints(capsys: pytest.CaptureFixture[str]) -> None:
@@ -280,15 +303,16 @@ def test_the_retry_example_is_valid_config() -> None:
 def test_every_max_option_the_skill_names_exists() -> None:
     """Moved from the spend tests when spend was removed: each ``max_*`` option the config and
     agents references name is a field of a runtime, an agent, the limits or a retry."""
-    from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig
-    from matrix.adapters._out.runtime.model import ModelAgentRuntimeConfig
+    from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig, SubagentConfig
+    from matrix.adapters._out.runtime.model import HardlineModelRuntimeConfig
     from matrix.domain.config import AgentConfig
 
     text = matrix.skill("config") + matrix.skill("agents")
     named = set(re.findall(r"\b(max_[a-z_]+)\b", text))
     fields = {
         *ClaudeSdkRuntimeConfig.model_fields,
-        *ModelAgentRuntimeConfig.model_fields,
+        *SubagentConfig.model_fields,
+        *HardlineModelRuntimeConfig.model_fields,
         *AgentConfig.model_fields,
         *matrix.Limits.model_fields,
         *matrix.Retry.model_fields,

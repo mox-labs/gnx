@@ -19,7 +19,7 @@ ends a session once it has spent that, and the response says so (``stop: max_bud
 matrix counts nothing against it. ``cost_usd`` on a response is the SDK's own report
 (``total_cost_usd``), kept as a fact of the session.
 
-Type URL: ``matrix.v1.runtime.claude-sdk``. Requires the ``claude`` extra.
+Type URL: ``matrix.v1.agent-runtime.claude-sdk``. Requires the ``claude`` extra.
 """
 
 from __future__ import annotations

@@ -13,16 +13,16 @@ A `claude-sdk` runtime launches a Claude Agent SDK session as a subprocess. Insi
 session the agent may read and write files, run commands, and reach the network — bounded by
 the runtime's `permission_mode` and `cwd` and by the definition's `tools`.
 
-A `model` runtime makes one model call through hardline and carries no local authority; it
-refuses any definition that declares tools rather than run it without them. Where that call's
-data goes is decided by the hardline registry; hardline's own security notes cover it.
+A `hardline` model runtime makes one model call and carries no local authority: it has no
+tools and no agent can be bound to it. Where that call's data goes is decided by the hardline
+registry; hardline's own security notes cover it.
 
 ## Trust boundaries
 
 ### 1. Config → agent authority
 
-`compose` builds runtimes from `matrix.runtimes.<name>` and binds agents from
-`matrix.agents.<name>`. Every authority-bearing value — `permission_mode`, `cwd`,
+`compose` builds agent runtimes from `matrix.agent_runtimes.<name>` and model runtimes from
+`matrix.model_runtimes.<name>`, and binds agents from `matrix.agents.<name>`. Every authority-bearing value — `permission_mode`, `cwd`,
 `setting_sources`, `plugins`, `skills`, inline subagents (`agents`, each with its own prompt
 and tools), a definition's `tools` — arrives from config: a `matrix:`
 section, an ix `experiment.yaml`, a markdown agent file.

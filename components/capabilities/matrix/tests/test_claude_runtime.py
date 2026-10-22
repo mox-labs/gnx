@@ -189,12 +189,12 @@ class TestPermissionMode:
         )
 
     def test_unknown_mode_fails_through_the_registry_naming_the_legal_set(self):
-        from matrix import ConfigError, default_registry, runtime_type_url
+        from matrix import ConfigError, agent_runtime_type_url, default_registry
 
         with pytest.raises(ConfigError) as exc:
             default_registry(discover=False).create(
-                "runtime",
-                runtime_type_url("claude-sdk"),
+                "agent-runtime",
+                agent_runtime_type_url("claude-sdk"),
                 {"permission_mode": "bypassPermission"},
                 needs={"cwd": None},
                 where="ix.yaml",
@@ -368,10 +368,14 @@ async def test_inline_subagents_reach_the_sdk_as_its_agent_definitions(monkeypat
 
 
 def _create(options: dict):
-    from matrix import default_registry, runtime_type_url
+    from matrix import agent_runtime_type_url, default_registry
 
     return default_registry(discover=False).create(
-        "runtime", runtime_type_url("claude-sdk"), options, needs={"cwd": None}, where="r"
+        "agent-runtime",
+        agent_runtime_type_url("claude-sdk"),
+        options,
+        needs={"cwd": None},
+        where="r",
     )
 
 

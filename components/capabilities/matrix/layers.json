@@ -15,6 +15,7 @@
       "files": ["src/matrix/domain/ports/**/*.py"],
       "allow": ["__future__", "dataclasses", "typing", "collections",
                 "matrix.domain.agent", "matrix.domain.construct", "matrix.domain.executor",
+                "matrix.domain.model_call",
                 "matrix.domain.observer", "matrix.domain.problems"],
       "forbid": ["opentelemetry", "yaml"]
     },

@@ -26,6 +26,7 @@ from matrix.domain.errors import (
 )
 from matrix.domain.executor import Retry
 from matrix.domain.ids import KIND_SEGMENTS
+from matrix.domain.model_step import MODEL_CALL
 from matrix.domain.problems import MATRIX_PROBLEM_KINDS, PROBLEM_KINDS
 from matrix.domain.registry import MATRIX_POINTS
 
@@ -48,8 +49,8 @@ INSTALL = (
 
 #: What each optional extra adds. The tests hold the keys to the package's extras.
 EXTRAS: dict[str, str] = {
-    "claude": "the `claude-sdk` runtime (Claude Agent SDK sessions)",
-    "models": "the `model` runtime (one model call through hardline)",
+    "claude": "the `claude-sdk` agent runtime (Claude Agent SDK sessions)",
+    "models": "the `hardline` model runtime (one model call through hardline)",
     "otel": "the OpenTelemetry SDK and OTLP exporters: export of spans and metrics",
 }
 
@@ -58,7 +59,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("matrix config --sources", "the files the config is read from, lowest priority first"),
     ("matrix config", "the merged config"),
     ("matrix check", "compose runtimes and agents, wire the components; calls nothing"),
-    ("matrix plan", "the order of work, effects, agents, agent calls; every problem at once"),
+    ("matrix plan", "the order of work, effects, agents, calls; every problem at once"),
     ("matrix run --input KIND=PATH", "run it; prints the run id and its record's files"),
     ("matrix runs", "the recorded runs, oldest first: id, status, start, where"),
     ("matrix agents", "the agents the config defines, with their runtimes"),
@@ -79,23 +80,27 @@ TIERS: tuple[tuple[str, str], ...] = (
 #: Each key of the ``matrix:`` section. The tests hold the keys to :class:`MatrixConfig`.
 CONFIG_KEYS: dict[str, str] = {
     "definitions": "directories of agent definitions (`*.md`, Claude Code format)",
-    "runtimes": "name: `{type, ...options}`; `type` is a registered runtime's short name or "
-    "type URL",
+    "agent_runtimes": "name: `{type, ...options}`: agent sessions, with a loop and tools; "
+    "`type` is `claude-sdk`, `mock`, or a registered agent runtime's type URL",
+    "model_runtimes": "name: `{type, ...options}`: one model call each; `type` is `hardline`, "
+    "`mock`, or a registered model runtime's type URL",
     "observers": "a short name or type URL, or `{type, ...options}`",
     "agents": "name: `{runtime, definition?, description?, system_prompt?, model?, tools?, "
-    "max_turns?}`",
+    "max_turns?}`; `runtime` names an agent runtime",
     "components": "a list of `{name, type, config}`: the components of a run",
     "inputs": "the kinds the caller supplies when it runs the components",
     "store": "where runs are recorded: `{type, ...options}`; default `jsonl` under `.matrix/runs`",
     "limits": "concurrency, deadlines, grace, cleanup, `on_failure`, `retry`, per-component "
     "overrides",
-    "models": "a hardline registry handed to every `type: model` runtime without its own",
+    "models": "a hardline registry handed to every `type: hardline` model runtime without its own",
 }
 
 #: What an extension may declare it needs, handed to its ``build`` by name. The tests hold
 #: these to what composition supplies.
 NEEDS: dict[str, str] = {
     "agents": "the composed agents, by name",
+    "model_runtimes": "the composed model runtimes, by name",
+    "schemas": "the registered payload schemas, by kind",
     "models": "the config's `models` section",
     "cwd": "the working directory a caller supplies",
     "name": "the component's name in the run (components only)",
@@ -172,15 +177,16 @@ acme = "acme.matrix_extension:register"
 
 CONFIG_EXAMPLE = """\
 matrix:
-  runtimes:
-    offline:                      # replies from config: no model is called
+  agent_runtimes:
+    offline:                      # a stand-in: canned replies, no model is called
       type: mock
-      by_agent:                   # agent name -> its reply
-        claimer: '{"claims": ["b is added"]}'
-        rater: '{"score": 4}'
+      by_agent: {claimer: '{"claims": ["b is added"]}'}   # agent name -> its reply
+  model_runtimes:
+    offline:                      # a stand-in for a model: one canned reply
+      type: mock
+      default: '{"score": 4}'
   agents:
     claimer: {runtime: offline, system_prompt: 'List the claims. Reply with JSON only.'}
-    rater: {runtime: offline, system_prompt: 'Rate the claims 1-5. Reply {"score": N} only.'}
   inputs: [acme.v1.diff]
   components:
     - name: claim
@@ -188,9 +194,10 @@ matrix:
       config: {agent: claimer, inputs: {diff: acme.v1.diff}, task: "Claims in:\\n{diff}",
                response: acme.v1.claim-reply, output: acme.v1.claims}
     - name: rate
-      type: matrix.v1.agent-step
-      config: {agent: rater, inputs: {claims: acme.v1.claims}, task: "Rate:\\n{claims}",
-               response: acme.v1.rate-reply, output: acme.v1.rating}
+      type: matrix.v1.model-step
+      config: {runtime: offline, system: 'Rate the claims 1-5. Reply {"score": N} only.',
+               inputs: {claims: acme.v1.claims}, prompt: "Rate:\\n{claims}",
+               output: acme.v1.rating}
 """
 
 
@@ -232,7 +239,8 @@ Use matrix to:
 
 - write a unit of work that declares the kinds of data it requires and provides, and let
   matrix order the work, run it, and keep every row it hands over;
-- bind agent definitions to runtimes from config;
+- bind agent definitions to agent runtimes, and make model calls on model runtimes, from
+  config;
 - check and plan a config, then run it from the command line (`matrix plan`, `matrix run`)
   or from Python (`compose(load_config()).run(...)`), recorded as it goes;
 - read YAML and markdown documents as your own pydantic types, every problem reported with
@@ -353,22 +361,32 @@ section per tool. The `matrix:` keys, each optional; an unknown key is refused:
 
 {keys}
 
-A `./matrix.yaml` of two agent steps that composes, plans and runs in this build as written:
+A `./matrix.yaml` of an agent step and a model step that composes, plans and runs in this
+build as written:
 
 {_fence("yaml", CONFIG_EXAMPLE)}
 
+- **Two kinds of runtime.** An agent runtime hosts a session with a loop and tools: agents
+  bind to it and an `agent-step` runs one. A model runtime makes one call: a `model-step`
+  names it. An agent bound to a model runtime is refused, with the fix.
 - **One `response` per step.** An agent step provides its reply (an `AgentResponse`, the
-  task as sent in its `task`) under `response`; the default, `matrix.v1.agent-response`,
-  serves one step, so each further step names its own.
-- **`output` needs JSON.** The reply must be one JSON document, alone or in a ```` ```json ````
-  block, recorded as a row of that kind: ask for it in the prompt or the task.
-- **The mock** replies by `responses` (keyed by the whole task as sent), then `by_agent`,
-  then `default`, else echoes `mock:<agent>:<task>`.
+  task as sent in its `task`) under `response`; a model step its call (a `ModelCall`, the
+  prompt as sent in its `prompt`). Each default serves one step, so each further step names
+  its own.
+- **`output` is the reply as a row of that kind.** A model step asks its runtime for the
+  kind's registered schema when there is one; otherwise, and always for an agent step, the
+  reply must be one JSON document, alone or in a ```` ```json ```` block: ask for it in the
+  prompt or the task.
+- **The mocks** are stand-ins (`stand_in: true` in `matrix catalog`). The agent one replies by
+  `responses` (keyed by the whole task as sent), then `by_agent`, then `default`, else echoes
+  `mock:<agent>:<task>`; the model one by `responses`, `by_model`, `default`, else
+  `mock:<model>:<prompt>`.
 - **`model`** is the runtime's to read: on `claude-sdk` an alias (`haiku`, `sonnet`, `opus`)
-  or a full model id; on `model`, a hardline registry name.
+  or a full model id; on a model step on `hardline`, a hardline registry name, checked when
+  the step is built.
 
-The order of `components` means nothing: the work is ordered by the kinds. Agent steps and
-runtimes in full: `matrix --skill -r agents`; store, limits and retries: `-r config`."""
+The order of `components` means nothing: the work is ordered by the kinds. Steps and runtimes
+in full: `matrix --skill -r agents`; store, limits and retries: `-r config`."""
 
 
 def _commands() -> str:
@@ -401,7 +419,7 @@ def _errors() -> str:
     envelope = (
         '{"schema": "matrix.v1.error",\n'
         ' "error": {"kind": "config", "message": "...", "fix": "...", "complete": true,\n'
-        '           "problems": [{"path": "matrix.runtimes.m.type", "kind": "name_unknown",\n'
+        '           "problems": [{"path": "matrix.agent_runtimes.m.type", "kind": "name_unknown",\n'
         '                         "message": "...", "fix": "...", "allowed": ["mock"],\n'
         '                         "got": "nope", "source": "./matrix.yaml"}],\n'
         '           "details": {}}}'
@@ -432,7 +450,7 @@ JSON line under `--json`:
 #: The references ``matrix --skill -r NAME`` prints, and what each holds.
 REFERENCES: dict[str, str] = {
     "config": "every config key in full: the store, limits and retries, merging, --only",
-    "agents": "agent steps in full, the mock's replies, each runtime's models and limits",
+    "agents": "agent and model steps in full, the mocks' replies, each runtime's options",
     "running": "plan then run: inputs, run ids, reading a run's record, `matrix runs`, --from",
     "telemetry": "OpenTelemetry from the standard variables, the conventions followed, the "
     "local event log",
@@ -474,12 +492,12 @@ The tiers and the `matrix:` keys are in the main skill. This is the rest.
 
 ## Merging
 
-Later tiers win. Mappings merge key by key, so `runtimes` and `agents` hold every tier's
-entries, a later tier's replacing an earlier one's of the same name; lists replace, except
-`definitions`, which keeps every tier's directories, each read from beside the file that
-names it: an agent defined in two of them is a `name_taken` problem at
-`matrix.definitions`. A problem names the file that set the value it is about (`source`),
-so `matrix config --sources` is rarely needed.
+Later tiers win. Mappings merge key by key, so `agent_runtimes`, `model_runtimes` and
+`agents` hold every tier's entries, a later tier's replacing an earlier one's of the same
+name; lists replace, except `definitions`, which keeps every tier's directories, each read
+from beside the file that names it: an agent defined in two of them is a `name_taken`
+problem at `matrix.definitions`. A problem names the file that set the value it is about
+(`source`), so `matrix config --sources` is rarely needed.
 
 Each `CONFIG` given to a command is a tier above the others, in the order given; `-` reads
 one from standard input, where a relative directory stays as written. `--only` reads the
@@ -523,11 +541,13 @@ def _reference_running() -> str:
 
 `matrix plan [CONFIG] --json` composes, wires and reports, calling nothing:
 `stages` (what starts together), each component's `requires`, `provides`, `after`,
-`effects` and `attempts`, the `agents` and `runtimes` in use, `effects` for the whole run
-(null when any is unknown, never read as none), `agent_calls_min` and `agent_calls_max`
-(one call per agent step at least, one per attempt at most; the max is null when a
-component that is not an agent step may call a model), the `store` and where a run would
-be recorded, and the `limits`. A problem anywhere is the error envelope with every problem.
+`effects` and `attempts`, the `agents`, `agent_runtimes` and `model_runtimes` in use (each
+runtime's `stand_in` says whether its answers are canned), `effects` for the whole run (null
+when any is unknown, never read as none), `agent_calls_min` and `agent_calls_max`, and
+`model_calls_min` and `model_calls_max` (one per step at least, one per attempt at most; the
+maxima are null when a component that is neither an agent step nor a model step may call a
+model), the `store` and where a run would be recorded, and the `limits`. A problem anywhere
+is the error envelope with every problem.
 
 `matrix run [CONFIG] --input KIND=PATH ... --json` runs it. Each `--input` file holds one
 JSON value a line, the rows of that run-input kind (`-` is standard input, once). It prints
@@ -548,7 +568,9 @@ With the default store a run is a directory under `.matrix/runs/<run_id>/`:
 - `run.json`: the run document, replaced once when the run ends: `status`, `components` (how
   each ended), `failures`, and `tables` (each kind's file and row count);
 - `<kind>.jsonl`: one per kind, each line one row as recorded; an agent step's `response`
-  rows are `AgentResponse`s, the task as sent in `task`, the reply in `content`;
+  rows are `AgentResponse`s, the task as sent in `task`, the reply in `content`; a model
+  step's are `ModelCall`s, the prompt as sent in `prompt`, the reply in `text`, and the
+  model that answered, its usage, request id, attempts and latency;
 - `matrix.v1.ledger.jsonl`: which component handed each row over, and when;
 - `events.jsonl`: the run's events; `matrix.agent.start` carries each task as sent, so a
   step that failed before recording its reply still shows what it was asked.
@@ -566,7 +588,8 @@ A run killed mid-way keeps every row it had recorded and reads `interrupted`.
 `matrix run --from RUN_ID` runs again with that run's inputs, and reuses the rows of each
 component that completed there (`stopped` is not completed), was built from the same
 type, config and needs (an agent step's agent definition, runtime and the models its runtime
-resolved; `matrix.models`; the working directory), and whose providers are reused too: those
+resolved; a model step's model runtime and the models it resolved; `matrix.models`; the
+working directory), and whose providers are reused too: those
 components end `reused`, the rest run. A code change with the same config is not seen. A
 reused row of a kind with a registered schema reaches its consumers as an instance of that
 schema, as on a fresh run; a kind without one is reused as the JSON the store kept.
@@ -592,7 +615,7 @@ print(run.status, container.location(run.run_id))
 
 def _reference_agents() -> str:
     return f"""\
-# Agent steps and runtimes
+# Agent steps, model steps and runtimes
 
 ## matrix.v1.agent-step
 
@@ -620,22 +643,65 @@ def _reference_agents() -> str:
   JSON fails the step (`contract`), quoting the reply. Ask for the JSON in the agent's
   `system_prompt` or the task, and give the mock that JSON.
 
+## matrix.v1.model-step
+
+```yaml
+- name: rate
+  type: matrix.v1.model-step
+  config:
+    runtime: fast                     # a matrix.model_runtimes name
+    model: haiku                      # a name the runtime resolves; unset, its default
+    system: "Rate the claims 1-5."    # optional, as written
+    inputs: {{claims: acme.v1.claims}}  # placeholder -> the kind whose rows fill it
+    prompt: "Rate:\\n{{claims}}"         # {{placeholder}}s, checked as an agent step's task
+    response: acme.v1.rate-call       # default {MODEL_CALL}: one step per kind
+    output: acme.v1.rating            # optional: the reply as one row of this kind
+```
+
+- One call: no loop, no tools, no turns. The model name is checked with the runtime when the
+  step is built, so an unknown one is a `config` problem at `matrix check`.
+- It provides a `ModelCall` under `response`: `text`, `value` (the structured reply),
+  `prompt` (as sent), `name` and `model` (the registry name and the provider's id of the
+  model that answered), `family`, `backend`, `provider`, `usage` (`input_tokens`,
+  `output_tokens`, `cache_read_tokens`, `cache_write_tokens`), `request_id`, `attempts`,
+  `retries`, `fallback_from` (the model asked for, when a fallback answered), `latency_ms`,
+  and `finish_reason` and `refusal`, which are null until the runtime reports them.
+- With `output`, when a package registered a schema for the kind, the runtime is asked for
+  that structure and validates the reply (hardline repairs a reply that does not fit, within
+  its bound); the row is the validated value. Without a schema, the reply must be one JSON
+  document, as for an agent step.
+
 ## Runtimes
 
-`matrix describe matrix.v1.runtime.<type>` prints each one's options.
+`matrix describe matrix.v1.agent-runtime.<type>` or `matrix.v1.model-runtime.<type>` prints
+each one's options. A mock is a stand-in: `stand_in: true` in `matrix catalog` and the plan.
+
+Agent runtimes (`matrix.agent_runtimes`):
 
 - `mock`: offline. A reply is the first of `responses` (keyed by the whole task as sent),
   `by_agent` (keyed by agent name), `default`; else the echo `mock:<agent>:<task>`, which
   shows each task as sent. `model` is recorded, never used.
-- `claude-sdk` (extra `claude`): Claude Agent SDK sessions with tools. `model`: an alias the
-  Claude Code CLI knows (`haiku`, `sonnet`, `opus`) or a full model id (as
-  `claude-sonnet-4-5`); unset, the CLI's default. `max_budget_usd` is the SDK's own option:
-  the SDK ends a session once it has spent that many USD (`stop: max_budget_usd`), and
-  `cost_usd` is what the SDK reported; `max_turns` (on the agent) bounds its turns;
-  `permission_mode` defaults to `default`.
-- `model` (extra `models`): one call through hardline, no tools. `model`: a hardline
-  registry name (`matrix.models`, or hardline's own tiers); unset, `default_model`.
-  `max_tokens` bounds a reply; it reports no cost.
+- `claude-sdk` (extra `claude`): Claude Agent SDK sessions with tools. Its config is all a
+  session can be given: `permission_mode` (default `default`), `cwd`, `setting_sources`
+  (`user`, `project`, `local`; `[]` is hermetic), `plugins` (`{{type: local, path}}`),
+  `skills` (names, or `all`), `agents` (inline subagents: `description`, `prompt`, `tools`,
+  `disallowed_tools`, `model`, `skills`, `max_turns`), `fallback_model`, `max_budget_usd`.
+  An agent whose `tools` leave out `Skill` on a runtime with `skills`, or an option the
+  installed SDK lacks, is refused at binding. `model`: an alias the Claude Code CLI knows
+  (`haiku`, `sonnet`, `opus`) or a full model id (as `claude-sonnet-4-5`); unset, the CLI's
+  default. `max_budget_usd` is the SDK's own option: the SDK ends a session once it has spent
+  that many USD (`stop: max_budget_usd`), and `cost_usd` is what the SDK reported;
+  `max_turns` (on the agent) bounds its turns.
+
+Model runtimes (`matrix.model_runtimes`):
+
+- `mock`: offline. A reply is the first of `responses` (keyed by the whole prompt as sent),
+  `by_model` (keyed by model name), `default`; else the echo `mock:<model>:<prompt>`. Any
+  model name is accepted.
+- `hardline` (extra `models`): one call through hardline, in any family it has a row for.
+  `model`: a hardline registry name (`matrix.models`, or hardline's own tiers); unset,
+  `default_model`, then the registry's default. `max_tokens` bounds a reply; it reports no
+  cost.
 """
 
 
@@ -673,7 +739,8 @@ The GenAI semantic conventions as read on 2026-10-19 (repository
 `open-telemetry/semantic-conventions-genai`, no release tagged, status Development), scope
 `matrix`:
 
-- spans: `invoke_workflow` (a run), `matrix.component`, `invoke_agent {agent}` with
+- spans: `invoke_workflow` (a run), `matrix.component` (a model step's call is inside its
+  component's span: a call is not an agent session), `invoke_agent {agent}` with
   `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`,
   `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` and
   `error.type`; `execute_tool {tool}` for each tool call a runtime timed (`claude-sdk` does);

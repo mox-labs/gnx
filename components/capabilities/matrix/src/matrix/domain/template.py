@@ -6,17 +6,24 @@ must name an input, and each input must have a placeholder, so a typo fails at c
 with every other problem rather than when a run reaches the step. ``{{`` and ``}}`` are
 literal braces; a placeholder may index or take an attribute of its input (``{diff[0]}``),
 as :meth:`str.format` allows.
+
+:func:`render` fills one from the rows a step was handed, and :func:`json_document` reads a
+reply that must be one JSON document, which both steps' ``output`` asks for.
 """
 
 from __future__ import annotations
 
+import json
+import re
 import string
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from matrix.domain.errors import ConfigError
+from pydantic import BaseModel
+
+from matrix.domain.errors import ConfigError, ContractError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
 _FIX = "use {placeholder} for each input, by its name under `inputs`, and {{ }} for literal braces"
 
@@ -55,3 +62,60 @@ def check_template(template: str, inputs: Iterable[str], *, where: str) -> None:
             f"{'are' if len(unused) > 1 else 'is'} never used by the template",
             fix="add a {placeholder} for each input, or drop the inputs the template does not use",
         )
+
+
+def render(
+    template: str | None,
+    inputs: Mapping[str, str],
+    rows: Mapping[str, tuple[Any, ...]],
+    *,
+    where: str,
+) -> str:
+    """The text for these ``rows``: each placeholder of ``template`` filled with the rows of
+    the kind ``inputs`` maps it to, one row as itself, several as a JSON list. Without a
+    template, the single input's text is the whole text.
+
+    Raises ContractError when a provider handed over no rows, and ConfigError when an index
+    or attribute the template asks of a row is not there."""
+    values: dict[str, str] = {}
+    for placeholder, kind in inputs.items():
+        found = rows[kind]
+        if not found:
+            raise ContractError(
+                f"{where} requires {kind!r}, but its provider handed over no rows", table=kind
+            )
+        values[placeholder] = as_text(found[0] if len(found) == 1 else list(found))
+    if template is None:
+        return next(iter(values.values()))
+    try:
+        return template.format_map(values)
+    except (KeyError, IndexError, AttributeError, ValueError) as e:  # what an index asked
+        raise ConfigError(
+            f"{where}: the template cannot be filled: {e}",
+            fix="index or take an attribute of an input only where its rows have one",
+        ) from e
+
+
+def as_text(value: Any) -> str:
+    """A row as a template fills it in: text as it stands, anything else as JSON."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, BaseModel):
+        return value.model_dump_json(indent=2)
+    if isinstance(value, list):
+        value = [v.model_dump(mode="json") if isinstance(v, BaseModel) else v for v in value]
+    return json.dumps(value, indent=2, default=str)
+
+
+_FENCED = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
+
+
+def json_document(content: str) -> Any:
+    """The one JSON document ``content`` holds, alone or in a fenced ```` ```json ```` block.
+    Raises LookupError when it holds none."""
+    for candidate in (content.strip(), *(m.group(1) for m in _FENCED.finditer(content))):
+        try:
+            return json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+    raise LookupError("no JSON document")

@@ -155,8 +155,9 @@ def check(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> None
     """Compose runtimes and agents, wire components; call nothing."""
     report = matrix.check_config(tool, _locations(config), only=only)
     text = (
-        f"ok: {len(report.runtimes)} runtimes, {len(report.agents)} agents compose, "
-        f"{len(report.components)} components wire (nothing was called)"
+        f"ok: {len(report.agent_runtimes)} agent runtimes, {len(report.model_runtimes)} model "
+        f"runtimes, {len(report.agents)} agents compose, {len(report.components)} components "
+        "wire (nothing was called)"
     )
     _warn(report.warnings, as_json)
     _emit(report.document(), as_json, text)
@@ -182,17 +183,26 @@ def agents(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> Non
 @_json_option
 def plan(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> None:
     """Say what a run would do: the order of work, each component's effects, the agents and
-    runtimes in use, how many agent calls it makes, every problem at once. Runs nothing."""
+    runtimes in use, how many agent and model calls it makes, every problem at once. Runs
+    nothing."""
     found = matrix.plan_config(tool, _locations(config), only=only)
     lines = [f"inputs: {', '.join(found.inputs) or '(none)'}"]
     for number, stage in enumerate(found.stages, start=1):
         lines.append(f"stage {number}: {', '.join(stage)}")
     for c in found.components:
         effects = "unknown" if c.effects is None else ", ".join(c.effects) or "none"
-        agent = f" (agent {c.agent} on {c.runtime})" if c.agent else ""
-        lines.append(f"  {c.name:<20} {c.type}{agent}; effects: {effects}")
-    calls = "unknown" if found.agent_calls_max is None else found.agent_calls_max
-    lines.append(f"agent calls: {found.agent_calls_min} to {calls}")
+        if c.agent:
+            on = f" (agent {c.agent} on {c.runtime})"
+        elif c.runtime:
+            on = f" (model {c.model or 'default'} on {c.runtime})"
+        else:
+            on = ""
+        lines.append(f"  {c.name:<20} {c.type}{on}; effects: {effects}")
+    for what, low, high in (
+        ("agent", found.agent_calls_min, found.agent_calls_max),
+        ("model", found.model_calls_min, found.model_calls_max),
+    ):
+        lines.append(f"{what} calls: {low} to {'unknown' if high is None else high}")
     lines.append(f"record: {found.store.location}")
     _warn(found.warnings, as_json)
     _emit(found.document(), as_json, "\n".join(lines))
