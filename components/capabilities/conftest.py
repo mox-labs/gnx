@@ -21,6 +21,10 @@ The guard replaces module and class attributes, so it holds only for code that l
 names up when it calls them. A test that proves a call site does so reaches the guard on
 purpose: it reads ``refused_live_calls`` and clears what it expected to find there.
 
+It also holds the suites' one skip gate. Under ``--strict-skips`` (``just capabilities-test``,
+and so CI) a skip whose reason is not in ``EXPECTED_SKIPS`` fails the run: a gate test that
+began to skip, on a tool the runner stopped installing, would otherwise pass unseen.
+
 pytest reads this file for every test under this directory: the members set no pytest
 configuration of their own, so this workspace is the rootdir wherever pytest starts in it.
 """
@@ -34,6 +38,16 @@ import pytest
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+#: The skips a full run is expected to show, by reason; each is opt-in by design.
+EXPECTED_SKIPS: frozenset[str] = frozenset(
+    {
+        # ix's calibration across every scenario: minutes of simulation, run by hand.
+        "the full simulation: IX_SLOW=1 pytest -m slow",
+        # recon against third-party APIs, which a gate must not depend on: `just recon-live`.
+        "calls live APIs; set RECON_LIVE=1 to run",
+    }
+)
 
 #: Where a session reaches a model: (module, attribute) of each call refused.
 LIVE_CALLS: tuple[tuple[str, str], ...] = (
@@ -72,3 +86,55 @@ def refused_live_calls(_no_live_model_session: list[str]) -> list[str]:
     """The calls the guard has refused in this test so far, each as ``module.attribute``.
     Whatever is left in it at teardown fails the test."""
     return _no_live_model_session
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--strict-skips",
+        action="store_true",
+        help="fail the run on a skip whose reason is not in EXPECTED_SKIPS (conftest.py)",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if config.getoption("--strict-skips"):
+        config.pluginmanager.register(_SkipGate(), "strict-skips")
+
+
+class _SkipGate:
+    """Fails the run on each skip ``EXPECTED_SKIPS`` does not name, and lists them."""
+
+    def __init__(self) -> None:
+        self.unexpected: list[str] = []
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        self._check(report)
+
+    def pytest_collectreport(self, report: pytest.CollectReport) -> None:
+        self._check(report)
+
+    def _check(self, report: pytest.TestReport | pytest.CollectReport) -> None:
+        if not report.skipped or hasattr(report, "wasxfail"):
+            return
+        if isinstance(report.longrepr, tuple):
+            path, line, message = report.longrepr
+            where, reason = f"{path}:{line}", message.removeprefix("Skipped: ")
+        else:
+            where, reason = report.nodeid, str(report.longrepr)
+        if reason not in EXPECTED_SKIPS:
+            self.unexpected.append(f"{where}: {reason}")
+
+    def pytest_sessionfinish(self, session: pytest.Session) -> None:
+        if self.unexpected and session.exitstatus == pytest.ExitCode.OK:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+    def pytest_terminal_summary(self, terminalreporter: Any) -> None:
+        if not self.unexpected:
+            return
+        terminalreporter.section("unexpected skips", red=True)
+        for line in self.unexpected:
+            terminalreporter.write_line(line)
+        terminalreporter.write_line(
+            "Each is a test that did not run. Make it run here, or add its reason to "
+            "EXPECTED_SKIPS in components/capabilities/conftest.py, saying why it is expected."
+        )
