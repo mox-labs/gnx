@@ -168,3 +168,21 @@ def test_matrix_run_says_when_export_cannot_happen(
     (warning,) = json.loads(capsys.readouterr().out)["warnings"]
     assert warning["kind"] == "extra_missing"
     assert matrix.EXIT_CODES["ok"] == 0
+
+
+def test_an_otel_observer_exports_content_only_when_its_config_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from matrix.adapters._out.observers.otel import OtelObserver
+
+    def otel(config: MatrixConfig) -> OtelObserver:
+        (observer,) = [o for o in compose(config).observers if isinstance(o, OtelObserver)]
+        return observer
+
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "console")
+    assert otel(MatrixConfig()).capture_content is False  # attached by the variables alone
+    assert otel(MatrixConfig(observers=("otel",))).capture_content is False
+    asked = MatrixConfig(observers=({"type": "otel", "capture_content": True},))
+    assert otel(asked).capture_content is True
+    with pytest.raises(matrix.ConfigError, match="capture_contents"):
+        compose(MatrixConfig(observers=({"type": "otel", "capture_contents": True},)))

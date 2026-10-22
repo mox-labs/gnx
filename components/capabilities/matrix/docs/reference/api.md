@@ -216,7 +216,7 @@ components.
 | `defer(release)` | register a sync or async callable to be called when the run ends |
 | `emit(name, **fields)` | emit one event |
 | `measure(name, value, *, unit="", kind="gauge", **attrs)` | record a number as a `matrix.measure` event; `kind` is `gauge`, `counter` or `histogram` |
-| `span(name, **fields)` | an async context manager emitting `<name>.start` and `<name>.end` (`status`, `duration_ms`) |
+| `span(name, **fields)` | an async context manager emitting `<name>.start` and `<name>.end` (`status`, `duration_ms`); OpenTelemetry gets only its number and boolean fields unless content is asked for ([the `otel` observer](#the-otel-observer)) |
 
 `provide` is synchronous. When it returns, the row has been validated against the kind's
 registered schema, appended to the Construct, and is durable in the run's store. It raises
@@ -801,13 +801,13 @@ shares a `span`. An agent called from inside a component reports that component'
 | `matrix.run.end` | run id / none | `status`, `rows`, `duration_ms` |
 | `matrix.component.start` | new id / run id | |
 | `matrix.component.stopping` | the component's / run id | `reason` (`deadline`, `run_failed`, `cancelled`) |
-| `matrix.component.end` | the component's / run id | `status`, and when they apply `reason`, `duration_ms`, `kind`, `abandoned`. Exactly one per component; a skipped component has no start |
+| `matrix.component.end` | the component's / run id | `status`, and when they apply `reason`, `duration_ms`, `kind`, `abandoned`, `attempts`. Exactly one per component; a skipped component has no start |
 | `matrix.component.late` | new id / run id | `call`: the context method used after the component ended |
 | `matrix.component.retry` | the component's / run id | `attempt` (the one about to start), `kind`, `error`, `wait_s` |
 | `matrix.row.append` | new id / run id | `kind`, `row`, `seq`: the row's ledger pointer and order |
 | `matrix.release.start` | new id / run id | |
 | `matrix.release.end` | same / run id | `status` (`released`, `failed`, `abandoned`), `error` |
-| `matrix.agent.start` | new id / the calling span | `agent`, `model` |
+| `matrix.agent.start` | new id / the calling span | `agent`, `model`, `task` (the task as sent) |
 | `matrix.agent.end` | same / the calling span | `agent`, `duration_ms`, then `status` (`stop`), `tokens_input`, `tokens_output`, `cost_usd`, `model`, `family`, `provider`, `tool_calls`; or `status="error"`, `error`, `reason`, `kind` |
 | `matrix.tool.start` | new id / the agent's span | `agent`, `tool`, `call_id`; timed when the runtime saw the call start |
 | `matrix.tool.end` | same / the agent's span | `agent`, `tool`, `call_id`, `status` (`ok`, `error`), `duration_ms`; timed when the runtime saw its result |
@@ -858,9 +858,33 @@ is going.
 `matrix.v1.observer.otel`. Attached by `observers: [otel]`, and to every composed container
 when the standard `OTEL_*` variables ask for export (below). It speaks only the OpenTelemetry
 API, a dependency of matrix, which does nothing until an application installs an SDK.
-`OtelObserver(*, tracer_provider=None, meter_provider=None)` takes providers of the caller's
-own; by default it uses the global ones. Instrumentation scope `matrix`, with matrix's
-version.
+`OtelObserver(*, tracer_provider=None, meter_provider=None, capture_content=False)` takes
+providers of the caller's own; by default it uses the global ones. Instrumentation scope
+`matrix`, with matrix's version. Config: `capture_content` (default `false`), as in
+`observers: [{type: otel, capture_content: true}]`; the observer the `OTEL_*` variables
+attach takes the default.
+
+**No content leaves by default.** Span attributes come from an allowlist:
+
+- the conventions' names in the table below;
+- matrix's own fields that carry no content, as `matrix.<field>`: `status`, `reason`,
+  `kind`, `abandoned`, `attempts`, `rows`, `duration_ms`, `reused_from`, `family`,
+  `tool_calls`, `cost_usd`, and the ids `matrix.run.id` and `matrix.component`;
+- of the fields a component passes to `ctx.span`, the numbers and booleans, under its root
+  (`acme.rows`), and the `ok`/`error` status matrix gives the span at its end
+  (`acme.status`). A string can hold anything, so a component's string field is content.
+
+Content is an agent's `task`, any `error` message, and a component's string fields. It
+leaves only with `capture_content`, as `matrix.task`, `matrix.error` and `<root>.<field>`;
+and only then is an error's message a span's status description, which is otherwise its
+`error.type`. `error.type` is set on every failure either way. The GenAI conventions ask
+for exactly this: instrumentations "SHOULD NOT capture them by default, but SHOULD provide
+an option for users to opt in" (`docs/gen-ai/gen-ai-spans.md`, "Full (buffered) content").
+They name `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` only as an example, not as a
+defined variable, so matrix takes the opt-in from its config, not from the environment.
+
+A `ctx.measure`'s `attrs` are exported as given, strings included: they are the dimensions
+the component chose for that metric.
 
 **Conventions.** The OpenTelemetry GenAI semantic conventions, as read on 2026-10-19 from
 their repository, `open-telemetry/semantic-conventions-genai`: no release tagged there yet,
@@ -873,11 +897,12 @@ own times (not when the observer received them):
 
 | Span | Kind | Attributes |
 |------|------|------------|
-| `invoke_workflow` (a run) | INTERNAL | `gen_ai.operation.name=invoke_workflow`, `matrix.run.id`, `matrix.status`; `error.type` when it failed |
-| `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.attempts`; `error.type` (the error's kind) when it failed. The conventions have no step |
-| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.cost_usd`; `error.type` (the runtime's `reason`) when it failed |
-| `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`; `error.type=tool_error` when the tool reported an error |
-| a component's `ctx.span(name)` | INTERNAL | its fields under its root (`acme.status`) |
+| `invoke_workflow` (a run) | INTERNAL | `gen_ai.operation.name=invoke_workflow`, `matrix.run.id`, `matrix.status`, `matrix.rows`, `matrix.duration_ms`, `matrix.reused_from`; `error.type` when it failed |
+| `matrix.component` | INTERNAL | `matrix.component`, `matrix.status`, `matrix.reason`, `matrix.duration_ms`, `matrix.attempts`, `matrix.abandoned`; `matrix.kind` and `error.type` (the error's kind) when it failed. The conventions have no step |
+| `matrix.release` | INTERNAL | `matrix.component`, `matrix.status`; `error.type` when it failed. With content: `matrix.error` |
+| `invoke_agent {agent}` | INTERNAL: the agent is invoked in this process | `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `matrix.component`, `matrix.status`, `matrix.duration_ms`, `matrix.family`, `matrix.tool_calls`, `matrix.cost_usd`; `matrix.reason`, `matrix.kind` and `error.type` (the runtime's `reason`) when it failed. With content: `matrix.task`, `matrix.error` |
+| `execute_tool {tool}` | INTERNAL | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.agent.name`, `matrix.status`, `matrix.duration_ms`; `error.type=tool_error` when the tool reported an error |
+| a component's `ctx.span(name)` | INTERNAL | `matrix.component`; its number and boolean fields and its status under its root (`acme.rows`, `acme.status`, `acme.duration_ms`). With content: its string fields too |
 
 Metrics, derived from the same events, so an event log replays into the numbers an exporter
 saw. The conventions' names where they define one:
