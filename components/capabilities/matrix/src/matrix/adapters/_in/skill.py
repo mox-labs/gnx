@@ -246,7 +246,7 @@ def _install(version: str) -> str:
 {_fence("bash", commands)}
 
 Every runtime and telemetry comes with it: the Claude Agent SDK (`claude-sdk`), hardline and
-pydantic-ai (`hardline`, `pydantic-ai`), and the OpenTelemetry SDK with its OTLP exporters,
+pydantic-ai (`hardline`, `pydantic-ai`), and the OpenTelemetry SDK with its OTLP/HTTP exporter,
 each imported only when what uses it is built. There are no extras.
 
 A script that imports matrix runs where matrix is installed: inside the project you added it
@@ -743,12 +743,13 @@ file. Events are telemetry: lossy by design (dropped when the bounded queue is f
 
 ## OpenTelemetry
 
-The OpenTelemetry SDK and the OTLP exporters are installed with matrix, so the standard
+The OpenTelemetry SDK and the OTLP/HTTP exporter are installed with matrix, so the standard
 variables are enough: when `OTEL_EXPORTER_OTLP_ENDPOINT` (or
 its `_TRACES_` and `_METRICS_` forms) is set, or `OTEL_TRACES_EXPORTER` /
 `OTEL_METRICS_EXPORTER` names an exporter other than `none`, every run gets the `otel`
 observer and `matrix run` installs the SDK: exporters `otlp` (default) or `console`, OTLP
-over `OTEL_EXPORTER_OTLP_PROTOCOL` `http/protobuf` (default) or `grpc`, the resource from
+over http/protobuf only (owner ruling 2026-10-22: `grpc` in an `OTEL_EXPORTER_OTLP_*PROTOCOL`
+is a warning saying to set `http/protobuf`, and that signal is not exported), the resource from
 `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` (`service.name` is `matrix` unless they
 set it). `OTEL_SDK_DISABLED=true` turns it off. Asked for in an install that lacks them,
 nothing is exported and every document's `warnings` says so (`dependency_missing`). From

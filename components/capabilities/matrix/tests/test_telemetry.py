@@ -25,6 +25,8 @@ _OTEL = (
     "OTEL_TRACES_EXPORTER",
     "OTEL_METRICS_EXPORTER",
     "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
 )
 
 
@@ -149,28 +151,61 @@ def test_what_matrix_does_not_install_is_named(monkeypatch: pytest.MonkeyPatch) 
     }
 
 
-def test_otlp_follows_the_protocol_variable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """http/protobuf is the spec's default; grpc when the variable says so."""
+@pytest.mark.parametrize(
+    ("variable", "refused"),
+    [
+        ("OTEL_EXPORTER_OTLP_PROTOCOL", ["traces", "metrics"]),
+        ("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", ["traces"]),
+        ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", ["metrics"]),
+    ],
+)
+def test_grpc_is_refused_and_says_what_to_set(
+    monkeypatch: pytest.MonkeyPatch, clean: list[str], variable: str, refused: list[str]
+) -> None:
+    """Owner ruling 2026-10-22: matrix exports OTLP over http/protobuf only. A signal asked
+    for over gRPC is not exported, rather than sent as http/protobuf to an endpoint that
+    speaks gRPC; the warning names the variable and what to set instead. The other signal
+    exports."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+    monkeypatch.setenv(variable, "grpc")
+    installed = configure_telemetry()
+    installed.shutdown()
+    [warning] = installed.warnings
+    assert (warning.path, warning.kind, warning.got) == (variable, "invalid_value", "grpc")
+    assert warning.allowed == ("http/protobuf",)
+    assert "http/protobuf only" in warning.message
+    assert warning.fix is not None and f"{variable}=http/protobuf" in warning.fix
+    assert clean == [s for s in ("traces", "metrics") if s not in refused]
+    assert telemetry.warnings() == installed.warnings  # what every document carries
+
+
+def test_otlp_is_http_protobuf_whatever_else_the_variable_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A protocol matrix does not speak, other than gRPC, is a warning and OTLP/HTTP."""
     import sys
     import types
 
     made: list[str] = []
-    for module, name, label in (
-        ("opentelemetry.exporter.otlp.proto.http.trace_exporter", "OTLPSpanExporter", "http"),
-        ("opentelemetry.exporter.otlp.proto.grpc.trace_exporter", "OTLPSpanExporter", "grpc"),
-    ):
-        fake = types.ModuleType(module)
+    module = "opentelemetry.exporter.otlp.proto.http.trace_exporter"
+    fake = types.ModuleType(module)
 
-        def exporter(endpoint: str | None = None, label: str = label) -> object:
-            made.append(label)
-            return object()
+    def exporter(endpoint: str | None = None) -> object:
+        made.append("http")
+        return object()
 
-        setattr(fake, name, exporter)
-        monkeypatch.setitem(sys.modules, module, fake)
+    fake.OTLPSpanExporter = exporter  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, module, fake)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json")
     telemetry._otlp("traces", None)
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
-    telemetry._otlp("traces", None)
-    assert made == ["http", "grpc"]
+    assert made == ["http"]
+
+
+def test_matrix_depends_on_no_grpc_exporter() -> None:
+    from importlib.metadata import requires
+
+    exporters = [r for r in requires("matrix") or [] if r.startswith("opentelemetry-exporter")]
+    assert [r.split(">")[0] for r in exporters] == ["opentelemetry-exporter-otlp-proto-http"]
 
 
 def test_matrix_run_installs_the_sdk_and_keeps_stdout_for_its_document(

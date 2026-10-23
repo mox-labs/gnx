@@ -25,8 +25,14 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   component that is neither an agent step nor a model step needs `agents` or
   `model_runtimes`; before, when one declared the `model` effect or none at all. The design
   record (section 17) has the reasons.
+- **OTLP over gRPC** (owner ruling 2026-10-22). matrix exports over http/protobuf only and
+  depends on `opentelemetry-exporter-otlp-proto-http` alone, so `grpcio` is no longer
+  installed with it. `OTEL_EXPORTER_OTLP_PROTOCOL` (or its `_TRACES_` or `_METRICS_` form)
+  set to `grpc` is a warning naming the variable and what to set (`http/protobuf`, at the
+  collector's OTLP/HTTP port), and the signals it governs are not exported over OTLP. ix,
+  which installs telemetry through `matrix.configure_telemetry()`, does the same.
 - **Extras.** `claude`, `models`, `otel` and `dev` are gone: the Claude Agent SDK, hardline
-  (`>=0.2,<0.3`), `pydantic-ai-slim`, the OpenTelemetry SDK and both OTLP exporters are
+  (`>=0.2,<0.3`), `pydantic-ai-slim`, the OpenTelemetry SDK and its OTLP/HTTP exporter are
   dependencies, each imported only when what uses it is built, so `import matrix` loads none
   of them. A requirement that names an extra (`matrix[otel] @ ...`) now fails to resolve: drop
   the brackets. An install that lacks one of them (a broken environment) reports it as the
