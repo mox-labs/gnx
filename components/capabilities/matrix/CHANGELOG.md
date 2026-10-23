@@ -231,7 +231,8 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   pydantic-ai's run id; it reports no cost. A hardline failure is an `AgentRuntimeError` with
   its reason, carrying what the session had spent. pydantic-ai's own instrumentation is
   switched off on every agent, so it records no prompt or reply. It drives `pydantic-ai-slim`
-  and `hardline`.
+  and `hardline`. Naming a tool in its config is a grant to run that code with the process's
+  authority, accepted as such (owner ruling 2026-10-22; SECURITY.md).
   - **Composing a config runs no tool's module.** Building the runtime (and so `matrix check`,
     `matrix plan` and `matrix agents`) only finds each tool's module on the import path,
     without running it; a session imports a tool when it first offers it. A module that cannot
