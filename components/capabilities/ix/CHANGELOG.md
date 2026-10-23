@@ -1,21 +1,5 @@
 # Changelog — ix
 
-## Unreleased
-
-### Added
-
-- **Validate warns of a placeholder nothing will fill.** Nothing fills an environment's
-  options or a sensor's, nor un-doubles an escape in them, so `${{HOME}}` in an
-  `environment.process` command passed validate and then broke the shell (the run failed
-  `environment_lost`), and a `text-match`'s `contains: '{size}'` was compared as that text
-  whatever the cell's level. Each `{name}` there that a trial fills elsewhere (a factor, a
-  subject's option or facet, a service's binding) and each `{{name}}` is now an
-  `unbound_placeholder` warning. A `{name}` nothing fills (a shell's `${HOME}`) is not.
-- **A typo inside an escape is warned of.** In prompt text a doubled name nothing fills is
-  sent as written, so `{{sise}}` for the factor `size` reached the agent with no word. One
-  near a name that is filled there is now a warning naming it; a template's name near none
-  (`{{user}}`) is still sent as written without one.
-
 ## 0.6.0 — 2026-10-22
 
 `docs/design/2026-10-19-record.md` has the reasons for this release's changes, from §16 on.
@@ -169,6 +153,17 @@
 
 ### Added
 
+- **Validate warns of a placeholder nothing will fill.** Nothing fills an environment's
+  options or a sensor's, nor un-doubles an escape in them, so `${{HOME}}` in an
+  `environment.process` command passed validate and then broke the shell (the run failed
+  `environment_lost`), and a `text-match`'s `contains: '{size}'` was compared as that text
+  whatever the cell's level. Each `{name}` there that a trial fills elsewhere (a factor, a
+  subject's option or facet, a service's binding) and each `{{name}}` is now an
+  `unbound_placeholder` warning. A `{name}` nothing fills (a shell's `${HOME}`) is not.
+- **A typo inside an escape is warned of.** In prompt text a doubled name nothing fills is
+  sent as written, so `{{sise}}` for the factor `size` reached the agent with no word. One
+  near a name that is filled there is now a warning naming it; a template's name near none
+  (`{{user}}`) is still sent as written without one.
 - **pydantic-evals' evaluators as a sensor.** The `evaluator` sensor runs one of
   pydantic-evals' evaluators over each trial, named by `evaluator` with its `arguments`. ix
   keeps the loop: each trial is handed to the evaluator as pydantic-evals'
