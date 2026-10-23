@@ -64,7 +64,7 @@ EXPORT_VARIABLES = (
 RELEASE_TAG = "recon-v0.12.0"
 
 _INSTALL_FIX = (
-    "reinstall recon, which depends on the OpenTelemetry SDK and its OTLP exporters: uv tool "
+    "reinstall recon, which depends on the OpenTelemetry SDK and its OTLP exporter: uv tool "
     'install --reinstall "recon @ '
     f'git+https://github.com/mox-labs/gnx@{RELEASE_TAG}#subdirectory=components/capabilities/recon"'
     "; or unset the OTEL_* variables"
@@ -236,12 +236,15 @@ def _install(env: Mapping[str, str], version: str, signals: list[str]) -> list[P
     resource = Resource.create(defaults)
     if "TRACES" in signals and _selected("TRACES", env, warnings):
         span_exporter = _exporter("TRACES", env, warnings)
-        tracer_provider = TracerProvider(resource=resource)
-        tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
-        trace.set_tracer_provider(tracer_provider)
+        if span_exporter is not None:
+            tracer_provider = TracerProvider(resource=resource)
+            tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
+            trace.set_tracer_provider(tracer_provider)
     if "METRICS" in signals and _selected("METRICS", env, warnings):
-        reader = PeriodicExportingMetricReader(_exporter("METRICS", env, warnings))
-        metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[reader]))
+        metric_exporter = _exporter("METRICS", env, warnings)
+        if metric_exporter is not None:
+            reader = PeriodicExportingMetricReader(metric_exporter)
+            metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[reader]))
     return list(dict.fromkeys(warnings))  # a protocol both signals read is warned about once
 
 
@@ -264,32 +267,37 @@ def _selected(signal: str, env: Mapping[str, str], warnings: list[Problem]) -> b
 
 
 def _exporter(signal: str, env: Mapping[str, str], warnings: list[Problem]) -> Any:
-    """The OTLP exporter for ``signal`` over the protocol the environment names (default
-    ``http/protobuf``, as the specification sets it)."""
+    """The OTLP exporter for ``signal`` over http/protobuf, the specification's default and the
+    one protocol recon exports over (owner ruling 2026-10-22: no gRPC). None, with a warning,
+    when the environment asks for gRPC: sent as http/protobuf, the signal would go to an
+    endpoint that speaks gRPC and be lost."""
     variable = f"OTEL_EXPORTER_OTLP_{signal}_PROTOCOL"
-    protocol = env.get(variable) or env.get("OTEL_EXPORTER_OTLP_PROTOCOL") or "http/protobuf"
+    if not env.get(variable):
+        variable = "OTEL_EXPORTER_OTLP_PROTOCOL"
+    protocol = env.get(variable) or "http/protobuf"
     if protocol == "grpc":
-        if signal == "TRACES":
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-                OTLPSpanExporter as GrpcSpans,
+        warnings.append(
+            Problem(
+                "",
+                f"{variable}=grpc: recon exports OTLP over http/protobuf only, so it exports "
+                "nothing that variable governs",
+                kind="otel_unavailable",
+                fix=f"{variable}=http/protobuf, with the endpoint at the collector's OTLP/HTTP "
+                "port (4318 by default)",
+                got=protocol,
+                allowed=("http/protobuf",),
             )
-
-            return GrpcSpans()
-        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
-            OTLPMetricExporter as GrpcMetrics,
         )
-
-        return GrpcMetrics()
+        return None
     if protocol != "http/protobuf":
         warnings.append(
             Problem(
                 "",
-                f"OTLP protocol {protocol} is not one OpenTelemetry's Python exporters send; "
-                "exporting http/protobuf",
+                f"OTLP protocol {protocol} is not one recon exports over; exporting http/protobuf",
                 kind="otel_unavailable",
-                fix="OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf, or grpc",
+                fix=f"{variable}=http/protobuf",
                 got=protocol,
-                allowed=("grpc", "http/protobuf"),
+                allowed=("http/protobuf",),
             )
         )
     if signal == "TRACES":

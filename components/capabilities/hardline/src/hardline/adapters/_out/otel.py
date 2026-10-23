@@ -270,7 +270,6 @@ _ENDPOINTS = (
 _EXPORTERS = {"traces": "OTEL_TRACES_EXPORTER", "metrics": "OTEL_METRICS_EXPORTER"}
 #: The exporters installed; the spec's others (zipkin, prometheus) are said and skipped.
 _SUPPORTED = frozenset({"otlp", "console", "none"})
-_PROTOCOLS = frozenset({"http/protobuf", "grpc"})
 
 
 def _names(value: str | None) -> list[str]:
@@ -317,11 +316,11 @@ def configure_telemetry(environ: Mapping[str, str] | None = None) -> Installed:
     process's own. When no variable asks for export it installs nothing.
 
     It installs the exporters ``OTEL_TRACES_EXPORTER`` and ``OTEL_METRICS_EXPORTER`` name
-    (``otlp``, the default, or ``console``, which prints to stderr), OTLP over
-    ``OTEL_EXPORTER_OTLP_PROTOCOL`` (``http/protobuf``, the default; ``grpc`` when its exporter
-    is installed), each OTLP exporter reading its endpoint and headers from the variables
-    itself, and a resource from ``OTEL_SERVICE_NAME`` and ``OTEL_RESOURCE_ATTRIBUTES``
-    (``service.name`` is ``hardline`` when neither sets it). What it cannot install is a
+    (``otlp``, the default, or ``console``, which prints to stderr), OTLP over http/protobuf
+    alone (``grpc`` in ``OTEL_EXPORTER_OTLP_PROTOCOL`` is refused: owner ruling 2026-10-22), each
+    OTLP exporter reading its endpoint and headers from the variables itself, and a resource
+    from ``OTEL_SERVICE_NAME`` and ``OTEL_RESOURCE_ATTRIBUTES`` (``service.name`` is
+    ``hardline`` when neither sets it). What it cannot install is a
     warning, never an error: a command still runs without its telemetry."""
     env = os.environ if environ is None else environ
     if not _requested(env):
@@ -366,50 +365,53 @@ def _console(signal: str) -> Any:
 
 
 def _otlp(signal: str, env: Mapping[str, str], warnings: list[Problem]) -> Any:
-    """An OTLP exporter for ``signal`` over the protocol the environment names, or None, with a
-    warning, when that protocol's exporter is not installed. Without arguments the exporter
-    reads its endpoint and headers from the ``OTEL_EXPORTER_OTLP_*`` variables itself."""
+    """An OTLP exporter for ``signal`` over http/protobuf, or None, with a warning, when the
+    environment asks for gRPC (refused: hardline exports over http/protobuf only, and sent
+    that way the signal would go to an endpoint that speaks gRPC) or the exporter is not
+    installed. Without arguments the exporter reads its endpoint and headers from the
+    ``OTEL_EXPORTER_OTLP_*`` variables itself."""
     variable = f"OTEL_EXPORTER_OTLP_{signal.upper()}_PROTOCOL"
     if not env.get(variable):
         variable = "OTEL_EXPORTER_OTLP_PROTOCOL"
     protocol = env.get(variable) or "http/protobuf"
-    if protocol not in _PROTOCOLS:
+    if protocol == "grpc":
+        warnings.append(
+            Problem(
+                path=variable,
+                kind="invalid_value",
+                message=f"{variable} is 'grpc'; hardline exports OTLP over http/protobuf only, "
+                f"so it exports no {signal}",
+                fix=f"{variable}=http/protobuf, with the endpoint at the collector's OTLP/HTTP "
+                "port (4318 by default)",
+                allowed=("http/protobuf",),
+                got=protocol,
+            )
+        )
+        return None
+    if protocol != "http/protobuf":
         warnings.append(
             _warning(
                 variable,
-                f"{variable} is {protocol!r}; hardline exports OTLP over http/protobuf or grpc, "
-                "and uses http/protobuf",
+                f"{variable} is {protocol!r}; hardline exports OTLP over http/protobuf only, "
+                "and uses it",
                 protocol,
             )
         )
-        protocol = "http/protobuf"
     try:
-        if protocol == "grpc" and signal == "traces":
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        if signal == "traces":
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
             return OTLPSpanExporter()
-        if protocol == "grpc":
-            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 
-            return OTLPMetricExporter()
-        if signal == "traces":
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-                OTLPSpanExporter as HttpSpanExporter,
-            )
-
-            return HttpSpanExporter()
-        from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
-            OTLPMetricExporter as HttpMetricExporter,
-        )
-
-        return HttpMetricExporter()
+        return OTLPMetricExporter()
     except ImportError as e:
         warnings.append(
             _warning(
                 variable,
-                f"OTLP export of {signal} over {protocol} needs a module that is not installed "
-                f"({e.name}): nothing is exported over it",
-                protocol,
+                f"OTLP export of {signal} over http/protobuf needs a module that is not "
+                f"installed ({e.name}): nothing is exported over it",
+                "http/protobuf",
             )
         )
         return None

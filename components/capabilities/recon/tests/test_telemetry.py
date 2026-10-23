@@ -659,13 +659,39 @@ def test_the_sdk_and_the_exporters_are_installed_with_recon() -> None:
     """The command line is an application, and an application carries the SDK and OTLP: the
     ``OTEL_*`` variables are enough, with no extra to install first (owner rulings
     2026-10-22: the SDK and OTLP are default dependencies, and there are no extras). The library
-    still writes through the API alone."""
+    still writes through the API alone. OTLP is http/protobuf alone (owner ruling 2026-10-22:
+    no gRPC), so recon brings no gRPC exporter."""
     from importlib.metadata import requires
 
     plain = [r for r in requires("recon") or [] if "extra ==" not in r]
     assert any(r.startswith("opentelemetry-api") for r in plain)
     assert any(r.startswith("opentelemetry-sdk") for r in plain)
-    assert any(r.startswith("opentelemetry-exporter-otlp") for r in plain)
+    exporters = [r for r in plain if r.startswith("opentelemetry-exporter")]
+    assert [r.split(">")[0] for r in exporters] == ["opentelemetry-exporter-otlp-proto-http"]
+
+
+@pytest.mark.parametrize(
+    ("variable", "refused"),
+    [
+        ("OTEL_EXPORTER_OTLP_PROTOCOL", ["TRACES", "METRICS"]),
+        ("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", ["TRACES"]),
+        ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", ["METRICS"]),
+    ],
+)
+def test_grpc_is_refused_and_says_what_to_set(
+    monkeypatch: pytest.MonkeyPatch, variable: str, refused: list[str]
+) -> None:
+    """Owner ruling 2026-10-22: recon exports OTLP over http/protobuf only. A signal asked for
+    over gRPC is not exported, rather than sent as http/protobuf to an endpoint that speaks
+    gRPC; the warning names the variable and what to set instead. The other signal exports."""
+    installed = _installs(monkeypatch)
+    env = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318", variable: "grpc"}
+    [warning] = export_from_env(env, "9.9")
+    assert warning.kind == "otel_unavailable" and warning.got == "grpc"
+    assert warning.allowed == ("http/protobuf",)
+    assert variable in warning.message and "http/protobuf only" in warning.message
+    assert warning.fix is not None and f"{variable}=http/protobuf" in warning.fix
+    assert installed == [s.lower() for s in ("TRACES", "METRICS") if s not in refused]
 
 
 def _installs(

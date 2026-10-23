@@ -248,8 +248,9 @@ A host hands its own providers as `build_runtime(tracer_provider=..., meter_prov
 The `hardline` command is an application, and installs the SDK from the standard `OTEL_*`
 variables, as `matrix` and `ix` do (`hardline.configure_telemetry()`, for another entry point of
 one's own): `OTEL_TRACES_EXPORTER` and `OTEL_METRICS_EXPORTER` (`otlp`, the default, or `console`
-on stderr), OTLP over `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf`, the default; `grpc` when
-its exporter is installed) to the endpoint the `OTEL_EXPORTER_OTLP_*` variables name, and
+on stderr), OTLP over http/protobuf alone (`OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is refused with a
+warning, and nothing is exported over it) to the endpoint the `OTEL_EXPORTER_OTLP_*` variables
+name, and
 `service.name` `hardline` unless `OTEL_SERVICE_NAME` says otherwise. With none of them set,
 nothing is installed. What it cannot install is a `hardline: warning:` line, and under `--json`
 one of `check`'s `warnings`.

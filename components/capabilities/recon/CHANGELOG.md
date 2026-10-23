@@ -4,7 +4,8 @@
 
 ### Removed (breaking)
 
-- **No extras.** The `otel` extra is gone: the OpenTelemetry SDK and its OTLP exporters are installed with recon, so the `OTEL_*` variables are enough to export, with nothing else to install. The library still installs no provider: a program that imports recon configures OpenTelemetry itself, or calls `recon.configure_telemetry()`. The `dev` extra is gone too; recon's test tools are not part of an install.
+- **No extras.** The `otel` extra is gone: the OpenTelemetry SDK and its OTLP exporter are installed with recon, so the `OTEL_*` variables are enough to export, with nothing else to install. The library still installs no provider: a program that imports recon configures OpenTelemetry itself, or calls `recon.configure_telemetry()`. The `dev` extra is gone too; recon's test tools are not part of an install.
+- **No OTLP over gRPC** (owner ruling 2026-10-22). `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`, or a signal's own `_PROTOCOL` variable set to it, is refused with an `otel_unavailable` warning naming what to set, and the signals it governs are not exported, rather than sent as http/protobuf to an endpoint that speaks gRPC. recon depends on `opentelemetry-exporter-otlp-proto-http` in place of `opentelemetry-exporter-otlp`, which brought the gRPC exporter and `grpcio`.
 
 ### Changed (breaking)
 
