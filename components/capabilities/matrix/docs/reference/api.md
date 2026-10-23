@@ -565,9 +565,10 @@ large or external value. matrix records it and does nothing else with it.
 | `writer.finish(run) -> str` | records the final state atomically; returns where the record is |
 | `store.load(run_id) -> Construct` | the record of a run in any state; `torn` reports entries with no row |
 | `store.describe(run_id) -> dict` | the `matrix.v1.run` document with each table's size. A run that never finished reads `running`, or `interrupted` when the store can tell its writer is gone |
-| `store.runs() -> list[str]` | run ids, oldest first. The JSONL store skips, and logs on `matrix.store`, a directory whose `run.json` cannot be read |
+| `store.runs() -> list[str]` | run ids, oldest first. The JSONL store skips, and logs on `matrix.store`, a directory whose `run.json` cannot be read or is not a record |
 | `writer.events() -> Observer \| None` | optional: a sink for the run's events kept with its record; the executor closes it after the run |
 | `store.location(run_id) -> str` | optional: where the run's record is, or would be |
+| `store.damaged() -> list[tuple[str, str]]` | optional: each record `runs()` skipped, `(where, why)`, which `list_runs` reports; a store without it reports none |
 
 A missing run is a `NotFoundError` naming those that exist. Anything a store cannot write or
 read back is a `StoreError`; the executor turns any other exception a store raises into one.
@@ -1527,7 +1528,7 @@ tier; `UsageError` when there are none).
 | `check_config(tool="matrix", config=None, *, only=False)` | `CheckReport` (`matrix.v1.check`): `ok`, `agent_runtimes`, `model_runtimes`, `agents`, `observers` (a count), `components` in one valid order of work, `sources`, `warnings` | what `compose` and `wire` raise; `complete` is false when the config did not compose and has components to wire |
 | `list_agents(tool="matrix", config=None, *, only=False)` | `Agents` (`matrix.v1.agents`): each agent's name, runtime, runtime_type, model, tools, description; `warnings` | what `compose` raises |
 | `plan_config(tool="matrix", config=None, *, only=False)` | `Plan` (`matrix.v1.plan`): `tool`, `sources`, `inputs`, `stages` (what starts together), `components` (each `name`, `type`, `requires`, `provides`, `after`, `agent`, `runtime`, `model` (a model step's), `attempts`), `agents`, `agent_runtimes` and `model_runtimes` in use (each `name`, `type`, `stand_in`), `agent_calls_min` and `model_calls_min` (one per agent step, one per model step) and `agent_calls_max` and `model_calls_max` (one per attempt; null when a component that is neither needs `agents` or `model_runtimes`, and so may make sessions of its own), `store` (`type`, `location` with `RUN_ID` for the id), `limits` (what differs from the defaults), `warnings` | what `compose` and `wire` raise, and a problem for each `limits.components` name that is not a component |
-| `list_runs(tool="matrix", config=None, *, only=False)` | `Runs` (`matrix.v1.runs`): `store` (its type URL) and `runs`, oldest first, each `run_id`, `status` (`interrupted` for one whose writer is gone), `started`, `ended`, `location`. Builds only the store: runtimes and agents are not built | `ConfigError` when the store cannot be built, `StoreError` when it cannot be read |
+| `list_runs(tool="matrix", config=None, *, only=False)` | `Runs` (`matrix.v1.runs`): `store` (its type URL) and `runs`, oldest first, each `run_id`, `status` (`interrupted` for one whose writer is gone), `started`, `ended`, `location`; and `damaged`, each record the store skipped, `location` and `reason` (empty for a store that does not say). Builds only the store: runtimes and agents are not built | `ConfigError` when the store cannot be built, `StoreError` when it cannot be read |
 
 `registry` defaults to `default_registry()`.
 
@@ -1636,7 +1637,7 @@ Data goes to stdout, diagnostics to stderr. Nothing prompts.
 | `matrix agents [CONFIG]...` | each agent's name, runtime, runtime type, model, tools and description (`matrix.v1.agents`) |
 | `matrix plan [CONFIG]...` | what a run would do, with its agent and model calls, every problem at once; runs nothing (`matrix.v1.plan`) |
 | `matrix run [CONFIG]... [--input KIND=PATH]... [--run-id ID] [--from RUN_ID]` | runs the configured components; prints the run id, where it is recorded and, for a store that keeps files, each file of the record (`matrix.v1.run`, with `location`, `warnings` and the record's `tables`) |
-| `matrix runs [CONFIG]...` | the runs the configured store keeps, oldest first: id, status, start, location (`matrix.v1.runs`) |
+| `matrix runs [CONFIG]...` | the runs the configured store keeps, oldest first: id, status, start, location; then a `damaged:` line for each record it skipped, with why (`matrix.v1.runs`) |
 | `matrix --version` | `matrix, version X` |
 | `matrix --skill [-r NAME]` | the skill an agent reads (`matrix.skill()`), or one of its references (`config`, `agents`, `running`, `telemetry`, `loading`) |
 

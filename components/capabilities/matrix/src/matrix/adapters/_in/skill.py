@@ -549,7 +549,8 @@ error.
 
 `matrix run` prints where the record is and its files; `matrix runs` lists every recorded
 run, oldest first, a line each: id, status, start and where; with `--json`, `run_id`,
-`status`, `started`, `ended`, `location`.
+`status`, `started`, `ended`, `location`. A record it cannot read is skipped and named on a
+`damaged:` line with why (`damaged`: `location`, `reason`).
 With the default store a run is a directory under `.matrix/runs/<run_id>/`:
 
 - `run.json`: the run document, replaced once when the run ends: `status`, `components` (how

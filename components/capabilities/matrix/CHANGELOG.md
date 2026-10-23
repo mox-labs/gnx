@@ -438,7 +438,12 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 - **A write the disk cuts short is taken back** before the `StoreError`, so a live run's
   table never holds half a line.
 - **`runs()` skips a damaged record**, logging it on `matrix.store`. One unreadable
-  `run.json` made `runs()`, `matrix runs` and `list_runs` fail.
+  `run.json` made `runs()`, `matrix runs` and `list_runs` fail. A `run.json` that is JSON but
+  not an object is damaged too (it raised `AttributeError`).
+- **`matrix runs` names the damaged records it skipped** (owner ruling 2026-10-22), each on a
+  `damaged:` line with why; `matrix.v1.runs` and `list_runs` carry them as `damaged`
+  (`location`, `reason`). A store says what it skipped through a new optional member,
+  `damaged()`, which `list_runs` reads; the JSONL store has it.
 - **`fsync=True` flushes the run's directory too**, once its files are made and once
   `run.json` is renamed in: a file's own flush does not make its name durable.
 - **A store root that is a file is said to be one**, not reported as "run already exists".

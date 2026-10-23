@@ -300,6 +300,24 @@ def test_run_names_the_files_of_its_record_and_runs_lists_them(
     assert code == 0 and text.splitlines()[0].split()[:2] == ["one", "completed"]
 
 
+def test_runs_lists_the_damaged_records_it_skipped_with_their_reasons(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Owner ruling 2026-10-22: ``matrix runs`` and ``matrix.v1.runs`` name each record the
+    store could not list, with why, where it was only logged."""
+    assert main(["run", "--input", "acme.v1.diff=diffs.jsonl", "--run-id", "one"]) == 0
+    (project / ".matrix/runs/torn").mkdir()
+    (project / ".matrix/runs/torn/run.json").write_text("{trunc")
+    capsys.readouterr()
+    code, listed, _ = _cli(capsys, "runs", "--json")
+    assert code == 0
+    assert [r["run_id"] for r in listed["runs"]] == ["one"]
+    ((location, reason),) = [(d["location"], d["reason"]) for d in listed["damaged"]]
+    assert location.endswith(".matrix/runs/torn") and "JSONDecodeError" in reason
+    code, text, _ = _cli(capsys, "runs")
+    assert code == 0 and "damaged" in text and ".matrix/runs/torn" in text
+
+
 def test_inputs_can_come_from_standard_input(
     project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
