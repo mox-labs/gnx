@@ -578,7 +578,8 @@ which a call never makes, so `ix validate` refuses them on a `model-call` subjec
 ## What a run can touch
 
 An agent session's tools act on this machine as the user who runs ix, as `permission_mode`
-allows: the working directory is fresh, but nothing confines a tool to it. `function-test`
-and `outcome` run code (the agent's, and your graders) in a child process with a time limit
-and no credentials in its environment; that is not a sandbox. Run an experiment whose
-subjects you would run yourself. [SECURITY.md](../../SECURITY.md) has the detail.
+allows: the working directory is fresh, but nothing confines a tool to it. On `pydantic-ai`,
+a tool named in `runtime_options` is a Python function run in ix's own process: naming it is
+a grant to run that code. `function-test` and `outcome` run code (the agent's, and your
+graders) in a child process with a time limit and no credentials in its environment; that
+is not a sandbox. Run an experiment whose subjects you would run yourself. [SECURITY.md](../../SECURITY.md) has the detail.

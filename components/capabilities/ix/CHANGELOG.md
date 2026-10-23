@@ -200,7 +200,8 @@
   `claude-sdk` is: its `runtime_options` are that runtime's config (`models`,
   `default_model`, `tools`, ...), reviewed against what it declares, and each trial's
   session row names the model that answered and what the runtime drives (`pydantic-ai-slim`,
-  `hardline`). The kinds list it among the runtime choices.
+  `hardline`). The kinds list it among the runtime choices. Naming `tools` there is a grant
+  to run that code in ix's process (owner ruling 2026-10-22; SECURITY.md section 7).
 - **Subject kind `model-call`.** It takes model runtimes (`hardline`, `mock`, or any
   installed at `model-runtime`). Each trial is one model call, through `matrix.call_model`
   (a `matrix.model` span, as a model step's is), with `model`, `system_prompt` and
