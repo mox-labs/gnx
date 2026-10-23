@@ -37,9 +37,10 @@ dependencies = [
     # measure records to.
     "opentelemetry-api>=1.23",
     # What `matrix run` (and `configure_telemetry()`) installs from the OTEL_* variables: the
-    # SDK and both OTLP exporters (http/protobuf, the spec's default, and grpc).
+    # SDK and the OTLP exporter over http/protobuf, the spec's default and the one protocol
+    # matrix exports over (owner ruling 2026-10-22: no gRPC).
     "opentelemetry-sdk>=1.23",
-    "opentelemetry-exporter-otlp>=1.23",
+    "opentelemetry-exporter-otlp-proto-http>=1.23",
     "pydantic>=2.0",
     # The `pydantic-ai` agent runtime. Imported inside its adapter alone, when a runtime is
     # built, so `import matrix` does not load it. The major its Model and Agent APIs are

@@ -15,8 +15,9 @@ not ``true``:
 * an application entry point calls :func:`configure_telemetry` to install the SDK from those
   variables: ``matrix run`` does, and so may a tool built on matrix. It installs the
   exporters the two ``*_EXPORTER`` variables name (``otlp``, the default, or ``console``),
-  OTLP over ``OTEL_EXPORTER_OTLP_PROTOCOL`` (``http/protobuf``, the default, or ``grpc``),
-  and a resource from ``OTEL_SERVICE_NAME`` and ``OTEL_RESOURCE_ATTRIBUTES``
+  OTLP over http/protobuf only (owner ruling 2026-10-22: no gRPC; a signal whose
+  ``OTEL_EXPORTER_OTLP_*PROTOCOL`` says ``grpc`` is not exported, and a warning says what to
+  set), and a resource from ``OTEL_SERVICE_NAME`` and ``OTEL_RESOURCE_ATTRIBUTES``
   (``service.name`` is ``matrix`` when neither sets it). A program that configures
   OpenTelemetry itself does not call it.
 
@@ -51,7 +52,8 @@ _ENDPOINTS = (
 _EXPORTERS = {"traces": "OTEL_TRACES_EXPORTER", "metrics": "OTEL_METRICS_EXPORTER"}
 #: The exporters matrix installs; the spec's others (zipkin, prometheus) are reported.
 _SUPPORTED = frozenset({"otlp", "console", "none"})
-_PROTOCOLS = frozenset({"http/protobuf", "grpc"})
+#: The one OTLP protocol matrix exports over (owner ruling 2026-10-22: no gRPC).
+_PROTOCOLS = frozenset({"http/protobuf"})
 
 
 def _true(value: str | None) -> bool:
@@ -76,7 +78,7 @@ def requested(environ: Mapping[str, str] | None = None) -> str | None:
     return None
 
 
-#: What export needs beyond the API: the SDK and the OTLP exporters, imported only then.
+#: What export needs beyond the API: the SDK and the OTLP/HTTP exporter, imported only then.
 _SDK = "opentelemetry.sdk"
 _OTLP = "opentelemetry.exporter.otlp.proto.http"
 
@@ -132,20 +134,48 @@ def warnings(environ: Mapping[str, str] | None = None) -> tuple[Problem, ...]:
                         got=exporter,
                     )
                 )
-    for name in ("OTEL_EXPORTER_OTLP_PROTOCOL", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"):
+    governs: dict[str, list[str]] = {}
+    for signal in _EXPORTERS:
+        governs.setdefault(_protocol_variable(signal, env), []).append(signal)
+    for name, signals in governs.items():
         protocol = env.get(name)
-        if protocol and protocol not in _PROTOCOLS:
+        if protocol == "grpc":
             found.append(
                 problem(
                     name,
                     "invalid_value",
-                    f"{name} is {protocol!r}; matrix exports OTLP over http/protobuf or grpc, "
-                    "and uses http/protobuf",
+                    f"{name} is 'grpc'; matrix exports OTLP over http/protobuf only, so it "
+                    f"exports no {' or '.join(signals)} over OTLP",
+                    fix=f"{name}=http/protobuf, with the endpoint at the collector's OTLP/HTTP "
+                    "port (4318 by default)",
+                    allowed=sorted(_PROTOCOLS),
+                    got=protocol,
+                )
+            )
+        elif protocol and protocol not in _PROTOCOLS:
+            found.append(
+                problem(
+                    name,
+                    "invalid_value",
+                    f"{name} is {protocol!r}; matrix exports OTLP over http/protobuf only, "
+                    "and uses it",
                     allowed=sorted(_PROTOCOLS),
                     got=protocol,
                 )
             )
     return tuple(found)
+
+
+def _protocol_variable(signal: str, env: Mapping[str, str]) -> str:
+    """The variable that names ``signal``'s OTLP protocol: its own, when set, else the
+    shared one."""
+    own = f"OTEL_EXPORTER_OTLP_{signal.upper()}_PROTOCOL"
+    return own if env.get(own) else "OTEL_EXPORTER_OTLP_PROTOCOL"
+
+
+def _grpc(signal: str) -> bool:
+    """Whether the environment asks for ``signal`` over gRPC, which matrix refuses."""
+    return os.environ.get(_protocol_variable(signal, os.environ)) == "grpc"
 
 
 @dataclass
@@ -239,6 +269,8 @@ def _plan(*, endpoint: str | None, console: bool, by_environment: bool) -> dict[
             plan[signal].add("otlp")
         if console:
             plan[signal].add("console")
+        if _grpc(signal):  # refused, and said in the warnings
+            plan[signal].discard("otlp")
     return plan
 
 
@@ -302,19 +334,10 @@ def _install(
 
 
 def _otlp(signal: str, endpoint: str | None) -> Any:
-    """An OTLP exporter for ``signal`` over the protocol the environment names. Without an
-    ``endpoint`` the exporter reads the ``OTEL_EXPORTER_OTLP_*`` variables itself."""
-    protocol = (
-        os.environ.get(f"OTEL_EXPORTER_OTLP_{signal.upper()}_PROTOCOL")
-        or os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL")
-        or "http/protobuf"
-    )
-    grpc = protocol == "grpc"
+    """An OTLP exporter for ``signal`` over http/protobuf, the one protocol matrix exports
+    over. Without an ``endpoint`` the exporter reads the ``OTEL_EXPORTER_OTLP_*`` variables
+    itself."""
     try:
-        if signal == "traces" and grpc:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-
-            return OTLPSpanExporter(endpoint=endpoint) if endpoint else OTLPSpanExporter()
         if signal == "traces":
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
                 OTLPSpanExporter as HttpSpanExporter,
@@ -322,10 +345,6 @@ def _otlp(signal: str, endpoint: str | None) -> Any:
 
             url = f"{endpoint.rstrip('/')}/v1/traces" if endpoint else None
             return HttpSpanExporter(endpoint=url) if url else HttpSpanExporter()
-        if grpc:
-            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-
-            return OTLPMetricExporter(endpoint=endpoint) if endpoint else OTLPMetricExporter()
         from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
             OTLPMetricExporter as HttpMetricExporter,
         )
@@ -333,6 +352,4 @@ def _otlp(signal: str, endpoint: str | None) -> Any:
         url = f"{endpoint.rstrip('/')}/v1/metrics" if endpoint else None
         return HttpMetricExporter(endpoint=url) if url else HttpMetricExporter()
     except ImportError as e:
-        raise missing_dependency(
-            needed_by=f"OTLP export of {signal}", module="opentelemetry.exporter.otlp"
-        ) from e
+        raise missing_dependency(needed_by=f"OTLP export of {signal}", module=_OTLP) from e

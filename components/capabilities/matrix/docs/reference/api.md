@@ -1250,7 +1250,7 @@ OpenTelemetry itself does not. With no arguments the standard variables decide:
 |----------|------------------|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (and `_TRACES_`, `_METRICS_` forms) | set: export is asked for; the OTLP exporters read it |
 | `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `otlp` (the default once export is asked for), `console` (to stderr: stdout is the command's document), `none`; a comma list; another value is a warning |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` (and `_TRACES_`) | `http/protobuf` (the spec's default) or `grpc`; another value is a warning |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` (and `_TRACES_`, `_METRICS_`) | `http/protobuf` (the spec's default), the one protocol matrix exports over (owner ruling 2026-10-22). `grpc` is a warning naming the variable and what to set, and the signals it governs are not exported over OTLP; another value is a warning, and http/protobuf is used |
 | `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | the resource; `service.name` is `matrix` when neither sets it (or `service_name`, which wins) |
 | `OTEL_SDK_DISABLED` | `true`: nothing is installed and no observer attached |
 
