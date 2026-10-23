@@ -367,6 +367,49 @@ async def test_no_limits_means_the_bound_is_the_chain_and_the_repairs() -> None:
     assert len(e.value.attempt_log) == 3 and e.value.limit is None
 
 
+class _Reply(BaseModel):
+    answer: str
+
+
+def test_a_rows_worst_case_is_its_chain_unless_its_limits_say_less() -> None:
+    """Owner ruling 2026-10-22: limits stay unset by default, and ``check`` shows the worst
+    case. A ``complete`` makes at most the sum over the chain of (retries + 1) backend calls;
+    an ``extract`` that much plus, for each schema repair, (retries + 1) of the chain's
+    most-retried row, since a repair goes on from the row that answered. A limit lowers it."""
+    limits = {"attempts": 5, "seconds": 60, "tokens": 1000}
+    rt = mock_runtime(
+        {
+            "a": _row(["x"], retries=2, fallbacks=["b"]),
+            "b": _row(["x"], retries=0),
+            "c": _row(["x"], retries=2, fallbacks=["b"], limits=limits),
+        },
+        default="c",
+    )
+    a, c = rt.worst_case("a"), rt.worst_case("c")
+    assert (a.complete_calls, a.extract_calls, a.seconds, a.tokens) == (4, 7, None, None)
+    assert (c.complete_calls, c.extract_calls, c.seconds, c.tokens) == (4, 5, 60, 1000)
+    assert rt.worst_case(None) == c, "None is the default row, as for a call"
+
+
+async def test_an_extract_can_make_its_worst_case_and_no_more() -> None:
+    # Round one: a fails twice and answers what is not JSON (3 calls). The repair goes on from
+    # a: it fails three times and b answers what is not JSON (4 calls). 7, the worst case.
+    rt = mock_runtime(
+        {
+            "a": _row(
+                [*[{"error": "unavailable"}] * 2, "not json", *[{"error": "unavailable"}] * 3],
+                retries=2,
+                fallbacks=["b"],
+            ),
+            "b": _row(["not json"], retries=0),
+        },
+        sleep=Sleeps(),
+    )
+    with pytest.raises(SchemaError) as e:
+        await rt.extract("a", "hi", _Reply)
+    assert len(e.value.attempt_log) == rt.worst_case("a").extract_calls == 7
+
+
 @pytest.mark.parametrize("limits", [{"attempts": 0}, {"seconds": 0}, {"tokens": 0}, {"calls": 3}])
 def test_a_limit_that_bounds_nothing_is_refused(limits: dict[str, Any]) -> None:
     with pytest.raises(ConfigError, match=r"models\.a\.limits"):

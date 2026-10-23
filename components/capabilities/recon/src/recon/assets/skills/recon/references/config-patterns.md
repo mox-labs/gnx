@@ -17,7 +17,7 @@ Complete config examples for common recon use cases. Copy, adapt, write to `.rec
 
 ## Code Mining (Multi-Repo)
 
-Fan-out across multiple repositories. Collectors run against every catalog entry. Give `rg` an explicit path (`.`): with none it reads stdin, which is empty under recon, so it finds nothing.
+Fan-out across multiple repositories. Each collector runs against every catalog source of a kind it uses (`local`, for `cli`). Give `rg` an explicit path (`.`): with none it reads stdin, which is empty under recon, so it finds nothing.
 
 ```yaml
 catalog:

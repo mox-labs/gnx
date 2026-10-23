@@ -108,8 +108,8 @@ Limit = Literal["attempts", "seconds", "tokens"]
 
 class CallLimits(BaseModel):
     """Bounds on one logical call: a ``complete`` or ``extract``, with every retry, fallback and
-    schema repair it makes. Each is unset by default, which leaves the call bounded only by its
-    chain: (schema repairs + 1) x the sum over the chain of (retries + 1) backend calls.
+    schema repair it makes. Each is unset by default (owner ruling 2026-10-22), which leaves the
+    call bounded only by its chain, as :class:`CallBound` and ``hardline check`` show it.
 
     The row asked for sets the bounds of the whole call; a fallback's own ``limits`` apply only
     to a call that asks for the fallback by name.
@@ -123,8 +123,31 @@ class CallLimits(BaseModel):
     #: cut, and a wait for a retry that would pass it is not started.
     seconds: float | None = Field(default=None, gt=0)
     #: Tokens reported (input and output), summed over the call's backend calls. Checked
-    #: between calls, so the call that crosses it completes; a failed call reports none.
+    #: between calls, so the call that crosses it completes; a failed call reports none. A
+    #: bound on tokens, not on spend, kept as it is (owner ruling 2026-10-22).
     tokens: int | None = Field(default=None, ge=1)
+
+
+class CallBound(BaseModel):
+    """The most one logical call on a row can cost, as ``hardline check`` shows it: what its
+    chain allows, lowered by the row's ``limits`` where they are set. ``None`` is no bound:
+    with ``limits.seconds`` unset, each backend call is bounded only per phase (``timeout_s``)
+    and every wait only by the backoff's caps; with ``limits.tokens`` unset, nothing bounds
+    tokens but each call's ``max_tokens``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Backend calls a ``complete`` can make: the sum over the chain of (retries + 1), or
+    #: ``limits.attempts`` when lower.
+    complete_calls: int
+    #: Backend calls an ``extract`` can make: that sum, plus for each schema repair the
+    #: (retries + 1) of the chain's most-retried row, since a repair goes on from the row
+    #: that answered; or ``limits.attempts`` when lower.
+    extract_calls: int
+    #: ``limits.seconds``, or None.
+    seconds: float | None = None
+    #: ``limits.tokens``, or None.
+    tokens: int | None = None
 
 
 class Endpoint(BaseModel):

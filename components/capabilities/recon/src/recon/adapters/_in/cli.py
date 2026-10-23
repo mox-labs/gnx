@@ -305,6 +305,12 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
         effects = run["effects"] if isinstance(run["effects"], str) else ", ".join(run["effects"])
         table.add_row(run["output"], run["type"], run["source"] or "-", effects, escape(_does(run)))
     _print_table(table)
+    skips: dict[str, list[str]] = {}
+    for s in plan.skipped:
+        skips.setdefault(s["collector"], []).append(f"{s['source']} ({s['kind']})")
+    for collector, passed in skips.items():
+        out.print(f"[dim]{escape(collector)} skips {escape(', '.join(passed))}: its type does "
+                  "not use sources of those kinds[/]")  # fmt: skip
     for required in plan.requirements:
         holds = "yes" if required.holds else "[red]NO[/] "
         said = f"{required.need} ({', '.join(required.needed_by)})"

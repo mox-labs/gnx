@@ -182,6 +182,7 @@ class Recon:
             ),
             problems=[p.document() for p in plan.problems],
             warnings=[w.document() for w in plan.warnings + broken],
+            skipped=[skipped.document() for skipped in plan.skipped],
             requirements=requirements,
             runnable=all(required.holds for required in requirements),
             preflight=said,
@@ -212,7 +213,7 @@ class Recon:
                 ask = built.requirements.get(entry.type)
                 if ask is None:
                     continue
-                for source, output in fan_out(entry, catalog):
+                for source, output in fan_out(entry, catalog, types[entry.type].accepts_kinds):
                     target = (
                         entry if output == entry.name else entry.model_copy(update={"name": output})
                     )
@@ -272,10 +273,14 @@ class Recon:
                         "sources": len(plan.config.catalog),
                     }
                 )
-                extracts = {n for n, ct in self._plugins.collector_types.items() if ct.extracts}
+                types = self._plugins.collector_types
+                extracts = {n for n, ct in types.items() if ct.extracts}
+                kinds = {
+                    n: ct.accepts_kinds for n, ct in types.items() if ct.accepts_kinds is not None
+                }
                 survey = Survey(
                     self._archives, self._clock, self._version, telemetry, on_event,
-                    extracts=extracts, deadline=deadline,
+                    extracts=extracts, kinds=kinds, deadline=deadline,
                 )  # fmt: skip
                 tables = survey.run(
                     plan.config,
@@ -296,10 +301,10 @@ class Recon:
             span.set("recon.tables", len(tables))
             span.set("recon.tables.failed", len(failed_tables))
             span.set("recon.records", sum(t.records for t in tables))
-            if (kind := failure_kind(tables)) is not None:
+            if not survey.finished:
+                span.fail("store", "the archive could not be finished")
+            elif (kind := failure_kind(tables)) is not None:
                 span.fail(kind, f"{len(failed_tables)} of {len(tables)} table(s) failed")
-            elif not survey.finished:
-                span.fail("run_failed", "the archive could not be finished")
             warnings += survey.warnings
             for unreadable in self._query.unreadable(archive):
                 warnings.append(unreadable)

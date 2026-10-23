@@ -34,7 +34,7 @@ from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Collection, Mapping
 
     from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
 
@@ -84,15 +84,30 @@ class PlannedRun:
 
 
 @dataclass(frozen=True)
+class SkippedSource:
+    """A catalog source an unpinned collector does not run against: its type does not accept
+    the source's kind."""
+
+    collector: str
+    source: str
+    kind: str
+
+    def document(self) -> dict[str, str]:
+        return {"collector": self.collector, "source": self.source, "kind": self.kind}
+
+
+@dataclass(frozen=True)
 class Plan:
     """``complete`` is false when part of the config could not be checked, so more problems
-    may follow a fix."""
+    may follow a fix. ``skipped`` names each catalog source an unpinned collector does not
+    run against, since its type does not accept the source's kind."""
 
     config: ReconConfig | None
     runs: list[PlannedRun] = field(default_factory=list)
     problems: list[Problem] = field(default_factory=list)
     warnings: list[Problem] = field(default_factory=list)
     complete: bool = True
+    skipped: list[SkippedSource] = field(default_factory=list)
 
     @property
     def valid(self) -> bool:
@@ -107,21 +122,38 @@ class Plan:
 
 
 def fan_out(
-    entry: CollectorEntry, catalog: Mapping[str, SourceEntry]
+    entry: CollectorEntry,
+    catalog: Mapping[str, SourceEntry],
+    accepts: Collection[str] | None = None,
 ) -> list[tuple[SourceEntry | None, str]]:
     """The (source, output name) pairs a collector entry runs against.
 
     Pinned (``source:``) → that source only, output named after the collector. No source
-    and a non-empty catalog → every catalog entry, output ``<collector>-<source>``. No
-    catalog → once, with no source. A pinned source missing from the catalog yields
-    nothing; the planner reports it.
+    and a non-empty catalog → every catalog source of a kind in ``accepts``, the kinds its
+    type accepts (``CollectorType.accepts_kinds``; None, every kind), output
+    ``<collector>-<source>`` (owner ruling 2026-10-22). No catalog → once, with no source. A
+    pinned source missing from the catalog, or a catalog with no source of an accepted kind,
+    yields nothing; the planner reports either.
     """
     if entry.source:
         src = catalog.get(entry.source)
         return [(src, entry.name)] if src is not None else []
     if catalog:
-        return [(src, f"{entry.name}-{src.name}") for src in catalog.values()]
+        return [
+            (src, f"{entry.name}-{src.name}")
+            for src in catalog.values()
+            if accepts is None or src.type in accepts
+        ]
     return [(None, entry.name)]
+
+
+def accepted_kinds(
+    types: Mapping[str, CollectorType], entry: CollectorEntry
+) -> frozenset[str] | None:
+    """The source kinds the entry's type accepts; None (every kind) for a type that does not
+    say, or one not installed."""
+    ctype = types.get(entry.type)
+    return ctype.accepts_kinds if ctype is not None else None
 
 
 def build_plan(
@@ -166,6 +198,7 @@ def build_plan(
     unchecked = _unparsed_names(raw.get("catalog"), catalog) if not sources_whole else set()
 
     runs: list[PlannedRun] = []
+    skipped: list[SkippedSource] = []
     produced_by: dict[str, tuple[int, str]] = {}
     used_sources: set[str] = set()
     settings_whole = True
@@ -178,7 +211,12 @@ def build_plan(
         settings_whole = settings_whole and (
             checked is not None or (ctype is None and not entry.settings)
         )
-        for source, output in fan_out(entry, catalog):
+        accepts = ctype.accepts_kinds if ctype is not None else None
+        if not entry.source and accepts is not None:
+            passed = [src for src in catalog.values() if src.type not in accepts]
+            skipped += [SkippedSource(entry.name, src.name, src.type) for src in passed]
+            problems.extend(_no_accepted_source(i, entry, catalog, accepts, plugins, unchecked))
+        for source, output in fan_out(entry, catalog, accepts):
             problems.extend(_output_problems(i, output, produced_by))
             for key in _table_keys(output):
                 produced_by.setdefault(key, (i, output))
@@ -193,7 +231,6 @@ def build_plan(
     if is_directory is not None:
         problems += _directory_problems(sources, used_sources, is_directory, base)
     warnings += _credential_warnings(sources, used_sources - refused, env, plugins)
-    warnings += _mixed_fan_out_warnings(entries, catalog)
     config = None
     if not problems:
         config = ReconConfig(
@@ -208,6 +245,7 @@ def build_plan(
         problems=problems,
         warnings=warnings,
         complete=sources_whole and entries_whole and settings_whole and not refused,
+        skipped=skipped,
     )
 
 
@@ -471,7 +509,7 @@ def _entry_problems(
                     f"source {entry.source!r} not in catalog; have: {known}",
                     kind="name_unknown",
                     fix="name a catalog source, add this one under catalog:, or omit source: "
-                    "to fan out over the catalog",
+                    "to fan out over the catalog's sources it can use",
                     got=entry.source,
                     allowed=tuple(sorted(catalog)),
                 )
@@ -483,7 +521,7 @@ def _entry_problems(
                 f"a {entry.type} collector needs a source",
                 kind="missing_key",
                 fix="add a source under catalog: and name it here (or omit source: to fan out "
-                "over the catalog)",
+                "over the catalog's sources it can use)",
             )
         )
     if ctype is not None and checked is not None:
@@ -804,28 +842,33 @@ def plugin_warning(broken: BrokenPlugin) -> Problem:
     )
 
 
-def _mixed_fan_out_warnings(
-    entries: list[tuple[int, CollectorEntry]], catalog: Mapping[str, SourceEntry]
+def _no_accepted_source(
+    i: int,
+    entry: CollectorEntry,
+    catalog: Mapping[str, SourceEntry],
+    accepts: frozenset[str],
+    plugins: Plugins,
+    unchecked: set[str],
 ) -> list[Problem]:
-    """A collector with no ``source:`` runs against every catalog source. When those are of
-    different types, adding a source to the mission has most likely fanned it out over one
-    it was not written for: a command run in a web source, a URL asked of a directory."""
-    types = sorted({src.type for src in catalog.values()})
-    if len(types) < 2:
+    """A problem when an unpinned collector's non-empty catalog holds no source of a kind its
+    type accepts, so it would run against nothing (owner ruling 2026-10-22). A catalog that
+    may hold one the plan could not judge (a source that did not parse, or of a kind nothing
+    installed adds, each its own problem) gets no second one."""
+    if not catalog or any(src.type in accepts for src in catalog.values()):
         return []
-    names = ", ".join(f"{src.name} ({src.type})" for src in catalog.values())
+    if unchecked or any(src.type not in source_kinds(plugins) for src in catalog.values()):
+        return []
+    kinds = ", ".join(sorted(accepts))
+    there = ", ".join(f"{src.name} ({src.type})" for src in catalog.values())
+    root = " (a local source's url: . is the project root)" if "local" in accepts else ""
     return [
         Problem(
             f"collectors.{i}.source",
-            f"no source: pinned, so this {entry.type} collector runs against every catalog "
-            f"source, and they are of different types: {names}",
-            kind="fan_out_mixed",
-            fix=f"pin it with source: <name> (one of: {', '.join(catalog)}), or keep it "
-            "unpinned if it is meant for every one",
-            allowed=tuple(catalog),
+            f"a {entry.type} collector runs against sources of kind {kinds}, and the catalog "
+            f"has none: {there}",
+            kind="missing_key",
+            fix=f"add a source of kind {kinds} under catalog:{root}, or remove the collector",
         )
-        for i, entry in entries
-        if not entry.source
     ]
 
 

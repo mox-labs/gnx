@@ -25,6 +25,7 @@ ErrorKind = Literal[
     "auth",
     "conflict",
     "run_failed",
+    "store",
     "query",
     "interrupted",
 ]
@@ -39,6 +40,7 @@ ERROR_KINDS: tuple[ErrorKind, ...] = (
     "auth",
     "conflict",
     "run_failed",
+    "store",
     "query",
     "interrupted",
 )
@@ -54,6 +56,7 @@ EXIT_CODES: dict[str, int] = {
     "auth": 6,
     "conflict": 7,
     "run_failed": 8,
+    "store": 9,
     "query": 10,
     "interrupted": 130,
 }
@@ -69,8 +72,9 @@ EXIT_MEANINGS: dict[str, str] = {
     "deadline); the archive is kept, marked incomplete",
     "auth": "a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete",
     "conflict": "init, or survey -c, would overwrite a different mission config",
-    "run_failed": "a table failed, and not only on credentials or transiently, or the archive "
-    "could not be finished; the archive is kept, marked incomplete",
+    "run_failed": "a table failed, and not only on credentials or transiently; the archive is "
+    "kept, marked incomplete",
+    "store": "the survey could not finish its archive; it is kept, marked incomplete",
     "query": "the SQL failed, or reached outside the mission's archives",
     "interrupted": "the command was interrupted (Ctrl-C or SIGTERM) before it finished; a "
     "survey's archive is marked incomplete",
@@ -89,8 +93,8 @@ EXIT_NEXT: dict[str, str] = {
     "auth": "set the variable the failing source's auth.env names to a valid key, then "
     "survey again",
     "conflict": "add --replace to overwrite it, or choose another mission name",
-    "run_failed": "read each failed table's error, or the archive_unfinished warning, and fix "
-    "its cause, then plan and survey again",
+    "run_failed": "read each failed table's error and fix its cause, then plan and survey again",
+    "store": "free space where the archive is, or make it writable, then survey again",
     "query": "correct the SQL as the error's `fix` says; for a missing table, it names the "
     "tables there are",
     "interrupted": "run the command again",
@@ -114,8 +118,6 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "plugin_broken",
     "otel_unavailable",
     "telemetry_failed",
-    # an unpinned collector fans out over sources of different types
-    "fan_out_mixed",
     # a table came back as one record holding the list of records
     "extract_missing",
     # a table's file that SQL cannot read as a table

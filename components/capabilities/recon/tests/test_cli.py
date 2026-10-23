@@ -16,7 +16,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
 
 import pytest
 import yaml
@@ -223,7 +223,9 @@ class TestSurvey:
     ) -> None:
         """Regression: a survey whose ``meta.yaml`` or completion step failed (a full disk)
         said ``status: ok`` and exited 0, and under --json the one word of it, an event,
-        went nowhere; the archive stayed incomplete and only a later query said so."""
+        went nowhere; the archive stayed incomplete and only a later query said so.
+        Changed requirement (owner ruling 2026-10-22): it exits with the shared contract's
+        ``store`` kind, 9, not ``run_failed``."""
 
         def fails(self: ArchiveFiles, archive: Path, *args: Any) -> NoReturn:
             raise OSError(28, "No space left on device")
@@ -233,7 +235,7 @@ class TestSurvey:
         _mission(project, "m", OK_CONFIG)
         result = _invoke("survey", "m", "--json", over=over)
 
-        assert result.exit_code == 8
+        assert result.exit_code == 9
         doc = _doc(result)
         assert doc["status"] == "incomplete"
         assert [t["status"] for t in doc["tables"]] == ["ok"]
@@ -241,15 +243,41 @@ class TestSurvey:
         assert "No space left on device" in warning["message"]
         assert warning["kind"] in recon.PROBLEM_KINDS
         error = _error(result)
-        assert error["kind"] == "run_failed"
+        assert error["kind"] == "store"
         assert "could not be finished" in error["message"]
         assert error["details"] == {"archive": doc["archive"], "failed": []}
         assert (Path(doc["archive"]) / ".incomplete").exists()
 
         human = _invoke("survey", "m", over=over)
-        assert human.exit_code == 8
+        assert human.exit_code == 9
         assert "No space left on device" in human.stderr
-        assert "error (run_failed):" in human.stderr
+        assert "error (store):" in human.stderr
+
+    def test_an_archive_that_could_not_be_finished_is_store_whatever_its_tables_did(
+        self, project: Path
+    ) -> None:
+        """Owner ruling 2026-10-22: an archive the survey could not finish exits ``store`` (9).
+        A table's failure is recorded in the ``meta.yaml`` that could not be written, so the
+        store's failure is the one to act on first; the failed tables are still named."""
+
+        def fails(self: ArchiveFiles, archive: Path, *args: Any) -> NoReturn:
+            raise OSError(28, "No space left on device")
+
+        over = root(archives=type("NoMeta", (ArchiveFiles,), {"write_meta": fails})(SystemClock()))
+        config = {
+            "collectors": [
+                {"name": "good", "type": "cli", "run": "echo '{\"a\": 1}'"},
+                {"name": "bad", "type": "cli", "run": "exit 7"},
+            ]
+        }
+        _mission(project, "m", config)
+        result = _invoke("survey", "m", "--json", over=over)
+
+        assert result.exit_code == 9
+        error = _error(result)
+        assert error["kind"] == "store"
+        assert error["details"]["failed"] == ["bad"]
+        assert "1 of 2 table(s) failed" in error["message"]
 
     def test_no_config_is_not_found(self, project: Path) -> None:
         result = _invoke("survey", "nope", "--json")
@@ -337,7 +365,10 @@ class TestDryRun:
     def test_plans_without_running_or_writing(self, project: Path, flag: str) -> None:
         marker = project / "ran"
         config = {
-            "catalog": [{"name": "api", "url": "http://192.0.2.1"}],  # TEST-NET: unroutable
+            "catalog": [
+                {"name": "api", "url": "http://192.0.2.1"},  # TEST-NET: unroutable
+                {"name": "here", "type": "local", "url": "."},
+            ],
             "collectors": [
                 {"name": "touch", "type": "cli", "run": f"touch {marker}"},
                 {"name": "remote", "type": "api", "source": "api", "endpoint": "/x"},
@@ -357,9 +388,10 @@ class TestDryRun:
         assert doc["schema"] == "recon.v1.plan"
         assert doc["valid"] is True
         runs = {r["output"]: r for r in doc["runs"]}
-        assert set(runs) == {"touch-api", "remote"}
-        assert runs["touch-api"]["effects"] == ["subprocess"]
-        assert runs["touch-api"]["commands"] == [f"touch {marker}"]
+        assert set(runs) == {"touch-here", "remote"}
+        assert runs["touch-here"]["effects"] == ["subprocess"]
+        assert runs["touch-here"]["commands"] == [f"touch {marker}"]
+        assert doc["skipped"] == [{"collector": "touch", "source": "api", "kind": "api"}]
         assert runs["remote"]["effects"] == ["network"]
         assert runs["remote"]["url"] == "http://192.0.2.1/x"
         assert doc["effects"] == ["network", "subprocess"]
@@ -787,46 +819,55 @@ class TestDryRunShowsTheRequest:
         assert "Authorization: REDACTED" in human and '{"q": "bug"}' in human
 
 
-class TestMixedFanOut:
-    def test_an_unpinned_collector_over_sources_of_different_types_is_warned(
-        self, project: Path
-    ) -> None:
-        """Regression: adding a source of another type to a mission silently fanned an
-        unpinned collector out over it."""
-        config = {
-            "catalog": [
-                {"name": "repo", "type": "local", "url": "."},
-                {"name": "docs", "type": "web", "url": "https://docs.example.test"},
-            ],
-            "collectors": [
-                {"name": "todos", "type": "cli", "run": "rg TODO ."},
-                {"name": "page", "type": "web", "source": "docs"},
-            ],
-        }
-        _mission(project, "m", config)
+class TestFanOutByKind:
+    """Owner ruling 2026-10-22: an unpinned collector fans out only over the catalog sources
+    of kinds its type accepts, and the plan names the ones it skipped. This replaces the
+    ``fan_out_mixed`` warning, which said the collector would run against them all."""
+
+    MIXED: ClassVar[list[dict[str, str]]] = [
+        {"name": "repo", "type": "local", "url": "."},
+        {"name": "docs", "type": "web", "url": "https://docs.example.test"},
+    ]
+
+    def test_the_plan_names_the_sources_a_collector_skips(self, project: Path) -> None:
+        """Regression: adding a web source to a mission fanned an unpinned ``cli`` collector
+        out over it too, a command run in recon's working directory in its name."""
+        _mission(project, "m", {"catalog": self.MIXED, "collectors": [
+            {"name": "todos", "type": "cli", "run": "echo '{}'"},
+        ]})  # fmt: skip
 
         result = _invoke("survey", "m", "-n", "--json")
 
-        assert result.exit_code == 0
-        [warning] = [w for w in _doc(result)["warnings"] if w["kind"] == "fan_out_mixed"]
-        assert warning["path"] == "collectors.0.source"
-        assert "repo (local)" in warning["message"] and "docs (web)" in warning["message"]
-        assert "source:" in warning["fix"] and warning["allowed"] == ["repo", "docs"]
-        human = _invoke("survey", "m", "-n")
-        assert "collectors.0.source" in human.stderr and "fix: pin it" in human.stderr
-
-    def test_a_survey_prints_the_warning_with_its_fix(self, project: Path) -> None:
-        config = {
-            "catalog": [{"name": "repo", "type": "local", "url": "."},
-                        {"name": "api", "url": "https://api.example.test"}],
-            "collectors": [{"name": "hello", "type": "cli", "run": "echo hi"}],
-        }  # fmt: skip
-        _mission(project, "m", config)
-        result = _invoke("survey", "m")
         assert result.exit_code == 0, result.stderr
-        assert "collectors.0.source" in result.stderr and "fix: pin it" in result.stderr
+        doc = _doc(result)
+        assert [run["output"] for run in doc["runs"]] == ["todos-repo"]
+        assert doc["skipped"] == [{"collector": "todos", "source": "docs", "kind": "web"}]
+        assert doc["warnings"] == []
+        human = _invoke("survey", "m", "-n")
+        assert "todos skips docs (web)" in human.stdout
 
-    def test_sources_of_one_type_are_not_warned(self, project: Path) -> None:
+    def test_a_survey_runs_only_the_sources_its_collectors_accept(self, project: Path) -> None:
+        _mission(project, "m", {"catalog": self.MIXED, "collectors": [
+            {"name": "todos", "type": "cli", "run": "echo '{}'"},
+        ]})  # fmt: skip
+        result = _invoke("survey", "m", "--json")
+        assert result.exit_code == 0, result.stderr
+        assert [t["name"] for t in _doc(result)["tables"]] == ["todos-repo"]
+        assert "warning" not in result.stderr
+
+    def test_a_collector_with_no_source_it_accepts_is_a_plan_problem(self, project: Path) -> None:
+        """Regression: a ``cli`` collector over a catalog of ``web`` sources alone ran in recon's
+        working directory, once per source, with no warning."""
+        _mission(project, "m", {"catalog": self.MIXED[1:], "collectors": [
+            {"name": "todos", "type": "cli", "run": "pwd"},
+        ]})  # fmt: skip
+        result = _invoke("survey", "m", "-n", "--json")
+        assert result.exit_code == 3
+        [problem] = _error(result)["problems"]
+        assert problem["path"] == "collectors.0.source" and problem["kind"] == "missing_key"
+        assert "docs (web)" in problem["message"]
+
+    def test_sources_of_one_kind_skip_nothing(self, project: Path) -> None:
         config = {
             "catalog": [{"name": "a", "type": "local", "url": "a"},
                         {"name": "b", "type": "local", "url": "b"}],
@@ -835,7 +876,8 @@ class TestMixedFanOut:
         (project / "a").mkdir()
         (project / "b").mkdir()
         _mission(project, "m", config)
-        assert _doc(_invoke("survey", "m", "-n", "--json"))["warnings"] == []
+        doc = _doc(_invoke("survey", "m", "-n", "--json"))
+        assert doc["warnings"] == [] and doc["skipped"] == []
 
 
 class TestOneRecordHoldingTheRecords:
@@ -1124,7 +1166,7 @@ def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     tool's own kinds take codes from 10 up, one kind per code."""
     agreed = _contract("exit-codes.json")["kinds"]
     shared = set(agreed) & set(recon.EXIT_CODES)
-    assert shared == set(agreed) - {"store"}, "recon writes no separate store"
+    assert shared == set(agreed), "every agreed kind, store among them (owner ruling 2026-10-22)"
     assert {kind: recon.EXIT_CODES[kind] for kind in shared} == {k: agreed[k] for k in shared}
     own = set(recon.EXIT_CODES) - shared
     assert own == {"query"} and all(recon.EXIT_CODES[kind] >= 10 for kind in own)

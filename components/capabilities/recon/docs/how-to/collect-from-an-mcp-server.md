@@ -70,7 +70,7 @@ collectors:
     vars: {id: "1234"}
 ```
 
-`vars:` fill the `{placeholders}` in the string values of `arguments` and in `resource`; one that nothing fills is a plan problem. A collector with no `source:` runs against every catalog source, as any collector does.
+`vars:` fill the `{placeholders}` in the string values of `arguments` and in `resource`; one that nothing fills is a plan problem. A collector with no `source:` runs against every `mcp` source in the catalog, and the plan names the others it skips.
 
 A tool's records come from its structured content when it declares an output schema, and from the JSON in its text content when it does not. `result:` says which explicitly. Some servers declare an output schema of a single string and put their JSON in it and in their text, as the filesystem server does; for those, `result: text` reads the JSON. `extract:` then names where the records are in it, as for an `api` collector, and `normalize:` shapes them.
 

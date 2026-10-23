@@ -83,7 +83,9 @@ class CollectorError(CollectionError):
 class Survey:
     """One survey's run: the ports it writes through and the tables it has recorded.
 
-    ``extracts`` names the collector types that read ``extract:``; ``warnings`` collects
+    ``extracts`` names the collector types that read ``extract:``, and ``kinds`` the source
+    kinds each type accepts (a type it does not name accepts every kind), so an unpinned
+    collector runs against the sources the plan resolved for it; ``warnings`` collects
     what the run found worth saying about tables that succeeded, and about an archive it
     could not finish. ``finished`` is false when ``meta.yaml`` could not be written or the
     archive could not be marked complete, so it reads incomplete whatever its tables did."""
@@ -97,6 +99,7 @@ class Survey:
         on_event: EventCallback | None = None,
         *,
         extracts: Collection[str] = (),
+        kinds: Mapping[str, Collection[str]] | None = None,
         deadline: Deadline | None = None,
     ) -> None:
         self._archives = archives
@@ -106,6 +109,7 @@ class Survey:
         self._telemetry = telemetry
         self._on_event = on_event
         self._extracts = frozenset(extracts)
+        self._kinds = dict(kinds or {})
         self.warnings: list[Problem] = []
         self.finished = True
 
@@ -169,7 +173,7 @@ class Survey:
         catalog = {s.name: s for s in config.catalog}
         collector = collectors.get(entry.type)
         tables = []
-        for source, output in fan_out(entry, catalog):
+        for source, output in fan_out(entry, catalog, self._kinds.get(entry.type)):
             table = _table(entry, output, source.name if source else None)
             with self._telemetry.span(COLLECT, _attributes(table)) as span:
                 if collector is None:  # its type's factory raised: a plugin_broken warning

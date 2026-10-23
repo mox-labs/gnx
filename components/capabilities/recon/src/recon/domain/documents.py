@@ -81,6 +81,9 @@ class PlanDocument(Document):
     problems: list[dict[str, Any]]
     #: Problem records (``recon.v1.error``'s shape) that do not stop the survey.
     warnings: list[dict[str, Any]]
+    #: Each catalog source an unpinned collector does not run against, its type not
+    #: accepting the source's kind: ``{"collector", "source", "kind"}``.
+    skipped: list[dict[str, str]] = []
     #: What the runs need of this host, as the collector types that declare a preflight
     #: checked it during this dry run, each with whether it holds.
     requirements: list[Required] = []
@@ -308,17 +311,23 @@ _SURVEY_FAILURE_FIX = {
 
 def survey_failure(document: SurveyDocument) -> ReconError | None:
     """The error a survey's failed tables add up to, or None when every table succeeded and
-    the archive was finished. Its kind is ``auth``, ``transient`` or ``run_failed``; an
-    archive that could not be finished, every table having succeeded, is ``run_failed``
-    too, and its ``archive_unfinished`` warning says why. The details name the archive and
-    the failed tables."""
+    the archive was finished. An archive that could not be finished is ``store`` (owner ruling
+    2026-10-22), whatever its tables did: a failed table's error is recorded in the
+    ``meta.yaml`` that could not be written, so the store is the failure to act on first, and
+    its ``archive_unfinished`` warning says why. Otherwise the kind is ``auth``,
+    ``transient`` or ``run_failed``. The details name the archive and the failed tables."""
     kind = failure_kind(document.tables)
     failed = [t.name for t in document.failed]
-    if kind is None and document.status == "incomplete":
+    if any(w.get("kind") == "archive_unfinished" for w in document.warnings):
+        tables = (
+            f"{len(failed)} of {len(document.tables)} table(s) failed, and "
+            if failed
+            else "every table succeeded, but "
+        )
         return ReconError(
-            f"every table succeeded, but the archive could not be finished, so it reads "
-            f"incomplete: {document.archive}",
-            kind="run_failed",
+            f"{tables}the archive could not be finished, so it reads incomplete: "
+            f"{document.archive}",
+            kind="store",
             fix="read the survey's archive_unfinished warning, free space in the archive's "
             f"directory or make it writable, then: recon survey {document.mission}",
             details={"archive": document.archive, "failed": failed},

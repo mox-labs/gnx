@@ -456,7 +456,7 @@ def test_a_dry_run_builds_no_collector_whose_type_has_no_preflight(tmp_path: Pat
             plugins.collector_types[name] = replace(ct, create=building(built, name))
     plan = _plan(
         tmp_path,
-        [_call("good", "whoami"), {"name": "c", "type": "cli", "run": "true"}],
+        [_call("good", "whoami"), {"name": "c", "type": "capture"}],
         plugins=plugins,
     )
     assert built == []

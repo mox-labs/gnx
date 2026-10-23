@@ -166,3 +166,40 @@ def test_an_exporter_hardline_does_not_install_is_said_and_skipped(tmp_path: Pat
     done = _complete_in_a_process(tmp_path, OTEL_TRACES_EXPORTER="zipkin")
     assert done.returncode == 0, done.stderr
     assert "hardline: warning: OTEL_TRACES_EXPORTER" in done.stderr and "zipkin" in done.stderr
+
+
+@pytest.mark.parametrize(
+    "variable", ["OTEL_EXPORTER_OTLP_PROTOCOL", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"]
+)
+def test_grpc_is_refused_and_says_what_to_set(variable: str) -> None:
+    """Owner ruling 2026-10-22: hardline exports OTLP over http/protobuf only. gRPC is not
+    exported, even where its exporter happens to be installed, and the warning names the
+    variable and what to set instead."""
+    from hardline.adapters._out.otel import _otlp
+
+    warnings: list[Problem] = []
+    assert _otlp("traces", {variable: "grpc"}, warnings) is None
+    [warning] = warnings
+    assert warning.path == variable and warning.got == "grpc"
+    assert warning.allowed == ("http/protobuf",)
+    assert "http/protobuf only" in warning.message
+    assert warning.fix is not None and f"{variable}=http/protobuf" in warning.fix
+
+
+def test_the_command_says_grpc_is_refused(tmp_path: Path) -> None:
+    done = _complete_in_a_process(
+        tmp_path,
+        OTEL_TRACES_EXPORTER="otlp",
+        OTEL_METRICS_EXPORTER="none",
+        OTEL_EXPORTER_OTLP_PROTOCOL="grpc",
+    )
+    assert done.returncode == 0, done.stderr
+    assert "hardline: warning: OTEL_EXPORTER_OTLP_PROTOCOL" in done.stderr
+    assert "http/protobuf only" in done.stderr
+
+
+def test_hardline_depends_on_no_grpc_exporter() -> None:
+    from importlib.metadata import requires
+
+    exporters = [r for r in requires("hardline") or [] if r.startswith("opentelemetry-exporter")]
+    assert [r.split(">")[0] for r in exporters] == ["opentelemetry-exporter-otlp-proto-http"]

@@ -12,14 +12,16 @@ One command for every model the operator has configured. Models are registry row
 ```bash
 hardline models          # name, family, backend, local?, model id
 hardline check           # validates every tier and resolves every api_key reference
-hardline check --json    # {"ok", "tiers", "models": [{"name", "ok", "problem", ...}], "warnings"}
+hardline check --json    # {"ok", "tiers", "models": [{"name", "ok", "problem", "worst_case", ...}], "warnings"}
 ```
 
 `check` exits 0 only when every row would get past composition and find its key: a valid row,
 options its backend reads, an http(s) `base_url`, a key reference where the backend needs one.
 A key the provider then rejects is only discovered by a call (exit 6). A `shared_fate` warning means a
 row's fallback sends to the same server as the row, so it will not answer when that server is
-down: tell the operator rather than count on it.
+down: tell the operator rather than count on it. Each row's `worst_case` is what one call on it
+can cost: backend calls for a `complete` and an `extract`, and `seconds` and `tokens`, `null` when
+its `limits` set none, which is the default.
 
 If `hardline models` lists nothing, no registry exists yet. Do not invent one — ask the operator
 which models they run.

@@ -512,7 +512,37 @@ def test_cli_check_json_ok(cli_config: Path, capsys: pytest.CaptureFixture[str])
     report = json.loads(capsys.readouterr().out)
     assert report["ok"] is True
     assert set(report["tiers"][0]) == {"source", "present"}
-    assert set(report["models"][0]) == {"name", "backend", "family", "ok", "problem"}
+    assert set(report["models"][0]) == {"name", "backend", "family", "ok", "problem", "worst_case"}
+
+
+def test_cli_check_shows_each_rows_worst_case(
+    cli_config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Owner ruling 2026-10-22: limits stay unset by default, and ``check`` shows what one call
+    on each row can cost at worst, so the default's cost is seen rather than assumed."""
+    row = {"backend": "mock", "model": "m", "family": "x"}
+    _write(
+        tmp_path / "hardline.yaml",
+        {
+            "models": {
+                "a": {**row, "retries": 2, "fallbacks": ["b"]},
+                "b": {**row, "retries": 0, "limits": {"seconds": 30}},
+            }
+        },
+    )
+    assert main(["check", "--json"]) == 0
+    rows = {row["name"]: row for row in json.loads(capsys.readouterr().out)["models"]}
+    assert rows["a"]["worst_case"] == {
+        "complete_calls": 4,
+        "extract_calls": 7,
+        "seconds": None,
+        "tokens": None,
+    }
+    assert rows["b"]["worst_case"]["seconds"] == 30
+    assert main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert "a: at most 4 backend calls a complete, 7 an extract; no limit in seconds" in out
+    assert "b: at most 1 backend call a complete, 2 an extract; 30 s" in out
 
 
 @pytest.mark.parametrize(

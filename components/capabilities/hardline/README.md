@@ -60,11 +60,12 @@ provider's Retry-After) · `fallbacks` (distinct registry names tried once retri
 `limits` (bounds on a call, below) · `options` (the backend's own; see
 [Built-in backends](#built-in-backends)).
 
-**A call has its own bound.** One `extract` can make (schema repairs + 1) × the sum over its
-chain of (`retries` + 1) backend calls, each paid for in tokens; `timeout_s` bounds each phase of
-one (connecting, sending, each read), not the call as a whole.
-`limits` bounds the whole call, every retry, fallback and repair included, and is unset by
-default:
+**A call has its own bound.** One `complete` can make the sum over its chain of (`retries` + 1)
+backend calls, and one `extract` that much plus, for each schema repair, (`retries` + 1) of the
+chain's most-retried row, each paid for in tokens; `timeout_s` bounds each phase of one
+(connecting, sending, each read), not the call as a whole. `limits` bounds the whole call, every
+retry, fallback and repair included, and is unset by default (owner ruling 2026-10-22):
+`hardline check` shows each row's worst case, its limits applied:
 
 ```yaml
 models:
@@ -75,6 +76,9 @@ models:
       seconds: 300     # wall time from the call's start; a running attempt is cut when it passes
       tokens: 20000    # input + output tokens reported, checked between calls
 ```
+
+`tokens` bounds tokens, not spend, and the call that crosses it completes; it is kept as it is
+(owner ruling 2026-10-22).
 
 The row asked for sets the bounds; a fallback's own `limits` apply only when it is asked for by
 name. A call a limit stops raises what it would have raised anyway, with `limit` set to the bound
@@ -248,8 +252,9 @@ A host hands its own providers as `build_runtime(tracer_provider=..., meter_prov
 The `hardline` command is an application, and installs the SDK from the standard `OTEL_*`
 variables, as `matrix` and `ix` do (`hardline.configure_telemetry()`, for another entry point of
 one's own): `OTEL_TRACES_EXPORTER` and `OTEL_METRICS_EXPORTER` (`otlp`, the default, or `console`
-on stderr), OTLP over `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf`, the default; `grpc` when
-its exporter is installed) to the endpoint the `OTEL_EXPORTER_OTLP_*` variables name, and
+on stderr), OTLP over http/protobuf alone (`OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is refused with a
+warning, and nothing is exported over it) to the endpoint the `OTEL_EXPORTER_OTLP_*` variables
+name, and
 `service.name` `hardline` unless `OTEL_SERVICE_NAME` says otherwise. With none of them set,
 nothing is installed. What it cannot install is a `hardline: warning:` line, and under `--json`
 one of `check`'s `warnings`.
@@ -264,7 +269,8 @@ one of `check`'s `warnings`.
 hardline counts the inference tokens of the calls it makes; a host counts its own sessions,
 not the model calls inside them. **No content is recorded**: no prompt, system prompt, reply,
 refusal or error message, as an attribute, an event or a span status. There is no option to
-record it.
+record it. The names above (spans, metrics, attribute keys) are not contract and may change
+without notice; that no content is recorded is.
 
 Another composition root wires hardline from a section of its own config:
 
@@ -289,7 +295,7 @@ know, so it upgrades hardline before the program that writes the JSON does.
 | command | stdout JSON |
 |---|---|
 | `models --json` | `{"default": str\|null, "models": [ModelSpec without api_key, options]}`, each row's `base_url` filled |
-| `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null}], "warnings": [problem]}` |
+| `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null, "worst_case": {"complete_calls": int, "extract_calls": int, "seconds": float\|null, "tokens": int\|null}}], "warnings": [problem]}`; `null` is no limit |
 | `complete --json` | the `Completion` without `raw`: `type_url, name, text, family, model, backend, local, usage, request_id, latency_ms, attempts, retries, fallback_from, finish_reason, native_finish_reason, refusal, tool_calls, params, attempt_log, turns_digest, row` |
 
 `complete --json` carries no hardline version: it is a `Completion`, and validates back into

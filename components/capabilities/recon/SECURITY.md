@@ -245,8 +245,9 @@ capture is no longer JSON and cannot be read back by a `capture` collector. So a
 is replaced only where it is the whole value, and the capture stays JSON of the same shape.
 The cost, named: a credential under 8 characters inside longer text stays in the capture,
 and so does one inside the JSON of a tool's text block, which is one longer string (its
-structured content, when the tool declares an output schema, has it replaced). A credential
-that short is weak whatever recon does; keep a real one long. A credential the tool returns
+structured content, when the tool declares an output schema, has it replaced). It is
+documented, not redacted (owner ruling 2026-10-22: accepted). A credential that short is
+weak whatever recon does; keep a real one long. A credential the tool returns
 of its own is in the table as returned.
 
 **Telemetry.** Each call is a `recon.mcp.call` span with the method, the tool's name and

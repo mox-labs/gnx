@@ -1,7 +1,8 @@
 """``hardline``: list, check, and call configured models.
 
     hardline models [--json]                          the registry (* = default)
-    hardline check [--json]                           validate tiers, backends and secrets
+    hardline check [--json]                           validate tiers, backends and secrets,
+                                                      and show each row's worst case
     hardline complete MODEL PROMPT [--json] [...]     call a model, print its text
     hardline --skill                                  the text an agent reads
 
@@ -54,7 +55,7 @@ from hardline import (
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    from hardline import Completion
+    from hardline import CallBound, Completion
 
 ErrorKind = Literal["unknown", "usage", "config", "transient", "auth", "interrupted"]
 
@@ -294,6 +295,7 @@ def check(as_json: bool) -> None:
                 "family": spec.family,
                 "ok": spec.name not in problems,
                 "problem": problems.get(spec.name),
+                "worst_case": runtime.worst_case(spec.name).model_dump(mode="json"),
             }
             for spec in runtime.registry
         ]
@@ -309,10 +311,25 @@ def check(as_json: bool) -> None:
             ],
         )
     if not as_json:
+        # Limits are unset by default (owner ruling 2026-10-22): what a call can cost is shown,
+        # so the default's cost is seen rather than assumed.
+        for spec in runtime.registry:
+            click.echo(f"{spec.name}: {_worst(runtime.worst_case(spec.name))}")
         click.echo(
             f"ok: {len(runtime.registry)} model(s) valid against installed backends; "
             "every secret reference resolves"
         )
+
+
+def _worst(bound: CallBound) -> str:
+    """One row's worst case, as ``check`` says it."""
+    calls = "call" if bound.complete_calls == 1 else "calls"
+    seconds = f"{bound.seconds:g} s" if bound.seconds is not None else "no limit in seconds"
+    tokens = f"{bound.tokens} tokens" if bound.tokens is not None else "no limit in tokens"
+    return (
+        f"at most {bound.complete_calls} backend {calls} a complete, {bound.extract_calls} an "
+        f"extract; {seconds}; {tokens}"
+    )
 
 
 @cli.command()
