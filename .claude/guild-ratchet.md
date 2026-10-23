@@ -21,7 +21,7 @@ Focus panel: Karman, Burner, Ace, Chesterton (independent, Phase 1) → Lotfi (n
 > "Serialization is the point of no return; everything upstream of it is reversible, nothing downstream is. No fidelity comparison without a measured noise floor first." (Chesterton/Ixian)
 
 ### Future Triggers
-- Any cix-plugin intake: run the A1 relations-closure linter check and the V2 prediction test before mint; genericity gate applies to every bare candidate (`review`, `design`, `research` are known incoming landgrabs).
+- Any plugin intake: run the A1 relations-closure linter check and the V2 prediction test before mint; genericity gate applies to every bare candidate (`review`, `design`, `research` are known incoming landgrabs).
 - Flow-as-projection is composition-conditional: a bundle with no pipeline meaning goes through the §8a distributions/ open edge — do not mint fake Flows.
 - V11 pre-registered: compute cross-Flow skill reuse R at the next intake batch; R < 0.15 re-opens the naming weighting, R ≥ 0.30 vindicates Policy B.
 
@@ -75,8 +75,8 @@ doctrine.
   Agent spec law exists, an Agent manifest cannot validate; the payload is the whole
   component.
 - **`research` bare remains a landgrab** (2026-07-15 gate): the research Flow minted its
-  identity as `gnx.dev.v1.research-pipeline` — cix's `craft-` prefix dropped per GEP-0001
-  (provenance never in identity), the genericity gate satisfied by the compound.
+  identity as `gnx.dev.v1.research-pipeline` — the source plugin's `craft-` prefix dropped per
+  GEP-0001 (provenance never in identity), the genericity gate satisfied by the compound.
 - **Namespacing over hyphen-compounds for a family:** `gnx.dev.v1.dao.init` does not parse
   (GEP-0001 §4 — resource is exactly one segment after the version). A family belongs in
   the namespace: `gnx.dao.v1.{init,figures,charter,projection,instance}`.
