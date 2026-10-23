@@ -94,7 +94,7 @@ one catalog:
   skills, **selected through discussion with the user**, not from fixed menus. `gnx
   component init` scaffolds new lexicon entries.
 
-Planned marketplace plugins include: slick (plugin), the cix plugin family (ci-scaffolds,
+Planned marketplace plugins include: slick (plugin), the predecessor plugin set (ci-scaffolds,
 guild-arch, antifragile, craft-extensions, craft-evals, craft-research, craft-rhetoric),
 radix (multi-modal), luminex, aboot, memex, recon, post — and cortex (roadmap only:
 REP-015 is proposed with no research behind it; the programme's ruling is "don't accept
@@ -102,7 +102,7 @@ it to complete the picture").
 
 ## 3. The CLI architecture (decided 2026-06-12)
 
-The house pattern, already live in cix/recon/memex: **every capability ships its skill
+The house pattern, already live in recon and memex: **every capability ships its skill
 inside the artifact**, exposed via `--skill` (e.g. `memex --skill` emits a complete
 SKILL.md: activation frontmatter + intent→command table). Claude Code loads the skill and
 drives the tool.
@@ -136,7 +136,7 @@ gnx validate                # strict registration gate (manifest, ports, kind ru
 gnx build [--check]         # project Target surfaces (Claude Code plugins, marketplace.json)
 ```
 
-Language: **Python** (leaning, not hard-decided): inherits cix's proven hexagonal core
+Language: **Python** (leaning, not hard-decided): inherits the predecessor's proven hexagonal core
 (domain/ports/application/adapters; TargetPort protocol; 40 tests' shape), sits next to
 matrix, distributes via `uv tool install`, and the `--skill` importlib.resources loader
 ports verbatim. The TS alternative (npm-native, next to the CC ecosystem) was considered.
@@ -185,7 +185,7 @@ function in a project's life:
 | Function | Component(s) | Status |
 |---|---|---|
 | Constitution | CLAUDE.md seeding + dao charter + ratchet hook | pattern proven, needs componentizing |
-| Discipline | ci-scaffolds | working (cix), port as-is |
+| Discipline | ci-scaffolds | working (predecessor plugin set), port as-is |
 | Challenge | guild-arch (panel + trust-boundaries) | working |
 | Structural conscience | antifragile (ACES review) | working |
 | Lexicon growth | craft-extensions | working |
@@ -311,11 +311,11 @@ Three loci:
    structurally unable to accrete Claude Code semantics; **owner/authority identity on
    every registration** (the produce-authority wall — hardest to retrofit); accreditation
    as append-only ledger, human-mintable only.
-2. **Scaffolds** (projects born ACE): hexagonal skeletons per stack — Python in the
-   cix/matrix shape (uv, ruff, mypy strict), Rust in the vaani/x.uma shape (leaf crates,
-   clippy -D warnings), TS with the same ports discipline (ziran/SvelteKit precedent).
-   justfile as single source of truth for gates; fast/slow .githooks **actually wired by
-   init** (cix shipped hooks that were never wired — fix structurally); CI mirrors hooks.
+2. **Scaffolds** (projects born ACE): hexagonal skeletons per stack — Python in the matrix
+   shape (uv, ruff, mypy strict), Rust in the vaani/x.uma shape (leaf crates, clippy -D
+   warnings), TS with the same ports discipline (ziran/SvelteKit precedent). justfile as
+   single source of truth for gates; fast/slow .githooks **actually wired by init** (the
+   predecessor shipped hooks that were never wired — fix structurally); CI mirrors hooks.
 3. **Process** (the dao): guild review on designs; antifragile boundary test on proposed
    abstractions; evals on flows; ratchet across sessions.
 
@@ -397,15 +397,16 @@ Verified against official docs + live ~/.claude inspection:
   `directory`-source marketplaces (how yzavyas consumes his own) is ambiguous, and
   Windows-hostile. **Therefore: projection happens at authoring time; output is
   committed.** `gnx build` writes plugin dirs; `gnx build --check` keeps CI honest.
-- **One source, two generated manifests**: plugin.json AND the root marketplace.json
-  entry are both generated from the component/distribution source — killing cix's chronic
-  dual-manifest version drift structurally. Version lives in one place (plugin.json wins
-  silently in CC's resolution; version is the cache key — explicit bump = release).
+- **One source, two generated manifests**: plugin.json AND the root marketplace.json entry
+  are both generated from the component/distribution source — killing the predecessor's
+  chronic dual-manifest version drift structurally. Version lives in one place
+  (plugin.json wins silently in CC's resolution; version is the cache key — explicit bump
+  = release).
 - marketplace.json must live at repo root (`.claude-plugin/`); plugin dirs can live in
   any subdir (no `..`). Commands are legacy per CC docs ("use skills for new plugins").
-- cix lessons inherited: publish state lives in data, not directory renames; validation
-  is first-class in the CLI, not outsourced bash; stale CI paths from renames are the
-  tax of churn — name things once.
+- Lessons inherited from the predecessor plugin set: publish state lives in data, not
+  directory renames; validation is first-class in the CLI, not outsourced bash; stale CI
+  paths from renames are the tax of churn — name things once.
 
 Degeneration watch (standing, 2026-05-25): (1) Manifest core accreting vendor semantics;
 (2) **the CC Target adapter becoming de-facto spec because no second Target ships — the
@@ -436,7 +437,7 @@ gnx/
 - **Plugins are projections that pull, not owners.** A plugin references components by
   type_url; `gnx build` resolves them into a **self-contained, committed** plugin dir
   (CC copies the subdir in isolation, bans `..` traversal, has no install-time build —
-  §8). Author once, reference, generate self-contained. This kills cix's #1 pain
+  §8). Author once, reference, generate self-contained. This kills the predecessor's #1 pain
   (every plugin owned its own copies → version drift).
 - **The `components/` ↔ `extensions/` directory boundary IS the degeneration-watch #2
   enforcement surface.** A vendor-specific field on a core schema or core component
@@ -538,7 +539,7 @@ implementation-config — unresolved; and MCP may *ride* the HTTP/CLI adapters
    AccreditationRecord` vs side-table. (Partly slick's call.)
 2. Does gnx formally take the exogenous-anchor role? (Leaning yes; unratified.)
 3. On-disk manifest format: manifest.yaml (leaning) vs manifest.json.
-4. CLI language: Python (leaning, cix inheritance) vs TS (npm/CC adjacency).
+4. CLI language: Python (leaning, inherited from the predecessor) vs TS (npm/CC adjacency).
 5. The proto seam: provides/produces vs requires/provides — blocked on slick's next proto
    pass (Mission C / S9 unrun). gnx treats provides as semantic, produces/consumes as
    topology, regardless of final field names.
@@ -570,7 +571,7 @@ implementation-config — unresolved; and MCP may *ride* the HTTP/CLI adapters
     The June 9 governance dirt-road items (3-rung drift ladder, conjunctive gate,
     inspector-general invariant) were prescribed but never landed anywhere.
 14. Registry alias/lineage ledger: the corpus carries ~15 renames and collisions
-    (cix→gnx, Dijkstra→dagstra, luminex ×2, morpheus ×2, press vs post, semex/shastra
+    (Dijkstra→dagstra, luminex ×2, morpheus ×2, press vs post, semex/shastra
     dead…). HADES writes into the registry — it must not re-mint dead names. Does
     superseded-by/alias become a manifest-level concern?
 15. press vs post: the designed-but-unbuilt publishing pipeline (Pandoc/Typst/Vale/
