@@ -1,6 +1,6 @@
 # Python Hexagonal + Functional Patterns
 
-Patterns for building Python tools with hexagonal architecture and functional streaming. Extracted from production use (memex, cix).
+Patterns for building Python tools with hexagonal architecture and functional streaming. Extracted from production use (memex, recon).
 
 ## Hexagonal Layout
 

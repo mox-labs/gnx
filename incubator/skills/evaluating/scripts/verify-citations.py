@@ -291,7 +291,7 @@ def _openalex(
                 "filter": year_filter,
                 "per_page": 5,
             },
-            headers={"User-Agent": "verify-citations/0.2 (cix)"},
+            headers={"User-Agent": "verify-citations/0.2 (gnx)"},
             timeout=10,
         )
         if r.status_code != 200:

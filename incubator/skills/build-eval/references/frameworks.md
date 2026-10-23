@@ -158,8 +158,6 @@ tests:
 
 **Best for:** Skill activation precision/recall
 
-See the existing `evals/` directory in cix.
-
 **Key Features:**
 - Labeled expectations (must_trigger, should_not_trigger)
 - Precision/recall/F1 calculation
