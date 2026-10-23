@@ -29,7 +29,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from recon.application.plan import fan_out
+from recon.application.plan import accepted_kinds, fan_out
 from recon.domain.collector import BrokenPlugin, CollectorContext
 from recon.domain.errors import CollectionError, ReconError
 from recon.domain.normalize import apply_normalize, bound
@@ -140,7 +140,7 @@ def declared_env(
     declared: dict[str, set[str]] = {}
     for entry in config.collectors:
         names = declared.setdefault(entry.type, set())
-        for source, _output in fan_out(entry, catalog):
+        for source, _output in fan_out(entry, catalog, accepted_kinds(types or {}, entry)):
             if source is None:
                 continue
             if source.auth.env:

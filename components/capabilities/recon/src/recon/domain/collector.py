@@ -157,10 +157,11 @@ class CollectorType:
       unknown. The type parses ``entry.settings`` with it.
     - ``source_kinds`` are the catalog source kinds (a source's ``type:``) the type adds to
       the ones installed; a source of any other kind is a plan problem.
-    - ``accepts_kinds`` are the source kinds a collector of the type can be pinned to; a
-      collector pinned to a source of another kind is a plan problem. ``None`` takes a
-      source of any kind (``capture``, which only filters by the source's name, and a type
-      that does not say).
+    - ``accepts_kinds`` are the source kinds a collector of the type runs against: an
+      unpinned one fans out over the catalog's sources of these kinds alone, and the plan
+      names the rest as skipped; a collector pinned to a source of another kind is a plan
+      problem. ``None`` takes a source of any kind (``capture``, which only filters by the
+      source's name, and a type that does not say).
     - ``source_settings`` is the schema (a pydantic model that forbids unknown keys) of the
       keys a source of one of ``source_kinds`` takes beyond the ones every source has: a
       source's other keys (``source.settings``) are validated against it at plan time.

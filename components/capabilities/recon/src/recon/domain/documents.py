@@ -81,6 +81,9 @@ class PlanDocument(Document):
     problems: list[dict[str, Any]]
     #: Problem records (``recon.v1.error``'s shape) that do not stop the survey.
     warnings: list[dict[str, Any]]
+    #: Each catalog source an unpinned collector does not run against, its type not
+    #: accepting the source's kind: ``{"collector", "source", "kind"}``.
+    skipped: list[dict[str, str]] = []
     #: What the runs need of this host, as the collector types that declare a preflight
     #: checked it during this dry run, each with whether it holds.
     requirements: list[Required] = []

@@ -19,7 +19,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 MISSION = {
-    "catalog": [{"name": "papers", "url": "https://api.example.test", "rate_limit": {"rps": 1}}],
+    "catalog": [
+        {"name": "papers", "url": "https://api.example.test", "rate_limit": {"rps": 1}},
+        # Absolute, so two projects' captures name one directory (the shell is a fake).
+        {"name": "here", "type": "local", "url": "/"},
+    ],
     "collectors": [
         {
             "name": "search",
@@ -29,7 +33,7 @@ MISSION = {
             "extract": "data",
             "normalize": {"title": "title", "authors": "authors.*.name", "first": "authors.0.name"},
         },
-        # No source: it fans out over the catalog, so its table is lines-papers.
+        # No source: it fans out over the catalog's local sources, so its table is lines-here.
         {"name": "lines", "type": "cli", "run": "list-things", "normalize": {"n": "line_number"}},
     ],
 }
@@ -67,7 +71,7 @@ def test_same_mission_same_inputs_same_clock_is_the_same_archive(tmp_path: Path)
     assert first.name == second.name == "2026-01-02-030405-678901"
     assert _files(first) == _files(second)
     assert set(_files(first)) == {
-        "search.jsonl", "lines-papers.jsonl", "meta.yaml", "telemetry.jsonl"
+        "search.jsonl", "lines-here.jsonl", "meta.yaml", "telemetry.jsonl"
     }, "the event log is part of the archive, and as repeatable as the rest"  # fmt: skip
     records = [json.loads(line) for line in (first / "search.jsonl").read_text().splitlines()]
     assert records == [
@@ -84,7 +88,7 @@ def test_the_clock_reaches_the_archive_s_times_and_never_its_records(tmp_path: P
 
     assert first.name != second.name
     one, two = _files(first), _files(second)
-    for table in ("search.jsonl", "lines-papers.jsonl"):
+    for table in ("search.jsonl", "lines-here.jsonl"):
         assert one[table] == two[table]
     differing = {
         a.split(":")[0]

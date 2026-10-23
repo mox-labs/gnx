@@ -118,8 +118,6 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "plugin_broken",
     "otel_unavailable",
     "telemetry_failed",
-    # an unpinned collector fans out over sources of different types
-    "fan_out_mixed",
     # a table came back as one record holding the list of records
     "extract_missing",
     # a table's file that SQL cannot read as a table

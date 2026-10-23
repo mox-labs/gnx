@@ -608,6 +608,7 @@ def test_a_failure_exports_no_command_and_no_credential_in_a_url(
                 "catalog": [
                     {"name": "keyed", "url": keyed},
                     {"name": "small", "url": keyed, "max_bytes": 5},
+                    {"name": "here", "type": "local", "url": "."},
                 ],
                 "collectors": [
                     {"name": "cmd", "type": "cli", "run": "echo COMMAND-TOKEN >&2; exit 3"},

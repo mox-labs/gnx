@@ -1,7 +1,7 @@
 """Planning: every problem, with a path; every run, with its effects; no effects of its own."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 import yaml
@@ -55,7 +55,8 @@ class TestValidPlans:
         )
         assert plan.valid, plan.problems
         runs = {r.output: r.document() for r in plan.runs}
-        assert set(runs) == {"scan-a", "scan-s2", "q"}
+        # The cli collector fans out over the local source alone (owner ruling 2026-10-22).
+        assert set(runs) == {"scan-a", "q"}
         assert runs["scan-a"]["effects"] == ["subprocess"]
         assert runs["scan-a"]["commands"] == ["rg x", "rg y"]
         assert runs["q"]["effects"] == ["network"]
@@ -691,6 +692,95 @@ class TestATypeOwnsItsSettings:
         )
         [problem] = plan.problems
         assert (problem.path, problem.kind) == ("collectors.0.extract", "unknown_key")
+
+
+class TestFanOutByKind:
+    """Owner ruling 2026-10-22: an unpinned collector fans out only over the catalog sources of
+    kinds its type accepts. The plan names each source it skipped, by name and kind, and a
+    collector with no source of a kind it accepts is a plan problem."""
+
+    MIXED: ClassVar[list[dict[str, str]]] = [
+        {"name": "repo", "type": "local", "url": "/tmp"},
+        {"name": "docs", "type": "web", "url": "https://docs.example.test"},
+        {"name": "srv", "type": "mcp", "command": "server"},
+    ]
+
+    def test_an_unpinned_collector_runs_against_the_kinds_its_type_accepts(
+        self, registry: Plugins
+    ) -> None:
+        """Regression: each ran against every source, so the ``cli`` command ran in recon's
+        working directory for ``docs`` and ``srv``, and the ``web`` collector asked a
+        directory and an MCP server's command for a page."""
+        raw = {"catalog": self.MIXED, "collectors": [
+            {"name": "todos", "type": "cli", "run": "rg TODO ."},
+            {"name": "page", "type": "web"},
+        ]}  # fmt: skip
+        plan = _plan(raw, registry)
+        assert plan.valid, plan.problems
+        assert [run.output for run in plan.runs] == ["todos-repo", "page-docs"]
+        assert [s.document() for s in plan.skipped] == [
+            {"collector": "todos", "source": "docs", "kind": "web"},
+            {"collector": "todos", "source": "srv", "kind": "mcp"},
+            {"collector": "page", "source": "repo", "kind": "local"},
+            {"collector": "page", "source": "srv", "kind": "mcp"},
+        ]
+        assert plan.warnings == [], "fan_out_mixed is gone: what it warned of no longer runs"
+
+    def test_a_type_that_takes_any_kind_skips_nothing(self, registry: Plugins) -> None:
+        raw = {"catalog": self.MIXED, "collectors": [{"name": "c", "type": "capture"}]}
+        plan = _plan(raw, registry)
+        assert plan.valid, plan.problems
+        assert [run.output for run in plan.runs] == ["c-repo", "c-docs", "c-srv"]
+        assert plan.skipped == []
+
+    def test_a_collector_with_no_source_of_a_kind_it_accepts_is_a_problem(
+        self, registry: Plugins
+    ) -> None:
+        raw = {"catalog": self.MIXED[1:], "collectors": [
+            {"name": "todos", "type": "cli", "run": "pwd"},
+        ]}  # fmt: skip
+        plan = _plan(raw, registry)
+        [problem] = plan.problems
+        assert (problem.path, problem.kind) == ("collectors.0.source", "missing_key")
+        assert "local" in problem.message
+        assert "docs (web)" in problem.message and "srv (mcp)" in problem.message
+        assert problem.fix is not None and "catalog:" in problem.fix
+        assert plan.runs == [] and not plan.valid
+
+    def test_a_source_of_a_kind_nothing_adds_is_not_also_a_missing_source(
+        self, registry: Plugins
+    ) -> None:
+        raw = {
+            "catalog": [{"name": "repo", "type": "git", "url": "https://github.com/x/y"}],
+            "collectors": [{"name": "c", "type": "cli", "run": "true"}],
+        }
+        [problem] = _plan(raw, registry).problems
+        assert (problem.path, problem.kind) == ("catalog.0.type", "name_unknown")
+
+    def test_a_collector_is_given_only_the_variables_of_the_sources_it_runs_against(
+        self, registry: Plugins
+    ) -> None:
+        """Regression: the ``cli`` type was declared the API key's variable of a source it
+        fanned out over, so its commands could read it."""
+        from recon.application.collectors import declared_env
+
+        raw = {
+            "catalog": [
+                {"name": "repo", "type": "local", "url": "/tmp"},
+                {"name": "keyed", "url": "https://api.example.test",
+                 "auth": {"env": "API_KEY", "header": "x-api-key"}},
+            ],
+            "collectors": [
+                {"name": "todos", "type": "cli", "run": "rg TODO ."},
+                {"name": "q", "type": "api", "endpoint": "/x"},
+            ],
+        }  # fmt: skip
+        config = _plan(raw, registry, env={"API_KEY": "k"}).config
+        assert config is not None
+        assert declared_env(config, registry.collector_types) == {
+            "cli": set(),
+            "api": {"API_KEY"},
+        }
 
 
 class TestSourceKinds:
