@@ -17,7 +17,10 @@ what the runtime's error carried of it (:attr:`ModelRuntimeError.call`,
 So is a session that was **cancelled** mid-flight (``status: cancelled``, reason
 ``cancelled``): its runtime reported nothing, so the row holds what matrix knew, the runtime,
 the agent, the ids of the trace it ran in and the digest of what was sent. A cancellation
-never waits for its row: a row that cannot be recorded then is logged and left out.
+never waits for its row: a row that cannot be recorded then is logged and left out. A failed
+or cancelled session's row keeps the task or prompt as sent (``task``, ``prompt``), which no
+reply row holds for it (owner ruling 2026-10-22). It is content: it stays in the local
+record, and no event or observer carries it from here.
 
 Like the ledger, the table is matrix's own: no component provides or requires it. It is
 written through the Construct like any table, durably and in ledger order, by whatever ran
@@ -127,6 +130,12 @@ class Session(BaseModel):
     #: definition and task, for a model call its prompt, system prompt, model and output
     #: schema. Equal digests, equal requests.
     sent: str
+    #: The task as sent, for an agent session that failed or was cancelled; a completed
+    #: session's reply row keeps it (``AgentResponse.task``). Content: local record only.
+    task: str | None = None
+    #: The prompt as sent, for a model call that failed or was cancelled; a completed call's
+    #: reply row keeps it (``ModelCall.prompt``). Content: local record only.
+    prompt: str | None = None
 
 
 def digest(value: Any) -> str:
@@ -159,13 +168,15 @@ def agent_session(
     runtime: str | None = None,
     drives: tuple[str, ...] = (),
     error: BaseException | None = None,
+    task: str | None = None,
 ) -> Session:
     """The session row of an agent session, from what its runtime reported.
 
     For a session that failed, pass the ``error`` and what the runtime knew of the session
     (the error's ``response``, when it is an :class:`AgentRuntimeError` that carries one;
     else None): the row says it failed, and why. For one that was cancelled, pass the
-    ``CancelledError``: the row says so."""
+    ``CancelledError``: the row says so. Either keeps the ``task`` as sent; a completed
+    session's row does not, since its reply row does."""
     if response is None:
         return Session(
             port="agent-runtime",
@@ -173,6 +184,7 @@ def agent_session(
             drives=drives,
             agent=agent,
             sent=sent,
+            task=None if error is None else task,
             **_failure(error),
         )
     reported = (
@@ -207,6 +219,7 @@ def agent_session(
         turns=response.num_turns,
         session_id=response.session_id,
         sent=sent,
+        task=None if error is None else task,
         **_failure(error),
     )
 
@@ -218,6 +231,7 @@ def call_session(
     runtime: str | None = None,
     drives: tuple[str, ...] = (),
     error: BaseException | None = None,
+    prompt: str | None = None,
 ) -> Session:
     """The session row of a model call, from what its runtime reported, or the
     ``CancelledError`` that cancelled it (see :func:`agent_session`).
@@ -225,10 +239,17 @@ def call_session(
     For a call that failed, pass the ``error`` and what the runtime knew of the call (the
     error's ``call``, when it is a :class:`ModelRuntimeError` that carries one: for hardline,
     every attempt made and the usage they reported; else None): the row says it failed, and
-    why."""
+    why. A failed or cancelled call's row keeps the ``prompt`` as sent; a completed one's
+    does not, since its reply row does."""
+    kept = None if error is None else prompt
     if call is None:
         return Session(
-            port="model-runtime", runtime=runtime, drives=drives, sent=sent, **_failure(error)
+            port="model-runtime",
+            runtime=runtime,
+            drives=drives,
+            sent=sent,
+            prompt=kept,
+            **_failure(error),
         )
     return Session(
         port="model-runtime",
@@ -253,6 +274,7 @@ def call_session(
         turns_digest=call.turns_digest,
         row=call.row,
         sent=sent,
+        prompt=kept,
         **_failure(error),
     )
 

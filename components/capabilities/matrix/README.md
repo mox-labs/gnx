@@ -138,7 +138,7 @@ and model call a component runs, a failed one included, is a row of one more tab
 `matrix.v1.session`: whether it failed and why, the runtime, the model that answered, why it
 stopped, usage, ids (the runtime's, and the
 OpenTelemetry trace and span it ended in), fallback and attempts, and a digest of what was
-sent. A step's reply row points at it (`session`), and the ledger entry of every row a
+sent; a failed or cancelled one keeps the task or prompt as sent, in the record only. A step's reply row points at it (`session`), and the ledger entry of every row a
 component hands over names the sessions behind it. `docs/explanation/data-model.md` joins the
 three in DuckDB.
 

@@ -107,7 +107,10 @@ That config is a grant to send prompts to the collector; review it like one. A `
 attributes are exported as the component gives them.
 
 The local sinks are not filtered: the `jsonl` observer and a run's `events.jsonl` carry each
-task and error message as emitted.
+task and error message as emitted. The run's record holds content too: a reply row keeps the
+task or prompt as sent, and so does the session row of a session or call that failed or was
+cancelled (owner ruling 2026-10-22). Nothing exports the record; whoever can read the store's
+root can read it.
 
 ## Findings
 

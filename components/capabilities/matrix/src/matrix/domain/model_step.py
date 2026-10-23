@@ -266,7 +266,12 @@ async def call_model(
 
     def recorded(call: ModelCall | None, error: BaseException | None = None) -> Session:
         return call_session(
-            call, sent=call_sent(request), runtime=runtime_url, drives=drives, error=error
+            call,
+            sent=call_sent(request),
+            runtime=runtime_url,
+            drives=drives,
+            error=error,
+            prompt=request.prompt,
         )
 
     with around(observing(observers), begun) as end:

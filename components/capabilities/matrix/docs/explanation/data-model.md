@@ -107,6 +107,7 @@ a session.
 | `trace_id`, `span_id` | the OpenTelemetry trace and span the session ended in, as hex, when one was current; matrix mints no id |
 | `fallback_from`, `attempts`, `retries`, `attempt_log`, `params`, `turns_digest`, `row` | for a model call: the model asked for when a fallback answered, every attempt, what was sent and the registry row that answered |
 | `sent` | `sha256:<hex>` over canonical JSON (keys sorted, no whitespace, UTF-8) of what matrix sent the runtime: for a session `{"definition": ..., "task": ...}`, for a call `{"prompt", "system", "model", "output"}` with the output's JSON schema. Equal digests, equal requests |
+| `task`, `prompt` | for a session or a call that failed or was cancelled, the task (a session) or the prompt (a call) as sent; null for a completed one, whose reply row keeps it. Content: in the local record only, never on an event, span or metric |
 
 A fact the runtime did not report is null, never a constant.
 
@@ -117,7 +118,9 @@ the `hardline` model runtime every attempt made and the usage they reported (`at
 `usage`), for `claude-sdk` the session's id, usage, cost and turns when its result arrived.
 **So is a session that was cancelled** mid-flight (its component overran its deadline, or the
 run was cancelled): `status: cancelled`, with what matrix knew of it, since its runtime
-reported nothing: the runtime, the agent, the trace and span it ran in, and `sent`.
+reported nothing: the runtime, the agent, the trace and span it ran in, and `sent`. Either
+keeps what it was asked, as sent (`task` or `prompt`), which no reply row holds for it (owner
+ruling 2026-10-22).
 
 **A reply row points at its session row.** The `AgentResponse` an agent step provides, and the
 `ModelCall` a model step provides, keep the reply and what a consumer acts on (`content` or
@@ -251,10 +254,8 @@ their session row (`session`), which holds the model that answered, its usage an
 **Events are not part of the record.** `events.jsonl` is telemetry kept beside it: an event
 that did not fit the bounded queue, or that was still in it when the run stopped waiting, is
 not there. `run.json` says how many (`events_dropped`), which is how a reader knows the file
-is incomplete. No fact is read from it. What a step that failed was asked is the one thing
-the record does not hold in full: its session row has `sent`, a digest of the definition and
-task (or the prompt), and the `matrix.agent.start` event carries the task as sent when it was
-delivered.
+is incomplete. No fact is read from it. What a step that failed was asked is on its session
+row: the task or prompt as sent (`task`, `prompt`) beside `sent`, the digest.
 
 **While a run is going**, `run.json` says `running`, names the process writing it
 (`writer`: pid and host) and lists each table's file; every table file exists. Each row is one `write` of one whole line to a file opened for

@@ -224,7 +224,7 @@ A reply is a sample, so the record keeps where each one came from. Every agent s
 model call a component runs inside a run is a row of `matrix.v1.session`: the runtime, the
 model that answered (not the one asked for), why it stopped, its usage, the runtime's ids and
 the OpenTelemetry trace and span it ended in, any fallback and attempt, and a digest of what
-was sent. A step's reply row keeps what a consumer acts on (the reply, how it ended, the
+was sent; a failed or cancelled one keeps the task or prompt as sent, in the record only. A step's reply row keeps what a consumer acts on (the reply, how it ended, the
 family) and points at that row; the ledger entry of each row a component hands over names the
 sessions behind it. So a reply is no longer a mix of an answer and its provenance, and a new
 fact about sessions is a field of the session row, not a change to every reply.

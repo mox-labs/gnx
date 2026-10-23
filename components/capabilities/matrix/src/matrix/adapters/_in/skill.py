@@ -563,18 +563,20 @@ With the default store a run is a directory under `.matrix/runs/<run_id>/`:
   `runtime`, the
   model that answered, `stop`, `finish_reason`, `usage` (`input_tokens` counts the cache's),
   `cost_usd`, `session_id`, `request_id`, `trace_id` and `span_id`, `fallback_from`,
-  `attempts`, `attempt_log`, and `sent` (a digest of what was sent). The line's position
-  (from 0) is the row a reply's `session` names;
+  `attempts`, `attempt_log`, and `sent` (a digest of what was sent); a failed or cancelled
+  one keeps what it was asked, as sent (`task`, or `prompt` for a model call). The line's
+  position (from 0) is the row a reply's `session` names;
 - `matrix.v1.ledger.jsonl`: which component handed each row over, when, and the session
   rows behind it (`sessions`);
 - `events.jsonl`: the run's events, telemetry: lossy by design (`events_dropped` in
   `run.json` says how many are missing), so never read a fact from it. What a step that
-  failed was asked is not in the tables in full: its session row has `sent`, a digest.
+  failed was asked is on its session row (`task` or `prompt`).
 
 ```bash
 jq . .matrix/runs/RUN_ID/run.json
 jq -c '{task, content, session}' .matrix/runs/RUN_ID/acme.v1.claim-reply.jsonl
 jq -c '{status, reason, runtime, model, stop, usage}' .matrix/runs/RUN_ID/matrix.v1.session.jsonl
+jq -c 'select(.status != "completed")' .matrix/runs/RUN_ID/matrix.v1.session.jsonl
 ```
 
 A run killed mid-way keeps every row it had recorded. The first matrix command that reads

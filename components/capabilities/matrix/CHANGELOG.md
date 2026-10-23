@@ -199,6 +199,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
     session (`claude-sdk` fills it from a result that says the session failed: its id, usage,
     cost, turns and model). `BoundAgent` and the model step record a failed session before
     re-raising; the row is the failed component's, and no ledger entry names it.
+  - A failed or cancelled session's row keeps what it was asked, as sent (owner ruling
+    2026-10-22): `task` for an agent session, `prompt` for a model call; a completed one's
+    reply row keeps it, so its session row does not. It is content, kept in the local record
+    only: no event, span or metric carries it. `agent_session` takes `task=` and
+    `call_session` `prompt=`.
   - A `BoundAgent` and a model step record their own rows; a component that calls a model
     runtime itself records with `record_session(call_session(...))`. `agent_session` and
     `call_session` take `error=` (an exception, or the `CancelledError`), and their record
@@ -412,9 +417,8 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 - **Nothing points readers at the events for a fact.** The skill told an agent to read a
   failed step's task from `events.jsonl` with `jq`, and `matrix run` described the file as
   "each agent's task as sent": the channel is lossy, so the fact might not be there. Events
-  are now called lossy wherever the record is described, and the docs say the one thing the
-  tables do not hold in full: what a step that failed was asked (its session row has `sent`,
-  a digest).
+  are now called lossy wherever the record is described. What a step that failed was asked
+  is on its session row as sent (`task` or `prompt`, above).
 - **A killed run reads without matrix.** A cut-short last line broke `jq` (exit 5) and
   DuckDB (`Malformed JSON`), though matrix's own reader skipped it, and `interrupted` was
   only what `describe` computed: `run.json` said `running` for ever. Now the first matrix
