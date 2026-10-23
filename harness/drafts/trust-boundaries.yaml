@@ -2,7 +2,7 @@
 type_url: gnx.dev.v1.trust-boundaries
 kind: Skill
 maturity: shipped
-source: ../../..//mox/products/cix/plugins/guild-arch/skills/trust-boundaries/SKILL.md
+source: guild-arch/skills/trust-boundaries/SKILL.md  # relative to the intake source root (intake_payload.py --source-root)
 provides:
   - guild.security-by-design
 requires: []

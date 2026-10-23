@@ -4,7 +4,7 @@
 type_url: gnx.dev.v1.guild-arch
 kind: Capability
 maturity: shipped
-source: ../../..//mox/products/cix/plugins/guild-arch
+source: guild-arch  # relative to the intake source root (intake_payload.py --source-root)
 provides:
   - guild.architecture-review
   - guild.production-readiness
