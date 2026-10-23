@@ -1038,9 +1038,11 @@ def genres(lab: str | None, as_json: bool) -> None:
 def kinds(lab: str | None, as_json: bool) -> None:
     """List the subject kinds, probe kinds, sensors and environment kinds.
 
-    Each kind declares its options (required ones marked *), the facets it needs and offers
-    and, for a sensor, the metrics it provides. `runs` says whether this ix has
-    an adapter for the kind: one without can be validated, planned and registered, not run.
+    Each kind declares its options (required ones marked *), the facets it needs and offers,
+    for a sensor the metrics it provides and, for an environment, the keys each service it
+    brings up is bound with (`service_keys`: `{<service>.url}`). `runs` says whether this ix
+    has an adapter for the kind: one without can be validated, planned and registered, not
+    run.
     """
     try:
         found = ix.kinds(lab)
@@ -1058,6 +1060,8 @@ def kinds(lab: str | None, as_json: bool) -> None:
         table.add_column("kind", no_wrap=True)
         table.add_column("options (* required)", overflow="fold", min_width=widest)
         table.add_column("needs > offers")
+        if family == "environment":
+            table.add_column("service keys")
         table.add_column("runs", no_wrap=True)
         tables[family] = table
     metrics = Table(title="Metrics", title_justify="left")
@@ -1070,10 +1074,12 @@ def kinds(lab: str | None, as_json: bool) -> None:
             f"{name}{'*' if option.required else ''}" for name, option in kind.options.items()
         )
         facets = f"{', '.join(kind.needs) or '-'} > {', '.join(kind.offers) or '-'}"
+        keys = [escape(", ".join(kind.service_keys) or "-")] if kind.family == "environment" else []
         tables[kind.family].add_row(
             escape(label),
             escape(options or "-"),
             escape(facets),
+            *keys,
             "yes" if kind.name in found.runnable else "no",
         )
         for metric in kind.metrics:

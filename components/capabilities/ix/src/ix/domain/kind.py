@@ -297,9 +297,9 @@ class Kind(Record):
     duration: tuple[str, ...] = ()
     #: Sensors only: the expected and observed labels its readings' detail holds.
     confusion: Confusion | None = None
-    #: Environment kinds only: what each service it brings up is bound with (``host``,
+    #: Environment kinds only: the keys each service it brings up is bound with (``host``,
     #: ``port``, ``url``), which a subject's or a probe's option names as ``{<service>.<key>}``.
-    binds: tuple[str, ...] = ()
+    service_keys: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _coherent(self) -> Kind:
@@ -320,8 +320,8 @@ class Kind(Record):
             raise ValueError("only a probe kind declares duration")
         if self.confusion is not None and family != "sensor":
             raise ValueError("only a sensor kind declares confusion")
-        if self.binds and family != "environment":
-            raise ValueError("only an environment kind declares binds")
+        if self.service_keys and family != "environment":
+            raise ValueError("only an environment kind declares service_keys")
         for name in self.duration:
             if name not in self.options or self.options[name].type != "duration":
                 raise ValueError(f"duration names {name!r}, which is not a duration option")
@@ -435,12 +435,12 @@ def services(options: Mapping[str, Any]) -> tuple[str, ...] | None:
 def binding_names(kind: Kind | None, options: Mapping[str, Any]) -> tuple[str, ...] | None:
     """Every ``<service>.<key>`` an environment of ``kind`` written with ``options`` binds;
     None when its services are not named, so any service may be."""
-    if kind is None or not kind.binds:
+    if kind is None or not kind.service_keys:
         return ()
     named = services(options)
     if named is None:
         return None
-    return tuple(f"{service}.{key}" for service in named for key in kind.binds)
+    return tuple(f"{service}.{key}" for service in named for key in kind.service_keys)
 
 
 def placed(kind: Kind, options: Mapping[str, Any], base: str) -> dict[str, Any]:

@@ -151,6 +151,15 @@ may do is what that config and its definition say, and the runtime's config sche
 a key it does not declare. The session sees its prompt and the files copied in; it never
 sees the probe's truth.
 
+An `agent-session` subject on the `pydantic-ai` runtime runs in ix's own process. Its
+`runtime_options` may name tools, each a Python function (`tools: {name: module:function}`),
+and **naming one is a grant to run that code** (owner ruling 2026-10-22). `ix plan`, and the
+check before `ix run` starts, locate each module without running it; a trial's session
+imports the module when it first offers the tool, and calls the function when the model
+asks, with the whole authority of ix's process, its environment and credentials included,
+and no permission mode between the model's request and the call. Read the functions an
+experiment names before running it, as you would its commands (section 6).
+
 matrix builds the session and owns its authority: matrix's SECURITY.md has the detail. A
 `model-call` subject makes one model call per trial through a model runtime (`hardline`),
 with no tools and no working directory, and the `mock` runtimes call no model. `ix run

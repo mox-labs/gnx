@@ -381,6 +381,9 @@ class TestTheReferencesTeachFromTheRecords:
                 assert f"`{name}`{'*' if option.required else ''}" in text, (kind.label, name)
             for metric in kind.metrics:
                 assert f"metric `{metric.name}`" in text
+            if kind.service_keys:
+                keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
+                assert f"**`{kind.label}`**" in text and f"binds each service as {keys}" in text
         judged = [m for k in ix.kinds().kinds.values() for m in k.metrics if m.judged]
         assert text.count("JUDGED by a model") == len(judged) == 6  # judge 4, evaluator 2
 

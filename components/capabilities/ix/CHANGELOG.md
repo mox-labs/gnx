@@ -27,7 +27,7 @@
   plain install runs agent sessions on `claude-sdk` and exports spans. A requirement that
   names an extra (`ix[claude] @ ...`) now fails to resolve: drop the brackets. A warning
   matrix carries over for an install that lacks one is `dependency_missing` (was
-  `extra_missing`).
+  `extra_missing`; the rename is kept, owner ruling 2026-10-22).
 - **Spend.** ix no longer limits or estimates what a run costs. The ceiling was checked only
   between trials, rested on whatever cost an adapter chose to report (the `model` runtime
   reports none), and counted calls matrix already accounts for; it is gone, and not
@@ -200,7 +200,8 @@
   `claude-sdk` is: its `runtime_options` are that runtime's config (`models`,
   `default_model`, `tools`, ...), reviewed against what it declares, and each trial's
   session row names the model that answered and what the runtime drives (`pydantic-ai-slim`,
-  `hardline`). The kinds list it among the runtime choices.
+  `hardline`). The kinds list it among the runtime choices. Naming `tools` there is a grant
+  to run that code in ix's process (owner ruling 2026-10-22; SECURITY.md section 7).
 - **Subject kind `model-call`.** It takes model runtimes (`hardline`, `mock`, or any
   installed at `model-runtime`). Each trial is one model call, through `matrix.call_model`
   (a `matrix.model` span, as a model step's is), with `model`, `system_prompt` and
@@ -232,8 +233,10 @@
 - **Environment bindings reach the trials.** `{<service>.url}`, `.host` and `.port` in a
   subject's or a probe's options are filled from what the environment bound for that
   service, and `validate` accepts them for each service the environment's options name. An
-  environment kind declares the keys it binds (`binds:`). `environment.process` binds where a
-  service listens: its new `url` option, or the address of its `ready` URL. A run whose
+  environment kind declares the keys it binds each service with (`service_keys:`; owner
+  ruling 2026-10-22: not `binds`, which a kind option keeps for the placeholders its
+  adapter fills, and with no alias). `environment.process` binds where a service listens:
+  its new `url` option, or the address of its `ready` URL. A run whose
   environment came up without a service the experiment names fails before any trial
   (`unbound`), naming what it did bind.
 - **A verdict traces to the model that answered.** Record §19 has the reasons.
@@ -295,9 +298,10 @@
   for a block, and `Root(tracer=...)` takes where ix's spans go: a program that wires its own
   adapters no longer has to reach a private name to drive the command.
 - **`ix.domain` exports `TrialError`**, the base of `SubjectError` and `HarnessError`.
-- **What a caller may rely on is listed.** README names the run layout and table names, the
-  events and their fields, the span names and the exit kinds as contract, each pinned by a
-  test, and span attributes, the conventions' names and the human text as not.
+- **What a caller may rely on is listed.** README names the run layout and table names and
+  the exit kinds as contract, each pinned by a test, and the human text and every telemetry
+  name as not: span and event names, their attributes and fields, the conventions' names
+  (owner ruling 2026-10-22).
 
 ### Fixed
 
