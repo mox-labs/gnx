@@ -265,7 +265,8 @@ one of `check`'s `warnings`.
 hardline counts the inference tokens of the calls it makes; a host counts its own sessions,
 not the model calls inside them. **No content is recorded**: no prompt, system prompt, reply,
 refusal or error message, as an attribute, an event or a span status. There is no option to
-record it.
+record it. The names above (spans, metrics, attribute keys) are not contract and may change
+without notice; that no content is recorded is.
 
 Another composition root wires hardline from a section of its own config:
 

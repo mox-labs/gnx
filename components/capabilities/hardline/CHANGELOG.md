@@ -30,6 +30,7 @@ The first release with a changelog: each entry compares with 0.1.0.
 
 ### Changed
 
+- **Telemetry names are not contract** (owner ruling 2026-10-22): a span's or a metric's name and an attribute's key may change without notice, the GenAI conventions' ones included. That no content is recorded is.
 - Provider errors carry the provider's own message (`error.message`), with the key scrubbed, and name the row's location; `api.openai.com` is no longer named for a row that does not send there.
 - **Each discovered tier is named with how it was found**: `user <path>`, `cwd <path>`, `$HARDLINE_CONFIG <path>`, in errors, in `hardline check`, and in each row's record.
 

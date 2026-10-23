@@ -128,7 +128,7 @@ A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`)
 
 ## Telemetry
 
-recon reports what it did on open standards, with a local record by default.
+recon reports what it did on open standards, with a local record by default. The names below (spans, metrics, events, attribute keys) are not contract and may change without notice; what telemetry never carries, below, is.
 
 **The event log.** Every survey writes `telemetry.jsonl` into its archive, beside `meta.yaml`: one `recon.v1.event` line when a span starts and one when it ends, `{schema, name, time, span, parent, kind, attributes, status, message, duration_ms}`, the times from recon's clock so a survey against a fixed clock writes the same log twice. A start with no end is where a killed survey stopped. The spans:
 

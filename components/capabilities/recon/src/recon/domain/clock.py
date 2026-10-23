@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 #: The longest wait, in seconds, this platform's timers take: a socket's timeout, a sleep and
 #: a thread's wait each refuse a longer one (``OverflowError``). A source's ``timeout`` and
 #: its rate limit's longest wait for a token are held to it when the mission is planned.
+#: Reading this platform constant in the domain is accepted (owner ruling 2026-10-22).
 LONGEST_WAIT: Final = threading.TIMEOUT_MAX
 
 

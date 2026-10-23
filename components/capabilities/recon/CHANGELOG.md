@@ -19,6 +19,7 @@
 
 ### Changed
 
+- **Telemetry names are not contract** (owner ruling 2026-10-22): a span's, a metric's or an event's name and an attribute's key may change without notice. What telemetry never carries (a credential in a URL, a failed span's error text, an MCP call's arguments or result) is.
 - **`meta.yaml` names the layout of the archive's tables** (`table_layout: 1`), as it names its own format, and `query` refuses an archive in a layout it does not know rather than misreading it. An archive with no `table_layout` is in layout 1.
 - **A collector type is built only for a survey that uses it**, so one plugin's broken factory no longer warns in every survey. A table of a type whose factory raised fails as `config`, naming the type.
 - **`CollectorContext` carries `shell`**, the port the `cli` type runs commands through, and a transform that reads files declares it by taking a keyword-only `roots` (recon binds the mission's directories to every transform that does; `$markitdown` is no longer special-cased by identity).
