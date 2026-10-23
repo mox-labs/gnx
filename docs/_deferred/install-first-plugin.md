@@ -11,7 +11,7 @@ fidelity: tarmac
 
 **Status: shipped.** These steps run now. No gnx CLI required — the marketplace mechanism is Claude Code's own feature; gnx supplies the content.
 
-craft-rhetoric (v0.3.0) and the cix plugin family are installable today. `gnx init`, `gnx add`, and `gnx build` are designed but do not run yet — they do not appear here.
+craft-rhetoric (v0.3.0) and the rest of the predecessor plugin set are installable today. `gnx init`, `gnx add`, and `gnx build` are designed but do not run yet — they do not appear here.
 
 ---
 
@@ -22,10 +22,10 @@ Open `~/.claude/settings.json`. Add an `extraKnownMarketplaces` entry:
 ```json
 {
   "extraKnownMarketplaces": {
-    "cix": {
+    "gnx": {
       "source": {
         "source": "directory",
-        "path": "/path/to/cix"
+        "path": "/path/to/plugin-repo"
       },
       "autoUpdate": true
     }
@@ -33,15 +33,15 @@ Open `~/.claude/settings.json`. Add an `extraKnownMarketplaces` entry:
 }
 ```
 
-The key (`"cix"`) becomes the marketplace identifier. Claude Code uses it as the namespace suffix in `enabledPlugins` — `"craft-rhetoric@cix"`, `"ci-scaffolds@cix"`, and so on.
+The key (`"gnx"`) becomes the marketplace identifier; you choose it. Claude Code uses it as the namespace suffix in `enabledPlugins` — `"craft-rhetoric@gnx"`, `"ci-scaffolds@gnx"`, and so on.
 
-Two source types work. A `"directory"` source reads a local path — this is how cix is consumed today, pointing at a local clone of the repo. A `"github"` source (`"source": "github", "repo": "<owner>/<repo>"`) clones a public repo — the planned public distribution path. The example above uses a directory source against a local clone, which runs now.
+Two source types work. A `"directory"` source reads a local path — this is how the plugin repository is consumed today, pointing at a local clone of it. A `"github"` source (`"source": "github", "repo": "<owner>/<repo>"`) clones a public repo — the planned public distribution path. The example above uses a directory source against a local clone, which runs now.
 
 ---
 
 ## Step 2 — Browse what's available
 
-The cix marketplace ships these plugins today:
+That marketplace ships these plugins today:
 
 | Plugin | Version | What it provides |
 |--------|---------|-----------------|
@@ -54,7 +54,7 @@ The cix marketplace ships these plugins today:
 | `craft-research` | 0.3.0 | Research synthesis |
 | `radix` | 0.3.4 | Multimodal input handling |
 
-These are the gnx planned marketplace plugins installable through the cix source now. The gnx marketplace projection (a separate generated `marketplace.json` at the gnx repo root) is the designed shape — same content, different entry point, planned.
+These are the gnx planned marketplace plugins installable through that source now. The gnx marketplace projection (a separate generated `marketplace.json` at the gnx repo root) is the designed shape — same content, different entry point, planned.
 
 ---
 
@@ -65,21 +65,21 @@ In `~/.claude/settings.json`, add to `enabledPlugins`:
 ```json
 {
   "enabledPlugins": {
-    "craft-rhetoric@cix": true
+    "craft-rhetoric@gnx": true
   }
 }
 ```
 
-Claude Code copies the plugin subdirectory into a versioned cache at `~/.claude/plugins/cache/cix/craft-rhetoric/0.3.0/`. The plugin is self-contained — no build step, no traversal outside its directory. Once the entry is written and Claude Code restarts, the plugin is active.
+Claude Code copies the plugin subdirectory into a versioned cache at `~/.claude/plugins/cache/gnx/craft-rhetoric/0.3.0/`. The plugin is self-contained — no build step, no traversal outside its directory. Once the entry is written and Claude Code restarts, the plugin is active.
 
 To install multiple plugins from the same marketplace, add each one:
 
 ```json
 {
   "enabledPlugins": {
-    "craft-rhetoric@cix": true,
-    "ci-scaffolds@cix": true,
-    "guild-arch@cix": true
+    "craft-rhetoric@gnx": true,
+    "ci-scaffolds@gnx": true,
+    "guild-arch@gnx": true
   }
 }
 ```

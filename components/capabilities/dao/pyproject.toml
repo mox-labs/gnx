@@ -34,7 +34,7 @@ include = [
     "src/dao/py.typed",
 ]
 
-# The x.uma/puma house gate: B (bugbear), SIM and TCH on top of the cix set.
+# The x.uma/puma house gate: B (bugbear) and SIM on top of E, F, I, N, W, UP.
 [tool.ruff]
 line-length = 100
 target-version = "py312"

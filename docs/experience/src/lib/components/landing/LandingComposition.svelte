@@ -1,9 +1,9 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 
-	// Cinematic quincunx (lifted from the cix landing): a full-viewport grid with
-	// the sigil at center and content at the cardinal points, over an atmospheric
-	// gradient. Collapses to vertical full-viewport slides on mobile.
+	// Cinematic quincunx: a full-viewport grid with the sigil at center and content
+	// at the cardinal points, over an atmospheric gradient. Collapses to vertical
+	// full-viewport slides on mobile.
 	interface Props {
 		north?: Snippet;
 		west?: Snippet;

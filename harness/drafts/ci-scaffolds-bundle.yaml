@@ -4,7 +4,7 @@
 type_url: gnx.dev.v1.ci-scaffolds
 kind: Capability
 maturity: shipped
-source: ../../..//mox/products/cix/plugins/ci-scaffolds
+source: ci-scaffolds  # relative to the intake source root (intake_payload.py --source-root)
 provides:
   - ci.trust-calibration
   - ci.engineering-craft

@@ -11,7 +11,7 @@
 #        recon init my-review --from \
 #          plugins/craft-research/skills/collecting/references/research-catalog.yaml
 #
-#   2. Edit the resulting .cix/recon/my-review/config.yaml to replace
+#   2. Edit the resulting .recon/my-review/config.yaml to replace
 #      {query} and {limit} placeholders with real values from your
 #      sources/inventory.md.
 #
@@ -47,13 +47,13 @@ catalog:
     url: https://api.openalex.org
     auth: { param: api_key, env: OPENALEX_API_KEY }
     rate_limit: { rps: 10, burst: 5 }
-    user_agent: "recon/0.8.0 (https://github.com/mox-labs/cix)"
+    user_agent: "recon/0.8.0 (https://github.com/mox-labs/gnx)"
 
   - name: zenodo
     type: api
     url: https://zenodo.org/api
     rate_limit: { rps: 1, burst: 2 }
-    user_agent: "recon/0.8.0 (https://github.com/mox-labs/cix)"
+    user_agent: "recon/0.8.0 (https://github.com/mox-labs/gnx)"
 
 collectors:
   - name: s2-search

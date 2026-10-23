@@ -1,6 +1,6 @@
 # Design Principles
 
-Five principles governing every cix extension, grounded in collaborative intelligence research.
+Five principles governing every extension, grounded in collaborative intelligence research.
 
 ---
 

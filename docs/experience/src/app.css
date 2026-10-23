@@ -8,11 +8,11 @@
 @import '@fontsource/ibm-plex-sans/600.css';
 @import './lib/brand/tokens.css';
 
-/* gnx docsite — themed on the lifted cix brand layer. Dark-first dao neutrals,
+/* gnx docsite — themed on the brand layer in lib/brand/tokens.css. Dark-first dao neutrals,
    trichrome used BY ROLE (Spark = links/emphasis/open marks, Constraint =
    boundaries/RETURN, Emergence = code/SHIP/resolved), mono-led type
-   (cix·operator: "monospace body signals tool-ness"). The gnx semantic names
-   below alias the cix tokens so the existing component styles re-skin in place. */
+   (the operator register: "monospace body signals tool-ness"). The gnx semantic names
+   below alias the brand tokens so the existing component styles re-skin in place. */
 :root {
 	--bg: var(--dao-bg);
 	--fg: var(--dao-text);

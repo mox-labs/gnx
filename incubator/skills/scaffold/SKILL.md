@@ -102,7 +102,7 @@ Verify:
 
 ## Hexagonal Template — Python
 
-The reference implementation, based on established project convention (memex, ix, cix).
+The reference implementation, based on established project convention (memex, ix).
 
 ### Directory Layout
 

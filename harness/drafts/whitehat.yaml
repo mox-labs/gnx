@@ -2,7 +2,7 @@
 type_url: gnx.dev.v1.whitehat
 kind: Skill
 maturity: shipped
-source: ../../..//mox/products/cix/plugins/ci-scaffolds/skills/whitehat/SKILL.md
+source: ci-scaffolds/skills/whitehat/SKILL.md  # relative to the intake source root (intake_payload.py --source-root)
 provides:
   - ci.security-finding
 requires: []

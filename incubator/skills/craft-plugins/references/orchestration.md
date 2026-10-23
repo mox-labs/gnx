@@ -468,4 +468,4 @@ The resumed agent sees its FULL prior conversation + the new prompt. No context 
 
 - [Claude Code subagent documentation](https://docs.anthropic.com/en/docs/claude-code/sub-agents)
 - [Agent Teams (experimental)](https://docs.anthropic.com/en/docs/claude-code/agent-teams)
-- Real-world orchestration patterns from CIX ecosystem plugins
+- Real-world orchestration patterns from the predecessor plugin set

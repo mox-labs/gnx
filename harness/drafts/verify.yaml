@@ -2,7 +2,7 @@
 type_url: gnx.dev.v1.verify
 kind: Agent
 maturity: shipped
-source: ../../..//mox/products/cix/plugins/craft-research/agents/scrutiny.md
+source: craft-research/agents/scrutiny.md  # relative to the intake source root (intake_payload.py --source-root)
 provides:
   - gnx.dev.v1.verified-claims
   - research.claim-verification

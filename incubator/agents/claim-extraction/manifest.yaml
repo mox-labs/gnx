@@ -1,5 +1,5 @@
-# First D21 intake from cix (2026-07-23). Adopted from
-# cix/plugins/craft-research/agents/extract.md + skills/extracting/ — re-minted
+# First D21 intake from the predecessor plugin set (2026-07-23). Adopted from
+# craft-research/agents/extract.md + skills/extracting/ — re-minted
 # under gnx per GEP-0001 (adoption, not impersonation); payload self-contained
 # (method references bundled, the one plugin-relative pointer rewritten).
 type_url: gnx.dev.v1.claim-extraction

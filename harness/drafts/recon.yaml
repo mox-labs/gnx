@@ -2,7 +2,7 @@
 type_url: gnx.dev.v1.recon
 kind: Capability                  # recon-backed mechanical collection
 maturity: shipped
-source: ~/mox/products/cix/tools/recon  # the TOOL behind the Capability — binds via source; exposes --skill
+source: ../../components/capabilities/recon  # the TOOL behind the Capability — binds via source; exposes --skill
 provides:
   - gnx.dev.v1.source-cache
   - research.source-collection
