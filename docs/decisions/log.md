@@ -112,15 +112,18 @@ config-driven wings (D7), Commentable + file-backed feedback, /llms.txt + /raw t
 2026-07-04/05 grounding under D10's register. Pre-clear backup: scratch/app-backup-2026-07-05/.
 *Flip:* if the rebuilt shell regresses a ratified mechanic, restore from backup and re-cut.
 
-**D12 — cix is dissolved into gnx; the public register carries no cix brand.**  one-way (yzavyas).
+**D12 — The predecessor is dissolved into gnx; the public register carries no predecessor brand.**
+one-way (yzavyas).
 The plugins are **gnx components** — named on their own feet (craft-rhetoric, guild-arch,
 ci-scaffolds…), being ported into the catalog as components/capabilities (plugin-grain
-adoption now; round-two four-kind decomposition later). Public sweep: no "cix plugin
+adoption now; round-two four-kind decomposition later). Public sweep: no predecessor "plugin
 family"; marketplace config examples use the user-chosen `gnx` key (the key IS user-chosen —
-`craft-rhetoric@gnx`); type_url examples use gnx namespaces; tool mentions drop the cix
-umbrella. cix survives dossier-side only, as lineage and intake provenance — the same move
-GEP-0001 makes at the identity layer, applied at the brand layer.
-*Why:* succession is adoption, not co-branding; the succession decree archived cix.
+`craft-rhetoric@gnx`); type_url examples use gnx namespaces; tool mentions drop the
+predecessor's umbrella. Intake provenance lives in `source`/`relations`, never in a name — the
+same move GEP-0001 makes at the identity layer, applied at the brand layer. The predecessor's
+name first survived dossier-side as lineage; on 2026-10-23 yzavyas ruled it out of the
+repository entirely.
+*Why:* succession is adoption, not co-branding; the succession decree archived the predecessor.
 *What would change it:* nothing — naming authority exercised.
 
 **D13 — Identity casing: kebab-case resources.**  one-way-adjacent (yzavyas, 2026-07-06 — GEP-0001's
@@ -138,7 +141,7 @@ real components' manifests stay valid as-is; controlled tag vocabulary stays def
 *Flip:* the first component the parse rule cannot serve re-opens split-fields.
 
 **D15 — The expansion is ratified: gnx = generative noetic extensions.**  mint-once (yzavyas,
-2026-07-06). Already in the wild via the cix archive notice ("generative noetic extensions for
+2026-07-06). Already in the wild via the predecessor's archive notice ("generative noetic extensions for
 agents"); the public wing states it once, plainly, on the landing/what-is surface.
 *Why:* naming authority exercised; the de-facto public statement becomes the de-jure one.
 
@@ -369,7 +372,7 @@ close the semantic gap, and gnx must not claim otherwise.
 
 ## Open two-way doors (autonomous defaults; flag if the list grows)
 
-- Public-landing voice register — cix·operator (IBM Plex Mono, tool-ness) vs blueprints·
+- Public-landing voice register — operator (IBM Plex Mono, tool-ness) vs blueprints·
   billboard (DM Mono, loud). Default: operator for docs. *Flip:* if the public marketplace
   landing wants the louder voice.
 - On-disk layout for new public docs — `content/<section>/<slug>.md` subdirs (chosen) vs
