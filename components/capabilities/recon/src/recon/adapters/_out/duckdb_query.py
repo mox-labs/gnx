@@ -1,8 +1,12 @@
 """SQL over an archive's tables, in DuckDB.
 
-Every table is a view named after its file (non-identifier characters become ``_``). The
-capture log is not a table. A table that collected nothing is a view with no rows: its one
-sentinel line is filtered out.
+The tables are the ones the archive's store lists (``ArchiveStore.tables``): this adapter
+reads each where the store says it is and knows nothing else of how archives are stored.
+Every table is a view named by :func:`~recon.domain.archives.table_name` (non-identifier
+characters become ``_``). A table that collected nothing is a view with no rows, whose
+columns are the ones the store says it keeps (its collector's ``normalize:`` spec's),
+null-typed, so a query of them binds as it would on a full table; ``_empty`` is a column of
+it too, for queries written against the sentinel line an empty table's file holds.
 
 A view is made per table, and one that cannot be made does not stop the others. DuckDB reads
 a JSON object as a struct, so an object keyed by data rather than by field names (OpenAlex's
@@ -20,7 +24,11 @@ error from a glob that spans archives says the archives' columns can differ.
 The SQL is not trusted. Whoever writes it has usually just read the tables, and the tables
 are collected text, so the connection is confined before any SQL runs: it reads files only
 under the mission's ``archive/`` directory (every archive of the mission, which keeps
-cross-archive diffs working), installs and loads no extension, and reaches no network.
+cross-archive diffs working), spills nothing to disk, installs and loads no extension, and
+reaches no network. DuckDB
+lets SQL write wherever it may read, so a query runs only SELECT statements (``WITH``,
+``FROM``, ``DESCRIBE`` and ``SUMMARIZE`` are SELECTs to DuckDB): a ``COPY``, ``ATTACH``,
+``CREATE`` or any other statement is refused before anything runs.
 """
 
 from __future__ import annotations
@@ -28,26 +36,27 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from recon.adapters._out.archive_files import is_empty_table, table_files
-from recon.domain.archives import Rows
+from recon.domain.archives import Rows, table_name
 from recon.domain.errors import NotFoundError, Problem, QueryError
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-_NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
-
-
-def table_name(stem: str) -> str:
-    return _NOT_IDENTIFIER.sub("_", stem)
+    from recon.domain.archives import ArchiveStore, StoredTable
 
 
 def _confine(conn: Any, readable: Path) -> None:
     """Restrict a fresh connection to reading under ``readable``. Order matters:
     ``allowed_directories`` can only be set while external access is still on, turning
     external access off cannot be undone, and the lock stops the extension settings from
-    being switched back."""
+    being switched back. Spilling to disk is off: DuckDB adds its temp directory (``.tmp/``
+    under the working directory) to the directories SQL may read, so a query could read
+    whatever is there; a query that would spill fails for memory instead. The time zone is
+    UTC: DuckDB reads ``…Z`` as a timestamp with no zone, and a cast to TIMESTAMPTZ would
+    otherwise take the machine's zone for it; a time with an explicit offset keeps it."""
     root = str(readable).replace("'", "''")
+    conn.execute("SET TimeZone='UTC'")
+    conn.execute("SET temp_directory=''")
     conn.execute(f"SET allowed_directories=['{root}']")
     conn.execute("SET autoinstall_known_extensions=false")
     conn.execute("SET autoload_known_extensions=false")
@@ -55,24 +64,54 @@ def _confine(conn: Any, readable: Path) -> None:
     conn.execute("SET lock_configuration=true")
 
 
+def _reads_only(conn: Any, sql: str) -> None:
+    """Refuse ``sql`` unless every statement in it is a SELECT, as DuckDB's parser types it."""
+    import duckdb
+
+    refused = [
+        statement.type.name
+        for statement in conn.extract_statements(sql)
+        if statement.type != duckdb.StatementType.SELECT
+    ]
+    if refused:
+        raise QueryError(
+            f"recon query runs only SELECT statements; this SQL has {', '.join(refused)}",
+            fix="ask with a SELECT (WITH, FROM, DESCRIBE and SUMMARIZE are SELECTs too): a "
+            "query reads the archive and writes nothing, so COPY, ATTACH, CREATE, INSERT, SET "
+            "and every other statement are refused",
+            details={"statements": refused},
+        )
+
+
 class DuckdbQuery:
-    def tables(self, archive: Path) -> list[str]:
-        return [table_name(f.stem) for f in table_files(archive)]
+    """``archives`` is the store whose tables the SQL reads."""
+
+    def __init__(self, archives: ArchiveStore) -> None:
+        self._archives = archives
 
     def execute(self, archive: Path, sql: str) -> Rows:
         import duckdb  # only a query needs it
 
         archive = archive.absolute()
-        files = table_files(archive)
-        if not files:
+        tables = self._archives.tables(archive)
+        if not tables:
             raise NotFoundError(f"no tables in archive {archive}")
         conn = duckdb.connect()
         try:
             _confine(conn, archive.parent)
-            unreadable = _views(conn, files)
-            readable = [name for name in self.tables(archive) if name not in unreadable]
+            unreadable = _views(conn, tables)
+            names = [table_name(table.output) for table in tables]
+            readable = [name for name in names if name not in unreadable]
             try:
+                _reads_only(conn, sql)
                 result = conn.execute(sql)
+                columns = [d[0] for d in result.description or []]
+                rows = result.fetchall() if result.description else []
+            except ImportError as exc:  # a module DuckDB needs for a result, raised as itself
+                module = exc.name or "a module"
+                raise QueryError(
+                    f"DuckDB could not import {module}: {exc}", fix=_module_fix(module)
+                ) from exc
             except duckdb.Error as exc:
                 for name, (file, why) in unreadable.items():
                     if isinstance(exc, duckdb.CatalogException) and _names(sql, name):
@@ -89,45 +128,50 @@ class DuckdbQuery:
                 _unreadable(name, file, why, ", and this query did not use it")
                 for name, (file, why) in unreadable.items()
             ]
-            if not result.description:
-                return Rows(columns=[], rows=[], warnings=warnings)
-            columns = [d[0] for d in result.description]
-            return Rows(columns=columns, rows=result.fetchall(), warnings=warnings)
+            return Rows(columns=columns, rows=rows, warnings=warnings)
         finally:
             conn.close()
 
     def unreadable(self, archive: Path) -> list[Problem]:
         import duckdb
 
-        files = table_files(archive.absolute())
-        if not files:
+        tables = self._archives.tables(archive.absolute())
+        if not tables:
             return []
         conn = duckdb.connect()
         try:
             _confine(conn, archive.absolute().parent)
             return [
-                _unreadable(name, file, why) for name, (file, why) in _views(conn, files).items()
+                _unreadable(name, file, why) for name, (file, why) in _views(conn, tables).items()
             ]
         finally:
             conn.close()
 
 
-def _views(conn: Any, files: list[Path]) -> dict[str, tuple[Path, str]]:
+def _views(conn: Any, tables: list[StoredTable]) -> dict[str, tuple[Path, str]]:
     """Make a view of each table; return the tables that got none, with their file and why."""
     import duckdb
 
     unreadable: dict[str, tuple[Path, str]] = {}
-    for file in files:
-        quoted = str(file).replace("'", "''")
-        where = " WHERE NOT _empty" if is_empty_table(file) else ""
+    for table in tables:
+        name = table_name(table.output)
+        if table.empty:
+            kept = [f"NULL AS {_identifier(column)}" for column in table.columns]
+            if "_empty" not in table.columns:
+                kept.append("NULL::BOOLEAN AS _empty")
+            body = f"SELECT {', '.join(kept)} WHERE false"
+        else:
+            quoted = str(table.file).replace("'", "''")
+            body = f"SELECT * FROM read_json_auto('{quoted}')"
         try:
-            conn.execute(
-                f'CREATE VIEW "{table_name(file.stem)}" AS '
-                f"SELECT * FROM read_json_auto('{quoted}'){where}"
-            )
+            conn.execute(f'CREATE VIEW "{name}" AS {body}')
         except duckdb.Error as exc:
-            unreadable[table_name(file.stem)] = (file, _first_line(exc))
+            unreadable[name] = (table.file, _first_line(exc))
     return unreadable
+
+
+def _identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
 
 #: DuckDB's own hint on a struct it cannot infer; a view cannot take it, and the fix says
@@ -178,6 +222,7 @@ UNNEST_DOCS = "https://duckdb.org/docs/current/sql/query_syntax/unnest"
 #: A quoted string in the SQL: a path a ``read_*`` function is given.
 _LITERAL = re.compile(r"'((?:[^']|'')*)'")
 _MISSING_TABLE = re.compile(r"Table with name \S+ does not exist")
+_REQUIRED_MODULE = re.compile(r"Required module '([\w.]+)' failed to import")
 
 
 def _cross_archive_glob(sql: str) -> str | None:
@@ -190,10 +235,26 @@ def _cross_archive_glob(sql: str) -> str | None:
     return None
 
 
+def _module_fix(module: str) -> str:
+    return (
+        f"DuckDB needs the Python module {module} to return this result (pytz for a TIMESTAMP "
+        "WITH TIME ZONE): reinstall recon, which declares it, or cast the column to a type "
+        "that needs no module, as <column>::TIMESTAMP"
+    )
+
+
 def _fix(exc: Exception, archive: Path, tables: list[str], sql: str) -> str:
     import duckdb
 
     message = _first_line(exc)
+    required = _REQUIRED_MODULE.search(message)
+    if required is not None:
+        return _module_fix(required.group(1))
+    if isinstance(exc, duckdb.OutOfMemoryException):
+        return (
+            "the query needs more memory than DuckDB has, and a recon query never spills to "
+            "disk: select fewer columns or rows, or aggregate before joining"
+        )
     if isinstance(exc, duckdb.PermissionException):
         return (
             f"a query reads only files under {archive.parent}, loads no extension and makes "

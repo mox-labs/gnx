@@ -3,12 +3,14 @@ without running anything.
 
 A plan is a pure function of the experiment, its design, its probe set and the kinds it
 names. It states the decision first (the question, the hypothesis rendered from the genre,
-the guardrails, the form of the verdict), then what a run costs: the trials with their
-arithmetic, the estimated duration, the effects and the spend.
+the guardrails, the form of the verdict), then what a run takes: the trials with their
+arithmetic and the estimated duration. What the run needs of this host, and whether each
+need holds here, is added by the caller that can ask the adapters (``requirements``): it
+depends on the host, not the experiment, so it is in no digest.
 
 **The digest.** ``digest`` identifies what a run would do. It is over the experiment's
-operative digest, the design, the probe set, the effects, the trial count and the list of
-trials in the order a run carries them out (``schedule_digest``). It is stable against a
+operative digest, the design, the probe set, the trial count and the list of trials in the
+order a run carries them out (``schedule_digest``). It is stable against a
 comment, key order, a default written out, a reworded question, note or description, and
 a field a later ix adds with a default. It changes when a value a run
 would use changes, including one the genre supplied.
@@ -27,21 +29,23 @@ from ix.domain.design import (
     RoleAssignment,
     SelectedSensor,
     SourcedValue,
-    kind_uses,
     metric_text,
     missing_adapters,
 )
 from ix.domain.experiment import Level, cells
 from ix.domain.genre import Calibration, Order, VerdictForm
-from ix.domain.kind import EFFECTS, fill, seconds
+from ix.domain.kind import fill, seconds
 from ix.domain.problem import Problem
 from ix.domain.schema import Record, canonical
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from ix.domain.design import Design
-    from ix.domain.experiment import Experiment, ProbeSet, Spend
+    from ix.domain.experiment import Experiment, ProbeSet
     from ix.domain.genre import Genre
     from ix.domain.kind import Kinds
+    from ix.domain.ports import Requirement
 
 #: The share of runs in which a true effect of the detectable size is shown.
 POWER = 0.8
@@ -62,15 +66,26 @@ class OrderPlan(Record):
     description: str
 
 
-class Effect(Record):
-    """Something a run would do to the world, and what declares it: the kind an entry names,
-    or the author on top of that."""
+class Required(Record):
+    """Something a run needs of this host, whether it holds here, and the entries that need
+    it: what an adapter's preflight said, the same need from several entries said once."""
 
-    effect: str
-    detail: str = ""
-    #: The entry in the experiment this effect belongs to (``subjects.buffered``).
-    source: str
-    declared_by: Literal["kind", "experiment"]
+    need: str
+    holds: bool
+    #: What was found, when it does not hold.
+    why: str = ""
+    #: How to make it hold, when it does not.
+    fix: str = ""
+    #: The entries that need it: ``subjects.buffered``, ``probes.0``, ``sensors.1``,
+    #: ``environment``.
+    needed_by: tuple[str, ...]
+
+    def text(self) -> str:
+        """The need in one line, with why it does not hold and its fix when it does not."""
+        said = f"{', '.join(self.needed_by)}: {self.need}"
+        if self.holds:
+            return said
+        return said + "".join(f"; {part}" for part in (self.why, self.fix) if part)
 
 
 class PlannedProbes(Record):
@@ -123,27 +138,6 @@ class Duration(Record):
             else f"{minutes // 60}h {minutes % 60:02d}m"
         )
         return f"about {human} ({self.basis})"
-
-
-class SpendEstimate(Record):
-    """What a run is expected to spend, the ceiling it is held to, and where each came from.
-
-    ``estimated`` is what the trials of the latest finished run of the experiment cost on
-    average times the trials (``source: measured``), or, before any run reported a cost, the
-    experiment's ``per_trial`` times the trials (``declared``): a cost measured on this
-    experiment is better evidence than a guess made before it ran. ``ceiling_source`` is
-    ``experiment`` (its ``spend.ceiling``) or ``settings`` (ix's ``spend_cap``, for a run
-    that spends and whose experiment sets none).
-    """
-
-    estimated: float | None
-    ceiling: float | None
-    currency: str
-    basis: str
-    ceiling_source: Literal["experiment", "settings", ""] = ""
-    #: What ``estimated`` rests on: ``measured`` (an earlier run), ``declared``
-    #: (``spend.per_trial``), or nothing.
-    source: Literal["measured", "declared", ""] = ""
 
 
 class RegistrationStatus(Record):
@@ -210,20 +204,19 @@ class Plan(Record):
     duration: Duration
     order: OrderPlan
     sensors: tuple[SelectedSensor, ...]
-    effects: tuple[Effect, ...]
-    spend: SpendEstimate
+    #: What a run needs of this host, each with whether it holds here now. Not part of the
+    #: digest: it changes with the host, not the plan.
+    requirements: tuple[Required, ...] = ()
     registration: RegistrationStatus = RegistrationStatus()
     #: The smallest effect a run of this plan can detect, when an earlier run says how much
     #: the primary varies. Not part of the digest: it changes with the runs, not the plan.
     sensitivity: Sensitivity = Sensitivity()
     #: Every design value and where it came from.
     provenance: tuple[SourcedValue, ...]
-    #: Kinds the experiment uses that this ix has no adapter for: it can be checked, planned
-    #: and registered, and ``ix run`` would refuse it.
+    #: Kinds the experiment uses that this ix has no adapter for, or whose adapter cannot be
+    #: built here (with why): it can be checked, planned and registered, and ``ix run`` would
+    #: refuse it.
     unimplemented: tuple[str, ...] = ()
-    #: Subjects this host cannot start as written (``subjects.<name>: <why>``): they depend
-    #: on the host, so registration is not refused, and ``ix run`` here would refuse them.
-    unstartable: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
     #: What ``validate`` warns of (subjects that differ in more than one thing, a kind with
     #: no adapter here, a refused genre or kind file): problems that do not stop the plan.
@@ -232,14 +225,41 @@ class Plan(Record):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def runnable(self) -> bool:
-        """Whether ``ix run`` on this host would start: no kind without an adapter and no
-        subject it cannot start. False is not an error; ``ix plan`` still exits 0."""
-        return not self.unimplemented and not self.unstartable
+        """Whether ``ix run`` on this host would start: no kind without an adapter that
+        builds, and every requirement holds. False is not an error; ``ix plan`` still exits
+        0."""
+        return not self.unimplemented and not self.unmet
+
+    @property
+    def unmet(self) -> tuple[Required, ...]:
+        """The requirements that do not hold here: they depend on the host, so registration
+        is not refused, and ``ix run`` here would refuse them."""
+        return tuple(required for required in self.requirements if not required.holds)
 
     @property
     def verdict(self) -> str:
         """The form of the verdict, in words."""
         return VERDICTS[self.verdict_form]
+
+
+def required(found: Iterable[tuple[str, Requirement]]) -> tuple[Required, ...]:
+    """Each requirement an adapter's preflight gave, as (the entry it was given for, it), said
+    once with every entry that needs it, in the order first needed."""
+    merged: dict[Requirement, list[str]] = {}
+    for where, requirement in found:
+        entries = merged.setdefault(requirement, [])
+        if where not in entries:
+            entries.append(where)
+    return tuple(
+        Required(
+            need=requirement.need,
+            holds=requirement.holds,
+            why=requirement.why,
+            fix=requirement.fix,
+            needed_by=tuple(entries),
+        )
+        for requirement, entries in merged.items()
+    )
 
 
 def count_trials(experiment: Experiment, design: Design, probes: int) -> Trials:
@@ -259,102 +279,31 @@ def count_trials(experiment: Experiment, design: Design, probes: int) -> Trials:
     )
 
 
-def estimate_spend(
-    spend: Spend | None,
-    trials: int,
-    *,
-    spend_cap: float | None = None,
-    observed: tuple[float, str] | None = None,
-) -> SpendEstimate:
-    """The estimated cost of ``trials`` trials: from ``observed``, the mean cost of a trial
-    in an earlier run and that run's id, or else from the author's per-trial figure. The
-    ceiling is the experiment's, or ``spend_cap`` when it sets none."""
-    currency = spend.currency if spend is not None else "USD"
-    ceiling = spend.ceiling if spend is not None else None
-    source: Literal["experiment", "settings", ""] = "experiment" if ceiling is not None else ""
-    if ceiling is None and spend_cap is not None:
-        ceiling, source = spend_cap, "settings"
-    per_trial = spend.per_trial if spend is not None else None
-    estimated: float | None = None
-    rests_on: Literal["measured", "declared", ""] = ""
-    if observed is not None:
-        mean, run_id = observed
-        estimated, rests_on = round(mean * trials, 6), "measured"
-        basis = f"{trials} trials x {mean:.4g}, the mean cost of a trial measured in run {run_id}"
-        if per_trial is not None:
-            basis += f"; the declared per_trial of {per_trial:g} is set aside"
-    elif per_trial is not None:
-        estimated, rests_on = round(per_trial * trials, 6), "declared"
-        basis = (
-            f"{trials} trials x {per_trial:g} declared per trial, a guess until a run measures "
-            "it: pilot with `ix run --exploratory` and plan again"
-        )
-    else:
-        basis = "no per_trial cost declared and no earlier run that reported one"
-    return SpendEstimate(
-        estimated=estimated, ceiling=ceiling, currency=currency, basis=basis,
-        ceiling_source=source, source=rests_on,
-    )  # fmt: skip
-
-
-def effects(
-    experiment: Experiment, design: Design, kinds: Kinds, probes: ProbeSet | None
-) -> tuple[Effect, ...]:
-    """What a run would do to the world: the effects of each kind in use, then what the author
-    added to them. The author cannot remove one."""
-    found: list[Effect] = []
-    used, _ = kind_uses(experiment, kinds, probes)
-    for use in used:
-        found += [
-            Effect(effect=effect, detail=EFFECTS[effect], source=use.path, declared_by="kind")
-            for effect in use.kind.effects
-        ]
-        found += [
-            Effect(effect=text, source=use.path, declared_by="experiment") for text in use.effects
-        ]
-    for sensor in design.sensors:
-        selected = kinds.kinds.get(sensor.kind)
-        if sensor.source == "ix" and selected is not None:
-            found += [
-                Effect(
-                    effect=effect,
-                    detail=EFFECTS[effect],
-                    source=f"sensor {selected.label}",
-                    declared_by="kind",
-                )
-                for effect in selected.effects
-            ]
-    unique: dict[tuple[str, str], Effect] = {}
-    for effect in found:
-        unique.setdefault((effect.effect, effect.source), effect)
-    return tuple(unique.values())
-
-
 def estimate_duration(
     experiment: Experiment, design: Design, kinds: Kinds, probes: ProbeSet
 ) -> Duration:
-    """Probe time over the whole run, from the durations probe kinds declare."""
-    shared = [set(subject.options) for subject in experiment.subjects.values()]
-    common = set.intersection(*shared) if shared else set()
-    first = next(iter(experiment.subjects.values()))
-    passes = len(design.roles) + (1 if design.calibration == "aa" and design.control else 0)
+    """Probe time over the whole run, from the durations probe kinds declare. A probe's
+    options are filled as each trial fills them: with the cell's levels and the options of
+    the subject whose turn it is."""
     total = 0.0
     for probe in probes.probes:
         kind = kinds.get("probe", probe.kind)
         if kind is None or not kind.duration:
             return Duration(seconds=None, basis=f"probe kind {probe.kind} declares no duration")
         for cell in cells(experiment.factors):
-            bound: dict[str, Any] = {name: first.options[name] for name in common} | cell
-            for option in kind.duration:
-                if option not in probe.options:
-                    continue
-                length = seconds(fill(probe.options[option], bound))
-                if length is None:
-                    return Duration(
-                        seconds=None,
-                        basis=f"{probe.id}: {option} is not a duration once filled in",
-                    )
-                total += length * design.repeats * passes
+            for subject, _ in run.turns(design):
+                options = experiment.subjects[subject].options
+                bound: dict[str, Any] = {**fill(options, cell), **cell}
+                for option in kind.duration:
+                    if option not in probe.options:
+                        continue
+                    length = seconds(fill(probe.options[option], bound))
+                    if length is None:
+                        return Duration(
+                            seconds=None,
+                            basis=f"{probe.id}: {option} is not a duration once filled in",
+                        )
+                    total += length * design.repeats
     trials = count_trials(experiment, design, len(probes.probes)).total
     return Duration(
         seconds=total, basis=f"{trials} trials, probe time only; setup and teardown add to it"
@@ -391,7 +340,6 @@ def plan_digest(
     experiment: Experiment,
     design: Design,
     probes: ProbeSet,
-    plan_effects: tuple[Effect, ...],
     trials: int,
     schedule_digest: str,
 ) -> str:
@@ -405,7 +353,6 @@ def plan_digest(
             "experiment": experiment.digest(operative=True),
             "design": resolved,
             "probes": probes.digest,
-            "effects": sorted([effect.effect, effect.source] for effect in plan_effects),
             "trials": trials,
             "schedule": schedule_digest,
         }
@@ -505,8 +452,6 @@ def plan(
     registration: RegistrationStatus | None = None,
     adapters: frozenset[str] | None = None,
     spread: Spread | None = None,
-    spend_cap: float | None = None,
-    observed_cost: tuple[float, str] | None = None,
 ) -> Plan:
     """The plan of a valid experiment. Runs nothing and reads nothing.
 
@@ -514,12 +459,11 @@ def plan(
     has no run path to ask.
     """
     trials = count_trials(experiment, design, len(probes.probes))
-    plan_effects = effects(experiment, design, kinds, probes)
     alternating = len(design.roles) + (1 if trials.calibration else 0)
     schedule_digest = run.schedule_digest(run.schedule(experiment, design, probes))
     missing = () if adapters is None else missing_adapters(experiment, design, probes, adapters)
     return Plan(
-        digest=plan_digest(experiment, design, probes, plan_effects, trials.total, schedule_digest),
+        digest=plan_digest(experiment, design, probes, trials.total, schedule_digest),
         experiment=experiment.name,
         experiment_digest=experiment.digest(),
         genre=schema.short(genre.name),
@@ -539,14 +483,15 @@ def plan(
         duration=estimate_duration(experiment, design, kinds, probes),
         order=_order(design, alternating),
         sensors=design.sensors,
-        effects=plan_effects,
-        spend=estimate_spend(
-            experiment.spend, trials.total, spend_cap=spend_cap, observed=observed_cost
-        ),
         registration=registration or RegistrationStatus(),
         provenance=design.provenance,
         unimplemented=tuple(
             f"{schema.family_of(kind) or 'kind'} kind {schema.short(kind)} ({where})"
+            + (
+                f", only one that cannot be built: {kinds.unbuildable[kind]}"
+                if kind in kinds.unbuildable
+                else ""
+            )
             for where, kind in missing
         ),
         notes=(genre.design.note,),

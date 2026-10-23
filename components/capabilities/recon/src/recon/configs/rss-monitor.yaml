@@ -2,14 +2,16 @@
 #
 # Demonstrates:
 #   • response_format: xml with xmltodict parsing
-#   • attribute extraction via .@attrname (e.g. link.@href)
+#   • attribute extraction via .@attrname (e.g. link.0.@href)
 #   • temporal awareness — each survey produces a new timestamped archive
 #     that can be diffed against previous runs to surface "what's new"
 #
 # Recon's xmltodict config hardcodes force_list=(entry, author, link,
-# category), which matches the Atom format. For RSS 2.0 feeds where
-# <item> is the container, single-item responses may come back as a dict
-# rather than a list. Prefer Atom where available.
+# category), which matches the Atom format: each of those is always a list,
+# even when an entry has one, so a path into one names its index
+# (link.0.@href, author.0.name). For RSS 2.0 feeds where <item> is the
+# container, single-item responses may come back as a dict rather than a
+# list. Prefer Atom where available.
 #
 # Usage:
 #   recon init my-feeds --template rss-monitor
@@ -38,12 +40,12 @@ collectors:
     extract: "feed.entry"
     normalize:
       title: title
-      link: "link.@href"
+      link: "link.0.@href"
       published: published
-      author: "author.name"
+      author: "author.0.name"
 
   # GitHub's per-repo releases Atom feed. Edit the path segment to
-  # point at a different repo.
+  # point at a different repo. Its entries carry <updated> and no <published>.
   - name: cpython-releases
     type: api
     source: gh-releases
@@ -52,7 +54,6 @@ collectors:
     extract: "feed.entry"
     normalize:
       title: title
-      link: "link.@href"
-      published: published
-      author: "author.name"
+      link: "link.0.@href"
+      author: "author.0.name"
       updated: updated

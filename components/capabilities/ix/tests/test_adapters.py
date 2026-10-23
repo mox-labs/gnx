@@ -16,7 +16,6 @@ from typing import Any
 
 import pytest
 
-import ix
 from ix.adapters._out import k6_load
 from ix.adapters._out.environments import NoEnvironment, ProcessEnvironment
 from ix.adapters._out.matrix_process import MatrixLauncher
@@ -24,11 +23,12 @@ from ix.adapters._out.processes import accepts, answers
 from ix.adapters._out.sensors import MEMORY, MemorySensor, TimingSensor
 from ix.adapters._out.subjects import HttpSubject, ProcessSubject
 from ix.domain.experiment import EnvironmentConfig, SubjectConfig
+from ix.domain.ports import Surroundings
 from ix.domain.run import HarnessError, Interaction, SubjectError, Target
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 
-SERVER = Path(ix.__file__).parents[2] / "examples" / "delay-server" / "server.py"
+SERVER = Path(__file__).resolve().parents[1] / "examples" / "delay-server" / "server.py"
 
 
 def _free_port() -> int:
@@ -58,8 +58,21 @@ def _alive(pid: int) -> bool:
     return True
 
 
+async def _until_reached(reached: asyncio.Event, trial: asyncio.Future[None]) -> None:
+    """Wait until ``trial`` has reached its subject. A trial that ends first, by failing before
+    it got there, raises its error here; waiting on ``reached`` alone would wait forever."""
+    waiting: asyncio.Future[Any] = asyncio.ensure_future(reached.wait())
+    await asyncio.wait({waiting, trial}, return_when=asyncio.FIRST_COMPLETED)
+    waiting.cancel()
+    if trial.done():
+        trial.result()
+        raise AssertionError("the trial ended without reaching its subject")
+
+
 class Scope:
-    """A stand-in for whatever runs ix's work: the three members and nothing more."""
+    """A stand-in for whatever runs ix's work: its members and nothing more."""
+
+    run_id = "r"
 
     def __init__(self) -> None:
         self.stopping = asyncio.Event()
@@ -102,6 +115,26 @@ class TestReadiness:
         assert await answers(f"http://127.0.0.1:{_free_port()}/healthz") is False
         assert await answers("not a url") is False
 
+    async def test_no_proxy_variable_reroutes_the_readiness_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The probe was an httpx client with trust_env on, so HTTP_PROXY with no NO_PROXY sent a
+        # loopback probe through the proxy: a program that was up was never seen to be.
+        async def reply(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY"):
+            monkeypatch.setenv(name, f"http://127.0.0.1:{_free_port()}")
+        for name in ("NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(name, raising=False)
+        server = await asyncio.start_server(reply, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        async with server:
+            assert await answers(f"http://127.0.0.1:{port}/healthz") is True
+
 
 class TestProcessSubject:
     async def test_it_is_up_when_reached_and_gone_when_released(self) -> None:
@@ -126,11 +159,22 @@ class TestProcessSubject:
                 await asyncio.Event().wait()
 
         task = asyncio.ensure_future(trial())
-        await reached.wait()
+        await _until_reached(reached, task)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         assert not _alive(pids[0])
+
+    @pytest.mark.timeout(5)
+    async def test_a_trial_that_fails_before_it_is_reached_ends_the_wait(self) -> None:
+        """Regression: a trial that failed before ``reached.set()`` left the test
+        above waiting on ``reached`` forever, and the whole suite with it."""
+
+        async def trial() -> None:
+            raise SubjectError("the subject never came up")
+
+        with pytest.raises(SubjectError, match="never came up"):
+            await _until_reached(asyncio.Event(), asyncio.ensure_future(trial()))
 
     async def test_a_program_that_exits_before_it_is_up_is_the_subjects_failure(self) -> None:
         port = _free_port()
@@ -180,8 +224,8 @@ class TestProcessSubject:
         subject = ProcessSubject(MatrixLauncher())
 
         def told(command: list[str], **options: Any) -> str | None:
-            written = SubjectConfig(kind="process", options={"command": command, **options})
-            return subject.unstartable(written, base=str(tmp_path))
+            found = subject.requirements({"command": command, **options}, base=str(tmp_path))
+            return next((required.why for required in found if not required.holds), None)
 
         assert (
             told(["./proxy-typo"])
@@ -194,6 +238,16 @@ class TestProcessSubject:
         (tmp_path / "bin" / "proxy").write_text("#!/bin/sh\n")
         (tmp_path / "bin" / "proxy").chmod(0o755)
         assert told(["./proxy"], cwd="bin") is None
+
+    def test_an_address_a_trial_fills_is_not_judged_before_it_is_filled(self) -> None:
+        """A ``url`` that names an environment binding (``{upstream.port}``) has no port
+        until the trial fills it; the review refuses only a port that is not one."""
+        subject = ProcessSubject(MatrixLauncher())
+        around = Surroundings(path="subjects.proxy", base=".")
+        bound = {"command": ["./proxy"], "url": "http://127.0.0.1:{upstream.port}"}
+        assert subject.review(bound, around) == []
+        broken = subject.review({"command": ["./proxy"], "url": "http://127.0.0.1:99999"}, around)
+        assert [(p.path, p.kind) for p in broken] == [("subjects.proxy.url", "option_invalid")]
 
     async def test_a_command_that_cannot_be_started_is_the_subjects_failure(self) -> None:
         missing = SubjectConfig(kind="process", options={"command": ["./no-such-program"]})
@@ -259,12 +313,13 @@ class TestHttpSubject:
         self, auth: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("IX_TEST_TOKEN", "s3cret")
-        subject = SubjectConfig(kind="http", options={"url": "https://x.test", "auth": auth})
-        assert HttpSubject().unstartable(subject, base=".") is not None
-        named = SubjectConfig(
-            kind="http", options={"url": "https://x.test", "auth": "env:IX_TEST_TOKEN"}
+        (unset,) = HttpSubject().requirements({"url": "https://x.test", "auth": auth}, base=".")
+        assert not unset.holds
+        assert "s3cret" not in f"{unset.need} {unset.why} {unset.fix}"
+        (named,) = HttpSubject().requirements(
+            {"url": "https://x.test", "auth": "env:IX_TEST_TOKEN"}, base="."
         )
-        assert HttpSubject().unstartable(named, base=".") is None
+        assert named.holds and named.need == "variable IX_TEST_TOKEN is set (auth)"
 
 
 class TestEnvironments:
@@ -285,7 +340,15 @@ class TestEnvironments:
         scope = Scope()
         bindings = await ProcessEnvironment(MatrixLauncher()).up(environment, base=".", scope=scope)
         pid = bindings["upstream"]["pid"]
-        assert bindings == {"upstream": {"pid": pid, "ready": server["ready"]}}
+        assert bindings == {
+            "upstream": {
+                "pid": pid,
+                "host": "127.0.0.1",
+                "port": port,
+                "url": f"http://127.0.0.1:{port}",
+                "ready": server["ready"],
+            }
+        }
         assert _alive(pid) and await answers(server["ready"])
         await scope.release()
         assert not _alive(pid)
@@ -311,6 +374,13 @@ class TestEnvironments:
         finally:
             await scope.release()
         assert await NoEnvironment().lost({}) is None
+
+    async def test_a_pid_it_did_not_start_is_not_read_as_its_service(self) -> None:
+        """Regression (ix-outer 15): liveness was ``os.kill(pid, 0)`` on the stored pid, so a
+        pid the system gave to another live process read as the service still up, and one
+        another user owns raised out of the run. It asks the process it started."""
+        provider = ProcessEnvironment(MatrixLauncher())
+        assert await provider.lost({"upstream": {"pid": os.getpid()}}) == "service upstream exited"
 
     async def test_a_service_that_does_not_come_up_fails_and_is_still_released(self) -> None:
         port = _free_port()
@@ -353,6 +423,17 @@ class TestSensors:
             "error_rate": {"events": 2, "units": 200},
         }  # fmt: skip
 
+    async def test_timing_counts_a_dropped_arrival_as_an_error(self) -> None:
+        """Regression: arrivals an open model dropped, because every client was waiting on
+        the subject, were left out of the error rate."""
+        spread = dict.fromkeys(("min", "mean", "p50", "p90", "p95", "p99", "p999", "max"), 1.0)
+        load = {"latency_ms": spread, "ttfb_ms": spread, "throughput": 4.8,
+                "sent": 32, "failed": 8, "dropped": 219}  # fmt: skip
+        measured = await TimingSensor().sense(
+            self._interaction(observations={"load": load}), truth={}, options={}
+        )
+        assert measured["error_rate"] == {"events": 8 + 219, "units": 32 + 219}
+
     async def test_memory_samples_the_subjects_group_while_it_watches(self) -> None:
         port = _free_port()
         sensor = MemorySensor()
@@ -388,9 +469,21 @@ class TestTheLoadProbeWithoutItsTool:
             },
             "measured": {
                 "executor": "constant-vus", "vus": 4, "duration": "3s", "startTime": "0.5s",
-                "gracefulStop": "0s",
+                "gracefulStop": "61s",
             },
         }  # fmt: skip
+
+    def test_every_request_of_the_window_is_waited_for_up_to_its_timeout(self) -> None:
+        """Regression: a request in flight when the window closed was cut off and counted
+        nowhere, so a subject that hung on some requests read as having no errors. Now k6
+        waits past the window for as long as a request may take (option ``timeout``, k6's
+        60s when absent), so every request sent ends answered, failed or timed out."""
+        plan, _ = k6_load.scenarios({"load_model": "closed", "duration": "3s", "timeout": "2s"})
+        assert plan["measured"]["gracefulStop"] == "3s"
+        assert k6_load.request_timeout({"timeout": "2s"}) == 2.0
+        assert k6_load.request_timeout({}) == k6_load.REQUEST_TIMEOUT_S == 60.0
+        probe = k6_load.K6Load(MatrixLauncher())
+        assert probe.budget_s({"duration": "3s", "timeout": "2s"}) == 3 + 3 + k6_load.OVERHEAD_S
 
     def test_an_open_model_holds_an_arrival_rate(self) -> None:
         plan, _ = k6_load.scenarios({"load_model": "open", "rate": "80/s", "duration": "60s"})
@@ -418,13 +511,25 @@ class TestTheLoadProbeWithoutItsTool:
             k6_load.scenarios(options)
         assert failed.value.reason == "option"
 
-    def _summary(self, *, sent: int = 268, answered: int = 201) -> dict[str, Any]:
+    def _summary(
+        self,
+        *,
+        sent: int = 268,
+        answered: int = 201,
+        attempts: int | None = None,
+        late: int = 0,
+        dropped: int = 2,
+    ) -> dict[str, Any]:
         answers = {"min": 51.1, "avg": 59.5, "med": 60.3, "max": 68.4, "p(90)": 62.3,
                    "p(95)": 63.4, "p(99)": 66.2, "p(99.9)": 68.0, "count": answered}  # fmt: skip
         everything = {**{name: 0.0 for name in answers}, "count": sent}
         good = "{scenario:measured,expected_response:true}"
         return {
             "metrics": {
+                "ix_attempts{scenario:measured}": {
+                    "values": {"count": sent if attempts is None else attempts}
+                },
+                "ix_late_answers{scenario:measured}": {"values": {"count": late}},
                 f"http_req_duration{good}": {"values": answers},
                 f"http_req_waiting{good}": {"values": answers},
                 f"http_reqs{good}": {"values": {"count": answered}},
@@ -435,7 +540,7 @@ class TestTheLoadProbeWithoutItsTool:
                 "http_req_failed{scenario:measured}": {
                     "values": {"rate": (sent - answered) / max(sent, 1), "passes": sent - answered}
                 },
-                "dropped_iterations{scenario:measured}": {"values": {"count": 2}},
+                "dropped_iterations{scenario:measured}": {"values": {"count": dropped}},
                 "http_req_duration": {"values": {"med": 999.0}},
             },
             "setup_data": {"digest": "ab12"},
@@ -444,7 +549,8 @@ class TestTheLoadProbeWithoutItsTool:
     def test_the_observation_is_the_measured_part_only(self) -> None:
         seen = k6_load.observation(self._summary(), model="closed", duration_s=3.0)
         assert seen["requests"] == 201 and seen["throughput"] == pytest.approx(67.0)
-        assert seen["error_rate"] == 0.25 and seen["dropped"] == 2 and seen["tool"] == "k6"
+        assert seen["error_rate"] == (67 + 2) / (268 + 2) and seen["dropped"] == 2
+        assert seen["tool"] == "k6"
         assert seen["latency_ms"] == {
             "min": 51.1, "mean": 59.5, "p50": 60.3, "p90": 62.3, "p95": 63.4, "p99": 66.2,
             "p999": 68.0, "max": 68.4,
@@ -490,10 +596,27 @@ class TestTheLoadProbeWithoutItsTool:
         assert self._observed(differed, verify=False)["requests"] == 201
 
     def test_failed_requests_count_as_errors_and_never_as_fast_answers(self) -> None:
-        seen = k6_load.observation(self._summary(), model="closed", duration_s=3.0)
+        seen = k6_load.observation(self._summary(dropped=0), model="closed", duration_s=3.0)
         assert seen["requests"] == 201 and seen["error_rate"] == 0.25
         assert (seen["failed"], seen["sent"]) == (67, 268)
         assert seen["latency_ms"]["min"] == 51.1 and seen["ttfb_ms"]["p50"] == 60.3
+
+    def test_requests_never_answered_and_dropped_arrivals_are_errors(self) -> None:
+        """Regression, from a probe of a server that hangs on one request in four: 32
+        requests were sent, 24 answered, 8 never were, and 219 arrivals were dropped, and
+        the error rate read 0."""
+        summary = self._summary(sent=24, answered=24, attempts=32, dropped=219)
+        seen = k6_load.observation(summary, model="open", duration_s=5.0)
+        assert (seen["sent"], seen["failed"], seen["dropped"]) == (32, 8, 219)
+        assert seen["error_rate"] == (8 + 219) / (32 + 219)
+        assert seen["requests"] == 24
+
+    def test_an_answer_after_the_window_counts_for_errors_not_throughput(self) -> None:
+        seen = k6_load.observation(
+            self._summary(late=21, dropped=0), model="closed", duration_s=3.0
+        )
+        assert seen["requests"] == 180 and seen["throughput"] == pytest.approx(60.0)
+        assert (seen["failed"], seen["sent"]) == (67, 268)
 
     def test_a_load_that_sent_nothing_is_the_harnesss_failure(self) -> None:
         with pytest.raises(HarnessError) as failed:
@@ -504,6 +627,19 @@ class TestTheLoadProbeWithoutItsTool:
         with pytest.raises(SubjectError) as failed:
             k6_load.observation(self._summary(answered=0), model="closed", duration_s=3.0)
         assert failed.value.reason == "no_answer"
+
+    @pytest.mark.parametrize(("attempts", "late"), [(8, 0), (8, 8)])
+    def test_nothing_answered_inside_the_window_is_the_subjects_failure(
+        self, attempts: int, late: int
+    ) -> None:
+        """Regression: a subject that hung on every request left k6 no request to count,
+        and that was classed as the harness's failure, so the trial was dropped as
+        missing data. Requests were sent; none was answered inside the window."""
+        summary = self._summary(sent=late, answered=late, attempts=attempts, late=late)
+        with pytest.raises(SubjectError) as failed:
+            k6_load.observation(summary, model="closed", duration_s=3.0)
+        assert failed.value.reason == "no_answer"
+        assert "inside the measured window" in str(failed.value)
 
     def test_a_first_response_with_no_body_under_verify_is_the_subjects_failure(self) -> None:
         refused = self._summary()
@@ -520,4 +656,6 @@ class TestTheLoadProbeWithoutItsTool:
         with pytest.raises(HarnessError) as failed:
             await probe.apply(options, Target(subject="s"), seed=1)
         assert failed.value.reason == "tool_missing"
-        assert probe.budget_s({"duration": "3s", "warmup": "1s"}) == 4 + k6_load.OVERHEAD_S
+        assert probe.budget_s({"duration": "3s", "warmup": "1s"}) == (
+            4 + k6_load.REQUEST_TIMEOUT_S + 1 + k6_load.OVERHEAD_S
+        )

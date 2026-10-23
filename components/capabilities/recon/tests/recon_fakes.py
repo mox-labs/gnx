@@ -1,28 +1,35 @@
 """Small fakes for the ports a survey reads through, and a one-call survey runner.
 
-Each stands in for exactly one port and does nothing the port's contract does not promise.
+Each fake stands in for exactly one port and does nothing the port's contract does not
+promise. The runner wires nothing itself: it is recon's own root with fakes given for the
+ports a test stands in for.
 """
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import recon
-from recon.adapters._out.archive_files import ArchiveFiles
-from recon.adapters._out.system_clock import SystemClock
-from recon.application.survey import ARCHIVE_ID_FORMAT, Survey
+import yaml
+
+from recon.composition import load_plugins, root
+from recon.domain.collector import CollectorType, Plugins
 from recon.domain.http import HttpResponse
-from recon.domain.telemetry import Telemetry
+from recon.domain.models import CollectorEntry, ReconConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Mapping
-    from pathlib import Path
+    from collections.abc import Callable, Generator, Iterator, Mapping
 
+    from recon.composition import RequesterFactory
+    from recon.domain.capture import CaptureLog
     from recon.domain.clock import Clock
-    from recon.domain.collector import Collector
+    from recon.domain.collector import Collector, CollectorContext
+    from recon.domain.converters import ConversionResult, DocumentConverter
     from recon.domain.documents import TableOutcome
-    from recon.domain.models import ReconConfig, SourceEntry
+    from recon.domain.models import SourceEntry
+    from recon.domain.shell import ShellRunner
 
 
 class FixedClock:
@@ -45,6 +52,23 @@ class FixedClock:
 
     def advance(self, seconds: float) -> None:
         self._at += timedelta(seconds=seconds)
+
+
+class HurriedClock:
+    """The real passing of time, but a wait asked of it is recorded and skipped: ``slept``
+    holds each one, and ``monotonic`` counts them as passed."""
+
+    def __init__(self) -> None:
+        self.slept: list[float] = []
+
+    def now(self) -> datetime:
+        return datetime.now(UTC) + timedelta(seconds=sum(self.slept))
+
+    def monotonic(self) -> float:
+        return time.monotonic() + sum(self.slept)
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
 
 
 class ScriptedRequester:
@@ -95,22 +119,92 @@ class ScriptedShell:
         return 0
 
 
+class NoConverter:
+    """A DocumentConverter for a test that reaches none: converting a document is a failure."""
+
+    def convert(self, content: bytes, content_type: str, url: str) -> ConversionResult:
+        raise AssertionError("no test here converts a document")
+
+
+def collector_entry(**fields: Any) -> CollectorEntry:
+    """A ``CollectorEntry`` with the settings of its type (``run=``, ``endpoint=``, ...), which
+    the model keeps as extra fields: they are arbitrary keys, so they are not typed."""
+    return CollectorEntry(**fields)
+
+
+def plugins_with(**collectors: Collector) -> Plugins:
+    """The installed plugins, and a collector type for each of ``collectors`` by name that
+    builds that collector, declaring nothing else (no settings, no check)."""
+    plugins = load_plugins()
+    for name, collector in collectors.items():
+        plugins.collector_types[name] = CollectorType(create=_creating(collector), effects=None)
+    return plugins
+
+
+class EmptyCollector:
+    """A Collector that finds no records: for a collector type that is registered, built and
+    never run."""
+
+    def collect(
+        self,
+        entry: CollectorEntry,
+        source: SourceEntry | None,
+        *,
+        captures: CaptureLog | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        return iter(())
+
+
+def building(built: list[str], name: str) -> Callable[[CollectorContext], Collector]:
+    """A collector type's ``create`` that records ``name`` in ``built`` and then fails: for a
+    test of a run that must build no collector, which then sees what was built."""
+
+    def create(ctx: CollectorContext) -> Collector:
+        built.append(name)
+        raise AssertionError(f"a collector was built: {name!r}")
+
+    return create
+
+
+def _creating(collector: Collector) -> Callable[[CollectorContext], Collector]:
+    def create(ctx: CollectorContext) -> Collector:
+        return collector
+
+    return create
+
+
 def run_survey(
-    config: ReconConfig,
-    collectors: Mapping[str, Collector],
-    mission: Path,
-    on_event: Callable[[dict[str, Any]], None] | None = None,
+    config: ReconConfig | Mapping[str, Any],
+    project: Path,
     *,
-    config_sha256: str | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    plugins: Plugins | None = None,
+    requester: RequesterFactory | None = None,
+    shell: ShellRunner | None = None,
+    converter: DocumentConverter | None = None,
     clock: Clock | None = None,
+    env: Mapping[str, str] | None = None,
+    name: str = "m",
 ) -> tuple[Path, list[TableOutcome]]:
-    """One survey over the real archive files, its events in the archive's event log, on the
-    system clock unless one is given."""
-    clock = clock or SystemClock()
-    archives = ArchiveFiles(clock)
-    started = clock.now()
-    archive = archives.create(mission, started.strftime(ARCHIVE_ID_FORMAT))
-    telemetry = Telemetry([archives.event_log(archive)], clock)
-    survey = Survey(archives, clock, recon.__version__, telemetry, on_event)
-    tables = survey.run(config, collectors, archive, started=started, config_sha256=config_sha256)
-    return archive, tables
+    """Survey ``config`` as the mission ``name`` of ``project`` through recon's own root,
+    with a fake for each port given and the real adapter for the rest (no environment
+    unless ``env`` is given). Returns the archive and its tables."""
+    raw = (
+        config.model_dump(mode="json", exclude_unset=True)
+        if isinstance(config, ReconConfig)
+        else config
+    )
+    mission = project / ".recon" / name
+    mission.mkdir(parents=True, exist_ok=True)
+    (mission / "config.yaml").write_text(yaml.safe_dump(dict(raw), sort_keys=False))
+    recon = root(
+        {} if env is None else env,
+        project=project,
+        clock=clock,
+        plugins=plugins,
+        requester=requester,
+        shell=shell,
+        converter=converter,
+    )
+    document = recon.survey(name, on_event=on_event)
+    return Path(document.archive), document.tables

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -13,7 +14,7 @@ from hardline.adapters._in.cli import error_payload, main
 from hardline.adapters._out.secrets import EnvFileSecretResolver
 from hardline.adapters._out.yaml_source import MappingConfigSource, YamlConfigSource
 from hardline.composition import discover_backends, discover_sources, load_registry, merge_tiers
-from hardline.domain.structured import extract_json
+from hardline.domain.structured import extract_json, json_candidates
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -69,7 +70,7 @@ def test_explicit_env_tier_must_exist(monkeypatch: pytest.MonkeyPatch, tmp_path:
 def test_explicit_env_tier_is_highest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     explicit = _write(tmp_path / "x.yaml", {"models": {}})
     monkeypatch.setenv("HARDLINE_CONFIG", str(explicit))
-    assert discover_sources(tmp_path)[-1].describe() == str(explicit)
+    assert discover_sources(tmp_path)[-1].describe().endswith(str(explicit))
 
 
 def test_mapping_source_is_how_another_root_hands_its_section() -> None:
@@ -106,45 +107,155 @@ def test_missing_file_secret(tmp_path: Path) -> None:
         EnvFileSecretResolver().resolve(f"file:{tmp_path / 'none'}")
 
 
+def test_a_file_secret_that_is_not_text_is_a_secret_error(tmp_path: Path) -> None:
+    # A key file that is not UTF-8 raised UnicodeDecodeError, which is not a HardlineError.
+    f = tmp_path / "key"
+    f.write_bytes(b"\xff\xfe\x00binary")
+    with pytest.raises(SecretError, match="not UTF-8 text") as e:
+        EnvFileSecretResolver().resolve(f"file:{f}")
+    assert "binary" not in str(e.value)
+
+
 def test_unknown_secret_scheme() -> None:
     with pytest.raises(SecretError, match="unknown scheme"):
         EnvFileSecretResolver().resolve("vault:x")
 
 
-# --- entry points --------------------------------------------------------------------
+# --- entry points ---------------------------------------------------------------------
+
+#: hardline's own entry points, read before any test replaces the lookup.
+_INSTALLED = list(entry_points(group="hardline.backends"))
+
+_ROW = {"model": "m", "family": "x"}
 
 
 class _EP:
-    def __init__(self, name: str, obj: Any) -> None:
-        self.name, self.value, self._obj = name, f"pkg:{name}", obj
+    def __init__(self, name: str, obj: Any = None, error: Exception | None = None) -> None:
+        self.name, self.value, self._obj, self._error = name, f"pkg:{name}", obj, error
 
     def load(self) -> Any:
+        if self._error is not None:
+            raise self._error
         return self._obj
+
+
+def _with_entry_points(monkeypatch: pytest.MonkeyPatch, *extra: _EP) -> None:
+    monkeypatch.setattr("hardline.composition.entry_points", lambda group: [*_INSTALLED, *extra])
+
+
+def test_the_built_in_backends_are_hardlines_own_entry_points() -> None:
+    # No hard-coded table. The built-ins are found the way a third party's are.
+    assert {ep.name for ep in _INSTALLED} >= {"openai-compat", "anthropic", "mock"}
+
+
+def test_no_entry_points_means_no_backends(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("hardline.composition.entry_points", lambda group: [])
+    assert discover_backends() == {}
 
 
 def test_entry_point_backend_is_discovered(monkeypatch: pytest.MonkeyPatch) -> None:
     from hardline.adapters._out.mock import MockBackend
 
-    monkeypatch.setattr(
-        "hardline.composition.entry_points", lambda group: [_EP("thirdparty", MockBackend)]
-    )
-    assert "thirdparty" in discover_backends()
+    _with_entry_points(monkeypatch, _EP("thirdparty", MockBackend))
+    rt = build_runtime({"models": {"t": {**_ROW, "backend": "thirdparty"}}})
+    assert rt.registry.names() == ("t",)
 
 
-def test_entry_point_may_not_shadow_a_builtin(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("plugin", "problem"),
+    [
+        (_EP("broken", error=ImportError("No module named 'acme'")), "could not be loaded"),
+        (_EP("broken", object), "did not produce a ModelBackend"),
+    ],
+)
+def test_a_broken_backend_plugin_fails_only_the_rows_naming_it(
+    plugin: _EP, problem: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An ImportError in any installed plugin aborted composition for every row.
+    _with_entry_points(monkeypatch, plugin)
+    rt = build_runtime({"models": {"q": {**_ROW, "backend": "mock"}}})
+    assert rt.registry.names() == ("q",)
+    with pytest.raises(ConfigError, match=rf"models\.b\.backend: .*{problem}"):
+        build_runtime({"models": {"b": {**_ROW, "backend": "broken"}}})
+
+
+def test_an_entry_point_may_not_shadow_another(monkeypatch: pytest.MonkeyPatch) -> None:
     from hardline.adapters._out.mock import MockBackend
 
-    monkeypatch.setattr(
-        "hardline.composition.entry_points", lambda group: [_EP("mock", MockBackend)]
-    )
-    with pytest.raises(ConfigError, match="collides"):
-        discover_backends()
+    _with_entry_points(monkeypatch, _EP("mock", MockBackend))
+    with pytest.raises(ConfigError, match=r"models\.q\.backend: .*more than one entry point"):
+        build_runtime({"models": {"q": {**_ROW, "backend": "mock"}}})
+    rt = build_runtime({"models": {"o": {**_ROW, "backend": "openai-compat"}}})
+    assert rt.registry.names() == ("o",)
 
 
-def test_entry_point_must_produce_a_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("hardline.composition.entry_points", lambda group: [_EP("bad", object)])
-    with pytest.raises(ConfigError, match="did not produce a ModelBackend"):
-        discover_backends()
+# --- options and keys are checked when the runtime is composed -------------
+
+
+@pytest.mark.parametrize(
+    ("row", "problem"),
+    [
+        ({"backend": "openai-compat", "options": {"token_param": "tokens"}}, "options.token_param"),
+        (
+            {"backend": "openai-compat", "options": {"token_parm": "max_tokens"}},
+            "options.token_parm",
+        ),
+        ({"backend": "anthropic", "api_key": "env:K", "options": {"x": 1}}, "options.x"),
+        ({"backend": "anthropic"}, "api_key"),
+        ({"backend": "mock", "options": {"script": [{"error": "flaky"}]}}, "options.script"),
+    ],
+)
+def test_a_row_its_backend_cannot_serve_fails_composition(
+    row: dict[str, Any], problem: str
+) -> None:
+    # Before: options were read at call time, so `hardline check` passed a row whose first call
+    # would fail; and a keyless anthropic row failed its call as "the key was rejected".
+    with pytest.raises(ConfigError, match=rf"models\.q\.{problem}"):
+        build_runtime({"models": {"q": {**_ROW, **row}}})
+
+
+def test_cli_check_fails_a_keyless_anthropic_row_as_config(
+    cli_config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(tmp_path / "hardline.yaml", {"models": {"h": {**_ROW, "backend": "anthropic"}}})
+    assert main(["check", "--json"]) == 3
+    error = _error_line(capsys.readouterr().err)
+    assert error["kind"] == "config" and "models.h.api_key" in error["message"]
+    assert main(["complete", "h", "hi", "--json"]) == 3  # not 6: no provider was asked
+
+
+# --- tiers: where each was found is part of its name -----------------------------
+
+
+def test_explicit_env_tier_must_be_a_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # A directory passed the exists() check and raised IsADirectoryError when read.
+    monkeypatch.setenv("HARDLINE_CONFIG", str(tmp_path))
+    with pytest.raises(ConfigError, match="HARDLINE_CONFIG.*not a file"):
+        discover_sources(tmp_path)
+
+
+def test_each_discovered_tier_names_how_it_was_found(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    explicit = _write(tmp_path / "x.yaml", {"models": {}})
+    monkeypatch.setenv("HARDLINE_CONFIG", str(explicit))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    user, project, env = (source.describe() for source in discover_sources(tmp_path / "proj"))
+    assert user == f"user {tmp_path / 'home' / '.hardline' / 'config.yaml'}"
+    assert project == f"cwd {tmp_path / 'proj' / 'hardline.yaml'}"
+    assert env == f"$HARDLINE_CONFIG {explicit}"
+
+
+@pytest.mark.parametrize("content", [b"models: \xff\xfe", None])
+def test_an_unreadable_tier_is_a_config_error(content: bytes | None, tmp_path: Path) -> None:
+    # A non-UTF-8 file raised UnicodeDecodeError, a directory IsADirectoryError.
+    path = tmp_path / "hardline.yaml"
+    if content is None:
+        path.mkdir()
+    else:
+        path.write_bytes(content)
+    with pytest.raises(ConfigError, match="hardline.yaml"):
+        YamlConfigSource(path).read()
 
 
 # --- structured extraction -----------------------------------------------------------
@@ -166,6 +277,17 @@ def test_extract_json(text: str, expected: str) -> None:
 def test_extract_json_none() -> None:
     with pytest.raises(ValueError, match="no JSON"):
         extract_json("no structure here")
+
+
+def test_extract_json_skips_bracketed_prose_that_is_not_json() -> None:
+    # The first balanced pair was taken whether or not it parsed, so '{name}' won.
+    assert extract_json('Use the {name} field: {"ok": true}') == '{"ok": true}'
+
+
+def test_json_candidates_are_every_balanced_value_in_order() -> None:
+    # '[1]' is JSON, so only the schema can tell it from the answer: the runtime tries each.
+    assert json_candidates('Answer [1] below: {"ok": true}') == ["[1]", '{"ok": true}']
+    assert json_candidates('{"a": {"b": 1}} then {x}') == ['{"a": {"b": 1}}']
 
 
 # --- CLI -----------------------------------------------------------------------------
@@ -208,9 +330,14 @@ def test_cli_error_exit_code(cli_config: Path, capsys: pytest.CaptureFixture[str
     assert "unknown model 'missing'" in capsys.readouterr().err
 
 
-# --- CLI: exit codes, JSON errors, check (agent-drivability F2/F3/F5) ----------------
+# --- CLI: exit codes, JSON errors, check ----------------
+#
+# Changed requirement: a failure is the workspace's shared envelope,
+# {"schema": "hardline.v1.error", "error": {kind, message, fix, complete, problems, details}},
+# with the agreed kinds: a transient failure is `transient` (exit 5) with its reason in
+# `details`, a malformed request `config`, and `fix` is always a next step.
 
-_ERROR_KEYS = {"kind", "message", "retryable", "retry_after", "fix"}
+_ERROR_KEYS = ["kind", "message", "fix", "complete", "problems", "details"]
 
 
 def _scripted_config(tmp_path: Path, reason: str) -> None:
@@ -234,25 +361,27 @@ def _error_line(err: str) -> dict[str, Any]:
     lines = err.strip().splitlines()
     assert len(lines) == 1, f"expected one JSON line on stderr, got: {err!r}"
     payload: dict[str, Any] = json.loads(lines[0])
-    assert set(payload) == {"error"} and set(payload["error"]) == _ERROR_KEYS
-    return payload["error"]
+    assert list(payload) == ["schema", "error"] and payload["schema"] == "hardline.v1.error"
+    error: dict[str, Any] = payload["error"]
+    assert list(error) == _ERROR_KEYS and error["message"] and error["fix"]
+    return error
 
 
 @pytest.mark.parametrize(
-    ("reason", "code", "retryable"),
+    ("reason", "code", "kind"),
     [
-        ("rate_limit", 5, True),
-        ("timeout", 5, True),
-        ("unavailable", 5, True),
-        ("auth", 6, False),
-        ("bad_request", 3, False),
-        ("unknown", 1, False),
+        ("rate_limit", 5, "transient"),
+        ("timeout", 5, "transient"),
+        ("unavailable", 5, "transient"),
+        ("auth", 6, "auth"),
+        ("bad_request", 3, "config"),
+        ("unknown", 1, "unknown"),
     ],
 )
 def test_cli_backend_reason_sets_exit_code_and_json_error(
     reason: str,
     code: int,
-    retryable: bool,
+    kind: str,
     cli_config: Path,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -262,10 +391,8 @@ def test_cli_backend_reason_sets_exit_code_and_json_error(
     out, err = capsys.readouterr()
     assert out == ""
     error = _error_line(err)
-    assert error["kind"] == reason
-    assert error["retryable"] is retryable
-    assert error["retry_after"] is None
-    assert (error["fix"] is None) == (reason == "unknown")
+    assert error["kind"] == kind and error["details"]["reason"] == reason
+    assert "retry_after" not in error["details"]
 
 
 def test_cli_backend_error_without_json_is_prose_with_same_code(
@@ -273,13 +400,14 @@ def test_cli_backend_error_without_json_is_prose_with_same_code(
 ) -> None:
     _scripted_config(tmp_path, "auth")
     assert main(["complete", "s", "x"]) == 6
-    assert capsys.readouterr().err.startswith("hardline: model 's' (mock): scripted auth")
+    # Changed requirement: the prose names the kind, as the envelope does.
+    assert capsys.readouterr().err.startswith("hardline: error (auth): model 's' (mock): scripted")
 
 
 def test_error_payload_carries_retry_after() -> None:
     payload, code = error_payload(BackendError("slow down", reason="rate_limit", retry_after=7.0))
-    assert code == 5
-    assert payload["error"]["retry_after"] == 7.0 and payload["error"]["retryable"] is True
+    assert code == 5 and payload["error"]["kind"] == "transient"
+    assert payload["error"]["details"] == {"reason": "rate_limit", "retry_after": 7.0}
 
 
 def test_cli_unknown_model_json_error(cli_config: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -296,6 +424,31 @@ def test_cli_invalid_config_is_exit_3(
     assert main(["models", "--json"]) == 3
     error = _error_line(capsys.readouterr().err)
     assert error["kind"] == "config" and "family" in error["message"]
+    # Each registry problem is a record, with the tier it came from.
+    (problem,) = error["problems"]
+    assert (problem["path"], problem["kind"]) == ("models.q.family", "missing_key")
+    assert problem["source"] == f"cwd {tmp_path / 'hardline.yaml'}"
+
+
+def test_cli_lists_every_registry_problem_as_a_record(
+    cli_config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(
+        tmp_path / "hardline.yaml",
+        {
+            "default": "nope",
+            "models": {
+                "q": {"backend": "mock", "model": "m", "family": "x", "famly": "y"},
+                "r": {"backend": "mock", "model": "m", "family": "x", "max_tokens": 0},
+            },
+        },
+    )
+    assert main(["check", "--json"]) == 3
+    error = _error_line(capsys.readouterr().err)
+    found = {(p["path"], p["kind"]) for p in error["problems"]}
+    assert found == {("models.q.famly", "unknown_key"), ("models.r.max_tokens", "invalid_value")}
+    bad = next(p for p in error["problems"] if p["path"] == "models.r.max_tokens")
+    assert bad["got"] == 0
 
 
 def _secret_config(tmp_path: Path) -> None:
@@ -340,7 +493,8 @@ def test_cli_check_json_reports_per_row_and_never_the_value(
     assert main(["check", "--json"]) == 3
     out, err = capsys.readouterr()
     report = json.loads(out)
-    assert set(report) == {"ok", "tiers", "models"} and report["ok"] is False
+    # Changed requirement: the report also carries the registry's warnings.
+    assert set(report) == {"ok", "tiers", "models", "warnings"} and report["ok"] is False
     rows = {row["name"]: row for row in report["models"]}
     assert rows["q"]["ok"] is True and rows["q"]["problem"] is None
     assert rows["g"]["ok"] is False and "HL_TEST_MISSING_KEY" in rows["g"]["problem"]
@@ -358,7 +512,37 @@ def test_cli_check_json_ok(cli_config: Path, capsys: pytest.CaptureFixture[str])
     report = json.loads(capsys.readouterr().out)
     assert report["ok"] is True
     assert set(report["tiers"][0]) == {"source", "present"}
-    assert set(report["models"][0]) == {"name", "backend", "family", "ok", "problem"}
+    assert set(report["models"][0]) == {"name", "backend", "family", "ok", "problem", "worst_case"}
+
+
+def test_cli_check_shows_each_rows_worst_case(
+    cli_config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Owner ruling 2026-10-22: limits stay unset by default, and ``check`` shows what one call
+    on each row can cost at worst, so the default's cost is seen rather than assumed."""
+    row = {"backend": "mock", "model": "m", "family": "x"}
+    _write(
+        tmp_path / "hardline.yaml",
+        {
+            "models": {
+                "a": {**row, "retries": 2, "fallbacks": ["b"]},
+                "b": {**row, "retries": 0, "limits": {"seconds": 30}},
+            }
+        },
+    )
+    assert main(["check", "--json"]) == 0
+    rows = {row["name"]: row for row in json.loads(capsys.readouterr().out)["models"]}
+    assert rows["a"]["worst_case"] == {
+        "complete_calls": 4,
+        "extract_calls": 7,
+        "seconds": None,
+        "tokens": None,
+    }
+    assert rows["b"]["worst_case"]["seconds"] == 30
+    assert main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert "a: at most 4 backend calls a complete, 7 an extract; no limit in seconds" in out
+    assert "b: at most 1 backend call a complete, 2 an extract; 30 s" in out
 
 
 @pytest.mark.parametrize(
@@ -367,26 +551,32 @@ def test_cli_check_json_ok(cli_config: Path, capsys: pytest.CaptureFixture[str])
         ["complete", "", "x", "--temperature", "-1"],
         ["complete", "", "x", "--temperature", "nan"],
         ["complete", "", "x", "--max-tokens", "0"],
+        ["complete", "--json"],  # missing arguments
+        ["nonsense", "--json"],
     ],
 )
-def test_cli_numeric_bounds_are_usage_errors(
+def test_cli_usage_errors_exit_2_with_the_envelope(
     argv: list[str], cli_config: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    with pytest.raises(SystemExit) as exc:
-        main(argv)
-    assert exc.value.code == 2
-    assert capsys.readouterr().out == ""
+    # Changed requirement: a usage error is an exit code, not argparse's SystemExit,
+    # and under --json it is the envelope too, as every other error is.
+    assert main([*argv, "--json"] if "--json" not in argv else argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _error_line(err)["kind"] == "usage"
 
 
 def test_cli_temperature_zero_is_accepted(cli_config: Path) -> None:
     assert main(["complete", "", "x", "--temperature", "0"]) == 0
 
 
-def test_cli_help_lists_exit_codes(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit):
-        main(["--help"])
-    out = capsys.readouterr().out
-    assert "exit codes:" in out and "5 transient" in out and "6 auth" in out
+def test_cli_help_lists_every_exit_code(capsys: pytest.CaptureFixture[str]) -> None:
+    from hardline.adapters._in.cli import EXIT_CODES
+
+    assert main(["-h"]) == 0
+    text = capsys.readouterr().out
+    for kind, code in EXIT_CODES.items():
+        assert f"{code}  {kind}:" in text, kind
 
 
 def test_cli_skill(capsys: pytest.CaptureFixture[str]) -> None:
@@ -406,3 +596,67 @@ def test_schema_instruction_leads_with_a_fill_in_template() -> None:
     text = schema_instruction(Verdict.model_json_schema())
     assert '{"supported": <boolean>, "reason": <string>}' in text
     assert "do not repeat it" in text
+
+
+@pytest.mark.parametrize(
+    ("options", "note"),
+    [
+        ({"default": "half", "finish_reason": "length"}, "max_tokens"),
+        ({"default": "", "refusal": "I won't."}, "refused"),
+        ({"default": ""}, "empty"),
+    ],
+)
+def test_cli_complete_says_when_the_reply_is_not_a_whole_answer(
+    options: dict[str, Any],
+    note: str,
+    cli_config: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Printed alone, a truncated or refused reply reads as the model's answer.
+    _write(
+        tmp_path / "hardline.yaml",
+        {"models": {"q": {"backend": "mock", "model": "m", "family": "x", "options": options}}},
+    )
+    assert main(["complete", "q", "hi"]) == 0
+    out, err = capsys.readouterr()
+    assert out == options["default"] + "\n"
+    assert err.startswith("hardline: ") and note in err
+
+
+def test_cli_complete_json_carries_why_the_reply_ended(
+    cli_config: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["complete", "", "hello", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert (out["finish_reason"], out["native_finish_reason"], out["refusal"]) == (
+        "stop",
+        "stop",
+        None,
+    )
+
+
+def test_cli_check_reports_a_fallback_that_shares_its_primarys_fate(
+    cli_config: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A warning travels inside the --json document, and on stderr without it; the row is
+    # legal, so check still exits 0.
+    local = {"backend": "openai-compat", "family": "x", "base_url": "http://127.0.0.1:8080/v1"}
+    _write(
+        tmp_path / "hardline.yaml",
+        {
+            "models": {
+                "a": {**local, "model": "m", "fallbacks": ["b"]},
+                "b": {**local, "model": "n"},
+            }
+        },
+    )
+    assert main(["check", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert [(w["path"], w["kind"]) for w in report["warnings"]] == [
+        ("models.a.fallbacks", "shared_fate")
+    ]
+    assert main(["check"]) == 0
+    err = capsys.readouterr().err
+    assert err.count("fallback 'b'") == 1  # said once, not again by the log
+    assert "warning: models.a.fallbacks: fallback 'b'" in err

@@ -20,7 +20,7 @@ from ix.domain import schema
 from ix.domain.analysis import METHOD
 from ix.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT, UsageError
 from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment, Threshold
-from ix.domain.kind import EFFECTS, KIND_FAMILIES, NOTE_PREFIX
+from ix.domain.kind import KIND_FAMILIES, NOTE_PREFIX
 from ix.domain.plan import VERDICTS
 from ix.domain.problem import PROBLEM_KINDS
 
@@ -49,12 +49,12 @@ SOURCE = "git+https://github.com/mox-labs/gnx@ix-v{version}#subdirectory=compone
 #: The commands ix has, in the order an author uses them.
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("ix validate <path>", "every problem at once, each with path, kind, message, fix"),
-    ("ix plan <path>", "the decision, the cost, and the smallest effect it can detect"),
+    ("ix plan <path>", "the decision, the trials, and the smallest effect it can detect"),
     ("ix register <path>", "freeze the design beside the file, before any run"),
     ("ix deviations <path>", "what changed since registration"),
     (
         "ix run <path> --dry-run",
-        "the same file on mock replies: checks the harness, spends nothing, never a verdict",
+        "the same file on mock replies: checks the harness, calls no model, never a verdict",
     ),
     (
         "ix run <path> --exploratory --repeats N",
@@ -62,7 +62,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ),
     ("ix run <path>", "carry it out and print the report; the exit code is the verdict"),
     ("ix report <path>", "the latest run's report again; or give a run directory"),
-    ("ix runs <path>", "each run: when, gated, exploratory or dry, verdict, spend"),
+    ("ix runs <path>", "each run: when, its commit, gated, exploratory or dry, verdict, trials"),
     ("ix genres", "the genres installed, and any genre file ix refused"),
     ("ix kinds", "the kinds installed, and which of them this ix can run"),
 )
@@ -77,25 +77,31 @@ REFERENCES: dict[str, str] = {
     "kinds": "each subject kind, probe kind, sensor and environment kind: options and metrics",
     "running": "registration, running, the run record, and how a verdict is reached",
     "agents": "evaluating an agent end to end: sessions, probe files, sensors, dry runs, "
-    "screens, spend, the judge, and reading the report",
+    "screens, the judge, and reading the report",
     "problems": "every problem kind validate reports",
 }
 
 #: What a runnable kind needs on the host beyond ix, by kind label. The tests hold each key
 #: to a kind this ix can run, and ``http-load`` to the program its adapter starts.
 PREREQUISITES: dict[str, str] = {
-    "agent-session": "runs on one of matrix's runtimes: `claude-sdk` needs `ix[claude]`, the "
-    "Claude Code CLI and its credentials; `model` needs `ix[models]` and a hardline model; "
-    "`mock` needs nothing and spends nothing. `ix plan` lists one that cannot start under "
-    "`Runnable: no`",
+    "agent-session": "runs on one of matrix's agent runtimes: `claude-sdk` needs the Claude "
+    "Code CLI and its credentials; `pydantic-ai` needs a hardline model (its "
+    "`models` or matrix's) and makes every model call through hardline; `mock` needs nothing "
+    "and calls no model. `ix plan` lists one that cannot start under `Runnable: no`",
+    "model-call": "runs on one of matrix's model runtimes: `hardline` needs a hardline model; "
+    "`mock` needs nothing and calls no model. `ix plan` lists a runtime that cannot start, or "
+    "a model it cannot resolve, under `Runnable: no`",
     "function-test": "and `outcome` run Python in a child process with a time limit and no "
     "credentials in its environment; it is not a sandbox, so test code from a subject you "
     "would run yourself",
-    "http-load": "runs `k6` from `PATH`: check with `k6 version`. Without it every trial is "
-    "a harness failure (`tool_missing`) and the run decides nothing",
+    "http-load": "runs `k6` from `PATH`: check with `k6 version`. `ix plan` lists it under "
+    "`Runnable: no` when it is not there",
     "memory": "samples resident memory with `ps`, so it reads memory on macOS and Linux",
     "process": "starts the `command` it is given; `ix plan` lists a program that is not "
     "there under `Runnable: no`",
+    "compose": "runs `docker compose` against a daemon that answers: `ix plan` checks docker, "
+    "the daemon, compose and the file, and lists what fails under `Runnable: no`. A dry run "
+    "brings the stack up for real",
 }
 
 #: The example the skill opens with. It runs as written where `python3` and `k6` are
@@ -220,7 +226,7 @@ description: >-
 Read the diff, then list what is wrong with it, the most serious first."""
 
 #: A probe file of the ``agents`` reference: frontmatter keys are truth, except ``id``,
-#: ``kind``, ``effects`` and ``options``, which holds the prompt kind's options.
+#: ``kind`` and ``options``, which holds the prompt kind's options.
 PROBE_FILE = """\
 ---
 id: review-ask
@@ -245,9 +251,10 @@ subjects:
     runtime: claude-sdk
     skills: [skills/review]
     tools: [Read, Grep, Skill]
-    setting_sources: []
-    permission_mode: bypassPermissions
     max_turns: 3
+    runtime_options:
+      setting_sources: [project]
+      permission_mode: bypassPermissions
 probes:
   - id: review-ask
     kind: prompt
@@ -262,7 +269,6 @@ probes:
 primary: {metric: activated_correctly}
 threshold: {op: ">=", value: 0.8}
 metrics: [text_matched, cost]
-spend: {ceiling: 3.00, per_trial: 0.05}
 """,
     "routing": """\
 name: review-routing
@@ -273,9 +279,10 @@ subjects:
     kind: agent-session
     runtime: claude-sdk
     max_turns: 1
-    setting_sources: []
-    permission_mode: bypassPermissions
     plugins: [plugins/review]
+    runtime_options:
+      setting_sources: []
+      permission_mode: bypassPermissions
 probes:
   - id: review-ask
     kind: prompt
@@ -288,7 +295,6 @@ probes:
 primary: {metric: activated_correctly}
 threshold: {op: ">=", value: 0.8}
 metrics: [cost, hit_limit]
-spend: {ceiling: 3.00, per_trial: 0.05}
 """,
     "loop": """\
 name: self-review-merge
@@ -315,7 +321,6 @@ probes:
 primary: {metric: tests_passed}
 comparison: superiority
 metrics: [tests_score, rounds, cost]
-spend: {ceiling: 5.00, per_trial: 0.04}
 """,
     "control": """\
 name: review-skill-effect
@@ -326,15 +331,15 @@ subjects:
     kind: agent-session
     runtime: claude-sdk
     tools: [Read, Grep, Skill]
-    setting_sources: []
     max_turns: 3
+    runtime_options: {setting_sources: [project]}
   with-skill:
     kind: agent-session
     runtime: claude-sdk
     skills: [skills/review]
     tools: [Read, Grep, Skill]
-    setting_sources: []
     max_turns: 3
+    runtime_options: {setting_sources: [project]}
 probes:
   - id: off-by-one
     kind: prompt
@@ -344,7 +349,26 @@ probes:
 primary: {metric: text_matched}
 comparison: superiority
 metrics: [cost]
-spend: {ceiling: 3.00, per_trial: 0.05}
+""",
+    "evaluator": """\
+name: reads-before-answering
+question: Does the agent find total() and read it before it answers?
+genre: evaluate
+subjects:
+  agent: {kind: agent-session, runtime: claude-sdk, tools: [Read, Grep], max_turns: 4}
+probes:
+  - id: where-is-total
+    kind: prompt
+    prompt: Where is total() defined, and what does it return for an empty list?
+    mock_response: total() is in app.py and returns 0 for an empty list.
+    truth: {contains: app.py}
+sensors:
+  - kind: evaluator
+    evaluator: ToolCorrectness
+    arguments: {expected_tools: [Grep, Read], allow_extra: true}
+primary: {metric: eval_passed}
+threshold: {op: ">=", value: 0.7}
+metrics: [text_matched]
 """,
 }
 
@@ -355,7 +379,8 @@ SHAPE_MARK = "# The shape of the file, not a file to validate."
 VALUE_FORMS: dict[str, tuple[str, tuple[str, ...]]] = {
     "duration": ("a number and a unit (ms, s, m, h), or a bare number of seconds",
                  ("500ms", "60s", "2m", "1h", "90")),
-    "rate": ("arrivals per second or per minute, or a bare number per second; at least one",
+    "rate": ("a whole number of arrivals per second or per minute, or a bare number per "
+             "second; at least one (2.5/s is 150/m)",
              ("80/s", "600/m", "20")),
     "margin": ("relative to the control, in percentage points, or a bare number in the "
                "metric's unit", ("5%", "10pp", "0.5")),
@@ -452,15 +477,13 @@ def _install(version: str, kinds: Kinds) -> str:
             "",
             "```bash",
             f'uv tool install "{source}"',
-            "# or, to run agent sessions on the claude-sdk runtime",
-            f'uv tool install "ix[claude] @ {source}"',
             f"ix --version      # ix, version {version}",
             "```",
             "",
             "ix is on no package index: it is installed from its repository at the release's "
-            "tag, and uv takes matrix, which ix runs on, from the same repository. The extras: "
-            "`claude` (the `claude-sdk` runtime), `models` (the `model` runtime, through "
-            "hardline), `otel` (export of spans over OTLP).",
+            "tag, and uv takes matrix, which ix runs on, from the same repository. Every agent "
+            "and model runtime comes with it (`claude-sdk`, `pydantic-ai`, `hardline`), and "
+            "the OpenTelemetry SDK that exports spans over OTLP: there are no extras.",
             "",
             "What the runnable kinds need on the host:",
             "",
@@ -488,7 +511,7 @@ def _quick_start() -> str:
             "```bash",
             f"ix validate lab/static   # {ok}: valid. {invalid}: fix every problem listed, "
             "validate again",
-            "ix plan lab/static       # read Decides, Trials, Effects, Spend; runs nothing. "
+            "ix plan lab/static       # read Decides, Trials, Requires; runs nothing. "
             "Runnable: no (--json: runnable false) means stop and fix what it lists",
             f"ix register lab/static   # {ok}: the design is frozen in "
             "lab/static/experiment.registration.json",
@@ -498,7 +521,8 @@ def _quick_start() -> str:
             "```",
             "",
             "`ix plan` exits 0 whether or not this host can run the plan: it only shows. "
-            "Read the plan before every run: its Effects and Spend are what the run will do, "
+            "Read the plan before every run: its Trials are what the run will do and Requires "
+            "what it needs of this host, "
             "and nothing has happened yet. Decide before you run: the registration is what the "
             "verdict is held to.",
         ]
@@ -546,7 +570,7 @@ def _commands() -> str:
             "",
             "`<path>` is the experiment file, a directory holding `experiment.yaml`, or `-` "
             "for an experiment on standard input (it has no file to register beside, so it "
-            "runs only with `--exploratory`). Every "
+            "runs only with `--exploratory` or `--dry-run`). Every "
             "command takes `--json` and then prints one document with a `schema` field on "
             "stdout: `ix.v1.validation`, `ix.v1.plan`, `ix.v1.registered`, "
             "`ix.v1.deviations`, `ix.v1.report`, `ix.v1.runs`, `ix.v1.genres`, `ix.v1.kinds`. "
@@ -605,8 +629,9 @@ def _errors() -> str:
             "document as `warnings` (`ix.v1.validation`, `ix.v1.plan`).",
             "- Some outcomes are not failures, yet exit non-zero: an invalid experiment from "
             "`ix validate`, deviations found, and a run that fails, is inconclusive, was not "
-            "held to a registration it moved away from, stopped, could not finish or is still "
-            "running. Each prints its own document on stdout.",
+            "held to a registration it moved away from, was answered by a stand-in where a "
+            "gate was asked for, stopped, could not finish or is still running. Each prints its "
+            "own document on stdout.",
             "- Tolerate an error kind, a problem kind or a document field you do not know: "
             "each set grows. Refuse a `schema` whose major is not `v1`.",
             "",
@@ -633,11 +658,12 @@ def _skill(genres: Genres, kinds: Kinds, version: str) -> str:
         f"# ix {version}: experiments that decide a question about a system\n\n"
         "ix answers a question about a system with an experiment. One YAML file names the "
         "question, the subjects, the probes and the metric that decides. ix checks the file, "
-        "shows the decision a run would inform and what it would cost, freezes the design "
+        "shows the decision a run would inform and how many trials it takes, freezes the design "
         "before anything runs, runs it one trial at a time, and reports a verdict: `holds`, "
-        "`fails` or `inconclusive`. The system is a service (a program, an endpoint) or an AI "
-        "agent: a fresh session per trial on one of matrix's runtimes, graded by its tool "
-        "calls, tests, graders or a judge (`ix --skill -r agents` takes you through one)."
+        "`fails` or `inconclusive`. The system is a service (a program, an endpoint), an AI "
+        "agent (a fresh session per trial on one of matrix's agent runtimes, graded by its "
+        "tool calls, tests, graders or a judge) or a model (one call per trial on one of "
+        "matrix's model runtimes); `ix --skill -r agents` takes you through one."
     )
     sections = [
         _frontmatter(version),
@@ -682,8 +708,7 @@ metrics: [<metric>]                 # further metrics to measure and report
 sensors:                            # only to give a sensor options, or to choose between two
   - {{kind: <sensor>, <option>: <value>}}
 repeats: <n>
-seed: <n>
-spend: {{ceiling: 5.00, per_trial: 0.02, currency: USD}}"""
+seed: <n>"""
     shapes = "\n".join(
         f"  - `{shape}`: statistic {', '.join(STATISTICS[shape])}; "
         f"estimator {', '.join(ESTIMATORS[shape])}"
@@ -694,7 +719,6 @@ spend: {{ceiling: 5.00, per_trial: 0.02, currency: USD}}"""
         for name, (what, examples) in VALUE_FORMS.items()
     )
     operators = ", ".join(f"`{op}`" for op in get_args(Threshold.model_fields["op"].annotation))
-    effects = "; ".join(f"`{name}` {what}" for name, what in EFFECTS.items())
     return f"""\
 ## The experiment file
 
@@ -735,17 +759,44 @@ whether it came from the experiment, the genre or ix.
 - **What a verdict can rest on.** A `mean`, a `median` (it needs 6 blocks, repeats x
   probes, in a cell: `repeats_below_min`) or a rate. A `min` or a `max` is measured and
   reported, never decided on (`estimator_illegal`). A rate's margin is in percentage points
-  (`10pp`) or a share (`0.05`), never in percent (`unit_mismatch`).
-- **Placeholders.** In an inline probe, `{{name}}` is a factor, or an option every subject
-  sets; anything else is `unbound_placeholder`.
+  (`10pp`) or a share (`0.05`), never in percent (`unit_mismatch`), and below the whole range
+  (`1`, `100pp`). A rate's threshold is a share strictly between 0 and 1 (`0.9`, not `90%`
+  or `90`): one at 0 or 1 or beyond is passed by every rate or by none (`invalid_value`).
+- **Placeholders.** `{{name}}` in a subject's option is a factor's level, filled per cell;
+  a value that is one placeholder takes the level with its type (`max_turns: "{{turns}}"`
+  is the integer). In a probe, inline or from a file, it is a factor, an option every
+  subject sets, or a facet every subject's kind offers (`{{pid}}`). Both take what the
+  environment binds a service with: `{{<service>.url}}`, `.host`, `.port` (a `process`
+  service's `url`, a `compose` service's published port). A loop's `prompt` fills
+  `{{prompt}}`, `{{response}}`, `{{until}}` and `{{failures}}` itself. Anything else is
+  `unbound_placeholder`: a problem, except in prompt text (an option `-r kinds` marks
+  `prompt text`, such as a probe's `prompt`, a `system_prompt` or a `loop`), where a name
+  nothing fills is sent as written and is a warning, so code (`print(f"{{user}}")`) can be
+  put to an agent. Read those warnings (`validate`, `plan`, `register` and `run` print
+  them, and a run's record keeps them): a typo (`{{sise}}` for the factor `size`) is one,
+  and names the placeholder it is likely to be. A name a probe takes from some subjects and
+  not others stays a problem, doubled or not, since the subjects would be put different
+  prompts. In prompt text `{{{{name}}}}`, where `name` is filled there, is the text
+  `{{name}}`; every other brace is sent as written, so JSON (`{{"a": {{"b": 1}}}}`) or a
+  template (`{{{{ user.name }}}}`, or `{{{{user}}}}` where nothing fills `user`) in a prompt
+  reaches the agent unchanged. So a template's own `{{{{model}}}}`, `{{{{runtime}}}}` or
+  `{{{{workdir}}}}` is the text `{{model}}` wherever something fills that name there (an
+  option every subject sets, or a facet, as much as a factor): write it with spaces,
+  `{{{{ model }}}}`, to send it as written whatever fills the name. A doubled name nothing
+  fills that is near one that is filled (`{{{{sise}}}}` for `size`) is warned of. In a
+  subject's or a probe's other options `{{{{name}}}}` is always the text `{{name}}`:
+  `setup: [sh, -c, 'echo ${{{{HOME}}}}']` runs `echo ${{HOME}}`. Nothing fills an
+  environment's options or a sensor's, nor un-doubles an escape in them: `{{name}}` and
+  `{{{{name}}}}` are sent as written, so an `environment.process` command takes the shell's
+  own `${{HOME}}`, and a `text-match`'s `contains: '{{size}}'` is compared as that text.
+  Validate warns of a `{{name}}` there that a trial fills elsewhere, of every
+  `{{{{name}}}}` there, and of each `{{name}}` in a judge's `rubric`, which is sent as
+  written.
 - **Probes from files.** Leave `probes` out and ix reads the `probes/` folder beside the
   experiment, one file per probe (`.md`, `.yaml`): a markdown file's text is the prompt,
   and its frontmatter keys other than `id` (default: the file's name), `kind` (default
-  `prompt`), `options` and `effects` are the probe's truth (reference data a sensor
-  measures against; it never reaches the subject). A truth key no sensor in use reads is
-  `truth_unclaimed`.
-- **Effects** come from the kinds. `effects:` beside a `kind` adds to them and cannot remove
-  one. A run that spends money needs `spend.ceiling` (`spend_unbounded`). Effects: {effects}.
+  `prompt`) and `options` are the probe's truth (reference data a sensor measures against;
+  it never reaches the subject). A truth key no sensor in use reads is `truth_unclaimed`.
 """
 
 
@@ -813,12 +864,14 @@ def _genres(genres: Genres) -> str:
 
 
 def _option_values(option: Option) -> str:
-    """What an option takes: its closed set, its open choices, or its type."""
+    """What an option takes: its closed set, its open choices, or its type; and whether it
+    is prompt text."""
+    text = ", prompt text" if option.text else ""
     if option.allowed:
-        return f" ({'|'.join(option.allowed)})"
+        return f" ({'|'.join(option.allowed)}{text})"
     if option.choices:
-        return f" ({option.type}: {', '.join(option.choices)} or another)"
-    return f" ({option.type})"
+        return f" ({option.type}: {', '.join(option.choices)} or another{text})"
+    return f" ({option.type}{text})"
 
 
 def _kind_line(kind: Kind, runnable: bool) -> str:
@@ -834,10 +887,11 @@ def _kind_line(kind: Kind, runnable: bool) -> str:
         facets.append(f"needs {', '.join(kind.needs)}")
     if kind.offers:
         facets.append(f"offers {', '.join(kind.offers)}")
-    if kind.effects:
-        facets.append(f"effects {', '.join(kind.effects)}")
     if kind.truth:
         facets.append(f"reads truth {', '.join(kind.truth)}")
+    if kind.service_keys:
+        keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
+        facets.append(f"binds each service as {keys}")
     if facets:
         parts.append(f"  {'; '.join(facets)}")
     for metric in kind.metrics:
@@ -864,7 +918,6 @@ def _kinds(kinds: Kinds) -> str:
             or "- (none installed)"
         )
         blocks.append(f"### {titles[family]}\n\n{lines}")
-    effects = "; ".join(f"`{name}` {what}" for name, what in EFFECTS.items())
     families = "\n\n".join(blocks)
     return f"""\
 ## Kinds
@@ -875,17 +928,18 @@ behind. Required options are marked `*`.
 
 A kind marked **declared only** has no adapter in this ix: an experiment that uses it can be
 validated, planned and registered, `validate` warns (`kind_unimplemented`), the plan says
-`Runnable: no`, and `ix run` refuses it before anything starts. A subject this host cannot
-start as written (a command that is not there, an `auth` variable that is not set) is listed
-in the plan's `unstartable` and under `Runnable: no`; it can still be registered.
+`Runnable: no`, and `ix run` refuses it before anything starts; so does a kind whose adapter
+cannot be built here (`ix kinds` says why). What an entry needs of this host (a program on
+PATH, an `auth` variable that is set, a runtime that resolves the model, the docker daemon)
+its adapter checks: the plan's `requirements` list each with `holds`, and one that does not
+hold is under `Runnable: no` with its `why` and `fix`. It depends on the host, so the
+experiment can still be registered.
 
 A `process` subject is up when its `ready` URL answers an HTTP GET with a status below 500;
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One
 that is not up within `startup_timeout` (30s) fails the trial as the subject's (`not_ready`).
 
 {families}
-
-Effects: {effects}.
 """
 
 
@@ -897,11 +951,19 @@ def _running() -> str:
 `ix register <path>` writes `<file-stem>.registration.json` beside the experiment. It holds
 the design as resolved (what the file chose and what the genre supplied: comparison, margin,
 threshold, guardrails, control, repeats, seed, order, calibration, estimators, the analysis
-and its parameters, the sensors), and the digests of the probe set, the experiment and the
-plan.
+and its parameters, the sensors), the digests of the probe set, the experiment and the
+plan, and the digest of each file and folder the subjects and sensors name: `skills`,
+`plugins` (each folder a `*` matches), `fixtures`, `definition`, `graders`, `rubric_file`,
+any option a kind declares a `path` or `paths`, and each item of a `command` (a process's
+`command`, relative to its `cwd`; a session's `setup`) that names a file: `[python3,
+server.py]` digests `server.py`.
 
 Digests are over meaning: a comment, key order or a default written out is not a change. A
-reworded `question` or `rationale` changes the experiment's digest and not the plan's.
+reworded `question` or `rationale` changes the experiment's digest and not the plan's. A
+file's digest is its bytes; a folder's is its files' relative paths and their bytes, never
+their times. A skill, plugin, fixture or definition edited after registration is a
+deviation named by what changed (`skill review changed after registration`): the verdict is
+about what those files hold.
 
 `ix deviations <path>` lists what differs from the registration and exits
 {EXIT_CODES["deviations"]} when anything does. `ix register` on a changed experiment is refused
@@ -940,28 +1002,50 @@ then the report (`ix.v1.report`) on stdout.
   settings): one JSONL file per table
   (`ix.v1.trial`, `ix.v1.interaction`, `ix.v1.reading`, ...), written as the run goes. A
   trial is on disk when it finishes, so a run that is killed keeps what it had.
+- **From a reading to the model that answered.** A reading joins its interaction on `seq`.
+  Each interaction's `sessions`, and each reading's (a judge's own calls), are row numbers,
+  from 0, in `matrix.v1.session.jsonl`: one row per agent session or model call, failed
+  ones included, with the runtime, the model that answered and its `family`, `usage`, the
+  ids, `attempt_log`, and `status` (`failed` with its `reason`). `jq -c '{{seq, sessions}}'
+  ix.v1.interaction.jsonl` lists them; `sed -n "$((N + 1))p" matrix.v1.session.jsonl` reads
+  row N.
+- **What a verdict is about** is in the manifest (`ix.v1.run`) and the report: the digest
+  of each file the subjects and sensors name (`contents`: paths and digests, never what
+  the files hold), the git commit and whether a tracked file differed from it
+  (`provenance.commit`, `provenance.dirty`; `not a repository` outside one), the versions
+  of ix, matrix and hardline, and each runtime installed with the distribution that
+  registered it and the versions of what it drives (`claude-agent-sdk` for `claude-sdk`).
+  `ix report` prints them under `Contents`, `Ran from` and `Versions`; `ix runs` gives each
+  run's commit.
 - **Stopping.** Ctrl-C stops the trial in flight, stops everything the run started and
   exits {EXIT_CODES["run_interrupted"]} with the partial report. `ix report <run directory>`
   reads any run again, finished or not; a run that did not finish gives no verdict, and one
-  still running exits {EXIT_CODES["running"]}.
-- **Refused before anything starts**: a subject command that is not there, an `auth`
-  variable that is not set, and an agent runtime that cannot start or cannot play its
-  agent (the plan lists them under `unstartable`).
-- **Spend.** A run with a ceiling stops starting trials once the next could take it past
-  the ceiling; the report says why (`halt`) and exits {EXIT_CODES["run_interrupted"]}
-  with no verdict (`ix --skill -r agents`).
+  still running exits {EXIT_CODES["running"]}. A report calls no model and runs no code: a
+  run stopped before a judge, an `evaluator`, `function-test` or `outcome` read is reported
+  without readings (`unread` says why); run it again.
+- **Refused before anything starts**: any requirement of this host that does not hold: a
+  command that is not there, an `auth` variable that is not set, `k6` missing for
+  `http-load`, the docker daemon down for `compose`, an agent runtime that cannot start or
+  cannot play its agent (the plan's `requirements`, each with `holds`, `why` and `fix`).
 - **A dry run gives no verdict.** `ix run <path> --dry-run` runs the file as written
-  with every agent session on the `mock` runtime (`ix --skill -r agents`); a subject with
-  no stand-in (a `process`) is refused. A run in which a stand-in answered any trial,
-  this way or with `runtime: mock` written in, measured the harness, not the subject: the
-  report says `Dry run on mock replies` and gives neither a verdict nor an indication.
+  with every agent session and model call on matrix's `mock` runtime of its port (`ix
+  --skill -r agents`); a subject with no stand-in (a `process`) is refused, and the
+  environment is brought up for real (a `compose` stack, a `process` service). A run in which
+  a stand-in answered any trial, this way or with `runtime: mock` written in, measured the
+  harness, not the subject: the
+  report says `Dry run on mock replies` and gives neither a verdict nor an indication, and
+  the run is not `gated`. A registered run with `runtime: mock` written in exits
+  {EXIT_CODES["simulated"]} (`simulated`), never {EXIT_CODES["ok"]}.
   `ix runs` lists each run as `gated`, `exploratory` or `dry`.
 - **Failures have an owner.** A trial the *subject* failed (it died, it was not up in
-  time) counts against the subject. A trial the *harness* failed (a tool broke, a timeout,
-  an environment that went down) is missing data; an environment that went down also ends
-  the run (exit {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be
-  taken. The report counts each. A subject too slow for an open model's rate is measured,
-  not dropped.
+  time, it answered no request inside the measured window, an agent session ran past its
+  probe's `timeout`) counts against the subject. A
+  trial the *harness* failed (a tool broke, a timeout, an environment that went down) is
+  missing data; an environment that went down also ends the run (exit
+  {EXIT_CODES["run_failed"]}). A *sensor* failure is a reading that could not be taken. The
+  report counts each. A subject too slow for an open model's rate is measured, not
+  dropped. `error_rate` counts a request that failed, timed out (`http-load`'s
+  `timeout`, k6's 60s) or was never answered, and each arrival dropped, as an error.
 
 ## Reading a verdict
 
@@ -982,14 +1066,16 @@ the margin. Choose the comparison for the claim to be made.
   show it.
 - **The A/A check.** Where the genre calibrates, the control also runs against itself. If
   it differs from itself, or the check cannot be made, the run is `inconclusive` and
-  `analysis.reason` says why, whatever the variants did. It never widens an interval.
+  `analysis.reason` says which, whatever the variants did. A control that reads the same
+  number in both samples of every block held still, and passes. It never widens an
+  interval.
 - **Intervals are printed unadjusted**, at 95%; `allowed` is the level a decision was held
   to (the full 0.05 for `holds`, Holm's share for `fails`).
 """
 
 
 def _agents() -> str:
-    halted, dry, usage = EXIT_CODES["run_interrupted"], EXIT_CODES["ok"], EXIT_CODES["usage"]
+    dry, usage = EXIT_CODES["ok"], EXIT_CODES["usage"]
     return f"""\
 ## Evaluating an agent
 
@@ -997,26 +1083,38 @@ An agent evaluation is an experiment like any other: a genre for the decision, s
 probes and a metric. What makes it one is the kinds.
 
 - **The subject is `agent-session`.** Each trial is a fresh session in a new working
-  directory outside the experiment, on the matrix runtime its `runtime` names. It is
-  required, with no default, so spending is never implicit: `claude-sdk` (the Claude Agent
-  SDK, with tools, turns, plugins and skills; spends), `model` (one call through hardline,
-  no tools; spends) or `mock` (canned replies; spends nothing: a dry run). Left out,
-  validate reports `option_missing`. The other options:
+  directory outside the experiment, on the matrix agent runtime its `runtime` names. It is
+  required, with no default, so a model provider is never called implicitly: `claude-sdk`
+  (the Claude Agent SDK, with tools, turns, plugins and skills; calls a model provider),
+  `mock` (canned replies; calls no model: a dry run), or any agent runtime installed, by
+  its type URL. Left out, validate reports `option_missing`. The other options:
   `definition` (a Claude Code agent file: body is the system prompt), `model`,
-  `system_prompt`, `tools` (`[]`: none), `max_turns`, and for `claude-sdk`
-  `permission_mode`, `setting_sources` (`[]` keeps this machine's settings and plugins
-  out), `plugins` (folders, `*` allowed) and `skills` (folders copied into the session's
-  `.claude/skills`). `fixtures` are files and folders copied into the working directory
-  first, and `setup` a command run there after them (`[python3, seed.py]`);
-  `runtime_options` are passed to the runtime's own config (`temperature` for `model`).
-  Only `claude-sdk` takes `permission_mode`, `setting_sources`, `plugins` and `skills`;
-  on another runtime they are `option_inapplicable`.
+  `system_prompt`, `tools` (`[]`: none), `max_turns`, `plugins` (folders, `*` allowed,
+  handed to the runtime as its `plugins`), `skills` (folders copied to where the runtime
+  says a session finds its skills: claude-sdk's `.claude/skills`, read as its `project`
+  settings), `fixtures` (files and folders copied
+  into the working directory first), `setup` (a command run there after them:
+  `[python3, seed.py]`) and `runtime_options`: the runtime's own config, passed through as
+  written. For `claude-sdk` that is `permission_mode`, `setting_sources` (`[]` keeps this
+  machine's settings and plugins out), `fallback_model`, `max_budget_usd` and `agents`;
+  `matrix describe matrix.v1.agent-runtime.claude-sdk` lists them. A key the runtime's
+  config does not declare is `option_unknown`; `plugins` on a runtime that takes none are
+  `option_inapplicable`.
+- **To measure a model rather than an agent, the subject is `model-call`.** Each trial is
+  one call on the matrix model runtime its `runtime` names (`hardline`, `mock`, or any
+  installed): no turns, no tools, no working directory. Options: `model` (a name the
+  runtime resolves, checked by `ix plan`), `system_prompt` and `runtime_options` (the
+  runtime's config: `temperature`, `max_tokens` for `hardline`). The `prompt` probe
+  applies, without `collect`; `activation` and `tool-usage` read tool calls a call never
+  makes, so validate refuses them on it (`unobservable`), and a `function-test` `file`.
 - **The probe is `prompt`.** Write one file per probe in a `probes/` folder beside the
   experiment and leave `probes:` out: the markdown body is the prompt, and every
-  frontmatter key but `id`, `kind`, `options` and `effects` is the truth sensors read
+  frontmatter key but `id`, `kind` and `options` is the truth sensors read
   (it never reaches the agent). Probe options, under `options:` in a file: `collect`
   (files the agent writes, kept for grading), `feedback` (tests a test-feedback loop shows
-  the agent), `mock_response` (the reply the `mock` runtime gives), `timeout` (600s).
+  the agent), `mock_response` (the reply a stand-in runtime such as `mock` gives),
+  `timeout` (600s): a session or call that runs past it fails the trial as the subject's
+  (`overran`).
   An option written beside the truth is truth, which the probe never sees: validate says
   so (`truth_unclaimed`) and shows where it goes. `probes/review-ask.md`:
 
@@ -1025,12 +1123,15 @@ probes and a metric. What makes it one is the kinds.
 ```
 - **Sensors read what the session said and did**, and are chosen by the metric you name:
   `activated_correctly` (`activation`: truth `expectation` must_trigger,
-  should_not_trigger or acceptable, and `expected_skill`), `tool_used_correctly` and
+  should_not_trigger or acceptable, and `expected_skill`, compared whole: `review` is fired
+  by `review` or `plugin:review`, never by `code-review-lite`), `tool_used_correctly` and
   `tool_usage_score` (`tool-usage`, option `tool`: a tool called by name or a program run
-  through Bash; truth `expected_command`, `expected_args`), `tests_passed`,
+  through Bash; truth `expected_command`, the whole word, and `expected_args`), `tests_passed`,
   `tests_pass_share` and `tests_score` (`function-test`: truth `function_name`,
-  `test_cases` of `{{input, expected}}` or `{{input, raises}}`, and `tiers` that weigh
-  them; option `file` tests a collected file instead of the reply), `outcome_score` and
+  `test_cases` of `{{input, expected}}` or `{{input, raises}}` (`raises` names an exception
+  class or a base of it; `any` is `Exception`, so code that exits passes only where
+  `SystemExit` is named), and `tiers` that weigh them; option `file` tests a collected
+  file instead of the reply), `outcome_score` and
   `outcome_passed` (`outcome`, option `graders`: a Python module of your own whose
   `GRADERS` maps a probe id, or the truth's `grader`, to a function of the reply returning
   0 to 1; a probe with none is graded by the share of its truth's `expected_facts` the reply
@@ -1039,12 +1140,20 @@ probes and a metric. What makes it one is the kinds.
   `matches` (a regular expression), each in a probe's truth or as the sensor's option for
   every probe; options `ignore_case`, `strip`), `tokens_total`, `tokens_input`,
   `tokens_output`, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, `hit_limit`
-  (`usage`), and the judged `judged_score` and `judged_pass` (`judge`, option `rubric`).
+  (`usage`: what the runtime did not report is left out, so a model call has no `turns`),
+  the judged `judged_score` and `judged_pass` (`judge`, option `rubric`), and
+  pydantic-evals' evaluators: `eval_passed`, `eval_score`, and the judged
+  `judged_eval_passed` and `judged_eval_score` (`evaluator`, below).
 - **Validate checks that the sensors can see.** A setting that makes what a sensor reads
-  impossible is `unobservable`, refused before any trial: a skill with no `Skill` tool
-  among `tools`, `activation` or `tool-usage` on the `model` runtime (no tools), a
-  `tool-usage` tool the session may not call, a session with no skill, plugin or setting
-  to fire, and files to `collect` with no tool to write them or in `plan` mode.
+  impossible is `unobservable`, refused before any trial, whatever the runtime is called:
+  a skill whose `tools` leave out the tool the runtime says fires one (claude-sdk's
+  `Skill`), `skills` on a runtime that names no place for them or, as configured,
+  loads none from the working directory (claude-sdk with `setting_sources` that leave
+  `project` out), a `tool-usage` tool the session may not call, a session with no skill,
+  plugin or setting to fire, files to `collect` with no tool to write them or on a runtime
+  that writes none (claude-sdk in `plan` mode), and `activation` or `tool-usage` on a
+  `model-call` subject. What a runtime's sessions do is the runtime's to declare, so the
+  same holds for any agent runtime that says so.
 - **Conditions to compare are subjects** under `compare`: one changed option each (a
   `system_prompt`, a `definition` file, a `model`, a `loop`). A `loop` adds rounds:
   `{{strategy: self-review, rounds: 3}}` asks again with the previous answer until it
@@ -1067,12 +1176,16 @@ A skill is a folder holding `SKILL.md`, beside the experiment:
 `SKILL.md` opens with frontmatter that has both keys: `name` (lowercase letters, digits
 and hyphens, the folder's name) and `description` (what the skill does and when to use
 it: the agent reads only this to decide whether to fire it). `skills:` copies each folder
-into the session's `.claude/skills`, and ix has the session read `project` settings, where
-they are found, even under `setting_sources: []`, which keeps this machine's own settings,
-skills and plugins out. A skill fires through the `Skill` tool, so `tools`, when you list
-them, must include `Skill`. `expected_skill` is the skill's `name`. Skills in a plugin come
-with `plugins:` instead. A skill installed on this machine is read only when its settings
-source is listed (`setting_sources: [user]`), and then everything else there comes too.
+to where the runtime says a session finds its skills; for claude-sdk, the session's
+`.claude/skills`, which it reads as its `project` settings:
+`setting_sources: [project]` reads them and nothing else of this machine, since the
+working directory is the trial's own (`[]` would read none, and validate refuses it). A
+skill fires through the tool the runtime names, claude-sdk's `Skill`, so `tools`, when you
+list them, must include it. `expected_skill` is the skill's `name`. Skills in a plugin come
+with `plugins:` instead; `expected_skill: review` matches the plugin's `acme:review`, and
+`expected_skill: acme:review` names that plugin's skill only. A skill installed on this
+machine is read only when its settings source is listed (`setting_sources: [user]`), and
+then everything else there comes too.
 
 {_yaml(AGENT_EXAMPLES["skill"])}
 
@@ -1099,17 +1212,14 @@ have written it anyway. Two things show more.
 
 ## The order of work
 
-1. `ix validate` and `ix plan`. Before a run, the plan's Spend is the declared `per_trial`
-   times the trials, a guess; once a run has reported costs, the mean cost of its trials
-   times the trials, and the plan says which it used. Runnable says whether the runtime
-   can start here.
+1. `ix validate` and `ix plan`. Runnable says whether the runtime can start here.
 2. **Dry run.** `ix run <path> --dry-run` runs the file as written on stand-ins: each
    session on the `mock` runtime replying with its probe's `mock_response` (give each one
-   whose grade you know), the options only `claude-sdk` takes set aside and listed under
-   `Stood in`, a judge scoring every reply 0.5. Every sensor reads the canned replies as
-   it would a model's, so a grader that grades wrong shows here, for nothing. It checks
-   the harness, never the agent: the report says `Dry run on mock replies` and gives no
-   verdict and no indication (exit {dry}).
+   whose grade you know), the real runtime's `runtime_options` and `plugins` set aside and
+   listed under `Stood in`, a judge scoring every reply 0.5. Every sensor reads the canned
+   replies as it would a model's, so a grader that grades wrong shows here, for nothing.
+   It checks the harness, never the agent: the report says `Dry run on mock replies` and
+   gives no verdict and no indication (exit {dry}).
 3. **Pilot.** On the real runtime, `ix run <path> --exploratory --repeats N`, N the
    genre's fewest repeats: the file stays as it will be registered, and the report lists
    the change under `Changed`. A pilot gives no verdict, and one too small for even every
@@ -1117,51 +1227,86 @@ have written it anyway. Two things show more.
    size, not the agent. Read the screen: a probe at `floor` or `ceiling` (every trial
    failed, or passed) or `noisy` (one subject's readings on it spread over more than 0.35
    of the range) cannot discriminate; fix or drop those probes. Then `ix plan` again:
-   Spend now rests on what a trial cost, and Sensitivity on how much the primary varied.
+   Sensitivity now rests on how much the primary varied.
 4. `ix register`, then `ix run`: the exit code is the verdict. `--repeats` is refused
    here (exit {usage}): a verdict rests on the registered design.
 
-## Spend
-
-A kind that spends needs a ceiling: `spend.ceiling`, or `spend_cap` in ix's settings
-(`ix:` in `~/.ix/config.yaml` or `./ix.yaml`, beside `runs:`, where every run is kept). A
-run adds up the cost each session reported and stops starting trials once the next could
-take it past the ceiling (the dearest trial so far, or `per_trial` if more); a runtime
-that reports no cost (`model`) is held to `per_trial` or not started past its first trial.
-The report says why it stopped (`halt`), and exits {halted} with no verdict. A judge's
-spend counts against the ceiling too.
-
 ## The judge
 
-`judge` asks a model (`runtime`, required with no default: `model` or `claude-sdk`, which
-spend, or `mock`, which does not; `model`) to score a reply against your `rubric` from 0 to
-1: `{{kind: judge, runtime: model, rubric: rubric.md}}`. Its readings are judged: they are
-reported and **never decide** a verdict. `repeats: 3` asks it three times per reply:
-`judge_agreement` is how often it agreed with itself. Two flags are printed whenever a
-trial raises one: `judge_inconsistent` (its repeats split on pass or fail) and
-`judge_in_family` (the judge is of the subject's model family; judge with another).
+`judge` asks a model to score a reply against your `rubric` from 0 to 1. It names its
+runtime with one of two options, and has no default: `model_runtime` (one model call per
+reading: `hardline` calls a model provider, `mock` does not) or `agent_runtime` (a one-turn
+session with no tools per reading: `claude-sdk` calls a model provider, `mock` does not).
+Validate refuses a judge that names neither, or both:
+`{{kind: judge, model_runtime: hardline, rubric: rubric.md}}`. Its readings
+are judged: they are reported and **never decide** a verdict. `repeats: 3` asks it three
+times per reply: `judge_agreement` is how often it agreed with itself. Two flags are
+printed whenever a trial raises one: `judge_inconsistent` (its repeats split on pass or
+fail) and `judge_in_family` (the judge is of the subject's model family; judge with
+another). On an agent runtime the judge runs in a fresh temporary directory, given the
+config its runtime declares keeps the machine out (claude-sdk's `setting_sources: []`)
+under its own `runtime_options`, so what is where ix runs (a CLAUDE.md, your settings,
+hooks) does not shape its scores.
+
+## pydantic-evals' evaluators
+
+`evaluator` runs one of pydantic-evals' evaluators over each trial; ix keeps the loop
+(`Dataset.evaluate` is not used). Name it with `evaluator` and give its `arguments` as
+pydantic-evals documents them. It reads the reply as `output`, the prompt as `inputs`, the
+probe's truth `expected_output` and `metadata`, how long the probe took, and the spans that
+ended in the trial. Every assertion it gives held is `eval_passed`; its score is
+`eval_score` (`result` names one when it gives several); labels and each result's reason
+are in the reading's detail. One `evaluator` entry per experiment: a second is
+`name_taken`.
+
+{_yaml(AGENT_EXAMPLES["evaluator"])}
+
+- **Reading the reply**: `Equals`, `EqualsExpected` (the truth's `expected_output`),
+  `Contains`, `IsInstance`, `MaxDuration`.
+- **Reading the spans**: `ToolCorrectness`, `TrajectoryMatch` (an `eval_score`),
+  `ArgumentCorrectness`, `MaxToolCalls`, `MaxModelRequests`, `HasMatchingSpan`, on matrix's
+  `execute_tool` span of each tool call the runtime timed (`claude-sdk` does). They are
+  captured from the OpenTelemetry SDK in ix's process, with nothing to set: the run puts
+  matrix's `otel` observer on itself and keeps the spans in the process, exporting them only
+  when the `OTEL_*` variables ask. `ArgumentCorrectness` also needs
+  `observers: [{{type: otel, capture_content: true}}]` under `matrix:` in the settings, since a
+  call's arguments are content. Without
+  the spans the reading fails and says why; it never reads as no tool called. A dry run on
+  `mock` has no tool calls to read.
+- **Calling a model**: `LLMJudge` and `GEval` give `judged_eval_passed` and
+  `judged_eval_score`, which never decide. Their model comes from the matrix model runtime
+  `model_runtime` names (with `model`, `runtime_options`), never from `arguments` and never
+  from pydantic-evals' default; validate refuses one with no `model_runtime`
+  (`option_missing`) or a `model` in its arguments. A dry run judges on pydantic-ai's
+  `TestModel`, which calls no model. On `hardline` it judges on the registry row `model`
+  names, each request a hardline call; a model runtime that gives no pydantic-ai model is
+  `Runnable: no` in `ix plan`, and the `judge` sensor scores there.
 
 ## Reading the report
 
 Beside the verdict: `Shows`, what the evidence shows in plain words and in the direction
 it points (`with-skill's text_matched is higher than without's by 40pp [12pp, 61pp]`),
-whatever the verdict; `Spent` (trials, sensors, ceiling), the expected-against-observed
-table of `activation` and `tool-usage` with precision and recall, the flags, and the
-probes that cannot discriminate (left out of a dry run: canned replies screen nothing).
+whatever the verdict; the expected-against-observed table of `activation` and
+`tool-usage` with precision and recall, the flags, and the probes that cannot discriminate
+(left out of a dry run: canned replies screen nothing).
 After it, on stderr, the exit code, what it means and the next step (`exit` in `--json`).
 A runtime warning, such as a permissive `permission_mode`, is said once per run, in
 `warnings`. Each trial's record keeps the prompt, the reply, every
 tool call, each round's transcript, how the session stopped, its turns, tokens, cost and
-duration (`ix.v1.interaction`), and the run's events (`events.jsonl`).
+duration (`ix.v1.interaction`), the rows of `matrix.v1.session` behind it (`sessions`: the
+model that answered each round), and the run's events (`events.jsonl`). The `running`
+reference shows how to follow a reading to them.
 
 ## What runs here, and what it can touch
 
 `function-test` and `outcome` run Python in a child process with a time limit and only
 `PATH` and the locale in its environment. It is not a sandbox: model code can still read,
-write and connect as you. A session's working directory is a fresh temporary directory,
+write and connect as you. The code does not grade itself: the child gets each case's
+input, never what is expected, and ix compares what came back, so printing passing lines
+or rewriting the cases fails. A session's working directory is a fresh temporary directory,
 removed after the trial; the agent's tools act on your machine as `permission_mode`
 allows. Telemetry: with `OTEL_EXPORTER_OTLP_ENDPOINT` set, ix exports `ix.plan`, `ix.run`,
-`ix.trial` and `ix.sensor` spans and matrix the sessions inside them (`ix[otel]`).
+`ix.trial` and `ix.sensor` spans and matrix the sessions inside them.
 """
 
 

@@ -15,20 +15,27 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from matrix.composition.builtins import runtime_type_url, store_type_url
+from matrix.composition.builtins import (
+    AGENT_RUNTIME,
+    MODEL_RUNTIME,
+    agent_runtime_type_url,
+    model_runtime_type_url,
+    store_type_url,
+)
 from matrix.composition.config import discover_sources, load_config
 from matrix.composition.container import build_store, compose, default_registry
 from matrix.domain.agent_step import AGENT_STEP
 from matrix.domain.errors import ConfigError, NotFoundError, UsageError, invalid
-from matrix.domain.ports._out.construct_store import location_of
+from matrix.domain.model_step import MODEL_STEP
+from matrix.domain.ports._out.construct_store import damaged_of, location_of
 from matrix.domain.problems import Problem, problem, sourced
 
 if TYPE_CHECKING:
     from matrix.composition.config import Location
     from matrix.composition.container import Container
     from matrix.domain.component import Wiring
-    from matrix.domain.config import Config, MatrixConfig
-    from matrix.domain.registry import Entry, Registry
+    from matrix.domain.config import Config
+    from matrix.domain.registry import Registry
 
 
 class _Document(BaseModel):
@@ -48,8 +55,10 @@ class CatalogEntry(_Document):
     #: The distribution that registered it, or ``(direct)``.
     origin: str
     needs: list[str]
-    #: What it may touch; None when it did not say, which never means "nothing".
-    effects: list[str] | None
+    #: Whether it stands in for the real thing: a mock's canned answers, not a model's.
+    stand_in: bool = False
+    #: The distributions it drives, by their installed names.
+    drives: list[str] = []
     #: Whether it takes a config (``matrix describe`` shows the schema).
     configurable: bool
 
@@ -75,7 +84,8 @@ class ExtensionDescription(_Document):
     stability: str
     origin: str
     needs: list[str]
-    effects: list[str] | None
+    stand_in: bool = False
+    drives: list[str] = []
     #: The JSON schema its config must meet; None when it takes none.
     config: dict[str, Any] | None
 
@@ -106,14 +116,16 @@ class CheckReport(_Document):
     schema_: Literal["matrix.v1.check"] = Field(default="matrix.v1.check", alias="schema")
     #: Always true: a config that does not compose raises instead.
     ok: Literal[True] = True
-    runtimes: list[str]
+    agent_runtimes: list[str]
+    model_runtimes: list[str]
     agents: list[str]
     #: How many observers composed.
     observers: int
     #: The configured components in the order they would run.
     components: list[str]
     sources: list[str]
-    #: What composed but a reader should know: a permissive runtime, export without its extra.
+    #: What composed but a reader should know: a permissive runtime, export the install
+    #: cannot do.
     warnings: list[Problem] = []
 
 
@@ -140,11 +152,12 @@ class PlannedComponent(_Document):
     provides: list[str]
     #: The components it waits for.
     after: list[str]
-    #: What it may touch; None when it did not say, which never means "nothing".
-    effects: list[str] | None
-    #: For an ``agent-step``: the agent it runs, and that agent's runtime.
+    #: For an ``agent-step``: the agent it runs, and that agent's agent runtime. For a
+    #: ``model-step``: its model runtime, and the model it names (None: the runtime's
+    #: default).
     agent: str | None = None
     runtime: str | None = None
+    model: str | None = None
     #: How many times it may be run (its retry policy's attempts).
     attempts: int = 1
 
@@ -159,24 +172,8 @@ class PlannedAgent(_Document):
 class PlannedRuntime(_Document):
     name: str
     type: str
-    effects: list[str] | None
-
-
-class Spend(_Document):
-    """What a run would spend, as far as it can be known before it runs."""
-
-    #: Agent sessions: at least one per agent step, at most one per attempt. ``max`` is None
-    #: when a component that is not an agent step may call a model.
-    agent_calls_min: int
-    agent_calls_max: int | None
-    #: The most it can cost in USD: 0.0 when nothing in the run calls a model; the sessions'
-    #: own budgets (``max_budget_usd``) summed, or the ceiling when that is lower; None when
-    #: a session that may call a model has no budget.
-    cost_usd_max: float | None
-    #: ``matrix.limits.spend_usd``: the run starts no agent session that could pass it.
-    ceiling_usd: float | None = None
-    #: How the bound was reached, or what would make one.
-    note: str
+    #: Whether it stands in for the real thing: its answers are canned, not a model's.
+    stand_in: bool
 
 
 class RunSummary(_Document):
@@ -189,8 +186,15 @@ class RunSummary(_Document):
     #: Where its record is: for the JSONL store, the directory holding ``run.json``, a
     #: ``<kind>.jsonl`` per kind, ``matrix.v1.ledger.jsonl`` and ``events.jsonl``.
     location: str
-    #: What its agent sessions reported spending, when they reported it.
-    spend_usd: float | None = None
+
+
+class DamagedRun(_Document):
+    """A record the store found and could not list."""
+
+    #: Where it is: for the JSONL store, the directory holding its ``run.json``.
+    location: str
+    #: Why it could not be listed.
+    reason: str
 
 
 class Runs(_Document):
@@ -199,6 +203,9 @@ class Runs(_Document):
     store: str
     #: Oldest first.
     runs: list[RunSummary]
+    #: The records the store skipped, each with why; empty when there are none, or when the
+    #: store does not say what it skipped.
+    damaged: list[DamagedRun] = []
 
 
 class StorePlan(_Document):
@@ -220,17 +227,20 @@ class Plan(_Document):
     stages: list[list[str]]
     components: list[PlannedComponent]
     agents: list[PlannedAgent]
-    runtimes: list[PlannedRuntime]
-    #: Every effect the components declare; None when any component's are unknown.
-    effects: list[str] | None
-    spend: Spend
+    agent_runtimes: list[PlannedRuntime]
+    model_runtimes: list[PlannedRuntime]
+    #: Agent sessions: at least one per agent step, at most one per attempt. ``max`` is None
+    #: when a component that is neither an agent step nor a model step needs matrix's agents
+    #: or model runtimes, the only way it can make a session of its own.
+    agent_calls_min: int
+    agent_calls_max: int | None
+    #: Model calls: at least one per model step, at most one per attempt (a structured
+    #: reply's repairs are inside one). ``max`` is None as for agent calls.
+    model_calls_min: int
+    model_calls_max: int | None
     store: StorePlan
     limits: dict[str, Any]
     warnings: list[Problem] = []
-
-
-def _effects(entry: Entry) -> list[str] | None:
-    return None if entry.effects is None else sorted(entry.effects)
 
 
 def catalog(point: str | None = None, *, registry: Registry | None = None) -> Catalog:
@@ -256,7 +266,8 @@ def catalog(point: str | None = None, *, registry: Registry | None = None) -> Ca
             stability=e.stability,
             origin=e.origin,
             needs=sorted(e.needs),
-            effects=_effects(e),
+            stand_in=e.stand_in,
+            drives=list(e.drives),
             configurable=e.config is not None,
         )
         for e in registry.entries(point)
@@ -269,7 +280,7 @@ def catalog(point: str | None = None, *, registry: Registry | None = None) -> Ca
 
 
 def describe_extension(type_url: str, *, registry: Registry | None = None) -> Extensions:
-    """What ``type_url`` is registered as: its config schema, needs and effects.
+    """What ``type_url`` is registered as: its config schema and needs.
 
     Raises :class:`NotFoundError` listing every registered type URL when it is not one.
     """
@@ -292,7 +303,8 @@ def describe_extension(type_url: str, *, registry: Registry | None = None) -> Ex
                 stability=e.stability,
                 origin=e.origin,
                 needs=sorted(e.needs),
-                effects=_effects(e),
+                stand_in=e.stand_in,
+                drives=list(e.drives),
                 config=None if e.config is None else e.config.model_json_schema(),
             )
             for e in matches
@@ -376,7 +388,8 @@ def check_config(
     loaded = _load(tool, config, only)
     container = _composed(loaded)
     return CheckReport(
-        runtimes=sorted(container.runtimes),
+        agent_runtimes=sorted(container.agent_runtimes),
+        model_runtimes=sorted(container.model_runtimes),
         agents=sorted(container.agents),
         observers=len(container.observers),
         components=list(container.wire().order()),
@@ -402,7 +415,7 @@ def list_agents(
             AgentSummary(
                 name=name,
                 runtime=spec.runtime,
-                runtime_type=loaded.matrix.runtimes[spec.runtime].type,
+                runtime_type=loaded.matrix.agent_runtimes[spec.runtime].type,
                 model=agent.definition.model,
                 tools=None if tools is None else list(tools),
                 description=agent.definition.description,
@@ -417,9 +430,9 @@ def plan_config(
     *,
     only: bool = False,
 ) -> Plan:
-    """What a run of ``tool``'s configured components would do: the order of work, what each
-    component touches, the agents and runtimes it uses, what it could spend, where it would
-    be recorded. Composes and wires; runs nothing and calls nothing.
+    """What a run of ``tool``'s configured components would do: the order of work, the
+    agents and runtimes it uses, how many agent and model calls it
+    makes, where it would be recorded. Composes and wires; runs nothing and calls nothing.
 
     Raises ConfigError with every problem found (``complete`` False when one kept a check
     from being made).
@@ -452,8 +465,9 @@ def list_runs(
     only: bool = False,
 ) -> Runs:
     """The runs kept in ``tool``'s configured store, oldest first, each with its status,
-    times and location. Builds only the store: runtimes and agents are neither built nor
-    checked, so a config that does not compose still lists its runs.
+    times and location, and the records the store skipped as damaged, each with why. Builds
+    only the store: runtimes and agents are neither built nor checked, so a config that does
+    not compose still lists its runs.
 
     Raises ConfigError when the store cannot be built, StoreError when it cannot be read.
     """
@@ -467,7 +481,6 @@ def list_runs(
     found = []
     for run_id in store.runs():
         record = store.describe(run_id)
-        spent = record.get("spend_usd")
         found.append(
             RunSummary(
                 run_id=run_id,
@@ -475,24 +488,15 @@ def list_runs(
                 started=record.get("started"),
                 ended=record.get("ended"),
                 location=location_of(store, run_id),
-                spend_usd=spent if isinstance(spent, int | float) else None,
             )
         )
-    return Runs(store=store_type_url(loaded.matrix.store.type), runs=found)
+    damaged = [DamagedRun(location=where, reason=why) for where, why in damaged_of(store)]
+    return Runs(store=store_type_url(loaded.matrix.store.type), runs=found, damaged=damaged)
 
 
-def _stages(wiring: Wiring) -> list[list[str]]:
-    placed: set[str] = set()
-    stages: list[list[str]] = []
-    while len(placed) < len(wiring.components):
-        stage = [
-            name
-            for name in wiring.components
-            if name not in placed and all(d in placed for d in wiring.depends[name])
-        ]
-        stages.append(stage)
-        placed.update(stage)
-    return stages
+#: The needs that hand a component matrix's runtimes: the only way one that is neither an
+#: agent step nor a model step can make a session of its own.
+_RUNTIME_NEEDS = frozenset({"agents", "model_runtimes"})
 
 
 def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) -> Plan:
@@ -500,29 +504,25 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
     entries = {entry.name: entry for entry in matrix.components}
     components: list[PlannedComponent] = []
     used: dict[str, str] = {}
-    calls_min = calls_max = 0
-    countable = True  # no component but an agent step may call a model
-    budgeted = 0.0  # what the sessions that may call a model may spend, by their own budgets
-    unbudgeted: set[str] = set()  # runtimes whose sessions may call a model with no budget
+    models_used: set[str] = set()
+    agent_min = agent_max = model_min = model_max = 0
+    countable = True  # no component but an agent or a model step can reach a runtime
     for name in wiring.order():
         component = wiring.components[name]
         entry = entries[name]
-        effects = wiring.effects.get(name)
         attempts = container.limits.retry_of(name).attempts
-        agent = runtime = None
+        agent = runtime = model = None
         if entry.type == AGENT_STEP:
             agent = str(entry.config.get("agent"))
             runtime = matrix.agents[agent].runtime
             used[agent] = runtime
-            calls_min += 1
-            calls_max += attempts
-            if effects is None or "model" in effects:
-                budget = getattr(container.runtimes[runtime], "budget_usd", None)
-                if budget is None:
-                    unbudgeted.add(runtime)
-                else:
-                    budgeted += attempts * budget
-        elif effects is None or "model" in effects:
+            agent_min, agent_max = agent_min + 1, agent_max + attempts
+        elif entry.type == MODEL_STEP:
+            runtime = str(entry.config.get("runtime"))
+            model = entry.config.get("model")
+            models_used.add(runtime)
+            model_min, model_max = model_min + 1, model_max + attempts
+        elif _RUNTIME_NEEDS & container.registry.entry("component", entry.type).needs:
             countable = False
         components.append(
             PlannedComponent(
@@ -531,47 +531,39 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
                 requires=sorted(component.requires),
                 provides=sorted(component.provides),
                 after=list(wiring.depends[name]),
-                effects=None if effects is None else sorted(effects),
                 agent=agent,
                 runtime=runtime,
+                model=None if model is None else str(model),
                 attempts=attempts,
             )
         )
-    runtimes = {
-        name: _runtime_effects(container, matrix.runtimes[name].type)
-        for name in sorted(set(used.values()))
-    }
-    free = countable and all(e is not None and "model" not in e for e in runtimes.values())
-    declared = wiring.declared_effects()
     return Plan(
         tool=tool,
         sources=list(loaded.sources),
         inputs=sorted(wiring.inputs),
-        stages=_stages(wiring),
+        stages=[list(stage) for stage in wiring.stages()],
         components=components,
         agents=[
             PlannedAgent(
                 name=name,
                 runtime=runtime,
-                runtime_type=matrix.runtimes[runtime].type,
+                runtime_type=matrix.agent_runtimes[runtime].type,
                 model=container.agents[name].definition.model,
             )
             for name, runtime in sorted(used.items())
         ],
-        runtimes=[
-            PlannedRuntime(name=name, type=matrix.runtimes[name].type, effects=effects)
-            for name, effects in runtimes.items()
+        agent_runtimes=[
+            _planned(container, AGENT_RUNTIME, name, matrix.agent_runtimes[name].type)
+            for name in sorted(set(used.values()))
         ],
-        effects=None if declared is None else sorted(declared),
-        spend=_spend(
-            matrix,
-            calls_min,
-            calls_max if countable else None,
-            free=free,
-            budgeted=budgeted if countable and not unbudgeted else None,
-            unbudgeted=sorted(unbudgeted),
-            ceiling=container.limits.spend_usd,
-        ),
+        model_runtimes=[
+            _planned(container, MODEL_RUNTIME, name, matrix.model_runtimes[name].type)
+            for name in sorted(models_used)
+        ],
+        agent_calls_min=agent_min,
+        agent_calls_max=agent_max if countable else None,
+        model_calls_min=model_min,
+        model_calls_max=model_max if countable else None,
         store=StorePlan(
             type=store_type_url(matrix.store.type),
             location=location_of(container.store, "RUN_ID"),
@@ -581,57 +573,8 @@ def _plan(tool: str, loaded: Config[Any], container: Container, wiring: Wiring) 
     )
 
 
-def _spend(
-    matrix: MatrixConfig,
-    calls_min: int,
-    calls_max: int | None,
-    *,
-    free: bool,
-    budgeted: float | None,
-    unbudgeted: list[str],
-    ceiling: float | None,
-) -> Spend:
-    """The most a run may spend, and how that was reached or what would bound it."""
-    if free:
-        cost, note = 0.0, "nothing in this run calls a model"
-    elif budgeted is not None:
-        cost = budgeted if ceiling is None else min(ceiling, budgeted)
-        note = "each session that may call a model is bounded by its runtime's max_budget_usd"
-        if ceiling is not None:
-            note += f"; the run starts no session that could pass ${ceiling:.2f}"
-    else:
-        cost = None
-        remedies = [_unbounded(name, matrix.runtimes[name].type) for name in unbudgeted]
-        if calls_max is None:
-            remedies.append("a component that is not an agent step may call a model")
-        note = "not knowable before the run: " + "; ".join(remedies)
-        note += (
-            f"; the run starts no session once ${ceiling:.2f} is spent, but sessions in flight "
-            "may pass it"
-            if ceiling is not None
-            else "; set matrix.limits.spend_usd to stop starting sessions at a ceiling"
-        )
-    return Spend(
-        agent_calls_min=calls_min,
-        agent_calls_max=calls_max,
-        cost_usd_max=cost,
-        ceiling_usd=ceiling,
-        note=note,
-    )
-
-
-def _unbounded(name: str, kind: str) -> str:
-    """Why runtime ``name`` (of type ``kind``) leaves a run's spend unknown, and the remedy."""
-    if runtime_type_url(kind) == runtime_type_url("claude-sdk"):
-        return f"set max_budget_usd on runtime {name!r}"
-    if runtime_type_url(kind) == runtime_type_url("model"):
-        return (
-            f"runtime {name!r} ({kind}) reports no cost, so the record's spend_usd leaves its "
-            "sessions out (null when no session reports one); bound it with max_tokens"
-        )
-    return f"runtime {name!r} ({kind}) bounds no session's spend"
-
-
-def _runtime_effects(container: Container, kind: str) -> list[str] | None:
-    effects = container.registry.entry("runtime", runtime_type_url(kind)).effects
-    return None if effects is None else sorted(effects)
+def _planned(container: Container, point: str, name: str, kind: str) -> PlannedRuntime:
+    """The runtime ``name`` of type ``kind`` at ``point``, as a plan lists it."""
+    url = agent_runtime_type_url(kind) if point == AGENT_RUNTIME else model_runtime_type_url(kind)
+    entry = container.registry.entry(point, url)
+    return PlannedRuntime(name=name, type=kind, stand_in=entry.stand_in)

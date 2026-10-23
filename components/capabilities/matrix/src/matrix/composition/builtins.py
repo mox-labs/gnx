@@ -2,30 +2,41 @@
 
 ``pyproject.toml`` declares ``[project.entry-points."matrix.extensions"] matrix = ...:register``,
 so :func:`~matrix.composition.container.load_extensions` finds the built-ins exactly as it
-finds a third party's: one discovery path, no special case. Optional dependencies are
-imported only when an entry is built, so registering costs nothing and a missing extra fails
-when used, saying what to install.
+finds a third party's: one discovery path, no special case. A runtime's or an observer's
+dependencies are imported only when an entry is built, so registering costs nothing, and an
+install that lacks one fails when it is used, saying how to repair it.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from matrix.adapters._out.observers.jsonl import JsonlObserver, JsonlObserverConfig
 from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig
-from matrix.adapters._out.runtime.mock import MockRuntime, MockRuntimeConfig
-from matrix.adapters._out.runtime.model import ModelAgentRuntimeConfig
+from matrix.adapters._out.runtime.mock import (
+    MockAgentRuntime,
+    MockAgentRuntimeConfig,
+    MockModelRuntime,
+    MockModelRuntimeConfig,
+)
+from matrix.adapters._out.runtime.model import HardlineModelRuntimeConfig
+from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntimeConfig
 from matrix.adapters._out.stores.jsonl import (
     JsonlConstructStore,
     JsonlStoreConfig,
     MemoryConstructStore,
 )
+from matrix.composition import telemetry
 from matrix.domain.agent import AgentResponse
 from matrix.domain.agent_step import AGENT_RESPONSE, AGENT_STEP, TASK, AgentStep, AgentStepConfig
 from matrix.domain.component import LEDGER
 from matrix.domain.construct import LedgerEntry
-from matrix.domain.errors import missing_extra
+from matrix.domain.errors import missing_dependency
 from matrix.domain.ids import type_url
+from matrix.domain.model_call import ModelCall
+from matrix.domain.model_step import MODEL_CALL, MODEL_STEP, PROMPT, ModelStep, ModelStepConfig
 from matrix.domain.ref import REF, Ref
 
 if TYPE_CHECKING:
@@ -34,17 +45,30 @@ if TYPE_CHECKING:
     from matrix.adapters._out.observers.console import ConsoleObserver
     from matrix.adapters._out.observers.otel import OtelObserver
     from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntime
-    from matrix.adapters._out.runtime.model import ModelAgentRuntime
+    from matrix.adapters._out.runtime.model import HardlineModelRuntime
+    from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntime
     from matrix.domain.ports._out.agent_runtime import Agent
-    from matrix.domain.registry import Registry
+    from matrix.domain.ports._out.model_runtime import ModelRuntime
+    from matrix.domain.registry import Entry, Registry
 
-#: Runtime short names in config (``type: claude-sdk``) resolve under this prefix.
-RUNTIME_PREFIX = "matrix.v1.runtime."
+#: The registry point of each kind of runtime.
+AGENT_RUNTIME = "agent-runtime"
+MODEL_RUNTIME = "model-runtime"
+
+#: Short names in config (``type: claude-sdk``, ``type: hardline``) resolve under these.
+AGENT_RUNTIME_PREFIX = "matrix.v1.agent-runtime."
+MODEL_RUNTIME_PREFIX = "matrix.v1.model-runtime."
 
 
-def runtime_type_url(name: str) -> str:
-    """``claude-sdk`` → ``matrix.v1.runtime.claude-sdk``; a full type URL passes through."""
-    return name if "." in name else type_url("matrix", 1, f"runtime.{name}")
+def agent_runtime_type_url(name: str) -> str:
+    """``claude-sdk`` → ``matrix.v1.agent-runtime.claude-sdk``; a full type URL passes
+    through."""
+    return name if "." in name else type_url("matrix", 1, f"agent-runtime.{name}")
+
+
+def model_runtime_type_url(name: str) -> str:
+    """``hardline`` → ``matrix.v1.model-runtime.hardline``; a full type URL passes through."""
+    return name if "." in name else type_url("matrix", 1, f"model-runtime.{name}")
 
 
 def observer_type_url(name: str) -> str:
@@ -57,17 +81,34 @@ def _claude_sdk(config: ClaudeSdkRuntimeConfig, *, cwd: str | None = None) -> Cl
 
     if config.cwd is None and cwd is not None:
         config = config.model_copy(update={"cwd": cwd})
-    return ClaudeSdkRuntime(config)
+    return ClaudeSdkRuntime(config, trace_environment=telemetry.trace_environment)
 
 
-def _model(
-    config: ModelAgentRuntimeConfig, *, models: dict[str, Any] | None = None
-) -> ModelAgentRuntime:
-    from matrix.adapters._out.runtime.model import ModelAgentRuntime
+def _pydantic_ai(
+    config: PydanticAiRuntimeConfig, *, models: dict[str, Any] | None = None
+) -> PydanticAiRuntime:
+    from matrix.adapters._out.runtime.pydantic_ai import PydanticAiRuntime
 
     if config.models is None and models is not None:
         config = config.model_copy(update={"models": models})
-    return ModelAgentRuntime.from_config(config)
+    return PydanticAiRuntime.from_config(config)
+
+
+def _hardline(
+    config: HardlineModelRuntimeConfig, *, models: dict[str, Any] | None = None
+) -> HardlineModelRuntime:
+    from matrix.adapters._out.runtime.model import HardlineModelRuntime
+
+    if config.models is None and models is not None:
+        config = config.model_copy(update={"models": models})
+    # The calls its pydantic-ai Model makes are session rows under its own registration.
+    return HardlineModelRuntime.from_config(
+        config, runtime_url=model_runtime_type_url("hardline"), drives=_HARDLINE_DRIVES
+    )
+
+
+#: What the ``hardline`` model runtime drives: its registration's, and its calls' rows'.
+_HARDLINE_DRIVES = ("hardline",)
 
 
 def store_type_url(name: str) -> str:
@@ -75,12 +116,27 @@ def store_type_url(name: str) -> str:
     return name if "." in name else type_url("matrix", 1, f"store.{name}")
 
 
-def _otel() -> OtelObserver:
+# Here, not beside the observer, so that registering imports no OpenTelemetry.
+class OtelObserverConfig(BaseModel):
+    """The ``otel`` observer's options. Without any, spans carry no content."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    capture_content: bool = Field(
+        default=False,
+        description="Export content too: each agent's task (matrix.task), error messages "
+        "(matrix.error and the span's status) and a component's string ctx.span fields. Off "
+        "by default, as the GenAI semantic conventions ask; turning it on sends prompts to "
+        "the collector.",
+    )
+
+
+def _otel(config: OtelObserverConfig) -> OtelObserver:
     try:
         from matrix.adapters._out.observers.otel import OtelObserver
     except ImportError as e:  # the API is a dependency; a broken install still says what to do
-        raise missing_extra("otel", needed_by="the otel observer", module="opentelemetry") from e
-    return OtelObserver()
+        raise missing_dependency(needed_by="the otel observer", module="opentelemetry") from e
+    return OtelObserver(capture_content=config.capture_content)
 
 
 def _console() -> ConsoleObserver:
@@ -97,34 +153,69 @@ def _agent_step(config: AgentStepConfig, *, agents: Mapping[str, Agent]) -> Agen
     return AgentStep(config, agents=agents)
 
 
+def _model_step(
+    config: ModelStepConfig,
+    *,
+    model_runtimes: Mapping[str, ModelRuntime],
+    schemas: Mapping[str, type[BaseModel]],
+    model_runtime_entries: Mapping[str, Entry],
+) -> ModelStep:
+    entry = model_runtime_entries.get(config.runtime)
+    return ModelStep(
+        config,
+        model_runtimes=model_runtimes,
+        schemas=schemas,
+        runtime_url=None if entry is None else entry.type_url,
+        drives=() if entry is None else entry.drives,
+    )
+
+
 def register(registry: Registry) -> None:
     """Register matrix's runtimes, components, payload types, observers and stores."""
     registry.register(
-        "runtime",
-        runtime_type_url("claude-sdk"),
+        AGENT_RUNTIME,
+        agent_runtime_type_url("claude-sdk"),
         _claude_sdk,
         config=ClaudeSdkRuntimeConfig,
         needs={"cwd"},
-        effects={"model", "network", "subprocess", "filesystem"},
-        summary="Claude Agent SDK sessions: tools, multiple turns, plugins",
+        summary="Claude Agent SDK sessions: tools, multiple turns, plugins, skills, subagents",
+        drives=("claude-agent-sdk",),
     )
     registry.register(
-        "runtime",
-        runtime_type_url("model"),
-        _model,
-        config=ModelAgentRuntimeConfig,
+        AGENT_RUNTIME,
+        agent_runtime_type_url("pydantic-ai"),
+        _pydantic_ai,
+        config=PydanticAiRuntimeConfig,
         needs={"models"},
-        effects={"model", "network"},
-        summary="One model call through hardline; any model family, no tools",
+        summary="pydantic-ai agent sessions whose model calls go through hardline: tools, "
+        "multiple turns, any model family hardline has a row for",
+        drives=("pydantic-ai-slim", "hardline"),
     )
     registry.register(
-        "runtime",
-        runtime_type_url("mock"),
-        MockRuntime,
-        config=MockRuntimeConfig,
-        effects=set(),
-        summary="Deterministic replies from config; offline",
+        AGENT_RUNTIME,
+        agent_runtime_type_url("mock"),
+        MockAgentRuntime,
+        config=MockAgentRuntimeConfig,
+        summary="A stand-in for any agent: deterministic replies from config; offline",
         stability="stable",
+        stand_in=True,
+    )
+    registry.register(
+        MODEL_RUNTIME,
+        model_runtime_type_url("hardline"),
+        _hardline,
+        config=HardlineModelRuntimeConfig,
+        needs={"models"},
+        summary="One model call through hardline, in any model family it has a row for",
+        drives=_HARDLINE_DRIVES,
+    )
+    registry.register(
+        MODEL_RUNTIME,
+        model_runtime_type_url("mock"),
+        MockModelRuntime,
+        config=MockModelRuntimeConfig,
+        summary="A stand-in for any model: deterministic replies from config; offline",
+        stand_in=True,
     )
     registry.register(
         "component",
@@ -134,25 +225,34 @@ def register(registry: Registry) -> None:
         needs={"agents"},
         summary="An agent as a component: the rows it requires rendered into its task",
     )
+    registry.register(
+        "component",
+        MODEL_STEP,
+        _model_step,
+        config=ModelStepConfig,
+        needs={"model_runtimes", "schemas", "model_runtime_entries"},
+        summary="One model call as a component: the rows it requires rendered into its prompt",
+    )
     registry.register_payload(AGENT_RESPONSE, AgentResponse)
+    registry.register_payload(MODEL_CALL, ModelCall)
     registry.register_payload(LEDGER, LedgerEntry)
     registry.register_payload(REF, Ref)
     registry.register(
         "payload-type", TASK, str, summary="A task for an agent: plain text", stability="stable"
     )
+    registry.register("payload-type", PROMPT, str, summary="A prompt for a model: plain text")
     registry.register(
         "observer",
         observer_type_url("otel"),
         _otel,
-        effects={"network"},
-        summary="OpenTelemetry spans and metrics on the GenAI conventions; exported when the "
-        "OTEL_* variables say where (requires matrix[otel])",
+        config=OtelObserverConfig,
+        summary="OpenTelemetry spans and metrics on the GenAI conventions, without content "
+        "unless capture_content; exported when the OTEL_* variables say where",
     )
     registry.register(
         "observer",
         observer_type_url("console"),
         _console,
-        effects=set(),
         summary="Progress on stderr: component states and elapsed time, live on a terminal",
     )
     registry.register(
@@ -160,7 +260,6 @@ def register(registry: Registry) -> None:
         observer_type_url("jsonl"),
         _jsonl,
         config=JsonlObserverConfig,
-        effects={"filesystem"},
         summary="One JSON line per event, to a file or stderr: the stream an agent tails",
     )
     registry.register(
@@ -168,7 +267,6 @@ def register(registry: Registry) -> None:
         store_type_url("jsonl"),
         JsonlConstructStore.from_config,
         config=JsonlStoreConfig,
-        effects={"filesystem"},
         summary="Each run a directory of JSONL tables, written as it goes, with its events",
         stability="stable",
     )
@@ -176,6 +274,5 @@ def register(registry: Registry) -> None:
         "store",
         store_type_url("memory"),
         MemoryConstructStore,
-        effects=set(),
         summary="Runs kept in memory for the life of the process: tests and embedding",
     )

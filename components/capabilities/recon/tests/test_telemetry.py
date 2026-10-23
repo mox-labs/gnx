@@ -22,10 +22,10 @@ from click.testing import CliRunner
 import recon
 from recon.adapters._in.cli import main
 from recon.adapters._out import otel_telemetry
-from recon.adapters._out.http_requester import HttpxRequester
+from recon.adapters._out.http_requester import HttpRequester
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
 from recon.domain.errors import CollectionError
-from recon.domain.models import SourceEntry
+from recon.domain.models import AuthConfig, SourceEntry
 from recon.domain.ratelimit import RateLimiter
 from recon.domain.telemetry import Telemetry
 from tests.recon_fakes import FixedClock
@@ -85,6 +85,18 @@ def test_an_exception_fails_its_span_and_goes_on(raised: BaseException, error_ty
         raise raised
     [end] = sink.ends("recon.query")
     assert end.status == "error" and end.attributes["error.type"] == error_type
+
+
+def test_an_exception_s_span_message_is_its_class_and_quotes_nothing_of_it() -> None:
+    """An exception no caller described (a plugin's own, a defect) fails its span with its
+    class name alone: its text may hold a command or a URL's credentials, and the span's
+    message goes to the OTLP endpoint and the event log."""
+    sink = Recorded()
+    telemetry = Telemetry([sink], FixedClock())
+    with pytest.raises(RuntimeError), telemetry.span("recon.collect"):
+        raise RuntimeError("curl https://user:hunter2@api.example.test/x failed")
+    [end] = sink.ends("recon.collect")
+    assert end.message == "RuntimeError"
 
 
 def test_a_sink_that_raises_is_dropped_and_named_and_the_work_goes_on() -> None:
@@ -172,7 +184,7 @@ def test_the_event_log_is_not_a_table(project: Path) -> None:
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        code = 503 if self.path.startswith("/busy") else 200
+        code = 503 if self.path.startswith("/busy") else 404 if "missing" in self.path else 200
         body = b'{"ok": true}'
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -193,15 +205,15 @@ def server() -> Any:
     httpd.shutdown()
 
 
-def _requester(sink: Recorded) -> HttpxRequester:
+def _requester(sink: Recorded) -> HttpRequester:
     clock = FixedClock()
-    return HttpxRequester(RateLimiter(clock), clock, Telemetry([sink], clock))
+    return HttpRequester(RateLimiter(clock), clock, Telemetry([sink], clock))
 
 
 def test_a_request_is_a_client_span_with_the_required_attributes(server: Any) -> None:
     sink = Recorded()
     port = server.server_address[1]
-    source = SourceEntry(name="s", url=f"http://127.0.0.1:{port}", auth={"param": "api_key"})
+    source = SourceEntry(name="s", url=f"http://127.0.0.1:{port}", auth=AuthConfig(param="api_key"))
     _requester(sink).request(source, "GET", f"{source.url}/ok", params={"api_key": "s3cret"})
 
     [start] = [e for e in sink.events if e.name == "recon.http.request.start"]
@@ -235,7 +247,7 @@ def test_a_transport_failure_names_its_exception_and_credentials_in_the_url_are_
     with pytest.raises(CollectionError):
         _requester(sink).request(source, "GET", f"{source.url}/x?sig=abc&q=1")
     end = sink.ends("recon.http.request")[0]
-    assert end.attributes["error.type"] == "httpx.ConnectError"
+    assert end.attributes["error.type"] == "httpx2.ConnectError"
     assert end.attributes["url.full"] == ("http://REDACTED:REDACTED@127.0.0.1:9/x?sig=REDACTED&q=1")
     assert "http.response.status_code" not in end.attributes
 
@@ -245,7 +257,7 @@ def test_a_transport_failure_names_its_exception_and_credentials_in_the_url_are_
 
 def test_events_become_otel_spans_and_metrics() -> None:
     from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader, NumberDataPoint
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -271,12 +283,16 @@ def test_events_become_otel_spans_and_metrics() -> None:
                 else:
                     collect.set("recon.records", 5)
 
-    spans = {s.name + "/" + str(s.attributes.get("recon.table", "")): s
+    spans = {s.name + "/" + str((s.attributes or {}).get("recon.table", "")): s
              for s in exporter.get_finished_spans()}  # fmt: skip
     survey = spans["recon.survey/"]
-    assert survey.instrumentation_scope.name == "recon"
-    assert survey.instrumentation_scope.schema_url == "https://opentelemetry.io/schemas/1.44.0"
-    assert spans["recon.collect/ok"].parent.span_id == survey.context.span_id
+    scope = survey.instrumentation_scope
+    assert scope is not None
+    assert scope.name == "recon"
+    assert scope.schema_url == "https://opentelemetry.io/schemas/1.44.0"
+    parent, context = spans["recon.collect/ok"].parent, survey.context
+    assert parent is not None and context is not None
+    assert parent.span_id == context.span_id
     assert spans["recon.collect/bad"].status.status_code == StatusCode.ERROR
     posts = [s for s in exporter.get_finished_spans() if s.name == "POST"]
     assert len(posts) == 2 and all(s.kind == SpanKind.CLIENT for s in posts)
@@ -284,7 +300,11 @@ def test_events_become_otel_spans_and_metrics() -> None:
     data = reader.get_metrics_data()
     assert data is not None
     points = {
-        metric.name: [(dict(p.attributes), p.value) for p in metric.data.data_points]
+        metric.name: [
+            (dict(p.attributes or {}), p.value)
+            for p in metric.data.data_points
+            if isinstance(p, NumberDataPoint)
+        ]
         for resource in data.resource_metrics
         for scope in resource.scope_metrics
         for metric in scope.metrics
@@ -293,6 +313,160 @@ def test_events_become_otel_spans_and_metrics() -> None:
     assert points["recon.collect.failures"] == [
         ({"recon.collector.type": "api", "error.type": "auth"}, 1)
     ]
+
+
+def _sdk() -> tuple[Any, Any]:
+    """An SDK tracer provider of the test's own, and the exporter its finished spans go to."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return provider, exporter
+
+
+def test_a_span_a_library_opens_inside_recons_work_nests_under_it() -> None:
+    """Regression: recon built its spans from events and never made one current, so a span
+    another library opened inside a table (an instrumented client, a plugin's own) landed
+    under whatever the caller had made current, or in a trace of its own."""
+    from opentelemetry import trace
+
+    provider, exporter = _sdk()
+    library = provider.get_tracer("some.library")
+    telemetry = Telemetry([OtelEvents("9.9", tracer_provider=provider)], FixedClock())
+    callers = trace.get_current_span()
+    with (
+        telemetry.span("recon.survey"),
+        telemetry.span("recon.collect"),
+        library.start_as_current_span("library.call"),
+    ):
+        pass
+    spans = {s.name: s for s in exporter.get_finished_spans()}
+    assert spans["library.call"].parent is not None
+    assert spans["library.call"].parent.span_id == spans["recon.collect"].context.span_id
+    assert spans["recon.collect"].context.trace_id == spans["library.call"].context.trace_id
+    assert trace.get_current_span() is callers, "the caller's context is back afterwards"
+
+
+def test_an_event_log_span_is_the_exported_span_that_carries_its_id() -> None:
+    """Regression: the event log's span ids count from 1 and OpenTelemetry's are random, and
+    nothing tied one to the other, so a line of ``telemetry.jsonl`` could not be found in
+    the exported trace."""
+    provider, exporter = _sdk()
+    recorded = Recorded()
+    telemetry = Telemetry([recorded, OtelEvents("9.9", tracer_provider=provider)], FixedClock())
+    with telemetry.span("recon.survey", {"recon.archive": "a1"}):
+        for _ in range(2):
+            with telemetry.span("recon.collect"):
+                pass
+    logged = {(e.name.removesuffix(".end"), e.span) for e in recorded.events
+              if e.name.endswith(".end")}  # fmt: skip
+    exported = {(s.name, s.attributes["recon.event.span"]) for s in exporter.get_finished_spans()}
+    assert exported == logged
+
+
+def test_a_sink_whose_around_raises_is_dropped_and_cannot_change_the_works_outcome() -> None:
+    """``around`` runs inside the work, so it is held to what any sink is: it cannot fail the
+    work or swallow its exception, and one that raises is dropped and named."""
+    from contextlib import contextmanager, suppress
+
+    class Meddles:
+        def on_event(self, event: Any) -> None:
+            pass
+
+        @contextmanager
+        def around(self, event: Any) -> Any:
+            with suppress(RuntimeError):  # a sink trying to swallow the work's exception
+                yield
+
+    class Breaks(Meddles):
+        def around(self, event: Any) -> Any:
+            raise OSError("cannot")
+
+    sink = Recorded()
+    telemetry = Telemetry([Meddles(), Breaks(), sink], FixedClock())
+    with pytest.raises(RuntimeError), telemetry.span("recon.collect"):
+        raise RuntimeError("the work failed")
+    assert telemetry.failed == ["Breaks: OSError: cannot"]
+    [end] = sink.ends("recon.collect")
+    assert end.status == "error" and end.attributes["error.type"] == "RuntimeError"
+
+
+def test_a_dropped_sink_ends_the_spans_it_held_open() -> None:
+    """Regression: a sink that raised was dropped with its OpenTelemetry spans started and
+    never ended, so they were never exported: the trace lost every span open at the time."""
+    provider, exporter = _sdk()
+
+    class FailsOnItsThirdEvent(OtelEvents):
+        seen = 0
+
+        def on_event(self, event: Any) -> None:
+            self.seen += 1
+            if self.seen == 3:
+                raise OSError("exporter hiccup")
+            super().on_event(event)
+
+    from opentelemetry.trace import StatusCode
+
+    telemetry = Telemetry([FailsOnItsThirdEvent("9.9", tracer_provider=provider)], FixedClock())
+    with telemetry.span("recon.survey"):
+        with telemetry.span("recon.collect"):
+            pass
+        with telemetry.span("recon.collect"):
+            pass
+    assert telemetry.failed == ["FailsOnItsThirdEvent: OSError: exporter hiccup"]
+    ended = exporter.get_finished_spans()
+    assert sorted(s.name for s in ended) == ["recon.collect", "recon.survey"]
+    assert all(s.status.status_code == StatusCode.ERROR for s in ended)
+    assert all("telemetry" in (s.status.description or "") for s in ended)
+
+
+def test_a_request_carries_the_trace_context_of_its_attempt() -> None:
+    """Regression: no ``traceparent`` went out, so a server's spans could not join recon's
+    trace. Each send carries its own attempt's span as the parent."""
+    import httpx2
+
+    provider, exporter = _sdk()
+    sent: list[str] = []
+
+    def busy(request: Any) -> Any:
+        sent.append(request.headers.get("traceparent", ""))
+        return httpx2.Response(503)
+
+    clock = FixedClock()
+    telemetry = Telemetry([OtelEvents("9.9", tracer_provider=provider)], clock)
+    requester = HttpRequester(
+        RateLimiter(clock), clock, telemetry, transport=httpx2.MockTransport(busy)
+    )
+    source = SourceEntry(name="s", url="https://api.example.test")
+    with pytest.raises(CollectionError):
+        requester.request(source, "GET", "https://api.example.test/x")
+    attempts = [s for s in exporter.get_finished_spans() if s.name == "GET"]
+    assert len(sent) == len(attempts) == 3
+    for header, attempt in zip(sent, attempts, strict=True):
+        context = attempt.get_span_context()
+        _version, trace_id, parent_id, _flags = header.split("-")
+        assert (trace_id, parent_id) == (f"{context.trace_id:032x}", f"{context.span_id:016x}")
+
+
+def test_a_request_carries_no_trace_context_when_nothing_traces() -> None:
+    import httpx2
+
+    sent: list[dict[str, str]] = []
+
+    def answer(request: Any) -> Any:
+        sent.append(dict(request.headers))
+        return httpx2.Response(200, json={})
+
+    clock = FixedClock()
+    requester = HttpRequester(
+        RateLimiter(clock), clock, Telemetry([Recorded()], clock),
+        transport=httpx2.MockTransport(answer),
+    )  # fmt: skip
+    requester.request(SourceEntry(name="s", url="https://a.test"), "GET", "https://a.test/x")
+    assert "traceparent" not in sent[0]
 
 
 def test_without_the_variables_nothing_is_installed_and_nothing_is_warned() -> None:
@@ -304,10 +478,10 @@ def test_without_the_variables_nothing_is_installed_and_nothing_is_warned() -> N
 def test_the_variables_without_the_sdk_are_a_warning_in_the_json_document(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def missing(env: Any, version: str) -> Any:
+    def missing(env: Any, version: str, signals: Any) -> Any:
         raise ImportError("No module named 'opentelemetry.sdk'", name="opentelemetry.sdk")
 
-    monkeypatch.setattr(otel_telemetry, "_provider_installed", lambda: False)
+    _installs(monkeypatch)
     monkeypatch.setattr(otel_telemetry, "_install", missing)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
     config = project / ".recon" / "m" / "config.yaml"
@@ -320,7 +494,10 @@ def test_the_variables_without_the_sdk_are_a_warning_in_the_json_document(
         [warning] = json.loads(result.stdout)["warnings"]
         assert warning["kind"] == "otel_unavailable"
         assert warning["got"] == "OTEL_EXPORTER_OTLP_ENDPOINT"
-        assert "recon[otel]" in warning["fix"]
+        assert "reinstall recon" in warning["fix"]
+        # Regression: the fix installed from main, not from the release that warned.
+        tag = f"gnx@recon-v{recon.__version__}#subdirectory=components/capabilities/recon"
+        assert tag in warning["fix"]
     query = json.loads(_invoke("query", "m", "SELECT 1 AS one", "--json").stdout)
     assert [w["kind"] for w in query["warnings"]] == ["otel_unavailable"]
 
@@ -328,9 +505,9 @@ def test_the_variables_without_the_sdk_are_a_warning_in_the_json_document(
 def _spy_on_install(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Record every SDK install ``export_from_env`` would make, and make none."""
     installed: list[str] = []
-    monkeypatch.setattr(otel_telemetry, "_provider_installed", lambda: False)
+    _installs(monkeypatch)
 
-    def install(env: Any, version: str) -> list[Any]:
+    def install(env: Any, version: str, signals: Any) -> list[Any]:
         installed.extend(name for name in otel_telemetry.EXPORT_VARIABLES if env.get(name))
         return []
 
@@ -411,13 +588,67 @@ def test_setting_the_standard_variables_is_enough_to_export(project: Path) -> No
     assert b"recon.collect.records" in metrics
 
 
-def test_an_unsupported_exporter_is_a_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    installed: list[str] = []
-    from opentelemetry import metrics, trace
+def test_a_failure_exports_no_command_and_no_credential_in_a_url(
+    project: Path, server: Any
+) -> None:
+    """Regression: a failed span's status was the first line of its error, so a failed
+    ``cli`` command's whole text, and a source URL's user information, went to the OTLP
+    endpoint. A failed span says what kind of failure it was and quotes nothing from it.
 
-    monkeypatch.setattr(otel_telemetry, "_provider_installed", lambda: False)
-    monkeypatch.setattr(trace, "set_tracer_provider", lambda p: installed.append("traces"))
-    monkeypatch.setattr(metrics, "set_meter_provider", lambda p: installed.append("metrics"))
+    In a process of its own, exporting to a receiver started by the test."""
+    collector = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
+    threading.Thread(target=collector.serve_forever, daemon=True).start()
+    _Collector.received.clear()
+    keyed = f"http://user:PASSWORD-TOKEN@127.0.0.1:{server.server_address[1]}"
+    config = project / ".recon" / "m" / "config.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "catalog": [
+                    {"name": "keyed", "url": keyed},
+                    {"name": "small", "url": keyed, "max_bytes": 5},
+                    {"name": "here", "type": "local", "url": "."},
+                ],
+                "collectors": [
+                    {"name": "cmd", "type": "cli", "run": "echo COMMAND-TOKEN >&2; exit 3"},
+                    {"name": "gone", "type": "api", "source": "keyed", "endpoint": "/missing"},
+                    {"name": "big", "type": "api", "source": "small", "endpoint": "/ok"},
+                ],
+            }
+        )
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OTEL_")}
+    env["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://127.0.0.1:{collector.server_address[1]}"
+    try:
+        result = subprocess.run(
+            [str(Path(sys.executable).with_name("recon")), "survey", "m", "--json"],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    finally:
+        collector.shutdown()
+    survey = json.loads(result.stdout)
+    tables = survey["tables"]
+    assert {t["name"] for t in tables} >= {"gone", "big"} and len(tables) > 2
+    assert {t["status"] for t in tables} == {"error"}
+    traces = b"".join(body for path, body in _Collector.received if path == "/v1/traces")
+    events = (Path(survey["archive"]) / "telemetry.jsonl").read_text()
+    assert b"recon.collect" in traces
+    for exported in (traces, events.encode()):
+        assert b"COMMAND-TOKEN" not in exported and b"echo" not in exported
+        assert b"PASSWORD-TOKEN" not in exported and b"user:" not in exported
+    assert b"meta.yaml" in traces, "a failed table's span says where its error is"
+    meta = (Path(survey["archive"]) / "meta.yaml").read_text()
+    assert "PASSWORD-TOKEN" not in meta and "REDACTED:REDACTED@127.0.0.1" in meta
+    assert "COMMAND-TOKEN" in meta, "the archive keeps the error, for whoever reads it"
+
+
+def test_an_unsupported_exporter_is_a_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    installed = _installs(monkeypatch)
     env = {"OTEL_TRACES_EXPORTER": "zipkin", "OTEL_METRICS_EXPORTER": "none"}
     [warning] = export_from_env(env, "9.9")
     assert warning.kind == "otel_unavailable" and warning.got == "zipkin"
@@ -425,10 +656,167 @@ def test_an_unsupported_exporter_is_a_warning(monkeypatch: pytest.MonkeyPatch) -
     assert installed == ["traces"]
 
 
-def test_the_otel_extra_is_declared() -> None:
-    """``pip install 'recon[otel]'`` is what the warning tells a person to run."""
+def test_the_sdk_and_the_exporters_are_installed_with_recon() -> None:
+    """The command line is an application, and an application carries the SDK and OTLP: the
+    ``OTEL_*`` variables are enough, with no extra to install first (owner rulings
+    2026-10-22: the SDK and OTLP are default dependencies, and there are no extras). The library
+    still writes through the API alone. OTLP is http/protobuf alone (owner ruling 2026-10-22:
+    no gRPC), so recon brings no gRPC exporter."""
     from importlib.metadata import requires
 
-    extras = [r for r in requires("recon") or [] if "extra == 'otel'" in r]
-    assert any(r.startswith("opentelemetry-sdk") for r in extras)
-    assert any(r.startswith("opentelemetry-exporter-otlp") for r in extras)
+    plain = [r for r in requires("recon") or [] if "extra ==" not in r]
+    assert any(r.startswith("opentelemetry-api") for r in plain)
+    assert any(r.startswith("opentelemetry-sdk") for r in plain)
+    exporters = [r for r in plain if r.startswith("opentelemetry-exporter")]
+    assert [r.split(">")[0] for r in exporters] == ["opentelemetry-exporter-otlp-proto-http"]
+
+
+@pytest.mark.parametrize(
+    ("variable", "refused"),
+    [
+        ("OTEL_EXPORTER_OTLP_PROTOCOL", ["TRACES", "METRICS"]),
+        ("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", ["TRACES"]),
+        ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", ["METRICS"]),
+    ],
+)
+def test_grpc_is_refused_and_says_what_to_set(
+    monkeypatch: pytest.MonkeyPatch, variable: str, refused: list[str]
+) -> None:
+    """Owner ruling 2026-10-22: recon exports OTLP over http/protobuf only. A signal asked for
+    over gRPC is not exported, rather than sent as http/protobuf to an endpoint that speaks
+    gRPC; the warning names the variable and what to set instead. The other signal exports."""
+    installed = _installs(monkeypatch)
+    env = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318", variable: "grpc"}
+    [warning] = export_from_env(env, "9.9")
+    assert warning.kind == "otel_unavailable" and warning.got == "grpc"
+    assert warning.allowed == ("http/protobuf",)
+    assert variable in warning.message and "http/protobuf only" in warning.message
+    assert warning.fix is not None and f"{variable}=http/protobuf" in warning.fix
+    assert installed == [s.lower() for s in ("TRACES", "METRICS") if s not in refused]
+
+
+def _installs(
+    monkeypatch: pytest.MonkeyPatch, *, tracer: Any = None, meter: Any = None
+) -> list[str]:
+    """Spy on the providers ``export_from_env`` sets, by signal, and set none. ``tracer`` and
+    ``meter`` are the ones the program installed already; None is none, the API's default."""
+    from opentelemetry import metrics, trace
+    from opentelemetry.metrics._internal import _ProxyMeterProvider
+
+    installed: list[str] = []
+    default_tracer, default_meter = trace.ProxyTracerProvider(), _ProxyMeterProvider()
+    monkeypatch.setattr(trace, "get_tracer_provider", lambda: tracer or default_tracer)
+    monkeypatch.setattr(metrics, "get_meter_provider", lambda: meter or default_meter)
+    monkeypatch.setattr(trace, "set_tracer_provider", lambda p: installed.append("traces"))
+    monkeypatch.setattr(metrics, "set_meter_provider", lambda p: installed.append("metrics"))
+    return installed
+
+
+def test_a_signal_with_its_own_endpoint_alone_exports_that_signal_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: any export variable installed both providers, so a traces endpoint alone
+    also sent metrics to the default endpoint, which nothing listened on."""
+    installed = _installs(monkeypatch)
+    env = {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:4318"}
+    assert export_from_env(env, "9.9") == []
+    assert installed == ["traces"]
+
+
+def test_a_provider_the_program_installed_is_kept_signal_by_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: only the tracer provider was looked at, so a program that installed its
+    own tracer provider got no metrics from recon, and one that installed its own meter
+    provider had recon try to replace it."""
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.trace import TracerProvider
+
+    env = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318"}
+    installed = _installs(monkeypatch, tracer=TracerProvider())
+    assert export_from_env(env, "9.9") == []
+    assert installed == ["metrics"]
+
+    installed = _installs(monkeypatch, meter=MeterProvider())
+    assert export_from_env(env, "9.9") == []
+    assert installed == ["traces"]
+
+
+# --- attributes a consumer reads -------------------------------------------------------------
+
+
+def test_a_body_over_max_bytes_fails_its_span_as_body_too_large(server: Any) -> None:
+    """``error.type`` on a request span is the status, the httpx2 class, or
+    ``body_too_large``: a consumer counts refusals by it."""
+    sink = Recorded()
+    port = server.server_address[1]
+    source = SourceEntry(name="s", url=f"http://127.0.0.1:{port}", max_bytes=1)
+    with pytest.raises(CollectionError):
+        _requester(sink).get(source, f"http://127.0.0.1:{port}/ok")
+    [end] = sink.ends("recon.http.request")
+    assert end.status == "error" and end.attributes["error.type"] == "body_too_large"
+
+
+def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
+    """``recon.query`` carries ``recon.rows``, the number of rows the query returned."""
+    from recon.adapters._out.archive_files import ArchiveFiles
+    from recon.adapters._out.duckdb_query import DuckdbQuery
+    from recon.adapters._out.mission_files import MissionFiles
+    from recon.application.use_cases import Recon
+    from recon.composition import load_plugins
+    from tests.recon_fakes import run_survey
+
+    run_survey(
+        {"collectors": [{"name": "t", "type": "cli", "run": 'printf \'{"a": 1}\\n{"a": 2}\\n\''}]},
+        tmp_path,
+    )
+    sink, clock = Recorded(), FixedClock()
+    archives = ArchiveFiles(clock)
+
+    def no_survey(*args: Any) -> Any:
+        raise AssertionError("a query builds no collector")
+
+    querying = Recon(
+        missions=MissionFiles(tmp_path, clock),
+        archives=archives,
+        query=DuckdbQuery(archives),
+        clock=clock,
+        plugins=load_plugins(),
+        build_collectors=no_survey,
+        telemetry=lambda archive: Telemetry([sink], clock),
+        env={},
+        version="0",
+    )
+    querying.query("m", "SELECT a FROM t")
+    [end] = sink.ends("recon.query")
+    assert end.attributes["recon.rows"] == 2
+
+
+def test_a_log_written_inside_recons_work_reads_recons_span_as_current() -> None:
+    """A log written while recon works (a plugin's own ``logging`` call) is joined to the
+    span recon has open: a log bridge stamps each record with the current span's context,
+    which inside recon's work is recon's span. Read here as a bridge reads it, through
+    ``trace.get_current_span()``, since the SDK's own logging handler is deprecated."""
+    import logging
+
+    from opentelemetry import trace
+
+    provider, exporter = _sdk()
+    stamped: list[tuple[int, int]] = []
+
+    class Bridge(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            context = trace.get_current_span().get_span_context()
+            stamped.append((context.trace_id, context.span_id))
+
+    logger = logging.getLogger("some.plugin")
+    bridge = Bridge()
+    logger.addHandler(bridge)
+    try:
+        telemetry = Telemetry([OtelEvents("9.9", tracer_provider=provider)], FixedClock())
+        with telemetry.span("recon.collect"):
+            logger.warning("a plugin speaks")
+    finally:
+        logger.removeHandler(bridge)
+    [span] = exporter.get_finished_spans()
+    assert stamped == [(span.get_span_context().trace_id, span.get_span_context().span_id)]

@@ -1,0 +1,47 @@
+{
+ "info": {
+  "author": null,
+  "author_email": "Samuel Colvin <s@muelcolvin.com>, Eric Jolibois <em.jolibois@gmail.com>, Hasan Ramezani <hasan.r67@gmail.com>, Adrian Garcia Badaracco <1755071+adriangb@users.noreply.github.com>, Terrence Dorsey <terry@pydantic.dev>, David Montague <david@pydantic.dev>, Serge Matveenko <lig@countzero.co>, Marcelo Trylesinski <marcelotryle@gmail.com>, Sydney Runkle <sydneymarierunkle@gmail.com>, David Hewitt <mail@davidhewitt.dev>, Alex Hall <alex.mojaki@gmail.com>, Victorien Plot <contact@vctrn.dev>",
+  "bugtrack_url": null,
+  "description_content_type": "text/markdown",
+  "docs_url": null,
+  "download_url": null,
+  "downloads": {
+   "last_day": -1,
+   "last_month": -1,
+   "last_week": -1
+  },
+  "dynamic": null,
+  "home_page": null,
+  "keywords": null,
+  "license": null,
+  "license_expression": "MIT",
+  "license_files": [
+   "LICENSE"
+  ],
+  "maintainer": null,
+  "maintainer_email": null,
+  "name": "pydantic",
+  "package_url": "https://pypi.org/project/pydantic/",
+  "platform": null,
+  "project_url": "https://pypi.org/project/pydantic/",
+  "project_urls": {
+   "Changelog": "https://pydantic.dev/docs/validation/latest/get-started/changelog/",
+   "Documentation": "https://pydantic.dev/docs/validation/latest/get-started/",
+   "Funding": "https://github.com/sponsors/samuelcolvin",
+   "Homepage": "https://github.com/pydantic/pydantic",
+   "Source": "https://github.com/pydantic/pydantic"
+  },
+  "provides_extra": [
+   "email",
+   "timezone"
+  ],
+  "release_url": "https://pypi.org/project/pydantic/2.14.1/",
+  "requires_python": ">=3.10",
+  "summary": "Data validation using Python type hints",
+  "version": "2.14.1",
+  "yanked": false,
+  "yanked_reason": null
+ },
+ "last_serial": 42100743
+}

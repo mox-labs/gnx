@@ -46,7 +46,7 @@ _EVALUATE: dict[str, Any] = {
     "name": "routing",
     "question": "Does the right skill fire?",
     "genre": "evaluate",
-    # The mock runtime: a test that runs this by mistake spends nothing.
+    # The mock runtime: a test that runs this by mistake calls no model.
     "subjects": {"catalog": {"kind": "agent-session", "runtime": "mock", "max_turns": 1}},
     "probes": [
         {
@@ -58,7 +58,6 @@ _EVALUATE: dict[str, Any] = {
     ],
     "primary": {"metric": "activated_correctly"},
     "threshold": {"op": ">=", "value": 0.9},
-    "spend": {"ceiling": 5},
 }
 
 
@@ -66,6 +65,18 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "slow: the full simulation of the statistics; IX_SLOW=1 pytest -m slow"
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_tracer_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test starts with no OpenTelemetry tracer provider installed, and leaves none
+    behind: a run whose sensors read spans installs one in the process, and
+    OpenTelemetry lets a process install one only once."""
+    from opentelemetry import trace
+    from opentelemetry.util._once import Once
+
+    monkeypatch.setattr(trace, "_TRACER_PROVIDER", None)
+    monkeypatch.setattr(trace, "_TRACER_PROVIDER_SET_ONCE", Once())
 
 
 @pytest.fixture(scope="session")

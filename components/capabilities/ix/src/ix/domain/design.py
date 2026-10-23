@@ -14,19 +14,19 @@ probes meet. None is ``metric_unprovided``; two are ``metric_ambiguous``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import Field
 
 from ix.domain import schema
 from ix.domain.experiment import (
-    ESTIMATORS,
     STATISTICS,
     Guardrail,
     Level,
     Margin,
     MetricRef,
     Threshold,
+    default_estimator,
 )
 from ix.domain.genre import CONTROL, AnalysisRef, Calibration, Order, VerdictForm
 from ix.domain.kind import Confusion, Metric, check_options
@@ -34,6 +34,8 @@ from ix.domain.problem import InvalidExperimentError, Problem, problem
 from ix.domain.schema import Record
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from ix.domain.experiment import (
         EnvironmentConfig,
         Experiment,
@@ -252,6 +254,21 @@ def _listed(
         sensor = kinds.get("sensor", selection.kind)
         if sensor is None:
             continue  # an unknown kind is reported where the kind is named
+        first = next((at for at, kind in listed if kind.name == sensor.name), None)
+        if first is not None:
+            # A run keeps one entry per sensor kind: a second would replace the first's options.
+            problems.append(
+                problem(
+                    f"sensors.{index}.kind",
+                    kind="name_taken",
+                    message=f"sensor {schema.short(sensor.name)} is listed at sensors.{first} "
+                    "already; a run uses one entry of each sensor kind",
+                    fix=f"keep one {schema.short(sensor.name)} entry: merge this one's options "
+                    "into it, or remove it",
+                    got=selection.kind,
+                )
+            )
+            continue
         listed.append((index, sensor))
         if not _fits(sensor, offered):
             lacking = sorted(set(sensor.needs) - (offered or set()))
@@ -449,13 +466,12 @@ def select_sensors(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None
 
 @dataclass(frozen=True)
 class KindUse:
-    """One place the experiment names a kind: where, which kind, the options written beside
-    it, and the effects the author added."""
+    """One place the experiment names a kind: where, which kind, and the options written
+    beside it."""
 
     path: str
     kind: Kind
     options: dict[str, Any]
-    effects: tuple[str, ...]
 
 
 def kind_uses(
@@ -487,7 +503,7 @@ def kind_uses(
                     )
                 )
             return
-        found.append(KindUse(path=path, kind=kind, options=entry.options, effects=entry.effects))
+        found.append(KindUse(path=path, kind=kind, options=entry.options))
         problems.extend(check_options(kind, entry.options, path))
 
     bind("environment", family="environment", entry=experiment.environment)
@@ -524,6 +540,43 @@ def kinds_in_use(
     return tuple((where, kind) for kind, where in first.items())
 
 
+def entries_in_use(
+    experiment: Experiment, design: Design, probes: ProbeSet
+) -> tuple[tuple[str, str, Mapping[str, Any]], ...]:
+    """Every entry a run of the experiment carries out, as (where it is written, its kind's
+    type URL, its options): the environment, each subject, each probe (``probes.<index>``
+    when written inline, ``probes.<id>`` when read from a file) and each sensor the design
+    uses (``sensors.<index>`` when listed, ``sensors`` when the genre chose it)."""
+    found: list[tuple[str, str, Mapping[str, Any]]] = [
+        (
+            "environment",
+            schema.url("environment", experiment.environment.kind),
+            experiment.environment.options,
+        )
+    ]
+    found += [
+        (f"subjects.{name}", schema.url("subject", subject.kind), subject.options)
+        for name, subject in experiment.subjects.items()
+    ]
+    inline = bool(experiment.probes)
+    found += [
+        (f"probes.{index if inline else probe.id}", schema.url("probe", probe.kind), probe.options)
+        for index, probe in enumerate(probes.probes)
+    ]
+    listed = {
+        schema.url("sensor", entry.kind): index for index, entry in enumerate(experiment.sensors)
+    }
+    found += [
+        (
+            "sensors" if sensor.kind not in listed else f"sensors.{listed[sensor.kind]}",
+            sensor.kind,
+            sensor.options,
+        )
+        for sensor in design.sensors
+    ]
+    return tuple(found)
+
+
 def missing_adapters(
     experiment: Experiment, design: Design, probes: ProbeSet, adapters: frozenset[str]
 ) -> tuple[tuple[str, str], ...]:
@@ -539,7 +592,18 @@ def missing_adapters(
 # --- the hypothesis ----------------------------------------------------------------------
 
 
-def metric_text(ref: MetricRef | Guardrail) -> str:
+class Measured(Protocol):
+    """What names a measure: a metric and the statistic of it (a primary, a guardrail, a
+    decision)."""
+
+    @property
+    def metric(self) -> str: ...
+
+    @property
+    def statistic(self) -> str | None: ...
+
+
+def metric_text(ref: Measured) -> str:
     """``ttfb p99``; a statistic of ``value`` (a boolean or a scalar) or ``rate`` (a count)
     adds nothing and is left out."""
     plain = ref.statistic in (None, "value", "rate")
@@ -607,13 +671,10 @@ def _reductions(
         sourced.append(_from("ix", path=f"{path}.statistic", value=statistic, note=note))
     if estimator is not None:
         sourced.append(_from("experiment", path=f"{path}.estimator", value=estimator))
-    elif metric is not None and metric.shape == "boolean":
-        estimator = ESTIMATORS["boolean"][0]
-        sourced.append(
-            _from(
-                "ix", path=f"{path}.estimator", value=estimator, note="booleans combine as a rate"
-            )
-        )
+    elif metric is not None and metric.shape in ("boolean", "count"):
+        estimator = default_estimator(metric.shape)
+        note = "booleans and counts combine as a rate"
+        sourced.append(_from("ix", path=f"{path}.estimator", value=estimator, note=note))
     elif metric is not None:
         estimator = genre.design.estimator
         sourced.append(_from("genre", path=f"{path}.estimator", value=estimator))

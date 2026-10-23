@@ -15,7 +15,14 @@ Not an agent runtime: no tool loop, no permissions, no trajectory. Those live on
 
 from importlib.metadata import PackageNotFoundError, version
 
-from hardline.composition import build_runtime, discover_backends, discover_sources
+from hardline.composition import (
+    build_runtime,
+    configure_telemetry,
+    discover_backends,
+    discover_sources,
+    load_registry,
+)
+from hardline.conformance import answer_problems, backend_problems
 from hardline.domain.errors import (
     RETRYABLE,
     BackendError,
@@ -29,21 +36,36 @@ from hardline.domain.errors import (
 )
 from hardline.domain.ports._out.backend import ModelBackend
 from hardline.domain.ports._out.config_source import ConfigSource
+from hardline.domain.ports._out.observer import CallObserver
 from hardline.domain.ports._out.secrets import SecretResolver
 from hardline.domain.registry import ModelRegistry
 from hardline.domain.runtime import ModelRuntime
 from hardline.domain.types import (
     COMPLETION_TYPE_URL,
     NAMESPACE,
+    Answered,
+    Attempt,
+    AttemptFailed,
+    CallBound,
+    CallEvent,
+    CallLimits,
     Completion,
+    Endpoint,
+    FellBack,
+    FinishReason,
     Message,
     ModelSpec,
+    Problem,
     RawCompletion,
     Request,
+    RequestParams,
+    RowRecord,
     Structured,
+    ToolCall,
+    ToolSpec,
     Usage,
-    backend_type_url,
 )
+from hardline.skill import get_skill
 
 try:
     __version__ = version("hardline")
@@ -54,11 +76,21 @@ __all__ = [
     "COMPLETION_TYPE_URL",
     "RETRYABLE",
     "NAMESPACE",
+    "Answered",
+    "Attempt",
+    "AttemptFailed",
     "BackendError",
+    "CallBound",
+    "CallEvent",
+    "CallLimits",
+    "CallObserver",
     "Completion",
     "ConfigError",
     "ConfigSource",
     "ContractError",
+    "Endpoint",
+    "FellBack",
+    "FinishReason",
     "Message",
     "ModelBackend",
     "ModelRegistry",
@@ -66,17 +98,26 @@ __all__ = [
     "HardlineError",
     "Reason",
     "ModelSpec",
+    "Problem",
     "RawCompletion",
     "Request",
+    "RequestParams",
+    "RowRecord",
     "SchemaError",
     "SecretError",
     "SecretResolver",
     "Structured",
+    "ToolCall",
+    "ToolSpec",
     "UnknownModelError",
     "Usage",
     "__version__",
-    "backend_type_url",
+    "answer_problems",
+    "backend_problems",
     "build_runtime",
+    "configure_telemetry",
     "discover_backends",
     "discover_sources",
+    "get_skill",
+    "load_registry",
 ]

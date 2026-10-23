@@ -3,8 +3,8 @@
 Every error carries a **kind**, what the caller can do about it, so nobody parses messages.
 :data:`EXIT_CODES` maps each kind a command exits with to its code, :data:`EXIT_MEANINGS`
 says what each means and :data:`EXIT_NEXT` what to do about it. The codes are those agreed in
-``components/capabilities/exit-codes.json``, and the tests hold this table to it. Three kinds
-are finer than an exit: ``contract``, ``component`` and ``spend`` exit as ``run_failed``
+``components/capabilities/exit-codes.json``, and the tests hold this table to it. Two kinds
+are finer than an exit: ``contract`` and ``component`` exit as ``run_failed``
 (:data:`EXITS_AS`).
 
 Every error also carries a ``fix`` (one actionable sentence, or None), ``problems`` (each a
@@ -24,12 +24,14 @@ from matrix.domain.problems import counted, summary
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from matrix.domain.agent import AgentResponse
     from matrix.domain.construct import Construct
     from matrix.domain.executor import Run
+    from matrix.domain.model_call import ModelCall
     from matrix.domain.problems import Problem
 
 ErrorKind = Literal[
-    "usage", "config", "not_found", "contract", "component", "spend", "run_failed", "store",
+    "usage", "config", "not_found", "contract", "component", "run_failed", "store",
     "transient", "auth", "interrupted", "unknown",
 ]  # fmt: skip
 
@@ -48,13 +50,11 @@ EXIT_CODES: dict[str, int] = {
     "interrupted": 130,
 }
 
-#: Error kinds that exit under another kind's code: a component that broke its contract,
-#: raised, or was refused an agent session by the run's spend ceiling, fails the run. The
-#: envelope keeps the finer kind (``error.details.cause``).
+#: Error kinds that exit under another kind's code: a component that broke its contract or
+#: raised fails the run. The envelope keeps the finer kind (``error.details.cause``).
 EXITS_AS: dict[str, str] = {
     "contract": "run_failed",
     "component": "run_failed",
-    "spend": "run_failed",
 }
 
 #: What each kind in :data:`EXIT_CODES` means.
@@ -66,8 +66,7 @@ EXIT_MEANINGS: dict[str, str] = {
     "not_found": "a name, type URL, file or run that is not registered, configured or there",
     "transient": "unavailable, rate-limited or timed out",
     "auth": "credentials missing or refused",
-    "run_failed": "the run ran and a component failed: it raised, broke what it declares, or "
-    "was refused an agent session by the spend ceiling",
+    "run_failed": "the run ran and a component failed: it raised or broke what it declares",
     "store": "the run's record could not be written or read",
     "interrupted": "the command was interrupted (Ctrl-C, SIGTERM) before it finished",
 }
@@ -93,7 +92,7 @@ EXIT_NEXT: dict[str, str] = {
 
 #: The repository tag of this release. matrix is not published to a package index: it is
 #: installed from the repository at this tag. The tests hold it to the package's version.
-RELEASE_TAG = "matrix-v0.6.0"
+RELEASE_TAG = "matrix-v0.7.0"
 
 #: Where this release is installed from, as a uv source.
 SOURCE = (
@@ -174,26 +173,24 @@ class ConfigError(MatrixError, ValueError):
     kind: ErrorKind = "config"
 
 
-def missing_extra(extra: str, *, needed_by: str, module: str) -> ConfigError:
-    """The error for selecting something whose optional dependency is not installed.
-
-    ``extra`` is the name in matrix's ``[project.optional-dependencies]``; ``details`` carries
-    it and the missing ``module`` so a caller can act without parsing the message.
+def missing_dependency(*, needed_by: str, module: str) -> ConfigError:
+    """The error for selecting something whose dependency cannot be imported. matrix depends
+    on every one it imports, so the install is incomplete; ``details`` carries the missing
+    ``module`` so a caller can act without parsing the message.
     """
     return ConfigError(
         f"{needed_by} requires {module!r}, which is not installed",
-        fix=install_extra(extra),
-        extra=extra,
+        fix=reinstall(),
         missing=module,
     )
 
 
-def install_extra(extra: str) -> str:
-    """How to install matrix's ``extra``: into a project, and into an installed tool."""
-    requirement = REQUIREMENT.replace("matrix @", f"matrix[{extra}] @", 1)
+def reinstall() -> str:
+    """How to repair an install that lacks one of matrix's dependencies: in a project, and in
+    an installed tool."""
     return (
-        f'install matrix\'s {extra} extra: uv add "{requirement}" in a project, or '
-        f'uv tool install --with "{requirement}" <tool> for an installed tool'
+        f'reinstall matrix, which depends on it: uv add "{REQUIREMENT}" in a project, or '
+        "uv tool install --reinstall <the tool's requirement> for an installed tool"
     )
 
 
@@ -246,14 +243,6 @@ class ComponentError(MatrixError):
     kind: ErrorKind = "component"
 
 
-class SpendError(MatrixError):
-    """An agent session was not started: it could have taken the run past its spend ceiling
-    (``matrix.limits.spend_usd``). ``details`` holds ``agent``, ``spent_usd``, ``held_usd``,
-    ``ceiling_usd`` and, when the runtime bounds a session, ``budget_usd``."""
-
-    kind: ErrorKind = "spend"
-
-
 class StoreError(MatrixError):
     """The run's record could not be kept or read back: a write failed, a run id is already
     taken, or a stored record contradicts itself. A run whose record cannot be kept fails."""
@@ -276,14 +265,12 @@ _REASON_KIND: dict[str, ErrorKind] = {
 }
 
 
-class AgentRuntimeError(MatrixError):
-    """An agent runtime could not complete a session, with a classified ``reason``.
-
-    ``reason`` says whose problem it is, so a harness can keep infrastructure failures out of
-    an agent's score: ``unavailable``/``rate_limited``/``timeout`` are worth retrying,
-    ``auth`` needs credentials, ``incapable`` means the runtime cannot honour the definition
-    (a config fault), ``refused`` means the model declined, and ``failed`` means the session
-    ran and broke. Every runtime raises this for an execution failure, whatever its backend.
+class _ClassifiedError(MatrixError):
+    """A runtime's failure with a classified ``reason``: whose problem it is, so a harness can
+    keep infrastructure failures out of an agent's or a model's score.
+    ``unavailable``/``rate_limited``/``timeout`` are worth retrying, ``auth`` needs
+    credentials, ``incapable`` means the runtime cannot honour what it was asked (a config
+    fault), ``refused`` means the model declined, and ``failed`` means it ran and broke.
 
     ``retry_after_s`` is the backend's own hint (a ``Retry-After``), when it gave one; a retry
     policy waits that long, up to its cap.
@@ -311,6 +298,34 @@ class AgentRuntimeError(MatrixError):
     @property
     def retryable(self) -> bool:
         return self.kind == "transient"
+
+
+class AgentRuntimeError(_ClassifiedError):
+    """An agent runtime could not complete a session, with a classified ``reason``. Every
+    agent runtime raises this for an execution failure, whatever its backend.
+
+    ``response`` is what the runtime knew of the failed session, when it knew anything: its
+    id, usage, cost, turns and the model that answered (claude-sdk's, from a result that says
+    the session failed). The session's row in ``matrix.v1.session`` is built from it."""
+
+    def __init__(
+        self, message: str, *, response: AgentResponse | None = None, **kwargs: Any
+    ) -> None:
+        super().__init__(message, **kwargs)
+        self.response = response
+
+
+class ModelRuntimeError(_ClassifiedError):
+    """A model runtime could not complete a call, with a classified ``reason``. Every model
+    runtime raises this for an execution failure, whatever its backend.
+
+    ``call`` is what the runtime knew of the failed call, when it knew anything: for hardline,
+    every attempt made (``attempt_log``) and the usage they reported. The call's row in
+    ``matrix.v1.session`` is built from it."""
+
+    def __init__(self, message: str, *, call: ModelCall | None = None, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.call = call
 
 
 class RunError(MatrixError):
@@ -341,10 +356,10 @@ class RunError(MatrixError):
 
     @property
     def kind(self) -> ErrorKind:  # type: ignore[override]
-        """``run_failed`` when a component raised, broke its contract or was refused an agent
-        session by the spend ceiling; otherwise the cause's own kind, whose remedy differs
-        (``store``, ``transient``, ``auth``, ``config``)."""
-        if self.cause_kind in ("contract", "component", "spend", "unknown"):
+        """``run_failed`` when a component raised or broke its contract; otherwise the
+        cause's own kind, whose remedy differs (``store``, ``transient``, ``auth``,
+        ``config``)."""
+        if self.cause_kind in ("contract", "component", "unknown"):
             return "run_failed"
         return self.cause_kind
 

@@ -1,21 +1,26 @@
 # Security — recon
 
-recon collects from heterogeneous sources — HTTP APIs, local CLIs, web pages, capture logs
-— and normalises the results to JSONL. Two things make it worth reading before you run
-someone else's config: **a recon config runs shell commands**, and recon handles source
-credentials.
+recon collects from heterogeneous sources — HTTP APIs, local CLIs, web pages, MCP servers,
+capture logs — and normalises the results to JSONL. Two things make it worth reading before
+you run someone else's config: **a recon config runs programs** (shell commands, and the MCP
+servers it starts), and recon handles source credentials.
 
 Audience: anyone running `recon survey` against a config they did not write.
 
-**Read the plan first.** `recon survey <mission> --dry-run` validates the config and lists
-every run it would make — the exact substituted shell commands, the URLs, and each run's
-declared effects (network, subprocess, filesystem) — without fetching, executing or writing
-anything. Reviewing a config means reviewing that plan.
+**Read the config first, then the plan.** `recon survey <mission> --dry-run` validates the
+config and lists every run it would make — the exact substituted shell commands, the URLs,
+the MCP calls and each run's declared effects (network, subprocess, filesystem) — without
+writing anything. It fetches and executes nothing either, with one exception it names in the
+plan's `preflight`: for an `mcp` run it starts the stdio server the config names (and
+connects to a remote one) to list its tools. A config with an `mcp` source therefore runs
+its `command` at the dry run (boundary 8): read that key before planning someone else's
+config. Reviewing a config means reviewing it and that plan.
 
 ## Blast radius
 
-A survey may execute arbitrary shell commands, make outbound HTTP requests carrying your
-credentials, and write files under the mission directory (`.recon/<mission>/`).
+A survey may execute arbitrary shell commands, start the MCP servers its config names, make
+outbound HTTP requests carrying your credentials, and write files under the mission directory
+(`.recon/<mission>/`). A dry run may start those MCP servers too.
 
 ## Trust boundaries
 
@@ -55,6 +60,13 @@ a query parameter (`auth.param`), or both. Two consequences:
 - The secret is attached to requests to **whatever URL that source declares**. A config
   that points a credentialed source at an attacker's host exfiltrates the credential. The
   URL and the credential are chosen by the same file. The dry-run plan shows each URL.
+- The secret goes only to the origin of the request a collector built. A redirect to
+  another host, port or scheme is followed without the source's `auth.header`, as httpx2
+  follows one without `Authorization`; an upgrade from http to https on the same host keeps
+  it (R-9). A key sent as `auth.param` is part of the URL: a redirect carries it on only
+  when the server writes it into the new location.
+- TLS certificates are verified against the operating system's trust store (httpx2's
+  default, through `truststore`).
 - Secrets are never written to the JSONL output and never logged. Request headers are
   never persisted. In captures, response headers are persisted with credential-bearing
   values redacted (R-2), and an `auth.param` value is redacted from the captured URL (R-4).
@@ -64,12 +76,16 @@ it before anything is sent.
 
 A collector type is not handed the process environment. Its `env` holds only the
 variables the mission declares for it: the `auth.env` names of the catalog sources its
-collectors run against. A plugin type therefore sees the secrets the config granted its
+collectors run against, and the variables those sources name through their kind's own
+settings (an `mcp` source's `env:NAME` references). A plugin type therefore sees the secrets the config granted its
 sources and no others, and reading any other name fails the table with a config error
 that says where to declare it, rather than returning nothing (R-5). This scopes what a
 collector type is *handed*; it is not a sandbox. A plugin is Python in recon's process and
 can import `os`, and a `cli` command's child process inherits recon's whole environment
 (boundary 1).
+
+An archive's `meta.yaml` names each variable the mission declares, `set` or `unset`, so a
+reader can see which credentials a survey ran with; it never holds a value.
 
 ### 3. Remote responses → local files
 
@@ -82,6 +98,22 @@ sha256, never by anything in the response.
 a collected value. It reads only under the mission directory and the catalog's `local`
 sources (after resolving symlinks and `..`), and it never fetches a URL; either refusal
 fails the table with a config error (R-6).
+
+A `web` collector's page, and the file `$markitdown` opens, are converted from their bytes
+and nothing else. recon builds markitdown with a named list of converters, audited for
+markitdown 0.1.5, and none of them reaches the network or starts a process: plain text,
+HTML, ZIP (each entry by the same list), RSS, Wikipedia and Bing result pages (parsed, not
+fetched), DOCX, XLSX, XLS, PPTX, images, notebooks, PDF, Outlook messages, EPub and CSV.
+Left out are the audio converter, which uploads the recording to Google's speech API
+(R-14); the YouTube converter, which asks YouTube for a transcript (R-12); the Azure
+Document Intelligence converter, which uploads the document; markitdown's plugins; and
+exiftool, which markitdown would run on images and audio. The image and PPTX converters
+call a model only when given a client, and recon gives none. A converter a later markitdown
+adds is not registered until it has been read and listed. Audio is therefore not converted:
+it fails the table, naming the document. Importing markitdown itself starts two local
+processes once per recon process, `uname -p` and `file -b <python>`: its Document
+Intelligence module imports `azure.identity`, which reads the platform through Python's
+`platform` module. Neither reaches the network.
 
 ### 4. Capture logs → the capture collector
 
@@ -97,7 +129,12 @@ check stops the table with an error naming the file and line.
 payload's `tool_response` is stored verbatim and its other fields (`tool_input`,
 `session_id`, `cwd`, ...) become the capture's `request`. A captured MCP result can contain
 anything the tool saw, including private data, so `.recon/<mission>/captures/` deserves the
-same care as the conversation transcript. `recon capture` writes only under an existing
+same care as the conversation transcript. `tool_input` is stored as the hook gives it,
+credentials included: an MCP tool that takes a key as an argument has that key written to
+the log. recon cannot tell such an argument from any other, and redacting by guessing at
+names would both miss keys and destroy evidence, so nothing in `tool_input` is redacted. The
+redaction of credential headers and the source's `auth.param` covers what recon fetches
+itself, not what a hook hands it. `recon capture` writes only under an existing
 mission's directory; it refuses (exit 4) when the mission does not exist, rather than
 creating one from a name it was handed.
 
@@ -112,12 +149,16 @@ The connection is confined before any SQL runs: `allowed_directories` is the mis
 `archive/` directory, extension auto-install and auto-load are off, external access is
 off (DuckDB does not allow turning it back on), and the configuration is locked. A query
 reads its own and earlier archives of the same mission and nothing else; `INSTALL`, `LOAD`
-and URLs are refused (R-7).
+and URLs are refused (R-7). DuckDB lets SQL write wherever it may read, so a query runs only
+statements DuckDB's parser types as SELECT; `COPY ... TO`, `ATTACH`, `CREATE`, `EXPORT` and
+every other statement are refused before any of the SQL runs (R-10).
 
-What this does **not** do: it does not make a query read-only inside that directory. SQL
-can still write a file under the mission's `archive/` (`COPY ... TO`, `ATTACH`), and can
-use DuckDB's spill directory (`.tmp/` under the working directory). And it does nothing
-about the text itself: a `content` column from the web is untrusted wherever it is read.
+Spilling to disk is off: DuckDB adds its spill directory (`.tmp/` under the working
+directory) to the directories SQL may read, so with it on a query could read whatever is
+there (R-15). A query that needs more memory than DuckDB has fails as a `query` error.
+
+What this does **not** do: anything about the text itself. A `content` column from the web
+is untrusted wherever it is read.
 
 ### 7. Telemetry → the archive's event log, and an OTLP endpoint
 
@@ -128,15 +169,92 @@ attributes are chosen so that neither destination receives a secret or a body: n
 request body or response body is an attribute, and `url.full` has its user information,
 the source's `auth.param` value and the signature parameters of the HTTP conventions
 (`X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `sig`, `X-Goog-Signature`)
-replaced by `REDACTED`. A span that failed carries only the first line of its error: the
-URL a collector asked for, to which `auth.param` is added later, and never the quoted
-response body that follows (R-8).
+replaced by `REDACTED`. A span that failed carries its error's kind and a message in recon's
+own words, never the error's text, which can quote a command, a URL or SQL (R-11). A failed
+table's error, its command or URL included, stays in the archive's `meta.yaml`, and a URL
+in an error message has its user information and `auth.param` value `REDACTED` there too.
 
 What this does **not** do: a secret a mission puts anywhere else in a URL (in a path, or in
 a query parameter that is not its source's `auth.param`) is recorded as written, as it is
-in the dry-run plan and `meta.yaml`. A `cli` collector's commands are not attributes. The
+in the dry-run plan and `meta.yaml`. A `cli` collector's commands are neither attributes
+nor span messages. The
 endpoint the variables name receives the mission's URLs, table and collector names, and
 record counts: point it at a collector you trust with them.
+
+When an SDK is installed (the `OTEL_*` variables, or a program's own setup), each HTTP
+request also carries a W3C `traceparent` header naming its span, and `tracestate` and any
+baggage the caller's context holds, so the source's server can join recon's trace. It
+learns a trace id and a span id, nothing of the mission. With no SDK, no such header is
+sent.
+
+### 8. Config → an MCP server (`mcp` collector)
+
+An `mcp` source names its server, and each of its two shapes is a boundary of its own.
+
+**A stdio server is a program the config runs.** `command` and `args` are started as a
+child process with your user's rights, at the dry run as at the survey: the same trust as
+a `cli` collector's `run:` (boundary 1), and with `npx -y` or `uvx`, a package it downloads
+first. It is not given a shell, and not recon's environment: it gets the SDK's short list
+(`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) and the variables its `env:` gives,
+each written as is or as an `env:NAME` reference the mission declares. Its stderr goes to a
+temporary file; the end of it is quoted in a failed table's error, in `meta.yaml`. It is
+stopped when the survey (or the dry run) ends, however it ends. It runs in the project
+root, not recon's working directory, so a server given `.` reads the same tree wherever
+recon is run from.
+
+**A remote server receives its own credential only.** Its `token` (`env:NAME` or
+`file:PATH`, never the secret itself, which the plan refuses) is sent as `Authorization:
+Bearer`, or its `headers_helper` command's headers are sent (a command, so boundary 1's
+trust again). They go to the server's `url` and nowhere else: the MCP SDK's client follows
+no redirect itself, and its transport follows one only within the server's origin (scheme,
+host and port, or http to https on the same host), so a token never leaves its origin, as
+the rule (R-9) asks of an HTTP source (R-13): a credentialed source follows no cross-origin redirect. TLS is verified against the operating
+system's trust store. A server that signs in with OAuth through a browser is not a source:
+reach it through the hook route (boundary 5).
+
+**A server's schema is checked, never followed.** A tool's input schema is the server's
+text. recon checks it is valid JSON Schema before checking arguments against it, and
+resolves its `$ref`s within the schema alone: a `$ref` to another host is never fetched
+(jsonschema's default would fetch it itself, outside the requester). A schema that is not
+valid, or refers to what it does not hold, is a requirement that does not hold: the dry
+run lists it and the survey fails that table as `config`.
+
+**What a server returns may be private.** A tool reads what its server can reach (a
+repository, a mailbox, a drive), and its answer becomes the table, and with `preserve_raw`
+the capture: an archive of an `mcp` mission deserves the care its server's data does. In a
+capture, every credential value the source resolved (its token, its helper's headers, the
+variables given to a stdio server, each cookie's value) is replaced by the redaction marker,
+in the result and in the request recorded beside it. The replacing is done on the decoded
+result, before it is written as JSON, by one rule with a threshold of 8 characters:
+
+- **8 characters or more: wherever it appears**, inside other text too: at the start of a
+  line, after a tab, in a URL, run into other letters (`key-<token>`, `prefix_<token>`, a
+  CJK word), in the structured content and in the JSON a text block holds.
+- **Under 8 characters: only where it is a whole value**: a whole JSON string, a header's
+  whole value, or a whole query parameter's value in a string that is a URL. Never inside a
+  number, a boolean or longer text.
+
+Why the threshold. A real token is long, and a server that echoes one puts it where it likes,
+so a long credential is replaced as a substring: text that holds it holds the token, and a
+narrower test of where it stands lets one through (in written JSON a newline is the two
+characters `\n`, so a token at the start of a line looks joined to an `n`). A short value
+in a credential-named slot is as often a word or a number of its own: a cookie's
+`consent=true`, a stdio server's `DEBUG=1`, `X-Api-Key-Version: 2`. Replaced in text, it
+blanks every `true`, `1` or `2` in the capture, a JSON boolean or number included, and the
+capture is no longer JSON and cannot be read back by a `capture` collector. So a short one
+is replaced only where it is the whole value, and the capture stays JSON of the same shape.
+The cost, named: a credential under 8 characters inside longer text stays in the capture,
+and so does one inside the JSON of a tool's text block, which is one longer string (its
+structured content, when the tool declares an output schema, has it replaced). It is
+documented, not redacted (owner ruling 2026-10-22: accepted). A credential that short is
+weak whatever recon does; keep a real one long. A credential the tool returns
+of its own is in the table as returned.
+
+**Telemetry.** Each call is a `recon.mcp.call` span with the method, the tool's name and
+the source, never its arguments or its result. FastMCP's own spans are not made for recon's
+calls: a failed one carries the tool's error text as its status. The MCP SDK's spans (a
+method name and a request id) nest under recon's when an SDK is installed; a JSON-RPC error
+the server sends can be their status message.
 
 ## Findings
 
@@ -243,13 +361,103 @@ Regression: `test_a_request_is_a_client_span_with_the_required_attributes` and
 `test_a_transport_failure_names_its_exception_and_credentials_in_the_url_are_redacted` in
 `recon/tests/test_telemetry.py`.
 
+### R-9 — a source's own auth header followed a redirect to another host (fixed)
+
+httpx2 drops `Authorization` when a redirect leaves the origin, and nothing else. A source
+whose key goes in its own header (`x-api-key`, as Exa, Serper and Semantic Scholar take
+it) sent that key to whatever host its API redirected to. Fixed by dropping the source's
+`auth.header` from every request sent outside the origin of the one the collector built,
+by the rule httpx2 applies to `Authorization`. The redirect is still followed rather than
+refused: an API that sends a download to a storage or CDN host with a signed URL needs no
+key there, and refusing would fail that table for no gain.
+
+Regression: `test_a_redirect_to_another_origin_does_not_carry_the_sources_credential` and
+`test_a_redirect_within_the_origin_keeps_the_credential` in
+`recon/tests/test_http_requester.py`.
+
+### R-10 — a query could write into the mission's archives (fixed)
+
+The confinement of R-7 lets SQL write wherever it may read, so `COPY (...) TO`, `ATTACH`
+and `EXPORT` wrote files under `archive/`: over an archive's `meta.yaml`, or a planted
+`.jsonl` that the next query read as a table. Fixed by running only statements DuckDB's
+parser types as SELECT; any other is a `query` error that names it, and nothing in the SQL
+runs.
+
+Regression: `TestOnlyReads` in `recon/tests/test_query.py`, and
+`test_no_query_the_skill_teaches_is_refused_as_a_write` in `recon/tests/test_skill.py`.
+
+### R-11 — a failed span exported a command and a URL's credentials (fixed)
+
+R-8 kept a failed span's message to the first line of its error, and that line could be
+the whole problem: a failed `cli` command's error begins with the command, and a failed
+request's with its URL, user information included. Both reached the OTLP endpoint as the
+span's status, and the event log, so a secret inlined in `run:` (R-3) left the machine
+when its command failed. Fixed: a failed span's message describes the failure in recon's
+own words (the table failed, and its kind; the status code; the exception class) and
+quotes nothing; the error's text stays in `meta.yaml`. A URL in an error message is
+reported as `url.full` is, with user information and `auth.param` `REDACTED`.
+
+Regression: `test_a_failure_exports_no_command_and_no_credential_in_a_url` in
+`recon/tests/test_telemetry.py`, which runs `recon survey` with an OTLP receiver.
+
+### R-12 — a YouTube page made markitdown fetch outside the requester (fixed)
+
+Given a YouTube watch URL, markitdown's YouTube converter asked YouTube for the video's
+transcript itself: a request outside the requester, its rate limit, `max_bytes`, spans and
+the capture log, the class of bypass R-6 closed for `$markitdown`. Its failures were printed
+on stdout, where `--json` writes the document. Fixed: the converter is given the page's
+bytes and content type, and markitdown is built without its YouTube converter (boundary 3
+lists what it is built with), so the page converts as the HTML it is. Its transcript is not
+collected.
+
+Regression: `test_a_youtube_page_is_converted_from_its_bytes_and_nothing_more_is_fetched` in
+`recon/tests/test_transforms.py`.
+
+### R-13 — an MCP server's credential could follow a redirect, or its error leave by OTLP (prevented)
+
+FastMCP passes `follow_redirects=True` to a client factory, and httpx2 drops only
+`Authorization` across origins, so a `headers_helper` key would have followed a redirect to
+another host; and FastMCP sets a failed tool call's span status to the tool's error text.
+Prevented before release: the collector's client is the SDK's own, which follows no
+redirect itself (the SDK's transport follows one only within the origin), and FastMCP's
+spans are suppressed for recon's calls.
+
+Regression: `test_a_remotes_token_never_follows_a_redirect_off_its_origin`,
+`test_the_sdks_client_follows_no_redirect_itself` and
+`test_fastmcps_own_spans_which_carry_a_tools_error_text_are_not_made` in
+`recon/tests/test_mcp_collector.py`.
+
+### R-14 — audio was uploaded to Google's speech API (fixed)
+
+markitdown's audio converter transcribes a recording with `speech_recognition`'s
+`recognize_google`, which uploads the whole recording to Google. A `web` collector that
+fetched `audio/*`, and `$markitdown` on a local `.wav` or `.mp3` (or one inside a ZIP), sent
+it there: no requester, rate limit, span or capture, to a third party the mission never
+named. R-12 had closed the YouTube converter alone. Fixed: recon no longer builds markitdown
+with every built-in; it registers a named list of converters, audited for what they reach
+(boundary 3), and audio is not among them.
+
+Regression: `TestAudioIsNeverSentAnywhere` in `recon/tests/test_transforms.py`, which fakes
+the speech client and fails if it is called, and
+`test_markitdown_holds_only_the_converters_recon_audited`, which holds the list to the audit.
+
+### R-15 — a query could read DuckDB's spill directory (fixed)
+
+DuckDB adds its temp directory to `allowed_directories`, so with the default (`.tmp/`
+under the working directory) `SELECT content FROM read_text('.tmp/note.txt')` returned a
+file outside the archive, against boundary 6's "nothing else". Fixed: the connection sets
+`temp_directory` to empty before it is confined, so nothing spills and the archive is all
+a query can read.
+
+Regression: `test_duckdb_s_spill_directory_is_not_readable` in `recon/tests/test_query.py`.
+
 ## Not covered
 
-- No sandboxing of collector commands. See boundary 1.
+- No sandboxing of collector commands or of the MCP servers a config starts. See
+  boundaries 1 and 8.
 - No egress allowlist. A source may point anywhere.
 - No TLS pinning; recon uses the platform trust store.
 - Declared collector effects are not enforced.
-- A query can write files under the mission's `archive/` directory. See boundary 6.
 
 ## Reporting
 

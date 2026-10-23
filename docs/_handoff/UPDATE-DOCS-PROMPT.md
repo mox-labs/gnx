@@ -31,7 +31,7 @@ Read these before writing a line. Do not introduce a claim that does not trace t
    4 kinds, the 5-field manifest), §8/§8a/§8b (Claude Code projection, repo layout, protocol
    diversity), §9 (accreditation), §11 (the public/internal boundary).
 2. `~/.claude/CLAUDE.md` (constitution) + the **ci-scaffolds** skills
-   (`~/.claude/plugins/cache/cix/ci-scaffolds/0.6.0/skills/`).
+   (`~/.claude/plugins/cache/<marketplace>/ci-scaffolds/0.6.0/skills/`).
 3. `docs/RUBRIC.md` + `docs/_handoff/01-RUBRIC-EXTENSION.md` (the gate; register profiles; H/I/J).
 4. The exemplar pages in §3 below — **go read them**; they are the external bar.
 5. `docs/decisions/log.md` (doors closed this build) + `docs/_handoff/02-PLAN.md` (the milestones).
@@ -39,8 +39,8 @@ Read these before writing a line. Do not introduce a claim that does not trace t
 
 **Test of understanding before drafting:** you can state, cold, what gnx *is* (a registry +
 marketplace + CLI of composable cognitive extensions), *why this shape* (the antifragile/ACES
-rationale), and *what is shipped vs designed* (slick v0.2.0 + the cix plugin family ship; the
-gnx CLI/registry/marketplace are designed). If you cannot, re-read §1.
+rationale), and *what is shipped vs designed* (slick v0.2.0 + the predecessor plugin set ship;
+the gnx CLI/registry/marketplace are designed). If you cannot, re-read §1.
 
 ---
 
@@ -191,7 +191,7 @@ disk. After each stage, grep the files for leaked `Voice review summary`, `ORWEL
 **Hard constraints:**
 - **Maturity honesty** (hard gate): shipped / planned / proposed on every capability claim;
   shipped → imperative how-to ok; planned/proposed → explanation/reference register only, never
-  command an unbuilt action. slick v0.2.0 + the cix plugin family are SHIPPED; the gnx
+  command an unbuilt action. slick v0.2.0 + the predecessor plugin set are SHIPPED; the gnx
   CLI/registry/marketplace are PLANNED.
 - **Public/internal boundary:** no cosmology (the loop, geist.sh, samsara, Treya,
   Bodhi/Dagstra/HADES) on the public surface — internal Design only.

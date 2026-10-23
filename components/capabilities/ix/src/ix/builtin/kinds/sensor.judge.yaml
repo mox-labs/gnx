@@ -2,21 +2,25 @@ schema: ix.v1.kind
 name: ix.v1.sensor.judge
 summary: A model scores the response against a rubric. Its readings never decide a verdict.
 options:
-  rubric: {type: string, description: "the rubric; or rubric_file"}
+  rubric: {type: string, text: true, description: "the rubric; or rubric_file"}
   rubric_file: {type: path, description: "a file holding the rubric, relative to the experiment"}
-  runtime:
+  model_runtime:
     type: string
-    required: true
-    description: "the matrix runtime that runs the judge: one of the choices, or any runtime installed. There is no default, so spending is never implicit"
+    description: "the matrix model runtime the judge calls, once per reading: one of the choices, or any model runtime installed. Give this or agent_runtime, not both; there is no default, so a model provider is never called implicitly"
     choices:
-      model: one call through hardline; spends
-      claude-sdk: a one-turn Claude Agent SDK session with no tools; spends
-      mock: a canned reply; spends nothing
+      hardline: one call through hardline's model registry; calls a model provider
+      mock: a canned reply; calls no model
+  agent_runtime:
+    type: string
+    description: "the matrix agent runtime the judge runs on, a one-turn session with no tools per reading, in a fresh temporary directory; given the config its runtime declares keeps the machine out (claude-sdk: setting_sources: []) under its own runtime_options. Give this or model_runtime, not both"
+    choices:
+      claude-sdk: a one-turn Claude Agent SDK session; calls a model provider
+      pydantic-ai: a one-turn pydantic-ai session, its model call through hardline; calls a model provider
+      mock: a canned reply; calls no model
   model: {type: string, description: the model that judges}
-  runtime_options: {type: mapping, description: further options of the judge runtime's own config}
+  runtime_options: {type: mapping, description: "the judge runtime's own config, passed through as written"}
   repeats: {type: integer, description: "how many times the judge reads each response, to check that it agrees with itself; 1 when absent"}
   pass_at: {type: number, description: "the score at which judged_pass is true; 0.5 when absent"}
-effects: [spend]
 needs: [response]
 metrics:
   - {name: judged_score, unit: ratio, direction: higher, shape: scalar, judged: true, bounds: [0, 1], description: "the judge's score against the rubric, the mean of its repeats"}

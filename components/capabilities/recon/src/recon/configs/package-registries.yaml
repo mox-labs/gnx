@@ -2,8 +2,9 @@
 #
 # Demonstrates:
 #   • multi-source API collection with heterogeneous response shapes
-#   • cross-source normalization to a single common schema
-#     {name, version, description, source_url}
+#   • cross-source normalization to shared columns: name, version and source_url
+#     in every table; npm and crates.io add description and released_at, PyPI
+#     adds summary and license (what its metadata holds)
 #
 # Each collector fetches ONE package by name. To track multiple packages,
 # duplicate the collector block with a different endpoint. There is no
@@ -36,7 +37,10 @@ catalog:
 
 collectors:
   # PyPI — path-based lookup by exact package name.
-  # Replace "pydantic" with your target package.
+  # Replace "pydantic" with your target package. A package on current metadata
+  # leaves info.home_page and info.license empty: its links are under
+  # info.project_urls, keyed as its authors chose ("Source", "Repository",
+  # "Homepage"), and its license is info.license_expression.
   - name: pypi-info
     type: api
     source: pypi
@@ -45,8 +49,8 @@ collectors:
       name: "info.name"
       version: "info.version"
       summary: "info.summary"
-      source_url: "info.home_page"
-      license: "info.license"
+      source_url: "info.project_urls.Source"
+      license: "info.license_expression"
 
   # npm — path-based lookup. Replace "typescript" with your target.
   - name: npm-info

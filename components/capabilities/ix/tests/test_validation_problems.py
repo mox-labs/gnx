@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 import ix
-from ix.application.experiments import Vocabulary, examine, validate
+from ix.application.experiments import Vocabulary, examine, reviewed, validate
 from ix.domain.problem import PROBLEM_KINDS, Problem, problem
 
 if TYPE_CHECKING:
@@ -26,7 +26,7 @@ Pairs = set[tuple[str, str]]
 
 
 def _problems(data: dict[str, Any], vocabulary: Vocabulary) -> tuple[Problem, ...]:
-    return examine(data, vocabulary, base=".").problems
+    return examine(data, vocabulary).problems
 
 
 def _found(data: dict[str, Any], vocabulary: Vocabulary) -> Pairs:
@@ -43,7 +43,7 @@ def test_the_baselines_are_valid(
     compare_data: dict[str, Any], evaluate_data: dict[str, Any], vocabulary: Vocabulary
 ) -> None:
     for data in (compare_data, evaluate_data):
-        examined = examine(data, vocabulary, base=".")
+        examined = examine(data, vocabulary)
         assert examined.problems == () and examined.warnings == ()
         assert examined.complete and examined.design is not None
         assert validate(examined).valid
@@ -53,7 +53,7 @@ def test_an_invalid_experiment_has_no_design(
     compare_data: dict[str, Any], vocabulary: Vocabulary
 ) -> None:
     del compare_data["margin"]
-    examined = examine(compare_data, vocabulary, base=".")
+    examined = examine(compare_data, vocabulary)
     assert examined.problems and examined.design is None
 
 
@@ -197,7 +197,7 @@ def _kind_unfit(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
         "new": {"kind": "agent-session", "runtime": "mock", "model": "b"},
     }
     c["probes"][0]["target"] = "http://127.0.0.1:8080/x"
-    return _found({**c, "spend": {"ceiling": 1}}, v)
+    return _found(c, v)
 
 
 def _option_unknown(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
@@ -254,7 +254,7 @@ def _estimator_illegal(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
 def _judged_gate(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     del e["probes"][0]["truth"]  # nothing reads it once activation is not in use
     e["primary"] = {"metric": "judged_pass"}
-    e["sensors"] = [{"kind": "judge", "runtime": "model", "rubric": "rubric.md"}]
+    e["sensors"] = [{"kind": "judge", "model_runtime": "hardline", "rubric": "rubric.md"}]
     return _found(e, v)
 
 
@@ -289,6 +289,13 @@ def _probe_duplicate_id(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return _found({**e, "probes": [e["probes"][0], e["probes"][0]]}, v)
 
 
+def _sensor_listed_twice(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    """Regression: a run keeps one entry per sensor kind, so the second silently replaced
+    the first one's options."""
+    twice = [{"kind": "text-match", "contains": "a"}, {"kind": "text-match", "contains": "b"}]
+    return _found({**e, "sensors": twice, "metrics": ["text_matched"]}, v)
+
+
 def _truth_unclaimed(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     e["probes"][0]["truth"]["expected_skil"] = "review"
     return _found(e, v)
@@ -297,14 +304,6 @@ def _truth_unclaimed(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
 def _unbound_placeholder(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     c["probes"][0]["target"] = "{url}/blobs/{size}"
     return _found(c, v)
-
-
-def _spend_over_ceiling(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
-    return _found({**e, "spend": {"ceiling": 1.0, "per_trial": 0.5}}, v)
-
-
-def _spend_unbounded(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
-    return _found({**e, "spend": {"per_trial": 0.5}}, v)
 
 
 def _genre_invalid(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
@@ -349,7 +348,7 @@ def _kind_duplicate(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
 
 def _subjects_differ_in(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     c["subjects"]["streaming"]["ready"] = "http://127.0.0.1:9090/healthz"
-    return {(p.path, p.kind) for p in examine(c, v, base=".").warnings}
+    return {(p.path, p.kind) for p in examine(c, v).warnings}
 
 
 def _genre_rejected(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
@@ -364,7 +363,7 @@ def _kind_unimplemented(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     """Asked of a vocabulary that says what can run: everything but the memory sensor."""
     c["guardrails"] = [{"metric": "memory_peak", "margin": "5%"}]
     runs = frozenset(v.kinds.kinds) - {"ix.v1.sensor.memory"}
-    examined = examine(c, replace(v, adapters=runs), base=".")
+    examined = examine(c, replace(v, adapters=runs))
     assert examined.problems == ()
     return {(p.path, p.kind) for p in examined.warnings}
 
@@ -399,8 +398,8 @@ def _validated(write: Write, data: dict[str, Any]) -> Pairs:
 
 
 def _option_inapplicable(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
-    """A skill given to a session on the mock runtime, which would refuse it."""
-    e["subjects"]["catalog"]["skills"] = ["skills/review"]
+    """Plugins given to a session on the mock runtime, whose config takes none."""
+    e["subjects"]["catalog"]["plugins"] = ["plugins/review"]
     return _validated(write, e)
 
 
@@ -413,6 +412,17 @@ def _unobservable(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
         "tools": ["Read"],
     }
     return _validated(write, e)
+
+
+def _adapter_failed(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    """An extension's adapter whose review raises: a problem at each entry it reviews."""
+
+    class Raising:
+        def review(self, options: Any, around: Any) -> list[Problem]:
+            raise RuntimeError("a bug in the extension")
+
+    examined = reviewed(examine(e, v), v, lambda kind: Raising(), base=".")
+    return {(p.path, p.kind) for p in examined.problems}
 
 
 #: Each case by the scenario it builds: (the case, the path, the problem kind it reports).
@@ -441,8 +451,13 @@ CASES: dict[str, tuple[Any, str, str]] = {
     "option_unknown": (_option_unknown, "probes.0.durration", "option_unknown"),
     "option_missing": (_option_missing, "probes.0.duration", "option_missing"),
     "option_invalid": (_option_invalid, "probes.0.load_model", "option_invalid"),
-    "option_inapplicable": (_option_inapplicable, "subjects.catalog.skills", "option_inapplicable"),
+    "option_inapplicable": (
+        _option_inapplicable,
+        "subjects.catalog.plugins",
+        "option_inapplicable",
+    ),
     "unobservable": (_unobservable, "subjects.catalog.tools", "unobservable"),
+    "adapter_failed": (_adapter_failed, "subjects.catalog", "adapter_failed"),
     "metric_unprovided": (_metric_unprovided, "primary.metric", "metric_unprovided"),
     "metric_ambiguous": (_metric_ambiguous, "primary.metric", "metric_ambiguous"),
     "metric_mismatch": (_metric_mismatch, "metrics.0.shape", "metric_mismatch"),
@@ -455,10 +470,9 @@ CASES: dict[str, tuple[Any, str, str]] = {
     "probe_file": (_probe_file, "", "yaml_syntax"),
     "probes_folder_missing": (_probes_folder_missing, "probes", "probes_empty"),
     "probe_duplicate_id": (_probe_duplicate_id, "probes", "name_taken"),
+    "sensor_listed_twice": (_sensor_listed_twice, "sensors.1.kind", "name_taken"),
     "truth_unclaimed": (_truth_unclaimed, "probes.0.truth.expected_skil", "truth_unclaimed"),
     "unbound_placeholder": (_unbound_placeholder, "probes.0.target", "unbound_placeholder"),
-    "spend_over_ceiling": (_spend_over_ceiling, "spend.ceiling", "spend_over_ceiling"),
-    "spend_unbounded": (_spend_unbounded, "spend.ceiling", "spend_unbounded"),
     "genre_invalid": (_genre_invalid, "", "genre_invalid"),
     "genre_duplicate": (_genre_duplicate, "name", "name_taken"),
     "genre_extends_unknown": (_genre_extends_unknown, "extends", "name_unknown"),
@@ -597,15 +611,213 @@ class TestPlaceholders:
         assert (found.path, found.kind, found.got) == (
             "probes.0.target", "unbound_placeholder", "url",
         )  # fmt: skip
-        assert found.allowed == ("command",)
+        # Changed requirement (owner ruling 2026-10-22): a facet every subject's kind offers
+        # binds too.
+        assert found.allowed == ("command", "pid")
 
-    def test_probe_files_are_content_and_are_not_scanned(
+    def test_a_probe_files_placeholder_is_filled_and_an_unbound_one_is_text(
         self, evaluate_data: dict[str, Any], write_experiment: Write
     ) -> None:
+        """Changed requirement (owner ruling 2026-10-22): a probe file's options were not scanned,
+        so ``{x}`` in one ran as the text ``{x}`` whatever was meant. They are filled like an inline
+        probe's. Changed again: a prompt is text, so ``{x}`` that nothing fills is sent as
+        written, and validate warns rather than refuses; ``{{x}}`` is sent as written too."""
         file = write_experiment({k: v for k, v in evaluate_data.items() if k != "probes"})
         (file.parent / "probes").mkdir()
-        (file.parent / "probes" / "a.md").write_text("---\nexpectation: must_trigger\n---\n{x}\n")
-        assert ix.validate(file).valid
+        probe = file.parent / "probes" / "a.md"
+        probe.write_text("---\nexpectation: must_trigger\n---\nReturn {x}.\n")
+        found = ix.validate(file)
+        assert found.valid
+        (warned,) = found.warnings
+        assert (warned.path, warned.kind, warned.got) == (
+            "probes.a.prompt", "unbound_placeholder", "x",
+        )  # fmt: skip
+        assert "sent as written" in warned.message
+        probe.write_text("---\nexpectation: must_trigger\n---\nReturn {{x}}.\n")
+        found = ix.validate(file)
+        assert found.valid and not found.warnings
+
+    def test_a_typo_in_prompt_text_warns_and_names_the_likely_placeholder(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Prompt text may hold braces of its own (code), so a name nothing fills there is
+        sent as written; a typo for a factor (``{sise}``) is still said, with the name it
+        is likely to be."""
+        evaluate_data["factors"] = {"size": ["small", "large"]}
+        evaluate_data["probes"][0]["prompt"] = "Review the {size} change; {sise} is wrong."
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = examined.warnings
+        assert (warned.path, warned.kind, warned.got) == (
+            "probes.0.prompt", "unbound_placeholder", "sise",
+        )  # fmt: skip
+        assert "{size}" in warned.message and "{size}" in warned.fix
+
+    def test_a_canned_reply_may_hold_braces_as_a_prompt_may(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """A stand-in's canned reply is free text as a prompt is: code in it, such as an
+        f-string, is no placeholder to refuse."""
+        evaluate_data["probes"][0]["mock_response"] = 'print(f"{user}")'
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+
+    @pytest.mark.parametrize("written", ["{model}", "{{model}}"])
+    def test_a_name_only_some_subjects_fill_is_refused_in_prompt_text(
+        self, written: str, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """A prompt's ``{model}`` is filled for a subject that sets ``model`` and sent as
+        written to one that does not: the subjects would be put different prompts, so it is
+        refused, as it is in any other option. Regression: so is ``{{model}}``, which was the
+        text ``{model}`` for the one and sent doubled to the other, with no word."""
+        agent = evaluate_data["subjects"]["catalog"]
+        evaluate_data.update(genre="compare", comparison="superiority")
+        evaluate_data["subjects"] = {"plain": dict(agent), "tuned": {**agent, "model": "m-2"}}
+        evaluate_data["probes"][0]["prompt"] = f"Review this change as {written}."
+        problems = [p for p in _problems(evaluate_data, vocabulary) if p.got == "model"]
+        assert [(p.path, p.kind) for p in problems] == [("probes.0.prompt", "unbound_placeholder")]
+        assert "some subjects" in problems[0].message
+        evaluate_data["subjects"]["plain"]["model"] = "m-1"
+        assert _problems(evaluate_data, vocabulary) == ()
+
+    def test_a_typo_in_a_judges_rubric_is_warned_of(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """A rubric is prompt text no filling reaches: every ``{name}`` in it is sent to the
+        judge as written. A typo there is said, as it is in a prompt; a factor's name too,
+        since the rubric does not take its level."""
+        evaluate_data["factors"] = {"size": ["small", "large"]}
+        evaluate_data["sensors"] = [
+            {"kind": "judge", "model_runtime": "mock", "rubric": "Score the {sise} change."}
+        ]
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = [w for w in examined.warnings if w.kind == "unbound_placeholder"]
+        assert (warned.path, warned.got) == ("sensors.0.rubric", "sise")
+        assert "sent as written" in warned.message
+
+    @pytest.mark.parametrize(("written", "got"), [("${{HOME}}", "HOME"), ("{size}", "size")])
+    def test_a_placeholder_in_an_environments_options_is_warned_of(
+        self, written: str, got: str, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Nothing fills an environment's options, nor un-doubles an escape in them: a
+        shell's ``${{HOME}}`` reaches the shell doubled, and a factor's ``{size}`` is the text
+        ``{size}``. Each is said, so validate does not pass what the run will break or
+        mis-measure; the shell's own ``${HOME}`` is no placeholder of ix's and is not."""
+        evaluate_data["factors"] = {"size": ["small", "large"]}
+        command = ["sh", "-c", f"echo {written}"]
+        evaluate_data["environment"] = {"kind": "process", "services": {"up": {"command": command}}}
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = [w for w in examined.warnings if w.kind == "unbound_placeholder"]
+        assert (warned.path, warned.got) == ("environment.services", got)
+        assert "sent as written" in warned.message
+        evaluate_data["environment"]["services"]["up"]["command"] = ["sh", "-c", "echo ${HOME}"]
+        examined = examine(evaluate_data, vocabulary)
+        assert [w for w in examined.warnings if w.kind == "unbound_placeholder"] == []
+
+    @pytest.mark.parametrize("written", ["{size}", "{{size}}"])
+    def test_a_factor_named_in_a_sensors_options_is_warned_of(
+        self, written: str, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Nothing fills a sensor's options: a text-match's ``contains: '{size}'`` is compared
+        as the text ``{size}``, whatever the cell's level, so its reading is silently wrong.
+        It is said."""
+        evaluate_data["factors"] = {"size": ["small", "large"]}
+        evaluate_data["sensors"] = [{"kind": "text-match", "contains": written}]
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = [w for w in examined.warnings if w.kind == "unbound_placeholder"]
+        assert (warned.path, warned.got) == ("sensors.0.contains", "size")
+        assert "sent as written" in warned.message
+
+    def test_a_typo_inside_an_escape_in_prompt_text_warns_and_names_the_likely_name(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """In prompt text ``{{size}}``, where ``size`` is filled, is the text ``{size}``, and
+        ``{{sise}}``, which nothing fills, is sent doubled. A doubled name near one that is
+        filled is likely such a typo, so it is said with the name it is likely to be; a
+        template's doubled name near none (``{{user}}``) is not."""
+        evaluate_data["factors"] = {"size": ["small", "large"]}
+        evaluate_data["probes"][0]["prompt"] = "Write {{size}} and {{sise}} for {{user}}."
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = [w for w in examined.warnings if w.kind == "unbound_placeholder"]
+        assert (warned.path, warned.got) == ("probes.0.prompt", "sise")
+        assert "{{size}}" in warned.message and "sent as written" in warned.message
+
+    def test_a_subject_options_placeholder_must_be_a_factor(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: a subject's options were not scanned, so a typo such as ``{sise}``
+        passed validate and ran as the text ``{sise}``. Only a factor fills a subject's
+        options."""
+        compare_data["factors"] = {"size": ["1MiB", "1GiB"]}
+        compare_data["probes"][0]["target"] = "{url}/blobs/{size}"
+        compare_data["subjects"]["streaming"]["command"] = ["./proxy", "--size", "{sise}"]
+        (found,) = _problems(compare_data, vocabulary)
+        assert (found.path, found.kind, found.got) == (
+            "subjects.streaming.command", "unbound_placeholder", "sise",
+        )  # fmt: skip
+        assert found.allowed == ("size",)
+        # A command is no prompt: the typo is still refused, and the fix names the factor.
+        assert "{size}" in found.fix
+        compare_data["subjects"]["streaming"]["command"] = ["./proxy", "--size", "{size}"]
+        assert _found(compare_data, vocabulary) == set()
+
+    def test_a_facet_every_subject_offers_binds_a_probe(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """A run fills a probe's options with the subject's facets too: ``{pid}`` is a
+        process subject's, though no subject writes it."""
+        compare_data["probes"][0]["target"] = "{url}/proc/{pid}"
+        assert _found(compare_data, vocabulary) == set()
+
+    def test_an_option_that_fills_its_own_placeholders_binds_them(
+        self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """A loop's ``prompt`` is filled by the loop each round (``{prompt}``,
+        ``{response}``); the kind declares them, so they are not unbound. A loop is prompt
+        text, so ``{oops}``, which nothing fills, is a warning and sent as written."""
+        evaluate_data["subjects"]["catalog"]["loop"] = {
+            "strategy": "self-review", "rounds": 2, "prompt": "{prompt} / {response} / {oops}",
+        }  # fmt: skip
+        examined = examine(evaluate_data, vocabulary)
+        assert examined.problems == ()
+        (warned,) = examined.warnings
+        assert (warned.path, warned.kind, warned.got) == (
+            "subjects.catalog.loop", "unbound_placeholder", "oops",
+        )  # fmt: skip
+        assert set(warned.allowed) >= {"prompt", "response", "failures", "until"}
+
+    def test_a_subject_is_reviewed_in_every_cell(
+        self, evaluate_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        """Regression: a subject with any placeholder was not reviewed at all, so a factor
+        on one option hid every other problem the runtime would refuse. Each cell's options
+        are reviewed as a trial would have them."""
+        sweep = {k: v for k, v in evaluate_data.items() if k != "threshold"}
+        sweep.update(genre="characterize", factors={"turns": [1, 2]})
+        sweep["subjects"]["catalog"].update(max_turns="{turns}", runtime_options={"bogus": 1})
+        assert _validated(write_experiment, sweep) == {
+            ("subjects.catalog.runtime_options.bogus", "option_unknown")
+        }
+
+
+class TestAddresses:
+    @pytest.mark.parametrize("option", ["url", "ready"])
+    def test_a_port_out_of_range_is_refused_at_validate(
+        self, option: str, compare_data: dict[str, Any], write_experiment: Write
+    ) -> None:
+        """Regression: ``urlsplit(url).port`` raised out of the readiness check, so every
+        trial became a harness ``error`` instead of the experiment being refused."""
+        compare_data["subjects"]["buffered"][option] = "http://127.0.0.1:99999/healthz"
+        compare_data["subjects"]["streaming"]["url"] = "http://127.0.0.1:8080"
+        if option == "url":
+            compare_data["probes"][0]["target"] = "http://127.0.0.1:8080/x"
+        assert _validated(write_experiment, compare_data) == {
+            (f"subjects.buffered.{option}", "option_invalid")
+        }
 
 
 # --- the genre's requirements, across genres -------------------------------------------
@@ -687,7 +899,7 @@ class TestGenreRequirements:
 class TestJudgedMetricNeverDecides:
     """Enforced by the sensor's declaration, in every genre with a verdict."""
 
-    _JUDGE = [{"kind": "judge", "runtime": "model", "rubric": "rubrics/quality.md"}]
+    _JUDGE = [{"kind": "judge", "model_runtime": "hardline", "rubric": "rubrics/quality.md"}]
 
     @pytest.fixture
     def judged_data(self, evaluate_data: dict[str, Any]) -> dict[str, Any]:
@@ -820,3 +1032,83 @@ def test_a_median_needs_six_blocks(compare_data: dict[str, Any], vocabulary: Voc
     assert _problems({**compare_data, "repeats": 6}, vocabulary) == ()
     (problem,) = _problems({**compare_data, "repeats": 5}, vocabulary)
     assert (problem.path, problem.kind, problem.got) == ("repeats", "repeats_below_min", 5)
+
+
+@pytest.mark.parametrize("margin", [5, 1, "100pp"])
+def test_a_rate_margin_beyond_the_whole_range_is_refused(
+    margin: float | str, compare_data: dict[str, Any], vocabulary: Vocabulary
+) -> None:
+    """Regression: a bare margin on a rate is a share, so ``margin: 5`` allowed a loss of
+    500 points and held for a variant that lost 80 of them."""
+    compare_data["guardrails"] = [{"metric": "error_rate", "margin": margin}]
+    (problem,) = _problems(compare_data, vocabulary)
+    assert (problem.path, problem.kind) == ("guardrails.0.margin", "invalid_value")
+    assert "0.05" in problem.fix
+    compare_data["guardrails"] = [{"metric": "error_rate", "margin": 0.05}]
+    assert _problems(compare_data, vocabulary) == ()
+
+
+@pytest.mark.parametrize("value", [5, 1, 0, -0.1])
+def test_a_rate_threshold_outside_zero_to_one_is_refused(
+    value: float, evaluate_data: dict[str, Any], vocabulary: Vocabulary
+) -> None:
+    """Regression: a threshold on a rate is never range-checked, so ``< 5`` held at once,
+    decided at 0, for any error rate at all; at 0 or 1 a rate can never pass it, or always
+    does."""
+    evaluate_data["threshold"] = {"op": ">=", "value": value}
+    (problem,) = _problems(evaluate_data, vocabulary)
+    assert (problem.path, problem.kind) == ("threshold.value", "invalid_value")
+    assert "share" in problem.fix and problem.got == value
+    evaluate_data["threshold"] = {"op": ">=", "value": 0.9}
+    assert _problems(evaluate_data, vocabulary) == ()
+
+
+def test_a_rate_threshold_in_percent_is_told_to_be_a_share(
+    evaluate_data: dict[str, Any], vocabulary: Vocabulary
+) -> None:
+    """Regression: the fix said "state the threshold as a bare number", which led an author
+    from ``90%`` straight to ``90``."""
+    evaluate_data["threshold"] = {"op": ">=", "value": "90%"}
+    (problem,) = _problems(evaluate_data, vocabulary)
+    assert (problem.path, problem.kind) == ("threshold.value", "unit_mismatch")
+    assert problem.fix == "state the threshold as a share: 0.9"
+
+
+_THIN = {
+    **_PARENT,
+    "name": "lab.v1.genre.thin",
+    "hypothesis_form": "{subject} meets {threshold} on {metric}",
+    "must_set": ["primary", "threshold"],
+    "design": {
+        "repeats": {"default": 2, "min": 1},
+        "order": "interleaved",
+        "calibration": "none",
+        "note": "fewer repeats than any interval needs",
+    },
+    "analysis": {"id": "ix.v1.analysis.evaluate"},
+    "verdict_form": "three-way",
+}
+
+
+def test_a_run_too_thin_for_any_interval_is_refused(
+    evaluate_data: dict[str, Any], write_experiment: Write
+) -> None:
+    """Regression: validate held a median to its 6 blocks but no decision to the 3 every
+    interval needs, so a genre with ``repeats.min`` 1 validated and every decision of every
+    run was then "too few"."""
+    thin = {**evaluate_data, "genre": "lab.v1.genre.thin", "repeats": 2}
+    assert _lab(write_experiment, thin, "genres", _THIN) == {("repeats", "repeats_below_min")}
+    enough = {**evaluate_data, "genre": "lab.v1.genre.thin", "repeats": 3}
+    assert ix.validate(write_experiment(enough)).problems == ()  # the same lab, its genres/
+
+
+def test_too_few_repeats_is_one_problem_with_one_fix(
+    evaluate_data: dict[str, Any], vocabulary: Vocabulary
+) -> None:
+    """Regression: repeats under the genre's minimum and under the 3 blocks an interval
+    needs were two ``repeats_below_min`` problems at one path with two fixes. The genre's
+    minimum, the larger, says it once."""
+    evaluate_data["probes"] = evaluate_data["probes"][:1]
+    problems = [p for p in _problems({**evaluate_data, "repeats": 1}, vocabulary)]
+    (only,) = [p for p in problems if p.kind == "repeats_below_min"]
+    assert "genre evaluate" in only.message

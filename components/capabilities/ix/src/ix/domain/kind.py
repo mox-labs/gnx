@@ -1,16 +1,23 @@
 """Kinds: what a subject, a probe, a sensor or an environment of a given kind is, as data.
 
-A kind's declaration says which options it takes (their types, which are required), what
-using it does to the world (``effects``), which facets it ``offers`` and which it ``needs``,
-and, for a sensor, the metrics it provides (with whether a model judges them) and the probe
-truth it reads. ``validate`` holds an experiment to these declarations and ``plan`` reports
-their effects, so neither depends on the author asserting them.
+A kind's declaration says which options it takes (their types, which are required), which
+facets it ``offers`` and which it ``needs``, and, for a sensor, the metrics it provides (with
+whether a model judges them) and the probe truth it reads. ``validate`` holds an experiment
+to these declarations, so it does not depend on the author asserting them.
 
 A declaration starts nothing and measures nothing: the adapter registered under the kind's
-type URL does.
+type URL does. What carrying a kind out needs of the host (a program, a daemon, a variable)
+is the adapter's to check (:class:`~ix.domain.ports.Preflight`), not the declaration's to
+claim.
+
+**The families are closed** (:data:`KIND_FAMILIES`). Each has its own place in a run: the
+environment is brought up once, a subject is reached for each trial, a probe applied to it,
+a sensor reads what it left behind. A new family would need a new place in that loop and in
+the schedule, the record and the analysis, which a declaration cannot give it; a new kind of
+an existing family needs only its file and its adapter.
 
 **Facets** are how kinds fit together without knowing each other. A subject kind offers how
-it can be reached (``url``, ``pid``, ``agent``); a probe kind needs some of those and offers
+it can be reached (``url``, ``pid``, ``respondent``); a probe kind needs some of those and offers
 what applying it leaves behind (``load``, ``response``, ``usage``); a sensor needs what it
 measures from.
 """
@@ -18,31 +25,18 @@ measures from.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError, model_validator
 
 from ix.domain import schema
-from ix.domain.experiment import Direction, Name, Shape
+from ix.domain.experiment import Direction, Level, Name, Shape, cells
 from ix.domain.problem import Problem, from_validation_error, problem
 from ix.domain.schema import DeclarationFile, Record
 
+#: The families of kind, in the order a run uses them; closed (see the module docstring).
 KIND_FAMILIES: tuple[str, ...] = ("subject", "probe", "sensor", "environment")
-
-EffectName = Literal["process", "network", "spend", "tools", "code", "containers", "filesystem"]
-
-#: What using a kind can do to the world. A closed set, so a plan can be read at a glance
-#: and a rule can act on one (a kind that spends needs a ceiling).
-EFFECTS: dict[EffectName, str] = {
-    "process": "starts a process on this machine",
-    "network": "sends requests over the network",
-    "spend": "spends money",
-    "tools": "lets a model call tools",
-    "code": "executes generated code",
-    "containers": "starts containers",
-    "filesystem": "writes files outside the run's own record",
-}
 
 OptionType = Literal[
     "string",
@@ -54,10 +48,21 @@ OptionType = Literal[
     "list",
     "mapping",
     "path",
+    "paths",
+    "command",
     "any",
 ]
 
-_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.-]*)\}")
+_NAME = r"[A-Za-z_][A-Za-z0-9_.-]*"
+#: A placeholder (group 2), or one doubled (group 1). A doubled one is its own text,
+#: ``{{name}}`` is ``{name}``: always, in an option that is not prompt text; in prompt text,
+#: where its name is filled there. Every other brace, doubled or not, is text as written, so
+#: a prompt holding JSON (``{"a": {"b": 1}}``) or a template (``{{ user.name }}``,
+#: ``{{user}}`` where nothing fills ``user``) is sent as it was written; so is a ``{name}``
+#: nothing fills, which validation refuses outside prompt text.
+_PLACEHOLDER = re.compile(rf"\{{\{{({_NAME})\}}\}}|\{{({_NAME})\}}")
+#: A value that is one placeholder and nothing else: filled, it becomes the level itself.
+_WHOLE = re.compile(rf"\{{({_NAME})\}}")
 _DURATION = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)\s*$")
 _SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
 _RATE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(?:/\s*(s|m))?\s*$")
@@ -67,9 +72,11 @@ NOTE_PREFIX = "x-"
 
 
 def placeholders(value: Any) -> list[str]:
-    """Every ``{name}`` in the strings of ``value``, in order of appearance."""
+    """Every ``{name}`` in the strings of ``value``, in order of appearance; a doubled one
+    (``{{name}}``) is text, not one: its own (``{name}``) where ``name`` is filled, else as
+    written."""
     if isinstance(value, str):
-        return _PLACEHOLDER.findall(value)
+        return [name for _, name in _PLACEHOLDER.findall(value) if name]
     if isinstance(value, Mapping):
         return [name for item in value.values() for name in placeholders(item)]
     if isinstance(value, list | tuple):
@@ -77,19 +84,105 @@ def placeholders(value: Any) -> list[str]:
     return []
 
 
-def fill(value: Any, bound: Mapping[str, Any]) -> Any:
-    """``value`` with each ``{name}`` that ``bound`` knows replaced by its level, in every
-    string at any depth of mappings and lists."""
+def escapes(value: Any) -> list[str]:
+    """The name of every doubled placeholder (``{{name}}``) in the strings of ``value``, in
+    order of appearance."""
     if isinstance(value, str):
-        return _PLACEHOLDER.sub(
-            lambda match: str(bound[match.group(1)]) if match.group(1) in bound else match.group(0),
-            value,
-        )
+        return [name for name, _ in _PLACEHOLDER.findall(value) if name]
     if isinstance(value, Mapping):
-        return {key: fill(item, bound) for key, item in value.items()}
+        return [name for item in value.values() for name in escapes(item)]
     if isinstance(value, list | tuple):
-        return [fill(item, bound) for item in value]
+        return [name for item in value for name in escapes(item)]
+    return []
+
+
+def fill(
+    value: Any,
+    bound: Mapping[str, Any],
+    *,
+    escaped: bool = False,
+    later: Collection[str] = (),
+    literal: bool = False,
+) -> Any:
+    """``value`` with each ``{name}`` that ``bound`` knows replaced by its level, in every
+    string at any depth of mappings and lists. A string that is one placeholder and nothing
+    else becomes the level itself, with its type (``"{t}"`` filled with 0.5 is 0.5); one
+    inside more text is written into it. A doubled placeholder (``{{name}}``) whose name
+    ``bound`` knows, or any when ``literal`` (an option that is not prompt text), becomes
+    its text (``{name}``); one a later filling fills (``later``, or every one when
+    ``escaped``) stays doubled for it. An unknown name, and every other brace, stays as
+    written."""
+    if isinstance(value, str):
+        whole = _WHOLE.fullmatch(value)
+        if whole is not None and whole.group(1) in bound:
+            return bound[whole.group(1)]
+
+        def replaced(match: re.Match[str]) -> str:
+            text, name = match.group(1), match.group(2)
+            if text is not None:
+                kept = escaped or text in later
+                undoubled = not kept and (literal or text in bound)
+                return f"{{{text}}}" if undoubled else match.group(0)
+            return str(bound[name]) if name in bound else match.group(0)
+
+        return _PLACEHOLDER.sub(replaced, value)
+    if isinstance(value, Mapping):
+        return {
+            key: fill(item, bound, escaped=escaped, later=later, literal=literal)
+            for key, item in value.items()
+        }
+    if isinstance(value, list | tuple):
+        return [fill(item, bound, escaped=escaped, later=later, literal=literal) for item in value]
     return value
+
+
+def fill_options(
+    options: Mapping[str, Any], bound: Mapping[str, Any], kind: Kind | None
+) -> dict[str, Any]:
+    """The ``options`` of an entry of ``kind`` filled with ``bound``, as a trial has them. In
+    prompt text (an option the kind declares ``text``), a doubled name is its text where
+    ``bound`` fills it and is sent as written where nothing does (a template's
+    ``{{user}}``); one the adapter fills again itself (the option's ``binds``: a loop's
+    ``{response}``) stays doubled, so that it is un-doubled once, by the adapter's filling.
+    In any other option every doubled name is its text, filled there or not: ``{{HOME}}``
+    in a command is ``{HOME}``. Only a subject's and a probe's options are filled; an
+    environment's and a sensor's are sent as written."""
+    declared = kind.options if kind is not None else {}
+    filled: dict[str, Any] = {}
+    for key, value in options.items():
+        option = declared.get(key)
+        if option is not None and option.text:
+            filled[key] = fill(value, bound, later=option.binds)
+        else:
+            filled[key] = fill(value, bound, literal=True)
+    return filled
+
+
+def per_cell(
+    options: Mapping[str, Any],
+    factors: Mapping[str, tuple[Level, ...]],
+    *,
+    text: Collection[str] = (),
+) -> list[Any]:
+    """``options`` filled for each cell of ``factors``, as a trial in that cell has them
+    but with each doubled placeholder kept doubled: an adapter asked about them (a preflight,
+    a review) reads a placeholder that is left as one only a trial fills (an environment's
+    binding), and an escaped ``{{name}}`` as text. In an option that is prompt text
+    (``text``), every ``{name}`` left is doubled too: no setting is read from it, and code
+    in a prompt (``f"{user}"``) is text. Each distinct filling once, in the order of the
+    cells."""
+    found: list[Any] = []
+    for cell in cells(dict(factors)):
+        filled = fill(options, cell, escaped=True)
+        filled = {key: _as_text(value) if key in text else value for key, value in filled.items()}
+        if filled not in found:
+            found.append(filled)
+    return found
+
+
+def _as_text(value: Any) -> Any:
+    """``value`` with each ``{name}`` in it doubled, the text it is to an adapter."""
+    return fill(value, {name: f"{{{{{name}}}}}" for name in placeholders(value)}, escaped=True)
 
 
 def seconds(value: Any) -> float | None:
@@ -108,13 +201,17 @@ def seconds(value: Any) -> float | None:
 
 def arrivals(value: Any) -> tuple[int, Literal["s", "m"]] | None:
     """A rate option as (arrivals, per second or per minute): ``80/s``, ``600/m`` or a bare
-    number of arrivals per second. None when it is not a rate of at least one arrival."""
+    number of arrivals per second. None when it is not a whole number of at least one
+    arrival: ``2.5/s`` is written ``150/m``, never rounded."""
     if isinstance(value, bool):
         return None
     match = _RATE.match(str(value))
-    if match is None or round(float(match.group(1))) < 1:
+    if match is None:
         return None
-    return round(float(match.group(1))), "m" if match.group(2) == "m" else "s"
+    count = float(match.group(1))
+    if count < 1 or not count.is_integer():
+        return None
+    return int(count), "m" if match.group(2) == "m" else "s"
 
 
 class Metric(Record):
@@ -169,6 +266,18 @@ class Option(Record):
     #: open (unlike ``allowed``, another value is accepted). A missing option's fix lists
     #: them, so an author picks one knowingly rather than inheriting a default.
     choices: dict[str, str] = {}
+    #: For a ``command``: the option that holds the directory its relative paths are
+    #: relative to (``cwd``), itself relative to the experiment. Absent: the experiment's
+    #: directory.
+    within: str = ""
+    #: The placeholders the adapter fills in this option's value itself, at run time (a
+    #: loop's ``{prompt}`` and ``{response}``): validation reads them as bound.
+    binds: tuple[str, ...] = ()
+    #: The value is prompt text, sent to a model as text (a prompt, a system prompt, a
+    #: rubric), not a setting. A ``{name}`` in it that nothing fills is sent as written,
+    #: since a prompt may hold code (``f"{user}"``), and validation warns of it rather
+    #: than refusing it.
+    text: bool = False
     description: str = ""
 
 
@@ -178,7 +287,6 @@ class Kind(Record):
     name: str
     summary: str = Field(min_length=1)
     options: dict[Name, Option] = {}
-    effects: tuple[EffectName, ...] = ()
     offers: tuple[str, ...] = ()
     needs: tuple[str, ...] = ()
     #: Sensors only: the metrics this sensor provides.
@@ -189,6 +297,9 @@ class Kind(Record):
     duration: tuple[str, ...] = ()
     #: Sensors only: the expected and observed labels its readings' detail holds.
     confusion: Confusion | None = None
+    #: Environment kinds only: the keys each service it brings up is bound with (``host``,
+    #: ``port``, ``url``), which a subject's or a probe's option names as ``{<service>.<key>}``.
+    service_keys: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _coherent(self) -> Kind:
@@ -209,6 +320,8 @@ class Kind(Record):
             raise ValueError("only a probe kind declares duration")
         if self.confusion is not None and family != "sensor":
             raise ValueError("only a sensor kind declares confusion")
+        if self.service_keys and family != "environment":
+            raise ValueError("only an environment kind declares service_keys")
         for name in self.duration:
             if name not in self.options or self.options[name].type != "duration":
                 raise ValueError(f"duration names {name!r}, which is not a duration option")
@@ -216,6 +329,8 @@ class Kind(Record):
             unknown = sorted(set(option.required_when) - set(self.options))
             if unknown:
                 raise ValueError(f"{name} is required_when {unknown}, which are not options")
+            if option.within and (option.type != "command" or option.within not in self.options):
+                raise ValueError(f"{name} is within {option.within!r}: a command names an option")
         return self
 
     @property
@@ -226,6 +341,11 @@ class Kind(Record):
     def label(self) -> str:
         """The name an experiment writes: short for a built-in, the type URL otherwise."""
         return schema.short(self.name)
+
+    @property
+    def text_options(self) -> tuple[str, ...]:
+        """The options whose value is prompt text (``text``)."""
+        return tuple(name for name, option in self.options.items() if option.text)
 
     def required(self, options: Mapping[str, Any]) -> tuple[str, ...]:
         """The options that must be written beside this kind, given the ``options`` that are."""
@@ -265,16 +385,62 @@ def _fits(value: Any, option: Option) -> bool:
             ok = isinstance(value, Mapping)
         case "path":
             ok = isinstance(value, str) and bool(value)
+        case "paths":
+            ok = isinstance(value, list | tuple) and all(map(_a_path, value))
+        case "command":
+            ok = isinstance(value, list | tuple) and bool(value) and all(map(_an_argument, value))
         case _:
             ok = True
     return ok and (not option.allowed or str(value) in option.allowed)
 
 
+def _an_argument(item: Any) -> bool:
+    """An item of a ``command``: a program or an argument, written as text or a number."""
+    return isinstance(item, str | int | float) and not isinstance(item, bool)
+
+
+def _a_path(item: Any) -> bool:
+    """An item of a ``paths`` option: a path, or a mapping that holds one (``{type: local,
+    path: plugins/lint}``)."""
+    path = item.get("path") if isinstance(item, Mapping) else item
+    return isinstance(path, str) and bool(path)
+
+
+#: A type's name in a sentence, where it is not the name itself.
+_TYPE_WORDS = {
+    "paths": "list of paths",
+    "command": "command: a program and its arguments, as a non-empty list of text",
+}
+
 _EXAMPLES = {
     "duration": ", such as 60s or 2m",
-    "rate": ", such as 80/s or 600/m",
+    "rate": ", a whole number of arrivals such as 80/s or 600/m (2.5/s is 150/m)",
     "path": ", relative to the experiment's directory",
+    "paths": ", each relative to the experiment's directory",
 }
+
+
+def services(options: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """The services an environment's options name: the keys of a ``services`` mapping or the
+    items of a list; None when they name none, so which services come up is known only once
+    they are up (a compose file's every service)."""
+    named = options.get("services")
+    if isinstance(named, Mapping):
+        return tuple(str(name) for name in named)
+    if isinstance(named, list | tuple) and named:
+        return tuple(str(name) for name in named)
+    return None
+
+
+def binding_names(kind: Kind | None, options: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """Every ``<service>.<key>`` an environment of ``kind`` written with ``options`` binds;
+    None when its services are not named, so any service may be."""
+    if kind is None or not kind.service_keys:
+        return ()
+    named = services(options)
+    if named is None:
+        return None
+    return tuple(f"{service}.{key}" for service in named for key in kind.service_keys)
 
 
 def placed(kind: Kind, options: Mapping[str, Any], base: str) -> dict[str, Any]:
@@ -314,7 +480,9 @@ def check_options(kind: Kind, options: Mapping[str, Any], path: str) -> list[Pro
             )
         elif not _fits(value, option):
             expected = (
-                f"one of {', '.join(option.allowed)}" if option.allowed else f"a {option.type}"
+                f"one of {', '.join(option.allowed)}"
+                if option.allowed
+                else f"a {_TYPE_WORDS.get(option.type, option.type)}"
             )
             problems.append(
                 problem(
@@ -363,9 +531,13 @@ class Kinds(Record):
     kinds: dict[str, Kind] = {}
     #: Refused kind files, by kind name (or by origin when the file gave no name).
     rejected: dict[str, tuple[Problem, ...]] = {}
-    #: The kinds (type URLs) an adapter is registered for: a run can use these. A kind that
-    #: is declared and not listed here can be validated, planned and registered, not run.
+    #: The kinds (type URLs) whose adapter is registered and builds here: a run can use
+    #: these. A kind that is declared and not listed here can be validated, planned and
+    #: registered, not run.
     runnable: tuple[str, ...] = ()
+    #: Kinds (type URLs) whose registered adapter cannot be built here, each with why: a
+    #: need nothing supplies, or a factory that built something not of its port's shape.
+    unbuildable: dict[str, str] = {}
     #: Extensions that failed to load, one sentence each: an adapter one of them registers
     #: is missing from ``runnable``.
     quarantined: tuple[str, ...] = ()
@@ -386,14 +558,14 @@ def kinds(files: Iterable[DeclarationFile], *, grammar: schema.Grammar) -> Kinds
     declare one name, a file that does not own it is refused alone if the other does, and
     both are refused otherwise."""
     rejected: dict[str, list[Problem]] = {}
-    accepted: dict[str, tuple[DeclarationFile, Kind]] = {}
-    duplicated: set[str] = set()
+    declared: dict[str, list[tuple[DeclarationFile, Kind]]] = {}
 
     for file in files:
         kind = _parsed(file, grammar, rejected)
         if kind is not None:
-            claim(kind.name, file, kind, accepted, duplicated, rejected, noun="kind")
+            declared.setdefault(kind.name, []).append((file, kind))
 
+    accepted = settle(declared, rejected, noun="kind")
     return Kinds(
         kinds={name: kind for name, (_, kind) in sorted(accepted.items())},
         rejected={name: tuple(found) for name, found in sorted(rejected.items())},
@@ -450,40 +622,37 @@ def unreadable(origin: str) -> tuple[Problem, ...]:
     )
 
 
-def claim[T](
-    name: str,
-    file: DeclarationFile,
-    declared: T,
-    accepted: dict[str, tuple[DeclarationFile, T]],
-    duplicated: set[str],
+def settle[T](
+    declared: Mapping[str, list[tuple[DeclarationFile, T]]],
     rejected: dict[str, list[Problem]],
     *,
     noun: str,
-) -> None:
-    """Accept ``declared`` under ``name`` unless another file holds the name. Of a file that
-    owns the name's namespace and one that does not, the one that does not is refused; two
-    files alike are both refused, and so is any later file that declares the name, so that
-    neither silently wins."""
-    held = accepted.get(name)
-    if held is not None and held[0].owned != file.owned:
-        intruder = held[0] if file.owned else file
-        rejected.setdefault(name, []).append(
-            problem(
-                "name",
-                kind="name_taken",
-                message=f"{name} belongs to the package that owns its namespace; this file "
-                "cannot declare it again",
-                fix=f"give this {noun} a name in its own namespace",
-                source=intruder.origin,
-            )
-        )
-        if file.owned:
-            accepted[name] = (file, declared)
-        return
-    if held is not None or name in duplicated:
-        duplicated.add(name)
-        first = accepted.pop(name, None)
-        for origin in [file.origin] + ([first[0].origin] if first else []):
+) -> dict[str, tuple[DeclarationFile, T]]:
+    """Of the files that declare each name, the one that keeps it; the others are added to
+    ``rejected``. A file that owns the name's namespace keeps it, and every file that does
+    not is refused; two or more files alike are all refused, so that none silently wins.
+    Which file keeps a name does not depend on the order the files were read in."""
+    accepted: dict[str, tuple[DeclarationFile, T]] = {}
+    for name, held in declared.items():
+        owners = [entry for entry in held if entry[0].owned]
+        if owners:
+            for file, _ in held:
+                if not file.owned:
+                    rejected.setdefault(name, []).append(
+                        problem(
+                            "name",
+                            kind="name_taken",
+                            message=f"{name} belongs to the package that owns its namespace; "
+                            "this file cannot declare it again",
+                            fix=f"give this {noun} a name in its own namespace",
+                            source=file.origin,
+                        )
+                    )
+        contenders = owners or held
+        if len(contenders) == 1:
+            accepted[name] = contenders[0]
+            continue
+        for file, _ in contenders:
             rejected.setdefault(name, []).append(
                 problem(
                     "name",
@@ -491,8 +660,7 @@ def claim[T](
                     message=f"{name} is declared by more than one {noun} file",
                     fix="give one of them another name; ix refuses both so that neither "
                     "silently wins",
-                    source=origin,
+                    source=file.origin,
                 )
             )
-        return
-    accepted[name] = (file, declared)
+    return accepted

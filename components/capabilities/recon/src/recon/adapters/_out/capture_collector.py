@@ -23,6 +23,11 @@ parsed like a cli collector's stdout) unless ``response_format`` is set explicit
 the collector fans out over a catalog, each run keeps only captures whose ``source`` is
 that catalog entry's name (unless ``match.source`` says otherwise).
 
+A run that gives no record says why when there is a why (``NoRecordsError``): it read
+captures and its filters kept none, or the ``extract`` fits none of the bodies it kept. A
+capture whose body the ``extract`` does not fit is skipped when others give records: a log
+holds many tools' results.
+
 Registered as the built-in collector type ``capture`` (entry-point group
 ``recon.collectors``).
 """
@@ -32,13 +37,15 @@ from __future__ import annotations
 import glob
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from recon.adapters._out.capture_files import read_captures
 from recon.adapters._out.parsing import parse_body, parse_line
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.collector import CollectorType
-from recon.domain.errors import CollectionError
+from recon.domain.errors import CollectionError, NoRecordsError
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, to_records
 
 if TYPE_CHECKING:
@@ -53,6 +60,36 @@ DEFAULT_CAPTURE_PATH = f"captures/{CAPTURE_LOG_NAME}"
 
 #: The name under which a normalize spec can reach the capture line itself.
 CAPTURE_SCOPE = "_capture"
+
+
+class CaptureMatch(BaseModel):
+    """Filters a `capture` collector applies to capture-log lines.
+
+    Each field is a shell-style glob (`fnmatch`) matched against the capture's field of the
+    same name; an unset field matches everything.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: str | None = None
+    collector: str | None = None
+    kind: str | None = None
+
+
+class CaptureSettings(BaseModel):
+    """A ``capture`` collector's own keys: ``path`` (a capture log, or a glob, relative to
+    the mission), ``match`` and ``response_format`` (the bodies' format, when not their
+    content type's)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str | None = None
+    match: CaptureMatch | None = None
+    response_format: Literal["json", "xml", "html", "text"] = "json"
+
+
+def _settings(entry: CollectorEntry) -> CaptureSettings:
+    return CaptureSettings.model_validate(entry.settings)
 
 
 def body_format(content_type: str) -> str:
@@ -81,18 +118,31 @@ class CaptureCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        logs = self._logs(entry)
-        explicit_format = "response_format" in entry.model_fields_set
+        settings = _settings(entry)
+        logs = self._logs(entry.name, settings)
+        explicit_format = "response_format" in settings.model_fields_set
+        wanted = _wanted(settings, source)
+        read = kept = given = 0
+        unfit: NoRecordsError | None = None
         for log in logs:
             for capture, body in read_captures(log):
-                if not _matches(entry, source, capture):
+                read += 1
+                if not _matches(wanted, capture):
                     continue
+                kept += 1
                 fmt = (
-                    entry.response_format
+                    settings.response_format
                     if explicit_format
                     else body_format(str(capture.get("content_type", "")))
                 )
-                for record in _records(body, fmt, entry.extract, origin=f"{log} {capture['id']}"):
+                origin = f"{log} {capture['id']}"
+                try:
+                    records = list(_records(body, fmt, entry.extract, origin=origin))
+                except NoRecordsError as nothing:
+                    unfit = unfit or nothing
+                    continue
+                for record in records:
+                    given += 1
                     if not entry.normalize:
                         yield record
                         continue
@@ -101,14 +151,20 @@ class CaptureCollector:
                     # columns the spec names.
                     scope = {**record, CAPTURE_SCOPE: capture}
                     yield apply_normalize(scope, entry.normalize, self._transforms)
+        if given == 0 and read and not kept:
+            match = settings.match
+            implied = source is not None and (match is None or match.source is None)
+            raise _unmatched(read, wanted, implied=implied)
+        if given == 0 and unfit is not None:
+            raise unfit
 
-    def _logs(self, entry: CollectorEntry) -> list[Path]:
-        pattern = entry.path or DEFAULT_CAPTURE_PATH
+    def _logs(self, name: str, settings: CaptureSettings) -> list[Path]:
+        pattern = settings.path or DEFAULT_CAPTURE_PATH
         full = Path(pattern) if Path(pattern).is_absolute() else self._mission_dir / pattern
         logs = sorted(p for p in map(Path, glob.glob(str(full), recursive=True)) if p.is_file())
         if not logs:
             msg = (
-                f"capture collector '{entry.name}': no capture log matches {pattern!r} "
+                f"capture collector '{name}': no capture log matches {pattern!r} "
                 f"(relative to {self._mission_dir}). Captures are written by `recon capture` "
                 "and by surveys with preserve_raw: true"
             )
@@ -120,22 +176,38 @@ class CaptureCollector:
         return logs
 
 
-def _matches(entry: CollectorEntry, source: SourceEntry | None, capture: dict[str, Any]) -> bool:
-    match = entry.match
-    wanted = {
-        "source": match.source if match else None,
-        "collector": match.collector if match else None,
-        "kind": match.kind if match else None,
-    }
-    if wanted["source"] is None and source is not None:
+def _wanted(settings: CaptureSettings, source: SourceEntry | None) -> dict[str, str]:
+    """The globs a capture must match, by field: ``match:``, and the source's name as the
+    ``source`` glob when the run has a source and ``match.source`` is not set."""
+    wanted = settings.match.model_dump(exclude_none=True) if settings.match else {}
+    if "source" not in wanted and source is not None:
         wanted["source"] = source.name
+    return wanted
+
+
+def _matches(wanted: dict[str, str], capture: dict[str, Any]) -> bool:
     for field, pattern in wanted.items():
-        if pattern is None:
-            continue
         value = capture.get(field)
         if value is None or not fnmatchcase(str(value), pattern):
             return False
     return True
+
+
+def _unmatched(read: int, wanted: dict[str, str], *, implied: bool) -> NoRecordsError:
+    globs = ", ".join(f"{field} {pattern!r}" for field, pattern in wanted.items())
+    why = (
+        f"; source {wanted['source']!r} is the catalog source this run is for, which a "
+        "capture collector with a source keeps unless match.source says otherwise"
+        if implied
+        else ""
+    )
+    return NoRecordsError(
+        f"none of the {read} capture(s) read matched {globs}{why}",
+        problem_kind="captures_unmatched",
+        field="match",
+        fix="set match: to what the captures hold (recon capture records an MCP tool's "
+        'server as its source; match.source: "*" keeps every source), then survey again',
+    )
 
 
 def _records(
@@ -152,16 +224,15 @@ def _records(
 
 
 def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
-    match = entry.match.model_dump(exclude_none=True) if entry.match else {}
-    if "source" not in match and source is not None:
-        match["source"] = source.name
-    return {"path": entry.path or DEFAULT_CAPTURE_PATH, "match": match}
+    settings = _settings(entry)
+    return {"path": settings.path or DEFAULT_CAPTURE_PATH, "match": _wanted(settings, source)}
 
 
 collector_type = CollectorType(
     create=lambda ctx: CaptureCollector(ctx.mission_dir, ctx.transforms),
     effects=frozenset({"filesystem"}),
     summary="capture log (recon.v1.capture) → bodies → records; fetches nothing",
+    settings=CaptureSettings,
     normalizes=True,  # the spec may address the capture line itself, as `_capture.*`
     extracts=True,
     describe=_describe,

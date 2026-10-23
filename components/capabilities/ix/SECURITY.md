@@ -3,8 +3,8 @@
 ix validates, plans and registers an experiment, and runs one. Validating, planning and
 registering read files, compute, and write one registration file. **Running does what the
 experiment file says**: it starts programs, sends network requests, runs agent sessions
-that call a model, use tools on this machine and spend money, and runs code (the agent's,
-and the experiment's own graders) in child processes.
+that call a paid model and use tools on this machine, and runs code (the agent's, and the
+experiment's own graders) in child processes.
 
 Audience: anyone running ix against an experiment, a genre or a kind they did not author.
 
@@ -12,21 +12,55 @@ Audience: anyone running ix against an experiment, a genre or a kind they did no
 
 | Command | Reads | Writes |
 |---|---|---|
-| `validate`, `plan`, `deviations` | the experiment file (or standard input, given `-`); genre and kind files; probe files; the registration file; ix's settings; for `plan`, the runs under `.ix/runs` | nothing |
+| `validate`, `plan`, `deviations` | the experiment file (or standard input, given `-`); genre and kind files; probe files; the registration file; ix's settings; for `plan`, the runs under `.ix/runs`; for `plan` and `deviations` (and `register` and `run`, below), every file and folder the subjects, sensors and environment name, to digest it | nothing |
 | `register` | the same | `<file-stem>.registration.json` beside the experiment |
 | `genres`, `kinds`, `--skill` | genre and kind files | nothing |
-| `run` | the same as `validate`, and the environment | `<experiment directory>/.ix/runs/<run id>/` (or under `runs:` in ix's settings); temporary directories it removes; whatever the programs and sessions it starts write |
-| `report`, `runs` | the experiment file; the runs under `.ix/runs` | nothing |
+| `run` | the same as `plan`, the environment, and the git work tree the experiment sits in | `<experiment directory>/.ix/runs/<run id>/` (or under `runs:` in ix's settings); temporary directories it removes; whatever the programs and sessions it starts write |
+| `report`, `runs` | the experiment file; the runs under `.ix/runs` | nothing, but for the first read of a run whose `ix run` was killed on this host: matrix's store finishes its record as `interrupted` (`run.json` replaced, a cut-short last line moved to `<file>.torn`) |
 
-`run` also **starts**: each `process` subject's `command`, each `process` environment
+`report` and `runs` call no model and start no process. A report of a run that ended before
+its sensors read its interactions reads them then, but only with sensors whose adapters ix
+hands nothing that acts outside its own process: not matrix's runtimes or a judge's models
+(a `judge`, an `evaluator`), and not a launcher (`function-test` and `outcome`, which run
+the agent's code and the experiment's graders). A run that used one is reported without
+readings, and the report says why and to run the experiment again (the test suite holds
+this with a judge that counts its calls, and with graders that leave a mark if they run,
+over two reports). A third-party sensor that reaches a model provider or starts a program by
+its own means, not through what ix hands it, is outside what ix can tell.
+
+`plan`, and `run` before its first trial, ask each adapter in use what it needs of this host:
+that builds the runtimes the subjects and sensors name (no session starts and no model is
+called), looks for programs on `PATH`, and starts `docker info` and `docker compose version`
+for a `compose` environment.
+
+`run` also **starts**: `git -c core.fsmonitor=false -C <experiment directory>` three times
+(`rev-parse --is-inside-work-tree`, `rev-parse --verify HEAD`, `status --porcelain
+--untracked-files=no`) to record the commit, with the repository's file-system monitor
+turned off. A repository's own config can still name a program git runs while it reads the
+tree (a clean filter), as it can for any `git status`: the experiment's repository is
+trusted as the experiment is (boundary 6). It also starts each `process` subject's
+`command`, each `process` environment
 service's `command`, `k6` for an `http-load` probe, `ps` for the `memory` sensor, an agent
 session for each trial of an `agent-session` subject (on `claude-sdk`, the Claude Code CLI,
-through the Claude Agent SDK), a subject's `setup` command, and a Python child process for
+through the Claude Agent SDK), a model call for each trial of a `model-call` subject (on
+`hardline`, an HTTP request to the provider its registry names), a subject's `setup`
+command, `docker` for a `compose` environment (`info` and `compose version` from `ix plan`
+too; `compose ls`, `up`, `ps` and `down` from `ix run`), and a Python child process for
 each `function-test` reading, each `outcome` reading and each round of a `test-feedback`
 loop. And it **sends**: HTTP requests from k6 to each probe's `target`; readiness checks to
 `ready` and `url`; each prompt, and what the session does, to the model provider of the
-session's runtime; each reply and its rubric to the judge's model provider; and spans to
-an OpenTelemetry endpoint when the `OTEL_*` variables name one.
+session's or the call's runtime; each reply and its rubric to the judge's model provider;
+for a pydantic-evals judge evaluator (`LLMJudge`, `GEval`), each reply and its rubric or
+criteria, with the prompt when its `include_input` is set and the probe's `expected_output`
+when its `include_expected_output` is, to the model provider of the model runtime the
+sensor's `model_runtime` names, and never to pydantic-evals' default model (an `evaluator`
+sensor whose arguments name a `model` is refused by `ix validate`); and spans to an
+OpenTelemetry endpoint when the `OTEL_*` variables name one. ix's own spans carry ids,
+names, numbers and outcomes (and the message of an exception that ends one), never a prompt
+or a reply; matrix's spans carry a session's
+content (prompts, replies, tool arguments) only when its `otel` observer is told to capture
+it (`capture_content`). The `evaluator` sensor's other
+evaluators send nothing: they read what the run recorded.
 
 ## Trust boundaries
 
@@ -34,8 +68,10 @@ an OpenTelemetry endpoint when the `OTEL_*` variables name one.
 
 The experiment file, genre files, kind files, probe files and ix's settings are parsed with
 `yaml.safe_load`, through matrix's loader. A YAML tag that would construct a Python object
-is a parse error and the file is refused; the test suite holds this for genre files with a
-tag that would create a file if it ran. The registration is JSON.
+is a parse error and the file is refused. The test suite holds this for a genre file, a kind
+file and the experiment file, with a tag that creates a file under an unsafe loader (the test
+checks that it does). Probe files and the settings go through the same loader and are not
+tested separately. The registration is JSON.
 
 ### 2. An installed genre or kind package is imported
 
@@ -51,20 +87,26 @@ YAML only and imports nothing.
 
 Probes not written inline are read from the `probes/` folder beside the experiment.
 `fixtures`, `skills`, `plugins`, `definition`, `graders` and `rubric_file` are read from
-where they point, relative to the experiment or absolute, as the user running ix. A probe
-file's content goes into the probe set's digest; the plan prints probe ids and the digest,
-not the content. The registration is written beside the experiment file, under a name
+where they point, relative to the experiment or absolute, as the user running ix, and so is
+any other option a kind declares a `path` or `paths`, and each item of a `command` (a
+`process` subject's `command`, an agent session's `setup`) that names a file. `plan`,
+`register`, `deviations` and `run` read each of them, every file under a folder with links followed, to digest it. A
+probe file's content goes into the probe set's digest; the plan prints probe ids and the
+digest, not the content. Of the files the subjects and sensors name, the registration and
+the run's record keep the path as written and the digest, never what the file holds. The registration is written beside the experiment file, under a name
 derived from the file's own name.
 
 ### 4. A declaration is a claim, not a control
 
-A kind declares its effects (`process`, `network`, `spend`, `tools`, `code`, `containers`,
-`filesystem`) and the plan reports them. That is a statement by whoever wrote the kind file,
-and ix has no code that enforces it. Two properties limit how it can mislead:
+A kind declares its options, facets and metrics. That is a statement by whoever wrote the
+kind file, and what a kind does to the host is not among its claims: kinds declare no
+effects. What a plan lists under `Requires` is what each adapter checked of this host (a
+program on PATH, a daemon, a variable), not what the run may touch. One property limits how
+a declaration can mislead:
 
-- an experiment can add effects to what a kind declares and cannot remove one;
-- two files declaring the same kind are both refused, so a lab's `kinds/` directory cannot
-  quietly redeclare a built-in kind with fewer effects, or a sensor's metric as not judged.
+- a file that does not own a kind's namespace cannot redeclare it, and two files alike are
+  both refused, so a lab's `kinds/` directory cannot quietly redeclare a built-in kind, or a
+  sensor's metric as not judged.
 
 A third-party kind package is trusted to describe itself honestly, as in boundary 2.
 
@@ -79,8 +121,9 @@ version control, where an edit to the record is itself a visible change.
 `ix run` executes the `command` of every `process` subject and environment service, and an
 agent subject's `setup`, with the user's environment and privileges, in the directory the
 experiment names. **Running an experiment you did not write is running its author's
-commands.** Nothing is sandboxed. `ix plan` shows what a run would start (`Effects:`)
-without starting it; read the plan, and the file, before running someone else's.
+commands.** Nothing is sandboxed. `ix plan` shows the programs a run would start
+(`Requires:`) without starting them; read the plan, and the file, before running someone
+else's.
 
 What ix does to bound it:
 
@@ -97,17 +140,36 @@ What ix does to bound it:
 
 An `agent-session` subject on the `claude-sdk` runtime is a Claude Code session with the
 tools its definition allows. Its tools act as the user who runs ix, with ix's environment,
-credentials included, as `permission_mode` allows: `bypassPermissions` approves every tool
-call, and `ix plan` and the run's report say so in their `warnings`, once per subject. Each trial's session starts in a fresh temporary directory, removed when the trial
-ends, but nothing confines a tool to that directory. `setting_sources: []` keeps this
-machine's own settings and plugins out of the session; without it the session reads them.
-The session sees its prompt and the files copied in; it never sees the probe's truth.
+credentials included, as the `permission_mode` in its `runtime_options` allows:
+`bypassPermissions` approves every tool call, and `ix plan` and the run's report say so in
+their `warnings`, once per subject. Each trial's session starts in a fresh temporary
+directory, removed when the trial ends, but nothing confines a tool to that directory.
+`setting_sources: []` in its `runtime_options` keeps this machine's own settings and
+plugins out of the session; without it the session reads them. ix passes a subject's
+`runtime_options` to the runtime as written and grants nothing of its own: what a session
+may do is what that config and its definition say, and the runtime's config schema refuses
+a key it does not declare. The session sees its prompt and the files copied in; it never
+sees the probe's truth.
 
-matrix builds the session and owns its authority: matrix's SECURITY.md has the detail. The
-`model` runtime makes one model call through hardline with no tools, and the `mock` runtime
-calls no model. `ix run --dry-run` puts every session, and a judge, on `mock`, so it calls
-no model and spends nothing; it still copies the fixtures, runs a subject's `setup` command
-and runs the code the sensors run (section 8), as a real run would.
+An `agent-session` subject on the `pydantic-ai` runtime runs in ix's own process. Its
+`runtime_options` may name tools, each a Python function (`tools: {name: module:function}`),
+and **naming one is a grant to run that code** (owner ruling 2026-10-22). `ix plan`, and the
+check before `ix run` starts, locate each module without running it; a trial's session
+imports the module when it first offers the tool, and calls the function when the model
+asks, with the whole authority of ix's process, its environment and credentials included,
+and no permission mode between the model's request and the call. Read the functions an
+experiment names before running it, as you would its commands (section 6).
+
+matrix builds the session and owns its authority: matrix's SECURITY.md has the detail. A
+`model-call` subject makes one model call per trial through a model runtime (`hardline`),
+with no tools and no working directory, and the `mock` runtimes call no model. `ix run
+--dry-run` puts every session, every call and a judge on the `mock` runtime of its port,
+so it calls no model; it still copies the fixtures and skills, runs a subject's `setup`
+command and runs the code the sensors run (section 8), as a real run would. **A dry run
+brings the environment up for real**: no environment has a stand-in, so a `process`
+environment starts its services' commands, and a `compose` environment pulls or builds its
+images and starts its containers (section 13), exactly as `ix run` does. Which runtime
+stands in is what its registration declares (`stand_in`), never read from its name.
 
 ### 8. Code runs in a child process that is not a sandbox
 
@@ -122,13 +184,28 @@ Model-written code is untrusted; run code from a subject you would run yourself,
 in a container. A graders module is trusted as far as the experiment's author is. Neither
 is imported by `validate` or `plan`.
 
-### 9. A run spends money up to a ceiling
+**Code under test may try to game its grader.** Code that knows it is being tested can
+print what a passing run would report and exit, rewrite the expectations it can reach, or
+return a value that claims to equal anything. So `function-test` gives the child only each
+case's input, never what is expected of it; the child reports what each call returned (as
+plain data) or raised, and ix compares that with the truth in its own process. Those
+reports go back on a copy of the child's stdout made before the code is loaded, each line
+carrying a token drawn for the run, while the code's own stdout goes nowhere. Code that
+searches its own process can still find that copy and the token and report a value it did
+not return, but it cannot learn the expected values from the harness, since they never
+enter its process. It can read them from disk if it finds the experiment's files, because
+the child is not a sandbox: run ix in a container when that matters.
 
-A kind that spends needs a ceiling before the experiment is valid: `spend.ceiling`, or
-`spend_cap` in ix's settings. A run adds up the cost each session reported and stops
-starting trials once the next could take it past the ceiling; a runtime that reports no
-cost is held to the declared `per_trial`, or stopped after one trial. The ceiling is checked
-between trials, so one trial can take a run past it. A judge's spend counts against it.
+### 9. Nothing in ix bounds what a run costs
+
+A session on `claude-sdk`, a call on `hardline`, and a judge on either call a paid model,
+and ix neither estimates what a run will cost nor stops one for what it has cost. What bounds a
+run is its shape: the plan's `Trials` is how many sessions it starts (and a judge's
+`repeats` how many calls it makes per trial), and `max_turns` bounds each session. The
+Claude Agent SDK's own `max_budget_usd`, given in a subject's `runtime_options`, ends a
+`claude-sdk` session once that session has cost that much (`stop: max_budget_usd`). What a
+runtime reports a session cost is recorded with the session, in its `usage`, as a fact.
+Read the plan before a run, and run with `--dry-run` first: it calls no model.
 
 ### 10. Load is sent where the file says
 
@@ -151,11 +228,28 @@ or the keys hardline's registry names); ix neither reads nor stores them.
 
 ### 12. The record holds what the run saw
 
-`.ix/runs/` holds the experiment as run (commands, URLs, literal headers), the design, every
-measurement, and for an agent trial the prompt, the reply, every tool call with its input
+`.ix/runs/` holds the experiment as run (commands, URLs, literal headers), the design, the
+path and digest of each file the subjects, sensors and environment name, the commit and the installed
+versions, every measurement, and for an agent trial the prompt, the reply, every tool call with its input
 (the commands a session ran included), each round's transcript and the files collected.
+With an `evaluator` sensor it also holds every span that ended in each trial, with its
+attributes: a tool call's arguments among them when matrix's `otel` observer captures
+content.
 Keep it out of version control if any of that is private. A record is plain files: it can be
 edited, and `ix report` reports what the files say.
+
+### 13. A compose environment runs what its file says, with the daemon's privileges
+
+A `compose` environment hands its `file` to the docker daemon: images are pulled or built,
+containers started with the ports, volumes, mounts and privileges the file asks for. Whoever
+can reach the daemon is in effect root on its host, so running an experiment whose compose
+file you did not write is running its author's containers (boundary 6). `ix run` takes the
+stack down with `down -v --remove-orphans`, which removes the project's named volumes too,
+and sweeps only stacks ix itself brought up (marked by a compose file of its own among the
+project's files) for the same compose file whose process is gone; a
+`project` an experiment names is never swept, and is refused while it has containers. The
+compose file is digested like the subjects' files, and each service's image id is recorded
+in the run's bindings, so what ran can be told afterwards.
 
 ## Findings
 
@@ -173,7 +267,7 @@ write.
 
 Until a naming decision is made, a package extending ix should depend on it by git URL at
 a release's tag
-(`ix @ git+https://github.com/mox-labs/gnx@ix-v0.5.0#subdirectory=components/capabilities/ix`),
+(`ix @ git+https://github.com/mox-labs/gnx@ix-v0.6.0#subdirectory=components/capabilities/ix`),
 not by bare name.
 
 ### Earlier findings

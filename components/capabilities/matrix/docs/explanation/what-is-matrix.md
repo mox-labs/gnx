@@ -60,7 +60,7 @@ It raises one `CompilationError` listing every problem it found, so a broken set
 components is fixed in one pass rather than one error at a time:
 
 1. every kind is a versioned type URL (`<namespace>.v<N>.<resource>`), and none is
-   `matrix.v1.ledger`, the run's own provenance table;
+   `matrix.v1.ledger` or `matrix.v1.session`, the run's own tables;
 2. every required kind is provided by some component or is a run input;
 3. no kind has two providers, and a run input has none;
 4. no component requires a kind it provides;
@@ -72,7 +72,7 @@ kinds. There is no way to wire a loop; work that must repeat is repeated by whoe
 wiring again, or inside one component.
 
 The result, a `Wiring`, is reusable: wire once, run many times with different inputs.
-`wiring.order()` shows one valid order of work, for a reader; the executor does not use it.
+`wiring.stages()` groups the components into the stages `matrix plan` prints, and `wiring.order()` lists them one stage after another: views for a reader; the executor does not use them.
 
 ### Running produces a Run
 
@@ -107,18 +107,20 @@ component ended, its failures, and a `Construct` holding every row. See
 
 ### Every run ends, and cleans up
 
-A run ends `completed`, `failed` or `cancelled`; each component ends `completed`, `failed`,
-`cancelled` or `skipped`. What makes that true is that there is one way to stop a component,
-whatever the reason:
+A run ends `completed`, `failed` or `cancelled`; each component ends `completed`, `stopped`,
+`failed`, `cancelled`, `skipped` or `reused`. What makes that true is that there is one way to
+stop a component, whatever the reason:
 
 1. **Stop request.** `ctx.stopping` is set. A component that returns now keeps what it
-   returns.
+   returns, and ends `stopped` (`failed`, past its deadline): its rows are recorded but may
+   be partial, so a later run never reuses them.
 2. **Grace.** The executor waits `grace_s` for that.
 3. **Cancel.** The component's task is cancelled and its own `finally` blocks run. A
    component that swallows the cancellation is abandoned after `cleanup_s` and reported as
    such.
 4. **Deferred release.** At the end of the run, everything components handed to `ctx.defer`
-   is called, last registered first, each bounded by `cleanup_s`.
+   is called, last registered first: an async one bounded by `cleanup_s`, a synchronous
+   one run to its end, which the event loop cannot interrupt.
 
 The reasons are a component's own deadline (`Limits.deadline_s`, overridden per component by
 `Limits.components`), another component's failure, and cancellation of the run, which is also
@@ -149,26 +151,55 @@ record of it; what does survive is every row handed over before the kill.
 
 An agent has two owners. What it *is* (its prompt, tools, model and turn bound) belongs to
 whoever wrote it. *Where it runs* (the Claude Agent SDK with a permission mode and a working
-directory, one call through hardline, a mock) belongs to whoever deploys it. matrix keeps
-them apart:
+directory, pydantic-ai's loop on a hardline model with its tools, or a mock) belongs to whoever
+deploys it. matrix keeps them apart:
 
 - an `AgentDefinition` is the what. It is data, the same shape as a Claude Code agent file, so
   a plugin's `agents/*.md` load as definitions without translation;
-- an `AgentRuntime` is the where. It has two calls: `check(definition)` and
-  `run(definition, task)`;
+- an `AgentRuntime` is the where: a session with a loop and tools. It has two calls:
+  `check(definition)` and `run(definition, task)`;
 - a `BoundAgent` pairs one of each, and calls `check` when it is made.
 
-`check` is how a runtime refuses a definition it would run as a different agent. The `model`
-runtime makes one call with no tool loop, so a definition that declares tools is refused at
-binding, before anything has spent a token, rather than run without them.
+`check` is how a runtime refuses a definition it would run as a different agent, at binding,
+before anything has spent a token. What a runtime can be given is data: its typed config is
+the whole of it, so `claude-sdk` takes `permission_mode`, `setting_sources`, `plugins`,
+`skills` and inline subagents and refuses any other option at its key; and its `check`
+refuses a definition whose tools leave out `Skill` when it has skills, which could then never
+run, and any option the installed SDK's own dataclasses do not have. `pydantic-ai` takes a
+hardline registry, a default model and the tools an agent may choose from, and refuses a tool
+it does not have or a model hardline cannot resolve.
 
 A runtime reports how a session ended (`AgentResponse.stop`: `completed`, or the limit it
 reached, such as `max_turns`) and raises `AgentRuntimeError` when the session failed. The
 error's `reason` says whose problem it is (`rate_limited`, `auth`, `incapable`, ...) so a
 harness can keep an infrastructure failure out of an agent's score.
 
-`compose(config)` builds runtimes, loads definitions and binds agents from a `matrix:` config
-section, and returns a `Container`. Composition makes no model call and no tool call.
+`compose(config)` builds agent and model runtimes, loads definitions and binds agents from a
+`matrix:` config section, and returns a `Container`. Composition makes no model call and no
+tool call.
+
+### A model call is not an agent session
+
+One call to one model (a triage, an extraction, a judge) has no loop, no tools and no turns,
+so it is not played on an agent runtime. It has its own port, `ModelRuntime`, with two calls:
+`check(model)`, which resolves the model name when a step is built, so an unknown one is a
+`config` problem before anything runs; and `call(request)`, which returns a `ModelCall`. The
+record carries what the runtime reports of the call: why the reply ended (`finish_reason`,
+the provider's own value, and any `refusal`), the model that answered (a fallback may make it
+differ from the one asked for, and `fallback_from` says so), usage with cache tokens, the
+request id, attempts, retries and latency, what was sent, every attempt made and the
+registry row that answered. A fact the runtime does not report stays empty rather than being
+filled with a constant: a call has no `num_turns`.
+
+The two ports are separate because their contracts differ. A runtime that makes one call
+cannot honour a definition with tools; behind one port its `check` would refuse what another
+runtime of the same port accepts, and its replies would carry turns and a stop reason it
+never had. A caller that can use either, as a judge can, names which port it wants.
+
+Each port has its own registry point (`agent-runtime`, `model-runtime`) and its own config
+section (`agent_runtimes`, `model_runtimes`). An agent binds only to an agent runtime. The
+mocks of both declare `stand_in`, so a caller can tell canned answers from a model's without
+reading anything into a runtime's name.
 
 ### An agent as a component
 
@@ -178,20 +209,38 @@ their rows are rendered into a task template. It provides the agent's `AgentResp
 the kind `response` names and, when its config names an `output` kind, the JSON the agent
 returned as one row of that kind. The executor validates that row against the kind's schema
 like any other, so an agent that does not return the promised structure breaks its contract
-and the run says so. The wiring knows nothing about agents.
+and the run says so. The wiring knows nothing about agents. A task template's placeholders
+are checked against its inputs when the step is built.
+
+`matrix.v1.model-step` is the same for one model call. It names a model runtime and a model,
+renders its prompt from its inputs, and provides the `ModelCall`, with the prompt as sent,
+under its `response` kind. With an `output` kind that has a registered schema, it asks the
+runtime for that structure, which hardline validates and repairs; the row is the validated
+reply. A reply cut at `max_tokens`, refused, withheld or empty is not provided at all: the step
+fails, saying which. A component downstream takes whatever row it is given as an answer, and
+nothing in the wiring could tell it otherwise.
+
+A reply is a sample, so the record keeps where each one came from. Every agent session and
+model call a component runs inside a run is a row of `matrix.v1.session`: the runtime, the
+model that answered (not the one asked for), why it stopped, its usage, the runtime's ids and
+the OpenTelemetry trace and span it ended in, any fallback and attempt, and a digest of what
+was sent; a failed or cancelled one keeps the task or prompt as sent, in the record only. A step's reply row keeps what a consumer acts on (the reply, how it ended, the
+family) and points at that row; the ledger entry of each row a component hands over names the
+sessions behind it. So a reply is no longer a mix of an answer and its provenance, and a new
+fact about sessions is a field of the session row, not a change to every reply.
 
 ## One registry for every extension
 
-The `Registry` holds **extension points** (`runtime`, `component`, `payload-type`,
-`observer`, `store`; other packages add their own, named under their own root, as ix adds
+The `Registry` holds **extension points** (`agent-runtime`, `model-runtime`, `component`,
+`payload-type`, `observer`, `store`; other packages add their own, named under their own root, as ix adds
 `ix.sensor`) and the **entries** registered at each, keyed by type URL. An entry carries
 what a caller, human or agent, needs to decide whether to use it:
 
 - `config`: the pydantic model its settings validate against;
-- `needs`: shared things composition hands it (`agents`, `models`, `cwd`, and for a
-  component its own `name`), declared rather than guessed from field names;
-- `effects`: what it may touch (`network`, `subprocess`, `filesystem`, `model`). `None` means
-  unknown, which is never read as "none";
+- `needs`: shared things composition hands it (`agents`, `model_runtimes`, `schemas`,
+  `models`, `cwd`, and for a component its own `name`), declared rather than guessed from
+  field names;
+- `stand_in`: whether it stands in for the real thing, as the mock runtimes do;
 - `summary`, `stability` and `origin` (the package that registered it).
 
 Every extension, matrix's built-ins included, is found the same way: an entry point in the
@@ -211,10 +260,10 @@ both. Install order never decides.
 `{name, type, config}` entries (the config's `matrix.components`, or the caller's own), builds
 each through the registry, and wires them.
 
-Because entries declare their effects, a wiring can say what it may touch. `Container.wire`
-records each component's effects (an `agent-step` has its agent's runtime's), and
-`Wiring.declared_effects()` is their union, or `None` when any component's effects are
-unknown.
+Because entries declare their needs, a plan can bound the sessions a run makes: only an
+agent step, a model step, or a component handed `agents` or `model_runtimes` can reach a
+runtime. An entry declares no effects: a label nothing checked said less than its needs do,
+and what an extension needs of the host is its own to check before it runs.
 
 ## Observers, not built-in tracing
 
@@ -235,7 +284,9 @@ is a library, and installing an SDK, which decides where telemetry goes for the 
 is the application's. `matrix run` is an application, so it does, from the same variables.
 
 Telemetry is not data. Events reach observers through a bounded queue and a dispatcher, never
-on the task that emitted them, so an observer cannot stall a run: one that raises is skipped,
+on the task that emitted them, so an observer's `on_event` cannot stall a run (its optional
+`around`, entered in the work's own task so a library's span nests under matrix's, must not
+block for the same reason): one that raises is skipped,
 one that is slow makes the queue fill and events drop (counted, and reported), and one that
 never returns costs the run a bounded wait at its end. Nothing a run produces depends on an
 event arriving; results are read from the `Run` or its store. For the same reason observers are not an
@@ -257,12 +308,15 @@ set the value it is about.
 
 The config also declares a run: its components and inputs, where it is recorded (`store`,
 chosen from the registry like a runtime) and the limits it keeps. `matrix plan` composes and
-wires it and says what a run would do and spend, calling nothing; `matrix run` runs it, and
-`matrix runs` lists what was recorded and what each run spent. What a run may spend is bounded twice: a `claude-sdk`
-runtime's `max_budget_usd` ends one session at its limit, and `limits.spend_usd` stops the
-run starting any agent session that could take it past the ceiling, counting what each
-session reports. The executor holds that ceiling, not the components: an agent a component
-calls inside a run asks the run before its session starts.
+wires it and says what a run would do, calling nothing; `matrix run` runs it, and
+`matrix runs` lists what was recorded. matrix keeps no spending ceiling and states no cost
+for a run: what a run costs depends on providers matrix does not see, so it cannot measure
+it. What a session reports is kept as a fact of that session (its tokens, and `cost_usd`
+when the runtime reports one), and a runtime may bound its own sessions with its own option
+(the `claude-sdk` runtime passes the SDK's `max_budget_usd`). The per-call token cap is kept
+as it is (owner ruling 2026-10-22): `max_tokens`, on a model runtime, the `pydantic-ai`
+runtime or a hardline row, bounds each reply, and a reply cut there says so; it bounds a reply,
+not a run's cost.
 
 ## One loader
 

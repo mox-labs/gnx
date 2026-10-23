@@ -57,9 +57,12 @@ def init(
 def plan(
     name: str, *, config: Path | None = None, replace: bool = False, root: Path | None = None
 ) -> PlanDocument:
-    """What ``survey`` would do, without doing any of it. ``recon.v1.plan``.
+    """What ``survey`` would do, without doing it. ``recon.v1.plan``.
 
-    ``config`` is a file to plan instead of the mission's own; ``replace`` allows it to
+    Writes nothing, and fetches and runs nothing, but for the preflight of a collector type
+    that declares one, which the document's ``preflight`` names: an ``mcp`` run's server is
+    started (or connected to) and asked for its tools, and ``requirements`` says what was
+    found. ``config`` is a file to plan instead of the mission's own; ``replace`` allows it to
     differ from the mission's config. Raises ConfigError listing every problem; its
     ``complete`` is false when more may follow their fixes."""
     return _root(root).plan(name, config=config, replace=replace)
@@ -95,16 +98,16 @@ def query(
 ) -> QueryRows:
     """Rows from the latest archive of ``name``, or the archive named (an id ``status(name)``
     lists). ``recon.v1.query-rows``, naming the archive as ``archive_id``."""
-    return _root(root).query(name, sql, archive_id=archive)
+    return _root(root).query(name, sql, archive=archive)
 
 
 def configure_telemetry() -> list[Problem]:
     """For an application, never a library: install OpenTelemetry's SDK so that recon's
-    spans and metrics export as the ``OTEL_*`` variables say, when they ask to export and no
-    provider is installed yet. Returns warnings (``otel_unavailable``) for what they ask and
-    cannot get, such as the SDK without the ``otel`` extra. The command line calls this; the
-    other operations never do, so a program that imports recon configures OpenTelemetry
-    itself, or calls this."""
+    spans and metrics export as the ``OTEL_*`` variables say, for each signal they ask for
+    whose provider is not installed yet. Returns warnings (``otel_unavailable``) for what
+    they ask and cannot get, such as the SDK in an install without it. The command line
+    calls this; the other operations never do, so a program that imports recon configures
+    OpenTelemetry itself, or calls this."""
     from recon.composition import configure_telemetry as configure
 
     return configure()

@@ -1,6 +1,6 @@
 [project]
 name = "matrix"
-version = "0.6.0"
+version = "0.7.0"
 description = "Components wired by kind, a durable record of every run, and agents composed from config"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,11 +21,31 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+# Every runtime and telemetry is a dependency: there are no extras (owner ruling 2026-10-22). Each is imported only
+# inside the adapter that uses it, when that adapter is built, so `import matrix` loads none.
 dependencies = [
-    # The API only: spans and metrics cost nothing until an SDK is installed (the otel extra).
-    # >=1.23: the first release with a synchronous gauge, which a `gauge` measure records to.
+    # >=0.1.51: the first release that strips CLAUDECODE from the CLI's environment itself
+    # (bisected against PyPI wheels), which is what lets the `claude-sdk` runtime leave
+    # os.environ alone.
+    "claude-agent-sdk>=0.1.51",
+    # The `hardline` model runtime and the `pydantic-ai` agent runtime's model calls: any model
+    # family hardline has a registry row for. Bounded to the minor matrix is built against:
+    # before 1.0 a hardline minor may break.
+    "hardline>=0.2,<0.3",
+    # The library writes through the API: spans and metrics cost nothing until an application
+    # installs an SDK. >=1.23: the first release with a synchronous gauge, which a `gauge`
+    # measure records to.
     "opentelemetry-api>=1.23",
+    # What `matrix run` (and `configure_telemetry()`) installs from the OTEL_* variables: the
+    # SDK and the OTLP exporter over http/protobuf, the spec's default and the one protocol
+    # matrix exports over (owner ruling 2026-10-22: no gRPC).
+    "opentelemetry-sdk>=1.23",
+    "opentelemetry-exporter-otlp-proto-http>=1.23",
     "pydantic>=2.0",
+    # The `pydantic-ai` agent runtime. Imported inside its adapter alone, when a runtime is
+    # built, so `import matrix` does not load it. The major its Model and Agent APIs are
+    # written against.
+    "pydantic-ai-slim>=2.59,<3",
     "pyyaml>=6.0",
     "rich>=13",
     "rich-click>=1.8",
@@ -44,21 +64,6 @@ matrix = "matrix.adapters._in.cli:run"
 # is a callable register(registry) -> None, loaded by matrix.load_extensions().
 [project.entry-points."matrix.extensions"]
 matrix = "matrix.composition.builtins:register"
-
-[project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "opentelemetry-sdk>=1.23"]
-# >=0.1.51: the first release that strips CLAUDECODE from the CLI's environment itself
-# (bisected against PyPI wheels), which is what lets the runtime leave os.environ alone.
-claude = ["claude-agent-sdk>=0.1.51"]
-# The `model` agent runtime: any model family hardline has a registry row for. Bounded to the
-# minor matrix is built against: before 1.0 a hardline minor may break.
-models = ["hardline>=0.1,<0.2"]
-# The SDK and both OTLP exporters (http/protobuf, the spec's default, and grpc), which the
-# standard OTEL_* variables select.
-otel = [
-    "opentelemetry-sdk>=1.23",
-    "opentelemetry-exporter-otlp>=1.23",
-]
 
 [build-system]
 requires = ["hatchling"]
@@ -90,8 +95,8 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 
-# The OTLP exporters ship only with the `otel` extra, and telemetry.py imports them lazily
-# inside configure_telemetry() so matrix runs without them. Scoped to those modules.
+# The OTLP exporters ship no py.typed marker, and telemetry.py imports them lazily inside
+# configure_telemetry(). Scoped to those modules.
 [[tool.mypy.overrides]]
 module = ["opentelemetry.exporter.otlp.*"]
 ignore_missing_imports = true

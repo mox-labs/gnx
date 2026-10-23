@@ -20,8 +20,8 @@ from click.testing import CliRunner
 import ix
 from ix.adapters._in.cli import main
 from ix.application.experiments import Vocabulary, examine, make_plan
-from ix.domain.experiment import Experiment
-from ix.domain.plan import Plan, cells
+from ix.domain.experiment import Experiment, cells
+from ix.domain.plan import Plan
 from ix.domain.registration import Registration, deviations
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ Write = Any  # the write_experiment fixture
 
 
 def _plan(data: dict[str, Any], vocabulary: Vocabulary) -> Plan:
-    return make_plan(examine(data, vocabulary, base="."), vocabulary, None)
+    return make_plan(examine(data, vocabulary), vocabulary, None)
 
 
 def _record(file: Path) -> Path:
@@ -88,6 +88,20 @@ class TestPlanStatesTheDecision:
             "Margin:       5%, set in the experiment: the largest loss still counted as no "
             "worse; the person's decision, made before the run"
         ) in shown.stdout
+
+    def test_a_count_combines_as_a_rate_whatever_the_genre_says(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: a count took the genre's estimator, so the plan, the registration and
+        each decision on ``error_rate`` said ``mean`` while the analysis pooled it as a
+        rate."""
+        compare_data["guardrails"] = [
+            {"metric": "error_rate", "threshold": {"op": "<", "value": 0.01}}
+        ]
+        made = _plan(compare_data, vocabulary)
+        (estimator,) = [v for v in made.provenance if v.path == "guardrails.0.estimator"]
+        assert (estimator.value, estimator.source) == ("rate", "ix")
+        assert "counts" in estimator.note
 
     def test_the_genre_is_carried_short_and_as_its_url(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
@@ -171,6 +185,18 @@ class TestPlanCounts:
         made = _plan(compare_data, vocabulary)
         assert made.duration.seconds == (30 + 120) * 10 * 3
 
+    def test_duration_reads_each_subjects_own_options(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: the probe's options were filled with the first subject's for every
+        turn, so a length one subject's option sets was counted at the first one's."""
+        compare_data["subjects"]["buffered"]["startup_timeout"] = "30s"
+        compare_data["subjects"]["streaming"]["startup_timeout"] = "2m"
+        compare_data["probes"][0]["duration"] = "{startup_timeout}"
+        made = _plan(compare_data, vocabulary)
+        # buffered as the control and again as its A/A sample, streaming once: 10 repeats.
+        assert made.duration.seconds == (30 + 120 + 30) * 10
+
     def test_duration_is_not_invented(
         self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:
@@ -188,15 +214,16 @@ class TestPlanCounts:
         alone = _plan(evaluate_data, vocabulary).order
         assert "nothing to interleave" in alone.description
 
-    def test_spend_is_estimated_from_the_declared_cost_and_never_invented(
+    def test_a_plan_of_a_run_that_calls_a_model_states_no_spend(
         self, evaluate_data: dict[str, Any], vocabulary: Vocabulary
     ) -> None:
-        priced = _plan({**evaluate_data, "spend": {"ceiling": 5, "per_trial": 0.02}}, vocabulary)
-        assert priced.spend.estimated == pytest.approx(priced.trials.total * 0.02)
-        assert (priced.spend.ceiling, priced.spend.currency) == (5, "USD")
-        unpriced = _plan(evaluate_data, vocabulary).spend
-        assert unpriced.estimated is None and unpriced.ceiling == 5
-        assert "per_trial" in unpriced.basis
+        """Changed requirement: spend is removed. A plan estimates no cost and holds a run
+        to no ceiling; what the run will do is in its trials. Changed requirement (owner ruling
+        2026-10-22): nor does it list effects; what the run needs of this host is added by the
+        root."""
+        made = _plan(evaluate_data, vocabulary)
+        assert "spend" not in made.document() and "effects" not in made.document()
+        assert made.requirements == ()
 
     def test_the_genres_note_is_said_once(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
@@ -273,6 +300,20 @@ class TestPlanDigest:
         )
         assert _plan(compare_data, moved).digest == before.digest
         assert _plan(compare_data, moved).notes == ("settled by the canon",)
+
+    def test_a_reworded_note_is_outside_the_plan_digest(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: an ``x-`` note stayed in the options the plan digest covers, so
+        rewording one moved the plan, against the digest's own promise."""
+        compare_data["subjects"]["buffered"]["x-why"] = "the current proxy"
+        compare_data["probes"][0]["x-why"] = "a large download"
+        before = _plan(compare_data, vocabulary)
+        compare_data["subjects"]["buffered"]["x-why"] = "the proxy in production today"
+        compare_data["probes"][0]["x-why"] = "one big file"
+        after = _plan(compare_data, vocabulary)
+        assert after.digest == before.digest
+        assert after.experiment_digest != before.experiment_digest
 
     def test_a_field_added_to_the_plan_document_changes_no_digest(
         self, compare_data: dict[str, Any], vocabulary: Vocabulary
@@ -361,6 +402,57 @@ class TestRegister:
         file = tmp_path / "proxy.yaml"
         file.write_text(yaml.safe_dump(compare_data))
         assert ix.register(file).location == str(tmp_path / "proxy.registration.json")
+
+    def test_a_write_cut_short_leaves_the_record_as_it_was(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the registration was written in place, so a crash mid-write left a
+        file the next read refuses as not JSON. It is written beside and moved into place:
+        a write that does not finish leaves the old record whole, and no stray file."""
+        import os
+
+        from ix.adapters._out.registration_file import RegistrationFile
+
+        record = RegistrationFile(str(tmp_path / "experiment.registration.json"))
+        record.write({"experiment": "before"})
+
+        def cut(*_: Any) -> None:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(os, "replace", cut)
+        with pytest.raises(OSError, match="No space"):
+            record.write({"experiment": "after", "design": {"repeats": 5}})
+        assert record.read() == {"experiment": "before"}
+        assert [p.name for p in tmp_path.iterdir()] == ["experiment.registration.json"]
+
+    def test_a_write_takes_a_plain_files_mode_and_leaves_the_umask_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the write read the umask by setting it to 0 and back, which another
+        thread of an embedding program could catch in between, creating its own files
+        world-writable. The file gets a plain write's mode, and the umask is never set."""
+        import os
+        import stat
+
+        from ix.adapters._out.registration_file import RegistrationFile
+
+        current = os.umask(0o027)
+        try:
+            set_to: list[int] = []
+            real = os.umask
+
+            def umask(mask: int) -> int:
+                set_to.append(mask)
+                return real(mask)
+
+            monkeypatch.setattr(os, "umask", umask)
+            record = RegistrationFile(str(tmp_path / "experiment.registration.json"))
+            record.write({"experiment": "x"})
+            assert set_to == []
+        finally:
+            os.umask(current)
+        mode = stat.S_IMODE((tmp_path / "experiment.registration.json").stat().st_mode)
+        assert mode == 0o640
 
     def test_registering_again_unchanged_keeps_the_record(
         self, compare_data: dict[str, Any], write_experiment: Write
@@ -477,6 +569,41 @@ class TestDeviations:
             "design.threshold.value", 0.9, 0.6,
         )  # fmt: skip
 
+    def test_a_removed_margin_is_named(
+        self, compare_data: dict[str, Any], vocabulary: Vocabulary
+    ) -> None:
+        """Regression: values were compared only on paths both records held, so a margin
+        that became none (``margin.value`` against ``margin``) was no deviation, and only
+        the digests said that the plan changed."""
+        registered = examine(compare_data, vocabulary).design
+        changed = {**compare_data, "comparison": "superiority"}
+        del changed["margin"]
+        now = examine(changed, vocabulary).design
+        assert registered is not None and now is not None
+        named = {
+            d.field: d
+            for d in deviations(
+                Registration(experiment="x", design=registered.document()),
+                Registration(experiment="x", design=now.document()),
+            )
+        }
+        assert named["design.margin"].current is None
+        assert named["design.margin"].registered["value"] == 5.0
+        assert named["design.margin"].message == "margin changed after registration"
+
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [({"op": ">=", "value": 0.9}, None), (None, {"op": ">=", "value": 0.9})],
+    )
+    def test_a_threshold_removed_or_added_is_named(self, before: Any, after: Any) -> None:
+        def registered(threshold: Any) -> Registration:
+            return Registration(experiment="x", design={"threshold": threshold, "repeats": 5})
+
+        (found,) = deviations(registered(before), registered(after))
+        assert (found.field, found.registered, found.current) == (
+            "design.threshold", before, after,
+        )  # fmt: skip
+
     def test_a_reworded_question_changes_the_declaration_and_not_the_plan(
         self, compare_data: dict[str, Any], write_experiment: Write
     ) -> None:
@@ -547,7 +674,7 @@ class TestDeviations:
                 kinds=vocabulary.kinds,
             )
 
-        examined = examine(compare_data, vocabulary, base=".")
+        examined = examine(compare_data, vocabulary)
         stored = register(examined, vocabulary, None, location="r", now="t", version="v")
         cases = {
             "design.order": under(order="sequential"),
@@ -564,9 +691,7 @@ class TestDeviations:
             "design.report": under(report=("question",)),
         }
         for field, moved in cases.items():
-            found = find_deviations(
-                examine(compare_data, moved, base="."), moved, stored.registration
-            )
+            found = find_deviations(examine(compare_data, moved), moved, stored.registration)
             assert field in [d.field for d in found.deviations], field
 
     def test_checking_an_unregistered_experiment_is_not_found(
@@ -858,7 +983,7 @@ class TestSensitivity:
         from ix.domain.plan import sensitivity
 
         made = _plan(compare_data, vocabulary)
-        examined = examine(compare_data, vocabulary, base=".")
+        examined = examine(compare_data, vocabulary)
         assert examined.design is not None
         spread = Spread(run="r1", metric="ttfb", statistic="p99", unit="%", sd=2.0, n=10)
         found = sensitivity(examined.design, made.sensitivity.blocks, spread)

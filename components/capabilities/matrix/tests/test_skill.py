@@ -40,7 +40,6 @@ from matrix.adapters._in.skill import (
     CONFIG_KEYS,
     ENTRY_POINT,
     EXTENSION_EXAMPLE,
-    EXTRAS,
     NEEDS,
     REFERENCES,
     TIERS,
@@ -156,11 +155,11 @@ def test_the_config_keys_are_the_models_and_unknown_ones_are_refused() -> None:
         load_config(sources=[io.StringIO("matrix: {runtimez: {}}\n")])
 
 
-def test_the_extras_are_the_packages() -> None:
-    declared = set(metadata("matrix").get_all("Provides-Extra") or []) - {"dev"}
-    assert set(EXTRAS) == declared
-    for name in EXTRAS:
-        assert f"- `{name}`: " in matrix.skill()
+def test_there_are_no_extras_to_name() -> None:
+    """Owner ruling 2026-10-22 (no extras): every runtime and telemetry is a dependency of matrix,
+    so the package declares no extra and the skill names none to install."""
+    assert not metadata("matrix").get_all("Provides-Extra")
+    assert "matrix[" not in matrix.skill() and "There are no extras." in matrix.skill()
 
 
 def test_the_install_lines_name_this_release_by_its_tag() -> None:
@@ -179,7 +178,14 @@ def test_the_install_lines_name_this_release_by_its_tag() -> None:
 
 
 def test_the_points_and_needs_are_what_composition_hands_over() -> None:
-    assert Registry().points == {"component", "observer", "payload-type", "runtime", "store"}
+    assert Registry().points == {
+        "agent-runtime",
+        "component",
+        "model-runtime",
+        "observer",
+        "payload-type",
+        "store",
+    }
     container = compose(MatrixConfig())
     assert set(NEEDS) == set(container.needs()) | {"name"}
 
@@ -225,11 +231,16 @@ def test_the_config_example_composes_and_checks(
     assert main(["check", "--json"]) == 0
     checked = json.loads(capsys.readouterr().out)
     assert checked["components"] == ["claim", "rate"]
-    assert checked["agents"] == ["claimer", "rater"]
+    assert checked["agents"] == ["claimer"]
+    assert checked["agent_runtimes"] == checked["model_runtimes"] == ["offline"]
     assert main(["plan", "--json"]) == 0
     planned = json.loads(capsys.readouterr().out)
-    assert planned["spend"]["cost_usd_max"] == 0.0  # the mock runtime calls no model
-    assert planned["spend"]["ceiling_usd"] == 2.0
+    assert planned["agent_calls_min"] == planned["agent_calls_max"] == 1
+    assert planned["model_calls_min"] == planned["model_calls_max"] == 1
+    assert [r["stand_in"] for r in planned["agent_runtimes"] + planned["model_runtimes"]] == [
+        True,
+        True,
+    ]
     (tmp_path / "diffs.jsonl").write_text('"- a\\n+ b"\n')
     assert main(["run", "--input", "acme.v1.diff=diffs.jsonl", "--json"]) == 0
     ran = json.loads(capsys.readouterr().out)
@@ -238,13 +249,23 @@ def test_the_config_example_composes_and_checks(
     assert json.loads((record / "acme.v1.rating.jsonl").read_text()) == {"score": 4}
     claim = json.loads((record / "acme.v1.claim-reply.jsonl").read_text())
     assert claim["task"] == "Claims in:\n- a\n+ b"
+    call = json.loads((record / "matrix.v1.model-call.jsonl").read_text())
+    assert call["prompt"].startswith("Rate:\n") and call["text"] == '{"score": 4}'
 
 
-def test_the_agents_reference_step_is_a_valid_agent_step() -> None:
-    (block,) = _fenced(matrix.skill("agents"), "yaml")
-    (step,) = yaml.safe_load(block)
+def test_the_agents_reference_steps_are_valid_steps() -> None:
+    agent_block, model_block = _fenced(matrix.skill("agents"), "yaml")
+    (step,) = yaml.safe_load(agent_block)
     config = matrix.AgentStepConfig.model_validate(step["config"])
     assert (config.response, config.output) == ("acme.v1.claim-reply", "acme.v1.claims")
+    (step,) = yaml.safe_load(model_block)
+    assert step["type"] == matrix.MODEL_STEP
+    model = matrix.ModelStepConfig.model_validate(step["config"])
+    assert (model.runtime, model.response, model.output) == (
+        "fast",
+        "acme.v1.rate-call",
+        "acme.v1.rating",
+    )
 
 
 def test_every_reference_the_skill_lists_prints(capsys: pytest.CaptureFixture[str]) -> None:
@@ -278,6 +299,27 @@ def test_the_retry_example_is_valid_config() -> None:
     assert "`errors`" in matrix.skill("config")
 
 
+def test_every_max_option_the_skill_names_exists() -> None:
+    """Moved from the spend tests when spend was removed: each ``max_*`` option the config and
+    agents references name is a field of a runtime, an agent, the limits or a retry."""
+    from matrix.adapters._out.runtime.claude_sdk import ClaudeSdkRuntimeConfig, SubagentConfig
+    from matrix.adapters._out.runtime.model import HardlineModelRuntimeConfig
+    from matrix.domain.config import AgentConfig
+
+    text = matrix.skill("config") + matrix.skill("agents")
+    named = set(re.findall(r"\b(max_[a-z_]+)\b", text))
+    fields = {
+        *ClaudeSdkRuntimeConfig.model_fields,
+        *SubagentConfig.model_fields,
+        *HardlineModelRuntimeConfig.model_fields,
+        *AgentConfig.model_fields,
+        *matrix.Limits.model_fields,
+        *matrix.Retry.model_fields,
+    }
+    assert {"max_budget_usd", "max_turns", "max_tokens"} <= named
+    assert named <= fields, named - fields
+
+
 def test_the_loading_reference_names_only_exported_api() -> None:
     named = set(re.findall(r"matrix\.([A-Za-z_]+)\(", matrix.skill("loading")))
     assert named and named <= set(matrix.__all__), named - set(matrix.__all__)
@@ -296,7 +338,7 @@ def test_the_running_reference_python_runs_as_written(
     (tmp_path / "live.yaml").write_text(CONFIG_EXAMPLE)
     exec(compile(block, "running-reference", "exec"), {})  # noqa: S102
     (record,) = (tmp_path / ".matrix" / "runs").iterdir()
-    assert json.loads((record / "run.json").read_text())["spend_usd"] == 0.0
+    assert json.loads((record / "run.json").read_text())["status"] == "completed"
 
 
 def test_the_only_example_names_where_the_record_goes() -> None:
@@ -304,3 +346,20 @@ def test_the_only_example_names_where_the_record_goes() -> None:
     assert "`matrix run live.yaml --only --input KIND=PATH`" in text
     assert "default `.matrix/runs` under the working directory" in text
     assert "matrix run live.yaml --only --input" in matrix.skill("config")
+
+
+def test_nothing_sends_a_reader_to_the_events_for_a_fact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Events are lossy: the skill and ``matrix run`` sent readers to ``events.jsonl`` for a
+    failed step's task. No recipe reads them now, and each says they are lossy."""
+    text = "\n".join([matrix.skill(), *(matrix.skill(name) for name in REFERENCES)])
+    assert not re.search(r"^jq .*events\.jsonl", text, re.M)
+    assert "lossy" in matrix.skill("running") and "lossy" in matrix.skill("telemetry")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.delenv("MATRIX_CONFIG", raising=False)
+    (tmp_path / "matrix.yaml").write_text("matrix: {}\n")
+    assert main(["run"]) == 0
+    (events,) = [line for line in capsys.readouterr().out.splitlines() if "events" in line]
+    assert "lossy" in events and "task" not in events

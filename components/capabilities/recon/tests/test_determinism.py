@@ -11,20 +11,19 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from recon.adapters._out.api_collector import ApiCollector
-from recon.adapters._out.cli_collector import CliCollector
-from recon.composition import DEFAULT_USER_AGENT
-from recon.domain.models import ReconConfig, SourceEntry
+from recon.domain.models import RateLimitConfig, SourceEntry
 from recon.domain.ratelimit import RateLimiter
 from tests.recon_fakes import FixedClock, ScriptedRequester, ScriptedShell, run_survey
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from recon.domain.collector import Collector
-
 MISSION = {
-    "catalog": [{"name": "papers", "url": "https://api.example.test", "rate_limit": {"rps": 1}}],
+    "catalog": [
+        {"name": "papers", "url": "https://api.example.test", "rate_limit": {"rps": 1}},
+        # Absolute, so two projects' captures name one directory (the shell is a fake).
+        {"name": "here", "type": "local", "url": "/"},
+    ],
     "collectors": [
         {
             "name": "search",
@@ -34,7 +33,7 @@ MISSION = {
             "extract": "data",
             "normalize": {"title": "title", "authors": "authors.*.name", "first": "authors.0.name"},
         },
-        # No source: it fans out over the catalog, so its table is lines-papers.
+        # No source: it fans out over the catalog's local sources, so its table is lines-here.
         {"name": "lines", "type": "cli", "run": "list-things", "normalize": {"n": "line_number"}},
     ],
 }
@@ -44,19 +43,16 @@ BODY = json.dumps(
 )
 
 
-def _collectors() -> dict[str, Collector]:
+def _survey(project: Path, clock: FixedClock, **extra: object) -> Path:
     requester = ScriptedRequester({"https://api.example.test/search": BODY})
     shell = ScriptedShell({"list-things": ["one", '{"line_number": 7}', "three"]})
-    return {
-        "api": ApiCollector(requester, {}, DEFAULT_USER_AGENT),
-        "cli": CliCollector(runner=shell),
-    }
-
-
-def _survey(mission: Path, clock: FixedClock, **extra: object) -> Path:
-    mission.mkdir()
-    config = ReconConfig.model_validate({**MISSION, **extra})
-    archive, _ = run_survey(config, _collectors(), mission, config_sha256="ab" * 32, clock=clock)
+    archive, _ = run_survey(
+        {**MISSION, **extra},
+        project,
+        requester=lambda telemetry, deadline, rate_limiter: requester,
+        shell=shell,
+        clock=clock,
+    )
     return archive
 
 
@@ -75,7 +71,7 @@ def test_same_mission_same_inputs_same_clock_is_the_same_archive(tmp_path: Path)
     assert first.name == second.name == "2026-01-02-030405-678901"
     assert _files(first) == _files(second)
     assert set(_files(first)) == {
-        "search.jsonl", "lines-papers.jsonl", "meta.yaml", "telemetry.jsonl"
+        "search.jsonl", "lines-here.jsonl", "meta.yaml", "telemetry.jsonl"
     }, "the event log is part of the archive, and as repeatable as the rest"  # fmt: skip
     records = [json.loads(line) for line in (first / "search.jsonl").read_text().splitlines()]
     assert records == [
@@ -92,7 +88,7 @@ def test_the_clock_reaches_the_archive_s_times_and_never_its_records(tmp_path: P
 
     assert first.name != second.name
     one, two = _files(first), _files(second)
-    for table in ("search.jsonl", "lines-papers.jsonl"):
+    for table in ("search.jsonl", "lines-here.jsonl"):
         assert one[table] == two[table]
     differing = {
         a.split(":")[0]
@@ -125,7 +121,7 @@ def test_with_preserve_raw_only_each_capture_s_id_differs(tmp_path: Path) -> Non
 def test_a_rate_limit_waits_on_the_clock_port() -> None:
     clock = FixedClock()
     limiter = RateLimiter(clock)
-    source = SourceEntry(name="s", url="https://x.test", rate_limit={"rps": 2, "burst": 1})
+    source = SourceEntry(name="s", url="https://x.test", rate_limit=RateLimitConfig(rps=2, burst=1))
 
     limiter.acquire(source)
     limiter.acquire(source)

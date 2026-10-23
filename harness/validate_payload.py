@@ -46,6 +46,8 @@ NAME_EXCEPTIONS = {
     "k": "single-char persona name; works in Claude Code today, ruling owed",
 }
 FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.S)
+# A pointer into the plugins/ or tools/ tree of the repository a payload was lifted from.
+SOURCE_TREE_PATH = re.compile(r"(?<![\w$.-])\w[\w.-]*/(?:plugins|tools)/")
 
 # plugin-dev/agent-development: name 3-50, description 10-5000, prompt 20-10000.
 NAME_MIN, NAME_MAX = 3, 50
@@ -295,11 +297,11 @@ def check_listing_budget(paths: list[Path], rep: Report) -> None:
 
 
 def check_dangling(body: str, fm: dict, where: str, rep: Report) -> None:
-    """Pointers that only resolved inside the cix plugin tree.
+    """Pointers that only resolved inside the plugin repository a payload was lifted from.
 
-    Bench step 3 forbids a payload that still reaches into cix. `skills:` is cix's
-    plugin-relative dependency field and is recorded in harness/intake-ledger.yaml
-    for manifest generation, so it is a note here, not a finding.
+    Bench step 3 forbids a payload that still reaches into its source tree. `skills:` is
+    the source plugins' plugin-relative dependency field and is recorded in
+    harness/intake-ledger.yaml for manifest generation, so it is a note here, not a finding.
     """
     if fm.get("skills"):
         # NOT an undocumented accident, though plugin-dev does not list it: the dao registry
@@ -317,8 +319,13 @@ def check_dangling(body: str, fm: dict, where: str, rep: Report) -> None:
     for m in re.finditer(r"\$\{?CLAUDE_PLUGIN_ROOT\}?(/\.\.)+", body):
         rep.err(where, f"plugin-root reference escapes into a sibling plugin: {m.group(0)!r} "
                        "— install copies only this plugin's subdirectory")
-    for m in re.finditer(r"\bcix/(?:plugins|tools)/", body):
-        rep.err(where, f"dangling path into cix: {m.group(0)!r}")
+    # A repository-qualified path into a plugins/ or tools/ tree (`<repo>/plugins/...`,
+    # `<repo>/tools/...`) points into the source tree the payload was lifted from, which
+    # does not travel with it. The lookbehind and the word-character start leave out the
+    # payload's own plugin-root variable (`$CLAUDE_PLUGIN_ROOT/tools/`, inside the payload),
+    # `../` climbs (recorded below) and the install cache (`~/.claude/plugins/`).
+    for m in SOURCE_TREE_PATH.finditer(body):
+        rep.err(where, f"dangling path into the source plugin tree: {m.group(0)!r}")
     # Relative links that climb out of the component directory. These are NOT findings
     # here: a link like ../eliciting/SKILL.md is broken relative to components/skills/,
     # but resolves correctly once both skills land in the same projected plugin

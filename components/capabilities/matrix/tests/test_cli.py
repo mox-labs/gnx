@@ -18,6 +18,7 @@ from matrix import (
     ErrorKind,
     MatrixError,
     Problem,
+    Registry,
     StoreError,
     discover_sources,
     load_config,
@@ -33,11 +34,11 @@ def test_every_error_kind_has_an_exit_code_and_a_payload() -> None:
     so a detail can never overwrite ``kind``, ``message`` or ``fix``. Changed requirement
     (S6): one kind per code, as ``exit-codes.json`` agrees: ``contract`` and ``component``
     exit as ``run_failed``, ``store`` has its own code, and ``unknown`` is only a bug.
-    Changed requirement: an agent session refused by the run's spend ceiling (``spend``) is a
-    finer kind of failed run too."""
+    Changed requirement: spend was removed, and with it the ``spend`` kind."""
     assert set(EXIT_CODES) | set(EXITS_AS) == set(get_args(ErrorKind)) | {"ok"}
     assert len(set(EXIT_CODES.values())) == len(EXIT_CODES)  # one kind per code
-    assert EXITS_AS == {"contract": "run_failed", "component": "run_failed", "spend": "run_failed"}
+    assert EXITS_AS == {"contract": "run_failed", "component": "run_failed"}
+    assert "spend" not in get_args(ErrorKind)
     error = ConfigError("bad", fix="do this", path="a.b")
     assert error.payload() == {
         "schema": "matrix.v1.error",
@@ -58,9 +59,21 @@ def test_every_error_kind_has_an_exit_code_and_a_payload() -> None:
     assert isinstance(error, MatrixError) and isinstance(error, ValueError)
 
 
+CONTRACTS = Path(__file__).resolve().parents[2]
+
+
+def _contract(name: str) -> dict[str, Any]:
+    """One of the workspace's shared contracts, beside the packages in the repository."""
+    path = CONTRACTS / name
+    if not path.is_file():
+        pytest.skip(f"not run from the repository: no {path}")
+    loaded: dict[str, Any] = json.loads(path.read_text())
+    return loaded
+
+
 def test_the_envelope_is_the_agreed_shape() -> None:
     """S8: the envelope and its problems are those ``error-envelope.json`` agrees."""
-    contract = json.loads((Path(__file__).resolve().parents[2] / "error-envelope.json").read_text())
+    contract = _contract("error-envelope.json")
     error = ConfigError(
         "bad", problems=[Problem(path="a", kind="unknown_key", message="m")], complete=False
     )
@@ -95,11 +108,11 @@ def test_shared_and_tool_tiers_in_order(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_the_shared_file_feeds_every_tool(tmp_path: Path) -> None:
     shared = tmp_path / "matrix.yaml"
-    shared.write_text("matrix:\n  runtimes:\n    m: {type: mock}\n")
+    shared.write_text("matrix:\n  agent_runtimes:\n    m: {type: mock}\n")
     tool = tmp_path / "ix.yaml"
     tool.write_text("matrix:\n  agents:\n    a: {runtime: m, system_prompt: hi}\n")
     config = load_config(None, "ix", sources=[shared, tool])
-    assert set(config.matrix.runtimes) == {"m"} and set(config.matrix.agents) == {"a"}
+    assert set(config.matrix.agent_runtimes) == {"m"} and set(config.matrix.agents) == {"a"}
     assert config.sources == (str(shared), str(tool))
 
 
@@ -117,12 +130,27 @@ def test_catalog_lists_built_ins_as_json(capsys: pytest.CaptureFixture[str]) -> 
     code, data, _ = _cli(capsys, "catalog", "--json")
     assert code == 0 and data["schema"] == "matrix.v1.catalog"
     urls = {e["type_url"] for e in data["entries"]}
-    assert {"matrix.v1.runtime.mock", "matrix.v1.agent-step"} <= urls
+    assert {"matrix.v1.agent-runtime.mock", "matrix.v1.agent-step"} <= urls
     assert data["failures"] == []
 
 
+def test_a_runtime_says_which_distribution_it_drives(capsys: pytest.CaptureFixture[str]) -> None:
+    """A tool that records the versions behind a run (ix's manifest) reads which package
+    each runtime drives from its entry, not from a table of runtime names. Optional: an
+    entry that does not say drives nothing it declares."""
+    code, data, _ = _cli(capsys, "catalog", "--json")
+    drives = {e["type_url"]: e["drives"] for e in data["entries"]}
+    assert drives["matrix.v1.agent-runtime.claude-sdk"] == ["claude-agent-sdk"]
+    assert drives["matrix.v1.model-runtime.hardline"] == ["hardline"]
+    assert drives["matrix.v1.agent-runtime.mock"] == []
+    code, data, _ = _cli(capsys, "describe", "matrix.v1.agent-runtime.claude-sdk", "--json")
+    assert data["entries"][0]["drives"] == ["claude-agent-sdk"]
+    registry = Registry().register("component", "acme.v1.thing", object)
+    assert registry.entry("component", "acme.v1.thing").drives == ()
+
+
 def test_describe_shows_the_config_schema(capsys: pytest.CaptureFixture[str]) -> None:
-    code, data, _ = _cli(capsys, "describe", "matrix.v1.runtime.mock", "--json")
+    code, data, _ = _cli(capsys, "describe", "matrix.v1.agent-runtime.mock", "--json")
     assert code == 0 and data["entries"][0]["config"]["properties"]["default"]
 
 
@@ -133,7 +161,7 @@ def test_describe_unknown_is_not_found_with_a_json_error(
     assert code == 4
     error = json.loads(err)["error"]
     assert error["kind"] == "not_found" and error["details"]["value"] == "acme.v1.nothing"
-    assert "matrix.v1.runtime.mock" in error["details"]["allowed"]
+    assert "matrix.v1.agent-runtime.mock" in error["details"]["allowed"]
 
 
 def test_catalog_of_an_unknown_point_is_a_usage_error_listing_the_points(
@@ -144,7 +172,9 @@ def test_catalog_of_an_unknown_point_is_a_usage_error_listing_the_points(
     assert (code, data) == (2, None)
     error = json.loads(err)["error"]
     assert error["kind"] == "usage" and error["details"]["value"] == "bogus"
-    assert {"runtime", "component", "payload-type", "observer"} <= set(error["details"]["allowed"])
+    assert {"agent-runtime", "model-runtime", "component", "payload-type", "observer"} <= set(
+        error["details"]["allowed"]
+    )
 
 
 def test_check_composes_without_calling_anything(
@@ -153,14 +183,15 @@ def test_check_composes_without_calling_anything(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     (tmp_path / "matrix.yaml").write_text(
-        "matrix:\n  runtimes:\n    m: {type: mock}\n"
+        "matrix:\n  agent_runtimes:\n    m: {type: mock}\n"
         "  agents:\n    a: {runtime: m, system_prompt: hi}\n"
         "  inputs: [matrix.v1.task]\n"
         "  components:\n"
         "    - {name: ask, type: matrix.v1.agent-step, config: {agent: a}}\n"
     )
     code, data, _ = _cli(capsys, "check", "--json")
-    assert code == 0 and data["agents"] == ["a"] and data["runtimes"] == ["m"]
+    assert code == 0 and data["agents"] == ["a"] and data["agent_runtimes"] == ["m"]
+    assert data["model_runtimes"] == []
     assert data["components"] == ["ask"]
     code, data, _ = _cli(capsys, "agents", "--json")
     assert data["agents"][0]["runtime_type"] == "mock"
@@ -173,18 +204,59 @@ def test_a_bad_config_exits_3_with_the_key_path(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    (tmp_path / "matrix.yaml").write_text("matrix:\n  runtimes:\n    m: {type: nope}\n")
+    (tmp_path / "matrix.yaml").write_text("matrix:\n  agent_runtimes:\n    m: {type: nope}\n")
     code, _, err = _cli(capsys, "check", "--json")
     assert code == 3
     error = json.loads(err)["error"]
     assert error["kind"] == "config" and "runtimes.m.type" in error["message"] and error["fix"]
     (found,) = error["problems"]
     assert (found["path"], found["kind"], found["got"]) == (
-        "matrix.runtimes.m.type",
+        "matrix.agent_runtimes.m.type",
         "name_unknown",
         "nope",
     )
     assert "mock" in found["allowed"] and found["source"].endswith("matrix.yaml")
+
+
+def test_a_malformed_model_registry_is_a_config_problem_where_it_was_written(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: hardline's ConfigError escaped both runtimes built on it, so a typo in
+    ``matrix.models`` exited 1 as kind ``unknown``, "report this as a bug in matrix". It is
+    a config problem (exit 3) at the key that was written, said once however many runtimes
+    read it."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    (tmp_path / "matrix.yaml").write_text(
+        "matrix:\n"
+        "  models: {models: {m: {backend: mock, model: m-1}}}\n"
+        "  model_runtimes:\n    h: {type: hardline}\n"
+        "  agent_runtimes:\n    p: {type: pydantic-ai}\n"
+    )
+    code, _, err = _cli(capsys, "check", "--json")
+    assert code == 3, err
+    error = json.loads(err)["error"]
+    assert error["kind"] == "config" and "bug" not in error["fix"]
+    (found,) = error["problems"]
+    assert (found["path"], found["kind"]) == ("matrix.models.models.m.family", "missing_key")
+    assert found["source"].endswith("matrix.yaml")
+
+
+def test_a_runtime_s_own_malformed_registry_is_a_problem_at_its_own_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A registry given in a runtime's own config is reported at that runtime's key."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    (tmp_path / "matrix.yaml").write_text(
+        "matrix:\n  model_runtimes:\n"
+        "    h: {type: hardline, models: {models: {m: {backend: mock, model: m-1}}}}\n"
+    )
+    code, _, err = _cli(capsys, "check", "--json")
+    assert code == 3, err
+    (found,) = json.loads(err)["error"]["problems"]
+    assert found["path"] == "matrix.model_runtimes.h.models.models.m.family"
+    assert found["source"].endswith("matrix.yaml")
 
 
 def test_no_command_prints_help_and_a_usage_error_exits_2(
@@ -203,7 +275,7 @@ def test_check_reports_components_that_do_not_wire(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     (tmp_path / "matrix.yaml").write_text(
-        "matrix:\n  runtimes:\n    m: {type: mock}\n"
+        "matrix:\n  agent_runtimes:\n    m: {type: mock}\n"
         "  agents:\n    a: {runtime: m, system_prompt: hi}\n"
         "  components:\n"
         "    - {name: ask, type: matrix.v1.agent-step, config: {agent: a}}\n"
@@ -221,8 +293,7 @@ def test_check_reports_components_that_do_not_wire(
 
 def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     """``components/capabilities/exit-codes.json`` holds the codes every tool agrees on."""
-    fixture = Path(__file__).resolve().parents[2] / "exit-codes.json"
-    agreed = json.loads(fixture.read_text())["kinds"]
+    agreed = _contract("exit-codes.json")["kinds"]
     shared = set(agreed) & set(EXIT_CODES)
     assert {kind: EXIT_CODES[kind] for kind in shared} == {kind: agreed[kind] for kind in shared}
     # matrix's other kinds are its own, from 10 up; it has none, so every kind is agreed
@@ -280,15 +351,16 @@ def test_ctrl_c_is_one_envelope_of_kind_interrupted_and_exits_130(
     assert "error (interrupted):" in capsys.readouterr().err
 
 
-def test_telemetry_without_its_extra_is_a_config_error_with_a_fix(
+def test_telemetry_in_an_install_without_the_sdk_is_a_config_error_with_a_fix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: a missing ``matrix[otel]`` raised a bare ImportError, with no kind or fix."""
+    """Regression: a missing SDK raised a bare ImportError, with no kind or fix. matrix depends
+    on it, so an install without it is incomplete, and the fix says how to repair it."""
     import sys
 
     from matrix import configure_telemetry
 
-    monkeypatch.setitem(sys.modules, "opentelemetry.sdk", None)  # the SDK is the extra's
+    monkeypatch.setitem(sys.modules, "opentelemetry.sdk", None)
     with pytest.raises(ConfigError) as raised:
         configure_telemetry(console=True)
-    assert raised.value.kind == "config" and "matrix[otel]" in (raised.value.fix or "")
+    assert raised.value.kind == "config" and "--reinstall" in (raised.value.fix or "")

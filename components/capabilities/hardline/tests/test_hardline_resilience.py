@@ -1,4 +1,5 @@
-"""Retries, fallbacks, error reasons and cache accounting.
+"""Retries, fallbacks and cache accounting. How a provider's failure is classified is tested on
+the wire, in test_hardline_backends.py.
 
 Retry and fallback are separate: a retry asks the same model again after a transient
 failure; a fallback asks another registry row once retries are spent. A non-transient
@@ -7,20 +8,17 @@ failure is neither retried nor fallen back from.
 
 from __future__ import annotations
 
+import asyncio
 import random
-from types import SimpleNamespace
+import time
 from typing import Any
 
-import httpx
 import pytest
 from hardline_helpers import mock_runtime
 from pydantic import BaseModel
 
-from hardline import BackendError, ConfigError, Usage
-from hardline.adapters._out._classify import classify
-from hardline.adapters._out.anthropic_native import AnthropicBackend
+from hardline import BackendError, ConfigError, ModelRuntime, SchemaError, Usage, build_runtime
 from hardline.adapters._out.openai_compat import OpenAICompatBackend
-from hardline.domain.types import ModelSpec
 
 
 class Sleeps:
@@ -163,7 +161,98 @@ async def test_extract_falls_back_and_sums_usage() -> None:
     s = await rt.extract("a", "judge this", Verdict)
     assert s.value.ok is True
     assert s.completion.family == "llama" and s.completion.fallback_from == "a"
-    assert s.completion.usage.output_tokens > 0
+    # This asserted only `> 0`. The failed call reported nothing, so the total is exactly
+    # what b reported for '{"ok": true}' (two words in the mock's count).
+    assert s.completion.usage.output_tokens == 2
+    assert [(t.name, t.reason, t.usage is None) for t in s.completion.attempt_log] == [
+        ("a", "unavailable", True),
+        ("b", None, False),
+    ]
+    assert s.completion.usage == s.completion.attempt_log[-1].usage
+
+
+# --- the attempt log: each row tried, and why it failed -----------------------------
+
+
+async def test_the_attempt_log_names_each_row_tried_and_why() -> None:
+    rt = mock_runtime(
+        {
+            "primary": _row([{"error": "unavailable"}], retries=1, fallbacks=["backup"]),
+            "backup": _row(["from backup"]),
+        },
+        sleep=Sleeps(),
+    )
+    c = await rt.complete("primary", "hi")
+    assert [(t.name, t.reason) for t in c.attempt_log] == [
+        ("primary", "unavailable"),
+        ("primary", "unavailable"),
+        ("backup", None),
+    ]
+    assert all(t.latency_ms >= 0 for t in c.attempt_log)
+
+
+async def test_an_exhausted_chain_carries_its_log_and_what_it_cost() -> None:
+    class Verdict(BaseModel):
+        ok: bool
+
+    # One schema attempt answers (not valid), the repair finds every row down: the first
+    # attempt's tokens were spent, and the error says so rather than dropping them.
+    rt = mock_runtime(
+        {"a": _row(["not json", {"error": "rate_limit"}], retries=0)},
+        sleep=Sleeps(),
+    )
+    with pytest.raises(BackendError) as e:
+        await rt.extract("a", "?", Verdict)
+    assert [(t.name, t.reason) for t in e.value.attempt_log] == [("a", None), ("a", "rate_limit")]
+    assert e.value.usage is not None and e.value.usage == e.value.attempt_log[0].usage
+    assert e.value.usage.output_tokens == 2
+
+
+async def test_a_fault_raised_at_once_carries_its_log() -> None:
+    rt = mock_runtime({"a": _row([{"error": "auth"}])}, sleep=Sleeps())
+    with pytest.raises(BackendError) as e:
+        await rt.complete("a", "hi")
+    assert [(t.name, t.reason) for t in e.value.attempt_log] == [("a", "auth")]
+
+
+async def test_a_schema_failure_carries_what_it_cost() -> None:
+    class Verdict(BaseModel):
+        ok: bool
+
+    rt = mock_runtime({"a": _row(["nope", "still nope"])})
+    with pytest.raises(SchemaError) as e:
+        await rt.extract("a", "?", Verdict)
+    assert [t.reason for t in e.value.attempt_log] == [None, None]
+    assert e.value.usage is not None and e.value.usage.output_tokens == 1 + 2
+
+
+async def test_a_schema_repair_goes_on_from_the_row_that_answered() -> None:
+    # Each schema attempt restarted the chain at the primary that had just failed, so a
+    # repair paid for the primary's failures again and could mix replies from two models.
+    class Verdict(BaseModel):
+        ok: bool
+
+    rt = mock_runtime(
+        {
+            "a": _row([{"error": "unavailable"}], retries=0, fallbacks=["b"]),
+            "b": _row(["not json", '{"ok": true}']),
+        },
+        sleep=Sleeps(),
+    )
+    s = await rt.extract("a", "?", Verdict)
+    assert [(t.name, t.reason) for t in s.completion.attempt_log] == [
+        ("a", "unavailable"),
+        ("b", None),
+        ("b", None),
+    ]
+    assert (s.completion.name, s.completion.fallback_from, s.completion.attempts) == ("b", "a", 2)
+
+
+def test_a_repeated_fallback_is_refused() -> None:
+    # `[b, b]` was accepted, so b was retried twice in full and the warning for the first
+    # b was suppressed.
+    with pytest.raises(ConfigError, match=r"models\.a\.fallbacks.*'b' more than once"):
+        mock_runtime({"a": _row(["x"], fallbacks=["b", "b"]), "b": _row(["y"])})
 
 
 @pytest.mark.parametrize(
@@ -174,64 +263,157 @@ def test_bad_fallbacks_fail_at_construction(fallbacks: list[str], problem: str) 
         mock_runtime({"a": _row(["x"], fallbacks=fallbacks)})
 
 
-def test_scripted_error_reason_is_validated() -> None:
-    from hardline.adapters._out.mock import _scripted
-
-    spec = ModelSpec(name="a", backend="mock", model="m", family="x")
-    with pytest.raises(ConfigError, match="error 'flaky'"):
-        _scripted(spec, {"error": "flaky"})
+# --- the logical call's own bound: attempts, wall time, tokens ----------------------
 
 
-# --- classification ------------------------------------------------------------------
+async def test_limits_attempts_bounds_every_backend_call_the_call_makes() -> None:
+    # Before: one call could make (schema_retries + 1) x the sum over its chain of (retries + 1)
+    # backend calls, each paid for, with nothing to bound the product.
+    rt = mock_runtime(
+        {
+            "a": _row(
+                [{"error": "unavailable"}], retries=5, fallbacks=["b"], limits={"attempts": 3}
+            ),
+            "b": _row(["from b"]),
+        },
+        sleep=Sleeps(),
+    )
+    with pytest.raises(BackendError, match=r"limits\.attempts=3") as e:
+        await rt.complete("a", "hi")
+    assert [t.name for t in e.value.attempt_log] == ["a", "a", "a"]
+    assert (e.value.limit, e.value.reason, e.value.retryable) == ("attempts", "unavailable", True)
 
 
-def _status_error(cls: Any, status: int, headers: dict[str, str] | None = None) -> Any:
-    request = httpx.Request("POST", "http://x")
-    response = httpx.Response(status, headers=headers or {}, request=request)
-    return cls("boom", response=response, body=None)
+async def test_limits_attempts_counts_the_fallbacks_too() -> None:
+    rt = mock_runtime(
+        {
+            "a": _row(
+                [{"error": "unavailable"}], retries=0, fallbacks=["b", "c"], limits={"attempts": 2}
+            ),
+            "b": _row([{"error": "rate_limit"}], retries=0),
+            "c": _row(["from c"]),
+        },
+        sleep=Sleeps(),
+    )
+    with pytest.raises(BackendError) as e:
+        await rt.complete("a", "hi")
+    assert [t.name for t in e.value.attempt_log] == ["a", "b"] and e.value.limit == "attempts"
 
 
-@pytest.mark.parametrize(
-    ("status", "reason"),
-    [
-        (401, "auth"),
-        (403, "auth"),
-        (429, "rate_limit"),
-        (408, "timeout"),
-        (500, "unavailable"),
-        (529, "unavailable"),
-        (400, "bad_request"),
-        (404, "bad_request"),
-    ],
-)
-def test_openai_and_anthropic_status_errors_classify_alike(status: int, reason: str) -> None:
-    import anthropic
-    import openai
+async def test_limits_seconds_stops_before_a_wait_that_would_pass_it() -> None:
+    class Limited:
+        structured_modes = frozenset({"prompt"})
 
-    assert classify(_status_error(openai.APIStatusError, status))[0] == reason
-    assert classify(_status_error(anthropic.APIStatusError, status))[0] == reason
+        async def complete(self, spec: Any, request: Any, api_key: Any) -> Any:
+            raise BackendError("slow down", reason="rate_limit", retry_after=30.0)
+
+    sleeps = Sleeps()
+    rt = build_runtime(
+        {"models": {"a": {"backend": "x", "model": "m", "family": "x", "limits": {"seconds": 10}}}},
+        backends={"x": Limited()},
+        sleep=sleeps,
+    )
+    with pytest.raises(BackendError, match=r"limits\.seconds=10") as e:
+        await rt.complete("a", "hi")
+    assert sleeps.delays == []  # it did not wait 30 s to be told it was out of time
+    assert e.value.limit == "seconds" and e.value.reason == "rate_limit"
 
 
-def test_timeouts_and_connection_failures_are_transient() -> None:
-    import openai
+async def test_limits_seconds_cuts_an_attempt_that_would_pass_it() -> None:
+    class Slow:
+        structured_modes = frozenset({"prompt"})
 
-    request = httpx.Request("POST", "http://x")
-    assert classify(openai.APITimeoutError(request=request))[0] == "timeout"
-    assert classify(openai.APIConnectionError(request=request))[0] == "unavailable"
+        async def complete(self, spec: Any, request: Any, api_key: Any) -> Any:
+            await asyncio.sleep(30)
+            raise AssertionError("the attempt outlived the call's limit")
+
+    rt = build_runtime(
+        {
+            "models": {
+                "a": {"backend": "x", "model": "m", "family": "x", "limits": {"seconds": 0.05}}
+            }
+        },
+        backends={"x": Slow()},
+    )
+    started = time.monotonic()
+    with pytest.raises(BackendError) as e:
+        await rt.complete("a", "hi")
+    assert time.monotonic() - started < 5
+    assert (e.value.reason, e.value.limit) == ("timeout", "seconds")
+    assert [(t.name, t.reason) for t in e.value.attempt_log] == [("a", "timeout")]
 
 
-def test_retry_after_header_is_read() -> None:
-    import openai
+async def test_limits_tokens_stops_the_schema_repairs() -> None:
+    class Verdict(BaseModel):
+        ok: bool
 
-    error = _status_error(openai.RateLimitError, 429, {"retry-after": "7"})
-    assert classify(error) == ("rate_limit", 7.0)
+    # Each reply reports 1 input token per word sent and 1 output token per word replied; the
+    # first call alone passes 10 tokens, so no repair is sent.
+    rt = mock_runtime(
+        {"a": _row(["not json at all, said at length"], limits={"tokens": 10})},
+        schema_retries=3,
+    )
+    with pytest.raises(SchemaError, match=r"limits\.tokens=10") as e:
+        await rt.extract("a", "?", Verdict)
+    assert e.value.attempts == 1 and e.value.limit == "tokens"
+    assert e.value.usage is not None
+    assert e.value.usage.input_tokens + e.value.usage.output_tokens >= 10
 
 
-def test_provider_sdks_do_not_retry_behind_the_runtime() -> None:
-    spec = ModelSpec(name="a", backend="openai-compat", model="m", family="x", base_url="http://x")
-    assert OpenAICompatBackend()._client(spec, None).max_retries == 0
-    anthropic_spec = spec.model_copy(update={"backend": "anthropic"})
-    assert AnthropicBackend()._client(anthropic_spec, "k").max_retries == 0
+async def test_no_limits_means_the_bound_is_the_chain_and_the_repairs() -> None:
+    rt = mock_runtime({"a": _row([{"error": "unavailable"}], retries=2)}, sleep=Sleeps())
+    with pytest.raises(BackendError) as e:
+        await rt.complete("a", "hi")
+    assert len(e.value.attempt_log) == 3 and e.value.limit is None
+
+
+class _Reply(BaseModel):
+    answer: str
+
+
+def test_a_rows_worst_case_is_its_chain_unless_its_limits_say_less() -> None:
+    """Owner ruling 2026-10-22: limits stay unset by default, and ``check`` shows the worst
+    case. A ``complete`` makes at most the sum over the chain of (retries + 1) backend calls;
+    an ``extract`` that much plus, for each schema repair, (retries + 1) of the chain's
+    most-retried row, since a repair goes on from the row that answered. A limit lowers it."""
+    limits = {"attempts": 5, "seconds": 60, "tokens": 1000}
+    rt = mock_runtime(
+        {
+            "a": _row(["x"], retries=2, fallbacks=["b"]),
+            "b": _row(["x"], retries=0),
+            "c": _row(["x"], retries=2, fallbacks=["b"], limits=limits),
+        },
+        default="c",
+    )
+    a, c = rt.worst_case("a"), rt.worst_case("c")
+    assert (a.complete_calls, a.extract_calls, a.seconds, a.tokens) == (4, 7, None, None)
+    assert (c.complete_calls, c.extract_calls, c.seconds, c.tokens) == (4, 5, 60, 1000)
+    assert rt.worst_case(None) == c, "None is the default row, as for a call"
+
+
+async def test_an_extract_can_make_its_worst_case_and_no_more() -> None:
+    # Round one: a fails twice and answers what is not JSON (3 calls). The repair goes on from
+    # a: it fails three times and b answers what is not JSON (4 calls). 7, the worst case.
+    rt = mock_runtime(
+        {
+            "a": _row(
+                [*[{"error": "unavailable"}] * 2, "not json", *[{"error": "unavailable"}] * 3],
+                retries=2,
+                fallbacks=["b"],
+            ),
+            "b": _row(["not json"], retries=0),
+        },
+        sleep=Sleeps(),
+    )
+    with pytest.raises(SchemaError) as e:
+        await rt.extract("a", "hi", _Reply)
+    assert len(e.value.attempt_log) == rt.worst_case("a").extract_calls == 7
+
+
+@pytest.mark.parametrize("limits", [{"attempts": 0}, {"seconds": 0}, {"tokens": 0}, {"calls": 3}])
+def test_a_limit_that_bounds_nothing_is_refused(limits: dict[str, Any]) -> None:
+    with pytest.raises(ConfigError, match=r"models\.a\.limits"):
+        mock_runtime({"a": _row(["x"], limits=limits)})
 
 
 # --- cache accounting ----------------------------------------------------------------
@@ -244,33 +426,55 @@ def test_usage_sums_cache_tokens() -> None:
     assert (total.cache_read_tokens, total.cache_write_tokens) == (6, 2)
 
 
-async def test_anthropic_reports_cache_tokens() -> None:
-    class Resp(SimpleNamespace):
-        def model_dump(self, **_: Any) -> dict[str, Any]:
-            return {}
+# --- a fallback that shares its primary's fate ------------------------------------
 
-    async def create(**_: Any) -> Any:
-        return Resp(
-            id="m",
-            model="claude",
-            content=[SimpleNamespace(type="text", text="a")],
-            usage=SimpleNamespace(
-                input_tokens=3,
-                output_tokens=1,
-                cache_read_input_tokens=40,
-                cache_creation_input_tokens=9,
-            ),
-        )
 
-    backend = AnthropicBackend()
-    backend._client = lambda spec, key: SimpleNamespace(  # type: ignore[method-assign]
-        messages=SimpleNamespace(create=create)
+def _located(**rows: dict[str, Any]) -> ModelRuntime:
+    models = {
+        name: {"backend": "openai-compat", "model": "m", "family": "x", **row}
+        for name, row in rows.items()
+    }
+    return build_runtime({"models": models}, backends={"openai-compat": OpenAICompatBackend()})
+
+
+def test_a_fallback_on_the_same_server_as_its_primary_is_warned_of() -> None:
+    # Before: construction checked only that a fallback existed and was not the row itself, so a
+    # fallback on the same local server was taken for protection when the server going down
+    # takes both.
+    local = "http://127.0.0.1:8080/v1"
+    rt = _located(a={"base_url": local, "fallbacks": ["b"]}, b={"base_url": local, "model": "n"})
+    (warning,) = rt.warnings
+    assert (warning.path, warning.kind) == ("models.a.fallbacks", "shared_fate")
+    assert "'b'" in warning.message and local in warning.message and warning.fix
+
+
+@pytest.mark.parametrize(
+    "fallback",
+    [
+        {"base_url": "http://127.0.0.1:8081/v1"},  # another server
+        {"backend": "mock", "options": {}},  # another backend, with no location at all
+    ],
+)
+def test_a_fallback_elsewhere_is_not_warned_of(fallback: dict[str, Any]) -> None:
+    from hardline.adapters._out.mock import MockBackend
+
+    models = {
+        "a": {
+            "backend": "openai-compat",
+            "model": "m",
+            "family": "x",
+            "base_url": "http://127.0.0.1:8080/v1",
+            "fallbacks": ["b"],
+        },
+        "b": {"backend": "openai-compat", "model": "m", "family": "x", **fallback},
+    }
+    rt = build_runtime(
+        {"models": models},
+        backends={"openai-compat": OpenAICompatBackend(), "mock": MockBackend()},
     )
-    from hardline import Message, Request
+    assert rt.warnings == ()
 
-    raw = await backend.complete(
-        ModelSpec(name="a", backend="anthropic", model="m", family="claude"),
-        Request(messages=(Message(role="user", content="hi"),), max_tokens=8),
-        "k",
-    )
-    assert (raw.usage.cache_read_tokens, raw.usage.cache_write_tokens) == (40, 9)
+
+def test_mock_rows_share_no_server() -> None:
+    rt = mock_runtime({"a": _row(["x"], fallbacks=["b"]), "b": _row(["y"])})
+    assert rt.warnings == ()

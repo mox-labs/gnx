@@ -48,10 +48,10 @@ def test_a_missing_need_is_a_config_error() -> None:
 
 
 def test_untyped_entries_take_no_config() -> None:
-    registry = Registry().register("observer", "acme.v1.obs", lambda: "built")
-    assert registry.create("observer", "acme.v1.obs") == "built"
+    registry = Registry().register("component", "acme.v1.thing", lambda: "built")
+    assert registry.create("component", "acme.v1.thing") == "built"
     with pytest.raises(ConfigError, match="takes no config"):
-        registry.create("observer", "acme.v1.obs", {"x": 1})
+        registry.create("component", "acme.v1.thing", {"x": 1})
 
 
 def test_unknown_point_and_malformed_ids_are_refused() -> None:
@@ -122,21 +122,27 @@ def test_a_collision_names_both_origins_whatever_the_install_order(
 
 def test_the_built_ins_arrive_through_the_entry_point() -> None:
     registry = default_registry()
-    assert registry.entry("runtime", "matrix.v1.runtime.mock").origin == "matrix"
+    assert registry.entry("agent-runtime", "matrix.v1.agent-runtime.mock").origin == "matrix"
     assert not registry.failures
 
 
 def test_entries_describe_themselves_for_agents() -> None:
-    entry = default_registry(discover=False).entry("runtime", "matrix.v1.runtime.claude-sdk")
+    entry = default_registry(discover=False).entry(
+        "agent-runtime", "matrix.v1.agent-runtime.claude-sdk"
+    )
     described = entry.describe()
-    assert described["effects"] == ["filesystem", "model", "network", "subprocess"]
     assert described["needs"] == ["cwd"]
     assert "permission_mode" in described["config"]["properties"]
 
 
-def test_unknown_effects_stay_unknown() -> None:
+def test_an_entry_declares_no_effects() -> None:
+    """Changed requirement (owner ruling 2026-10-22): effects were labels nothing checked, and are
+    removed. What an entry is handed is its ``needs``; what it needs of the host its owner
+    checks."""
     entry = Registry().register("component", "acme.v1.x", build).entry("component", "acme.v1.x")
-    assert entry.effects is None and entry.describe()["effects"] is None
+    assert "effects" not in entry.describe()
+    with pytest.raises(TypeError):
+        Registry().register("component", "acme.v1.y", build, effects=set())  # type: ignore[call-arg]
 
 
 def test_an_extension_at_a_point_declared_later_is_retried(
@@ -188,14 +194,17 @@ def test_an_extension_cannot_shadow_a_namespace_it_does_not_own(
     from matrix.composition.builtins import register as matrix_register
 
     def impostor(registry: Registry) -> None:
-        registry.register("runtime", "aaa.v1.runtime.fine", lambda: "fine")
-        registry.register("runtime", "matrix.v1.runtime.mock", lambda: "hijacked")
+        registry.register("agent-runtime", "aaa.v1.agent-runtime.fine", lambda: "fine")
+        registry.register("agent-runtime", "matrix.v1.agent-runtime.mock", lambda: "hijacked")
 
     eps = [_entry_point("aaa", impostor, "aaa"), _entry_point("matrix", matrix_register, "matrix")]
     monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
     registry = load_extensions(Registry())
-    assert registry.entry("runtime", "matrix.v1.runtime.mock").origin == "matrix"
-    assert ("runtime", "aaa.v1.runtime.fine") not in registry  # the impostor is dropped whole
+    assert registry.entry("agent-runtime", "matrix.v1.agent-runtime.mock").origin == "matrix"
+    assert (
+        "agent-runtime",
+        "aaa.v1.agent-runtime.fine",
+    ) not in registry  # the impostor is dropped whole
     assert any(f.extension == "aaa" and "namespace" in f.error for f in registry.failures)
 
 
@@ -205,7 +214,7 @@ def test_a_quarantined_impostor_is_named_by_its_entry_point(
     from matrix.composition.builtins import register as matrix_register
 
     def impostor(registry: Registry) -> None:
-        registry.register("runtime", "matrix.v1.runtime.mock", lambda: "hijacked")
+        registry.register("agent-runtime", "matrix.v1.agent-runtime.mock", lambda: "hijacked")
 
     eps = [
         _entry_point("a-mock-plugin", impostor, "aaa-dist"),
@@ -239,3 +248,183 @@ def test_a_type_url_without_a_version_segment_is_refused_at_registration() -> No
         Registry().register("component", "acme.scorer", lambda: None)
     assert "version segment" in raised.value.message
     assert raised.value.details["value"] == "acme.scorer"
+
+
+# --- a runtime is held to its port ---------------------------------------------------------
+
+
+class _NoRun:
+    """A third party's agent runtime that forgot ``run``."""
+
+    def check(self, definition: object) -> None: ...
+
+
+class _SyncCall:
+    """A third party's model runtime whose ``call`` is not awaitable."""
+
+    def check(self, model: str | None) -> None: ...
+
+    def call(self, request: object) -> object: ...
+
+
+@pytest.mark.parametrize(
+    ("point", "cls", "said"),
+    [("agent-runtime", _NoRun, "run"), ("model-runtime", _SyncCall, "call")],
+)
+def test_a_runtime_class_that_breaks_its_port_is_refused_when_registered(
+    point: str, cls: type, said: str
+) -> None:
+    """Regression: one with ``check`` but no ``run`` composed cleanly and failed
+    only when an agent ran on it."""
+    with pytest.raises(ConfigError, match=said) as e:
+        Registry().register(point, f"acme.v1.{point}.x", cls)
+    assert e.value.fix
+
+
+@pytest.mark.parametrize("point", ["agent-runtime", "model-runtime"])
+def test_a_runtime_built_as_something_else_is_a_config_error_not_an_attribute_error(
+    point: str,
+) -> None:
+    """Regression: a factory that built ``object()`` made compose raise a bare
+    ``AttributeError`` with no kind, which the command reported as a defect (exit 1)."""
+    registry = Registry().register(point, f"acme.v1.{point}.x", lambda: object())
+    with pytest.raises(ConfigError, match="not a") as e:
+        registry.create(point, f"acme.v1.{point}.x", where="matrix.x")
+    assert e.value.exit_code == 3 and "matrix.x" in str(e.value)
+
+
+def test_a_broken_runtime_fails_composition_at_its_key() -> None:
+    from matrix import MatrixConfig, compose
+
+    registry = default_registry(discover=False)
+    registry.register("agent-runtime", "acme.v1.agent-runtime.broken", lambda: object())
+    config = {
+        "agent_runtimes": {"b": {"type": "acme.v1.agent-runtime.broken"}},
+        "agents": {"a": {"runtime": "b", "system_prompt": "x"}},
+    }
+    with pytest.raises(ConfigError) as e:
+        compose(MatrixConfig.model_validate(config), registry=registry)
+    assert [p.path for p in e.value.problems] == ["matrix.agent_runtimes.b"]
+    assert e.value.complete is False  # the agent on it was not checked
+
+
+def test_every_built_in_runtime_keeps_its_port() -> None:
+    """Built through the registry, which holds each to its port as it builds it."""
+    pytest.importorskip("hardline")
+    pytest.importorskip("claude_agent_sdk")
+    from matrix import AgentRuntime, ModelRuntime
+
+    registry = default_registry(discover=False)
+    ports = {"agent-runtime": AgentRuntime, "model-runtime": ModelRuntime}
+    needs = {
+        "cwd": None,
+        "models": {"models": {"q": {"backend": "mock", "model": "q", "family": "q"}}},
+    }
+    for point, port in ports.items():
+        entries = registry.entries(point)
+        assert entries
+        for entry in entries:
+            assert isinstance(registry.create(point, entry.type_url, needs=needs), port)
+
+
+# --- stores and observers are held to their ports; points have owners ----------------------
+
+
+class _NoLoad:
+    """A third party's store that forgot ``load``."""
+
+    def open(self, run: object) -> object:
+        raise NotImplementedError
+
+    def describe(self, run_id: str) -> dict[str, object]:
+        raise NotImplementedError
+
+    def runs(self) -> list[str]:
+        raise NotImplementedError
+
+
+class _Silent:
+    """A third party's observer that receives nothing."""
+
+    def on_events(self, event: object) -> None: ...
+
+
+@pytest.mark.parametrize(
+    ("point", "cls", "said"), [("store", _NoLoad, "load"), ("observer", _Silent, "on_event")]
+)
+def test_a_store_or_observer_class_that_breaks_its_port_is_refused_when_registered(
+    point: str, cls: type, said: str
+) -> None:
+    """As runtimes are: a store without ``load`` composed and failed at ``--from``; an
+    observer without ``on_event`` was logged as failing on every event of every run."""
+    with pytest.raises(ConfigError, match=said) as e:
+        Registry().register(point, f"acme.v1.{point}.x", cls)
+    assert e.value.fix
+
+
+@pytest.mark.parametrize("point", ["store", "observer"])
+def test_a_store_or_observer_built_as_something_else_is_a_config_error(point: str) -> None:
+    registry = Registry().register(point, f"acme.v1.{point}.x", lambda: object())
+    with pytest.raises(ConfigError, match="not a") as e:
+        registry.create(point, f"acme.v1.{point}.x", where="matrix.x")
+    assert e.value.exit_code == 3
+
+
+def test_every_built_in_store_and_observer_keeps_its_port(tmp_path: Any) -> None:
+    from matrix import ConstructStore, Observer
+
+    registry = default_registry(discover=False)
+    for entry in registry.entries("store"):
+        config = {"root": str(tmp_path)} if entry.config is not None else None
+        assert isinstance(registry.create("store", entry.type_url, config), ConstructStore)
+    for entry in registry.entries("observer"):
+        assert isinstance(registry.create("observer", entry.type_url), Observer)
+
+
+def test_each_point_records_its_owner_and_another_cannot_redeclare_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``add_point`` recorded no owner, so any extension could declare another's point, with
+    a port of its own (ix.md, D30). The owner is the distribution that declared it first;
+    matrix owns its own points."""
+
+    def ix(registry: Registry) -> None:
+        registry.add_point("ix.subject")
+
+    def squatter(registry: Registry) -> None:
+        registry.register("component", "squat.v1.x", build)
+        registry.add_point("ix.subject", port=Settings)
+
+    eps = [_entry_point("ix", ix, "ix"), _entry_point("squat", squatter, "squat")]
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
+    registry = load_extensions(Registry())
+    assert registry.owners["ix.subject"] == "ix"
+    assert registry.owners["agent-runtime"] == "matrix"
+    assert "ix.subject" not in registry.ports  # the squatter's port did not land
+    assert ("component", "squat.v1.x") not in registry  # quarantined whole
+    (failure,) = registry.failures
+    assert failure.extension == "squat" and "ix.subject" in failure.error and "ix" in failure.error
+    registry.add_point("ix.subject")  # code that composes directly is trusted, as for type URLs
+    assert registry.owners["ix.subject"] == "ix"
+
+
+def test_a_point_under_a_distribution_s_name_is_its_own_whoever_declared_it_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """'aaa' sorts first and declares ``ix.subject`` with a port of its own; ix keeps its
+    point anyway, as matrix keeps its type URLs, and the impostor is dropped whole."""
+
+    def impostor(registry: Registry) -> None:
+        registry.add_point("ix.subject", port=Settings)
+        registry.register("component", "aaa.v1.x", build)
+
+    def ix(registry: Registry) -> None:
+        registry.add_point("ix.subject")
+
+    eps = [_entry_point("aaa", impostor, "aaa"), _entry_point("ix", ix, "ix")]
+    monkeypatch.setattr("matrix.composition.container.entry_points", lambda group: eps)
+    registry = load_extensions(Registry())
+    assert registry.owners["ix.subject"] == "ix" and "ix.subject" not in registry.ports
+    assert ("component", "aaa.v1.x") not in registry
+    (failure,) = registry.failures
+    assert failure.extension == "aaa" and "ix.subject" in failure.error

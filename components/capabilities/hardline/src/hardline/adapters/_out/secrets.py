@@ -24,9 +24,12 @@ class EnvFileSecretResolver:
         if scheme == "file":
             path = Path(target).expanduser()
             try:
-                value = path.read_text().strip()
+                value = path.read_text(encoding="utf-8").strip()
             except OSError as e:
                 raise SecretError(f"secret {reference!r}: cannot read {path}: {e.strerror}") from e
+            except UnicodeDecodeError:
+                # The bytes are the secret's, so they are not quoted.
+                raise SecretError(f"secret {reference!r}: {path} is not UTF-8 text") from None
             if not value:
                 raise SecretError(f"secret {reference!r}: {path} is empty")
             return value

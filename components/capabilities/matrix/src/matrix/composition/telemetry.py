@@ -1,8 +1,8 @@
 """Telemetry: OpenTelemetry, configured the standard way, and the record's own event log.
 
 matrix emits events; the ``otel`` observer turns them into spans and metrics through the
-OpenTelemetry API, which is a base dependency and does nothing until an SDK is configured.
-The SDK and the OTLP exporters are the ``otel`` extra.
+OpenTelemetry API, which does nothing until an SDK is configured. The SDK and the OTLP
+exporters are dependencies too, imported only when export is asked for.
 
 **A library uses the API; an application installs the SDK** (OpenTelemetry's own rule).
 Composing, wiring and running never install a tracer or meter provider. When the environment
@@ -15,13 +15,15 @@ not ``true``:
 * an application entry point calls :func:`configure_telemetry` to install the SDK from those
   variables: ``matrix run`` does, and so may a tool built on matrix. It installs the
   exporters the two ``*_EXPORTER`` variables name (``otlp``, the default, or ``console``),
-  OTLP over ``OTEL_EXPORTER_OTLP_PROTOCOL`` (``http/protobuf``, the default, or ``grpc``),
-  and a resource from ``OTEL_SERVICE_NAME`` and ``OTEL_RESOURCE_ATTRIBUTES``
+  OTLP over http/protobuf only (owner ruling 2026-10-22: no gRPC; a signal whose
+  ``OTEL_EXPORTER_OTLP_*PROTOCOL`` says ``grpc`` is not exported, and a warning says what to
+  set), and a resource from ``OTEL_SERVICE_NAME`` and ``OTEL_RESOURCE_ATTRIBUTES``
   (``service.name`` is ``matrix`` when neither sets it). A program that configures
   OpenTelemetry itself does not call it.
 
-When the environment asks for export and the extra is missing, nothing is exported, and
-:func:`warnings` says so as a problem every ``matrix`` document carries; it is never silent.
+When the environment asks for export and an install lacks the SDK or the exporters, nothing
+is exported, and :func:`warnings` says so as a problem every ``matrix`` document carries; it
+is never silent.
 
 **With nothing configured**, a run given a store that keeps events (the JSONL store) still
 writes them into its record, ``events.jsonl``: the local sink.
@@ -35,7 +37,7 @@ from dataclasses import dataclass, field
 from importlib.util import find_spec
 from typing import TYPE_CHECKING, Any
 
-from matrix.domain.errors import install_extra, missing_extra
+from matrix.domain.errors import missing_dependency, reinstall
 from matrix.domain.problems import Problem, problem
 
 if TYPE_CHECKING:
@@ -50,7 +52,8 @@ _ENDPOINTS = (
 _EXPORTERS = {"traces": "OTEL_TRACES_EXPORTER", "metrics": "OTEL_METRICS_EXPORTER"}
 #: The exporters matrix installs; the spec's others (zipkin, prometheus) are reported.
 _SUPPORTED = frozenset({"otlp", "console", "none"})
-_PROTOCOLS = frozenset({"http/protobuf", "grpc"})
+#: The one OTLP protocol matrix exports over (owner ruling 2026-10-22: no gRPC).
+_PROTOCOLS = frozenset({"http/protobuf"})
 
 
 def _true(value: str | None) -> bool:
@@ -75,7 +78,7 @@ def requested(environ: Mapping[str, str] | None = None) -> str | None:
     return None
 
 
-#: What the ``otel`` extra installs that export needs.
+#: What export needs beyond the API: the SDK and the OTLP/HTTP exporter, imported only then.
 _SDK = "opentelemetry.sdk"
 _OTLP = "opentelemetry.exporter.otlp.proto.http"
 
@@ -100,8 +103,8 @@ def _missing(environ: Mapping[str, str]) -> str | None:
 
 
 def warnings(environ: Mapping[str, str] | None = None) -> tuple[Problem, ...]:
-    """What a reader should know about telemetry before a run: export asked for without the
-    extra that does it, or a variable naming what matrix does not install."""
+    """What a reader should know about telemetry before a run: export asked for in an install
+    that lacks what does it, or a variable naming what matrix does not install."""
     env = os.environ if environ is None else environ
     variable = requested(env)
     if variable is None:
@@ -111,10 +114,10 @@ def warnings(environ: Mapping[str, str] | None = None) -> tuple[Problem, ...]:
         return (
             problem(
                 variable,
-                "extra_missing",
-                f"{variable} asks for OpenTelemetry export, but matrix[otel] is not installed "
-                f"({lacking} is missing): nothing will be exported",
-                fix=install_extra("otel"),
+                "dependency_missing",
+                f"{variable} asks for OpenTelemetry export, but {lacking} is not installed: "
+                "nothing will be exported",
+                fix=reinstall(),
                 got=env.get(variable),
             ),
         )
@@ -131,20 +134,48 @@ def warnings(environ: Mapping[str, str] | None = None) -> tuple[Problem, ...]:
                         got=exporter,
                     )
                 )
-    for name in ("OTEL_EXPORTER_OTLP_PROTOCOL", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"):
+    governs: dict[str, list[str]] = {}
+    for signal in _EXPORTERS:
+        governs.setdefault(_protocol_variable(signal, env), []).append(signal)
+    for name, signals in governs.items():
         protocol = env.get(name)
-        if protocol and protocol not in _PROTOCOLS:
+        if protocol == "grpc":
             found.append(
                 problem(
                     name,
                     "invalid_value",
-                    f"{name} is {protocol!r}; matrix exports OTLP over http/protobuf or grpc, "
-                    "and uses http/protobuf",
+                    f"{name} is 'grpc'; matrix exports OTLP over http/protobuf only, so it "
+                    f"exports no {' or '.join(signals)} over OTLP",
+                    fix=f"{name}=http/protobuf, with the endpoint at the collector's OTLP/HTTP "
+                    "port (4318 by default)",
+                    allowed=sorted(_PROTOCOLS),
+                    got=protocol,
+                )
+            )
+        elif protocol and protocol not in _PROTOCOLS:
+            found.append(
+                problem(
+                    name,
+                    "invalid_value",
+                    f"{name} is {protocol!r}; matrix exports OTLP over http/protobuf only, "
+                    "and uses it",
                     allowed=sorted(_PROTOCOLS),
                     got=protocol,
                 )
             )
     return tuple(found)
+
+
+def _protocol_variable(signal: str, env: Mapping[str, str]) -> str:
+    """The variable that names ``signal``'s OTLP protocol: its own, when set, else the
+    shared one."""
+    own = f"OTEL_EXPORTER_OTLP_{signal.upper()}_PROTOCOL"
+    return own if env.get(own) else "OTEL_EXPORTER_OTLP_PROTOCOL"
+
+
+def _grpc(signal: str) -> bool:
+    """Whether the environment asks for ``signal`` over gRPC, which matrix refuses."""
+    return os.environ.get(_protocol_variable(signal, os.environ)) == "grpc"
 
 
 @dataclass
@@ -165,6 +196,33 @@ class Telemetry:
         self._providers.clear()
 
 
+def current_trace() -> tuple[str, str] | None:
+    """The trace and span ids, as hex, of the OpenTelemetry span current in the calling task,
+    or None when there is none (or no SDK made one): what a session row records. matrix mints
+    no ids; with the API alone every span is invalid, and this is None."""
+    from opentelemetry import trace
+
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return None
+    return trace.format_trace_id(context.trace_id), trace.format_span_id(context.span_id)
+
+
+def trace_environment() -> dict[str, str]:
+    """The OpenTelemetry context current in the calling task, as the environment variables a
+    child process reads it from (``TRACEPARENT``, ``TRACESTATE``; OpenTelemetry's
+    environment-variable carrier, the W3C header names upper-cased), through the configured
+    propagators. Empty when no span is current, or no SDK made one, so a child is handed
+    nothing then: what the ``claude-sdk`` runtime passes the CLI it starts."""
+    from opentelemetry import propagate
+
+    carrier: dict[str, str] = {}
+    propagate.inject(carrier)
+    if "traceparent" not in carrier:
+        return {}
+    return {key.upper(): value for key, value in carrier.items()}
+
+
 def configure_telemetry(
     *,
     service_name: str | None = None,
@@ -179,9 +237,9 @@ def configure_telemetry(
     nothing this does nothing. ``endpoint`` exports OTLP there, and ``console`` prints to
     stderr, whatever the variables say. ``OTEL_SDK_DISABLED=true`` turns all of it off.
 
-    Raises ConfigError without ``matrix[otel]`` when ``endpoint`` or ``console`` asked for
-    export; when only the environment did, the returned :class:`Telemetry` carries the
-    warning instead.
+    Raises ConfigError in an install that lacks the SDK or the exporters when ``endpoint`` or
+    ``console`` asked for export; when only the environment did, the returned
+    :class:`Telemetry` carries the warning instead.
     """
     if _true(os.environ.get("OTEL_SDK_DISABLED")):
         return Telemetry()
@@ -189,9 +247,9 @@ def configure_telemetry(
     if not (endpoint or console or by_environment):
         return Telemetry()
     if (endpoint or console) and not _installed(_SDK):
-        raise missing_extra("otel", needed_by="telemetry", module=_SDK)
+        raise missing_dependency(needed_by="telemetry", module=_SDK)
     if endpoint and not _installed(_OTLP):
-        raise missing_extra("otel", needed_by="OTLP export", module=_OTLP)
+        raise missing_dependency(needed_by="OTLP export", module=_OTLP)
     if not _installed(_SDK):  # only the environment asked: say so, and go on
         return Telemetry(warnings=warnings())
     plan = _plan(endpoint=endpoint, console=console, by_environment=by_environment)
@@ -211,6 +269,8 @@ def _plan(*, endpoint: str | None, console: bool, by_environment: bool) -> dict[
             plan[signal].add("otlp")
         if console:
             plan[signal].add("console")
+        if _grpc(signal):  # refused, and said in the warnings
+            plan[signal].discard("otlp")
     return plan
 
 
@@ -229,11 +289,7 @@ def _install(
     )
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import (
-        BatchSpanProcessor,
-        ConsoleSpanExporter,
-        SimpleSpanProcessor,
-    )
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
     attributes: dict[str, str] = {}
     named = os.environ.get("OTEL_SERVICE_NAME") or "service.name=" in os.environ.get(
@@ -249,13 +305,15 @@ def _install(
     if plan["traces"]:
         tracer_provider = TracerProvider(resource=resource)
         for name in sorted(plan["traces"]):
-            if name == "console":
-                # stderr: stdout is the command's own document
-                console = ConsoleSpanExporter(out=sys.stderr)
-                tracer_provider.add_span_processor(SimpleSpanProcessor(console))
-            else:
-                exporter = _otlp("traces", endpoint)
-                tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
+            # Batched, the console too: an exporter writes from the processor's thread, never
+            # on the task whose span ends, so the otel observer's `around` does no I/O that
+            # can wait. The console writes to stderr: stdout is the command's own document.
+            exporter = (
+                ConsoleSpanExporter(out=sys.stderr)
+                if name == "console"
+                else _otlp("traces", endpoint)
+            )
+            tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
             installed.append(f"traces:{name}")
         trace.set_tracer_provider(tracer_provider)
         providers.append(tracer_provider)
@@ -276,19 +334,10 @@ def _install(
 
 
 def _otlp(signal: str, endpoint: str | None) -> Any:
-    """An OTLP exporter for ``signal`` over the protocol the environment names. Without an
-    ``endpoint`` the exporter reads the ``OTEL_EXPORTER_OTLP_*`` variables itself."""
-    protocol = (
-        os.environ.get(f"OTEL_EXPORTER_OTLP_{signal.upper()}_PROTOCOL")
-        or os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL")
-        or "http/protobuf"
-    )
-    grpc = protocol == "grpc"
+    """An OTLP exporter for ``signal`` over http/protobuf, the one protocol matrix exports
+    over. Without an ``endpoint`` the exporter reads the ``OTEL_EXPORTER_OTLP_*`` variables
+    itself."""
     try:
-        if signal == "traces" and grpc:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-
-            return OTLPSpanExporter(endpoint=endpoint) if endpoint else OTLPSpanExporter()
         if signal == "traces":
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
                 OTLPSpanExporter as HttpSpanExporter,
@@ -296,10 +345,6 @@ def _otlp(signal: str, endpoint: str | None) -> Any:
 
             url = f"{endpoint.rstrip('/')}/v1/traces" if endpoint else None
             return HttpSpanExporter(endpoint=url) if url else HttpSpanExporter()
-        if grpc:
-            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-
-            return OTLPMetricExporter(endpoint=endpoint) if endpoint else OTLPMetricExporter()
         from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
             OTLPMetricExporter as HttpMetricExporter,
         )
@@ -307,6 +352,4 @@ def _otlp(signal: str, endpoint: str | None) -> Any:
         url = f"{endpoint.rstrip('/')}/v1/metrics" if endpoint else None
         return HttpMetricExporter(endpoint=url) if url else HttpMetricExporter()
     except ImportError as e:
-        raise missing_extra(
-            "otel", needed_by=f"OTLP export of {signal}", module="opentelemetry.exporter.otlp"
-        ) from e
+        raise missing_dependency(needed_by=f"OTLP export of {signal}", module=_OTLP) from e

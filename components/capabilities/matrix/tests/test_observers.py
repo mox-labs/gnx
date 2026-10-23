@@ -61,6 +61,9 @@ async def test_the_jsonl_observer_writes_one_document_per_event(tmp_path: Path) 
         "matrix.run.end",
     ]
     assert {d["schema"] for d in lines} == {"matrix.v1.event"}
+    assert {frozenset(d) for d in lines} == {
+        frozenset({"schema", "name", "time", "run_id", "span", "parent", "component", "fields"})
+    }
     assert {d["run_id"] for d in lines} == {run.run_id}
     assert lines[-1]["fields"]["status"] == "completed"
 
@@ -100,3 +103,26 @@ def test_observers_are_composed_from_config_with_their_options(tmp_path: Path) -
     jsonl.on_event(Event("acme.tick", span="s"))
     jsonl.close()
     assert json.loads(path.read_text())["name"] == "acme.tick"
+
+
+def test_the_jsonl_observer_touches_no_file_until_an_event_arrives(tmp_path: Path) -> None:
+    """``matrix check`` and ``matrix plan`` call nothing, yet composing the ``jsonl`` observer
+    created its file and folders, and nothing ever closed it."""
+    path = tmp_path / "nested" / "events.jsonl"
+    config = MatrixConfig.model_validate({"observers": [{"type": "jsonl", "path": str(path)}]})
+    compose(config, registry=default_registry(discover=False))
+    assert not (tmp_path / "nested").exists()
+
+
+async def test_the_jsonl_observer_closes_its_file_when_a_run_ends_and_opens_it_again(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    observer = JsonlObserver(path)
+    executor = Executor([observer])
+    await executor.run(wire({"a": Step(_ok, provides=OUT)}))
+    assert observer.closed
+    await executor.run(wire({"a": Step(_ok, provides=OUT)}))
+    assert observer.closed
+    names = [json.loads(line)["name"] for line in path.read_text().splitlines()]
+    assert names.count("matrix.run.start") == 2 and names[-1] == "matrix.run.end"

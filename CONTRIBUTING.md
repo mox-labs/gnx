@@ -28,15 +28,17 @@ enforce this — they share the same pattern, so they cannot disagree.
 
 ## Gates: the justfile is the single source of truth
 
-The hook and CI both call `just`, so a local check and the CI check cannot
-drift.
+The hook and CI both call `just` (`just check` and `just ci`), so a local check
+and the CI check cannot drift.
 
 ```sh
 just              # list every gate
 just check        # what every commit must pass: the docsite, a staged secret scan,
-                  # the identity grammar, component payloads, the plugin projection
-just ci           # the full CI gate: also the capability packages' tests, lint,
-                  # strict typecheck and standalone install, and the lab
+                  # the identity grammar, component payloads, the plugin projection,
+                  # and the capability packages' lint and format
+just ci           # the full CI gate: also the capability packages' tests, their strict
+                  # typecheck, each installed alone from its wheel and smoke-tested,
+                  # and the lab
 just lab          # validate and plan the lab's experiments; nothing is run
 ```
 
@@ -47,9 +49,22 @@ from there, or through `just capabilities-test`:
 uv --project components/capabilities run pytest components/capabilities/ix/tests -q
 ```
 
-No test reaches a live model: `components/capabilities/conftest.py` refuses every call
-where an agent session or a model call would spend money, and fails the test that made it.
-Use matrix's `mock` runtime, or a fake, instead.
+No test runs a live model session, and the test process reaches no host but this machine:
+`components/capabilities/conftest.py` refuses every call where an agent session or a model call
+would spend money, every socket connection or datagram in the test process that is not to
+loopback, every lookup through `socket.getaddrinfo`, `gethostbyname` or `gethostbyname_ex` of a
+name other than `localhost`, and a `k6` started directly with a target that is not loopback, and
+fails the test that made it. It does not see a child process other than `k6` (`git`, `uv`,
+`curl`, a container), nor `k6` started through a shell; its docstring lists each route it does
+not cover, and a test that takes one is reviewed for it. Use matrix's `mock` runtime, a fake, or
+a server of the test's own on 127.0.0.1 instead. A test that calls third-party hosts on purpose
+is marked `network` and runs only when asked, as recon's live tests do (`just recon-live`).
+
+`just capabilities-test` lists every skip with its reason, and fails on a skip that
+conftest.py's `EXPECTED_SKIPS` does not name: a test that cannot run here is either made to
+run or named there with why. So it fails on a machine without `k6` on `PATH`, or without a
+docker daemon running with `alpine:3.20` pulled: ix's end-to-end k6 tests and its live
+compose test need them (see Tools).
 
 ## One-time setup: wire the hooks
 
@@ -70,5 +85,7 @@ message on every commit. CI mirrors both.
 - [just](https://just.systems) — the gate runner.
 - [gitleaks](https://github.com/gitleaks/gitleaks) — the secret scanner.
 - [uv](https://docs.astral.sh/uv/) — the capability packages' workspace.
-- [k6](https://k6.io) — only to run ix's service experiments (`ix run` on an
-  `http-load` probe); no gate needs it.
+- [k6](https://k6.io) — ix's service experiments (`ix run` on an `http-load` probe), and
+  ix's end-to-end tests in `just ci`.
+- [docker](https://docs.docker.com/compose/) with compose — ix's `compose` environment, and
+  its live test in `just ci`, which needs `alpine:3.20` pulled.

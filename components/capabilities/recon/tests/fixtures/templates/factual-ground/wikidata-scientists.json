@@ -1,0 +1,59 @@
+{
+ "head": {
+  "vars": [
+   "person",
+   "personLabel",
+   "birth"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q139010143"
+    },
+    "birth": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2012-01-01T00:00:00Z"
+    },
+    "personLabel": {
+     "type": "literal",
+     "value": "Q139010143"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q140045127"
+    },
+    "birth": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2010-07-16T00:00:00Z"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Oliver Straus"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q141192875"
+    },
+    "birth": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2008-08-01T00:00:00Z"
+    },
+    "personLabel": {
+     "type": "literal",
+     "value": "Q141192875"
+    }
+   }
+  ]
+ }
+}

@@ -18,7 +18,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from ix.adapters._out.matrix_documents import GENRE_GROUP, GenreFiles
+from ix.adapters._out.matrix_documents import GENRE_GROUP, GenreFiles, KindFiles, read_experiment
 from ix.composition import type_url_problem
 from ix.domain.genre import (
     MUST_SETTABLE,
@@ -27,6 +27,7 @@ from ix.domain.genre import (
     genres,
     narrowing_violations,
 )
+from ix.domain.kind import kinds
 from ix.domain.problem import problem as a_problem
 from ix.domain.schema import DeclarationFile
 
@@ -150,6 +151,24 @@ class TestGenreRecord:
         with a hole in it."""
         with pytest.raises(ValidationError, match="refers to"):
             Genre.model_validate(_genre(comparisons={"superiority": form}))
+
+    @pytest.mark.parametrize(
+        "form",
+        ["{variant} beats {control} {}", "{variant} beats {control", "{variant} beats }",
+         "{variant.upper} beats {control}", "{variant[0]} beats {control}"],
+    )  # fmt: skip
+    def test_a_hypothesis_ix_cannot_fill_is_refused_when_the_genre_loads(self, form: str) -> None:
+        """Regression: the check saw only ``{identifier}``, so a positional ``{}`` or a lone
+        brace loaded, then raised a bare ValueError from every validate and plan of every
+        experiment that named the genre."""
+        with pytest.raises(ValidationError, match="ix can fill|refers to"):
+            Genre.model_validate(_genre(comparisons={"superiority": form}))
+
+    def test_a_literal_brace_in_a_hypothesis_is_written_doubled(self) -> None:
+        genre = Genre.model_validate(
+            _genre(comparisons={"superiority": "{variant} beats {control} on {{a set}}"})
+        )
+        assert not genre.needs_margin("superiority")
 
     def test_a_comparison_needs_a_margin_exactly_when_its_sentence_states_one(self) -> None:
         genre = Genre.model_validate(_genre())
@@ -651,15 +670,36 @@ class TestGenreExtensionPoint:
         assert found.get("lab.v1.genre.gate") is not None
         assert genres(library.files(), grammar=type_url_problem).get("lab.v1.genre.gate") is None
 
-    def test_a_genre_file_is_data_and_loads_no_code(self, tmp_path: Path) -> None:
-        """A YAML tag that would construct a Python object is a refused file, not a call."""
-        (tmp_path / "genres").mkdir()
+    @pytest.mark.parametrize("read", ["genre", "kind", "experiment"])
+    def test_a_file_is_data_and_runs_no_code(self, tmp_path: Path, read: str) -> None:
+        """A YAML tag that would construct a Python object is a refused file, not a call:
+        for a genre file, a kind file and the experiment file alike."""
         marker = tmp_path / "ran"
-        (tmp_path / "genres" / "evil.yaml").write_text(
-            f"name: !!python/object/apply:pathlib.Path.touch [{str(marker)!r}]\n"
-        )
-        found = genres(GenreFiles(packages=[]).files(str(tmp_path)), grammar=type_url_problem)
+        payload = f"name: !!python/object/apply:builtins.open [{str(marker)!r}, w]\n"
+        # The payload is live: an unsafe loader creates the file. A tag that an unsafe loader
+        # could not construct either would let this test pass over an unsafe loader.
+        live = tmp_path / "live"
+        yaml.unsafe_load(payload.replace(str(marker), str(live)))["name"].close()
+        assert live.exists()
+
+        if read == "genre":
+            (tmp_path / "genres").mkdir()
+            (tmp_path / "genres" / "evil.yaml").write_text(payload)
+            files = GenreFiles(packages=[]).files(str(tmp_path))
+            found = genres(files, grammar=type_url_problem)
+            refused = [p[0].kind for p in found.rejected.values()]
+            assert found.genres == {}
+        elif read == "kind":
+            (tmp_path / "kinds").mkdir()
+            (tmp_path / "kinds" / "evil.yaml").write_text(payload)
+            listed = kinds(KindFiles(packages=[]).files(str(tmp_path)), grammar=type_url_problem)
+            refused = [p[0].kind for p in listed.rejected.values()]
+            assert listed.kinds == {}
+        else:
+            (tmp_path / "experiment.yaml").write_text(payload)
+            experiment = read_experiment(str(tmp_path))
+            refused = [p.kind for p in experiment.problems]
+            assert experiment.experiment is None
         assert not marker.exists()
-        assert found.genres == {}
         # matrix's loader reads YAML safely: the tag is a syntax it refuses.
-        assert [p[0].kind for p in found.rejected.values()] == ["yaml_syntax"]
+        assert refused == ["yaml_syntax"]

@@ -2,7 +2,7 @@
 type_url: gnx.dev.v1.synthesis
 kind: Agent
 maturity: shipped
-source: ../../..//mox/products/cix/plugins/craft-research/agents/synthesis.md
+source: craft-research/agents/synthesis.md  # relative to the intake source root (intake_payload.py --source-root)
 provides:
   - gnx.dev.v1.synthesis-report
   - research.cross-source-integration

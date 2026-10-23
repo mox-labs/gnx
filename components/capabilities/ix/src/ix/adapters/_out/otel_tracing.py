@@ -1,17 +1,23 @@
 """ix's own spans, through the OpenTelemetry API, under the instrumentation scope ``ix``.
 
-ix is a library: it creates spans through the API and never installs a provider, so they go
-wherever the application's provider sends them, and nowhere when there is none. The ``ix``
-command installs one from the standard ``OTEL_*`` variables through matrix
-(``matrix.configure_telemetry``); a program embedding ix configures OpenTelemetry itself.
+ix creates spans through the API, so they go wherever the application's provider sends them,
+and nowhere when there is none. The ``ix`` command installs one from the standard ``OTEL_*``
+variables through matrix (``matrix.configure_telemetry``); a program embedding ix configures
+OpenTelemetry itself. The one provider ix installs is for a run whose sensors read spans when
+none is installed (:func:`keep_spans`): it has no exporter, so the spans stay in the process.
 
-The spans are ix's work: ``ix.plan``, ``ix.run``, ``ix.trial`` and ``ix.sensor``. The agent
+The spans are ix's work: ``ix.plan``, ``ix.run``, ``ix.environment``, ``ix.trial`` and
+``ix.sensor``. The agent
 sessions inside a trial are matrix's (``invoke_agent``, ``execute_tool``), and matrix's
-``invoke_workflow`` for the run sits under ``ix.run``. A sensor's readings are
-``gen_ai.evaluation.result`` events with the GenAI conventions' ``gen_ai.evaluation.name``,
-``gen_ai.evaluation.score.value`` and ``gen_ai.evaluation.score.label``, as read from
-``opentelemetry-semantic-conventions`` 0.65b0 on 2026-10-19 (moved since to the GenAI
-conventions' own repository, status Development).
+``invoke_workflow`` for the run sits under ``ix.run``.
+
+**The conventions are named here and nowhere else.** A metric a sensor read
+(:meth:`_Span.evaluated`) is a ``gen_ai.evaluation.result`` event with the GenAI
+conventions' ``gen_ai.evaluation.name``, ``gen_ai.evaluation.score.value`` and
+``gen_ai.evaluation.score.label``, as read from ``opentelemetry-semantic-conventions``
+0.65b0 on 2026-10-19 (moved since to the GenAI conventions' own repository, status
+Development); a failure's reason (:meth:`_Span.failed`, and a metric that could not be read)
+is the general conventions' ``error.type``. When the conventions move, this file does.
 """
 
 from __future__ import annotations
@@ -25,6 +31,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 SCOPE = "ix"
+
+#: The GenAI conventions' event for one evaluation, and its attributes.
+EVALUATION = "gen_ai.evaluation.result"
+EVALUATION_NAME = "gen_ai.evaluation.name"
+SCORE_VALUE = "gen_ai.evaluation.score.value"
+SCORE_LABEL = "gen_ai.evaluation.score.label"
+#: The general conventions' attribute for the kind of a failure.
+ERROR_TYPE = "error.type"
 
 
 def _plain(attributes: dict[str, Any]) -> dict[str, Any]:
@@ -50,8 +64,24 @@ class _Span:
     def set(self, **attributes: Any) -> None:
         self._span.set_attributes(_plain(attributes))
 
-    def event(self, name: str, /, **attributes: Any) -> None:
-        self._span.add_event(name, _plain(attributes))
+    def failed(self, reason: str) -> None:
+        self._span.set_attribute(ERROR_TYPE, reason)
+
+    def evaluated(
+        self,
+        metric: str,
+        *,
+        score: float | None = None,
+        label: str | None = None,
+        failure: str | None = None,
+    ) -> None:
+        attributes = {
+            EVALUATION_NAME: metric,
+            SCORE_VALUE: score,
+            SCORE_LABEL: label,
+            ERROR_TYPE: failure,
+        }
+        self._span.add_event(EVALUATION, _plain(attributes))
 
 
 class OtelTracer:
@@ -69,3 +99,19 @@ class OtelTracer:
         child. An exception that leaves it marks it as an error."""
         with self._tracer.start_as_current_span(name, attributes=_plain(attributes)) as span:
             yield _Span(span)
+
+
+def keep_spans() -> None:
+    """Make the spans of this process readable inside it: the tracer provider installed is
+    used as it is, exporters and all; when there is none, one with no span processor is
+    installed, so a span is kept only by what attaches to it (a sensor's capture) and nothing
+    is exported. OpenTelemetry lets a process install one provider, so a program that installs
+    its own does so before a run. Without the SDK none can be: a reading of the spans then
+    says so."""
+    if hasattr(trace.get_tracer_provider(), "add_span_processor"):
+        return
+    try:
+        from opentelemetry.sdk.trace import TracerProvider
+    except ImportError:
+        return
+    trace.set_tracer_provider(TracerProvider())

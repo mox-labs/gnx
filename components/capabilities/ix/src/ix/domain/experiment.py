@@ -72,6 +72,14 @@ ESTIMATORS: dict[str, tuple[str, ...]] = {
     "series": ("mean", "median", "min", "max"),
 }
 
+
+def default_estimator(shape: str, genre_estimator: str = "mean") -> str:
+    """The estimator a metric of ``shape`` combines its trials by when none is written: a
+    boolean or a count as a rate, whatever the genre says; anything else as the genre
+    says. The one default the design, validation and the analysis share."""
+    return ESTIMATORS[shape][0] if shape in ("boolean", "count") else genre_estimator
+
+
 #: Experiment fields that are prose for a reader. A change to one changes the experiment's
 #: digest and not the plan's.
 PROSE_FIELDS = frozenset({"question", "rationale"})
@@ -202,18 +210,16 @@ class SubjectConfig(Record):
     """One subject as the experiment configures it: the subject kind it is (a registered
     type) and that kind's options. The configuration under test.
 
-    ``effects`` adds to what the kind declares it does; it can remove nothing.
     """
 
     kind: str = Field(min_length=1)
     description: str = ""
-    effects: tuple[str, ...] = ()
     options: dict[str, Any] = {}
 
     @model_validator(mode="before")
     @classmethod
     def _options(cls, data: Any) -> Any:
-        return _fold(data, frozenset({"kind", "description", "effects", "options"}))
+        return _fold(data, frozenset({"kind", "description", "options"}))
 
 
 class ProbeConfig(Record):
@@ -226,14 +232,13 @@ class ProbeConfig(Record):
 
     id: str = ""
     kind: str = Field(min_length=1)
-    effects: tuple[str, ...] = ()
     truth: dict[str, Any] = {}
     options: dict[str, Any] = {}
 
     @model_validator(mode="before")
     @classmethod
     def _options(cls, data: Any) -> Any:
-        return _fold(data, frozenset({"id", "kind", "effects", "truth", "options"}))
+        return _fold(data, frozenset({"id", "kind", "truth", "options"}))
 
 
 #: Where probes are read from when the experiment writes none inline: this folder beside the
@@ -244,7 +249,7 @@ PROBES_FOLDER = "probes"
 PROBE_SUFFIXES = (".md", ".yaml", ".yml")
 
 #: The keys a probe file uses for the probe itself; every other key is the probe's truth.
-_PROBE_KEYS = frozenset({"id", "kind", "effects", "truth", "options", "body", "prompt"})
+_PROBE_KEYS = frozenset({"id", "kind", "truth", "options", "body", "prompt"})
 
 
 class ProbeFile(Record):
@@ -252,15 +257,14 @@ class ProbeFile(Record):
     frontmatter, then the prompt) or a YAML file.
 
     The text after a markdown file's frontmatter, its ``body``, is the ``prompt``. ``id``
-    (default: the file's name without its suffix), ``kind`` (default ``prompt``), ``effects``
-    and ``options`` are the probe's own; every other key is its truth, beside any written
+    (default: the file's name without its suffix), ``kind`` (default ``prompt``) and
+    ``options`` are the probe's own; every other key is its truth, beside any written
     under ``truth:``. A ``prompt`` probe's text is its ``prompt`` option even when empty, so
     validation can say it is missing.
     """
 
     id: str = ""
     kind: str = Field(default="prompt", min_length=1)
-    effects: tuple[str, ...] = ()
     truth: dict[str, Any] = {}
     options: dict[str, Any] = {}
     prompt: str | None = Field(default=None, alias="body")
@@ -282,9 +286,7 @@ class ProbeFile(Record):
         options = dict(self.options)
         if self.prompt is not None and (self.prompt.strip() or self.kind == "prompt"):
             options["prompt"] = self.prompt
-        return ProbeConfig(
-            id=self.id, kind=self.kind, effects=self.effects, truth=self.truth, options=options
-        )
+        return ProbeConfig(id=self.id, kind=self.kind, truth=self.truth, options=options)
 
 
 class SensorConfig(Record):
@@ -292,13 +294,12 @@ class SensorConfig(Record):
     give it options, or to say which of two sensors provides a metric both could."""
 
     kind: str = Field(min_length=1)
-    effects: tuple[str, ...] = ()
     options: dict[str, Any] = {}
 
     @model_validator(mode="before")
     @classmethod
     def _options(cls, data: Any) -> Any:
-        return _fold(data, frozenset({"kind", "effects", "options"}))
+        return _fold(data, frozenset({"kind", "options"}))
 
 
 class EnvironmentConfig(Record):
@@ -306,21 +307,12 @@ class EnvironmentConfig(Record):
     environment kind (a registered type) and its options."""
 
     kind: str = Field(default="none", min_length=1)
-    effects: tuple[str, ...] = ()
     options: dict[str, Any] = {}
 
     @model_validator(mode="before")
     @classmethod
     def _options(cls, data: Any) -> Any:
-        return _fold(data, frozenset({"kind", "effects", "options"}))
-
-
-class Spend(Record):
-    """The most a run may cost, and the author's estimate of one trial's cost."""
-
-    ceiling: float | None = Field(default=None, ge=0)
-    per_trial: float | None = Field(default=None, ge=0)
-    currency: str = "USD"
+        return _fold(data, frozenset({"kind", "options"}))
 
 
 def _shape_slip(error_type: str, message: str) -> PydanticCustomError:
@@ -367,7 +359,6 @@ class Experiment(Record):
 
     repeats: int | None = Field(default=None, ge=1)
     seed: int | None = Field(default=None, ge=0)
-    spend: Spend | None = None
 
     @field_validator("subjects", mode="before")
     @classmethod
@@ -397,8 +388,12 @@ class Experiment(Record):
         for name, levels in factors.items():
             if not levels:
                 raise ValueError(f"factor {name!r} has no levels; give at least one")
-            if len(set(map(repr, levels))) != len(levels):
-                raise ValueError(f"factor {name!r} repeats a level")
+            # Told apart as a cell names them (cell_key), so 1 and "1" are one level.
+            if len(set(map(str, levels))) != len(levels):
+                raise ValueError(
+                    f"factor {name!r} repeats a level: levels that read the same in a cell "
+                    "(1 and '1') are one"
+                )
         return factors
 
     @field_validator("metrics")
@@ -414,15 +409,26 @@ class Experiment(Record):
 
     def digest(self, *, operative: bool = False) -> str:
         """Digest of what the experiment declares, over :func:`~ix.domain.schema.canonical`.
-        ``operative`` leaves the prose out (the question, the rationale, descriptions): that
-        digest changes only when what a run would do changes."""
+        ``operative`` leaves the prose out (the question, the rationale, descriptions, and
+        every ``x-`` note beside an option): that digest changes only when what a run would
+        do changes."""
         data = canonical(self)
         if operative:
             for field in PROSE_FIELDS:
                 data.pop(field, None)
             for subject in data.get("subjects", {}).values():
                 subject.pop("description", None)
+            data = _unnoted(data)
         return schema.digest(data)
+
+
+def _unnoted(value: Any) -> Any:
+    """``value`` without any key that is a note (``x-``), at any depth."""
+    if isinstance(value, dict):
+        return {k: _unnoted(v) for k, v in value.items() if not str(k).startswith("x-")}
+    if isinstance(value, list):
+        return [_unnoted(item) for item in value]
+    return value
 
 
 def cells(factors: dict[str, tuple[Level, ...]]) -> tuple[dict[str, Level], ...]:
@@ -447,9 +453,12 @@ class ProbeSet(Record):
 
 
 def probe_set(probes: tuple[ProbeConfig, ...]) -> ProbeSet:
-    """Name every probe and pin the set. A probe with no ``id`` is ``probe-<n>``, from 1."""
+    """Name every probe and pin the set. A probe with no ``id`` is ``probe-<n>``, from 1.
+    The digest is over what each probe applies and measures against: an ``x-`` note is
+    not part of it."""
     named = tuple(
         probe if probe.id else probe.model_copy(update={"id": f"probe-{index}"})
         for index, probe in enumerate(probes, start=1)
     )
-    return ProbeSet(probes=named, digest=schema.digest([canonical(probe) for probe in named]))
+    pinned = [_unnoted(canonical(probe)) for probe in named]
+    return ProbeSet(probes=named, digest=schema.digest(pinned))

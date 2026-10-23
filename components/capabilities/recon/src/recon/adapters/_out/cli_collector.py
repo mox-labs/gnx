@@ -21,10 +21,12 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict
+
 from recon.adapters._out.parsing import parse_line
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
-from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize
+from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, bound
 from recon.domain.substitution import substitute
 
 if TYPE_CHECKING:
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
 
     from recon.domain.capture import CaptureLog
     from recon.domain.collector import Transform
+    from recon.domain.deadline import Deadline
     from recon.domain.models import CollectorEntry, SourceEntry
     from recon.domain.shell import ShellRunner
 
@@ -39,6 +42,20 @@ if TYPE_CHECKING:
 STDERR_TAIL_BYTES = 4096
 
 _READ_CHUNK = 65536
+
+
+class CliSettings(BaseModel):
+    """A ``cli`` collector's own keys: ``run``, the shell command, and ``patterns``, each
+    filling ``{pattern}`` in turn."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run: str | None = None
+    patterns: list[str] | None = None
+
+
+def _settings(entry: CollectorEntry) -> CliSettings:
+    return CliSettings.model_validate(entry.settings)
 
 
 class PopenRunner:
@@ -154,9 +171,11 @@ class CliCollector:
         self,
         runner: ShellRunner | None = None,
         transforms: Mapping[str, Transform] = BUILTIN_TRANSFORMS,
+        deadline: Deadline | None = None,
     ) -> None:
         self._runner = runner if runner is not None else PopenRunner()
         self._transforms = transforms
+        self._deadline = deadline
 
     def collect(
         self,
@@ -165,9 +184,12 @@ class CliCollector:
         *,
         captures: CaptureLog | None = None,
     ) -> Iterator[dict[str, Any]]:
-        if not entry.run:
-            msg = f"Collector '{entry.name}' has type=cli but no 'run' field"
-            raise CollectionError(msg, kind="config", fix='run: "<the shell command>"')
+        for problem in _check_run(entry, source):  # the plan's check, for a direct caller
+            raise CollectionError(
+                f"collector {entry.name!r}: {problem.message}; nothing was run",
+                kind="config",
+                fix=problem.fix,
+            )
 
         cwd = _cwd(source)
         timeout = source.timeout if source else 300.0
@@ -178,10 +200,24 @@ class CliCollector:
         capture_path = captures.stream_path(entry.name) if captures is not None else None
         exit_codes: list[int] = []
 
+        # A path a command prints is relative to where it ran: a transform that reads one
+        # resolves it there.
+        transforms = bound(self._transforms, base=cwd) if cwd is not None else self._transforms
         try:
             for pattern, cmd in commands:
-                lines = self._runner.run_lines(cmd, cwd, timeout, capture_path=capture_path)
-                exit_codes.append((yield from self._records(lines, entry, pattern)))
+                # A deadline shorter than the command's timeout cuts it: the error says so.
+                limit = timeout
+                if self._deadline is not None:
+                    self._deadline.check()
+                    limit = self._deadline.limit(timeout)
+                lines = self._runner.run_lines(cmd, cwd, limit, capture_path=capture_path)
+                try:
+                    exit_codes.append((yield from self._records(lines, entry, pattern, transforms)))
+                except CollectionError as exc:
+                    cut = self._deadline is not None and self._deadline.remaining() == 0
+                    if cut and limit < timeout and self._deadline is not None:
+                        raise self._deadline.exceeded() from exc
+                    raise
         finally:
             if captures is not None:
                 # Finalize even on mid-iteration abandonment: preserves partial captures
@@ -200,7 +236,11 @@ class CliCollector:
                 )
 
     def _records(
-        self, lines: Generator[str, None, int], entry: CollectorEntry, pattern: str | None
+        self,
+        lines: Generator[str, None, int],
+        entry: CollectorEntry,
+        pattern: str | None,
+        transforms: Mapping[str, Transform],
     ) -> Generator[dict[str, Any], None, int]:
         """The records of one command's lines; returns the command's exit code."""
         with contextlib.closing(lines):
@@ -218,35 +258,64 @@ class CliCollector:
                 if pattern is not None:
                     record["_pattern"] = pattern
                 if entry.normalize:
-                    record = apply_normalize(record, entry.normalize, self._transforms)
+                    record = apply_normalize(record, entry.normalize, transforms)
                 yield record
 
 
 def _cwd(source: SourceEntry | None) -> Path | None:
-    if source is None:
+    """The directory the commands run in: a ``local`` source's, which must be one; None,
+    recon's working directory, with no source or a source of another type."""
+    if source is None or source.type != "local":
         return None
     path = Path(source.url)
-    return path if path.is_dir() else None
+    if not path.is_dir():
+        raise CollectionError(
+            f"local source {source.name!r} names {source.url}, which is not a directory; "
+            "nothing was run",
+            kind="config",
+            fix="create the directory, or correct the source's url:",
+        )
+    return path
 
 
 def _commands(entry: CollectorEntry, source: SourceEntry | None) -> list[tuple[str | None, str]]:
-    """(pattern, substituted command) for each invocation the entry makes."""
-    if not entry.run:
+    """(pattern, substituted command) for each invocation the entry makes. recon fills
+    ``{url}`` and ``{pattern}``; any other ``{...}`` is the command's own (cargo's
+    ``--format '{p}'``, a jq object, docker's ``'{{.Name}}'``) and is passed as written."""
+    settings = _settings(entry)
+    if not settings.run:
         return []
     variables = {"url": source.url} if source else {}
-    patterns: list[str | None] = list(entry.patterns) if entry.patterns else [None]
+    patterns: list[str | None] = list(settings.patterns) if settings.patterns else [None]
     out = []
     for pattern in patterns:
         cmd_vars = {**variables, "pattern": pattern} if pattern is not None else variables
-        out.append((pattern, substitute(entry.run, cmd_vars)))
+        out.append((pattern, substitute(settings.run, cmd_vars, escapes=False)))
     return out
 
 
 # --- Registration ---
 
 
+def _check_run(entry: CollectorEntry, source: SourceEntry | None) -> list[Problem]:
+    """``{url}`` is the source's url, so a run with no source cannot fill it."""
+    run = _settings(entry).run
+    if source is not None or not run or "{url}" not in run:
+        return []
+    return [
+        Problem(
+            "run",
+            "run: uses {url}, the source's url, and this run has no source",
+            kind="unresolved",
+            fix="pin a catalog source with source:, or take {url} out of run:",
+            got=run,
+        )
+    ]
+
+
 def _check(entry: CollectorEntry) -> list[Problem]:
-    if not entry.run:
+    settings = _settings(entry)
+    if not settings.run:
         return [
             Problem(
                 "run",
@@ -255,7 +324,7 @@ def _check(entry: CollectorEntry) -> list[Problem]:
                 fix="run: \"rg --json 'TODO'\"",
             )
         ]
-    if "{pattern}" in entry.run and not entry.patterns:
+    if "{pattern}" in settings.run and not settings.patterns:
         return [
             Problem(
                 "patterns",
@@ -269,7 +338,8 @@ def _check(entry: CollectorEntry) -> list[Problem]:
 
 def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, Any]:
     # Effects are declared, not inspected: the command may do anything a shell can.
-    # The plan shows the exact commands so a reviewer can read them before they run.
+    # The plan shows the exact commands so a reviewer can read them before they run, and
+    # where: a local source's directory, or None for recon's working directory.
     return {
         "commands": [cmd for _pattern, cmd in _commands(entry, source)],
         "cwd": source.url if source is not None and source.type == "local" else None,
@@ -277,10 +347,16 @@ def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, An
 
 
 collector_type = CollectorType(
-    create=lambda ctx: CliCollector(transforms=ctx.transforms),
+    create=lambda ctx: CliCollector(ctx.shell, ctx.transforms, ctx.deadline),
     effects=frozenset({"subprocess"}),
     summary="shell command → stdout lines (JSON objects or text) → records",
+    settings=CliSettings,
+    source_kinds=frozenset({"local"}),
+    # A command runs in a local source's directory; any other source would leave it in
+    # recon's working directory.
+    accepts_kinds=frozenset({"local"}),
     normalizes=True,
     check=_check,
+    check_run=_check_run,
     describe=_describe,
 )

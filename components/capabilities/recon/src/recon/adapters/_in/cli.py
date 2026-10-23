@@ -2,7 +2,8 @@
 
 An inbound adapter over the library API and nothing else: every call goes through
 ``recon``'s declared names, so a program importing ``recon`` gets exactly what these
-commands print.
+commands print. ``main(obj=...)`` runs the commands over the operations given instead, a
+root built with other ports: that is how a test drives the command line.
 
 Data goes to stdout and commentary to stderr. ``--json`` prints one versioned document. A
 command that fails, a usage error, Ctrl-C and a defect in recon included, prints the
@@ -73,6 +74,15 @@ def _telemetry_warnings() -> list[dict[str, Any]]:
     """The command line is an application, so it installs OpenTelemetry's SDK as the
     ``OTEL_*`` variables say; what they ask and cannot get is a warning in its document."""
     return [warning.document() for warning in recon.configure_telemetry()]
+
+
+def _operations() -> Any:
+    """What the commands run: ``recon``'s library API, or what the caller of ``main`` passed
+    as its ``obj``, the same operations over other ports (a test's root, built by
+    ``recon.composition.root`` with fakes)."""
+    context = click.get_current_context(silent=True)
+    given = context.find_root().obj if context is not None else None
+    return recon if given is None else given
 
 
 def _interrupt(signum: int, frame: FrameType | None) -> NoReturn:
@@ -224,7 +234,7 @@ def init(
     recon init gh-audit --template github-audit
     recon init review -c path/to/catalog.yaml
     """
-    document = recon.init(name, template=template, config=config, replace=replace)
+    document = _operations().init(name, template=template, config=config, replace=replace)
     if as_json:
         _emit(document.document())
         return
@@ -246,7 +256,8 @@ def init(
     "-n",
     "--dry-run",
     is_flag=True,
-    help="Validate and print the plan: no network, no subprocess, nothing written",
+    help="Validate and print the plan. Nothing is written; nothing is fetched or run, except "
+    "what a collector type's preflight says (mcp starts each stdio server to list its tools)",
 )
 @_json_option
 def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json: bool) -> None:
@@ -263,7 +274,7 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
     """
     setup = _telemetry_warnings()
     if dry_run:
-        plan = recon.plan(name, config=config, replace=replace)
+        plan = _operations().plan(name, config=config, replace=replace)
         plan = plan.model_copy(update={"warnings": setup + plan.warnings})
         if as_json:
             _emit(plan.document())
@@ -272,7 +283,7 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
         return
     if not as_json:
         _print_warnings(setup)
-    document = recon.survey(
+    document = _operations().survey(
         name, config=config, replace=replace, on_event=None if as_json else _print_event
     )
     document = document.model_copy(update={"warnings": setup + document.warnings})
@@ -294,20 +305,51 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
         effects = run["effects"] if isinstance(run["effects"], str) else ", ".join(run["effects"])
         table.add_row(run["output"], run["type"], run["source"] or "-", effects, escape(_does(run)))
     _print_table(table)
+    skips: dict[str, list[str]] = {}
+    for s in plan.skipped:
+        skips.setdefault(s["collector"], []).append(f"{s['source']} ({s['kind']})")
+    for collector, passed in skips.items():
+        out.print(f"[dim]{escape(collector)} skips {escape(', '.join(passed))}: its type does "
+                  "not use sources of those kinds[/]")  # fmt: skip
+    for required in plan.requirements:
+        holds = "yes" if required.holds else "[red]NO[/] "
+        said = f"{required.need} ({', '.join(required.needed_by)})"
+        if not required.holds:
+            said += "".join(f"; {part}" for part in (required.why, required.fix) if part)
+        out.print(f"{holds}  {escape(said)}")
+    if not plan.runnable:
+        out.print("[red]Runnable: no[/]: a survey fails each table whose requirement is NO")
     if plan.writes.config:
         out.print(f"[dim]Would copy the config to {plan.writes.config}[/]")
-    out.print(f"[dim]{len(plan.runs)} run(s); nothing was fetched, executed or written.[/]")
+    if plan.preflight:
+        for said in plan.preflight:
+            out.print(f"[dim]The preflight of {escape(said)}.[/]")
+        out.print(f"[dim]{len(plan.runs)} run(s); nothing else was fetched or run, and nothing "
+                  "was written.[/]")  # fmt: skip
+    else:
+        out.print(f"[dim]{len(plan.runs)} run(s); nothing was fetched, executed or written.[/]")
 
 
 def _does(run: dict[str, Any]) -> str:
-    """A run's request (its method, URL, headers and body, a line each) or its commands."""
+    """A run's request (its method, URL, headers and body, a line each), its MCP call and the
+    server it goes to, or its commands and the directory they run in."""
+    if run.get("server") and run.get("method"):
+        target = run.get("tool") or run.get("resource")
+        lines = [f"{run['method']} {target}"]
+        if run.get("arguments"):
+            lines.append(json.dumps(run["arguments"]))
+        lines.append(f"on {run['server']}")
+        return "\n".join(lines)
     if run.get("url"):
         lines = [f"{run.get('method', 'GET')} {run['url']}"]
         lines += [f"{name}: {value}" for name, value in (run.get("headers") or {}).items()]
         if run.get("body") is not None:
             lines.append(json.dumps(run["body"]))
         return "\n".join(lines)
-    return "; ".join(run.get("commands") or []) or run.get("path") or ""
+    commands = "; ".join(run.get("commands") or [])
+    if commands and "cwd" in run:
+        return f"{commands} (in {run['cwd'] or 'the working directory'})"
+    return commands or run.get("path") or ""
 
 
 def _print_event(event: dict[str, Any]) -> None:
@@ -333,6 +375,8 @@ def _print_event(event: dict[str, Any]) -> None:
             err.print(f"[dim]    fix: {escape(event['fix'])}[/]")
     elif kind == "archive_warning":
         err.print(f"[yellow]  warning: archive: {escape(event['reason'])}[/]")
+        if event.get("fix"):
+            err.print(f"[dim]    fix: {escape(event['fix'])}[/]")
 
 
 # --- status ------------------------------------------------------------------------------
@@ -353,7 +397,7 @@ def status(mission: str | None, as_json: bool) -> None:
     recon status
     recon status my-scan --json
     """
-    document = recon.status(mission)
+    document = _operations().status(mission)
     if as_json:
         _emit(document.document())
         return
@@ -431,12 +475,13 @@ def _archive_tables(document: recon.StatusDocument) -> list[Table]:
 def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
     """Query a mission's latest archive, or the one --archive names, with SQL (DuckDB).
 
-    Each table is a view named after its file (hyphens become underscores). The output
-    names the archive the rows came from. An older archive's table, or a table's raw lines,
-    is read by its file: read_json_auto('<archive dir>/<table>.jsonl') for an earlier
-    archive, read_ndjson_objects(...) for each line as JSON text, and WITH ORDINALITY after
-    either for each row's line number in the file. Read one archive's file: a glob across
-    archives numbers all its files' lines as one, and their columns can differ.
+    Each table is a view named after its file, every character but a letter, digit or _
+    becoming _ (oa-works is oa_works); SQL ignores its case. The output names the archive
+    the rows came from. An older archive's table, or a table's raw lines, is read by its
+    file: read_json_auto('<archive dir>/<table>.jsonl') for an earlier archive,
+    read_ndjson_objects(...) for each line as JSON text, and WITH ORDINALITY after either
+    for each row's line number in the file. Read one archive's file: a glob across archives
+    numbers all its files' lines as one, and their columns can differ.
 
     \b
     recon query my-scan "SELECT title, year FROM s2_search LIMIT 10"
@@ -444,7 +489,7 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
     recon query my-scan "SELECT count(*) FROM s2_search" --archive 2026-04-01-143022-000000
     """
     setup = _telemetry_warnings()
-    document = recon.query(name, sql, archive=archive)
+    document = _operations().query(name, sql, archive=archive)
     document = document.model_copy(update={"warnings": setup + document.warnings})
     if as_json:
         _emit(document.document())
@@ -474,7 +519,7 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
 @_json_option
 def templates(as_json: bool) -> None:
     """List the built-in templates `recon init -t` takes."""
-    document = recon.templates()
+    document = _operations().templates()
     if as_json:
         _emit(document.document())
         return
@@ -492,7 +537,8 @@ def capture(name: str, as_json: bool) -> None:
     \b
     Hook (settings.json), capturing every MCP tool result:
       {"hooks": {"PostToolUse": [{"matcher": "mcp__.*",
-        "hooks": [{"type": "command", "command": "recon capture my-mcp --json"}]}]}}
+        "hooks": [{"type": "command",
+                   "command": "cd \\"$CLAUDE_PROJECT_DIR\\" && recon capture my-mcp --json"}]}]}}
     """
     if sys.stdin.isatty():
         raise recon.UsageError(
@@ -508,7 +554,7 @@ def capture(name: str, as_json: bool) -> None:
             f"stdin is not JSON ({exc})",
             fix="pipe one PostToolUse hook payload (a JSON object) to recon capture",
         ) from exc
-    line = recon.capture(name, payload)
+    line = _operations().capture(name, payload)
     if as_json:
         _emit(line.document())
         return

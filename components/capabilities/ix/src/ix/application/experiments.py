@@ -1,9 +1,10 @@
 """The use cases of the experiment model: examine, validate, plan, register, deviations.
 
 Each takes data: an experiment (or the data it should be), the probes read from its folder
-when it writes none inline, the genres and kinds it may name, and what a stored registration
-held. Reading and writing files is the composition root's work. Nothing starts a subject,
-applies a probe or spends anything.
+when it writes none inline, the digests of the files its subjects and sensors name, the
+genres and kinds it may name, and what a stored registration held. Reading and writing files
+is the composition root's work. Nothing starts a subject,
+applies a probe or calls a model.
 """
 
 from __future__ import annotations
@@ -18,7 +19,8 @@ from ix.domain.analysis import Spread, spread
 from ix.domain.design import select_sensors
 from ix.domain.errors import ConfigError, NotFoundError
 from ix.domain.experiment import PROBES_FOLDER, Experiment, ProbeConfig, ProbeSet, probe_set
-from ix.domain.plan import Plan, RegistrationStatus, estimate_spend, plan, sensitivity
+from ix.domain.kind import per_cell
+from ix.domain.plan import Plan, RegistrationStatus, Required, plan, sensitivity
 from ix.domain.ports import Review, Surroundings
 from ix.domain.problem import InvalidExperimentError, Problem, Validation, problem
 from ix.domain.registration import (
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
     from ix.domain.design import Design
     from ix.domain.genre import Genre, Genres
     from ix.domain.kind import Kinds
+    from ix.domain.provenance import Content
     from ix.domain.run import RunRecord
 
 
@@ -50,8 +53,6 @@ class Vocabulary:
     kinds: Kinds
     #: The kinds (type URLs) a run could carry out here; None when nothing was said.
     adapters: frozenset[str] | None = None
-    #: The ceiling of a run that spends and whose experiment sets none (ix's settings).
-    spend_cap: float | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,9 @@ class Examined:
     warnings: tuple[Problem, ...] = ()
     #: False when the file did not load, so the later checks never ran.
     complete: bool = True
+    #: What each file and folder its subjects and sensors name held, when the caller read
+    #: them (:func:`~ix.domain.provenance.named_files` lists them): frozen at registration.
+    contents: tuple[Content, ...] = ()
 
     @property
     def name(self) -> str:
@@ -124,15 +128,15 @@ def examine(
     experiment: Experiment | object,
     vocabulary: Vocabulary,
     *,
-    base: str,
     source: str = "",
     folder: FolderProbes | None = None,
 ) -> Examined:
     """Check an experiment, or the data an experiment should be.
 
-    ``base`` is the directory relative paths in the experiment resolve against; ``folder``
-    is what its probes folder held, read only when it writes no probes inline. Never raises
-    on a wrong experiment: the problems are in the result.
+    ``folder`` is what its probes folder held, read only when it writes no probes inline.
+    Nothing here reads a path the experiment names (that is :func:`reviewed`'s and the
+    digest's), so it takes no directory. Never raises on a wrong experiment: the problems
+    are in the result.
     """
     source = source or "<experiment>"
     problems: list[Problem] = []
@@ -149,7 +153,6 @@ def examine(
         vocabulary.kinds,
         probes,
         adapters=vocabulary.adapters,
-        spend_cap=vocabulary.spend_cap,
     )
     return Examined(
         source=source,
@@ -186,9 +189,20 @@ def reviewed(
 
     found: list[Problem] = []
     for name, subject in experiment.subjects.items():
-        built = adapter(schema.url("subject", subject.kind))
-        if isinstance(built, Review):
-            found += built.review(subject.options, around(f"subjects.{name}"))
+        kind = schema.url("subject", subject.kind)
+        built = adapter(kind)
+        if not isinstance(built, Review):
+            continue
+        # Each cell's options, as its trials will have them: a factor on one option hides
+        # nothing the adapter can tell about the others.
+        declared = vocabulary.kinds.get("subject", subject.kind)
+        text = declared.text_options if declared else ()
+        for options in per_cell(subject.options, experiment.factors, text=text):
+            found += [
+                said
+                for said in _review(built, kind, options, around(f"subjects.{name}"))
+                if said not in found
+            ]
     listed = {
         schema.url("sensor", entry.kind): index for index, entry in enumerate(experiment.sensors)
     }
@@ -196,12 +210,37 @@ def reviewed(
         built = adapter(sensor.kind)
         if isinstance(built, Review):
             index = listed.get(sensor.kind)
-            found += built.review(
-                sensor.options, around("sensors" if index is None else f"sensors.{index}")
+            found += _review(
+                built,
+                sensor.kind,
+                sensor.options,
+                around("sensors" if index is None else f"sensors.{index}"),
             )
     if not found:
         return examined
     return replace(examined, problems=(*examined.problems, *found), design=None)
+
+
+def _review(
+    built: Review, kind: str, options: Mapping[str, Any], around: Surroundings
+) -> list[Problem]:
+    """What ``built``, the adapter of ``kind`` (a type URL), finds wrong with ``options``. A
+    review runs an extension's own code, so one that raises is a problem at the entry that
+    names the adapter and its error, not an error out of every command that checks the
+    experiment."""
+    try:
+        return list(built.review(options, around))
+    except Exception as error:
+        return [
+            problem(
+                around.path,
+                kind="adapter_failed",
+                message=f"the adapter for {kind} raised {type(error).__name__}: {error} while "
+                "it checked these options, so they are unchecked",
+                fix="fix or uninstall the extension that registered it",
+                got=schema.short(kind),
+            )
+        ]
 
 
 def validate(examined: Examined) -> Validation:
@@ -276,13 +315,13 @@ def standing(
         checked.probes,
         vocabulary.kinds,
         adapters=vocabulary.adapters,
-        spend_cap=vocabulary.spend_cap,
     )
     current = freeze(
         checked.experiment,
         checked.design,
         checked.probes,
         plan_digest=made.digest,
+        contents=examined.contents,
         registered_at=now,
         ix_version=version,
     )
@@ -340,45 +379,22 @@ def earlier_spread(design: Design, earlier: Iterable[RunRecord]) -> Spread | Non
     return None
 
 
-def earlier_cost(earlier: Iterable[RunRecord]) -> tuple[float, str] | None:
-    """The mean cost of a trial in the first of ``earlier`` (latest first) whose trials
-    reported one, with its run id; trials a stand-in answered are left out. None when no
-    run did."""
-    for record in earlier:
-        costs = [
-            interaction.cost_usd
-            for interaction in record.interactions
-            if interaction.cost_usd is not None and not interaction.simulated
-        ]
-        if costs:
-            return sum(costs) / len(costs), record.run
-    return None
-
-
 def make_plan(
     examined: Examined,
     vocabulary: Vocabulary,
     stored: Registration | None,
     *,
     location: str = "",
-    unstartable: tuple[str, ...] = (),
+    requirements: tuple[Required, ...] = (),
     earlier: Iterable[RunRecord] = (),
 ) -> Plan:
-    """What a run would do, where the experiment stands against its registration, the
-    ``unstartable`` subjects the host found, and, from the ``earlier`` runs of the
-    experiment (latest first), how small an effect it can detect and what it should
-    cost."""
+    """What a run would do, where the experiment stands against its registration, what it
+    ``requirements`` of this host (each with whether it holds here), and, from the
+    ``earlier`` runs of the experiment (latest first), how small an effect it can detect."""
     made, current = standing(examined, vocabulary, now="", version="")
     checked = valid(examined, "planned")
     blocks = checked.design.repeats * len(checked.probes.probes)
-    earlier = list(earlier)
     sensed = sensitivity(checked.design, blocks, earlier_spread(checked.design, earlier))
-    spend = estimate_spend(
-        checked.experiment.spend,
-        made.trials.total,
-        spend_cap=vocabulary.spend_cap,
-        observed=earlier_cost(earlier),
-    )
     if stored is None:
         status = RegistrationStatus(status="none", location=location)
     else:
@@ -389,9 +405,8 @@ def make_plan(
     return made.model_copy(
         update={
             "registration": status,
-            "unstartable": unstartable,
+            "requirements": requirements,
             "sensitivity": sensed,
-            "spend": spend,
             "warnings": examined.warnings,
         }
     )

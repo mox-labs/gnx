@@ -2,7 +2,7 @@
 
 > Heterogeneous sources in, structured data out. Claude queries the result.
 
-Recon fetches from HTTP APIs, runs CLI tools, scrapes web pages, and reads capture logs that other tools wrote, then reshapes every response into uniform JSONL that Claude can query with SQL. The reshape is declarative, not code. Write a YAML config once; recon plans it, then runs it mechanically — no LLM in the loop.
+Recon fetches from HTTP APIs, runs CLI tools, scrapes web pages, calls the tools and reads the resources of MCP servers, and reads capture logs that other tools wrote, then reshapes every response into uniform JSONL that Claude can query with SQL. The reshape is declarative, not code. Write a YAML config once; recon plans it, then runs it mechanically — no LLM in the loop.
 
 ## Why
 
@@ -19,11 +19,11 @@ For the full argument, see [docs/explanation/capability.md](docs/explanation/cap
 recon is a package in the [gnx](https://github.com/mox-labs/gnx) repository, installed from it at the release's tag; it is not on a package index:
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.12.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
-Inside a gnx checkout, `uv tool install --editable components/capabilities/recon` installs your working copy instead. To export telemetry over OTLP, install the `otel` extra: `uv tool install "recon[otel] @ git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=components/capabilities/recon"` (see [Telemetry](#telemetry)).
+Inside a gnx checkout, `uv tool install --editable components/capabilities/recon` installs your working copy instead. The OpenTelemetry SDK and its OTLP exporters come with it, so the `OTEL_*` variables are enough to export telemetry (see [Telemetry](#telemetry)), and so does the MCP client (`fastmcp-slim[client]`), which only a survey that reaches an MCP server loads.
 
 Claude loads the skill on demand via `recon --skill`; the gnx `recon` plugin ships the same skill.
 
@@ -33,7 +33,7 @@ Claude loads the skill on demand via `recon --skill`; the gnx `recon` plugin shi
 recon templates                                   # the built-in scaffolds
 recon init my-scan --template code-forensics      # .recon/my-scan/config.yaml
 $EDITOR .recon/my-scan/config.yaml                # set the placeholders
-recon survey my-scan --dry-run                    # plan: validate, show every run, touch nothing
+recon survey my-scan --dry-run                    # plan: validate, show every run, write nothing
 recon survey my-scan                              # run: .recon/my-scan/archive/<timestamp>/
 recon query my-scan "SELECT line FROM todo_files LIMIT 20"
 ```
@@ -52,7 +52,8 @@ Recon is general-purpose. The built-in templates each showcase a distinct capabi
 | Package registries | Normalize PyPI / npm / crates.io into one schema | `package-registries` |
 | Factual grounding | Wikipedia + Wikidata SPARQL | `factual-ground` |
 | Content tracking | RSS / Atom feeds via XML parsing | `rss-monitor` |
-| MCP tool results | Results a Claude Code hook captured, normalized without refetching | `mcp-captures` |
+| MCP servers | A stdio or remote server's tools and resources, called by recon | `mcp-server` |
+| MCP tool results | Results a Claude Code hook captured, normalized without refetching (a server behind a browser sign-in) | `mcp-captures` |
 | Literature review | Semantic Scholar, arXiv, OpenAlex, Zenodo | *(a catalog owned by the consuming plugin — `recon init -c`)* |
 | Dependency audits, issue triage, API snapshots | `cargo tree`, `gh issue list`, any REST endpoint | *(see `recon --skill -r config-patterns`)* |
 
@@ -74,9 +75,9 @@ recon capture <mission>                                append a hook payload (st
 recon --skill [-r <reference>]                         print the skill (for Claude)
 ```
 
-`-c -` reads the config from stdin. Off a terminal, human output is never wrapped, so a path or a command stays whole on its line. `recon query` reads only the mission's own archives: no other file, no DuckDB extension, no URL ([SECURITY.md](SECURITY.md), boundary 6).
+`-c -` reads the config from stdin. Off a terminal, human output is never wrapped, so a path or a command stays whole on its line. `recon query` reads only the mission's own archives: no other file, no DuckDB extension, no URL. It runs SELECT statements only, so it writes nothing: a `COPY`, `ATTACH`, `CREATE` or other statement is a `query` error ([SECURITY.md](SECURITY.md), boundary 6).
 
-`init` reports its `outcome`: `created`, `unchanged` (the mission already had this config, byte for byte) or `replaced` (`--replace` overwrote a different one). A dry run shows each HTTP run's request as it would be sent: the method, the URL with every query parameter, the headers the mission decides and the body, with a credential `REDACTED` as telemetry has it. `recon query` names the archive its rows came from (`archive_id`); `recon status <mission>` lists that mission's archives as `missions[0].history`, each with its id, path, when it started and finished, its state and its tables. One table SQL cannot read, such as an OpenAlex record keeping its word-keyed `abstract_inverted_index`, is a `table_unreadable` warning at the end of the survey, and does not stop queries of the others: they run with the same warning, and a query of that table fails as `query` with the fix. A failed query's fix is about what failed: the tables there are for a missing table, DuckDB's message and its SQL documentation otherwise. A row is cited by its line in one archive's table file: `SELECT ordinality AS line, * FROM read_json_auto('<archive path>/<table>.jsonl') WITH ORDINALITY`, never a glob across archives, whose columns can differ.
+`init` reports its `outcome`: `created`, `unchanged` (the mission already had this config, byte for byte) or `replaced` (`--replace` overwrote a different one). A dry run shows each HTTP run's request as it would be sent: the method, the URL with every query parameter, the headers the mission decides and the body, with a credential `REDACTED` as telemetry has it. It runs and fetches nothing, but for an `mcp` run's preflight, which it names: it starts each stdio server (and connects to each remote one), lists its tools, checks each run's tool and arguments against them, and stops it. What it found is the plan's `requirements`, each with whether it holds, and `runnable`; a survey fails the table whose requirement does not hold, as `config`. `recon query` names the archive its rows came from (`archive_id`); `recon status <mission>` lists that mission's archives as `missions[0].history`, each with its id, path, when it started and finished, its state and its tables. One table SQL cannot read, such as an OpenAlex record keeping its word-keyed `abstract_inverted_index`, is a `table_unreadable` warning at the end of the survey, and does not stop queries of the others: they run with the same warning, and a query of that table fails as `query` with the fix. A failed query's fix is about what failed: the tables there are for a missing table, DuckDB's message and its SQL documentation otherwise. A row is cited by its line in one archive's table file: `SELECT ordinality AS line, * FROM read_json_auto('<archive path>/<table>.jsonl') WITH ORDINALITY`, never a glob across archives, whose columns can differ.
 
 Every command takes `--json`: one JSON document on stdout whose `schema` names its shape (`recon.v1.survey`, `recon.v1.plan`, `recon.v1.status`, `recon.v1.query-rows`, `recon.v1.templates`, `recon.v1.mission`, `recon.v1.capture`); collections are always wrapped in an object.
 
@@ -91,30 +92,35 @@ The codes up to 9 are the ones every gnx capability CLI agrees on; recon's own k
 | 2 | `usage`: a bad flag, argument or mission name |
 | 3 | `config`: every problem listed, with its path, kind and fix |
 | 4 | `not_found`: a mission, archive or template |
-| 5 | `transient`: retry later |
+| 5 | `transient`: a 429, a 5xx or a network error; retry later. A table cut by its `deadline:` or `timeout:` fails the same way on every retry: raise the one its error names |
 | 6 | `auth`: a credential was refused |
 | 7 | `conflict`: `init` or `survey -c` would overwrite a different mission config; `--replace` overwrites it |
 | 8 | `run_failed`: a table failed, not only on credentials or transiently; the archive is kept (a table's own unclassified error carries the same kind) |
+| 9 | `store`: the survey could not finish its archive (`meta.yaml` or the completion marker could not be written); the archive is kept |
 | 10 | `query`: the SQL failed or reached outside the mission's archives |
 | 130 | `interrupted`: Ctrl-C or SIGTERM |
 
-A survey in which any table failed still writes its archive (marked `.incomplete`) and still reports every table's status, then exits **6** if any table failed on credentials, **5** if every failure was transient, and **8** otherwise. Every failure, a usage error and Ctrl-C included, prints one envelope on stderr (one JSON line under `--json`), the shape the capability CLIs agree on: `{"schema": "recon.v1.error", "error": {"kind", "message", "fix", "complete", "problems", "details"}}`. Each problem is `{path, kind, message, fix, allowed, got, source}`, its `path` dotted from the top of the config (`collectors.0.type`) and its `kind` from the shared vocabulary (`unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, ...). `complete` is false when part of the config could not be checked, so more problems may follow the fixes. Warnings travel inside the `--json` document, as problem records in its `warnings` list: among them `fan_out_mixed` (a plan's unpinned collector would run against sources of different types), `extract_missing` (a survey's table of a collector without `extract:` got one record holding a list of objects, the path to set as `extract:` named) and `table_unreadable` (a survey wrote, or a query's archive has, a table SQL cannot read).
+A survey in which any table failed still writes its archive (marked `.incomplete`) and still reports every table's status, then exits **6** if any table failed on credentials, **5** if every failure was transient, and **8** otherwise. A survey whose `meta.yaml` or completion marker could not be written (a full disk) reports `status: incomplete` with an `archive_unfinished` warning, and exits **9** (`store`) whatever its tables did. Every failure, a usage error and Ctrl-C included, prints one envelope on stderr (one JSON line under `--json`), the shape the capability CLIs agree on: `{"schema": "recon.v1.error", "error": {"kind", "message", "fix", "complete", "problems", "details"}}`. Each problem is `{path, kind, message, fix, allowed, got, source}`, its `path` dotted from the top of the config (`collectors.0.type`) and its `kind` from the shared vocabulary (`unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, ...). `complete` is false when part of the config could not be checked, so more problems may follow the fixes. Warnings travel inside the `--json` document, as problem records in its `warnings` list: among them `extract_missing` (a survey's table of a collector without `extract:` got one record holding a list of objects, the path to set as `extract:` named), `table_unreadable` (a survey wrote, or a query's archive has, a table SQL cannot read) `archive_unfinished` (the survey could not write `meta.yaml` or mark its archive complete), and `extract_unresolved`, `records_not_objects`, `captures_unmatched` and `result_empty`, each for a table kept empty because recon could not find or keep its records (an `extract:` that resolves to nothing in a response that is not empty, items that are not objects, captures no filter kept, an MCP tool or resource that answered with no content), so an empty table never reads as a source that had nothing.
 
 ## Archives
 
 ```
 .recon/<mission>/archive/<timestamp>/
   <output>.jsonl       one table per collector × source; records exactly as normalized
-  meta.yaml            format_version 2: recon version, config sha256, and per table
-                       its type_url, records, status, seconds, error {kind, message,
-                       fix} (null for a table that succeeded)
+  meta.yaml            format_version 2: recon version, config sha256, table_layout 1
+                       (this layout of the tables), resolved (how the project root was
+                       found: argument, repository or working_directory; each variable
+                       the mission declares, set or unset, never its value), and per
+                       table its type_url, records, status, seconds, error {kind,
+                       message, fix} (null for a table that succeeded)
   telemetry.jsonl      the survey's recon.v1.event lines (see Telemetry); not a table
   .incomplete          written first, removed once meta.yaml is written and every table
-                       succeeded: a failed table, Ctrl-C, SIGTERM or a kill leaves it
+                       succeeded: a failed table, Ctrl-C, SIGTERM, a kill or a meta.yaml
+                       that could not be written leaves it
   captures.jsonl, raw/ the capture log, when preserve_raw: true
 ```
 
-A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`).
+A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`) so a consumer can tell what a table holds without reading collector code. `status` and `query` still read archives written by recon 0.8 (`format_version: 1`), and read a `meta.yaml` from a newer recon for the fields they know. Only a directory named as a survey names its archive (`2026-04-01-143022-000000`) is an archive: another directory under `archive/` is left alone. An archive whose `table_layout` this recon does not know (a newer recon wrote it) is refused by `query` with that number, rather than misread.
 
 ## Capture logs
 
@@ -122,7 +128,7 @@ A collector may declare `type_url:` (dotted grammar, default `recon.v1.records`)
 
 ## Telemetry
 
-recon reports what it did on open standards, with a local record by default.
+recon reports what it did on open standards, with a local record by default. The names below (spans, metrics, events, attribute keys) are not contract and may change without notice; what telemetry never carries, below, is.
 
 **The event log.** Every survey writes `telemetry.jsonl` into its archive, beside `meta.yaml`: one `recon.v1.event` line when a span starts and one when it ends, `{schema, name, time, span, parent, kind, attributes, status, message, duration_ms}`, the times from recon's clock so a survey against a fixed clock writes the same log twice. A start with no end is where a killed survey stopped. The spans:
 
@@ -131,11 +137,12 @@ recon reports what it did on open standards, with a local record by default.
 | `recon.survey` | `recon.mission`, `recon.archive`; at its end `recon.tables`, `recon.tables.failed`, `recon.records` |
 | `recon.collect`, one per table | `recon.table`, `recon.collector`, `recon.collector.type`, `recon.source`; at its end `recon.records` |
 | `recon.http.request`, one per attempt to send a request (kind client) | OpenTelemetry's HTTP client span attributes, [semantic conventions v1.44.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/http/http-spans.md#http-client-span) (stable): `http.request.method`, `server.address`, `server.port`, `url.full`, `http.response.status_code`, and `http.request.resend_count` on a retry |
+| `recon.mcp.call`, one per call to an MCP server, a listing included (kind client) | `mcp.method.name` (`tools/call`, `tools/list`, `resources/read`, ...), `gen_ai.tool.name` for a tool call, `recon.source`; never the arguments or the result |
 | `recon.query` | `recon.mission`, `recon.archive`; at its end `recon.rows` |
 
-A span that failed has `status: error`, the first line of the error as `message`, and `error.type`: a recon error kind (`transient`, `auth`, `run_failed`, ...), or for a request the status code (`503`), the httpx exception (`httpx.ConnectError`) or `body_too_large`. Nothing secret and no body is recorded: `url.full` has user information, the source's `auth.param` value and the conventions' signature parameters replaced by `REDACTED`, and no header, request body or response body is an attribute. A query writes no archive, so its span goes only to OpenTelemetry.
+A span that failed has `status: error`, a `message` in recon's own words that quotes nothing from the error (no command, URL or SQL; a failed table's error is in the archive's `meta.yaml`), and `error.type`: a recon error kind (`transient`, `auth`, `run_failed`, ...), or for a request the status code (`503`), the httpx2 exception (`httpx2.ConnectError`) or `body_too_large`. Nothing secret and no body is recorded: `url.full` has user information, the source's `auth.param` value and the conventions' signature parameters replaced by `REDACTED`, and no header, request body or response body is an attribute. A query writes no archive, so its span goes only to OpenTelemetry.
 
-**OpenTelemetry.** recon emits the same spans through the OpenTelemetry API (instrumentation scope `recon`, schema URL `https://opentelemetry.io/schemas/1.44.0`), and two counters derived from the `recon.collect` ends: `recon.collect.records` (`{record}`, by `recon.collector.type`) and `recon.collect.failures` (`{table}`, by `recon.collector.type` and `error.type`). `opentelemetry-api` is a dependency, and does nothing until an SDK is installed. As OpenTelemetry advises for a library ([Libraries](https://opentelemetry.io/docs/concepts/instrumentation/libraries/): "Libraries should only use the OpenTelemetry API"; "All application configuration is hidden from your library through the Tracer API"), `import recon` never installs the SDK: a program that wants recon's telemetry exported configures OpenTelemetry itself, as for any instrumented library, or calls `recon.configure_telemetry()`, which does what the command line does. The `recon` command is an application, so it does install the SDK: with the `otel` extra installed, the standard variables are enough to export: set any of `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_TRACES_EXPORTER` or `OTEL_METRICS_EXPORTER`, and recon installs the SDK's providers with OTLP exporters (`http/protobuf` unless `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`; `OTEL_*_EXPORTER=none` turns a signal off). Everything else (headers, timeouts, `OTEL_SERVICE_NAME`, default `recon`, `OTEL_RESOURCE_ATTRIBUTES`) the SDK reads itself; `OTEL_SDK_DISABLED=true` turns it off. Set without the extra, the variables put an `otel_unavailable` warning in the `--json` document of `recon survey`, `recon survey --dry-run` and `recon query` (`configure_telemetry()` returns it). Providers already installed are kept, and recon's spans go there. The event log is written either way: an archive's contents do not depend on the environment it was surveyed in.
+**OpenTelemetry.** recon emits the same spans through the OpenTelemetry API (instrumentation scope `recon`, schema URL `https://opentelemetry.io/schemas/1.44.0`), and two counters derived from the `recon.collect` ends: `recon.collect.records` (`{record}`, by `recon.collector.type`) and `recon.collect.failures` (`{table}`, by `recon.collector.type` and `error.type`). The library writes through `opentelemetry-api`, which does nothing until an SDK is installed. As OpenTelemetry advises for a library ([Libraries](https://opentelemetry.io/docs/concepts/instrumentation/libraries/): "Libraries should only use the OpenTelemetry API"; "All application configuration is hidden from your library through the Tracer API"), `import recon` never installs the SDK: a program that wants recon's telemetry exported configures OpenTelemetry itself, as for any instrumented library, or calls `recon.configure_telemetry()`, which does what the command line does. The `recon` command is an application, so it does install the SDK, which recon depends on with its OTLP exporter, and the standard variables are enough to export, signal by signal. Traces are exported when `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_TRACES_EXPORTER` is set, metrics when `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_METRICS_EXPORTER` is; recon installs the SDK's provider for each with an OTLP exporter over `http/protobuf`, the one protocol recon exports over (`OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is refused with an `otel_unavailable` warning naming what to set, and the signals it governs are not exported; `OTEL_*_EXPORTER=none` turns a signal off). Everything else (headers, timeouts, `OTEL_SERVICE_NAME`, default `recon`, `OTEL_RESOURCE_ATTRIBUTES`) the SDK reads itself; `OTEL_SDK_DISABLED=true` turns it off. In an install without the SDK, the variables put an `otel_unavailable` warning in the `--json` document of `recon survey`, `recon survey --dry-run` and `recon query` (`configure_telemetry()` returns it). A provider already installed is kept, signal by signal, and recon's spans or metrics go there. Each exported span carries `recon.event.span`, its id in the event log, so a line of `telemetry.jsonl` is the span with that id in the trace whose `recon.survey` span carries the archive's `recon.archive`. While a span is open it is the current one, so a span another library opens during recon's work (an instrumented client, a plugin's own) nests under it; each HTTP request carries its span as a W3C `traceparent` header, so the server's spans can join the trace. Neither happens without an SDK installed. A sink that fails is dropped for the rest of the operation (a `telemetry_failed` warning), and the OpenTelemetry spans it held open are ended as failed rather than lost. The event log is written either way: an archive's contents do not depend on the environment it was surveyed in.
 
 ## What recon is not
 
@@ -147,14 +154,14 @@ A span that failed has `status: error`, the first line of the error as `message`
 
 Library first, hexagonal. `import recon` is the API: `recon.init`, `plan`, `survey`, `status`, `query`, `templates`, `capture` each return a versioned document (a frozen pydantic record, `recon.SurveyDocument` and its siblings) whose `.document()` is what the CLI prints under `--json`, or raise an error whose `kind` says what to do. Each takes `root=`, the project its missions live in, so a program need not change directory: `recon.survey("m", root=Path("~/src/app").expanduser())`. `ConfigError` is also a `ValueError` and `NotFoundError` a `KeyError`. The CLI calls those names and nothing else.
 
-The domain holds the frozen Pydantic models, the normalize language, and the ports, each hiding a decision likely to change: `MissionStore` (where missions live, and that they are YAML), `ArchiveStore` (how an archive is stored), `ArchiveQuery` (the SQL engine and its sandbox), `Clock`, `Requester` (HTTP), `ShellRunner`, `DocumentConverter`, `CaptureLog` and `EventSink` (where telemetry goes). The application plans a mission (`plan.py`), runs a survey over the ports (`survey.py`), and composes the operations (`use_cases.py`). Outbound adapters implement the ports with YAML files, JSONL directories, DuckDB, httpx, subprocess, markitdown and OpenTelemetry; `composition.py` is the one place they meet. `tests/test_layering.py` holds the import rules, and `tests/test_determinism.py` the contract that the same mission and the same answers give the same records.
+The domain holds the frozen Pydantic models, the normalize language, and the ports, each hiding a decision likely to change: `MissionStore` (where missions live, and that they are YAML), `ArchiveStore` (how an archive is stored), `ArchiveQuery` (the SQL engine and its sandbox), `Clock`, `Requester` (HTTP), `ShellRunner`, `DocumentConverter`, `CaptureLog` and `EventSink` (where telemetry goes). The application plans a mission (`plan.py`), builds a survey's collectors and holds every type to the same rules (`collectors.py`: only the types the mission uses, each seeing only the environment it declares, `normalize:` applied to every type), runs a survey over the ports (`survey.py`), and composes the operations (`use_cases.py`). Outbound adapters implement the ports with YAML files, JSONL directories, DuckDB, httpx2, subprocess, markitdown and OpenTelemetry, and the `mcp` collector type is FastMCP's client on the MCP SDK; `composition.py` is the one place they meet, and holds no policy. Its `root()` binds each port to its adapter unless it is given one (the clock, the plugins, the archive store, the survey's requester, the shell, the converter), so a test's root is recon's own with fakes, and the command line runs over a root passed to it as `main(obj=...)`. `layers.json`, run by `tests/test_layering.py`, holds the import rules, and `tests/test_determinism.py` the contract that the same mission and the same answers give the same records.
 
 Collector types and transforms are extensions, loaded from the entry-point groups `recon.collectors` and `recon.transforms`. The built-ins register through the same groups:
 
-- collector types: `api`, `cli`, `web`, `capture`
+- collector types: `api`, `cli`, `web`, `capture`, `mcp`
 - transforms: `$html2text`, `$inverted_index`, `$join`, `$first`, `$markitdown`
 
-A plugin that fails to load is reported by `recon status` and `survey --dry-run` and does not break the others. To write one: [docs/reference/extending.md](docs/reference/extending.md).
+A plugin that fails to load is reported by `recon status` and `survey --dry-run` and does not break the others. A collector type declares the keys it takes (a schema the plan validates them by), the source kinds it adds and the keys those take, and may hold a session across its tables, which recon closes when the survey ends; a type that declares a preflight is asked by a dry run what each of its runs needs of the host. To write one: [docs/reference/extending.md](docs/reference/extending.md).
 
 The tests run offline, except the live integration tests against OpenAlex, arXiv, Semantic Scholar and Zenodo, which run only with `RECON_LIVE=1` (`just recon-live`).
 
@@ -163,10 +170,11 @@ The tests run offline, except the live integration tests against OpenAlex, arXiv
 - [docs/explanation/capability.md](docs/explanation/capability.md) — what recon does for Claude and why
 - [docs/how-to/first-survey.md](docs/how-to/first-survey.md) — a first mission, end to end
 - [docs/how-to/search-api-post-body.md](docs/how-to/search-api-post-body.md) — POST-body search APIs (Exa, Firecrawl, Tavily, Serper)
+- [docs/how-to/collect-from-an-mcp-server.md](docs/how-to/collect-from-an-mcp-server.md) — call an MCP server's tools and read its resources
 - [docs/how-to/capture-mcp-results.md](docs/how-to/capture-mcp-results.md) — capture MCP tool results with a hook and query them
 - [docs/reference/extending.md](docs/reference/extending.md) — adding a collector type or a transform
 - [docs/reference/capture-format.md](docs/reference/capture-format.md) — the capture log format (`recon.v1.capture`), for a tool that writes captures
-- [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0
+- [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0 and 0.12.0, and recon's claims
 - [CHANGELOG.md](CHANGELOG.md)
 - `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format` for the references. The plugin's copy is generated from it (`just recon-skill`).
 

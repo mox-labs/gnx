@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from matrix import (
     ComponentError,
@@ -20,6 +20,9 @@ from matrix import (
     RunError,
     wire,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 TEXT, UPPER, SCORE, OTHER = "acme.v1.text", "acme.v1.upper", "acme.v1.score", "acme.v1.other"
 
@@ -221,6 +224,35 @@ async def test_rows_validate_against_the_kinds_registered_schema() -> None:
         await Executor().run(wire({}, inputs=[SCORE], schemas={SCORE: Score}), {SCORE: {}})
 
 
+async def test_a_row_handed_over_that_its_schema_refuses_with_any_error_is_a_contract_error() -> (
+    None
+):
+    class Strict(BaseModel):
+        value: float
+
+        @field_validator("value")
+        @classmethod
+        def _finite(cls, value: float) -> float:
+            if value != value:
+                raise TypeError("not a number")
+            return value
+
+    raised: list[BaseException] = []
+
+    async def body(inputs: Inputs, ctx: RunContext) -> Any:
+        try:
+            ctx.provide(SCORE, {"value": float("nan")})
+        except Exception as e:
+            raised.append(e)
+            raise
+
+    wiring = wire({"s": Step(body, provides=[SCORE])}, schemas={SCORE: Strict})
+    with pytest.raises(RunError) as e:
+        await Executor().run(wiring)
+    assert [type(r) for r in raised] == [ContractError] and "not a number" in str(raised[0])
+    assert e.value.cause_kind == "contract"
+
+
 async def test_a_failure_keeps_the_partial_run() -> None:
     async def boom(inputs: Inputs, ctx: RunContext) -> Any:
         raise RuntimeError("kaput")
@@ -267,7 +299,7 @@ def test_limits_are_checked_when_made() -> None:
         {"on_failure": "retry"},
     ):
         with pytest.raises(ValidationError):
-            Limits(**bad)  # type: ignore[arg-type]
+            Limits(**bad)
 
 
 async def test_observers_see_the_run_and_one_failing_observer_cannot_stop_it() -> None:
@@ -321,3 +353,29 @@ async def test_live_handles_cannot_be_rows() -> None:
 
     with pytest.raises(RunError, match="must be data"):
         await Executor().run(wire({"src": emits(TEXT, threading.Lock())}))
+
+
+async def test_a_context_built_by_hand_refuses_the_names_a_run_refuses() -> None:
+    """``emit``, ``measure`` and ``span`` raise ``ContractError`` for a bad name; a context
+    built outside a run (a component's unit test) accepted any, so a test could not catch
+    what the run would refuse."""
+    from matrix import ContractError
+
+    ctx = RunContext("r", "c")
+    wrong: Any = "lots"  # a caller's value of the wrong type, as untyped code passes it
+    calls: tuple[Callable[[], object], ...] = (
+        lambda: ctx.emit("tick"),
+        lambda: ctx.emit("matrix.tick"),
+        lambda: ctx.measure("rss", 1.0),
+        lambda: ctx.measure("acme.rss", 1.0, kind="meter"),
+        lambda: ctx.measure("acme.rss", wrong),
+    )
+    for call in calls:
+        with pytest.raises(ContractError):
+            call()
+    with pytest.raises(ContractError):
+        async with ctx.span("matrix.probe"):
+            pass
+    ctx.emit("acme.tick", n=1)  # a good name is still accepted, and goes nowhere
+    async with ctx.span("acme.probe"):
+        ctx.measure("acme.rss", 1.0, kind="gauge")

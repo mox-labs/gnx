@@ -30,7 +30,6 @@ from ix.domain.experiment import (
     ProbeFile,
     SensorConfig,
     Shape,
-    Spend,
     SubjectConfig,
     Threshold,
 )
@@ -38,12 +37,11 @@ from ix.domain.genre import AnalysisRef, GenreDesign, Repeats, Role
 from ix.domain.kind import Confusion, Metric, Option
 from ix.domain.plan import (
     Duration,
-    Effect,
     OrderPlan,
     PlannedProbes,
     RegistrationStatus,
+    Required,
     Sensitivity,
-    SpendEstimate,
     Trials,
 )
 from ix.domain.ports import (
@@ -53,6 +51,7 @@ from ix.domain.ports import (
     Measured,
     Preflight,
     Probe,
+    Requirement,
     Review,
     Scope,
     Sensed,
@@ -64,20 +63,21 @@ from ix.domain.ports import (
     Surroundings,
     Traced,
 )
+from ix.domain.provenance import Content, Provenance, RuntimeOrigin
 from ix.domain.registration import Amendment, Deviation, Registration
 from ix.domain.report import RunSummary, TrialCounts
 from ix.domain.run import (
     Bindings,
     Failure,
-    Halt,
     HarnessError,
     Interaction,
     Reading,
     SubjectError,
     Target,
     Trial,
+    TrialError,
 )
-from ix.domain.summaries import ConfusionTable, LabelScore, ProbeScreen, Spent
+from ix.domain.summaries import ConfusionTable, LabelScore, ProbeScreen
 
 __all__ = [
     "Amendment",
@@ -87,10 +87,10 @@ __all__ = [
     "CalibrationCheck",
     "Confusion",
     "ConfusionTable",
+    "Content",
     "Decision",
     "Deviation",
     "Duration",
-    "Effect",
     "Environment",
     "EnvironmentConfig",
     "Estimate",
@@ -100,7 +100,6 @@ __all__ = [
     "Flag",
     "GenreDesign",
     "Guardrail",
-    "Halt",
     "HarnessError",
     "Interaction",
     "Interval",
@@ -121,14 +120,18 @@ __all__ = [
     "ProbeConfig",
     "ProbeFile",
     "ProbeScreen",
+    "Provenance",
     "Reading",
     "Registration",
     "RegistrationStatus",
     "Repeats",
+    "Required",
+    "Requirement",
     "Review",
     "Role",
     "RoleAssignment",
     "RunSummary",
+    "RuntimeOrigin",
     "Scope",
     "SelectedSensor",
     "Sensed",
@@ -138,9 +141,6 @@ __all__ = [
     "Shape",
     "SourcedValue",
     "Span",
-    "Spend",
-    "SpendEstimate",
-    "Spent",
     "Spread",
     "StandIn",
     "StoodIn",
@@ -153,5 +153,6 @@ __all__ = [
     "Traced",
     "Trial",
     "TrialCounts",
+    "TrialError",
     "Trials",
 ]

@@ -36,7 +36,9 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from matrix.domain.errors import CompilationError, invalid
 from matrix.domain.ids import versioned_problem
+from matrix.domain.observer import check_event_name, check_measure
 from matrix.domain.problems import problem
+from matrix.domain.session import SESSION
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -67,9 +69,12 @@ class ContextHooks(Protocol):
 
     def span(self, name: str, fields: dict[str, Any]) -> AbstractAsyncContextManager[None]: ...
 
+    def sessions(self) -> tuple[int, ...]: ...
+
 
 class _Detached:
-    """Hooks for a context built outside a run (a component under a unit test)."""
+    """Hooks for a context built outside a run (a component under a unit test). Nothing is
+    kept, but a name or a measurement the run would refuse is refused here too."""
 
     def defer(self, release: Release) -> None:
         return None
@@ -78,16 +83,20 @@ class _Detached:
         return None
 
     def emit(self, name: str, fields: dict[str, Any]) -> None:
-        return None
+        check_event_name(name)
 
     def measure(
         self, name: str, value: float, *, unit: str, kind: str, attrs: dict[str, Any]
     ) -> None:
-        return None
+        check_measure(name, value, kind)
 
     @asynccontextmanager
     async def span(self, name: str, fields: dict[str, Any]) -> AsyncIterator[None]:
+        check_event_name(name, what="span")
         yield
+
+    def sessions(self) -> tuple[int, ...]:
+        return ()
 
 
 class RunContext:
@@ -105,6 +114,9 @@ class RunContext:
 
     ``defer(release)`` hands the run something to undo. Every deferred release is called once
     when the run ends, in reverse order, whether the run completed, failed or was cancelled.
+
+    ``sessions()`` names the rows of ``matrix.v1.session`` the component has run since it
+    last handed a row over: the ones its next row's ledger entry will name.
 
     ``emit``, ``measure`` and ``span`` are the component's telemetry: events on the run's
     channel, under a name the component namespaces with its own root (``acme.probe.sample``;
@@ -164,6 +176,12 @@ class RunContext:
         ``acme.probe.end`` (with ``status`` and ``duration_ms``) around the block. Spans and
         agent calls made inside it are its children."""
         return self._hooks.span(name, fields)
+
+    def sessions(self) -> tuple[int, ...]:
+        """The rows of ``matrix.v1.session`` this component has run since it last handed a
+        row over, failed ones included: the sessions the ledger entry of its next row will
+        name. A component that wants a row to name its sessions itself reads them here."""
+        return self._hooks.sessions()
 
     def __repr__(self) -> str:
         return f"RunContext(run_id={self.run_id!r}, component={self.component!r})"
@@ -241,8 +259,6 @@ class Wiring:
     depends: Mapping[str, tuple[str, ...]]
     #: kind -> a pydantic model that rows of that kind must validate against
     schemas: Mapping[str, type[BaseModel]] = field(default_factory=dict)
-    #: name -> the effects its registration declares; ``None`` means unknown
-    effects: Mapping[str, frozenset[str] | None] = field(default_factory=dict)
     #: name -> a digest of what the component was built from (its type and config), when
     #: the caller knows it: a later run reuses a component's rows only when its digest is
     #: the same
@@ -253,31 +269,25 @@ class Wiring:
         """Every kind a run of this wiring has a table for: inputs first, then provided."""
         return (*sorted(self.inputs), *self.providers)
 
-    def order(self) -> tuple[str, ...]:
-        """The components in one valid order of work. A view for a reader: the executor
-        starts each component as soon as what it depends on has finished."""
-        placed: list[str] = []
+    def stages(self) -> tuple[tuple[str, ...], ...]:
+        """The components in stages: each stage those whose dependencies are all in earlier
+        ones. A view for a reader (``matrix plan`` prints it): the executor starts each
+        component as soon as what it depends on has finished."""
+        placed: set[str] = set()
+        stages: list[tuple[str, ...]] = []
         while len(placed) < len(self.components):
-            placed.extend(
+            stage = tuple(
                 name
                 for name in self.components
                 if name not in placed and all(d in placed for d in self.depends[name])
             )
-        return tuple(placed)
+            stages.append(stage)
+            placed.update(stage)
+        return tuple(stages)
 
-    def declared_effects(self) -> frozenset[str] | None:
-        """Every effect the components declare; ``None`` if any component's are unknown.
-
-        Unknown is never read as "none": a component built outside the registry, or
-        registered without effects, makes the whole run's effects unknown.
-        """
-        found: set[str] = set()
-        for name in self.components:
-            effects = self.effects.get(name)
-            if effects is None:
-                return None
-            found |= effects
-        return frozenset(found)
+    def order(self) -> tuple[str, ...]:
+        """The components in one valid order of work: the stages, one after another."""
+        return tuple(name for stage in self.stages() for name in stage)
 
 
 def wire(
@@ -285,7 +295,6 @@ def wire(
     *,
     inputs: Iterable[str] = (),
     schemas: Mapping[str, type[BaseModel]] | None = None,
-    effects: Mapping[str, frozenset[str] | None] | None = None,
     fingerprints: Mapping[str, str] | None = None,
 ) -> Wiring:
     """Infer the wiring of ``components`` and check it. Raises CompilationError listing every
@@ -331,7 +340,6 @@ def wire(
         providers=providers,
         depends=depends,
         schemas=dict(schemas or {}),
-        effects=dict(effects or {}),
         fingerprints=dict(fingerprints or {}),
     )
 
@@ -515,12 +523,13 @@ def _check_kind(kind: Any, where: str, problems: list[Problem]) -> bool:
             )
         )
         return False
-    if kind == LEDGER:
+    if kind in (LEDGER, SESSION):
+        what = "provenance table" if kind == LEDGER else "table of agent sessions and model calls"
         problems.append(
             problem(
                 where,
                 "invalid_value",
-                f"{LEDGER!r} is the run's own provenance table",
+                f"{kind!r} is the run's own {what}",
                 fix="name a kind of your own",
                 got=kind,
             )

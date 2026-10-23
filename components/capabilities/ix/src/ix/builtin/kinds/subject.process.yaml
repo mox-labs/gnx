@@ -2,11 +2,10 @@ schema: ix.v1.kind
 name: ix.v1.subject.process
 summary: A program ix starts for each trial and stops after it.
 options:
-  command: {type: list, required: true, description: the program and its arguments}
+  command: {type: command, required: true, within: cwd, description: "the program and its arguments; the program, and each file an argument names, relative to cwd, are digested as what was tested"}
   url: {type: string, description: where the program listens once it is up}
   ready: {type: string, description: "a URL that answers when the program is ready; without one, url accepting a connection"}
   cwd: {type: string, description: "the directory to start it in, relative to the experiment"}
   env: {type: mapping, description: environment variables to add}
   startup_timeout: {type: duration, description: how long to wait for ready; 30s when absent}
-effects: [process]
 offers: [pid, url]

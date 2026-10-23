@@ -9,7 +9,7 @@ This walkthrough uses **Exa** (neural search) because the auth is simple and the
 Install recon from the gnx repository (see [first-survey.md](./first-survey.md) for an editable install from a checkout):
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.11.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.12.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
@@ -29,7 +29,7 @@ Three config knobs make POST-body APIs work:
 
 Plus one templating knob that keeps the config generic:
 
-4. **`{placeholder}` substitution in body strings** — values from `params:` are substituted recursively into string values in `body:`. Non-strings (ints, bools, lists, nested dicts) pass through untouched. This is the same `substitute()` mechanism recon already uses for `endpoint` path interpolation and `cli.run` commands. **If any `{foo}` remains unresolved after substitution, `recon survey --dry-run` (and every survey, which plans first) reports it as a config problem at `collectors.<i>.body` and exits 3 before anything is sent** — loud local failure beats silent server-side 400s or empty results. Add every `{foo}` you reference to `params:`.
+4. **`{placeholder}` substitution in body strings** — values from `vars:` are substituted recursively into string values in `body:` (and into `endpoint:`). Non-strings (ints, bools, lists, nested dicts) pass through untouched. `vars:` go nowhere else: unlike `params:`, the query string, they are not sent as query parameters, so a search topic stays out of the URL and the server's access log. **If any `{foo}` remains unresolved after substitution, `recon survey --dry-run` (and every survey, which plans first) reports it as a config problem at `collectors.<i>.body` and exits 3 before anything is sent** — loud local failure beats silent server-side 400s or empty results. Add every `{foo}` you reference to `vars:`.
 
 ## Create the mission
 
@@ -60,7 +60,7 @@ collectors:
     source: exa
     endpoint: /search
     method: POST
-    params:
+    vars:
       topic: "transformer attention mechanism"   # ← change me, don't regenerate YAML
     body:
       query: "{topic}"                            # ← templated
@@ -119,7 +119,7 @@ collectors:
     source: exa
     endpoint: /search
     method: POST
-    params:
+    vars:
       topic: "transformer attention mechanism"
     body:
       query: "{topic}"
@@ -148,7 +148,7 @@ Uniform columns, populated. If a path was wrong, the field would be `null` — f
 
 ## Stage 4 — Survey
 
-Bump `numResults` and rename the collector. Change the search term by editing one line in `params:` — **no regeneration of the whole YAML**:
+Bump `numResults` and rename the collector. Change the search term by editing one line in `vars:` — **no regeneration of the whole YAML**:
 
 ```yaml
 catalog:
@@ -167,7 +167,7 @@ collectors:
     source: exa
     endpoint: /search
     method: POST
-    params:
+    vars:
       topic: "state-space models post-Mamba"    # ← only this line changes per variation
     body:
       query: "{topic}"
@@ -225,7 +225,7 @@ collectors:
     source: firecrawl
     endpoint: /v1/scrape
     method: POST
-    params:
+    vars:
       target_url: "https://example.com/article"
     body:
       url: "{target_url}"
@@ -256,7 +256,7 @@ collectors:
     source: tavily
     endpoint: /search
     method: POST
-    params:
+    vars:
       topic: "recent advances in state-space models"
     body:
       query: "{topic}"
@@ -290,7 +290,7 @@ collectors:
     source: serper
     endpoint: /search
     method: POST
-    params:
+    vars:
       query: "arxiv transformer survey 2025"
     body:
       q: "{query}"

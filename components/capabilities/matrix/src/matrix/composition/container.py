@@ -6,25 +6,31 @@ order, and reports **every** problem it meets as one ConfigError, each a
 
 1. **observers**, each ``matrix.observers`` entry resolved through the registry, and the
    ``otel`` observer when the standard ``OTEL_*`` variables ask for export;
-2. **runtimes**, each ``matrix.runtimes.<name>`` resolved by its type (a built-in short name
-   or a full type URL), its options validated by that runtime's typed config;
+2. **runtimes**, each ``matrix.agent_runtimes.<name>`` at the ``agent-runtime`` point and
+   each ``matrix.model_runtimes.<name>`` at the ``model-runtime`` point, resolved by its type
+   (a built-in short name or a full type URL), its options validated by that runtime's typed
+   config;
 3. **the store**, ``matrix.store``, resolved the same way at the ``store`` point;
 4. **definitions**, every ``*.md`` in each ``matrix.definitions`` directory, read by the
    loader as :class:`~matrix.domain.agent.AgentDefinition`;
 5. **agents**, each ``matrix.agents.<name>`` binding a definition (plus inline overrides) to a
-   named runtime. The runtime's ``check`` runs here, so a definition it cannot honour fails now.
+   named agent runtime. The runtime's ``check`` runs here, so a definition it cannot play
+   fails now.
+
+A model step checks its model name with its model runtime when :meth:`Container.wire` builds
+it, so an unknown model fails there, with every other problem of the wiring.
 
 Nothing is called: composition makes no model call and no tool call. What a reader should
-know but that is not wrong (a permissive runtime, export asked for without its extra) is in
-:attr:`Container.warnings`.
+know but that is not wrong (a permissive runtime, export asked for in an install that cannot
+do it) is in :attr:`Container.warnings`.
 
 :meth:`Container.wire` then turns a list of ``{name, type, config}`` entries (the config's
 ``matrix.components``, or the caller's own) into components and wires them by kind, and
 :meth:`Container.run` runs them with the configured store and limits.
 
-**Needs.** An extension declares the shared things it needs (``agents``, ``models``, ``cwd``;
-a component may also ask for its ``name``) when it registers; composition hands over exactly
-those. Nothing is matched by field name.
+**Needs.** An extension declares the shared things it needs (``agents``, ``model_runtimes``,
+``schemas``, ``models``, ``cwd``; a component may also ask for its ``name``) when it
+registers; composition hands over exactly those. Nothing is matched by field name.
 """
 
 from __future__ import annotations
@@ -40,9 +46,13 @@ from typing import TYPE_CHECKING, Any
 from matrix.adapters._in.signals import cancel_on_signals
 from matrix.composition import telemetry
 from matrix.composition.builtins import (
-    RUNTIME_PREFIX,
+    AGENT_RUNTIME,
+    AGENT_RUNTIME_PREFIX,
+    MODEL_RUNTIME,
+    MODEL_RUNTIME_PREFIX,
+    agent_runtime_type_url,
+    model_runtime_type_url,
     observer_type_url,
-    runtime_type_url,
     store_type_url,
 )
 from matrix.composition.builtins import register as register_builtins
@@ -50,7 +60,7 @@ from matrix.composition.config import default_loader
 from matrix.domain.agent import AgentDefinition, BoundAgent
 from matrix.domain.agent_step import AGENT_RESPONSE, AGENT_STEP
 from matrix.domain.component import Wiring, wire
-from matrix.domain.config import ComponentConfig, Config, MatrixConfig
+from matrix.domain.config import ComponentConfig, Config, MatrixConfig, RuntimeConfig
 from matrix.domain.errors import (
     CompilationError,
     ConfigError,
@@ -59,6 +69,7 @@ from matrix.domain.errors import (
     invalid,
 )
 from matrix.domain.executor import Executor, Limits, Reuse
+from matrix.domain.model_step import MODEL_CALL, MODEL_STEP
 from matrix.domain.ports._out.construct_store import location_of
 from matrix.domain.problems import problem, sourced
 from matrix.domain.registry import Extension, Registry
@@ -72,6 +83,7 @@ if TYPE_CHECKING:
     from matrix.domain.observer import Observer
     from matrix.domain.ports._out.agent_runtime import AgentRuntime
     from matrix.domain.ports._out.construct_store import ConstructStore
+    from matrix.domain.ports._out.model_runtime import ModelRuntime
     from matrix.domain.problems import Problem
 
 
@@ -84,7 +96,8 @@ class Container:
         config: Config[Any],
         registry: Registry,
         *,
-        runtimes: Mapping[str, AgentRuntime] | None = None,
+        agent_runtimes: Mapping[str, AgentRuntime] | None = None,
+        model_runtimes: Mapping[str, ModelRuntime] | None = None,
         definitions: Mapping[str, AgentDefinition] | None = None,
         agents: Mapping[str, BoundAgent] | None = None,
         observers: Sequence[Observer] = (),
@@ -94,7 +107,8 @@ class Container:
     ) -> None:
         self._config = config
         self._registry = registry
-        self._runtimes = dict(runtimes or {})
+        self._agent_runtimes = dict(agent_runtimes or {})
+        self._model_runtimes = dict(model_runtimes or {})
         self._definitions = dict(definitions or {})
         self._agents = dict(agents or {})
         self._observers = tuple(observers)
@@ -111,8 +125,12 @@ class Container:
         return self._registry
 
     @property
-    def runtimes(self) -> Mapping[str, AgentRuntime]:
-        return dict(self._runtimes)
+    def agent_runtimes(self) -> Mapping[str, AgentRuntime]:
+        return dict(self._agent_runtimes)
+
+    @property
+    def model_runtimes(self) -> Mapping[str, ModelRuntime]:
+        return dict(self._model_runtimes)
 
     @property
     def definitions(self) -> Mapping[str, AgentDefinition]:
@@ -158,26 +176,54 @@ class Container:
             )
         return agent
 
-    def runtime(self, name: str) -> AgentRuntime:
-        runtime = self._runtimes.get(name)
+    def agent_runtime(self, name: str) -> AgentRuntime:
+        runtime = self._agent_runtimes.get(name)
         if runtime is None:
-            known = ", ".join(sorted(self._runtimes)) or "(none configured)"
+            known = ", ".join(sorted(self._agent_runtimes)) or "(none configured)"
             raise NotFoundError(
-                f"no runtime named {name!r}. Configured: {known}",
-                fix="define it under matrix.runtimes",
+                f"no agent runtime named {name!r}. Configured: {known}",
+                fix="define it under matrix.agent_runtimes",
                 value=name,
-                allowed=sorted(self._runtimes),
+                allowed=sorted(self._agent_runtimes),
+            )
+        return runtime
+
+    def model_runtime(self, name: str) -> ModelRuntime:
+        runtime = self._model_runtimes.get(name)
+        if runtime is None:
+            known = ", ".join(sorted(self._model_runtimes)) or "(none configured)"
+            raise NotFoundError(
+                f"no model runtime named {name!r}. Configured: {known}",
+                fix="define it under matrix.model_runtimes",
+                value=name,
+                allowed=sorted(self._model_runtimes),
             )
         return runtime
 
     def bind(self, definition: AgentDefinition, runtime: str) -> BoundAgent:
-        """Bind a definition to a configured runtime, with this container's observers."""
-        return BoundAgent(definition, self.runtime(runtime), observers=self._observers)
+        """Bind a definition to a configured agent runtime, with this container's
+        observers."""
+        built = self.agent_runtime(runtime)
+        url = agent_runtime_type_url(self._config.matrix.agent_runtimes[runtime].type)
+        return BoundAgent(
+            definition,
+            built,
+            observers=self._observers,
+            runtime_url=url,
+            drives=_drives(self._registry, AGENT_RUNTIME, url),
+        )
 
     def needs(self) -> dict[str, Any]:
         """The shared things extensions may declare they need."""
         return {
             "agents": dict(self._agents),
+            "model_runtimes": dict(self._model_runtimes),
+            "model_runtime_entries": {
+                name: self._registry.entry(MODEL_RUNTIME, model_runtime_type_url(spec.type))
+                for name, spec in self._config.matrix.model_runtimes.items()
+                if (MODEL_RUNTIME, model_runtime_type_url(spec.type)) in self._registry
+            },
+            "schemas": self._registry.payload_schemas(),
             "models": self._config.matrix.models,
             "cwd": self._context.get("cwd"),
             **{k: v for k, v in self._context.items() if k != "cwd"},
@@ -197,10 +243,13 @@ class Container:
         an entry that cannot be built, and whatever :func:`~matrix.domain.component.wire`
         finds in those that can.
 
-        The wiring carries each component's declared effects (an ``agent-step`` has its
-        agent's runtime's) and its fingerprint: a digest of its type and config, and for an
-        ``agent-step`` of its agent's definition and runtime, which a later run compares
-        before it reuses the component's rows.
+        The wiring carries each component's fingerprint, which a later run compares before
+        it reuses the component's rows: a digest of its type, its config, and each need it
+        is handed (an ``agent-step``'s own agent, a ``model-step``'s
+        own model runtime, every agent or model runtime for another component that needs
+        them, ``models``, ``cwd``). An agent counts by its definition, its runtime's config
+        and needs, and what that runtime resolved when it was built; a model runtime by its
+        config and needs and what it resolved.
         """
         configured = components is None
         prefix = "matrix." if configured else ""
@@ -210,7 +259,6 @@ class Container:
         ]
         kinds = self._config.matrix.inputs if inputs is None else tuple(inputs)
         built: dict[str, Any] = {}
-        effects: dict[str, frozenset[str] | None] = {}
         prints: dict[str, str] = {}
         problems: list[Problem] = []
         seen: set[str] = set()
@@ -232,7 +280,6 @@ class Container:
                     needs={**self.needs(), "name": entry.name},
                     where=f"{where}.config",
                 )
-                effects[entry.name] = self._effects(entry)
                 prints[entry.name] = self._fingerprint(entry)
             except MatrixError as e:
                 problems += _problems_of(e, where, entry)
@@ -241,13 +288,12 @@ class Container:
                 built,
                 inputs=kinds,
                 schemas=self._registry.payload_schemas(),
-                effects=effects,
                 fingerprints=prints,
             )
             if not problems:
                 return wiring
         except CompilationError as e:
-            found = _agent_step_clashes(e.problems, entries)
+            found = _reply_clashes(e.problems, entries)
             problems += [p.at(prefix.rstrip(".")) if prefix else p for p in found]
         raise invalid(
             "the components cannot be wired",
@@ -256,32 +302,88 @@ class Container:
             error=CompilationError,
         )
 
-    def _effects(self, entry: ComponentConfig) -> frozenset[str] | None:
-        if entry.type == AGENT_STEP:
-            spec = self._config.matrix.agents.get(str(entry.config.get("agent")))
-            runtime = self._config.matrix.runtimes.get(spec.runtime) if spec else None
-            if runtime is None:
-                return None
-            return self._registry.entry("runtime", runtime_type_url(runtime.type)).effects
-        return self._registry.entry("component", entry.type).effects
-
     def _fingerprint(self, entry: ComponentConfig) -> str:
+        """A digest of what the component is built from: its type and config, and each need
+        it is handed that decides what it does. An agent step is handed its own agent; any
+        other component that needs ``agents`` is handed every agent."""
+        needs = set(self._registry.entry("component", entry.type).needs)
         made_of: dict[str, Any] = {"type": entry.type, "config": entry.config}
         if entry.type == AGENT_STEP:
-            name = str(entry.config.get("agent"))
-            agent = self._agents.get(name)
-            spec = self._config.matrix.agents.get(name)
-            if agent is not None and spec is not None:
-                made_of["agent"] = agent.definition.model_dump(mode="json")
-                runtime = self._config.matrix.runtimes.get(spec.runtime)
-                made_of["runtime"] = None if runtime is None else runtime.model_dump(mode="json")
+            needs.discard("agents")
+            made_of["agent"] = self._agent_made_of(str(entry.config.get("agent")))
+        if entry.type == MODEL_STEP:
+            needs.discard("model_runtimes")
+            made_of["model_runtime"] = self._model_runtime_made_of(str(entry.config.get("runtime")))
+        made_of["needs"] = self._needs_made_of(needs)
         text = json.dumps(made_of, sort_keys=True, default=str)
         return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
 
+    def _agent_made_of(self, name: str) -> dict[str, Any] | None:
+        """What decides how the agent ``name`` answers: its definition, its runtime's config
+        and the needs that runtime was handed, and what the runtime resolved when it was
+        built (``resolved``: a model runtime's registry, from ``matrix.models`` or the tiers
+        hardline discovered)."""
+        agent = self._agents.get(name)
+        spec = self._config.matrix.agents.get(name)
+        if agent is None or spec is None:
+            return None
+        runtime = self._config.matrix.agent_runtimes.get(spec.runtime)
+        found: dict[str, Any] = {
+            "definition": agent.definition.model_dump(mode="json"),
+            "runtime": None if runtime is None else runtime.model_dump(mode="json"),
+        }
+        url = None if runtime is None else agent_runtime_type_url(runtime.type)
+        if url is not None and (AGENT_RUNTIME, url) in self._registry:
+            found["needs"] = self._needs_made_of(self._registry.entry(AGENT_RUNTIME, url).needs)
+        resolved = getattr(agent.runtime, "resolved", None)
+        if resolved is not None:
+            found["resolved"] = resolved
+        return found
+
+    def _model_runtime_made_of(self, name: str) -> dict[str, Any] | None:
+        """What decides how the model runtime ``name`` answers: its config, the needs it was
+        handed, and what it resolved when it was built (``resolved``: hardline's registry)."""
+        built = self._model_runtimes.get(name)
+        runtime = self._config.matrix.model_runtimes.get(name)
+        if built is None or runtime is None:
+            return None
+        found: dict[str, Any] = {"runtime": runtime.model_dump(mode="json")}
+        url = model_runtime_type_url(runtime.type)
+        if (MODEL_RUNTIME, url) in self._registry:
+            found["needs"] = self._needs_made_of(self._registry.entry(MODEL_RUNTIME, url).needs)
+        resolved = getattr(built, "resolved", None)
+        if resolved is not None:
+            found["resolved"] = resolved
+        return found
+
+    def _needs_made_of(self, needs: Iterable[str]) -> dict[str, Any]:
+        """The value of each need matrix hands over, as it decides the work: every agent,
+        every model runtime, the model registry, the working directory (the process's when
+        none was given). The payload ``schemas`` are code, not config, and a need a host adds
+        through ``context`` is its own: neither is digested."""
+        found: dict[str, Any] = {}
+        for need in sorted(needs):
+            if need == "agents":
+                found[need] = {name: self._agent_made_of(name) for name in sorted(self._agents)}
+            elif need == "model_runtimes":
+                found[need] = {
+                    name: self._model_runtime_made_of(name) for name in sorted(self._model_runtimes)
+                }
+            elif need == "models":
+                found[need] = self._config.matrix.models
+            elif need == "cwd":
+                found[need] = str(self._context.get("cwd") or Path.cwd())
+        return found
+
     def executor(self, observers: Sequence[Observer] = ()) -> Executor:
         """An executor over the composed observers (and ``observers``) that turns SIGTERM and
-        SIGINT into the run's cancellation."""
-        return Executor([*self._observers, *observers], interrupts=cancel_on_signals)
+        SIGINT into the run's cancellation, and records in each session row the
+        OpenTelemetry trace and span the session ended in."""
+        return Executor(
+            [*self._observers, *observers],
+            interrupts=cancel_on_signals,
+            trace=telemetry.current_trace,
+        )
 
     def location(self, run_id: str) -> str:
         """Where the store keeps (or would keep) the run ``run_id``."""
@@ -289,11 +391,13 @@ class Container:
 
     def reuse(self, run_id: str, wiring: Wiring | None = None) -> Reuse:
         """What of the recorded run ``run_id`` a run of ``wiring`` (the configured one by
-        default) may reuse: each component that completed there, was built from the same
-        fingerprint, and whose providers are all reused too, with its rows as recorded.
+        default) may reuse: each component that completed there (``completed`` or
+        ``reused``, never ``stopped``), was built from the same fingerprint, and whose
+        providers are all reused too, with its rows as recorded.
 
-        Rows come back as the store keeps them (JSON data), not as the objects that were
-        handed over. Raises NotFoundError when there is no such run.
+        Rows come back as the store keeps them (JSON data); the executor validates each into
+        its kind's schema as it records it, as on a fresh run. Raises NotFoundError when there
+        is no such run.
         """
         wiring = wiring or self.wire()
         described = self.store.describe(run_id)
@@ -307,7 +411,7 @@ class Container:
             if (
                 mine is not None
                 and prints.get(name) == mine
-                and ending.get("status") in ("completed", "reused")
+                and _finished(ending)
                 and all(d in reused for d in wiring.depends[name])
             ):
                 provides = wiring.components[name].provides
@@ -357,20 +461,32 @@ class Container:
         )
 
 
+def _finished(ending: Mapping[str, Any]) -> bool:
+    """Whether a recorded ending is finished work. A ``completed`` that carries a stop's
+    reason is a component that returned after a stop request, as records written before
+    ``stopped`` existed say it: partial, like ``stopped``."""
+    status = ending.get("status")
+    return status == "reused" or (status == "completed" and ending.get("reason") is None)
+
+
 def new_run_id() -> str:
     """``<UTC time>-<4 hex digits>``: sorts by time; two runs in one second do not collide."""
     return f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(2)}"
 
 
-def _agent_step_clashes(
+#: The kind each step provides its reply as when its config names none.
+_REPLIES = {AGENT_STEP: AGENT_RESPONSE, MODEL_STEP: MODEL_CALL}
+
+
+def _reply_clashes(
     problems: Sequence[Problem], entries: Sequence[ComponentConfig]
 ) -> list[Problem]:
-    """``problems``, with a kind that two agent steps both provide as their reply pointed at
-    the key that fixes it: each step's own ``response``."""
+    """``problems``, with a kind that two agent or model steps both provide as their reply
+    pointed at the key that fixes it: each step's own ``response``."""
     responses = {
-        entry.name: str(entry.config.get("response", AGENT_RESPONSE))
+        entry.name: str(entry.config.get("response", _REPLIES[entry.type]))
         for entry in entries
-        if entry.type == AGENT_STEP
+        if entry.type in _REPLIES
     }
     found: list[Problem] = []
     for item in problems:
@@ -380,11 +496,11 @@ def _agent_step_clashes(
             item = item.model_copy(
                 update={
                     "path": f"components.{name}.config.response",
-                    "message": f"agent steps {', '.join(clashing)} all provide their reply as "
+                    "message": f"steps {', '.join(clashing)} all provide their reply as "
                     f"{item.got!r}; a kind has one provider",
-                    "fix": "give each agent step its own `response:` kind in its config (as "
-                    f"`response: <namespace>.v1.{name}-reply`); the default, "
-                    f"{AGENT_RESPONSE}, serves one step",
+                    "fix": "give each step its own `response:` kind in its config (as "
+                    f"`response: <namespace>.v1.{name}-reply`); the default, {item.got}, "
+                    "serves one step",
                 }
             )
         found.append(item)
@@ -461,54 +577,71 @@ class _Problems:
     def add(
         self, error: MatrixError, where: str, *, got: Any = None, kind: str | None = None
     ) -> None:
-        if error.problems:
-            self.found += error.problems
+        if error.problems:  # one problem read by several parts (`matrix.models`) is said once
+            self.found += [p for p in error.problems if p not in self.found]
             return
-        if "extra" in error.details:  # selected, but its optional dependency is missing
-            kind, got = "extra_missing", error.details.get("missing")
+        if "missing" in error.details:  # selected, but a dependency of it is not installed
+            kind, got = "dependency_missing", error.details.get("missing")
         kind = kind or ("name_unknown" if error.kind == "not_found" else "invalid_value")
         self.found.append(problem(where, kind, error.message, fix=error.fix, got=got))
 
 
 def build_runtimes(
-    matrix: MatrixConfig,
+    runtimes: Mapping[str, RuntimeConfig],
+    point: str,
     registry: Registry,
     needs: Mapping[str, Any],
     *,
-    source: str = "matrix",
+    where: str,
+    models_at: str = "",
     problems: _Problems | None = None,
-) -> dict[str, AgentRuntime]:
-    """Each configured runtime, built. Raises ConfigError listing every problem unless
-    ``problems`` collects them."""
+) -> dict[str, Any]:
+    """Each runtime in ``runtimes`` (an ``agent_runtimes`` or ``model_runtimes`` section),
+    built at ``point`` (``agent-runtime`` or ``model-runtime``). ``where`` is the section's
+    key path; ``models_at`` is the key path of the ``models`` need, where a problem in the
+    registry a runtime was handed, not given in its own config, is reported. Raises
+    ConfigError listing every problem unless ``problems`` collects them."""
     found = problems or _Problems()
-    runtimes: dict[str, AgentRuntime] = {}
-    for name, spec in matrix.runtimes.items():
-        where = f"{source}.runtimes.{name}"
-        url = runtime_type_url(spec.type)
-        if ("runtime", url) not in registry:
-            legal = sorted(
-                e.type_url.removeprefix(RUNTIME_PREFIX) for e in registry.entries("runtime")
-            )
+    prefix = AGENT_RUNTIME_PREFIX if point == AGENT_RUNTIME else MODEL_RUNTIME_PREFIX
+    type_url_of = agent_runtime_type_url if point == AGENT_RUNTIME else model_runtime_type_url
+    built: dict[str, Any] = {}
+    for name, spec in runtimes.items():
+        at = f"{where}.{name}"
+        url = type_url_of(spec.type)
+        if (point, url) not in registry:
+            legal = sorted(e.type_url.removeprefix(prefix) for e in registry.entries(point))
             found.found.append(
                 problem(
-                    f"{where}.type",
+                    f"{at}.type",
                     "name_unknown",
-                    f"{spec.type!r} is not a registered runtime",
-                    fix="use one of the registered runtimes, or install the package providing it",
+                    f"{spec.type!r} is not a registered {point}",
+                    fix=f"use one of the registered {point}s, or install the package providing it",
                     allowed=legal,
                     got=spec.type,
                 )
             )
             continue
+        options = spec.options()
         try:
-            runtimes[name] = registry.create(
-                "runtime", url, spec.options(), needs=needs, where=where
-            )
+            built[name] = registry.create(point, url, options, needs=needs, where=at)
         except MatrixError as e:
-            found.add(e, where)
+            handed = models_at and options.get("models") is None and needs.get("models")
+            found.add(_rerooted(e, f"{at}.models", models_at) if handed and e.problems else e, at)
     if problems is None and found.found:
-        raise invalid("the runtimes cannot be built", found.found)
-    return runtimes
+        raise invalid(f"the {point}s cannot be built", found.found)
+    return built
+
+
+def _rerooted(error: MatrixError, path: str, to: str) -> MatrixError:
+    """``error``'s problems, each at ``path`` (or under it) moved to ``to``: what
+    :meth:`_Problems.add` reads of an error that has problems."""
+    moved = [
+        p.model_copy(update={"path": to + p.path[len(path) :]})
+        if p.path == path or p.path.startswith(f"{path}.")
+        else p
+        for p in error.problems
+    ]
+    return MatrixError(error.message, fix=error.fix, problems=moved, complete=error.complete)
 
 
 def build_observers(
@@ -628,23 +761,30 @@ def bind_agents(
     source: str = "matrix",
     problems: _Problems | None = None,
     unread: bool = False,
+    registry: Registry | None = None,
 ) -> dict[str, BoundAgent]:
-    """Each configured agent, bound. An agent whose runtime is configured but could not be
-    built is skipped, and the check it would have had is reported as not made; so is one
-    whose definition is missing when ``unread`` says the definitions could not all be read."""
+    """Each configured agent, bound to its agent runtime, with the runtime's type URL and, from
+    ``registry``, the distributions it drives, for the sessions it records. An agent whose
+    runtime is configured but could not be built is skipped, and the check it would have had
+    is reported as not made; so is one whose definition is missing when ``unread`` says the
+    definitions could not all be read."""
     found = problems or _Problems()
     agents: dict[str, BoundAgent] = {}
     for name, spec in matrix.agents.items():
         where = f"{source}.agents.{name}"
         runtime = runtimes.get(spec.runtime)
-        if runtime is None and spec.runtime not in matrix.runtimes:
+        if runtime is None and spec.runtime not in matrix.agent_runtimes:
+            model = spec.runtime in matrix.model_runtimes
             found.found.append(
                 problem(
                     f"{where}.runtime",
                     "name_unknown",
-                    f"{spec.runtime!r} is not a configured runtime",
-                    fix="name a runtime defined under matrix.runtimes",
-                    allowed=sorted(matrix.runtimes),
+                    f"{spec.runtime!r} is a model runtime: one call, with no loop or tools"
+                    if model
+                    else f"{spec.runtime!r} is not a configured agent runtime",
+                    fix="name an agent runtime defined under matrix.agent_runtimes"
+                    + (", or make the call with a matrix.v1.model-step" if model else ""),
+                    allowed=sorted(matrix.agent_runtimes),
                     got=spec.runtime,
                 )
             )
@@ -672,13 +812,20 @@ def bind_agents(
             )
             continue
         if runtime is None:
-            if spec.runtime in matrix.runtimes:
+            if spec.runtime in matrix.agent_runtimes:
                 found.complete = False  # its runtime failed to build: its check was not made
             continue
         fields = {**(base.model_dump() if base is not None else {}), **overrides, "name": name}
         try:
             definition = AgentDefinition.model_validate(fields)
-            agents[name] = BoundAgent(definition, runtime, observers=observers)
+            url = agent_runtime_type_url(matrix.agent_runtimes[spec.runtime].type)
+            agents[name] = BoundAgent(
+                definition,
+                runtime,
+                observers=observers,
+                runtime_url=url,
+                drives=_drives(registry, AGENT_RUNTIME, url),
+            )
         except MatrixError as e:
             found.add(e, where)
         except ValueError as e:  # pydantic's ValidationError
@@ -707,7 +854,7 @@ def compose(
     ``loader`` reads the definition directories (default: the file source).
 
     Raises ConfigError listing every problem; ``complete`` is False when a problem kept a
-    check from being made (an agent whose runtime could not be built).
+    check from being made (an agent whose agent runtime could not be built).
     """
     full = config if isinstance(config, Config) else Config[Any](matrix=config, client=None)
     matrix = full.matrix
@@ -716,7 +863,24 @@ def compose(
     problems = _Problems()
     shared = {"cwd": None, "models": matrix.models, **dict(context or {})}
     observers = build_observers(matrix, reg, source=source, problems=problems)
-    runtimes = build_runtimes(matrix, reg, shared, source=source, problems=problems)
+    agent_runtimes = build_runtimes(
+        matrix.agent_runtimes,
+        AGENT_RUNTIME,
+        reg,
+        shared,
+        where=f"{source}.agent_runtimes",
+        models_at=f"{source}.models",
+        problems=problems,
+    )
+    model_runtimes = build_runtimes(
+        matrix.model_runtimes,
+        MODEL_RUNTIME,
+        reg,
+        shared,
+        where=f"{source}.model_runtimes",
+        models_at=f"{source}.models",
+        problems=problems,
+    )
     store = build_store(matrix, reg, source=source, problems=problems)
     loaded: dict[str, AgentDefinition] = {}
     directories = [str(d if Path(d).is_absolute() else root / d) for d in matrix.definitions]
@@ -743,7 +907,14 @@ def compose(
             )
         loaded[definition.name] = definition
     agents = bind_agents(
-        matrix, runtimes, loaded, observers, source=source, problems=problems, unread=unread
+        matrix,
+        agent_runtimes,
+        loaded,
+        observers,
+        source=source,
+        problems=problems,
+        unread=unread,
+        registry=reg,
     )
     if problems.found:
         raise invalid(
@@ -752,15 +923,20 @@ def compose(
             complete=problems.complete,
         )
     warnings = [
-        notice.at(f"{source}.runtimes.{name}")
-        for name, runtime in runtimes.items()
+        notice.at(f"{source}.{section}.{name}")
+        for section, built in (
+            ("agent_runtimes", agent_runtimes),
+            ("model_runtimes", model_runtimes),
+        )
+        for name, runtime in built.items()
         for notice in getattr(runtime, "warnings", ())
     ]
     warnings += telemetry.warnings()
     return Container(
         full,
         reg,
-        runtimes=runtimes,
+        agent_runtimes=agent_runtimes,
+        model_runtimes=model_runtimes,
         definitions=loaded,
         agents=agents,
         observers=observers,
@@ -768,3 +944,10 @@ def compose(
         store=store,
         warnings=warnings,
     )
+
+
+def _drives(registry: Registry | None, point: str, url: str) -> tuple[str, ...]:
+    """The distributions the runtime registered at ``url`` drives; none when unknown."""
+    if registry is None or (point, url) not in registry:
+        return ()
+    return registry.entry(point, url).drives

@@ -9,8 +9,10 @@
 
 [tool.uv.workspace]
 members = ["*"]
-# pytest writes __pycache__ beside conftest.py here, and it is no member.
-exclude = ["__pycache__"]
+# pytest writes __pycache__ beside conftest.py here, and it is no member. _testing holds
+# helpers the members' tests share (the layer check) and the tests of conftest.py's guard, and
+# is no member either.
+exclude = ["__pycache__", "_testing"]
 
 # uv 0.9+ REQUIRES an explicit source entry for a workspace-internal dependency.
 # A member that declares a bare `matrix` dep fails to resolve without this, with
@@ -29,16 +31,17 @@ hardline = { workspace = true }
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    # Bounds every test (the suite default is below), so a test that waits on an event that
+    # never comes fails with a traceback instead of holding the run until CI's job limit.
+    "pytest-timeout>=2.3",
     "ruff>=0.8",
     "mypy>=1.8",
     "types-PyYAML",  # gnx + harness parse YAML; strict mypy needs the stubs
-    "pytz>=2024.1",  # required by DuckDB TIMESTAMPTZ (recon)
-    "opentelemetry-sdk>=1.20",  # matrix's telemetry tests install an SDK provider
-    # The `claude` extra: matrix's SDK runtime is typechecked and tested here, and no other
-    # member brings the SDK in.
-    "matrix[claude]",
+    # The members, each with every dependency it has: no package has extras, so this
+    # group is where the test tools come from.
+    "matrix",
     "ix",
-    "recon[otel]",
+    "recon",
     "gnx",
     "dao",
     "hardline",
@@ -49,6 +52,9 @@ dev = [
 # applies to every package's tests.
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Seconds any one test may take, setup and teardown included; a test that needs longer says
+# so with its own `@pytest.mark.timeout`.
+timeout = 60
 
 [tool.ruff]
 line-length = 100

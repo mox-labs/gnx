@@ -1,0 +1,143 @@
+{
+  "language": "python",
+  "about": "recon's layers, checked by tests/test_layering.py on every test run with the shared checker (components/capabilities/_testing/layers.py), which reads a map as slick crafting-aces' layer-check.py does, so the same file runs under that script too. Adopted from the layer map the 2026-10-22 review drew (its v2, at 1580c81) and fitted to recon as it now is: application/collectors.py, the ArchiveStore's tables (so the query adapter no longer reads the store's files), deadlines, and httpx2 in place of httpx. recon keeps its ports in domain/ beside the model, so 'domain' is the four places' domain plus ports. 'why' keys are read by neither checker.",
+  "scan": ["src/recon/**/*.py"],
+  "scan_why": "Every Python file in the package. Tests are out of scan: a test reaches adapters by design.",
+  "layers": [
+    {
+      "name": "domain",
+      "files": ["src/recon/domain/**/*.py"],
+      "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "functools",
+                "html", "inspect", "pathlib", "re", "threading", "typing", "urllib",
+                "pydantic", "recon.domain"],
+      "forbid": ["opentelemetry", "duckdb", "httpx2", "httpx", "markitdown", "yaml", "open"],
+      "why": {
+        "stdlib": "recon's PURE_STDLIB (tests/test_layering.py): pathlib names a location and datetime is the type the clock port returns; touching the filesystem or reading the clock through them is caught by test_layering's effect scan",
+        "threading": "TIMEOUT_MAX alone, the longest wait the platform's timers take, which the plan holds a source's timeout and rate to (domain/clock.py); the domain starts no thread (test_layering's LAYER_STDLIB). Accepted: owner ruling 2026-10-22",
+        "pydantic": "every published document and config model is a pydantic model",
+        "forbid": "the adapters' technologies, YAML, and the builtin open, which no import shows"
+      }
+    },
+    {
+      "name": "application",
+      "files": ["src/recon/application/**/*.py"],
+      "allow": ["__future__", "collections", "contextlib", "dataclasses", "datetime", "functools",
+                "hashlib", "html", "inspect", "json", "pathlib", "re", "typing", "urllib",
+                "pydantic", "recon.domain", "recon.application"],
+      "forbid": ["opentelemetry", "duckdb", "httpx2", "httpx", "markitdown", "yaml", "open"],
+      "why": {
+        "hashlib, json": "the config's sha256 in the archive's meta, and a hook payload's body (test_layering's LAYER_STDLIB)",
+        "recon.domain, recon.application": "the use cases run over the ports, in the domain's types"
+      }
+    },
+    {
+      "name": "adapter_support",
+      "files": ["src/recon/adapters/_out/parsing.py", "src/recon/adapters/_out/user_agent.py"],
+      "allow": ["*", "recon.domain"],
+      "forbid": ["yaml"],
+      "why": {
+        "*": "body parsing (xmltodict, lazily) and the distribution's version for the User-Agent",
+        "recon.domain": "the errors a bad body raises; these helpers hold no port and reach no adapter"
+      }
+    },
+    {
+      "name": "file_store",
+      "files": ["src/recon/adapters/_out/archive_files.py", "src/recon/adapters/_out/capture_files.py",
+                "src/recon/adapters/_out/event_log.py", "src/recon/adapters/_out/mission_files.py"],
+      "allow": ["*", "recon.domain", "recon.adapters._out.capture_files",
+                "recon.adapters._out.event_log"],
+      "why": {
+        "*": "one technology, the local filesystem, and YAML for the archive's meta and the mission's config",
+        "capture_files, event_log": "the archive store composes the archive's capture log and event log, and the mission store reuses the capture log for the mission's external log: one technology composing its own files"
+      }
+    },
+    {
+      "name": "collectors",
+      "files": ["src/recon/adapters/_out/api_collector.py", "src/recon/adapters/_out/capture_collector.py",
+                "src/recon/adapters/_out/cli_collector.py", "src/recon/adapters/_out/mcp_collector.py",
+                "src/recon/adapters/_out/web_collector.py"],
+      "allow": ["*", "recon.domain", "recon.adapters._out.parsing",
+                "recon.adapters._out.user_agent", "recon.adapters._out.capture_files"],
+      "forbid": ["yaml"],
+      "why": {
+        "*": "each collector type's own technology: a child process for cli, the MCP client (fastmcp, the mcp SDK, jsonschema) for mcp, nothing beyond the requester port for api and web",
+        "parsing, user_agent": "the shared helpers",
+        "capture_files": "the capture collector reads the capture format through its one reader, so no second parser of the format exists"
+      }
+    },
+    {
+      "name": "query",
+      "files": ["src/recon/adapters/_out/duckdb_query.py"],
+      "allow": ["*", "recon.domain"],
+      "forbid": ["yaml"],
+      "why": {
+        "recon.domain only": "which files make an archive is the ArchiveStore's secret (domain/archives.py); the query reads the tables the store names, never the store adapter's layout"
+      }
+    },
+    {
+      "name": "other_driven",
+      "files": ["src/recon/adapters/__init__.py", "src/recon/adapters/_out/__init__.py",
+                "src/recon/adapters/_out/http_requester.py",
+                "src/recon/adapters/_out/markitdown_converter.py",
+                "src/recon/adapters/_out/otel_telemetry.py", "src/recon/adapters/_out/system_clock.py"],
+      "allow": ["*", "recon.domain"],
+      "forbid": ["yaml"],
+      "why": {
+        "*": "one technology each behind one port: httpx2 and tenacity (Requester), markitdown (DocumentConverter), OpenTelemetry (EventSink), the system clock (Clock)",
+        "recon.domain only": "an adapter reaches the port it implements, and no other adapter"
+      }
+    },
+    {
+      "name": "adapters_in",
+      "files": ["src/recon/adapters/_in/**/*.py"],
+      "allow": ["*", "recon"],
+      "forbid": ["yaml"],
+      "why": {
+        "*": "rich-click, rich and signal handling",
+        "recon": "a driving adapter reaches recon through 'import recon' alone. The entry admits every recon.* path, since an allowance is a prefix; test_layering holds every file under adapters/_in to recon.__all__"
+      }
+    },
+    {
+      "name": "root",
+      "files": ["src/recon/composition.py"],
+      "allow": ["*", "recon"],
+      "forbid": ["yaml"],
+      "why": {
+        "*, recon": "the composition root: the one file that chooses adapters (test_layering holds this too)"
+      }
+    },
+    {
+      "name": "facade",
+      "files": ["src/recon/__init__.py", "src/recon/api.py", "src/recon/skill_files.py"],
+      "allow": ["*", "recon.api", "recon.composition", "recon.domain", "recon.skill_files"],
+      "forbid": ["yaml"],
+      "why": {
+        "recon.composition, recon.domain": "the library API names the root and the domain, never an adapter or a use case",
+        "*": "importlib for the version and the packaged skill files"
+      }
+    },
+    {
+      "name": "package_data",
+      "files": ["src/recon/assets/__init__.py", "src/recon/configs/__init__.py"],
+      "allow": [],
+      "why": {
+        "nothing": "empty package markers for importlib.resources (the skill text, the templates)"
+      }
+    }
+  ],
+  "single_importer": [
+    {"name": "httpx2", "only": "src/recon/adapters/_out/http_requester.py"},
+    {"name": "tenacity", "only": "src/recon/adapters/_out/http_requester.py"},
+    {"name": "duckdb", "only": "src/recon/adapters/_out/duckdb_query.py"},
+    {"name": "opentelemetry", "only": "src/recon/adapters/_out/otel_telemetry.py"},
+    {"name": "markitdown", "only": "src/recon/adapters/_out/markitdown_converter.py"},
+    {"name": "xmltodict", "only": "src/recon/adapters/_out/parsing.py"},
+    {"name": "rich_click", "only": "src/recon/adapters/_in/cli.py"},
+    {"name": "fastmcp", "only": "src/recon/adapters/_out/mcp_collector.py"},
+    {"name": "mcp", "only": "src/recon/adapters/_out/mcp_collector.py"},
+    {"name": "mcp_types", "only": "src/recon/adapters/_out/mcp_collector.py"},
+    {"name": "jsonschema", "only": "src/recon/adapters/_out/mcp_collector.py"},
+    {"name": "referencing", "only": "src/recon/adapters/_out/mcp_collector.py"}
+  ],
+  "single_importer_why": "one file per technology, each behind one port; the MCP client is the mcp collector's alone, and it reaches httpx2 only through the SDK's own client. YAML is two files by design, the archive store writing the archive's meta and the mission store reading the mission's config, so it is confined to the file store by 'forbid' in every other layer rather than by a single_importer rule"
+}

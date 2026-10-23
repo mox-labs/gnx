@@ -4,13 +4,14 @@ SDK, and export asked for without what does it is a warning, never silence."""
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import matrix
-from matrix import MatrixConfig, compose, configure_telemetry
+from matrix import MatrixConfig, ObserverConfig, compose, configure_telemetry
 from matrix.adapters._in.cli import main
 from matrix.composition import telemetry
 
@@ -24,6 +25,8 @@ _OTEL = (
     "OTEL_TRACES_EXPORTER",
     "OTEL_METRICS_EXPORTER",
     "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
 )
 
 
@@ -86,6 +89,37 @@ def test_an_application_installs_the_sdk_from_the_variables(
         installed.shutdown()
 
 
+def test_console_export_never_writes_on_the_task_whose_span_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: console spans were written by a SimpleSpanProcessor, so ending one wrote
+    to stderr on the task that ended it: the otel observer's ``around`` could block the work
+    it wraps on a full pipe. Every exporter is batched, written from its own thread."""
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SpanExportResult
+
+    providers: list[Any] = []
+    monkeypatch.setattr(trace, "set_tracer_provider", providers.append)
+    writers: list[threading.Thread] = []
+
+    def export(self: Any, spans: Any) -> SpanExportResult:
+        writers.append(threading.current_thread())
+        return SpanExportResult.SUCCESS
+
+    monkeypatch.setattr(ConsoleSpanExporter, "export", export)
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "console")
+    monkeypatch.setenv("OTEL_METRICS_EXPORTER", "none")
+    installed = configure_telemetry()
+    try:
+        (provider,) = providers
+        with provider.get_tracer("test").start_as_current_span("work"):
+            pass
+        assert writers == []  # ending the span wrote nothing on this thread
+    finally:
+        installed.shutdown()  # flushes, from the processor's thread
+    assert writers and threading.current_thread() not in writers
+
+
 def test_disabled_means_nothing_even_when_asked(
     monkeypatch: pytest.MonkeyPatch, clean: list[str]
 ) -> None:
@@ -93,14 +127,14 @@ def test_disabled_means_nothing_even_when_asked(
     assert not configure_telemetry(console=True).enabled and clean == []
 
 
-def test_export_asked_for_without_the_extra_is_a_warning_naming_the_install(
+def test_export_asked_for_in_an_install_without_the_sdk_is_a_warning_naming_the_repair(
     monkeypatch: pytest.MonkeyPatch, clean: list[str]
 ) -> None:
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
     monkeypatch.setattr(telemetry, "_installed", lambda module=telemetry._SDK: False)
     (warning,) = telemetry.warnings()
-    assert (warning.path, warning.kind) == ("OTEL_EXPORTER_OTLP_ENDPOINT", "extra_missing")
-    assert 'uv add "matrix[otel] @ git+' in warning.fix and "pip" not in warning.fix
+    assert (warning.path, warning.kind) == ("OTEL_EXPORTER_OTLP_ENDPOINT", "dependency_missing")
+    assert 'uv add "matrix @ git+' in warning.fix and "pip" not in warning.fix
     installed = configure_telemetry()
     assert not installed.enabled and installed.warnings == (warning,) and clean == []
     assert compose(MatrixConfig()).warnings == (warning,)
@@ -117,23 +151,61 @@ def test_what_matrix_does_not_install_is_named(monkeypatch: pytest.MonkeyPatch) 
     }
 
 
-def test_otlp_follows_the_protocol_variable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """http/protobuf is the spec's default; grpc when the variable says so."""
+@pytest.mark.parametrize(
+    ("variable", "refused"),
+    [
+        ("OTEL_EXPORTER_OTLP_PROTOCOL", ["traces", "metrics"]),
+        ("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", ["traces"]),
+        ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", ["metrics"]),
+    ],
+)
+def test_grpc_is_refused_and_says_what_to_set(
+    monkeypatch: pytest.MonkeyPatch, clean: list[str], variable: str, refused: list[str]
+) -> None:
+    """Owner ruling 2026-10-22: matrix exports OTLP over http/protobuf only. A signal asked
+    for over gRPC is not exported, rather than sent as http/protobuf to an endpoint that
+    speaks gRPC; the warning names the variable and what to set instead. The other signal
+    exports."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+    monkeypatch.setenv(variable, "grpc")
+    installed = configure_telemetry()
+    installed.shutdown()
+    [warning] = installed.warnings
+    assert (warning.path, warning.kind, warning.got) == (variable, "invalid_value", "grpc")
+    assert warning.allowed == ("http/protobuf",)
+    assert "http/protobuf only" in warning.message
+    assert warning.fix is not None and f"{variable}=http/protobuf" in warning.fix
+    assert clean == [s for s in ("traces", "metrics") if s not in refused]
+    assert telemetry.warnings() == installed.warnings  # what every document carries
+
+
+def test_otlp_is_http_protobuf_whatever_else_the_variable_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A protocol matrix does not speak, other than gRPC, is a warning and OTLP/HTTP."""
     import sys
     import types
 
     made: list[str] = []
-    for module, name, label in (
-        ("opentelemetry.exporter.otlp.proto.http.trace_exporter", "OTLPSpanExporter", "http"),
-        ("opentelemetry.exporter.otlp.proto.grpc.trace_exporter", "OTLPSpanExporter", "grpc"),
-    ):
-        fake = types.ModuleType(module)
-        setattr(fake, name, lambda endpoint=None, label=label: made.append(label) or object())
-        monkeypatch.setitem(sys.modules, module, fake)
+    module = "opentelemetry.exporter.otlp.proto.http.trace_exporter"
+    fake = types.ModuleType(module)
+
+    def exporter(endpoint: str | None = None) -> object:
+        made.append("http")
+        return object()
+
+    fake.OTLPSpanExporter = exporter  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, module, fake)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json")
     telemetry._otlp("traces", None)
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
-    telemetry._otlp("traces", None)
-    assert made == ["http", "grpc"]
+    assert made == ["http"]
+
+
+def test_matrix_depends_on_no_grpc_exporter() -> None:
+    from importlib.metadata import requires
+
+    exporters = [r for r in requires("matrix") or [] if r.startswith("opentelemetry-exporter")]
+    assert [r.split(">")[0] for r in exporters] == ["opentelemetry-exporter-otlp-proto-http"]
 
 
 def test_matrix_run_installs_the_sdk_and_keeps_stdout_for_its_document(
@@ -166,5 +238,31 @@ def test_matrix_run_says_when_export_cannot_happen(
     (tmp_path / "matrix.yaml").write_text("matrix: {}\n")
     assert main(["run", "--json"]) == 0
     (warning,) = json.loads(capsys.readouterr().out)["warnings"]
-    assert warning["kind"] == "extra_missing"
+    assert warning["kind"] == "dependency_missing"
     assert matrix.EXIT_CODES["ok"] == 0
+
+
+def test_an_otel_observer_exports_content_only_when_its_config_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from matrix.adapters._out.observers.otel import OtelObserver
+
+    def otel(config: MatrixConfig) -> OtelObserver:
+        (observer,) = [o for o in compose(config).observers if isinstance(o, OtelObserver)]
+        return observer
+
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "console")
+    assert otel(MatrixConfig()).capture_content is False  # attached by the variables alone
+    assert otel(MatrixConfig(observers=("otel",))).capture_content is False
+    asked = MatrixConfig(
+        observers=(ObserverConfig.model_validate({"type": "otel", "capture_content": True}),)
+    )
+    assert otel(asked).capture_content is True
+    with pytest.raises(matrix.ConfigError, match="capture_contents"):
+        compose(
+            MatrixConfig(
+                observers=(
+                    ObserverConfig.model_validate({"type": "otel", "capture_contents": True}),
+                )
+            )
+        )

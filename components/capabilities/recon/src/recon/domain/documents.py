@@ -55,6 +55,20 @@ class PlanWrites(Document):
     captures: bool
 
 
+class Required(Document):
+    """Something a planned run needs of this host, or of what it reaches, whether it holds
+    here now, and the outputs of the runs that need it: what a collector type's preflight
+    said, the same need from several runs said once."""
+
+    need: str
+    holds: bool
+    #: What was found, when it does not hold.
+    why: str = ""
+    #: How to make it hold, when it does not.
+    fix: str = ""
+    needed_by: list[str]
+
+
 class PlanDocument(Document):
     schema_: Literal["recon.v1.plan"] = Field(default="recon.v1.plan", alias="schema")
     mission: str
@@ -67,6 +81,18 @@ class PlanDocument(Document):
     problems: list[dict[str, Any]]
     #: Problem records (``recon.v1.error``'s shape) that do not stop the survey.
     warnings: list[dict[str, Any]]
+    #: Each catalog source an unpinned collector does not run against, its type not
+    #: accepting the source's kind: ``{"collector", "source", "kind"}``.
+    skipped: list[dict[str, str]] = []
+    #: What the runs need of this host, as the collector types that declare a preflight
+    #: checked it during this dry run, each with whether it holds.
+    requirements: list[Required] = []
+    #: Whether every requirement holds. False is not an error: the plan is still valid, and a
+    #: survey fails each table whose requirement does not hold, as ``config``.
+    runnable: bool = True
+    #: What this dry run did to check the requirements, by collector type (``mcp: started
+    #: each stdio server a run names ...``); empty when it ran, fetched and wrote nothing.
+    preflight: list[str] = []
 
 
 # --- survey ---------------------------------------------------------------------------------
@@ -284,13 +310,30 @@ _SURVEY_FAILURE_FIX = {
 
 
 def survey_failure(document: SurveyDocument) -> ReconError | None:
-    """The error a survey's failed tables add up to, or None when every table succeeded. Its
-    kind is ``auth``, ``transient`` or ``run_failed``; its details name the archive and the
-    failed tables."""
+    """The error a survey's failed tables add up to, or None when every table succeeded and
+    the archive was finished. An archive that could not be finished is ``store`` (owner ruling
+    2026-10-22), whatever its tables did: a failed table's error is recorded in the
+    ``meta.yaml`` that could not be written, so the store is the failure to act on first, and
+    its ``archive_unfinished`` warning says why. Otherwise the kind is ``auth``,
+    ``transient`` or ``run_failed``. The details name the archive and the failed tables."""
     kind = failure_kind(document.tables)
+    failed = [t.name for t in document.failed]
+    if any(w.get("kind") == "archive_unfinished" for w in document.warnings):
+        tables = (
+            f"{len(failed)} of {len(document.tables)} table(s) failed, and "
+            if failed
+            else "every table succeeded, but "
+        )
+        return ReconError(
+            f"{tables}the archive could not be finished, so it reads incomplete: "
+            f"{document.archive}",
+            kind="store",
+            fix="read the survey's archive_unfinished warning, free space in the archive's "
+            f"directory or make it writable, then: recon survey {document.mission}",
+            details={"archive": document.archive, "failed": failed},
+        )
     if kind is None:
         return None
-    failed = [t.name for t in document.failed]
     return ReconError(
         f"{len(failed)} of {len(document.tables)} table(s) failed; the archive is incomplete",
         kind=kind,

@@ -9,7 +9,8 @@
 The interrupted track, resumed and run to completion. `check.py` implements GEP-0001 (accepted),
 GEP-0002 (accepted), and GEP-0003's compile checks (proposed — every such error is prefixed
 `[GEP-0003 provisional]`). Inputs: the 3 real manifests in `gnx/components/`, 11 draft manifests
-for cix-derived components (`drafts/` — all marked DRAFT, nothing minted), 12 fail fixtures.
+for components from the predecessor plugin set (`drafts/` — all marked DRAFT, nothing minted),
+12 fail fixtures.
 
 ## Runs
 
@@ -58,7 +59,7 @@ kind reclassification a two-way door on purpose; this is that door's first custo
 checkable beyond identity — "for the skill-bundle class, ports do no work, and the shape rule
 makes that legible instead of embarrassing." Confirmed on 5 real/drafted Skills.
 
-**R6 — Two pipeline-shaped "skills" are Flows wearing skill clothing.** cix's `research` and
+**R6 — Two pipeline-shaped "skills" are Flows wearing skill clothing.** The source plugins' `research` and
 `rhetoric` skills orchestrate their siblings; at intake they should decompose into member
 components + a Flow manifest, not register as monolithic Skills. Direct evidence for the
 intake-grain deliberation.
@@ -69,4 +70,4 @@ intake-grain deliberation.
   `./plugins/rational-inquiry`; the components live under `./components/`. Radix is absent from
   the marketplace entirely. Not fixed tonight — install-surface changes felt like your call.
 - `radix` names two different things: the gnx comprehension processor (design-stage) and the
-  parked cix knowledge-mining skill. A rename is a minting decision — flagged, not made.
+  parked knowledge-mining skill in the predecessor plugin set. A rename is a minting decision — flagged, not made.

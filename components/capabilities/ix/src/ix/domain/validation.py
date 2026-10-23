@@ -12,15 +12,17 @@ still be measured and reported.
 
 from __future__ import annotations
 
+import difflib
 import json
-from collections.abc import Mapping
+import math
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
 from ix.domain import schema
-from ix.domain.analysis import ANALYSES, analysis_unsupported
+from ix.domain.analysis import ANALYSES, MIN_BLOCKS, analysis_unsupported
 from ix.domain.design import (
     assign_roles,
     kind_uses,
@@ -28,11 +30,10 @@ from ix.domain.design import (
     resolve,
     select_sensors,
 )
-from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment
+from ix.domain.experiment import ESTIMATORS, STATISTICS, Experiment, default_estimator
 from ix.domain.genre import CONTROL
 from ix.domain.intervals import MEDIAN_MIN
-from ix.domain.kind import NOTE_PREFIX, placeholders
-from ix.domain.plan import count_trials, effects, estimate_spend
+from ix.domain.kind import NOTE_PREFIX, binding_names, escapes, placeholders
 from ix.domain.problem import Problem, Validation, from_validation_error, problem
 
 if TYPE_CHECKING:
@@ -50,7 +51,6 @@ _MUST_SET_FIX = {
     "guardrails": "guardrails: [{metric: <name>, margin: 5%}]",
     "repeats": "repeats: 5",
     "seed": "seed: 1",
-    "spend": "spend: {ceiling: 5.00}",
 }
 
 
@@ -284,22 +284,47 @@ def _fit(experiment: Experiment, kinds: Kinds, probes: ProbeSet | None) -> list[
     return problems
 
 
-def _threshold_unit(path: str, threshold: Threshold | None, metric: Metric) -> list[Problem]:
-    if threshold is None or not threshold.unit or threshold.unit == metric.unit:
+def _share_fix(value: float, unit: str) -> str:
+    """How to write ``value`` as the share a rate is compared on."""
+    return f"a share: {value / 100:g}" if unit in ("%", "pp") else "a share, such as 0.05"
+
+
+def _threshold_value(path: str, threshold: Threshold | None, metric: Metric) -> list[Problem]:
+    """A threshold in another unit than its metric's; on a rate, one outside (0, 1), which a
+    rate always passes or never can."""
+    if threshold is None:
         return []
-    return [
-        problem(
-            f"{path}.value",
-            kind="unit_mismatch",
-            message=f"the threshold is in {threshold.unit!r} and {metric.name} is in "
-            f"{metric.unit or '(no unit)'!r}",
-            fix=f"state the threshold in {metric.unit}"
-            if metric.unit
-            else "state the threshold as a bare number",
-            allowed=[metric.unit] if metric.unit else [],
-            got=threshold.unit,
-        )
-    ]
+    rate = metric.shape in ("boolean", "count")
+    if threshold.unit and threshold.unit != metric.unit:
+        if rate:
+            fix = f"state the threshold as {_share_fix(threshold.value, threshold.unit)}"
+        elif metric.unit:
+            fix = f"state the threshold in {metric.unit}"
+        else:
+            fix = "state the threshold as a bare number"
+        return [
+            problem(
+                f"{path}.value",
+                kind="unit_mismatch",
+                message=f"the threshold is in {threshold.unit!r} and {metric.name} is in "
+                f"{metric.unit or '(no unit)'!r}",
+                fix=fix,
+                allowed=[metric.unit] if metric.unit else [],
+                got=threshold.unit,
+            )
+        ]
+    if rate and not 0 < threshold.value < 1:
+        return [
+            problem(
+                f"{path}.value",
+                kind="invalid_value",
+                message=f"{metric.name} is a rate, a share between 0 and 1, so a threshold of "
+                f"{threshold.value:g} is passed by every rate or by none",
+                fix="state the threshold as a share between 0 and 1, such as 0.05",
+                got=threshold.value,
+            )
+        ]
+    return []
 
 
 @dataclass(frozen=True)
@@ -387,6 +412,10 @@ def _reads(
     return problems
 
 
+#: A rate's whole range on each basis a margin is stated in: a share, or percentage points.
+_WHOLE = {"absolute": 1.0, "points": 100.0, "relative": math.inf}
+
+
 def _decidable(
     ref: MetricRef | Guardrail,
     path: str,
@@ -398,7 +427,7 @@ def _decidable(
     median with fewer blocks than its interval needs."""
     problems: list[Problem] = []
     rate = metric.shape in ("boolean", "count")
-    estimator = ref.estimator or (ESTIMATORS[metric.shape][0] if rate else deciding.estimator)
+    estimator = ref.estimator or default_estimator(metric.shape, deciding.estimator)
     if estimator in ("min", "max") and estimator in ESTIMATORS[metric.shape]:
         problems.append(
             problem(
@@ -426,7 +455,24 @@ def _decidable(
                 got=given.text(),
             )
         )
-    if estimator == "median" and deciding.blocks is not None and deciding.blocks < MEDIAN_MIN:
+    elif rate and margin is not None and margin[1].value >= _WHOLE[margin[1].basis]:
+        where, given = margin
+        problems.append(
+            problem(
+                where,
+                kind="invalid_value",
+                message=f"{metric.name} is a rate, a share between 0 and 1, so a margin of "
+                f"{given.text()} is the whole range or more and rules no loss out",
+                fix="margin: a share below 1, such as 0.05, or percentage points below 100, "
+                "such as 5pp",
+                got=given.text(),
+            )
+        )
+    if (
+        estimator == "median"
+        and deciding.blocks is not None
+        and MIN_BLOCKS <= deciding.blocks < MEDIAN_MIN
+    ):
         problems.append(
             problem(
                 "repeats",
@@ -452,6 +498,24 @@ def _decision(
         estimator=genre.design.estimator if genre else "mean",
         blocks=None if probes is None else repeats * len(probes.probes),
     )
+    # Repeats under the genre's minimum are said once, by the genre's check (`_repeats`).
+    short = genre is not None and repeats < genre.design.repeats.min
+    if (
+        deciding.decides
+        and not short
+        and deciding.blocks is not None
+        and deciding.blocks < MIN_BLOCKS
+    ):
+        problems.append(
+            problem(
+                "repeats",
+                kind="repeats_below_min",
+                message=f"an interval needs {MIN_BLOCKS} blocks (repeats x probes) in a cell; "
+                f"this run would have {deciding.blocks}, so no decision could be made",
+                fix=f"raise repeats so repeats x probes is at least {MIN_BLOCKS}",
+                got=deciding.blocks,
+            )
+        )
     if experiment.primary is not None:
         problems += _reads(
             experiment.primary,
@@ -463,7 +527,7 @@ def _decision(
         )
         metric = instruments.metrics.get(experiment.primary.metric)
         if metric is not None:
-            problems += _threshold_unit("threshold", experiment.threshold, metric)
+            problems += _threshold_value("threshold", experiment.threshold, metric)
     for index, guardrail in enumerate(experiment.guardrails):
         path = f"guardrails.{index}"
         problems += _reads(
@@ -476,31 +540,220 @@ def _decision(
         )
         metric = instruments.metrics.get(guardrail.metric)
         if metric is not None:
-            problems += _threshold_unit(f"{path}.threshold", guardrail.threshold, metric)
+            problems += _threshold_value(f"{path}.threshold", guardrail.threshold, metric)
     return problems
 
 
-def _placeholders(experiment: Experiment) -> list[Problem]:
-    """An inline probe's ``{name}`` must be a factor, or an option every subject sets."""
-    shared = [set(subject.options) for subject in experiment.subjects.values()]
-    bound = sorted(set(experiment.factors) | (set.intersection(*shared) if shared else set()))
+def _unbound(
+    path: str,
+    value: Any,
+    bound: Sequence[str],
+    fix: str,
+    *,
+    text: bool = False,
+    filled_somewhere: Collection[str] = (),
+) -> tuple[list[Problem], list[Problem]]:
+    """The problems and the warnings for each ``{name}`` in ``value`` that is not ``bound``.
+    In prompt text (``text``), a name nothing fills anywhere (not in ``filled_somewhere``)
+    is sent as written, so it is a warning: a prompt may hold code (``f"{user}"``). A name
+    some subjects fill and others do not is a problem, doubled (``{{name}}``) or not, since
+    the subjects would be put different prompts. Every other is a problem. Each names the
+    bound name it is likely a typo for, if one is near."""
     problems: list[Problem] = []
-    for index, probe in enumerate(experiment.probes):
-        for key, value in probe.options.items():
-            for name in sorted(set(placeholders(value))):
-                if name not in bound:
-                    problems.append(
-                        problem(
-                            f"probes.{index}.{key}",
-                            kind="unbound_placeholder",
-                            message=f"{{{name}}} is bound to nothing",
-                            fix=f"declare factors: {{{name}: [...]}}, set {name!r} on every "
-                            "subject, or write the value out",
-                            allowed=bound,
-                            got=name,
-                        )
+    warnings: list[Problem] = []
+    if text:
+        for name in sorted(set(escapes(value)) & set(filled_somewhere) - set(bound)):
+            problems.append(_filled_by_some(path, f"{{{{{name}}}}}", name, bound))
+        for name in sorted(set(escapes(value)) - set(filled_somewhere) - set(bound)):
+            near = difflib.get_close_matches(name, bound, n=1)
+            if near:  # a template's own name near none is no typo of ours
+                warnings.append(
+                    problem(
+                        path,
+                        kind="unbound_placeholder",
+                        message=f"{{{{{name}}}}} is bound to nothing, so it is sent as written, "
+                        f"doubled; did you mean {{{{{near[0]}}}}}?",
+                        fix=f"leave it if it is a template's; write {{{{{near[0]}}}}} for the "
+                        f"text {{{near[0]}}}",
+                        allowed=tuple(bound),
+                        got=name,
                     )
-    return problems
+                )
+    for name in sorted(set(placeholders(value)) - set(bound)):
+        if name in filled_somewhere:
+            problems.append(_filled_by_some(path, f"{{{name}}}", name, bound))
+            continue
+        near = difflib.get_close_matches(name, bound, n=1)
+        likely = f"; did you mean {{{near[0]}}}?" if near else ""
+        rewrite = f"write {{{near[0]}}}, or " if near else ""
+        if text:
+            warnings.append(
+                problem(
+                    path,
+                    kind="unbound_placeholder",
+                    message=f"{{{name}}} is bound to nothing, so it is sent as written{likely}",
+                    fix=f"leave it if it is text; if it is a placeholder, {rewrite}"
+                    + fix.format(name=name),
+                    allowed=tuple(bound),
+                    got=name,
+                )
+            )
+            continue
+        problems.append(
+            problem(
+                path,
+                kind="unbound_placeholder",
+                message=f"{{{name}}} is bound to nothing{likely}",
+                fix=rewrite + fix.format(name=name) + ", or write the value out",
+                allowed=tuple(bound),
+                got=name,
+            )
+        )
+    return problems, warnings
+
+
+def _filled_by_some(path: str, written: str, name: str, bound: Sequence[str]) -> Problem:
+    """The problem with ``written``, a placeholder or its escape, where some subjects fill
+    ``name`` and others do not: each would be put a different prompt."""
+    return problem(
+        path,
+        kind="unbound_placeholder",
+        message=f"{written} is filled for some subjects and not for others, so they would be "
+        "put different prompts",
+        fix=f"set {name!r} on every subject or on none, or declare factors: {{{name}: [...]}}",
+        allowed=tuple(bound),
+        got=name,
+    )
+
+
+def _unfilled(path: str, value: Any, filled: Collection[str], whose: str) -> list[Problem]:
+    """The warnings for ``value``, an option nothing fills or un-doubles (``whose``: an
+    environment's, a sensor's): each ``{name}`` a trial fills elsewhere (``filled``), which
+    here is its text, and each ``{{name}}``, which is sent doubled. A ``{name}`` nothing
+    fills is a shell's or a tool's own (``${HOME}``), and is not said."""
+    warnings = [
+        problem(
+            path,
+            kind="unbound_placeholder",
+            message=f"{{{name}}} is sent as written: nothing fills {whose} options",
+            fix="write the value out; a trial's levels and bindings do not reach this option",
+            got=name,
+        )
+        for name in sorted(set(placeholders(value)) & set(filled))
+    ]
+    warnings += [
+        problem(
+            path,
+            kind="unbound_placeholder",
+            message=f"{{{{{name}}}}} is sent as written, doubled: nothing fills {whose} "
+            "options, nor un-doubles an escape in them",
+            fix=f"write {{{name}}} for the text {{{name}}}",
+            got=name,
+        )
+        for name in sorted(set(escapes(value)))
+    ]
+    return warnings
+
+
+def _placeholders(
+    experiment: Experiment, kinds: Kinds, probes: ProbeSet | None
+) -> tuple[list[Problem], list[Problem]]:
+    """Each ``{name}`` must be bound to what a trial fills it with. A subject's options are
+    filled with the cell's levels: a factor, or a placeholder the option's kind says the
+    adapter fills itself (``binds``). A probe's options, inline or from a file, are filled
+    with the cell's levels, the options of the subject it is applied to and the facets that
+    subject offers: a factor, an option every subject sets, or a facet every subject's kind
+    offers. A facet that is also an option of the kind (a process's ``url``) is offered only
+    when the option is set, so it binds only as that option. Both are also filled with what
+    the environment binds each service with (``{db.url}``).
+
+    The problems, and the warnings: in an option its kind declares prompt text (``text``),
+    a name nothing fills is sent as written, and is a warning. A name a probe's option
+    takes from some subjects and not others is a problem there too, doubled or not: the
+    subjects would be put different prompts. Nothing fills a sensor's options, so each
+    ``{name}`` in a sensor's prompt text (a judge's ``rubric``) is sent as written, and is
+    a warning. Nothing fills an environment's options either, nor a sensor's other options,
+    nor un-doubles an escape in them: a ``{name}`` there that a trial fills elsewhere, and
+    every ``{{name}}``, is sent as written, and is a warning."""
+    factors = sorted(experiment.factors)
+    environment = experiment.environment
+    declared = kinds.get("environment", environment.kind)
+    services = binding_names(declared, environment.options)
+
+    def served(bound: Sequence[str], value: Any) -> list[str]:
+        """``bound`` and what the environment binds its services with: each service its
+        options name, or, for one that names none (a compose file's every service), any
+        ``<service>.<key>`` with one of its kind's ``service_keys``, checked once it is up."""
+        found = {*bound, *(services or ())}
+        if services is None and declared is not None:
+            found |= {
+                name
+                for name in placeholders(value)
+                if "." in name and name.rpartition(".")[2] in declared.service_keys
+            }
+        return sorted(found)
+
+    problems: list[Problem] = []
+    warnings: list[Problem] = []
+    shared: list[set[str]] = []
+    for name, subject in experiment.subjects.items():
+        kind = kinds.get("subject", subject.kind)
+        facets = set(kind.offers) - set(kind.options) if kind else set()
+        shared.append(set(subject.options) | facets)
+        for key, value in subject.options.items():
+            if key.startswith(NOTE_PREFIX):
+                continue
+            option = kind.options.get(key) if kind else None
+            binds = served(sorted({*factors, *(option.binds if option else ())}), value)
+            found, cautions = _unbound(
+                f"subjects.{name}.{key}",
+                value,
+                binds,
+                "declare factors: {{{name}: [...]}}, or name a service the environment binds "
+                "({{<service>.url}})",
+                text=option is not None and option.text,
+            )
+            problems += found
+            warnings += cautions
+    bound = sorted(set(factors) | (set.intersection(*shared) if shared else set()))
+    somewhere = set(factors) | (set.union(*shared) if shared else set())
+    inline = bool(experiment.probes)
+    for index, probe in enumerate(probes.probes if probes else ()):
+        kind = kinds.get("probe", probe.kind)
+        for key, value in probe.options.items():
+            option = kind.options.get(key) if kind else None
+            found, cautions = _unbound(
+                f"probes.{index if inline else probe.id}.{key}",
+                value,
+                served(bound, value),
+                "declare factors: {{{name}: [...]}}, set {name!r} on every subject, or name a "
+                "service the environment binds ({{<service>.url}})",
+                text=option is not None and option.text,
+                filled_somewhere=somewhere,
+            )
+            problems += found
+            warnings += cautions
+    filled = {*somewhere, *(services or ())}
+    for key, value in environment.options.items():
+        if not key.startswith(NOTE_PREFIX):
+            warnings += _unfilled(f"environment.{key}", value, filled, "an environment's")
+    for index, sensor in enumerate(experiment.sensors):
+        kind = kinds.get("sensor", sensor.kind)
+        for key, value in sensor.options.items():
+            option = kind.options.get(key) if kind else None
+            if option is None or not option.text:
+                if not key.startswith(NOTE_PREFIX):
+                    warnings += _unfilled(f"sensors.{index}.{key}", value, filled, "a sensor's")
+                continue
+            _, cautions = _unbound(
+                f"sensors.{index}.{key}",
+                value,
+                (),
+                "write the text as it is to be sent: nothing fills a sensor's options",
+                text=True,
+            )
+            warnings += cautions
+    return problems, warnings
 
 
 def _probes(
@@ -571,7 +824,7 @@ def _misplaced_option(path: str, key: str, value: Any, *, inline: bool) -> Probl
     else:
         where = (
             f"write it under `options:` in the probe file's frontmatter (`options: {{{key}: "
-            f"{shown}}}`); every other frontmatter key but id, kind and effects is truth"
+            f"{shown}}}`); every other frontmatter key but id, kind and options is truth"
         )
     return problem(
         path,
@@ -581,48 +834,6 @@ def _misplaced_option(path: str, key: str, value: Any, *, inline: bool) -> Probl
         fix=where,
         got=key,
     )
-
-
-def _spend(
-    experiment: Experiment,
-    design: Design,
-    kinds: Kinds,
-    probes: ProbeSet,
-    spend_cap: float | None,
-) -> list[Problem]:
-    trials = count_trials(experiment, design, len(probes.probes))
-    estimate = estimate_spend(experiment.spend, trials.total, spend_cap=spend_cap)
-    problems: list[Problem] = []
-    spenders = sorted(
-        {e.source for e in effects(experiment, design, kinds, probes) if e.effect == "spend"}
-    )
-    if spenders and estimate.ceiling is None:
-        problems.append(
-            problem(
-                "spend.ceiling",
-                kind="spend_unbounded",
-                message=f"a run would spend money ({', '.join(spenders)}) and neither the "
-                "experiment nor ix's settings (spend_cap) set a ceiling",
-                fix="spend: {ceiling: <the most this run may cost>, per_trial: <your estimate>}",
-            )
-        )
-    if (
-        estimate.estimated is not None
-        and estimate.ceiling is not None
-        and estimate.estimated > estimate.ceiling
-    ):
-        problems.append(
-            problem(
-                "spend.ceiling",
-                kind="spend_over_ceiling",
-                message=f"the run is estimated at {estimate.estimated:g} {estimate.currency} "
-                f"({estimate.basis}), over the ceiling of {estimate.ceiling:g}",
-                fix="lower repeats, probes or cells, or raise spend.ceiling to at least "
-                f"{estimate.estimated:g}",
-                got=estimate.ceiling,
-            )
-        )
-    return problems
 
 
 def _parity(experiment: Experiment, control: str | None) -> list[Problem]:
@@ -657,32 +868,47 @@ def _parity(experiment: Experiment, control: str | None) -> list[Problem]:
     return warnings
 
 
+def _unimplemented(where: str, kind: str, kinds: Kinds) -> Problem:
+    """The warning for a kind in use that has no adapter here, or one that cannot be built."""
+    named = f"{schema.family_of(kind) or 'kind'} kind {schema.short(kind)}"
+    unable = "the experiment can be checked, planned and registered, and `ix run` would refuse it"
+    broken = kinds.unbuildable.get(kind)
+    if broken is not None:
+        return problem(
+            where,
+            kind="kind_unimplemented",
+            message=f"the adapter for {named} cannot be built here ({broken}): {unable}",
+            fix="fix or uninstall the extension that registered it; `ix kinds` lists every "
+            "adapter that cannot be built, with why",
+            got=schema.short(kind),
+        )
+    elsewhere = (
+        f"; an extension failed to load and may be the one that registers it "
+        f"({'; '.join(kinds.quarantined)}): `matrix catalog` shows why"
+        if kinds.quarantined
+        else ""
+    )
+    return problem(
+        where,
+        kind="kind_unimplemented",
+        message=f"this ix has no adapter for {named}: {unable}",
+        fix="use a kind `ix kinds` marks runnable, or run it where an adapter for "
+        f"{schema.short(kind)} is installed{elsewhere}",
+        got=schema.short(kind),
+    )
+
+
 def _unrunnable(
     experiment: Experiment,
     design: Design,
     probes: ProbeSet,
     adapters: frozenset[str],
-    quarantined: tuple[str, ...],
+    kinds: Kinds,
 ) -> list[Problem]:
-    """A warning for each kind in use with no adapter here, and for an analysis this ix
-    does not have."""
-    elsewhere = (
-        f"; an extension failed to load and may be the one that registers it "
-        f"({'; '.join(quarantined)}): `matrix catalog` shows why"
-        if quarantined
-        else ""
-    )
+    """A warning for each kind in use with no adapter here, or one that cannot be built, and
+    for an analysis this ix does not have."""
     warnings = [
-        problem(
-            where,
-            kind="kind_unimplemented",
-            message=f"this ix has no adapter for {schema.family_of(kind) or 'kind'} kind "
-            f"{schema.short(kind)}: the experiment can be checked, planned and registered, "
-            "and `ix run` would refuse it",
-            fix="use a kind `ix kinds` marks runnable, or run it where an adapter for "
-            f"{schema.short(kind)} is installed{elsewhere}",
-            got=schema.short(kind),
-        )
+        _unimplemented(where, kind, kinds)
         for where, kind in missing_adapters(experiment, design, probes, adapters)
     ]
     unsupported = analysis_unsupported(design.analysis)
@@ -737,13 +963,11 @@ def check(
     probes: ProbeSet | None,
     *,
     adapters: frozenset[str] | None = None,
-    spend_cap: float | None = None,
 ) -> Checked:
     """Every problem with a loaded experiment. ``probes`` is None when they could not be
     read (the caller reports why). ``adapters`` is the kinds (type URLs) a run could carry
     out here; a kind in use that is not among them is a warning, since the experiment is
-    still a valid declaration. ``spend_cap`` is the ceiling ix's settings give a run that
-    spends when the experiment sets none."""
+    still a valid declaration."""
     genre, problems = _genre(experiment, genres)
     control: str | None = None
     roles_fit = False
@@ -759,7 +983,8 @@ def check(
     instruments = select_sensors(experiment, kinds, probes)
     problems += instruments.problems
     problems += _decision(experiment, genre, instruments, probes)
-    problems += _placeholders(experiment)
+    unbound, unfilled = _placeholders(experiment, kinds, probes)
+    problems += unbound
     problems += _probes(experiment, probes, kinds, instruments)
 
     design = (
@@ -767,13 +992,11 @@ def check(
         if genre is not None and roles_fit
         else None
     )
-    if design is not None and probes is not None:
-        problems += _spend(experiment, design, kinds, probes, spend_cap)
-
     warnings = _parity(experiment, control if genre and genre.role(CONTROL) else None)
     # Said of a valid experiment only: an invalid one cannot run for reasons already given.
     if not problems and design is not None and probes is not None and adapters is not None:
-        warnings += _unrunnable(experiment, design, probes, adapters, kinds.quarantined)
+        warnings += _unrunnable(experiment, design, probes, adapters, kinds)
+    warnings += unfilled
     warnings += _refused(experiment, genres, kinds)
     return Checked(
         problems=tuple(problems),

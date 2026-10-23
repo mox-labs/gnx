@@ -6,9 +6,9 @@ measurements instead of assertions.
 
 ```
 ix validate lab/catalog-routing      # every problem at once, nothing run
-ix plan lab/catalog-routing          # the decision, the trials, the effects, the spend
+ix plan lab/catalog-routing          # the decision, the trials, what it needs here
 ix register lab/catalog-routing      # freeze the design before a run
-ix run lab/catalog-routing           # real agent sessions: this spends money
+ix run lab/catalog-routing           # real agent sessions: this calls a paid model
 ```
 
 Run from the repo root, with the capabilities workspace:
@@ -18,8 +18,8 @@ uv --project components/capabilities run ix plan lab/catalog-routing
 ```
 
 `just lab` validates and plans every experiment here, and CI runs it. Neither runs one: a
-run starts real agent sessions on the `claude-sdk` runtime and spends up to the
-experiment's ceiling. Runs are kept under each experiment's `.ix/runs/`, which git ignores.
+run starts real agent sessions on the `claude-sdk` runtime, each a call to a paid model.
+Runs are kept under each experiment's `.ix/runs/`, which git ignores.
 
 ## The experiments
 
@@ -103,7 +103,7 @@ This experiment fed canned responses through the function-test grader to check
 extraction, execution under a time limit and scoring. It tested the grader, not a subject,
 so it lives with ix now: `components/capabilities/ix/examples/harness-integrity` gives
 answers of known worth on matrix's `mock` runtime to the real `function-test` and `outcome`
-sensors, spends nothing, and ix's tests run it and hold each reading to its grade.
+sensors, calls no model, and ix's tests run it and hold each reading to its grade.
 
 ## Adding an experiment
 

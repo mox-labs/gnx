@@ -24,7 +24,9 @@ INTERVAL_S = 0.2
 
 class TimingSensor:
     """Latency, time to first byte, throughput and error rate, from the ``load`` facet a
-    load probe leaves. It watches nothing: the load tool did the timing."""
+    load probe leaves. It watches nothing: the load tool did the timing. The error rate
+    counts a request that failed and an arrival the load dropped, of every request sent
+    and every arrival dropped."""
 
     def watch(
         self, target: Target, options: Mapping[str, Any]
@@ -39,7 +41,10 @@ class TimingSensor:
             "latency": dict(load["latency_ms"]),
             "ttfb": dict(load["ttfb_ms"]),
             "throughput": float(load["throughput"]),
-            "error_rate": {"events": int(load["failed"]), "units": int(load["sent"])},
+            "error_rate": {
+                "events": int(load["failed"]) + int(load.get("dropped", 0)),
+                "units": int(load["sent"]) + int(load.get("dropped", 0)),
+            },
         }
 
 

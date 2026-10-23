@@ -9,7 +9,8 @@ the author; a kind is a data file a third party can ship.
 from __future__ import annotations
 
 from importlib import metadata
-from typing import TYPE_CHECKING, Any, get_args
+from itertools import permutations
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
@@ -18,9 +19,20 @@ from pydantic import ValidationError
 import ix
 from ix.adapters._out.matrix_documents import KIND_GROUP, KindFiles
 from ix.composition import type_url_problem
+from ix.domain import schema
 from ix.domain.design import select_sensors
 from ix.domain.experiment import Experiment, probe_set
-from ix.domain.kind import EFFECTS, EffectName, Kind, Kinds, check_options, kinds, seconds
+from ix.domain.kind import (
+    Kind,
+    Kinds,
+    arrivals,
+    check_options,
+    fill,
+    kinds,
+    per_cell,
+    placeholders,
+    seconds,
+)
 from ix.domain.schema import DeclarationFile
 from ix.domain.validation import check, parse
 
@@ -31,9 +43,9 @@ if TYPE_CHECKING:
 
 Write = Any  # the write_experiment fixture
 
-#: The kinds DECISIONS §2 names, by family.
+#: The kinds ix ships, by family.
 EXPECTED = {
-    "subject": {"process", "http", "agent-session"},
+    "subject": {"process", "http", "agent-session", "model-call"},
     "probe": {"prompt", "http-load", "inspect-task"},
     "sensor": {
         "timing",
@@ -45,6 +57,7 @@ EXPECTED = {
         "tool-usage",
         "outcome",
         "text-match",
+        "evaluator",
     },  # fmt: skip
     "environment": {"none", "process", "compose"},
 }
@@ -114,17 +127,13 @@ class TestBuiltInKinds:
             for name, option in kind.options.items():
                 assert option.description, f"{kind.label}.{name}"
 
-    def test_effects_are_a_closed_vocabulary(self, builtin_kinds: Kinds) -> None:
-        assert set(get_args(EffectName)) == set(EFFECTS)  # every effect a kind may name is told
+    def test_a_kind_declares_no_effects(self, builtin_kinds: Kinds) -> None:
+        """Changed requirement (owner ruling 2026-10-22): effects were labels nothing checked, and
+        are removed. A kind file that still declares them is refused, so its author is told."""
         for kind in builtin_kinds.kinds.values():
-            assert set(kind.effects) <= set(EFFECTS), kind.name
-        declared = {k.label: set(k.effects) for k in builtin_kinds.of("subject")}
-        assert declared == {
-            "process": {"process"}, "http": {"network"},
-            "agent-session": {"spend", "tools", "process", "filesystem"},
-        }  # fmt: skip
+            assert "effects" not in kind.document(), kind.name
         with pytest.raises(ValidationError):
-            Kind.model_validate(_sensor("x", effects=["telepathy"]))
+            Kind.model_validate(_sensor("x", effects=["network"]))
 
     def test_subjects_offer_and_probes_need(self, builtin_kinds: Kinds) -> None:
         offers = {k.label: set(k.offers) for k in builtin_kinds.of("subject")}
@@ -132,9 +141,12 @@ class TestBuiltInKinds:
         assert offers == {
             "process": {"pid", "url"},
             "http": {"url", "headers"},
-            "agent-session": {"agent", "workdir"},
+            "agent-session": {"respondent", "workdir"},
+            "model-call": {"respondent"},
         }
-        assert needs == {"prompt": {"agent"}, "http-load": {"url"}, "inspect-task": {"agent"}}
+        assert needs == {
+            "prompt": {"respondent"}, "http-load": {"url"}, "inspect-task": {"respondent"},
+        }  # fmt: skip
 
     def test_a_sensor_declares_its_metrics_and_whether_a_model_judges_them(
         self, builtin_kinds: Kinds
@@ -146,6 +158,8 @@ class TestBuiltInKinds:
         }
         assert {name for name, is_judged in judged.items() if is_judged} == {
             "judged_score", "judged_pass", "judge_agreement", "judge_inconsistent",
+            # a pydantic-evals evaluator that calls a model (LLMJudge, GEval)
+            "judged_eval_passed", "judged_eval_score",
         }  # fmt: skip
         assert judged["activated_correctly"] is False and judged["ttfb"] is False
         activation = builtin_kinds.get("sensor", "activation")
@@ -166,6 +180,25 @@ class TestBuiltInKinds:
             Kind.model_validate({"name": "lab.v1.probe.x", "summary": "s", "duration": ["length"]})
         with pytest.raises(ValidationError, match="type URL"):
             Kind.model_validate({"name": "lab.v1.genre.x", "summary": "s"})
+
+    def test_an_environment_kind_declares_its_service_keys(self, builtin_kinds: Kinds) -> None:
+        """Changed requirement (owner ruling 2026-10-22): the keys an environment binds each
+        service with are its ``service_keys``, so the kind no longer shares the name ``binds``
+        with an option's placeholders its adapter fills. ``binds:`` on a kind is refused, with
+        no alias; an option's ``binds`` keeps its name."""
+        keys = {kind.label: kind.service_keys for kind in builtin_kinds.of("environment")}
+        assert keys == {"none": (), "process": ("host", "port", "url"),
+                        "compose": ("host", "port", "url")}  # fmt: skip
+        environment = {"name": "lab.v1.environment.x", "summary": "s"}
+        assert Kind.model_validate({**environment, "service_keys": ["url"]}).service_keys == (
+            "url",
+        )
+        with pytest.raises(ValidationError, match="extra"):
+            Kind.model_validate({**environment, "binds": ["url"]})
+        with pytest.raises(ValidationError, match="only an environment kind declares service_keys"):
+            Kind.model_validate(_sensor("x", service_keys=["url"]))
+        session = builtin_kinds.get("subject", "agent-session")
+        assert session is not None and "response" in session.options["loop"].binds
 
     def test_a_declaration_is_data_and_holds_no_code(self) -> None:
         with pytest.raises(ValidationError, match="extra"):
@@ -235,6 +268,20 @@ class TestOptions:
         if load.options[option].allowed:
             assert problem.allowed == load.options[option].allowed
 
+    @pytest.mark.parametrize("value", ["2.5/s", "0.6/s", "1.5"])
+    def test_a_rate_of_part_arrivals_is_refused_not_rounded(
+        self, value: str, builtin_kinds: Kinds
+    ) -> None:
+        """Regression: ``2.5/s`` ran as 2/s and ``0.6/s`` as 1/s, with no notice, so the
+        stimulus differed from what the author registered."""
+        load = builtin_kinds.get("probe", "http-load")
+        assert load is not None
+        options = {"target": "http://x", "load_model": "open", "rate": value, "duration": "60s"}
+        (problem,) = check_options(load, options, "probes.0")
+        assert (problem.path, problem.kind) == ("probes.0.rate", "option_invalid")
+        assert "150/m" in problem.fix
+        assert arrivals("150/m") == (150, "m") and arrivals("3.0/s") == (3, "s")
+
     def test_a_placeholder_is_typed_when_it_is_filled_not_before(
         self, builtin_kinds: Kinds
     ) -> None:
@@ -247,6 +294,101 @@ class TestOptions:
             "duration": "{length}",
         }
         assert check_options(load, options, "probes.0") == []
+
+    def test_a_whole_value_placeholder_keeps_its_levels_type(self) -> None:
+        """Regression: ``fill`` wrote every level as text, so ``{temperature: "{t}"}`` reached
+        a runtime as ``"0.5"`` and ``{rounds: "{r}"}`` as ``"2"``. A value that is one
+        placeholder becomes the level itself; one inside more text is written into it."""
+        bound = {"t": 0.5, "r": 2, "on": True, "size": "1MiB"}
+        assert fill({"temperature": "{t}", "loop": {"rounds": "{r}"}}, bound) == {
+            "temperature": 0.5, "loop": {"rounds": 2},
+        }  # fmt: skip
+        assert fill(["{on}", "--size={size}", "x{r}"], bound) == [True, "--size=1MiB", "x2"]
+        assert fill("{unknown}", bound) == "{unknown}"
+
+    def test_a_doubled_placeholder_is_the_text_of_the_placeholder(self) -> None:
+        """``{{name}}``, where ``name`` is filled there, is the text ``{name}``: no
+        placeholder, and filled to that text whatever ``name`` is bound to."""
+        assert placeholders("{{x}} and {y} and {{ z }}") == ["y"]
+        assert fill("{{y}}", {"y": 1}) == "{y}"
+        assert fill("{{y}} is {y}", {"y": 1}) == "{y} is 1"
+        assert fill(["{{db.url}}", {"k": "{{y}}"}], {"y": 1, "db.url": "u"}) == [
+            "{db.url}",
+            {"k": "{y}"},
+        ]
+
+    def test_a_doubled_name_nothing_fills_there_is_left_as_written(self) -> None:
+        """Regression: ``{{user}}`` became ``{user}`` whatever ``user`` was, so a Mustache or
+        Handlebars line was altered. A name that is not filled in that place is not an
+        escape."""
+        assert fill("Hello {{user}}, {{y}}", {"y": 1}) == "Hello {{user}}, {y}"
+        assert fill(["{{db.url}}", {"k": "{{user}}"}], {"y": 1}) == [
+            "{{db.url}}",
+            {"k": "{{user}}"},
+        ]
+
+    def test_a_round_un_doubles_what_the_loop_option_binds(self, builtin_kinds: Kinds) -> None:
+        """The session's loop un-doubles the names the kind says it fills: were they to
+        differ, an escape would be kept doubled by the run and never un-doubled."""
+        from ix.adapters._out.matrix_agents import ROUND
+
+        session = builtin_kinds.get("subject", "agent-session")
+        assert session is not None
+        assert set(ROUND) == set(session.options["loop"].binds)
+
+    def test_a_name_filled_later_stays_doubled_for_that_filling(self) -> None:
+        """An option its adapter fills again (a loop's ``{response}``) keeps ``{{response}}``
+        doubled, so the adapter's filling is the one that makes it text; a name filled now
+        is text now."""
+        written = "{{response}} at {{y}} for {{user}}"
+        assert fill(written, {"y": 1}, later=("response",)) == "{{response}} at {y} for {{user}}"
+        assert fill(written, {"y": 1}, escaped=True) == written
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            'Return JSON like {"a": {"b": 1}} and nothing else.',
+            '{"outer": {"inner": {"deep": [1, {"x": 2}]}}}',
+            "{% for user in users %}Hello {{ user.name }}!{% endfor %}",
+            "{{ '{' }} and {{- name -}} and {{#if ok}}yes{{/if}}",
+            "f = {{a: 1}}",
+            "{{}} and }} and {{ and {",
+            "dict(a={'k': {'v': 1}})",
+        ],
+    )
+    def test_every_other_brace_is_left_as_written(self, written: str) -> None:
+        """Regression: every ``{{`` and ``}}`` was un-doubled, so nested JSON (``}}``) and a
+        template (``{{ user.name }}``) reached the agent altered. Only a doubled placeholder
+        is an escape; every other brace, doubled or not, is the text as written."""
+        bound = {"a": 9, "name": "N", "user.name": "U", "x": 3}
+        assert placeholders(written) == []
+        assert fill(written, bound) == written
+
+    def test_the_options_a_model_reads_as_text_are_declared_so(self, builtin_kinds: Kinds) -> None:
+        """Which options are prompt text is the kind's declaration (``text``), not a list of
+        names in ix: there an unbound ``{name}`` is sent as written and only warned of."""
+        declared = {
+            (schema.short(kind.name), name)
+            for kind in builtin_kinds.kinds.values()
+            for name in kind.text_options
+        }
+        assert declared == {
+            ("agent-session", "system_prompt"),
+            ("agent-session", "loop"),
+            ("model-call", "system_prompt"),
+            ("prompt", "prompt"),
+            ("prompt", "mock_response"),
+            ("judge", "rubric"),
+        }
+
+    def test_in_prompt_text_a_name_left_unfilled_is_text_to_an_adapter(self) -> None:
+        """Each cell's options, as a preflight reads them: in prompt text, a ``{name}`` the
+        cell leaves is written doubled, the text it is to an adapter, so code in a prompt
+        does not read as a placeholder a trial fills; in any other option it stays one."""
+        options = {"system_prompt": 'f"{user}" at {size}', "command": ["x", "{db.url}"]}
+        (cell,) = per_cell(options, {"size": ("s",)}, text=("system_prompt",))
+        assert cell == {"system_prompt": 'f"{{user}}" at s', "command": ["x", "{db.url}"]}
+        assert placeholders(cell) == ["db.url"]
 
     def test_a_kind_cannot_make_an_option_depend_on_one_it_does_not_take(self) -> None:
         declared = {
@@ -266,32 +408,40 @@ class TestOptions:
         assert (problem.path, problem.kind) == ("probes.0.rate", "option_missing")
         assert "when load_model is open" in problem.message
 
-    def test_an_agent_session_names_its_runtime_and_the_fix_says_what_each_spends(
+    def test_an_agent_session_names_its_runtime_and_the_fix_says_which_call_a_model(
         self, builtin_kinds: Kinds
     ) -> None:
         """Regression: ``runtime`` defaulted to claude-sdk, and an experiment and a test
-        fixture that named none started paid Claude sessions. Spending is never implicit."""
-        session = builtin_kinds.get("subject", "agent-session")
-        assert session is not None and session.options["runtime"].required
-        (problem,) = check_options(session, {"max_turns": 1}, "subjects.agent")
-        assert (problem.path, problem.kind) == ("subjects.agent.runtime", "option_missing")
-        for choice in ("claude-sdk (", "model (", "mock ("):
-            assert choice in problem.fix, choice
-        assert problem.fix.count("; spends)") == 2 and "; spends nothing)" in problem.fix
-        assert problem.allowed == ()  # an open set: an installed runtime is accepted too
-        assert check_options(session, {"runtime": "acme.v1.runtime.scripted"}, "s") == []
+        fixture that named none started paid Claude sessions. A model is never called
+        implicitly."""
+        for label, choices in [("agent-session", ("claude-sdk (", "pydantic-ai (", "mock (")),
+                               ("model-call", ("hardline (", "mock ("))]:  # fmt: skip
+            session = builtin_kinds.get("subject", label)
+            assert session is not None and session.options["runtime"].required
+            (problem,) = check_options(session, {}, "subjects.agent")
+            assert (problem.path, problem.kind) == ("subjects.agent.runtime", "option_missing")
+            for choice in choices:
+                assert choice in problem.fix, choice
+            # every choice but the stand-in says it calls a model provider
+            assert problem.fix.count("; calls a model provider)") == len(choices) - 1
+            assert "; calls no model)" in problem.fix
+            assert problem.allowed == ()  # an open set: an installed runtime is accepted too
+            assert check_options(session, {"runtime": f"acme.v1.{label}.x"}, "s") == []
 
-    def test_a_judge_names_its_runtime_and_the_fix_says_what_each_spends(
+    def test_a_judge_names_a_runtime_on_one_of_two_ports_and_has_no_default(
         self, builtin_kinds: Kinds
     ) -> None:
-        """Regression: the judge's ``runtime`` defaulted to ``model``, which spends."""
+        """Regression: the judge's ``runtime`` defaulted to ``model``, which calls a paid
+        model. It names a model runtime or an agent runtime, as two options; neither has a
+        default (the judge's review reports one named neither, or both)."""
         judge = builtin_kinds.get("sensor", "judge")
-        assert judge is not None and judge.options["runtime"].required
-        (problem,) = check_options(judge, {"rubric": "r"}, "sensors.0")
-        assert (problem.path, problem.kind) == ("sensors.0.runtime", "option_missing")
-        for choice in ("model (", "claude-sdk (", "mock ("):
-            assert choice in problem.fix, choice
-        assert problem.fix.count("; spends)") == 2 and "; spends nothing)" in problem.fix
+        assert judge is not None and "runtime" not in judge.options
+        agents = {"claude-sdk", "pydantic-ai", "mock"}
+        for option, choices in [("model_runtime", {"hardline", "mock"}),
+                                ("agent_runtime", agents)]:  # fmt: skip
+            assert set(judge.options[option].choices) == choices
+            assert not judge.options[option].required
+            assert "calls no model" in judge.options[option].choices["mock"]
 
     def test_an_options_open_choices_are_listed_and_never_enforced(self) -> None:
         declared = Kind.model_validate(
@@ -347,8 +497,8 @@ class TestFit:
         ).problems
         (unfit,) = [p for p in problems if p.kind == "kind_unfit"]
         assert unfit.path == "probes.0.kind" and unfit.got == "process"
-        assert unfit.allowed == ("agent-session",)
-        assert "needs agent" in unfit.message
+        assert unfit.allowed == ("agent-session", "model-call")
+        assert "needs respondent" in unfit.message
 
     def test_a_sensor_needs_what_subjects_or_probes_offer(
         self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
@@ -518,56 +668,155 @@ class TestMetricProviders:
         assert problem.fix.startswith("write it beside `kind`, out of `truth:`")
 
 
-# --- effects come from the kinds -------------------------------------------------------
+# --- what a run needs of this host ------------------------------------------------------
 
 
-class TestEffects:
-    def test_the_plan_reports_what_the_kinds_declare_without_being_told(
-        self, evaluate_data: dict[str, Any], write_experiment: Write
+def _executable(path: Path) -> Path:
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return path
+
+
+class TestRequirements:
+    def test_an_entry_writes_no_effects(
+        self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
     ) -> None:
-        plan = ix.plan(write_experiment(evaluate_data))
-        assert {(e.effect, e.source, e.declared_by) for e in plan.effects} == {
-            ("spend", "subjects.catalog", "kind"),
-            ("tools", "subjects.catalog", "kind"),
-            ("process", "subjects.catalog", "kind"),
-            ("filesystem", "subjects.catalog", "kind"),
-        }
-        assert all(e.detail == EFFECTS[e.effect] for e in plan.effects)
-
-    def test_the_author_adds_effects_and_cannot_remove_one(
-        self, compare_data: dict[str, Any], write_experiment: Write
-    ) -> None:
-        before = ix.plan(write_experiment(compare_data, "before"))
+        """Changed requirement (owner ruling 2026-10-22): an author could add effects beside a
+        kind; nothing checked them. Now ``effects:`` is an option the kind does not take."""
         compare_data["subjects"]["buffered"]["effects"] = ["binds 127.0.0.1:8080"]
-        compare_data["subjects"]["streaming"]["effects"] = []
-        after = ix.plan(write_experiment(compare_data, "after"))
-        declared = {(e.effect, e.source) for e in before.effects}
-        assert declared <= {(e.effect, e.source) for e in after.effects}
-        added = [e for e in after.effects if e.declared_by == "experiment"]
-        assert [(e.effect, e.source) for e in added] == [
-            ("binds 127.0.0.1:8080", "subjects.buffered")
-        ]
-        assert ("process", "subjects.streaming") in declared
+        found = _found(compare_data, builtin_genres, builtin_kinds)
+        assert ("subjects.buffered.effects", "option_unknown") in found
 
-    def test_a_sensor_ix_selected_brings_its_effects(
-        self, evaluate_data: dict[str, Any], write_experiment: Write
+    def test_the_plan_lists_what_the_run_needs_here_and_whether_each_holds(
+        self,
+        compare_data: dict[str, Any],
+        write_experiment: Write,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        evaluate_data["genre"] = "characterize"
-        evaluate_data["factors"] = {"model": ["small", "large"]}
-        evaluate_data["subjects"]["catalog"]["model"] = "small"
-        evaluate_data["primary"] = {"metric": "tests_passed"}
-        evaluate_data["probes"][0]["truth"] = {"function_name": "f", "test_cases": []}
-        del evaluate_data["threshold"]
-        plan = ix.plan(write_experiment(evaluate_data))
-        assert ("code", "sensor function-test") in {(e.effect, e.source) for e in plan.effects}
+        """Owner ruling 2026-10-22: in place of effects, the plan says what each adapter needs of
+        this host, once however many entries need it, and whether it holds now. One that does not
+        makes the plan not runnable, with why and the fix; the host is in no digest."""
+        tools = tmp_path / "bin"
+        tools.mkdir()
+        monkeypatch.setenv("PATH", str(tools))
+        file = write_experiment(compare_data)
+        _executable(file.parent / "proxy")
+        plan = ix.plan(file)
+        assert [(r.need, r.holds, r.needed_by) for r in plan.requirements] == [
+            ("'./proxy' is an executable file", True, ("subjects.buffered", "subjects.streaming")),
+            ("'k6' on PATH", False, ("probes.0",)),
+        ]
+        (unmet,) = plan.unmet
+        assert (unmet.why, unmet.fix) == (
+            "'k6' is not on PATH",
+            "install k6, or name it by its path",
+        )
+        assert not plan.runnable
+        with pytest.raises(ix.ConfigError) as refused:
+            ix.run(file, exploratory=True)
+        assert "'k6' is not on PATH" in str(refused.value)
+        _executable(tools / "k6")
+        again = ix.plan(file)
+        assert again.runnable and all(r.holds for r in again.requirements)
+        assert again.digest == plan.digest
 
-    def test_spending_needs_a_ceiling(
+    def test_an_environment_says_what_it_needs_too(
+        self,
+        compare_data: dict[str, Any],
+        write_experiment: Write,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The preflight was the subjects' alone; every family's adapter may have one."""
+        monkeypatch.setenv("PATH", str(tmp_path))
+        compare_data["environment"] = {
+            "kind": "process",
+            "services": {"upstream": {"command": ["no-such-upstream"]}},
+        }
+        plan = ix.plan(write_experiment(compare_data))
+        upstream = next(r for r in plan.requirements if r.needed_by == ("environment",))
+        assert (upstream.need, upstream.holds) == ("'no-such-upstream' on PATH", False)
+        assert not plan.runnable
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            {"system_prompt": "reply in plain text"},
+            {"system_prompt": "reply as {{json}}"},
+            {"system_prompt": 'reply as {"a": {"b": 1}}'},
+            {"system_prompt": 'reply as print(f"{user}")'},
+            {"loop": {"strategy": "self-review", "rounds": 2, "prompt": "You said {response}"}},
+        ],
+    )
+    def test_a_literal_brace_leaves_the_preflight_on(
+        self, tmp_path: Path, written: dict[str, Any]
+    ) -> None:
+        """Regression: the plan filled each cell's options un-doubling ``{{json}}`` into
+        ``{json}``, which the adapter read as a placeholder a trial fills, so it checked
+        nothing: the plan said runnable with no requirement, and the run started without the
+        fixture it names. A literal brace is text; the preflight still asks. So is prompt
+        text: a ``{user}`` nothing fills, sent as written, and a loop's ``{response}``, which
+        the session fills, not the trial."""
+        data = {
+            "name": "brace",
+            "question": "Does a literal brace switch the preflight off?",
+            "genre": "evaluate",
+            "subjects": {
+                "canned": {"kind": "agent-session", "runtime": "mock",
+                           "fixtures": ["no-such-folder"], **written},
+            },
+            "probes": [
+                {"id": "greet", "kind": "prompt", "prompt": "Greet me.",
+                 "mock_response": "BANANA, hello", "truth": {"starts_with": "BANANA"}},
+            ],
+            "primary": {"metric": "text_matched"},
+            "threshold": {"op": ">=", "value": 0.5},
+            "repeats": 5,
+        }  # fmt: skip
+        (tmp_path / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+        plan = ix.plan(tmp_path / "experiment.yaml")
+        assert not plan.runnable
+        (unmet,) = plan.unmet
+        assert "no-such-folder" in unmet.why and unmet.needed_by == ("subjects.canned",)
+        with pytest.raises(ix.ConfigError, match="no-such-folder"):
+            ix.run(tmp_path / "experiment.yaml", exploratory=True)
+
+    def test_an_escaped_factor_leaves_the_preflight_on(self, tmp_path: Path) -> None:
+        """Each cell's options reach the preflight with every escape kept doubled: in a
+        command, ``{{size}}``, where ``size`` is a factor, is text, not a placeholder a trial
+        fills, so the program the command names is still checked."""
+        data = {
+            "name": "escaped",
+            "question": "Does an escaped factor switch the preflight off?",
+            "genre": "evaluate",
+            "factors": {"size": ["small"]},
+            "subjects": {
+                "canned": {"kind": "agent-session", "runtime": "mock",
+                           "setup": ["no-such-program-anywhere", "{{size}}"]},
+            },
+            "probes": [
+                {"id": "greet", "kind": "prompt", "prompt": "Greet me.",
+                 "mock_response": "BANANA, hello", "truth": {"starts_with": "BANANA"}},
+            ],
+            "primary": {"metric": "text_matched"},
+            "threshold": {"op": ">=", "value": 0.5},
+            "repeats": 5,
+        }  # fmt: skip
+        (tmp_path / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+        plan = ix.plan(tmp_path / "experiment.yaml")
+        assert not plan.runnable
+        (unmet,) = plan.unmet
+        assert "no-such-program-anywhere" in unmet.need
+
+    def test_a_run_that_calls_a_model_needs_no_spend_and_takes_none(
         self, evaluate_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds
     ) -> None:
-        del evaluate_data["spend"]
-        assert _found(evaluate_data, builtin_genres, builtin_kinds) == {
-            ("spend.ceiling", "spend_unbounded")
-        }
+        """Changed requirement: spend is removed. A session that calls a model needs no
+        ceiling, and a ``spend`` section is a key the experiment does not have."""
+        assert _found(evaluate_data, builtin_genres, builtin_kinds) == set()
+        _, problems = parse({**evaluate_data, "spend": {"ceiling": 5}})
+        assert [(p.path, p.kind) for p in problems] == [("spend", "unknown_key")]
 
 
 # --- the extension point ---------------------------------------------------------------
@@ -655,3 +904,23 @@ class TestKindExtensionPoint:
         found = kinds(files, grammar=type_url_problem)
         assert found.get("sensor", "twin") is None and found.get("sensor", "timing") is not None
         assert [p.kind for p in found.rejected["lab.v1.sensor.twin"]] == ["name_taken"] * 2
+
+    @pytest.mark.parametrize("order", list(permutations(range(3))))
+    def test_the_owner_keeps_its_name_whatever_order_the_files_arrive_in(
+        self, order: tuple[int, ...]
+    ) -> None:
+        """Regression (ix-domain 14): two impostors read before the owner had the owner
+        refused as a duplicate. Who keeps a name does not depend on the order files are read."""
+        owner = {**_sensor("x"), "name": "acme.v1.sensor.twin", "summary": "The owner's."}
+        impostor = {**_sensor("x"), "name": "acme.v1.sensor.twin", "summary": "Not acme's."}
+        files = [
+            DeclarationFile(origin="owner.yaml", data=owner, owned=True),
+            DeclarationFile(origin="one.yaml", data=impostor),
+            DeclarationFile(origin="two.yaml", data=impostor),
+        ]
+        found = kinds([files[i] for i in order], grammar=type_url_problem)
+        twin = found.kinds.get("acme.v1.sensor.twin")
+        assert twin is not None and twin.summary == "The owner's."
+        refused = found.rejected["acme.v1.sensor.twin"]
+        assert sorted(str(p.source) for p in refused) == ["one.yaml", "two.yaml"]
+        assert {p.kind for p in refused} == {"name_taken"}

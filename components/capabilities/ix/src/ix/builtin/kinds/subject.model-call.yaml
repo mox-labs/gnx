@@ -1,0 +1,15 @@
+schema: ix.v1.kind
+name: ix.v1.subject.model-call
+summary: "A model on a matrix model runtime; each trial is one call: no tools, turns or working directory, so sensors that read tool calls, and probes that collect files, do not apply."
+options:
+  runtime:
+    type: string
+    required: true
+    description: "the matrix model runtime that makes the call: one of the choices, or any model runtime installed. There is no default, so a model provider is never called implicitly"
+    choices:
+      hardline: one call through hardline's model registry; calls a model provider
+      mock: canned replies; calls no model
+  model: {type: string, description: "the model the runtime resolves (a hardline registry name); the runtime's default when absent"}
+  system_prompt: {type: string, text: true, description: the system prompt}
+  runtime_options: {type: mapping, description: "the runtime's own config, passed through as written and checked by the runtime (hardline: temperature, max_tokens, default_model, models); `matrix describe matrix.v1.model-runtime.<name>` lists a runtime's"}
+offers: [respondent]

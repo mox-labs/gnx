@@ -17,7 +17,7 @@ runtime that lets the agent use tools without asking) is said once: in the repor
 ``warnings``, and once on stderr without ``--json``.
 
 Telemetry is configured once per command from the standard ``OTEL_*`` variables; what it
-warns of (export asked for without matrix's ``otel`` extra) is in every ``--json``
+warns of (export asked for in an install that cannot do it) is in every ``--json``
 document's ``warnings``, and on stderr otherwise.
 """
 
@@ -182,14 +182,14 @@ class _Group(click.RichGroup):
 def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     """ix: one file declares a question about a system and how it will be answered.
 
-    ix checks the file, shows the decision a run would inform and what it would cost,
+    ix checks the file, shows the decision a run would inform and how many trials it takes,
     freezes the design before anything runs, then runs it and reports what the readings say
     about that decision.
 
     \b
     ix --skill                  the skill an agent reads; ix --skill -r NAME a reference
     ix validate lab/proxy       every problem at once, nothing run
-    ix plan lab/proxy           the decision, the trials, the effects, the spend
+    ix plan lab/proxy           the decision, the trials, what it needs here
     ix register lab/proxy       freeze the design before a run
     ix deviations lab/proxy     what changed since registration
     ix run lab/proxy            carry it out; the exit code is the verdict
@@ -315,29 +315,16 @@ def _print_plan_work(plan: ix.Plan) -> None:
 
 
 def _print_plan_cost(plan: ix.Plan) -> None:
-    by_effect: dict[tuple[str, str], list[str]] = {}
-    for effect in plan.effects:
-        by_effect.setdefault((effect.effect, effect.detail), []).append(effect.source)
     lines = [
-        f"{name}{': ' + detail if detail else ''}  ({', '.join(sources)})"
-        for (name, detail), sources in by_effect.items()
+        f"{'yes' if required.holds else 'NO '}  {required.need}  ({', '.join(required.needed_by)})"
+        for required in plan.requirements
     ]
-    _field("Effects", *(lines or ["none"]))
-    spend = plan.spend
-    source = f" from {spend.ceiling_source}" if spend.ceiling_source else ""
-    if spend.estimated is None:
-        ceiling = (
-            "" if spend.ceiling is None else f"; ceiling {spend.ceiling:g} {spend.currency}{source}"
-        )
-        _field("Spend", f"not estimated ({spend.basis}){ceiling}")
-    else:
-        ceiling = "" if spend.ceiling is None else f", ceiling {spend.ceiling:g}{source}"
-        _field("Spend", f"about {spend.estimated:g} {spend.currency}{ceiling}  ({spend.basis})")
+    _field("Requires", *(lines or ["nothing of this host that an adapter checks"]))
     _field("Registration", plan.registration.text())
     _field("Sensitivity", plan.sensitivity.text)
     blockers = [
         *(f"this ix has no adapter for {kind}" for kind in plan.unimplemented),
-        *(f"cannot start on this host: {reason}" for reason in plan.unstartable),
+        *(f"not on this host: {required.text()}" for required in plan.unmet),
     ]
     if not plan.runnable:
         _field("Runnable", "no", *blockers)
@@ -380,12 +367,13 @@ def _print_plan(plan: ix.Plan, path: str) -> None:
 @_path_argument
 @_json_option
 def plan(path: str, as_json: bool) -> None:
-    """Show the decision a run would inform and what it would cost. Runs nothing.
+    """Show the decision a run would inform and how many trials it takes. Runs nothing.
 
     States the question, the hypothesis rendered from the genre, the guardrails and the form
     of the verdict; then the subjects with their roles, the trials with their arithmetic, the
-    estimated duration, the effects, the spend and where the experiment stands against its
-    registration. The plan's digest changes when a value a run would use changes.
+    estimated duration, what the run needs of this host with whether each holds here, and
+    where the experiment stands against its registration. The plan's digest changes when a
+    value a run would use changes.
 
     PATH is the experiment file, a directory that holds experiment.yaml, or - for standard
     input (which has no registration).
@@ -441,6 +429,9 @@ def register(path: str, amend: bool, reason: str | None, as_json: bool) -> None:
     out.print(f"  [dim]plan {record.plan_digest[:12]}, probes {record.probes_digest[:12]}[/dim]")
     if registered.outcome == "amended":
         out.print(f"  [dim]reason: {escape(record.amendments[-1].reason)}[/dim]")
+    if registered.warnings:
+        err.print(f"{len(registered.warnings)} warning(s)")
+        _print_problems(registered.warnings, err, mark="yellow")
 
 
 @main.command(epilog=EXIT_CODES)
@@ -585,21 +576,16 @@ def _print_outcome(report: ix.Report) -> None:
         )
     if report.stood_in:
         _field("Stood in", *report.stood_in)
-    if report.halt is not None:
-        _field("Stopped", f"{report.halt.reason}: {report.halt.message}")
-    spend = report.spend
-    if spend.total or spend.ceiling is not None:
-        ceiling = "" if spend.ceiling is None else f" of a ceiling of {spend.ceiling:g}"
-        source = f" ({spend.ceiling_source})" if spend.ceiling_source else ""
-        _field(
-            "Spent",
-            f"{spend.total:.4g}{ceiling}{source}: trials {spend.trials:.4g}, sensors "
-            f"{spend.sensing:.4g}; {spend.reported} of {spend.carried_out} trials reported a cost",
-        )
     for error in report.errors:
         _field("Failed", error)
     if report.registered_at:
-        held = "held to it" if report.gated else "exploratory: not held to it"
+        held = (
+            "held to it"
+            if report.gated
+            else "a stand-in answered, so not held to it"
+            if _stood_in(report) and not report.exploratory
+            else "exploratory: not held to it"
+        )
         _field("Registration", f"registered {report.registered_at}; {held}")
     else:
         _field("Registration", "none (exploratory)")
@@ -608,6 +594,15 @@ def _print_outcome(report: ix.Report) -> None:
             "Deviations",
             *(deviation.text() for deviation in report.deviations),
         )
+    if report.contents:
+        _field(
+            "Contents",
+            *(f"{c.label}  {c.digest[:12] or 'nothing there'}" for c in report.contents),
+        )
+    if report.provenance is not None:
+        _field("Ran from", report.provenance.checkout())
+        versions = report.provenance.versions
+        _field("Versions", ", ".join(f"{name} {found}" for name, found in versions.items()))
     out.print()
 
 
@@ -739,7 +734,11 @@ def _render_warrant(report: ix.Report) -> None:
             "derived from the record when this report was made."
         )
     elif report.readings == "none":
-        lines.append("No readings: none were recorded, and none could be derived here.")
+        lines.append(
+            f"No readings: none were recorded, and none were derived here: {report.unread}."
+            if report.unread
+            else "No readings were recorded."
+        )
     _field("Warrant", *lines, *analysis.notes)
 
 
@@ -864,18 +863,19 @@ The experiment must be registered first (`ix register`), or the run refused (exi
 run of an experiment that changed since its registration, until the registration is amended
 with a reason. `--dry-run` runs the experiment as written with every subject on a
 stand-in (an agent session on the mock runtime, replying with each probe's mock_response),
-setting aside the options only the real runtime takes: it checks the harness, spends
-nothing and gives no verdict. `--repeats N` pilots either with N repeats in place of the
+setting aside the options only the real runtime takes: it checks the harness, calls no
+model and gives no verdict. `--repeats N` pilots either with N repeats in place of the
 file's (never below the genre's minimum); a run that gives a verdict refuses it (exit
 {_CODE["usage"]}). PATH may be - for an experiment on standard input, which
 runs only with `--exploratory` or `--dry-run` and keeps its runs under the current
 directory. The exit code
 is the verdict: {_CODE["ok"]} holds (or no verdict to give), {_CODE["fails"]} fails,
-{_CODE["inconclusive"]} inconclusive. Ctrl-C stops the trial in flight, releases what was
-started and exits {_CODE["run_interrupted"]} with the partial report; a run the harness could
-not finish exits {_CODE["run_failed"]}. Either way the record is kept and `ix report` reads
-it. Without --json the exit code, what it means and the next step follow the report on
-stderr."""
+{_CODE["inconclusive"]} inconclusive; a registered run a stand-in answered (`runtime: mock`
+written in) gives none and exits {_CODE["simulated"]}, never {_CODE["ok"]}. Ctrl-C stops the
+trial in flight, releases what was started and exits {_CODE["run_interrupted"]} with the
+partial report; a run the harness could not finish exits {_CODE["run_failed"]}. Either way
+the record is kept and `ix report` reads it. Without --json the exit code, what it means and
+the next step follow the report on stderr."""
 
 _REPORT_HELP = f"""Print the report of a run, computed again from its record. Runs nothing.
 
@@ -883,8 +883,9 @@ RUN is a run's directory (as `ix run` and `ix runs` print it), or an experiment 
 directory, meaning its latest run. Works on a run in any state: finished, stopped, failed,
 killed or still running. Exits as `ix run` would have: {_CODE["ok"]} holds (or no verdict to
 give), {_CODE["fails"]} fails, {_CODE["inconclusive"]} inconclusive, {_CODE["run_interrupted"]}
-for a run that was stopped or killed and {_CODE["run_failed"]} for one the harness could not
-finish; and {_CODE["running"]} for a run that is still running."""
+for a run that was stopped or killed, {_CODE["run_failed"]} for one the harness could not
+finish and {_CODE["simulated"]} for a registered run a stand-in answered; and
+{_CODE["running"]} for a run that is still running."""
 
 
 @main.command(epilog=EXIT_CODES, help=_RUN_HELP)
@@ -898,7 +899,7 @@ finish; and {_CODE["running"]} for a run that is still running."""
     "--dry-run",
     is_flag=True,
     help="Run the experiment as written on stand-ins (agent sessions on mock, each probe's "
-    "mock_response the reply): checks the harness, spends nothing, never a verdict",
+    "mock_response the reply): checks the harness, calls no model, never a verdict",
 )
 @click.option(
     "--repeats",
@@ -918,8 +919,11 @@ def run(path: str, exploratory: bool, dry_run: bool, repeats: int | None, as_jso
         if bar is not None:
             bar.stop()
         _fail(error, as_json=as_json)
-    if bar is not None:
-        bar.stop()
+    finally:
+        # However the run ended: a defect or a stop outside the run must not print over a
+        # live display.
+        if bar is not None:
+            bar.stop()
     _finish(report, as_json, path)
 
 
@@ -941,10 +945,12 @@ def runs(path: str | None, as_json: bool) -> None:
     """List the runs kept beside an experiment, oldest first.
 
     PATH is the experiment file or its directory; without it, every experiment's runs under
-    the current directory. Each line is a run: its id, when it started, whether it was held
-    to a registration (gated), exploratory or a dry run, how it ended, its verdict (or the
-    indication of a run that gives none), its trials and what it spent. Each run is a
-    directory: pass it to `ix report`.
+    the current directory (each .ix/runs of an experiment at most 6 directories below it),
+    or under the settings' runs. Each line
+    is a run: its id, when it started, whether it was held to a registration (gated),
+    exploratory or a dry run, how it ended, its verdict (or the indication of a run that
+    gives none), its trials and the commit it ran from. Each run is a directory: pass it to
+    `ix report`.
     """
     try:
         found = ix.runs(path)
@@ -965,9 +971,14 @@ def runs(path: str | None, as_json: bool) -> None:
             outcome = f"indication {item.indication}"
         else:
             outcome = "the harness, not the agent" if item.mode == "dry" else "no verdict"
+        checkout = (
+            f"commit {item.commit[:12]}{' (dirty)' if item.dirty else ''}"
+            if item.commit
+            else "no commit"
+        )
         out.print(
-            f"  {escape(item.run)}  {escape(item.started_at)}  {item.mode}  {item.status}  "
-            f"{outcome}  {item.carried_out}/{item.planned} trials  spent {item.spent:.4g}",
+            f"  {escape(item.run)}  {escape(item.started_at)}  {checkout}  {item.mode}  "
+            f"{item.status}  {outcome}  {item.carried_out}/{item.planned} trials",
             soft_wrap=True,
             highlight=False,
         )
@@ -1028,8 +1039,10 @@ def kinds(lab: str | None, as_json: bool) -> None:
     """List the subject kinds, probe kinds, sensors and environment kinds.
 
     Each kind declares its options (required ones marked *), the facets it needs and offers,
-    its effects and, for a sensor, the metrics it provides. `runs` says whether this ix has
-    an adapter for the kind: one without can be validated, planned and registered, not run.
+    for a sensor the metrics it provides and, for an environment, the keys each service it
+    brings up is bound with (`service_keys`: `{<service>.url}`). `runs` says whether this ix
+    has an adapter for the kind: one without can be validated, planned and registered, not
+    run.
     """
     try:
         found = ix.kinds(lab)
@@ -1047,7 +1060,8 @@ def kinds(lab: str | None, as_json: bool) -> None:
         table.add_column("kind", no_wrap=True)
         table.add_column("options (* required)", overflow="fold", min_width=widest)
         table.add_column("needs > offers")
-        table.add_column("effects")
+        if family == "environment":
+            table.add_column("service keys")
         table.add_column("runs", no_wrap=True)
         tables[family] = table
     metrics = Table(title="Metrics", title_justify="left")
@@ -1060,11 +1074,12 @@ def kinds(lab: str | None, as_json: bool) -> None:
             f"{name}{'*' if option.required else ''}" for name, option in kind.options.items()
         )
         facets = f"{', '.join(kind.needs) or '-'} > {', '.join(kind.offers) or '-'}"
+        keys = [escape(", ".join(kind.service_keys) or "-")] if kind.family == "environment" else []
         tables[kind.family].add_row(
             escape(label),
             escape(options or "-"),
             escape(facets),
-            escape("\n".join(kind.effects) or "-"),
+            *keys,
             "yes" if kind.name in found.runnable else "no",
         )
         for metric in kind.metrics:
@@ -1080,10 +1095,12 @@ def kinds(lab: str | None, as_json: bool) -> None:
         out.print(table)
     out.print(metrics)
     err.print(
-        "[dim]runs: whether this ix has an adapter for the kind. One without can be "
-        "validated, planned and registered, and `ix run` refuses it.[/dim]"
+        "[dim]runs: whether this ix has an adapter for the kind that builds here. One "
+        "without can be validated, planned and registered, and `ix run` refuses it.[/dim]"
     )
     _print_rejected(found.rejected)
+    for name, why in found.unbuildable.items():
+        err.print(f"[red]Adapter cannot be built:[/red] {escape(name)}: {escape(why)}")
     for line in found.quarantined:
         err.print(f"[red]Extension not loaded:[/red] {escape(line)} [dim](matrix catalog)[/dim]")
 

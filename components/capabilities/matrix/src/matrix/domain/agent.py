@@ -2,10 +2,15 @@
 
 * **AgentDefinition** is what the agent *is*: prompt, tools, model, turn bound. Pure data, the
   same shape as a Claude Code agent file, so a plugin's agents are definitions as they stand.
-* **AgentRuntime** (a port) is *where and how* it runs: the Claude Agent SDK, one model call
-  through hardline, a mock. Deployment config lives on the runtime.
+* **AgentRuntime** (a port) is *where and how* it runs: a session with a loop and tools (the
+  Claude Agent SDK, a mock). Deployment config lives on the runtime. One model call is not an
+  agent session: it has its own port, ``ModelRuntime``, and its own step.
 * **BoundAgent** pairs them. The runtime's ``check`` runs at binding, so a definition the
   runtime cannot honour fails at composition, before anything has spent a token.
+
+What a session on a runtime *does*, as its config sets it (whether it loads skills, whether
+its tools can write), is data the runtime declares (:class:`AgentCapabilities`), so a caller
+asks the runtime instead of reading its options by name.
 
 A runtime reports how a session *ended* (``AgentResponse.stop``: ``completed``, or the limit
 it reached) and raises :class:`~matrix.domain.errors.AgentRuntimeError` with a classified
@@ -14,6 +19,8 @@ it reached) and raises :class:`~matrix.domain.errors.AgentRuntimeError` with a c
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 import uuid
 from datetime import datetime
@@ -21,6 +28,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from matrix.domain.errors import AgentRuntimeError
+from matrix.domain.model_call import FinishReason  # noqa: TC001 -- pydantic reads it
 from matrix.domain.observer import (
     AGENT_END,
     AGENT_START,
@@ -28,15 +37,18 @@ from matrix.domain.observer import (
     TOOL_END,
     TOOL_START,
     Event,
+    around,
     emit,
+    observing,
 )
-from matrix.domain.spend import CURRENT_SPEND
+from matrix.domain.session import agent_session, digest, record_cancelled, record_session
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from matrix.domain.observer import Observer
     from matrix.domain.ports._out.agent_runtime import AgentRuntime
+    from matrix.domain.session import Session
 
 _SLUG = r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
 
@@ -63,9 +75,9 @@ class AgentDefinition(BaseModel):
     name: str = Field(pattern=_SLUG)
     description: str = ""
     #: The text after a definition file's frontmatter (``body``), or given by name.
-    system_prompt: str = Field("", validation_alias=AliasChoices("system_prompt", "body"))
-    #: Interpreted by the runtime: an SDK alias or model id for the Claude runtime, a
-    #: hardline registry name for the model runtime. ``None`` = the runtime's default.
+    system_prompt: str = Field(default="", validation_alias=AliasChoices("system_prompt", "body"))
+    #: Interpreted by the runtime: an alias or model id for the Claude Agent SDK.
+    #: ``None`` = the runtime's default.
     model: str | None = None
     #: ``None`` = the runtime's default toolset. ``()`` = **no tools**: never collapsed into
     #: the default (see matrix/SECURITY.md M-2).
@@ -106,39 +118,128 @@ class AgentDefinition(BaseModel):
         return value.strip()
 
 
+class AgentCapabilities(BaseModel):
+    """What sessions on an agent runtime do, as its config sets them: data the runtime
+    declares about itself, so a caller asks it instead of reading its options by name. A
+    runtime's config class declares them, as a method ``capabilities()`` returning one of
+    these, and :meth:`~matrix.domain.registry.Entry.capabilities` asks it of a config. Each
+    answer is None where the runtime does not say: a caller then assumes nothing."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Whether a session loads skills from settings (this machine's, the user's, the
+    #: project's), beyond those it is given as plugins.
+    settings_skills: bool | None = None
+    #: Whether a session loads the skills in its working directory (in ``skills_dir``),
+    #: where a caller puts the skills it gives a session.
+    project_skills: bool | None = None
+    #: The tool a session calls to fire a skill (Claude Code's ``Skill``): the call a caller
+    #: reads to tell that one fired. None for a runtime that names none.
+    skill_tool: str | None = None
+    #: Where a caller places the skills it gives a session, relative to the session's working
+    #: directory (Claude Code's ``.claude/skills``), each a folder holding its ``SKILL.md``.
+    #: None for a runtime that names no place: its sessions find none there.
+    skills_dir: str | None = None
+    #: Whether a session's tools can write files.
+    writes_files: bool | None = None
+    #: Config that keeps a session from reading anything of the machine it runs on beyond
+    #: what it is given (its settings, memory files, hooks): what a caller lays under its own
+    #: config when a session must not be shaped by where it runs. Empty: nothing to add.
+    hermetic: dict[str, Any] = {}
+    #: The config key that decides each answer above, by the answer's name: where a caller
+    #: points someone who wants another answer. An answer no key changes is not in it.
+    set_by: dict[str, str] = {}
+
+
 class AgentResponse(BaseModel):
-    """The runtime-neutral record of one agent session."""
+    """The runtime-neutral record of one agent session: what a runtime returns.
+
+    On a reply row an agent step provides, the facts the session row holds are moved there:
+    the row keeps the reply and what a consumer acts on (``content``, ``transcript``,
+    ``tool_calls``, ``stop``, ``finish_reason``, ``family``, ``task``) and ``session``, the
+    position of its row in ``matrix.v1.session``; every field the session row holds is None
+    (:meth:`as_reply`). A fact the runtime did not report is None, never a constant.
+    """
 
     model_config = ConfigDict(frozen=True)
 
+    #: The session's reply: its final result, not every turn's text.
     content: str = ""
+    #: What the agent wrote, turn by turn: each of its text blocks, in order.
+    transcript: tuple[str, ...] = ()
     #: ``{name, input}`` per tool call, as plain dicts. A runtime that sees calls happen adds
     #: ``id``, ``started`` and ``ended`` (ISO times) and ``error`` (bool), and matrix reports
     #: each such call as an ``execute_tool`` span.
     tool_calls: tuple[dict[str, Any], ...] = ()
-    tokens_input: int = 0
-    tokens_output: int = 0
-    duration_ms: int = 0
-    cost_usd: float | None = None
-    num_turns: int = 0
-    #: The model family that answered (``claude``, ``qwen``, ``gemini``), stamped by the
-    #: runtime.
-    family: str | None = None
-    #: Who served it, as the GenAI conventions name providers (``anthropic``, ``openai``,
-    #: ``gcp.gemini``), when the runtime knows.
-    provider: str | None = None
-    #: The model id or registry name that answered, when the runtime knows it.
-    model: str | None = None
     #: Why the session ended: ``completed``, or the limit reached (``max_turns``,
     #: ``max_budget_usd``). A limit is not a failure; a failure raises instead.
     stop: str | None = None
+    #: Why the session's last reply ended, in the model call's vocabulary (``stop``,
+    #: ``length``, ``refusal``, ...); None when the runtime does not say.
+    finish_reason: FinishReason | None = None
+    #: The model family that answered (``claude``, ``qwen``, ``gemini``), stamped by the
+    #: runtime.
+    family: str | None = None
     #: The task the agent was given, as sent: an ``agent-step`` records it here, after
     #: substituting its inputs. None when the caller did not record it.
     task: str | None = None
+    #: The position of this session's row in the run's ``matrix.v1.session`` table, when a
+    #: run recorded it: the run that ran the session, which for a reused row is the one
+    #: ``reused_from`` names. None outside a run.
+    session: int | None = None
+    #: Every input token the session read, those served from and written to the prompt
+    #: cache included; ``cache_read_tokens`` and ``cache_write_tokens`` say how many of them.
+    tokens_input: int | None = None
+    tokens_output: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    duration_ms: int | None = None
+    #: The cost the runtime reported, when it reports one: a fact of the session.
+    cost_usd: float | None = None
+    num_turns: int | None = None
+    #: Who served it, as the GenAI conventions name providers (``anthropic``, ``openai``,
+    #: ``gcp.gemini``), when the runtime knows.
+    provider: str | None = None
+    #: The model id or registry name that answered, when the runtime knows it: not the one
+    #: the definition asked for.
+    model: str | None = None
+    #: The provider's own value for why the last reply ended, verbatim.
+    native_finish_reason: str | None = None
+    #: The runtime's id for the session, when it gives one.
+    session_id: str | None = None
+
+    def as_reply(self) -> AgentResponse:
+        """This response as a reply row: with ``session`` set, the facts its session row
+        holds are moved off. Without it nothing else holds them, and they stay."""
+        if self.session is None:
+            return self
+        return self.model_copy(update=dict.fromkeys(_SESSION_FACTS))
+
+
+#: The facts of an agent session its session row holds, and a reply row does not repeat.
+_SESSION_FACTS = (
+    "tokens_input",
+    "tokens_output",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "duration_ms",
+    "cost_usd",
+    "num_turns",
+    "provider",
+    "model",
+    "native_finish_reason",
+    "session_id",
+)
 
 
 class BoundAgent:
-    """A definition bound to a runtime: what a component calls."""
+    """A definition bound to a runtime: what a component calls.
+
+    Inside a run, each session it runs is recorded in the run's ``matrix.v1.session`` table,
+    with ``runtime_url`` (the runtime's type URL) and ``drives`` (its registry entry's) when
+    the binder knows them, and the response it returns points at that row (``session``). A
+    session that fails is recorded too, as failed, before its error is raised.
+    """
 
     def __init__(
         self,
@@ -146,11 +247,15 @@ class BoundAgent:
         runtime: AgentRuntime,
         *,
         observers: Sequence[Observer] = (),
+        runtime_url: str | None = None,
+        drives: tuple[str, ...] = (),
     ) -> None:
         runtime.check(definition)  # refuse here, at binding, not mid-run
         self._definition = definition
         self._runtime = runtime
         self._observers = tuple(observers)
+        self._runtime_url = runtime_url
+        self._drives = tuple(drives)
 
     @property
     def name(self) -> str:
@@ -167,69 +272,94 @@ class BoundAgent:
     async def run(self, task: str) -> AgentResponse:
         """Run the definition on the runtime. Emits ``matrix.agent.start`` (with the task as
         sent) and ``.end``, and a ``matrix.tool.start``/``.end`` pair for each tool call the
-        runtime timed.
-
-        Inside a run, the session is held to the run's spend ceiling first: raises
-        :class:`~matrix.domain.errors.SpendError`, starting nothing, when it could pass it.
-        """
+        runtime timed. ``.end`` carries ``usage_counted_by`` when the runtime declares who
+        counts its model calls' tokens. Inside a run, records the session (see the class
+        docstring)."""
         span = uuid.uuid4().hex
         name = self._definition.name
-        spend = CURRENT_SPEND.get()
-        held = 0.0
-        if spend is not None:
-            held = spend.hold(name, getattr(self._runtime, "budget_usd", None))
-        cost: float | None = None
         scope = CURRENT_SPAN.get()
         run_id, parent, component = (
             (scope.run_id, scope.span, scope.component) if scope else (None, None, None)
         )
-        await emit(
-            self._observers,
-            Event(
-                AGENT_START,
-                span=span,
-                run_id=run_id,
-                parent=parent,
-                fields={"agent": name, "model": self._definition.model, "task": task},
-                component=component,
-            ),
+        begun = Event(
+            AGENT_START,
+            span=span,
+            run_id=run_id,
+            parent=parent,
+            fields={"agent": name, "model": self._definition.model, "task": task},
+            component=component,
         )
+        await emit(self._observers, begun)
         started = time.monotonic()
         fields: dict[str, Any] = {"agent": name}
-        try:
-            response = await self._runtime.run(self._definition, task)
-        except Exception as e:
-            fields.update(status="error", error=str(e), reason=getattr(e, "reason", None))
-            fields["kind"] = getattr(e, "kind", type(e).__name__)
-            raise
-        else:
-            fields.update(
-                status=response.stop or "completed",
-                tokens_input=response.tokens_input,
-                tokens_output=response.tokens_output,
-                cost_usd=response.cost_usd,
-                model=response.model,
-                family=response.family,
-                provider=response.provider,
-                tool_calls=len(response.tool_calls),
-            )
-            cost = response.cost_usd
-            for call in response.tool_calls:
-                await self._tool(call, span, run_id, component)
-            return response
-        finally:
-            if spend is not None:
-                spend.settle(held, cost)
-            fields["duration_ms"] = int((time.monotonic() - started) * 1000)
-            ended = Event(
-                AGENT_END,
-                span=span,
-                run_id=run_id,
-                parent=parent,
-                fields=fields,
-                component=component,
-            )
-            await emit(self._observers, ended)
+        # The session's span is current in this task while the runtime works, so what a
+        # runtime or a library opens inside it is the session's child.
+        with around(observing(self._observers), begun) as end:
+            try:
+                response = await self._runtime.run(self._definition, task)
+            except asyncio.CancelledError as e:
+                fields.update(status="cancelled", reason="cancelled")
+                record_cancelled(self._session(task, None, e))
+                raise
+            except Exception as e:
+                fields.update(status="error", error=str(e), reason=getattr(e, "reason", None))
+                fields["kind"] = getattr(e, "kind", type(e).__name__)
+                self._record(task, None if not isinstance(e, AgentRuntimeError) else e.response, e)
+                raise
+            else:
+                fields.update(
+                    status=response.stop or "completed",
+                    tokens_input=response.tokens_input,
+                    tokens_output=response.tokens_output,
+                    cost_usd=response.cost_usd,
+                    model=response.model,
+                    family=response.family,
+                    provider=response.provider,
+                    tool_calls=len(response.tool_calls),
+                )
+                counted_by = getattr(self._runtime, "usage_counted_by", None)
+                if isinstance(counted_by, str) and counted_by:
+                    # The runtime's model calls are counted where they are made: an observer
+                    # counts this session's tokens no second time.
+                    fields["usage_counted_by"] = counted_by
+                for call in response.tool_calls:
+                    await self._tool(call, span, run_id, component)
+                row = self._record(task, response)
+                return response if row is None else response.model_copy(update={"session": row})
+            finally:
+                fields["duration_ms"] = int((time.monotonic() - started) * 1000)
+                ended = Event(
+                    AGENT_END,
+                    span=span,
+                    run_id=run_id,
+                    parent=parent,
+                    fields=fields,
+                    component=component,
+                )
+                end(ended)
+                await emit(self._observers, ended)
+
+    def _record(
+        self, task: str, response: AgentResponse | None, error: Exception | None = None
+    ) -> int | None:
+        """Record the session in the run this is part of, whether it replied or failed; its
+        row, or None outside a run."""
+        return record_session(self._session(task, response, error))
+
+    def _session(
+        self, task: str, response: AgentResponse | None, error: BaseException | None
+    ) -> Session:
+        definition = self._definition
+        sent = digest({"definition": definition.model_dump(mode="json"), "task": task})
+        return agent_session(
+            response,
+            agent=definition.name,
+            sent=sent,
+            runtime=self._runtime_url,
+            drives=self._drives,
+            error=error,
+            task=task,
+        )
 
     async def _tool(
         self, call: dict[str, Any], parent: str, run_id: str | None, component: str | None
@@ -249,8 +379,13 @@ class BoundAgent:
             "status": "error" if error else "ok",
             "duration_ms": int((ended - began).total_seconds() * 1000),
         }
-        for event_name, at, fields in ((TOOL_START, began, about), (TOOL_END, ended, finished)):
-            event = Event(
+        # The start carries the call's arguments, as JSON: content, as an agent's task is,
+        # which an observer exports only when asked to.
+        begun = about
+        if call.get("input") is not None:
+            begun = {**about, "arguments": json.dumps(call["input"], default=str)}
+        start, end = (
+            Event(
                 event_name,
                 span=span,
                 run_id=run_id,
@@ -259,7 +394,13 @@ class BoundAgent:
                 component=component,
                 time=at,
             )
-            await emit(self._observers, event)
+            for event_name, at, fields in ((TOOL_START, began, begun), (TOOL_END, ended, finished))
+        )
+        # Inside the session's span, at the times the runtime saw the call start and end.
+        with around(observing(self._observers), start) as ending:
+            await emit(self._observers, start)
+            await emit(self._observers, end)
+            ending(end)
 
 
 def _when(value: Any) -> datetime | None:

@@ -1,8 +1,9 @@
 """Running an experiment as one matrix run, and reading runs back from matrix's record.
 
-matrix's store is the only store: a run is a directory of typed JSONL tables written as the
-run goes, and ix reads a run back through it, in any state. Nothing here keeps a file of
-ix's own.
+matrix's store is the only store: a run is a directory of typed tables written as the run
+goes, and ix reads a run back through it, in any state. Which store is the composition
+root's choice, built at matrix's ``store`` point and handed in; nothing here names one, and
+nothing here keeps a file of ix's own.
 
 matrix's errors stop here. A run that fails or is stopped is not an error to the caller: its
 record says how it ended, and :meth:`Runs.record` reads that. What matrix could not do at
@@ -17,26 +18,26 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from matrix import (
-    Executor,
-    JsonlConstructStore,
+    ComponentLimits,
     Limits,
     MatrixError,
     RunError,
-    cancel_on_signals,
     compose,
 )
 from matrix import NotFoundError as MatrixNotFoundError
+from pydantic import ValidationError
 
+from ix.adapters._out.compose import DOWN_TIMEOUT_S
 from ix.adapters._out.matrix_errors import carried_over
 from ix.domain import schema
-from ix.domain.errors import IxError, NotFoundError
+from ix.domain.errors import ConfigError, IxError, NotFoundError
 from ix.domain.report import RunSummary
-from ix.domain.run import Halt, Interaction, Reading, RunManifest, RunRecord, RunStatus, Trial
+from ix.domain.run import Interaction, Reading, RunManifest, RunRecord, RunStatus, Trial
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
-    from matrix import Event, MatrixConfig, Registry
+    from matrix import ConstructStore, Event, MatrixConfig, Registry
 
     from ix.domain.ports import Traced
 
@@ -47,6 +48,10 @@ EVENTS = "matrix.v1.event"
 #: How long a trial in flight has to end after a stop request before it is cancelled: time
 #: for a load tool and a subject to be stopped politely.
 GRACE_S = 15.0
+
+#: How long the environment's releases have when the run ends: a compose stack's ``down``
+#: stops each container and removes its volumes, which outlasts matrix's default.
+ENVIRONMENT_CLEANUP_S = DOWN_TIMEOUT_S + 30.0
 
 _STATUS: dict[str, RunStatus] = {
     "running": "running",
@@ -70,7 +75,7 @@ class _Relay:
 
 async def execute(
     *,
-    root: str,
+    store: ConstructStore,
     registry: Registry,
     config: MatrixConfig,
     needs: Mapping[str, Any],
@@ -80,8 +85,8 @@ async def execute(
     tracer: Traced | None = None,
 ) -> None:
     """Carry out one experiment run as one matrix run of ``config`` (its components and
-    observers, resolved through ``registry`` and built with ``needs``), recorded under
-    ``root``, inside an ``ix.run`` span when there is a ``tracer``.
+    observers, resolved through ``registry`` and built with ``needs``), recorded in
+    ``store``, inside an ``ix.run`` span when there is a ``tracer``.
 
     Returns when the run ended, whether it completed or a component failed: the record
     says which. A stop request (the caller cancelled, Ctrl-C, SIGTERM) propagates as the
@@ -98,12 +103,17 @@ async def execute(
             container = compose(config, registry=registry, context=needs)
             wiring = container.wire()
             relay = [] if on_event is None else [_Relay(on_event)]
-            await Executor([*container.observers, *relay], interrupts=cancel_on_signals).run(
+            # matrix's executor for the composed run: signals become the run's cancellation,
+            # and each session row records the trace and span it ended in.
+            await container.executor(relay).run(
                 wiring,
                 {schema.RUN: manifest, schema.TRIAL: list(trials)},
-                store=JsonlConstructStore(root),
+                store=store,
                 run_id=manifest.run,
-                limits=Limits(grace_s=GRACE_S),
+                limits=Limits(
+                    grace_s=GRACE_S,
+                    components={"environment": ComponentLimits(cleanup_s=ENVIRONMENT_CLEANUP_S)},
+                ),
             )
         except RunError:
             return  # a component failed: the record holds what happened and what was kept
@@ -128,20 +138,22 @@ def _errors(described: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 class Runs:
-    """The runs recorded under one directory."""
+    """The runs recorded under one directory, read through ``store``: the store the root
+    built for that directory."""
 
-    def __init__(self, root: str) -> None:
+    def __init__(self, root: str, store: ConstructStore) -> None:
         self.root = root
-        self._store = JsonlConstructStore(root)
+        self.store = store
 
     @classmethod
-    def at(cls, path: str) -> tuple[Runs, str] | None:
+    def at(cls, path: str, store: Callable[[str], ConstructStore]) -> tuple[Runs, str] | None:
         """The runs that the run recorded in directory ``path`` is one of, and its id; None
-        when ``path`` is not a run's directory."""
+        when ``path`` is not a run's directory. ``store`` builds the store for a
+        directory."""
         directory = Path(path).resolve()
-        runs = cls(str(directory.parent))
+        runs = cls(str(directory.parent), store(str(directory.parent)))
         try:
-            runs._store.describe(directory.name)
+            runs.store.describe(directory.name)
         except MatrixNotFoundError:
             return None
         except MatrixError as error:
@@ -151,7 +163,7 @@ class Runs:
     def ids(self) -> list[str]:
         """Run ids, oldest first."""
         try:
-            return self._store.runs()
+            return self.store.runs()
         except MatrixError as error:
             raise carried_over(f"the runs in {self.root} cannot be listed", error) from error
 
@@ -159,8 +171,8 @@ class Runs:
         """One run as recorded, in whatever state it is. Raises :class:`NotFoundError` when
         there is no such run, or when the directory holds a run that is not an experiment's."""
         try:
-            described = self._store.describe(run)
-            construct = self._store.load(run)
+            described = self.store.describe(run)
+            construct = self.store.load(run)
         except MatrixNotFoundError as error:
             raise NotFoundError(
                 f"no run {run!r} in {self.root}",
@@ -181,20 +193,25 @@ class Runs:
                 fix="`ix runs <experiment>` lists the runs",
             )
         location = f"{self.root}/{run}"
-        halts = construct.rows(schema.HALT)
-        status = _STATUS.get(str(described.get("status")), "failed")
-        if halts and status == "completed":
-            status = "interrupted"  # it stopped starting trials: the halt row says why
+        try:
+            readings = tuple(Reading.model_validate(row) for row in construct.rows(schema.READING))
+        except ValidationError as error:
+            raise ConfigError(
+                f"run {run!r} in {self.root} holds a reading ix never writes: "
+                f"{error.errors()[0]['msg']}",
+                fix="the record is damaged; run the experiment again",
+                details={"path": f"{location}/{schema.READING}.jsonl"},
+            ) from error
         return RunRecord(
             run=run,
             location=location,
-            status=status,
+            status=_STATUS.get(str(described.get("status")), "failed"),
             manifest=RunManifest.model_validate(manifests[0]),
             trials=tuple(Trial.model_validate(row) for row in construct.rows(schema.TRIAL)),
             interactions=tuple(
                 Interaction.model_validate(row) for row in construct.rows(schema.INTERACTION)
             ),
-            readings=tuple(Reading.model_validate(row) for row in construct.rows(schema.READING)),
+            readings=readings,
             ended_at=str(described.get("ended") or ""),
             errors=_errors(described),
             tables={
@@ -209,33 +226,30 @@ class Runs:
                     else {}
                 ),
             },
-            halt=Halt.model_validate(halts[0]) if halts else None,
         )
 
-    def summaries(self) -> list[RunSummary]:
-        """Every experiment run under the root, oldest first. A directory that is not one
-        is left out."""
-        found: list[RunSummary] = []
-        for run in self.ids():
+    def records(self, *, latest_first: bool = False) -> Iterator[RunRecord]:
+        """Every experiment run under the root, oldest first (or latest first), each read
+        once and when asked. A directory that is not one is left out."""
+        ids = self.ids()
+        for run in reversed(ids) if latest_first else ids:
             try:
-                record = self.record(run)
+                yield self.record(run)
             except IxError:
                 continue
-            found.append(
-                RunSummary(
-                    run=run,
-                    location=record.location,
-                    experiment=record.manifest.experiment,
-                    status=record.status,
-                    gated=record.manifest.gated,
-                    mode="dry"
-                    if record.manifest.dry_run
-                    else "gated"
-                    if record.manifest.gated
-                    else "exploratory",
-                    started_at=record.manifest.started_at,
-                    planned=len(record.trials),
-                    carried_out=len(record.interactions),
-                )
-            )
-        return found
+
+    @staticmethod
+    def summary(record: RunRecord) -> RunSummary:
+        """What a list of runs can say of ``record`` without reporting it: its id, state
+        and counts."""
+        return RunSummary(
+            run=record.run,
+            location=record.location,
+            experiment=record.manifest.experiment,
+            status=record.status,
+            gated=record.gated,
+            mode="dry" if record.stood_in else "gated" if record.gated else "exploratory",
+            started_at=record.manifest.started_at,
+            planned=len(record.trials),
+            carried_out=len(record.interactions),
+        )

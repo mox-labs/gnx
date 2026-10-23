@@ -1,6 +1,6 @@
 [project]
 name = "hardline"
-version = "0.1.0"
+version = "0.2.0"
 description = "Model runtime — one port for every model family: messages in, text or a validated object out, tagged with the family that answered"
 requires-python = ">=3.12"
 license = "MIT"
@@ -8,26 +8,37 @@ authors = [
     { name = "yzavyas", email = "yza.vyas@gmail.com" }
 ]
 
-# The two provider SDKs are core, not extras: the OpenAI wire protocol is the one hardline
-# adopts (mlx_lm.server, ollama, vLLM and Gemini's compatibility endpoint all speak it),
-# and Anthropic is the one native adapter. Both are small; both are imported lazily.
+# No provider SDK: both wire protocols (OpenAI-compatible chat completions, Anthropic's
+# Messages API) are spoken directly over httpx2, so nothing reads a location or a credential
+# from the environment behind a registry row's back. httpx2 is bounded to the major tested.
+# Telemetry is the OpenTelemetry API, which a library may depend on without choosing an SDK.
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
-    "openai>=1.40",
-    "anthropic>=0.40",
+    "httpx2>=2.10,<3",
+    # The API: it records nothing until an application installs an SDK. 1.27 for the
+    # histogram's explicit_bucket_boundaries_advisory.
+    "opentelemetry-api>=1.27",
+    # The SDK and OTLP over http/protobuf, which the `hardline` command installs from the
+    # OTEL_* variables. The library never imports them; the command's telemetry does,
+    # only when a variable asks for export.
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    # The CLI, on the workspace's one stack.
+    "rich-click>=1.8",
 ]
-
-[project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
 hardline = "hardline.adapters._in.cli:main"
 
-# Third-party backends register here and are discovered at composition time — no edit to
-# hardline needed. The entry-point name is the short name a registry row puts in `backend:`.
-# The value is a zero-argument callable returning a ModelBackend.
+# Every backend registers here, hardline's own included, and is discovered at composition
+# time: a third-party backend needs no edit to hardline. The entry-point name is the short name
+# a registry row puts in `backend:`. The value is a zero-argument callable returning a
+# ModelBackend.
 [project.entry-points."hardline.backends"]
+openai-compat = "hardline.adapters._out.openai_compat:OpenAICompatBackend"
+anthropic = "hardline.adapters._out.anthropic_native:AnthropicBackend"
+mock = "hardline.adapters._out.mock:MockBackend"
 
 [build-system]
 requires = ["hatchling"]

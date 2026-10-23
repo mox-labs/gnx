@@ -1,8 +1,13 @@
 schema: ix.v1.kind
 name: ix.v1.environment.compose
-summary: A compose project brought up before the trials and down after them.
+summary: A docker compose project brought up before the trials and down after them, each service bound with its published port.
 options:
-  file: {type: string, required: true, description: the compose file}
-  project: {type: string, description: the project name}
-  services: {type: list, description: the services to bring up; all of them when absent}
-effects: [containers, process]
+  file: {type: path, required: true, description: "the compose file, relative to the experiment"}
+  project: {type: string, description: "the project name; one named for the run when absent, so two runs never share one and a stack a killed run left is swept. A project named here that already has containers is refused"}
+  services: {type: list, description: "the services to bring up; all of the file's when absent"}
+  wait_timeout: {type: duration, description: "how long the services have to be running, and healthy where they declare a healthcheck; 120s when absent"}
+  profiles: {type: list, description: "compose profiles to enable"}
+  env_file: {type: path, description: "a file of variables compose substitutes into the file, relative to the experiment"}
+  build: {type: boolean, description: "build the services' images before bringing them up; false when absent"}
+  pull: {type: string, allowed: [always, missing, never], description: "when to pull the services' images; compose's own default when absent"}
+service_keys: [host, port, url]

@@ -449,7 +449,7 @@ On frontier models, constrained "Sculpting" prompts that prescribe reasoning ste
 
 Task-Method-Knowledge prompting (WHY framing) achieved o1 on Random Blocksworld: 31.5% → 97.3% (+65.8pp). TMK provides structured representations of WHY actions are taken, not step-by-step procedures.
 
-**Implication:** WHY framing dramatically outperforms HOW prescriptions. This aligns with the cix WHY > HOW principle (security domain: 30% → 80%).
+**Implication:** WHY framing dramatically outperforms HOW prescriptions. This aligns with the WHY > HOW principle (security domain: 30% → 80%).
 
 **Sel et al. (2025). "DOTS: Learning to Reason Dynamically." ICLR 2025.**
 

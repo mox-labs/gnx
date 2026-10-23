@@ -1,40 +1,44 @@
 """Tests for CliCollector — subprocess → streaming records."""
 
+import os
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from recon.adapters._out.cli_collector import STDERR_TAIL_BYTES, CliCollector, PopenRunner
 from recon.adapters._out.parsing import parse_line as _parse_line
 from recon.domain.errors import CollectionError
-from recon.domain.models import CollectorEntry, SourceEntry
+from recon.domain.models import SourceEntry
+from tests.recon_fakes import collector_entry
 
 
 class TestParseLine:
-    def test_jsonl(self):
+    def test_jsonl(self) -> None:
         assert _parse_line('{"a": 1}', 1) == {"a": 1}
 
-    def test_text_fallback(self):
+    def test_text_fallback(self) -> None:
         assert _parse_line("line one", 3) == {"line_number": 3, "line": "line one"}
 
-    def test_empty(self):
+    def test_empty(self) -> None:
         assert _parse_line("", 1) is None
         assert _parse_line("   ", 1) is None
 
-    def test_non_dict_json_falls_back(self):
+    def test_non_dict_json_falls_back(self) -> None:
         """JSON arrays/numbers aren't records — treat as text line."""
         assert _parse_line("[1, 2, 3]", 1) == {"line_number": 1, "line": "[1, 2, 3]"}
 
 
 class TestCliCollector:
-    def test_basic_jsonl(self):
-        entry = CollectorEntry(
+    def test_basic_jsonl(self) -> None:
+        entry = collector_entry(
             name="test",
             type="cli",
             run='printf \'{"x": 1}\\n{"x": 2}\\n\'',
@@ -43,8 +47,8 @@ class TestCliCollector:
         assert len(records) == 2
         assert records[0]["x"] == 1
 
-    def test_text_output(self):
-        entry = CollectorEntry(
+    def test_text_output(self) -> None:
+        entry = collector_entry(
             name="lines",
             type="cli",
             run="echo 'hello world'",
@@ -53,8 +57,8 @@ class TestCliCollector:
         assert len(records) == 1
         assert "line" in records[0]
 
-    def test_patterns(self):
-        entry = CollectorEntry(
+    def test_patterns(self) -> None:
+        entry = collector_entry(
             name="pats",
             type="cli",
             run="echo '{pattern}'",
@@ -65,8 +69,8 @@ class TestCliCollector:
         assert records[0]["_pattern"] == "alpha"
         assert records[1]["_pattern"] == "beta"
 
-    def test_source_url_substitution(self):
-        entry = CollectorEntry(
+    def test_source_url_substitution(self) -> None:
+        entry = collector_entry(
             name="url-test",
             type="cli",
             run="echo '{url}'",
@@ -75,12 +79,12 @@ class TestCliCollector:
         records = list(CliCollector().collect(entry, source))
         assert "https://example.com" in records[0]["line"]
 
-    def test_source_as_cwd(self):
+    def test_source_as_cwd(self) -> None:
         """Local source URL is used as working directory."""
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "marker.txt").write_text("found")
 
-            entry = CollectorEntry(
+            entry = collector_entry(
                 name="cwd-test",
                 type="cli",
                 run="cat marker.txt",
@@ -89,8 +93,48 @@ class TestCliCollector:
             records = list(CliCollector().collect(entry, source))
             assert "found" in records[0]["line"]
 
-    def test_normalize(self):
-        entry = CollectorEntry(
+    def test_a_local_source_that_is_not_a_directory_runs_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the command ran in recon's working directory instead."""
+        monkeypatch.chdir(tmp_path)
+        entry = collector_entry(name="cwd-test", type="cli", run="touch ran-here")
+        source = SourceEntry(name="repo", type="local", url=str(tmp_path / "missing"))
+        with pytest.raises(CollectionError) as excinfo:
+            list(CliCollector().collect(entry, source))
+        assert excinfo.value.kind == "config"
+        assert str(tmp_path / "missing") in str(excinfo.value)
+        assert not (tmp_path / "ran-here").exists()
+
+    def test_a_command_with_no_source_has_300_seconds(self) -> None:
+        """A source's ``timeout`` bounds its commands; a command with no source gets 300 s."""
+        given: list[float] = []
+
+        class Shell:
+            def run_lines(
+                self, cmd: str, cwd: Path | None, timeout: float, **kwargs: Any
+            ) -> Generator[str, None, int]:
+                given.append(timeout)
+                yield '{"a": 1}'
+                return 0
+
+        entry = collector_entry(name="c", type="cli", run="true")
+        list(CliCollector(Shell()).collect(entry, None))
+        assert given == [300.0]
+
+    def test_url_with_no_source_to_fill_it_runs_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: ``{url}`` with no source was run literally."""
+        monkeypatch.chdir(tmp_path)
+        entry = collector_entry(name="u", type="cli", run="touch ran {url}")
+        with pytest.raises(CollectionError) as excinfo:
+            list(CliCollector().collect(entry, None))
+        assert excinfo.value.kind == "config" and "{url}" in str(excinfo.value)
+        assert not (tmp_path / "ran").exists()
+
+    def test_normalize(self) -> None:
+        entry = collector_entry(
             name="norm",
             type="cli",
             run='printf \'{"nested": {"val": 42}}\\n\'',
@@ -99,14 +143,9 @@ class TestCliCollector:
         records = list(CliCollector().collect(entry, None))
         assert records[0]["value"] == 42
 
-    def test_no_run_raises(self):
-        entry = CollectorEntry(name="bad", type="cli")
-        with pytest.raises(CollectionError, match="no 'run' field"):
-            list(CliCollector().collect(entry, None))
-
-    def test_failed_command_raises(self):
+    def test_failed_command_raises(self) -> None:
         """A non-zero exit other than a silent exit 1 surfaces during iteration."""
-        entry = CollectorEntry(
+        entry = collector_entry(
             name="fail",
             type="cli",
             run="exit 2",
@@ -114,9 +153,9 @@ class TestCliCollector:
         with pytest.raises(CollectionError, match="exit 2"):
             list(CliCollector().collect(entry, None))
 
-    def test_empty_output(self):
+    def test_empty_output(self) -> None:
         """Command with no stdout yields nothing (dispatch loop adds sentinel)."""
-        entry = CollectorEntry(
+        entry = collector_entry(
             name="empty",
             type="cli",
             run="true",
@@ -124,9 +163,9 @@ class TestCliCollector:
         records = list(CliCollector().collect(entry, None))
         assert records == []
 
-    def test_streaming_yields_lazily(self):
+    def test_streaming_yields_lazily(self) -> None:
         """Generator shape — records are yielded as produced, not batched."""
-        entry = CollectorEntry(
+        entry = collector_entry(
             name="streaming",
             type="cli",
             run='printf \'{"i": 1}\\n{"i": 2}\\n{"i": 3}\\n\'',
@@ -138,27 +177,43 @@ class TestCliCollector:
         rest = list(gen)
         assert [r["i"] for r in rest] == [2, 3]
 
-    def test_generator_cleanup_on_abandonment(self):
-        """Abandoning the iterator kills the subprocess (no leak)."""
-        entry = CollectorEntry(
+    def test_generator_cleanup_on_abandonment(self, tmp_path: Path) -> None:
+        """Abandoning the iterator kills the command and what it started (no leak): the
+        shell and its background ``sleep`` are both gone once the generator is closed."""
+        pids = tmp_path / "pids"
+        entry = collector_entry(
             name="longlived",
             type="cli",
-            run="printf '{\"a\": 1}\\n' && sleep 10 && printf '{\"a\": 2}\\n'",
+            run=f"sleep 10 & echo $$ $! > {pids}; printf '{{\"a\": 1}}\\n'; wait",
         )
         gen = CliCollector().collect(entry, None)
-        next(gen)  # read first record
-        gen.close()  # abandon — should kill subprocess
-        # If the subprocess were still alive, this test would hang on teardown.
-        # The actual assertion is implicit: test completes quickly.
+        assert isinstance(gen, Generator)
+        assert next(gen) == {"a": 1}
+        shell, sleeper = map(int, pids.read_text().split())
+        started = time.monotonic()
+        gen.close()
+        assert time.monotonic() - started < 3, "closing did not wait out the command"
+        deadline = time.monotonic() + 5
+        while any(_alive(pid) for pid in (shell, sleeper)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _alive(shell) and not _alive(sleeper)
 
 
-def _run_in_thread(cmd: str, timeout: float, limit: float) -> dict:
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _run_in_thread(cmd: str, timeout: float, limit: float) -> dict[str, Any]:
     """Run ``cmd`` through PopenRunner on a thread, so a runner that hangs fails the test
     after ``limit`` seconds instead of hanging it. Returns the lines, the exit code or the
     error, and how long it took."""
-    outcome: dict = {}
+    outcome: dict[str, Any] = {}
 
-    def go():
+    def go() -> None:
         start = time.monotonic()
         lines = PopenRunner().run_lines(cmd, None, timeout)
         got: list[str] = []
@@ -182,21 +237,21 @@ def _run_in_thread(cmd: str, timeout: float, limit: float) -> dict:
 class TestPopenRunnerFailures:
     """Each way a command can fail lands as a CollectionError; none hangs or reads as ok."""
 
-    def test_the_timeout_holds_while_the_command_keeps_stdout_open(self):
+    def test_the_timeout_holds_while_the_command_keeps_stdout_open(self) -> None:
         """Regression: the timeout applied only after stdout closed, so `sleep 5` with a
         0.5s timeout ran 5s and counted as success."""
         outcome = _run_in_thread("sleep 5", timeout=0.5, limit=4)
         assert "timed out" in str(outcome["error"]) and outcome["error"].fix
         assert outcome["seconds"] < 2
 
-    def test_a_timeout_kills_what_the_command_started(self):
+    def test_a_timeout_kills_what_the_command_started(self) -> None:
         marker = f"recon-timeout-{uuid.uuid4().hex}"
         _run_in_thread(f"sh -c 'sleep 30; : {marker}' & sleep 30", timeout=0.5, limit=4)
         time.sleep(0.2)
         found = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
         assert found.stdout == "", "a process the command started outlived the timeout"
 
-    def test_exit_1_with_stderr_fails_the_table_and_keeps_the_reason(self):
+    def test_exit_1_with_stderr_fails_the_table_and_keeps_the_reason(self) -> None:
         """Regression: exit 1 counted as success, so `cat` of a missing file wrote an ok,
         empty table and dropped its stderr."""
         outcome = _run_in_thread("cat /nonexistent/recon-test-file", timeout=5, limit=4)
@@ -204,28 +259,28 @@ class TestPopenRunnerFailures:
         assert "exit 1" in str(error) and "No such file" in str(error)
         assert error.fix
 
-    def test_exit_1_with_nothing_on_stderr_is_no_match(self):
+    def test_exit_1_with_nothing_on_stderr_is_no_match(self) -> None:
         outcome = _run_in_thread("echo hay | grep needle", timeout=5, limit=4)
         assert outcome["code"] == 1 and outcome["lines"] == []
 
-    def test_the_exit_code_is_returned(self):
+    def test_the_exit_code_is_returned(self) -> None:
         outcome = _run_in_thread("printf 'a\\nb'", timeout=5, limit=4)
         assert outcome == {**outcome, "code": 0, "lines": ["a", "b"]}
 
-    def test_a_flood_on_stderr_does_not_block_the_command(self):
+    def test_a_flood_on_stderr_does_not_block_the_command(self) -> None:
         """Regression: stderr was drained only after stdout closed, so a command writing
         more than a pipe buffer to stderr blocked forever."""
         flood = f"{sys.executable} -c \"import sys; sys.stderr.write('x' * 200000); print('done')\""
         outcome = _run_in_thread(flood, timeout=10, limit=5)
         assert outcome["code"] == 0 and outcome["lines"] == ["done"]
 
-    def test_only_the_tail_of_stderr_reaches_the_error(self):
+    def test_only_the_tail_of_stderr_reaches_the_error(self) -> None:
         noisy = (f"{sys.executable} -c \"import sys; sys.stderr.write('x' * 200000 + 'END'); "
                  "sys.exit(3)\"")  # fmt: skip
         error = _run_in_thread(noisy, timeout=10, limit=5)["error"]
         assert str(error).endswith("END") and len(str(error)) < STDERR_TAIL_BYTES + 500
 
-    def test_a_command_reading_stdin_reads_nothing_and_finishes(self):
+    def test_a_command_reading_stdin_reads_nothing_and_finishes(self) -> None:
         """Regression: the command inherited recon's stdin, so ``rg`` with no path (which
         reads stdin when it is not a tty) hung until its timeout. The survey runs in a child
         whose stdin is a pipe this test holds open."""

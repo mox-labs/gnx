@@ -7,31 +7,52 @@ fails, including a module nobody thought to forbid, a call to the builtin ``open
 operation on a path, and a read of the clock.
 
 Outside the inner layers: only ``recon.composition`` wires outbound adapters; outbound
-adapters know neither the use cases nor the command line; the command line reaches recon
-only through its declared API; importing ``recon`` loads no adapter library; the clock is
-read only by the clock adapter; and recon names no matrix.
+adapters know neither the use cases nor the command line; every driving adapter, each file
+under ``adapters/_in``, reaches recon only through its declared API; importing ``recon``
+loads no adapter library; the clock is read only by the clock adapter; and recon names no
+matrix.
 
 Every import counts, including one under ``TYPE_CHECKING``: a type-only dependency on an
 adapter is still a dependency on its shape.
+
+``layers.json`` holds every module to a layer, read by the workspace's shared checker as
+slick crafting-aces' ``layer-check.py`` reads it: a module no layer claims fails the suite,
+an adapter reaches only its own family, each technology is named by one file (YAML by the
+file store alone), and each rule has a planted violation that must be found.
+
+What these cannot see, so review still reads for it (the design record keeps the list): a
+module reached by ``importlib`` or through an alias, a use that is not an import, a
+re-export under another name (``composition`` re-exports ``Recon``), a file effect through
+a call this scan does not list, logic in a file whose imports are all allowed, and what a
+collector plugin does at run time.
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+try:
+    from _testing.layers import Plant, check, copy_tree, load, plant, plants, reaches_outside
+except ImportError:  # a package run apart from its workspace has no shared checker
+    pytest.skip(
+        "not run from the workspace: no _testing beside the packages", allow_module_level=True
+    )
+
 import recon
 
-SRC = Path(recon.__file__).resolve().parent
+SRC = Path(__file__).resolve().parents[1] / "src" / "recon"
 
 #: Standard-library modules an inner layer may import: pure computation only. ``pathlib``
 #: names a location (a mission directory, an archive); touching the filesystem through it
 #: is caught separately. ``datetime`` is the type the clock port returns; reading the time
-#: through it is caught separately.
+#: through it is caught separately. ``inspect`` reads a transform's signature, and
+#: ``functools`` binds its keywords.
 PURE_STDLIB = frozenset(
     {
         "__future__",
@@ -39,7 +60,9 @@ PURE_STDLIB = frozenset(
         "contextlib",
         "dataclasses",
         "datetime",
+        "functools",
         "html",
+        "inspect",
         "pathlib",
         "re",
         "typing",
@@ -48,8 +71,13 @@ PURE_STDLIB = frozenset(
 )
 
 #: What a layer may import beyond that. The application hashes the config it ran and encodes
-#: a hook payload as JSON; the domain does neither.
-LAYER_STDLIB = {"domain": frozenset(), "application": frozenset({"hashlib", "json"})}
+#: a hook payload as JSON; the domain does neither. The domain reads ``threading.TIMEOUT_MAX``,
+#: the longest wait the platform's timers take, to hold a source's ``timeout`` and rate to it
+#: (``domain/clock.py``); it starts no thread. Accepted (owner ruling 2026-10-22).
+LAYER_STDLIB = {
+    "domain": frozenset({"threading"}),
+    "application": frozenset({"hashlib", "json"}),
+}
 
 #: Third-party packages an inner layer may import.
 THIRD_PARTY = frozenset({"pydantic"})
@@ -141,7 +169,7 @@ def test_the_scan_catches_what_it_claims(tmp_path: Path) -> None:
     file.write_text(
         "from typing import TYPE_CHECKING\n"
         "import re\n"
-        "import yaml, duckdb, httpx, glom\n"
+        "import yaml, duckdb, httpx2, glom\n"
         "import os, time, uuid, subprocess, json, hashlib\n"
         "from datetime import datetime\n"
         "from recon.adapters._out.archive_files import ArchiveFiles\n"
@@ -156,7 +184,7 @@ def test_the_scan_catches_what_it_claims(tmp_path: Path) -> None:
         "    return path.read_text(), path.exists()\n"
     )
     assert _violations(file, "domain") == {
-        "yaml", "duckdb", "httpx", "glom", "os", "time", "uuid", "subprocess", "json",
+        "yaml", "duckdb", "httpx2", "glom", "os", "time", "uuid", "subprocess", "json",
         "hashlib", "recon.adapters._out.archive_files", "recon.composition",
         "recon.application.plan", "matrix", "open()", "datetime.now()", ".read_text()",
         ".exists()",
@@ -196,11 +224,18 @@ def test_the_facade_imports_no_adapter_and_no_use_case() -> None:
         assert not any(_within(m, ("recon.adapters", "recon.application")) for m in reached), name
 
 
+def _driving_reaches(src: Path) -> list[str]:
+    """Each place a driving adapter, any file under ``adapters/_in``, reaches recon other than
+    through ``recon.__all__``."""
+    driving = sorted((src / "adapters" / "_in").rglob("*.py"))
+    return reaches_outside(driving, "recon", recon.__all__)
+
+
 def test_the_command_line_calls_only_the_declared_api() -> None:
-    """``recon.adapters._in.cli`` imports ``recon`` itself and no module inside it, and every
-    ``recon.<name>`` it touches is in ``recon.__all__``."""
+    """Every driving adapter, the command line first, imports ``recon`` itself and no module
+    inside it, and every ``recon.<name>`` it touches is in ``recon.__all__``."""
     cli = SRC / "adapters" / "_in" / "cli.py"
-    assert {m for m in _imports(cli) if m.split(".")[0] == "recon"} == {"recon"}
+    assert _driving_reaches(SRC) == []
     tree = ast.parse(cli.read_text(encoding="utf-8"))
     used = {
         node.attr
@@ -210,7 +245,27 @@ def test_the_command_line_calls_only_the_declared_api() -> None:
         and node.value.id == "recon"
     }
     assert used, "the commands call nothing on recon"
-    assert used <= set(recon.__all__), used - set(recon.__all__)
+
+
+@pytest.mark.parametrize(
+    ("rel", "line"),
+    [
+        # recon-tests / first pass: the rule bound adapters/_in/cli.py by path, so a second
+        # driving adapter could reach the use cases or the root and pass.
+        ("adapters/_in/server.py", "from recon.composition import root"),
+        ("adapters/_in/server.py", "from recon.application.use_cases import survey"),
+        ("adapters/_in/server.py", "import recon\nrecon.composition"),
+        ("adapters/_in/cli.py", "from . import server"),
+        ("adapters/_in/cli.py", "from recon import _private"),
+    ],
+)
+def test_a_driving_adapter_reaching_past_recon_all_is_found(
+    tmp_path: Path, rel: str, line: str
+) -> None:
+    tree = copy_tree(SRC.parents[1], tmp_path)
+    (tree / "src" / "recon" / rel).touch()
+    plant(tree, Plant("driving", f"src/recon/{rel}", line, ""))
+    assert _driving_reaches(tree / "src" / "recon") != []
 
 
 def test_the_clock_is_read_only_through_its_port() -> None:
@@ -272,11 +327,12 @@ class TestLibrarySurface:
 
 
 def test_importing_recon_loads_no_adapter_and_wires_nothing() -> None:
-    """``import recon`` builds no root; building one imports neither httpx nor DuckDB nor
-    markitdown, so planning and status never load them."""
+    """``import recon`` builds no root; building one imports neither httpx2 nor DuckDB nor
+    markitdown nor the MCP client, so planning and status never load them."""
     code = (
         "import sys, recon\n"
-        "heavy = {'httpx', 'duckdb', 'markitdown', 'yaml'}\n"
+        "heavy = {'httpx2', 'duckdb', 'markitdown', 'yaml', 'fastmcp', 'mcp', 'mcp_types',\n"
+        "         'jsonschema', 'referencing'}\n"
         "print(sorted(m for m in sys.modules if m.split('.')[0] in heavy "
         "or m == 'recon.composition'))\n"
         "from recon.composition import root\n"
@@ -286,3 +342,129 @@ def test_importing_recon_loads_no_adapter_and_wires_nothing() -> None:
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == ["[]", "[]"]
+
+
+#: The MCP client and what only it imports.
+MCP_CLIENT = frozenset({"fastmcp", "mcp", "mcp_types", "jsonschema", "referencing"})
+
+_PROBE = (
+    "import atexit, sys\n"
+    "atexit.register(lambda: print(sorted({m.split('.')[0] for m in sys.modules} & HEAVY),\n"
+    "                              file=open('loaded.txt', 'w')))\n"
+    "sys.argv = ['recon', *sys.argv[1:]]\n"
+    "from recon.adapters._in.cli import main\n"
+    "main()\n"
+)
+
+
+@pytest.mark.parametrize(
+    "argv", [["--help"], ["init", "m", "-t", "mcp-captures"], ["capture", "m"]], ids=" ".join
+)
+def test_the_command_line_and_the_hook_route_never_load_the_mcp_client(
+    argv: list[str], tmp_path: Path
+) -> None:
+    """The MCP client is a dependency of every install (no extras), so it must cost nothing
+    where it is not used: ``recon --help`` and ``recon capture``, which a hook runs on every
+    tool call, load none of it."""
+    if argv[0] == "capture":
+        init = [
+            sys.executable,
+            "-c",
+            _PROBE.replace("HEAVY", "set()"),
+            "init",
+            "m",
+            "-t",
+            "mcp-captures",
+        ]
+        subprocess.run(init, cwd=tmp_path, check=True, capture_output=True)
+    payload = {"tool_name": "mcp__x__y", "tool_input": {}, "hook_event_name": "PostToolUse",
+               "tool_response": [{"type": "text", "text": "{}"}]}  # fmt: skip
+    result = subprocess.run(
+        [sys.executable, "-c", _PROBE.replace("HEAVY", repr(set(MCP_CLIENT))), *argv],
+        cwd=tmp_path,
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "loaded.txt").read_text().strip() == "[]"
+
+
+# --- the map: every module in a layer, and each rule biting ---------------------------------
+
+PACKAGE = SRC.parents[1]
+MAP = load(PACKAGE)
+
+
+@pytest.fixture
+def tree(tmp_path: Path) -> Path:
+    return copy_tree(PACKAGE, tmp_path)
+
+
+def test_every_module_is_in_a_layer_and_every_dependency_points_inward() -> None:
+    """``layers.json``: no module goes unjudged, adapters reach only their own family, each
+    technology is named by one file, and YAML stays in the file store."""
+    report = check(MAP, PACKAGE)
+    assert report.errors == []
+    assert report.findings == []
+    assert report.exit_code == 0
+    assert report.files_in_scan == len(list(SRC.rglob("*.py")))
+    assert all(count > 0 for count in report.layers.values()), report.layers
+
+
+@pytest.mark.parametrize("violation", [pytest.param(p, id=p.rule) for p in plants(MAP, PACKAGE)])
+def test_each_rule_of_the_map_bites(tree: Path, violation: Plant) -> None:
+    plant(tree, violation)
+    assert any(violation.finding in f for f in check(MAP, tree).findings), violation.finding
+
+
+@pytest.mark.parametrize(
+    ("rel", "line", "finding"),
+    [
+        # The first pass's finding F3, since fixed: the query read the store's file layout.
+        ("adapters/_out/duckdb_query.py", "from .archive_files import ArchiveFiles",
+         "layer query may not reach recon.adapters._out.archive_files"),
+        ("adapters/_out/web_collector.py", "from .http_requester import HttpRequester",
+         "layer collectors may not reach recon.adapters._out.http_requester"),
+        ("adapters/_out/capture_collector.py", "import yaml",
+         "layer collectors names forbidden yaml"),
+    ],
+)  # fmt: skip
+def test_a_reach_across_adapter_families_is_found(
+    tree: Path, rel: str, line: str, finding: str
+) -> None:
+    plant(tree, Plant("family", f"src/recon/{rel}", line, finding))
+    assert any(finding in f for f in check(MAP, tree).findings), finding
+
+
+def test_a_file_no_layer_claims_leaves_the_tree_unjudged(tree: Path) -> None:
+    (tree / "src" / "recon" / "adapters" / "_out" / "sql_collector.py").write_text("x = 1\n")
+    report = check(MAP, tree)
+    assert report.errors == [
+        "src/recon/adapters/_out/sql_collector.py is scanned but no layer claims it"
+    ]
+    assert report.exit_code == 2
+
+
+def test_a_layer_whose_file_moved_leaves_the_tree_unjudged(tree: Path) -> None:
+    out = tree / "src" / "recon" / "adapters" / "_out"
+    (out / "duckdb_query.py").rename(out / "query.py")
+    report = check(MAP, tree)
+    assert "layer query: glob 'src/recon/adapters/_out/duckdb_query.py' matches no file" in (
+        report.errors
+    )
+    assert report.exit_code == 2
+
+
+def test_the_public_names_are_the_ones_callers_use() -> None:
+    """``import recon``'s names are a contract: removing one breaks a caller. Adding one is
+    compatible, and is added here with the change that adds it."""
+    assert set(recon.__all__) == {
+        "Capture", "CollectionError", "ConfigError", "ConflictError", "ERROR_KINDS",
+        "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "ErrorDocument", "MissionDocument",
+        "NotFoundError", "PROBLEM_KINDS", "PlanDocument", "Problem", "QueryError", "QueryRows",
+        "ReconError", "StatusDocument", "SurveyDocument", "TableOutcome", "TemplatesDocument",
+        "UsageError", "__version__", "capture", "configure_telemetry", "error_document", "init",
+        "plan", "query", "skill", "skill_references", "status", "survey", "survey_failure",
+        "templates",
+    }  # fmt: skip

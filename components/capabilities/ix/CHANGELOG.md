@@ -1,5 +1,449 @@
 # Changelog — ix
 
+## 0.6.0 — 2026-10-22
+
+`docs/design/2026-10-19-record.md` has the reasons for this release's changes, from §16 on.
+
+### Removed (breaking)
+
+- **Extras.** `claude`, `models`, `otel` and `dev` are gone. matrix, which ix depends on,
+  brings every agent and model runtime and the OpenTelemetry SDK and OTLP exporters, so a
+  plain install runs agent sessions on `claude-sdk` and exports spans. A requirement that
+  names an extra (`ix[claude] @ ...`) now fails to resolve: drop the brackets. A warning
+  matrix carries over for an install that lacks one is `dependency_missing` (was
+  `extra_missing`; the rename is kept, owner ruling 2026-10-22).
+- **Spend.** ix no longer limits or estimates what a run costs. The ceiling was checked only
+  between trials, rested on whatever cost an adapter chose to report (the `model` runtime
+  reports none), and counted calls matrix already accounts for; it is gone, and not
+  replaced. Record §11 has the reasons.
+  - An experiment's `spend:` (`ceiling`, `per_trial`, `currency`) is an unknown key, and
+    `spend_cap` in ix's settings is refused. Delete both.
+  - The problems `spend_unbounded` and `spend_over_ceiling` are gone, and `spend` is no
+    longer a key a genre's `must_set` may name.
+  - The plan has no `spend` (`SpendEstimate`), the report no `spend` (`Spent`), and
+    `ix runs` no spent total (`RunSummary.spent`).
+  - The run manifest has no `spends`, `spend_ceiling` or `spend_ceiling_source`; the
+    interaction and the reading have no `cost_usd`; `TrialError` carries no cost; the spans
+    have no `ix.trial.cost_usd` or `ix.sensor.cost_usd`, and the `ix.trial.end` event no
+    `cost_usd`.
+  - `Sensed.cost_usd` is gone from the `Sensor` port, and the port's spend contract with
+    it.
+  - `ix.domain` no longer exports `Spend`, `SpendEstimate`, `Spent` or `Halt`.
+  - What a runtime reports a session cost stays a fact about the session: `cost_usd` in its
+    `usage`, read by the `usage` sensor's `cost` metric. A judge's reported cost is in its
+    readings' `detail`, beside its runtime and model. Nothing adds either up. The Claude
+    Agent SDK's own `max_budget_usd`, given in `runtime_options`, still ends a `claude-sdk`
+    session (`stop: max_budget_usd`, read as `hit_limit`).
+- **The halt.** Spend was its only cause, so a run no longer stops short of its schedule on
+  its own: the `ix.v1.halt` table and its row, `RunRecord.halt`, `Report.halt`, the
+  `ix.run.halted` event and the trials component's `provides` entry are gone. A run is
+  `interrupted` (exit 12) only when it is stopped.
+- **Effects.** They were labels nothing checked; requirements take their place (below).
+  `effects` in kind files (a kind file that still declares them is refused), `effects:`
+  beside an experiment's subject, probe, sensor or environment (now an option the kind does
+  not take), `Plan.effects` and `Effect`, `EffectName` and `EFFECTS`, and the `effects`
+  column of `ix kinds` are gone. The plan digest no longer covers effects, so every
+  experiment registered before this release shows a `plan_digest` deviation and its next run
+  is ungated: amend the registration (`ix register <path> --amend --reason "effects
+  removed"`) to gate it again.
+- **`examples/catalog-routing`**, a smaller copy of the repository's `lab/catalog-routing`;
+  the lab's is the one to read.
+
+### Changed (breaking)
+
+- **Agent runtimes and model runtimes are two ports.** matrix now has two runtime ports,
+  `agent-runtime` and `model-runtime`, and ix moves onto them. Nothing in ix branches on a
+  runtime's name. Record §17 has the reasons.
+  - `agent-session` takes agent runtimes only (`claude-sdk`, `pydantic-ai`, `mock`, or any
+    installed at matrix's `agent-runtime` point). `runtime: model` is gone from it; measure
+    a model with `model-call` (Added, below).
+  - Runtime options pass through. `permission_mode` and `setting_sources` are no longer
+    options of `agent-session`: write them under `runtime_options`, which is handed to the
+    runtime as written, and `validate` refuses a key the runtime's config does not declare
+    (`option_unknown`). A runtime warning is reported at
+    `subjects.<name>.runtime_options.<key>`. `plugins` stays ix's own option, its paths
+    resolved and handed to the runtime as its `plugins`; on a runtime whose config takes
+    none it is `option_inapplicable`.
+  - The judge names `model_runtime` (one model call per reading) or `agent_runtime` (a
+    one-turn session with no tools per reading), not `runtime`, and `validate` refuses one
+    that names neither or both. The reading's `detail.judge` holds `port` and the runtime's
+    type URL.
+  - Stand-ins come from the registration (`Entry.stand_in`), not from effects or a name. A
+    dry run puts each subject and judge on the `mock` of its own port and sets aside
+    `runtime_options` and `plugins`. Skills are kept, as copied files. Any stand-in is
+    handed each probe's `mock_response` as its config's `default`.
+  - The `respondent` facet replaces `agent`. Both subject kinds offer it, and `prompt` and
+    `inspect-task` need it.
+  - `usage.runtime` is the runtime's type URL (`matrix.v1.agent-runtime.claude-sdk`). The
+    `usage` sensor leaves out a metric whose fact the runtime did not report.
+  - The `runtimes` need an adapter declares is built by point and name:
+    `build(point, name, config, *, cwd=None)`, `stand_in(point, name)`, `takes(point,
+    name)`, `capabilities(point, name, config)`, `drives(point, name)`.
+- **What a session does is asked of its runtime, not read from option names.** The session
+  reviews read `setting_sources` and `permission_mode` by name, and ix knew Claude Code's
+  `Skill` tool and `.claude/skills`, for every runtime. ix now asks the runtime (matrix's
+  `AgentCapabilities`): whether a session loads skills from settings or its working
+  directory, whether its tools can write, which tool fires a skill, where a session finds
+  its skills, and what config keeps the machine out. claude-sdk answers as before.
+  - ix no longer adds `project` to `setting_sources` for a session given `skills`: skills a
+    session cannot load are `unobservable`, and the problem names the option the runtime
+    says decides it (on claude-sdk, `setting_sources` without `project`).
+  - A session's skills go where its runtime says (`skills_dir`); `activation` reads calls of
+    the tool the runtime says fires a skill (`skill_tool`, kept in the trial's `response`;
+    the sensor's `tool` option still overrides it), and validate holds `tools` to that
+    tool. Skills given to a session on a runtime that names no place for them, or that
+    loads none (`pydantic-ai`), are `unobservable`. A runtime that declares nothing has no
+    skills placed and none read as fired.
+  - `activation` on a runtime that names no skill tool is refused at validate
+    (`unobservable`), unless the sensor's `tool` names it, rather than reading every
+    `must_trigger` probe as not fired and every decoy as right. A stand-in is not held to
+    it.
+  - A judge on an agent runtime runs in a fresh temporary directory, removed after, given
+    the config its runtime declares keeps the machine out (claude-sdk: `setting_sources:
+    []`) under its own `runtime_options`. On claude-sdk it ran in ix's own directory with
+    the CLI's default sources, so a CLAUDE.md, a hook or a user's settings there could
+    shape its scores.
+- **Requirements in place of effects.** Every adapter may say what it needs of this host,
+  checked now. `Preflight` was the subjects' alone (`unstartable`); it is now
+  `requirements(options, *, base)`, optional for any adapter, each `Requirement` with
+  `need`, `holds`, `why` and `fix`. `process`, `http`, `agent-session` and `model-call`
+  check what they checked before; `http-load` checks `k6` on PATH, `environment.process`
+  each service's program, `compose` docker, its daemon, compose and its files, and `judge`
+  and `evaluator` their runtime. `Plan.requirements` (each with the entries that need it)
+  replaces `Plan.unstartable`; `ix plan` prints them under `Requires:`, and those that do
+  not hold under `Runnable: no` with the fix. `ix run` refuses to start while one does not
+  hold. Record §21 has the reasons.
+- **An adapter is held to its port, and one that cannot be built cannot run.**
+  - `Subject`, `Probe`, `Sensor` and `Environment` are runtime-checkable, and each is the
+    port of its family's point. A class registered there that lacks a member (a subject
+    with no `reach`) is refused when it is registered, so its extension is quarantined,
+    rather than validated and run with every trial a harness failure. What a factory builds
+    is held to the port when it is built.
+  - `ix kinds` lists the kinds whose adapter builds here as `runnable`, and the rest under
+    `unbuildable` with why: a need nothing supplies, or any exception its constructor
+    raised. `ix validate` warns of it (`kind_unimplemented`, with the reason), `ix plan`
+    says `Runnable: no` with it, and `ix run` refuses it naming it. Every other kind, and
+    every experiment that does not use it, is unaffected.
+- **A `Traced` scope reports outcomes through `evaluated` and `failed`**, in place of
+  `event`: a third-party scope implements the two methods. Only ix's OpenTelemetry tracer
+  names the GenAI conventions; the spans it exports are unchanged, and bringing the
+  environment up is now the span `ix.environment`, under `ix.run`.
+- **A count's estimator is `rate`.** A `count` metric took the genre's estimator, so the
+  plan, the registration and each decision said `mean` while the analysis pooled it as a
+  rate. Like a boolean, it now resolves to `rate` (`source: ix`), from the one default the
+  design, validation and the analysis share. A registration made before this release with a
+  count it names no estimator for differs from its plan: amend it.
+- **A prompt reaches the agent as it was written.** Every `{{` and `}}` in a subject's or a
+  probe's options was un-doubled, so nested JSON and Handlebars or Mustache templates
+  (`{{user}}`) were sent altered, while the registration digested the text as written.
+  - In prompt text, only `{{name}}` where `name` is filled there is an escape (the text
+    `{name}`). Every other brace is sent as written: `{{user}}`, where nothing fills
+    `user`, now reaches the agent doubled, where it was `{user}`.
+  - A `{name}` nothing fills in prompt text is sent as written too, and warned of, so a
+    prompt can hold code (`print(f"{user}")`, a template literal), where it was refused as
+    `unbound_placeholder`.
+  - A name a probe takes from some subjects and not others is refused, written `{name}` or
+    `{{name}}`: the subjects would be put different prompts.
+  - In a subject's or a probe's other options `{{name}}` is the text `{name}`, as before:
+    `setup: [sh, -c, 'echo ${{HOME}}']` runs `echo ${HOME}`. An environment's options and
+    a sensor's are neither filled nor un-doubled, as before: both forms are sent as
+    written.
+  - A loop's prompt, filled twice, un-doubles each escape once, by the filling that knows
+    its name.
+
+### Added
+
+- **Validate warns of a placeholder nothing will fill.** Nothing fills an environment's
+  options or a sensor's, nor un-doubles an escape in them, so `${{HOME}}` in an
+  `environment.process` command passed validate and then broke the shell (the run failed
+  `environment_lost`), and a `text-match`'s `contains: '{size}'` was compared as that text
+  whatever the cell's level. Each `{name}` there that a trial fills elsewhere (a factor, a
+  subject's option or facet, a service's binding) and each `{{name}}` is now an
+  `unbound_placeholder` warning. A `{name}` nothing fills (a shell's `${HOME}`) is not.
+- **A typo inside an escape is warned of.** In prompt text a doubled name nothing fills is
+  sent as written, so `{{sise}}` for the factor `size` reached the agent with no word. One
+  near a name that is filled there is now a warning naming it; a template's name near none
+  (`{{user}}`) is still sent as written without one.
+- **pydantic-evals' evaluators as a sensor.** The `evaluator` sensor runs one of
+  pydantic-evals' evaluators over each trial, named by `evaluator` with its `arguments`. ix
+  keeps the loop: each trial is handed to the evaluator as pydantic-evals'
+  `EvaluatorContext` (the prompt, the reply, the probe's truth `expected_output` and
+  `metadata`, the probe's duration and its spans); `Dataset.evaluate` is not used. Record
+  §24 has the reasons.
+  - Its assertions are `eval_passed` and its score `eval_score` (`result` names one of
+    several); an evaluator that calls a model (`LLMJudge`, `GEval`) gives
+    `judged_eval_passed` and `judged_eval_score`, which never decide. Labels and every
+    result with its reason are in the reading's detail.
+  - The span evaluators (`ToolCorrectness`, `TrajectoryMatch`, `ArgumentCorrectness`,
+    `MaxToolCalls`, `MaxModelRequests`, `HasMatchingSpan`) read the spans that ended in the
+    trial, captured in process and kept in the interaction (`watched`). A run whose sensors
+    read spans puts matrix's `otel` observer on itself and uses the tracer provider
+    installed, exporters and all, or installs one with no exporter when there is none, so
+    the evaluator reads the trial's spans and nothing leaves the process. A sensor says it
+    reads spans by being a `SpanReader` (a new optional port). Without spans of the trial
+    the reading fails and says why, rather than reading as no tool called.
+  - A judge evaluator's model is the pydantic-ai model the matrix model runtime
+    `model_runtime` names gives (matrix's `pydantic_ai_model`): on `hardline`, the registry
+    row `model` names, each request a hardline call, from `matrix.models` or the sensor's
+    `runtime_options` and from nowhere else; never its arguments or pydantic-evals' default
+    model. A stand-in runtime judges on pydantic-ai's `TestModel`. A model runtime that
+    gives no pydantic-ai model is `Runnable: no`, saying so. Each of the judge's calls is a
+    row of the run's session table, and the reading names it (`sessions`).
+  - `pydantic-evals` and `opentelemetry-sdk` are dependencies, pydantic-evals imported only
+    inside the sensor's adapter.
+- **An agent session on matrix's `pydantic-ai` runtime.** `runtime: pydantic-ai` is named as
+  `claude-sdk` is: its `runtime_options` are that runtime's config (`models`,
+  `default_model`, `tools`, ...), reviewed against what it declares, and each trial's
+  session row names the model that answered and what the runtime drives (`pydantic-ai-slim`,
+  `hardline`). The kinds list it among the runtime choices. Naming `tools` there is a grant
+  to run that code in ix's process (owner ruling 2026-10-22; SECURITY.md section 7).
+- **Subject kind `model-call`.** It takes model runtimes (`hardline`, `mock`, or any
+  installed at `model-runtime`). Each trial is one model call, through `matrix.call_model`
+  (a `matrix.model` span, as a model step's is), with `model`, `system_prompt` and
+  `runtime_options`. The runtime resolves the `model` before anything starts. The
+  interaction's `usage` keeps the call's facts: the model that answered, request id,
+  attempts, retries, `fallback_from`, `finish_reason`, `refusal`, latency, and tokens with
+  the cache's. `activation`, `tool-usage`, a `function-test` `file` and a probe's `collect`
+  are refused on it (`unobservable`).
+- **`environment.compose`.** A docker compose project brought up once for a run and down
+  after it, for experiments whose subjects need several services. Record §22 has the
+  reasons.
+  - `docker compose up -d --wait` brings it up, healthchecks included; `down -v
+    --remove-orphans` is deferred before `up`, so a stack that came up in part, or whose up
+    was cancelled, still comes down. The environment's releases are given longer than
+    matrix's default for it.
+  - Each running service is bound with its first published port (`{web.url}`, `.host`,
+    `.port`) and the image id it runs, in the run's bindings row. The compose file and
+    `env_file` are digested into the registration and the manifest.
+  - Without `project`, the project is named for the run and marked as ix's by a compose file
+    of ix's own that adds nothing; a stack a killed run left, so marked, is swept, and one
+    that only looks like ix's is not. A `project` written that already has containers is
+    refused.
+  - Options: `file` (a `path`), `project`, `services`, `wait_timeout`, `profiles`,
+    `env_file`, `build`, `pull`. Liveness is `compose ps`, every replica of a scaled
+    service read.
+  - A dry run brings the environment up for real, `compose` and `process` alike, and says
+    so (`stood_in`).
+  - `Scope` has `run_id`.
+- **Environment bindings reach the trials.** `{<service>.url}`, `.host` and `.port` in a
+  subject's or a probe's options are filled from what the environment bound for that
+  service, and `validate` accepts them for each service the environment's options name. An
+  environment kind declares the keys it binds each service with (`service_keys:`; owner
+  ruling 2026-10-22: not `binds`, which a kind option keeps for the placeholders its
+  adapter fills, and with no alias). `environment.process` binds where a service listens:
+  its new `url` option, or the address of its `ready` URL. A run whose
+  environment came up without a service the experiment names fails before any trial
+  (`unbound`), naming what it did bind.
+- **A verdict traces to the model that answered.** Record §19 has the reasons.
+  - `Interaction.sessions` holds the rows of the run's `matrix.v1.session` table behind the
+    trial: every agent session (each round of a loop) and model call the subject made,
+    failed ones included. `Reading.sessions` holds the rows its sensor made to read the
+    trial: a judge's calls or sessions. A reading joins its interaction on `seq`, and each
+    row says which runtime and which model answered, its usage and ids, and whether it
+    failed and why. The README shows the join in DuckDB, and `ix --skill -r running` with
+    `jq`.
+  - ix's own model calls (a `model-call` trial, a judge on a model runtime) are rows of that
+    table, failed or not, and `matrix.model` spans, as a model step's are. Agent sessions,
+    the judge's included, are recorded under their runtime's type URL.
+  - A run's executor is matrix's composed one, so with OpenTelemetry active each session row
+    holds the trace and span ids of the trial or sensor it ran under.
+- **A verdict is tied to what it judged.** The experiment's digest covers its document,
+  which names the subject's files by path; now what is at those paths is digested too, and a
+  run records where it ran from. Record §18 has the reasons.
+  - The registration and each run's manifest hold the digest of every file and folder the
+    subjects, sensors and environment name: `skills`, `plugins` (each folder a `*` matches),
+    `fixtures`, `definition`, `graders`, `rubric_file`, a compose file, any option a kind
+    declares `path` or `paths`, and each item of a `command` that names a file (`process`'s
+    `command`, relative to `cwd`; `agent-session`'s `setup`, relative to the experiment).
+    Each is kept as the path as written and the digest, never what the file holds. A
+    folder's digest is its files' relative paths and bytes, never their times.
+  - A skill, plugin, fixture, definition or program edited, deleted or added after
+    registration is a deviation named by what changed (`skill review changed after
+    registration`). A run of it is not gated and exits 14, as one with an edited probe file
+    does. A registration written before this release holds no contents and is not compared
+    on them; delete it and register again to freeze them.
+  - The manifest's `provenance` holds the git commit the experiment sits at and `dirty`, or
+    why there is none; the installed versions of ix, matrix and hardline; every agent and
+    model runtime installed, by type URL, with the distribution that registered it, its
+    version, and each distribution it drives with its version (`drives`); and each setting
+    the run read (`ix.runs`, `matrix.observers`, `matrix.models`) with where it came from,
+    never its value. `ix report` prints `Contents`, `Ran from` and `Versions`; `ix runs`
+    prints each run's commit; `Report.contents`, `Report.provenance`, `RunSummary.commit`
+    and `RunSummary.dirty` carry them in `--json`.
+  - Kind option types `paths` (a list of paths, each a string or a mapping with a `path`)
+    and `command` (a non-empty list of text, with `within` naming the option its relative
+    paths are relative to). `command: []` is refused at validate.
+- **Factors drive an agent's settings.** A value that is one placeholder takes the level
+  with its type (`rounds: "{rounds}"` is the integer); each cell's options are reviewed and
+  preflighted as its trials will have them; a placeholder in a subject's options or a probe
+  file is checked, `unbound_placeholder` unless a factor, a binding, an option every subject
+  sets, or a facet every subject's kind offers binds it; a kind option declares the
+  placeholders its adapter fills itself (`binds`: a loop's `{prompt}` and `{response}`), and
+  that it is prompt text (`text: true`: a probe's `prompt`, a `system_prompt`, a `loop`, a
+  judge's `rubric`), where a name nothing fills is sent as written and is a warning that
+  names the placeholder a typo is likely to be (`{sise}` for the factor `size`); a loop's
+  `rounds` may be 1. Nothing fills a sensor's options, so every `{name}` in a rubric is
+  such a warning. `validate`, `plan`, `register` and `run` each print these warnings: the
+  run keeps them in its manifest (`RunManifest.warnings`, `Report.warnings`), and
+  `Registered.warnings` (`ix register --json`) carries them.
+- **The run store is the composition root's choice**, built at matrix's `store` point
+  (`Root(run_store=...)`, `jsonl` by default, whose config takes the `root` directory) and
+  handed in, for running, reporting and listing alike.
+- **`ix.composition.using(root)`** runs the library functions and the `ix` command on a root
+  for a block, and `Root(tracer=...)` takes where ix's spans go: a program that wires its own
+  adapters no longer has to reach a private name to drive the command.
+- **`ix.domain` exports `TrialError`**, the base of `SubjectError` and `HarnessError`.
+- **What a caller may rely on is listed.** README names the run layout and table names and
+  the exit kinds as contract, each pinned by a test, and the human text and every telemetry
+  name as not: span and event names, their attributes and fields, the conventions' names
+  (owner ruling 2026-10-22).
+
+### Fixed
+
+- **No proxy variable reroutes a readiness probe.** A started program's `ready` URL was asked
+  through an httpx client that read `HTTP_PROXY` and its kin, so with a proxy set and no
+  `NO_PROXY` a probe of a program on 127.0.0.1 went to the proxy, and a program that was up was
+  never seen to be. A subject's and a service's readiness checks now go through httpx2, with
+  `trust_env` off, and ix depends on `httpx2` in place of `httpx`, so an install carries one
+  HTTP stack.
+- **A literal brace leaves the preflight on**, and a subject with a mapping option
+  (`runtime_options`, a `loop`) is preflighted. The plan treated any `{` in an option as a
+  placeholder a trial fills, and checked nothing: it said runnable and the run started
+  without the fixture the session names. Prompt text is text to the preflight, so a
+  `{name}` in it that nothing fills, or a loop's `{response}`, leaves it on too.
+- **One extension whose adapter raises while it is built no longer breaks every command.**
+  Only a `MatrixError` was read as "cannot be built", so a third party's constructor that
+  raised anything else made `validate`, `plan`, `register`, `run` and `kinds` raise for
+  every experiment. Listing the kinds builds each adapter once, where it built each twice.
+- **An adapter that raises while it checks an entry is named, not a crash.** An adapter
+  whose `review()` raised made `validate`, `plan` and `run` of an experiment that used it
+  raise the error as it stood. It is now a problem at the entry (`adapter_failed`), naming
+  the adapter and its error. One whose `requirements()` raises is a requirement that does
+  not hold, so the plan says `Runnable: no` and the run refuses to start.
+- **A report never calls a model and never starts a process.** `ix report` of a run that
+  ended before its sensors read its interactions derived the readings then: each report of a
+  run with a `judge` asked the judge again, and one with `function-test` or `outcome` ran
+  the agent's code and the graders again, from a read command. Readings are still derived at
+  report time with sensors handed nothing that acts outside ix's process; a run that used
+  another is reported with `readings: none` and `unread` naming the sensor and the fix (run
+  the experiment again). `ix run`'s own report of a failed run is the same.
+- **Each runtime ix builds is closed in the loop that made its calls.** A `model-call`
+  trial, a judge's reading and each agent round built a runtime and never closed it, so
+  each left hardline's connections open until garbage collection.
+- **The plan's duration reads each subject's own options.** A probe's duration was filled
+  with the first subject's options for every subject's turn.
+- **A count's threshold decision at many units per trial.** Over thousands of units the
+  score test's level is exactly 0, and the decision stopped there instead of also reading
+  the t test at Korn and Graubard's effective sample size. A count could then hold `< 0.2`
+  while its own printed 95% interval contained 0.2. The level is now the larger of the two
+  whenever the bound lies inside (0, 1), as the interval is.
+- **A rate's margin and threshold are range-checked.** On a boolean or a count a bare margin
+  is a share, so `margin: 5` allowed a loss of 500 points and held for a variant that lost
+  80; a threshold of `5`, or of 0 or 1, was passed by every rate or by none. `validate` now
+  refuses a rate margin of the whole range or more (`1`, `100pp`) and a rate threshold
+  outside (0, 1) as `invalid_value`. A rate threshold written in percent (`90%`) is still
+  `unit_mismatch`, and its fix now says the share (`0.9`).
+- **A/A with a control that reads the same every time.** A deterministic control read the
+  same number in both samples, the check found no spread, could not be made, and made the
+  run inconclusive with the reason "the environment did not hold still enough". Such a
+  control held still: the check passes. One whose second sample reads the same amount off in
+  every block differs from itself. A check that cannot be made now says that nothing shows
+  the environment held still, not that it moved.
+- **"No spread" in a relative comparison** was tested as exact proportionality between the
+  two sides, which constant readings such as 0.7 and 0.3 miss in binary; Fieller's interval
+  then had zero width and decided at a level of 0. It is now zero variance: every block
+  reading the same number on both sides decides nothing, as documented.
+- **A registered run a stand-in answered exits 16 (`simulated`), never 0.** An experiment
+  registered with `runtime: mock` written in ran held to its registration, gave no verdict
+  and exited 0, the code for `holds`. It now exits with ix's own kind `simulated` (16), and
+  the report, `ix runs` and `RunSummary` say it was not `gated`. `--exploratory` and
+  `--dry-run` still exit 0: no gate was asked for.
+- **An agent session that runs past its probe's `timeout` is the subject's failure**
+  (`overran`), not a harness timeout, which left exactly the hard probes out of the pass
+  rate. A runtime's own `timeout` reason (a provider that did not answer) stays the
+  harness's; ix's harness timeout is a backstop 30 s past the session's limit.
+- **A genre's hypothesis sentence is read as `str.format` reads it.** A positional `{}` or a
+  lone brace loaded, then raised a bare `ValueError` from every validate and plan of every
+  experiment that named the genre. Such a genre file is now refused when it loads
+  (`genre_invalid`); a literal brace is written doubled.
+- **Factor levels that read the same in a cell are one level.** `1` and `"1"` were accepted
+  and their blocks merged into one cell, keeping one trial of each block silently. Such
+  levels are refused (`invalid_value`).
+- **A rate of part arrivals is refused, not rounded.** `2.5/s` ran as 2/s. A `rate` is a whole
+  number of arrivals per second or per minute (`option_invalid`, whose fix says `2.5/s` is
+  `150/m`).
+- **A reading outside its shape's domain is refused where it is made.** `Reading` accepted a
+  boolean of 2, negative events, more events than units and a statistic that is not finite,
+  and the analysis of such a row failed with a bare `math domain error`. Such a reading is
+  now a `ValueError` when it is built, and a stored run holding one is a damaged record:
+  `ix report` exits 3 (`config`) and names the file.
+- **A sensor that gives the wrong shape fails its readings, not the run's sensing**: one
+  that returned something other than a mapping of metrics to values, or a count with a
+  number too large for a float, is a `sensor` failure (`shape`) of its readings.
+- **An empty run says why it is inconclusive**: "no trial was carried out, so nothing was
+  measured", where the reason was empty.
+- **The median's interval is computed in linear time.** One interval over 3,000 values took
+  50 s; the interval and its level are unchanged.
+- **`validate` refuses a run too thin for any interval**: fewer than 3 blocks (repeats x
+  probes) in a cell is `repeats_below_min` in a genre that decides, as a median's 6 already
+  were. Repeats under the genre's own minimum are one problem with one fix, not two.
+- **`activation` compares skill names whole.** `code-review-lite` firing read as `review`
+  firing. Now `expected_skill: review` is fired by `review` or `plugin:review` only, and
+  `expected_skill: plugin:review` by `plugin:review` only. `fired` is the skill that did
+  fire, written as the expected name is.
+- **`tool-usage` compares `expected_command` whole**, ignoring case: `dig` no longer matches
+  `digest`.
+- **`http-load` counts the requests a subject never answers.** A request still waiting when
+  the measured window closed was counted nowhere, so a server that hung on one request in
+  four read `error_rate` 0. Every request sent in the window is now waited for, until it is
+  answered or times out, and one k6 cut off anyway still counts as sent and failed. The new
+  option `timeout` sets how long a request may go unanswered (k6's 60s when absent), and a
+  trial's time budget grows by it.
+  - `error_rate` also counts each arrival an open model dropped: `(failed + dropped) /
+    (sent + dropped)`.
+  - A subject that answered nothing inside the window fails the trial (`no_answer`), where
+    it was left out as missing data.
+  - Latency and time to first byte include answers that came after the window closed, to
+    requests sent inside it; throughput still counts only the answers inside the window.
+- **`function-test`'s code no longer grades itself.** The child now gets only the inputs and
+  reports what each call returned or raised, on a channel of its own with a per-run token;
+  ix compares with the truth. A returned value is compared as JSON carries it; one JSON
+  cannot carry fails its case with its `repr`.
+- **Code that exits does not pass a must-raise case.** `raises: Exception` and `raises: any`
+  passed on any `BaseException`, so code that called `sys.exit` on every input passed every
+  must-raise case. `any` is now `Exception`, and `SystemExit` passes only where it is named.
+- **`text-match` refuses an empty list.** `contains: []` or `excludes: []` checked for the
+  literal text `[]`; it is now `option_invalid` at validate.
+- **`environment.process` asks the process it started whether it is still up**, not
+  `os.kill(pid, 0)` of a stored pid the system may have given to another process.
+- **A sensor kind listed twice under `sensors:` is a problem** (`name_taken`), where the
+  second silently replaced the first one's options.
+- **Who keeps a kind or genre name does not depend on the order files are read.** An owner
+  read after two impostors was refused as a third duplicate.
+- **A lab's own kinds reach the run.** A kind declared in `<lab>/kinds/` validated against
+  its declaration and then ran without it. The run, the preflight and a report now use the
+  kinds the experiment was validated against.
+- **A registration is written whole or not at all**: beside the record, then moved over it,
+  with the mode a plain write gives.
+- **A reworded note leaves the plan alone.** An `x-` note is outside the plan and probe-set
+  digests, as the question and descriptions are; it stays in the experiment's own digest.
+- **A margin or threshold removed or added is named** as a deviation of its own, with both
+  values.
+- **An address whose port is not one is refused at validate** (`option_invalid`), where it
+  raised out of the readiness check and made every trial a harness `error`.
+- **A failure inside a session is told by its source.** Only building and binding the
+  runtime is `runtime`; any other error is the harness's `error`, named by its type.
+- **`ix run`'s progress bar stops however the run ends.**
+- **`ix runs` with no path lists what its help says**: every experiment's runs under the
+  current directory (each `.ix/runs` of an experiment at most 6 directories below it;
+  hidden folders and `node_modules` are not entered), or those under the settings' `runs`.
+- **Each run is read once**, latest first where only the latest is wanted.
+- **What ix says matches what it does.** The skill and `ix --help` no longer say ix shows
+  what a run would cost; the skill says `-` runs with `--dry-run` as well as
+  `--exploratory`; SECURITY.md says a report runs no code, a plan's preflight builds
+  runtimes and starts `docker info`, a dry run brings the environment up for real, and what
+  ix's and matrix's spans carry.
+
 ## 0.5.0 — 2026-10-19
 
 ix runs agent evaluations as well as service comparisons, and the statistics behind a

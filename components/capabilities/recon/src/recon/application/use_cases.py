@@ -14,8 +14,11 @@ from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from recon.application.captures import record_hook_payload
-from recon.application.plan import Plan, build_plan, plugin_warning
-from recon.application.survey import ARCHIVE_ID_FORMAT, EventCallback, Survey
+from recon.application.collectors import declared_env
+from recon.application.plan import Plan, build_plan, fan_out, plugin_warning
+from recon.application.survey import EventCallback, Survey
+from recon.domain.archives import ARCHIVE_ID_FORMAT
+from recon.domain.deadline import Deadline
 from recon.domain.documents import (
     ArchiveStatus,
     BrokenPluginInfo,
@@ -26,6 +29,7 @@ from recon.domain.documents import (
     PlanDocument,
     PlanWrites,
     QueryRows,
+    Required,
     StatusDocument,
     SurveyDocument,
     TableError,
@@ -41,20 +45,19 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
+    from recon.application.collectors import SurveyCollectors
     from recon.domain.archives import ArchiveQuery, ArchiveStore
     from recon.domain.clock import Clock
-    from recon.domain.collector import BrokenPlugin, Collector, Plugins
+    from recon.domain.collector import Plugins
     from recon.domain.documents import Capture
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import ReconConfig
     from recon.domain.telemetry import Telemetry
 
-#: Builds one collector per installed type for a mission, reporting through the survey's
-#: telemetry; also returns the types whose factory failed, which a survey reports and whose
-#: tables fail with a config error.
-CollectorFactory = Callable[
-    ["Path", "ReconConfig", "Telemetry"], tuple[dict[str, "Collector"], list["BrokenPlugin"]]
-]
+#: Builds a collector for each installed type a mission uses, reporting through the survey's
+#: telemetry, with the types whose factory failed (which a survey reports and whose tables
+#: fail with a config error), and what to close when the survey ends.
+CollectorFactory = Callable[["Path", "ReconConfig", "Telemetry", "Deadline"], "SurveyCollectors"]
 
 #: The telemetry for one operation: a survey passes the archive it writes, whose event log
 #: is one of the sinks; an operation that writes no archive passes None.
@@ -78,7 +81,11 @@ class Recon:
         telemetry: TelemetryFactory,
         env: Mapping[str, str],
         version: str,
+        root_found_by: str = "argument",
     ) -> None:
+        """``root_found_by`` is how the composition root found the project root:
+        ``argument`` (the caller named it), ``repository`` (the nearest ancestor holding
+        ``.git``) or ``working_directory``. Each survey records it."""
         self._missions = missions
         self._archives = archives
         self._query = query
@@ -88,6 +95,7 @@ class Recon:
         self._telemetry = telemetry
         self._env = env
         self._version = version
+        self._root_found_by = root_found_by
 
     # --- init ---------------------------------------------------------------------------
 
@@ -150,10 +158,18 @@ class Recon:
     # --- plan and survey ----------------------------------------------------------------
 
     def plan(self, name: str, *, config: Path | None = None, replace: bool = False) -> PlanDocument:
-        """What a survey would do: every run with its effects, the files it would write.
-        Runs, fetches and writes nothing. Raises ConfigError listing every problem."""
+        """What a survey would do: every run with its effects, the files it would write, and
+        what the runs need of this host. Raises ConfigError listing every problem.
+
+        Writes nothing. Runs and fetches nothing either, unless a run's collector type
+        declares a ``preflight``: that type's collector is then built, asked what each of its
+        runs needs (an ``mcp`` type starts each stdio server a run names, and connects to each
+        remote one, to list its tools), and closed; ``preflight`` says what was done, and
+        ``requirements`` what was found."""
         _, plan, copy_to = self._prepare(name, config, replace)
         mission = self._missions.mission_dir(name)
+        assert plan.config is not None  # _prepare raises on an invalid plan
+        requirements, said, broken = self._preflight(mission, plan.config)
         return PlanDocument(
             mission=name,
             valid=plan.valid,
@@ -165,8 +181,54 @@ class Recon:
                 captures=bool(plan.config and plan.config.preserve_raw),
             ),
             problems=[p.document() for p in plan.problems],
-            warnings=[w.document() for w in plan.warnings],
+            warnings=[w.document() for w in plan.warnings + broken],
+            skipped=[skipped.document() for skipped in plan.skipped],
+            requirements=requirements,
+            runnable=all(required.holds for required in requirements),
+            preflight=said,
         )
+
+    def _preflight(
+        self, mission: Path, config: ReconConfig
+    ) -> tuple[list[Required], list[str], list[Problem]]:
+        """Ask the collector of each type that declares a preflight what each of its runs
+        needs: the requirements, each said once with the outputs that need it; what was done,
+        a sentence per type; and a warning for each type that could not be built or closed."""
+        types = {n: ct for n, ct in self._plugins.collector_types.items() if ct.preflight}
+        entries = [entry for entry in config.collectors if entry.type in types]
+        if not entries:
+            return [], [], []
+        said = [
+            f"{name}: {types[name].preflight}" for name in dict.fromkeys(e.type for e in entries)
+        ]
+        subset = config.model_copy(update={"collectors": entries})
+        built = self._build_collectors(
+            mission, subset, self._telemetry(None), Deadline(self._clock)
+        )
+        warnings = [plugin_warning(broken) for broken in built.failed]
+        merged: dict[tuple[str, bool, str, str], list[str]] = {}
+        catalog = {source.name: source for source in config.catalog}
+        try:
+            for entry in entries:
+                ask = built.requirements.get(entry.type)
+                if ask is None:
+                    continue
+                for source, output in fan_out(entry, catalog, types[entry.type].accepts_kinds):
+                    target = (
+                        entry if output == entry.name else entry.model_copy(update={"name": output})
+                    )
+                    for found in ask(target, source):
+                        key = (found.need, found.holds, found.why, found.fix)
+                        needed_by = merged.setdefault(key, [])
+                        if output not in needed_by:
+                            needed_by.append(output)
+        finally:
+            warnings += [plugin_warning(broken) for broken in built.close()]
+        requirements = [
+            Required(need=need, holds=holds, why=why, fix=fix, needed_by=needed_by)
+            for (need, holds, why, fix), needed_by in merged.items()
+        ]
+        return requirements, said, warnings
 
     def survey(
         self,
@@ -176,9 +238,10 @@ class Recon:
         replace: bool = False,
         on_event: EventCallback | None = None,
     ) -> SurveyDocument:
-        """Plan, then run every table and write one archive. A survey whose tables failed
-        still returns its document (``status: incomplete``);
-        :func:`~recon.domain.documents.survey_failure` says what the failures add up to.
+        """Plan, then run every table and write one archive. A survey whose tables failed,
+        or whose archive could not be finished, still returns its document (``status:
+        incomplete``); :func:`~recon.domain.documents.survey_failure` says what that adds up
+        to.
         Each table written that SQL cannot read is a ``table_unreadable`` warning, so it is
         found here rather than by the first query."""
         source, plan, copy_to = self._prepare(name, config, replace)
@@ -194,35 +257,53 @@ class Recon:
         archive = self._archives.create(mission, started.strftime(ARCHIVE_ID_FORMAT))
         telemetry = self._telemetry(archive)
         about = {"recon.mission": name, "recon.archive": archive.name}
+        deadline = Deadline(self._clock)
         with telemetry.span(SURVEY, about) as span:
-            collectors, failed = self._build_collectors(mission, plan.config, telemetry)
-            for broken in failed:
-                warnings.append(plugin_warning(broken))
-                emit({"kind": "warning", "reason": str(warnings[-1]), "fix": warnings[-1].fix})
-            emit(
-                {
-                    "kind": "start",
-                    "runs": len(plan.runs),
-                    "collectors": len(plan.config.collectors),
-                    "sources": len(plan.config.catalog),
+            built = self._build_collectors(mission, plan.config, telemetry, deadline)
+            try:
+                for broken in built.failed:
+                    warnings.append(plugin_warning(broken))
+                    emit({"kind": "warning", "reason": str(warnings[-1]),
+                          "fix": warnings[-1].fix})  # fmt: skip
+                emit(
+                    {
+                        "kind": "start",
+                        "runs": len(plan.runs),
+                        "collectors": len(plan.config.collectors),
+                        "sources": len(plan.config.catalog),
+                    }
+                )
+                types = self._plugins.collector_types
+                extracts = {n for n, ct in types.items() if ct.extracts}
+                kinds = {
+                    n: ct.accepts_kinds for n, ct in types.items() if ct.accepts_kinds is not None
                 }
-            )
-            extracts = {n for n, ct in self._plugins.collector_types.items() if ct.extracts}
-            survey = Survey(
-                self._archives, self._clock, self._version, telemetry, on_event, extracts=extracts
-            )
-            tables = survey.run(
-                plan.config,
-                collectors,
-                archive,
-                started=started,
-                config_sha256=hashlib.sha256(source.text).hexdigest(),
-            )
+                survey = Survey(
+                    self._archives, self._clock, self._version, telemetry, on_event,
+                    extracts=extracts, kinds=kinds, deadline=deadline,
+                )  # fmt: skip
+                tables = survey.run(
+                    plan.config,
+                    built.collectors,
+                    archive,
+                    started=started,
+                    config_sha256=hashlib.sha256(source.text).hexdigest(),
+                    resolved=self._resolved(plan.config),
+                )
+            finally:
+                # Whatever the survey opened (a collector's session, the requester's
+                # connections) ends with it, however it ends.
+                for broken in built.close():
+                    warnings.append(plugin_warning(broken))
+                    emit({"kind": "warning", "reason": str(warnings[-1]),
+                          "fix": warnings[-1].fix})  # fmt: skip
             failed_tables = [t for t in tables if t.status == "error"]
             span.set("recon.tables", len(tables))
             span.set("recon.tables.failed", len(failed_tables))
             span.set("recon.records", sum(t.records for t in tables))
-            if (kind := failure_kind(tables)) is not None:
+            if not survey.finished:
+                span.fail("store", "the archive could not be finished")
+            elif (kind := failure_kind(tables)) is not None:
                 span.fail(kind, f"{len(failed_tables)} of {len(tables)} table(s) failed")
             warnings += survey.warnings
             for unreadable in self._query.unreadable(archive):
@@ -232,7 +313,7 @@ class Recon:
         return SurveyDocument(
             mission=name,
             archive=str(archive),
-            status="incomplete" if failed_tables else "ok",
+            status="incomplete" if failed_tables or not survey.finished else "ok",
             tables=tables,
             warnings=[w.document() for w in warnings + _dropped(telemetry)],
         )
@@ -250,7 +331,13 @@ class Recon:
                 fix=f"recon init {name} --template <name> (see `recon templates`), "
                 f"or recon survey {name} -c <config.yaml>",
             ) from exc
-        plan = build_plan(source.data, self._plugins, self._env, base=self._missions.project)
+        plan = build_plan(
+            source.data,
+            self._plugins,
+            self._env,
+            base=self._missions.project,
+            is_directory=self._missions.is_directory,
+        )
         if not plan.valid:
             raise ConfigError(
                 f"{path}: {len(plan.problems)} problem(s)",
@@ -320,27 +407,40 @@ class Recon:
                     type_url=t.get("type_url"),
                     status=t.get("status"),
                     records=t.get("records"),
-                    error=TableError.model_validate(t["error"]) if t.get("error") else None,
+                    error=_table_error(t.get("error")),
                 )
                 for t in meta["tables"]
             ],
         )
 
-    def query(self, name: str, sql: str, *, archive_id: str | None = None) -> QueryRows:
+    def _resolved(self, config: ReconConfig) -> dict[str, Any]:
+        """Where a survey's inputs came from: how the project root was found, and each
+        variable the mission declares, by name, ``set`` or ``unset``. Never a value."""
+        names = sorted(set().union(*declared_env(config, self._plugins.collector_types).values()))
+        return {
+            "root": self._root_found_by,
+            "env": {name: "set" if self._env.get(name) else "unset" for name in names},
+        }
+
+    def query(self, name: str, sql: str, *, archive: str | None = None) -> QueryRows:
         """Run ``sql`` against the latest archive, or the one named. ``state`` says whether
-        the archive is incomplete, so its rows may be partial."""
-        archive = self._archive(name, archive_id)
+        the archive is incomplete, so its rows may be partial. A row is an object keyed by
+        column, so a name the SQL gives twice is made unique, in ``columns`` and every row,
+        with the suffix DuckDB gives it in a subquery (``a``, ``a_1``, then ``a_1_1`` on a
+        further clash)."""
+        path = self._archive(name, archive)
         telemetry = self._telemetry(None)
-        with telemetry.span(QUERY, {"recon.mission": name, "recon.archive": archive.name}) as span:
-            result = self._query.execute(archive, sql)
+        with telemetry.span(QUERY, {"recon.mission": name, "recon.archive": path.name}) as span:
+            result = self._query.execute(path, sql)
             span.set("recon.rows", len(result.rows))
-        rows = [dict(zip(result.columns, row, strict=True)) for row in result.rows]
+        columns = _unique(result.columns)
+        rows = [dict(zip(columns, row, strict=True)) for row in result.rows]
         return QueryRows(
             mission=name,
-            archive=str(archive),
-            archive_id=archive.name,
-            state="incomplete" if self._archives.is_incomplete(archive) else "ok",
-            columns=result.columns,
+            archive=str(path),
+            archive_id=path.name,
+            state="incomplete" if self._archives.is_incomplete(path) else "ok",
+            columns=columns,
             rows=rows,
             count=len(rows),
             warnings=[w.document() for w in result.warnings + _dropped(telemetry)],
@@ -382,6 +482,31 @@ class Recon:
             return record_hook_payload(self._missions.capture_log(name), payload)
         except ConfigError as exc:
             raise ConfigError(str(exc), fix="run recon capture from a PostToolUse hook") from exc
+
+
+def _unique(columns: list[str]) -> list[str]:
+    """``columns``, each name already taken given ``_1`` until it is not."""
+    taken: set[str] = set()
+    unique = []
+    for column in columns:
+        while column in taken:
+            column = f"{column}_1"
+        taken.add(column)
+        unique.append(column)
+    return unique
+
+
+def _table_error(error: Any) -> TableError | None:
+    """A table's error as ``meta.yaml`` holds it, read for the fields this recon knows: one
+    a newer recon wrote may carry more, and is not refused for them."""
+    if not isinstance(error, dict):
+        return None
+    fix = error.get("fix")
+    return TableError(
+        kind=str(error.get("kind", "unknown")),
+        message=str(error.get("message", "")),
+        fix=fix if isinstance(fix, str) else None,
+    )
 
 
 def _text(value: Any) -> str | None:

@@ -12,8 +12,12 @@ name: pages
 # SHA pins. See ci.yml for the same block and the note about lifting it into a shared
 # `mox-labs/ci/setup` composite action.
 
+# A push to main deploys only once `ci` has passed on that commit, and what deploys is that
+# commit, not whatever main points at by then. A manual run deploys main as it stands.
 on:
-  push:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -23,10 +27,11 @@ permissions:
   pages: write
   id-token: write
 
-# One deploy at a time; let a newer push win rather than queueing stale builds.
+# One deploy at a time. A newer run replaces one still waiting, so stale builds do not queue,
+# and a deploy already under way finishes rather than being cut off mid-flight.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   BUN_VERSION: "1.3.14"
@@ -34,9 +39,15 @@ env:
 
 jobs:
   build:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
         id: pages
@@ -76,6 +87,7 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

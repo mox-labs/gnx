@@ -54,8 +54,16 @@ def is_type_url(url: str) -> bool:
 
 
 def check_type_url(url: str, *, where: str = "") -> str:
-    """Return ``url`` if it is a valid type URL; otherwise raise ConfigError saying why."""
+    """Return ``url`` if it is a valid type URL outside the reserved ``slick`` namespace;
+    otherwise raise ConfigError saying why."""
     reason = problem(url)
+    if reason is None and _reserved(url):
+        prefix = f"{where}: " if where else ""
+        raise ConfigError(
+            f"{prefix}{url!r} is in the slick namespace, which is reserved for slick's primitives",
+            fix="name it under your own namespace root",
+            value=url,
+        )
     if reason is not None:
         prefix = f"{where}: " if where else ""
         raise ConfigError(
@@ -66,6 +74,11 @@ def check_type_url(url: str, *, where: str = "") -> str:
             value=url,
         )
     return url
+
+
+def _reserved(namespace: str) -> bool:
+    """Whether ``namespace`` (or a type URL) is ``slick`` or under it."""
+    return namespace == "slick" or namespace.startswith("slick.")
 
 
 def _split(url: str) -> TypeUrl | None:
@@ -109,7 +122,7 @@ def type_url(namespace: str, version: str | int, resource: str) -> str:
     for slick's own primitives.
     """
     ver = f"v{version}" if isinstance(version, int) else version
-    if namespace == "slick" or namespace.startswith("slick."):
+    if _reserved(namespace):
         raise ConfigError(
             f"cannot mint {namespace!r}: the slick namespace is reserved for slick's primitives",
             fix="mint under your own namespace root",

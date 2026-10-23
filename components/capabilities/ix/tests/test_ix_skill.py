@@ -8,6 +8,7 @@ record, and what an agent needs to act sits within the first 5,000 tokens.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import re
 from pathlib import Path
@@ -29,6 +30,7 @@ from ix.application.skill import (
     QUICK_START,
     REFERENCES,
     SHAPE_MARK,
+    SKILL_FILE,
     VALUE_FORMS,
 )
 from ix.domain.errors import ERROR_KINDS, EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT
@@ -107,22 +109,23 @@ class TestTheSkillIsASkill:
 
     def test_every_install_line_pins_this_release_s_tag(self) -> None:
         """ix is installed from its repository, never a package index: every install line, in
-        the skill, the README, the how-to and the repository's README, names the tag of the
-        release they describe, so a version bump without the tag fails here."""
+        the skill, the README, SECURITY.md, the how-to and the repository's README, names the
+        tag of the release they describe, so a version bump without the tag fails here."""
         source = (
             f"git+https://github.com/mox-labs/gnx@ix-v{ix.__version__}"
             "#subdirectory=components/capabilities/ix"
         )
-        package = Path(ix.__file__).resolve().parents[2]
+        package = Path(__file__).resolve().parents[1]
         texts = {"skill": _skill()}
         for file in (
             package / "README.md",
+            package / "SECURITY.md",
             package / "docs" / "how-to" / "evaluate-an-agent.md",
             package.parents[2] / "README.md",
         ):
-            if file.is_file():  # run from the repository
+            if file.is_file():  # the repository's README, when run from the repository
                 texts[str(file)] = file.read_text(encoding="utf-8")
-        assert len(texts) in (1, 4), list(texts)
+        assert len(texts) in (4, 5), list(texts)
         for name, text in texts.items():
             lines = [
                 line
@@ -132,13 +135,21 @@ class TestTheSkillIsASkill:
             assert lines and all(source in line for line in lines), (name, lines)
             assert "pip install" not in text, name
 
-    def test_the_extras_it_names_are_the_package_s(self) -> None:
+    def test_ix_speaks_http_through_the_stacks_one_client(self) -> None:
+        """Regression: ix was the one package on httpx, where the stack is httpx2 (owner
+        ruling, 2026-10-22), so every install carried two HTTP clients."""
+        from importlib.metadata import requires
+
+        names = {re.split(r"[ <>=!~;\[]", line, maxsplit=1)[0] for line in requires("ix") or ()}
+        assert "httpx2" in names and "httpx" not in names
+
+    def test_there_are_no_extras_to_name(self) -> None:
+        """Owner ruling 2026-10-22 (no extras): ix and matrix bring every runtime and the
+        OpenTelemetry SDK, so the package declares no extra and the skill names none to install."""
         from importlib.metadata import metadata
 
-        declared = set(metadata("ix").get_all("Provides-Extra") or []) - {"dev"}
-        install = _skill().split("## Install and check", 1)[1].split("## Quick start", 1)[0]
-        (sentence,) = [line for line in install.splitlines() if "The extras:" in line]
-        assert set(re.findall(r"`([\w-]+)` \(", sentence)) == declared
+        assert not metadata("ix").get_all("Provides-Extra")
+        assert "ix[" not in _skill() and "there are no extras" in _skill()
 
     def test_what_an_agent_needs_to_act_is_within_the_first_5000_tokens(self) -> None:
         skill = _skill()
@@ -249,7 +260,8 @@ class TestEveryClaimHolds:
         directory.mkdir()
         (directory / "experiment.yaml").write_text(QUICK_START)
         plan = ix.plan(directory)
-        assert plan.genre == "evaluate" and plan.unstartable == () and plan.unimplemented == ()
+        assert plan.genre == "evaluate" and plan.unimplemented == ()
+        assert {r.need for r in plan.requirements} == {"'python3' on PATH", "'k6' on PATH"}
         assert set(yaml.safe_load(QUICK_START)) == {"name", "question", "genre", "subjects",
                                                     "probes", "primary", "threshold"}  # fmt: skip
 
@@ -283,12 +295,19 @@ class TestEveryClaimHolds:
                                   else example)  # fmt: skip
 
     def test_the_prerequisites_are_of_runnable_kinds_and_name_what_the_adapters_run(
-        self,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         runnable = {name.rsplit(".", 1)[1] for name in ix.kinds().runnable}
         assert set(PREREQUISITES) <= runnable
         assert inspect.signature(K6Load).parameters["binary"].default == "k6"
-        assert '"ps"' in inspect.getsource(group_rss_bytes)
+        # The memory sensor reads `ps` from PATH: with none it reads nothing, with one it
+        # reads what that one prints.
+        monkeypatch.setenv("PATH", str(tmp_path))
+        assert asyncio.run(group_rss_bytes(42)) is None
+        ps = tmp_path / "ps"
+        ps.write_text("#!/bin/sh\necho '   42   10'\necho '    7  999'\n")
+        ps.chmod(0o755)
+        assert asyncio.run(group_rss_bytes(42)) == 10 * 1024
         install = _skill().split("## Install and check", 1)[1].split("## Quick start", 1)[0]
         assert "`k6 version`" in install and "`ps`" in install
 
@@ -297,7 +316,7 @@ class TestEveryClaimHolds:
         declared = sorted(
             {name.rsplit(".", 1)[1] for name in set(kinds.kinds) - set(kinds.runnable)}
         )
-        assert declared  # agent evaluations are declared only in this build
+        assert declared == ["inspect-task"]  # declared, with no adapter: design record §13
         when = _skill().split("## When to use ix", 1)[1].split("## Install", 1)[0]
         assert ", ".join(f"`{label}`" for label in declared) in when
 
@@ -316,8 +335,9 @@ class TestTheReferencesTeachFromTheRecords:
         ):
             assert said in running, said
         # A kind with no adapter says so where it is taught; one with an adapter does not.
+        # Changed requirement: compose has an adapter.
         marked = [line for line in kinds.splitlines() if "*(declared only: no adapter" in line]
-        assert {line.split("`")[1] for line in marked} == {"inspect-task", "compose"}
+        assert {line.split("`")[1] for line in marked} == {"inspect-task"}
 
     def test_every_genre_from_its_record(self) -> None:
         genres, skill = _reference("genres"), _skill()
@@ -361,8 +381,11 @@ class TestTheReferencesTeachFromTheRecords:
                 assert f"`{name}`{'*' if option.required else ''}" in text, (kind.label, name)
             for metric in kind.metrics:
                 assert f"metric `{metric.name}`" in text
+            if kind.service_keys:
+                keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
+                assert f"**`{kind.label}`**" in text and f"binds each service as {keys}" in text
         judged = [m for k in ix.kinds().kinds.values() for m in k.metrics if m.judged]
-        assert text.count("JUDGED by a model") == len(judged) == 4
+        assert text.count("JUDGED by a model") == len(judged) == 6  # judge 4, evaluator 2
 
     def test_what_it_says_about_unknown_keys_is_true(
         self, compare_data: dict[str, Any], write_experiment: Write
@@ -456,13 +479,15 @@ class TestTheAgentsReference:
     def test_it_names_every_option_and_metric_of_the_agent_kinds(self) -> None:
         text = " ".join(_reference("agents").split())
         kinds = ix.kinds()
-        for family, name in [("subject", "agent-session"), ("probe", "prompt")]:
+        for family, name in [("subject", "agent-session"), ("subject", "model-call"),
+                             ("probe", "prompt")]:  # fmt: skip
             kind = kinds.get(family, name)
             assert kind is not None
             for option in kind.options:
                 assert f"`{option}`" in text, (name, option)
         for name in (
             "activation", "tool-usage", "function-test", "outcome", "text-match", "usage", "judge",
+            "evaluator",
         ):  # fmt: skip
             sensor = kinds.get("sensor", name)
             assert sensor is not None and f"(`{name}`" in text, name
@@ -481,31 +506,36 @@ class TestTheAgentsReference:
         from ix.domain.summaries import NOISY
 
         text = " ".join(_reference("agents").split())
-        # No session runtime is the default: each spends or not, and the reference says which.
+        # No session runtime is the default: each calls a model or not, and the reference
+        # says which.
         assert "It is required, with no default" in text and "`option_missing`" in text
-        for runtime, spends in [("claude-sdk", "spends)"), ("model", "spends)"),
-                                ("mock", "spends nothing")]:  # fmt: skip
-            assert re.search(rf"`{runtime}` \([^)]*{re.escape(spends)}", text), runtime
-        assert "`judge` asks a model (`runtime`, required with no default" in text
+        for runtime, calls in [("claude-sdk", "calls a model provider)"),
+                               ("mock", "calls no model")]:  # fmt: skip
+            assert re.search(rf"`{runtime}` \([^)]*{re.escape(calls)}", text), runtime
+        assert "one call on the matrix model runtime its `runtime` names" in text
+        assert "`model_runtime` (one model call per reading" in text
+        assert "`agent_runtime` (a one-turn session with no tools per reading" in text
+        assert "and has no default" in text
         assert f"`timeout` ({SESSION_TIMEOUT_S:g}s)" in text and f"`{VERIFIED}`" in text
         for strategy in get_args(Loop.model_fields["strategy"].annotation):
             assert f"strategy: {strategy}" in text, strategy
         assert f"more than {NOISY:g} of the range" in text
-        assert f"exits {ix.EXIT_CODES['run_interrupted']} with no verdict" in text
 
     @pytest.mark.parametrize("example", ["skill", "routing", "control"])
-    def test_its_dry_run_runs_here_as_written_and_spends_nothing(
+    def test_its_dry_run_runs_here_as_written_and_calls_no_model(
         self, example: str, tmp_path: Path
     ) -> None:
         """The order of work's second step, done to the reference's own examples with no
-        edit: the dry run sets aside what only the real runtime takes."""
+        edit: the dry run sets aside what only the real runtime takes. The skill folders
+        are files the session is given, as the layout shows them, so they are there."""
         lab = tmp_path / example
-        lab.mkdir()
+        (lab / "skills" / "review").mkdir(parents=True)
+        (lab / "skills" / "review" / "SKILL.md").write_text(SKILL_FILE + "\n")
         (lab / "experiment.yaml").write_text(AGENT_EXAMPLES[example])
         report = ix.run(lab, dry_run=True)
         assert report.dry_run and report.simulated == "all" and report.stood_in
         assert report.verdict is None and report.indication is None
-        assert report.spend.total == 0 and report.exit_code == 0
+        assert report.exit_code == 0
 
     def test_its_probe_file_puts_options_under_options_and_runs(self, tmp_path: Path) -> None:
         """Regression: the reference showed no probe file, and an agent wrote
@@ -519,6 +549,7 @@ class TestTheAgentsReference:
         data.pop("probes")
         lab = tmp_path / "review-skill"
         (lab / "probes").mkdir(parents=True)
+        (lab / "skills" / "review").mkdir(parents=True)
         (lab / "experiment.yaml").write_text(yaml.safe_dump(data))
         (lab / "probes" / f"{front['id']}.md").write_text(PROBE_FILE + "\n")
         assert ix.validate(lab).valid

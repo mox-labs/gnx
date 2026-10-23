@@ -106,6 +106,8 @@ async def test_releases_run_on_success_too() -> None:
 
 
 async def test_a_failure_asks_running_components_to_stop_and_keeps_what_they_return() -> None:
+    """What a component returns after a stop request is recorded, and it ends ``stopped``:
+    what it returned may be partial, so it is not ``completed``."""
     running = asyncio.Event()
 
     async def cooperative(ctx: Any) -> str:
@@ -128,7 +130,7 @@ async def test_a_failure_asks_running_components_to_stop_and_keeps_what_they_ret
         await Executor().run(wiring)
     run = e.value.run
     assert e.value.component == "bad"
-    assert run.components["sampler"].status == "completed"
+    assert run.components["sampler"].status == "stopped"
     assert run.components["sampler"].reason == "run_failed"
     assert run.rows(A) == ("partial",)
     assert run.components["after"].document() == {"status": "skipped", "reason": "policy: fast"}
@@ -248,8 +250,30 @@ async def test_a_cancelled_component_that_returns_within_the_grace_keeps_its_row
     with pytest.raises(RunCancelled) as e:
         await task
     assert e.value.run.rows(A) == ("what I had",)
-    assert e.value.run.components["m"].status == "completed"
+    assert e.value.run.components["m"].document()["status"] == "stopped"
+    assert e.value.run.components["m"].reason == "cancelled"
     assert e.value.run.status == "cancelled"
+
+
+async def test_a_component_that_returned_before_the_stop_request_is_completed() -> None:
+    """A failure handled after a sibling has already returned does not make the sibling's
+    finished result read as stopped."""
+    failing = asyncio.Event()
+
+    async def done_first(ctx: Any) -> str:
+        await failing.wait()
+        return "whole"
+
+    async def fails(ctx: Any) -> str:
+        failing.set()
+        raise RuntimeError("kaput")
+
+    wiring = wire({"done": Step(done_first, provides=A), "bad": Step(fails, provides=B)})
+    with pytest.raises(RunError) as e:
+        await Executor().run(wiring)
+    assert e.value.run.components["done"].document()["status"] == "completed"
+    assert e.value.run.components["done"].reason is None
+    assert e.value.run.rows(A) == ("whole",)
 
 
 async def test_a_component_that_swallows_cancellation_is_abandoned_and_reported() -> None:
@@ -483,3 +507,37 @@ def test_a_signalled_run_stops_its_components_and_releases(
     assert out.strip() == "cancelled cancelled", err
     assert marker.read_text() == "released"
     assert proc.returncode == 42, err
+
+
+class _Abort(BaseException):
+    """What a release may raise that is not an ``Exception``: as ``SystemExit`` is."""
+
+
+async def test_a_release_that_raises_a_base_exception_does_not_skip_the_releases_owed(
+    tmp_path: Path,
+) -> None:
+    """A synchronous release that raised a ``BaseException`` escaped ``except Exception``, so
+    the releases still owed were never called and the record never finished.
+    Every release is called, the record is finished, and then it is raised."""
+    from matrix import JsonlConstructStore
+
+    released: list[str] = []
+
+    def aborts() -> None:
+        raise _Abort("the process is going down")
+
+    async def body(ctx: Any) -> str:
+        ctx.defer(lambda: released.append("first"))
+        ctx.defer(aborts)
+        return "v"
+
+    store = JsonlConstructStore(tmp_path)
+    with pytest.raises(_Abort):
+        await Executor().run(wire({"a": Step(body, provides=A)}), store=store, run_id="r")
+    assert released == ["first"]
+    recorded = store.describe("r")
+    assert recorded["status"] == "completed"
+    assert [(r["status"], r["error"]) for r in recorded["releases"]] == [
+        ("failed", "_Abort: the process is going down"),
+        ("released", None),
+    ]

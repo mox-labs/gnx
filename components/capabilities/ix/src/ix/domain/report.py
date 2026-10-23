@@ -3,7 +3,8 @@
 A report is a pure function of a run's record. It states the question and the decision the
 experiment declared, the verdict, the estimates behind it, the calibration check, the failures by
 owner, and the warrant: what the verdict rests on and what weakens it (deviations from the
-registration, trials left out, the method's own standing).
+registration, trials left out, the method's own standing), and what it was about: the
+digest of each file the subjects and sensors name, the commit, and the versions that ran it.
 
 **A verdict is a gate result, and only some runs give one.** ``verdict`` is set when the
 genre decides, the run was held to a registration it had not moved away from, it finished,
@@ -15,16 +16,17 @@ neither a verdict nor an indication, and says so in words that cannot be read as
 evidence (:data:`DRY_RUN`).
 
 Beside the verdict a report carries what :mod:`ix.domain.summaries` computes: confusion
-tables, flags, the probe screen (left out when a stand-in answered: canned replies screen
-nothing), and what the run spent. ``shows`` says what the evidence shows in plain words, in
+tables, flags, and the probe screen (left out when a stand-in answered: canned replies
+screen nothing). ``shows`` says what the evidence shows in plain words, in
 the direction it points, whatever the verdict: ``build30's latency p50 is higher than
 build20's by 29.6% [26.2%, 33.1%]``. ``best_case`` says when the run was too small for even
 every trial passing to show its threshold.
 
 ``exit_code`` is what a command that printed the report exits with: 0 when the verdict
 holds or there is none to give, and a code of its own for ``fails``, ``inconclusive``, an
-interrupted run, a failed one, one that is still running, and one whose experiment had
-changed since its registration (``deviations``: never 0, so no gate passes on it).
+interrupted run, a failed one, one that is still running, one whose experiment had changed
+since its registration (``deviations``), and a registered run a stand-in answered
+(``simulated``): neither of the last two is ever 0, so no gate passes on it.
 ``exit`` is the same with what it means and what to do next, as :data:`EXIT_NEXT` says.
 """
 
@@ -36,23 +38,16 @@ from pydantic import Field, ValidationError, computed_field
 
 from ix.domain import schema
 from ix.domain.analysis import Analysis, Decision, Finding, Outcome, analyze
-from ix.domain.design import Design
+from ix.domain.design import Design, metric_text
 from ix.domain.errors import EXIT_CODES, EXIT_MEANINGS, EXIT_NEXT, ConfigError
 from ix.domain.genre import VerdictForm
 from ix.domain.plan import best_case
 from ix.domain.problem import Problem
+from ix.domain.provenance import Content, Provenance
 from ix.domain.registration import Deviation
-from ix.domain.run import Halt, RunStatus, cell_key
+from ix.domain.run import RunStatus, cell_key
 from ix.domain.schema import Record
-from ix.domain.summaries import (
-    ConfusionTable,
-    ProbeScreen,
-    Spent,
-    confusion,
-    flags,
-    screen,
-    spent,
-)
+from ix.domain.summaries import ConfusionTable, ProbeScreen, confusion, flags, screen
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -117,8 +112,8 @@ class Report(Record):
     #: When the run was too small for even every trial going the right way to show the
     #: threshold of a pass rate: why it could not hold, and how many trials it would take.
     best_case: str = ""
-    #: False for an exploratory run, and for one of an experiment that had changed since its
-    #: registration.
+    #: False for an exploratory run, for one of an experiment that had changed since its
+    #: registration, and for one a stand-in answered (a dry run, or a mock runtime).
     gated: bool
     #: True when the run was asked to be exploratory.
     exploratory: bool = False
@@ -131,18 +126,26 @@ class Report(Record):
     registered_at: str = ""
     #: How the experiment differed from its registration when the run started.
     deviations: tuple[Deviation, ...] = ()
+    #: What the verdict is about: the digest of each file and folder the subjects and
+    #: sensors name, as the run found them.
+    contents: tuple[Content, ...] = ()
+    #: Where the run ran from: the commit and the versions that ran it. None for a run an
+    #: earlier ix recorded.
+    provenance: Provenance | None = None
     trials: TrialCounts
     #: ``recorded``: by the run. ``derived``: the run ended before its sensors read the
     #: interactions, so the report read them. ``none``: no readings, because none were
-    #: recorded and none could be derived here (a sensor the run used may have no adapter).
+    #: recorded and none were derived here (:attr:`unread` says why).
     readings: Literal["recorded", "derived", "none"] = "recorded"
+    #: Why the interactions of a run that ended before its sensors read them were not read
+    #: when this report was made, and how to get readings: a sensor the run used has no
+    #: adapter here, or may call a model or starts processes, which a report never does.
+    #: Empty otherwise.
+    unread: str = ""
     analysis: Analysis
     #: ``all`` when a stand-in (a mock runtime) answered every trial, ``some`` when it
     #: answered some: such a run measured the harness and gives no verdict; ``none`` else.
     simulated: Literal["none", "some", "all"] = "none"
-    #: Why the run stopped starting trials before its schedule was done, when it did.
-    halt: Halt | None = None
-    spend: Spent = Spent()
     #: The sentences of the flagged metrics any trial raised.
     flags: tuple[str, ...] = ()
     confusion: tuple[ConfusionTable, ...] = ()
@@ -175,6 +178,9 @@ class Report(Record):
         if not self.gated and self.deviations and not self.exploratory:
             # Not a gate result, and not one anybody asked to be ungated: never exit 0.
             return "deviations"
+        if self.simulated != "none" and not self.exploratory:
+            # Run as a gate, but a stand-in answered: it measured the harness. Never exit 0.
+            return "simulated"
         return "ok" if self.verdict in (None, "holds") else self.verdict
 
     @property
@@ -209,11 +215,13 @@ def report(
     record: RunRecord,
     *,
     readings: Sequence[Reading] | None = None,
+    unread: str = "",
 ) -> Report:
     """The report of ``record``.
 
     ``readings`` replaces the record's own when the run ended before its sensors read the
     interactions and the caller read them afterwards; the report then says ``derived``.
+    ``unread`` is why the caller did not read them, when it did not.
     """
     design = design_of(record)
     manifest = record.manifest
@@ -228,7 +236,7 @@ def report(
     simulated: Literal["none", "some", "all"] = (
         "none" if not stand_ins else "all" if stand_ins == len(record.interactions) else "some"
     )
-    stood_in = simulated != "none" or manifest.dry_run
+    stood_in = record.stood_in
     counts = TrialCounts(
         planned=len(record.trials),
         carried_out=len(record.interactions),
@@ -244,10 +252,6 @@ def report(
         why = "the run failed"
     elif record.status == "running":
         why = f"the run has not finished: {counts.text()} so far"
-    elif record.halt is not None:
-        why = f"the run stopped before its schedule was done ({counts.text()}): " + (
-            record.halt.message
-        )
     elif record.status != "completed":
         why = f"the run was {record.status}: {counts.text()}"
     elif stood_in:
@@ -284,18 +288,19 @@ def report(
         verdict=verdict,
         no_verdict=why,
         indication=None if verdict is not None or stood_in else analysis.outcome,
-        gated=manifest.gated,
+        gated=record.gated,
         exploratory=manifest.exploratory,
         dry_run=manifest.dry_run,
         stood_in=manifest.stood_in,
         registered_at=str((manifest.registration or {}).get("registered_at", "")),
         deviations=manifest.deviations,
+        contents=manifest.contents,
+        provenance=manifest.provenance,
         trials=counts,
         readings=source,
+        unread=unread if source == "none" else "",
         analysis=analysis,
         simulated=simulated,
-        halt=record.halt,
-        spend=spent(manifest, record.interactions, used),
         flags=flags(design, used),
         confusion=confusion(design, used),
         screen=() if stood_in else screen(design, record.trials, used),
@@ -319,16 +324,10 @@ def _span(low: float, high: float, unit: str) -> str:
     return f"[{_amount(low, unit)}, {_amount(high, unit)}]"
 
 
-def _measure(decision: Decision) -> str:
-    """``latency p50``; a statistic of ``value`` or ``rate`` adds nothing and is left out."""
-    plain = decision.statistic in ("value", "rate")
-    return decision.metric if plain else f"{decision.metric} {decision.statistic}"
-
-
 def _against_control(subject: str, control: str, decision: Decision) -> str:
     assert decision.interval is not None and decision.difference is not None
     low, high, unit = decision.interval.low, decision.interval.high, decision.unit
-    measure = _measure(decision)
+    measure = metric_text(decision)
     if low <= 0 <= high:
         return (
             f"{subject}'s {measure} differs from {control}'s by {decision.difference:+.3g}"
@@ -351,7 +350,7 @@ def _against_threshold(subject: str, design: Design, decision: Decision) -> str:
     assert decision.interval is not None and decision.difference is not None
     threshold = design.threshold
     low, high, unit = decision.interval.low, decision.interval.high, decision.unit
-    said = f"{subject}'s {_measure(decision)} is {_amount(decision.difference, unit)} " + (
+    said = f"{subject}'s {metric_text(decision)} is {_amount(decision.difference, unit)} " + (
         _span(low, high, unit)
     )
     if threshold is None:
@@ -415,8 +414,10 @@ class RunSummary(Record):
     #: for a run whose report could not be computed here.
     verdict: Outcome | None = None
     indication: Outcome | None = None
-    #: What the run reported spending, its trials and its sensors together.
-    spent: float = 0.0
+    #: The commit the run ran from, and whether a tracked file differed from it; empty for
+    #: a run outside a git work tree.
+    commit: str = ""
+    dirty: bool = False
 
 
 def summary(report: Report) -> RunSummary:
@@ -439,7 +440,8 @@ def summary(report: Report) -> RunSummary:
         mode=mode,
         verdict=report.verdict,
         indication=report.indication,
-        spent=report.spend.total,
+        commit=report.provenance.commit if report.provenance else "",
+        dirty=report.provenance.dirty if report.provenance else False,
     )
 
 

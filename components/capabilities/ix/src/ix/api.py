@@ -119,17 +119,18 @@ def run(
     ``<experiment directory>/.ix/runs/<run id>/``.
 
     Raises before anything starts: :class:`InvalidExperimentError`; :class:`ConfigError`
-    when a kind the experiment names has no adapter or a subject cannot start on this host
-    (:attr:`Plan.unstartable` lists those beforehand); :class:`UnregisteredError` when the
-    experiment has no registration and neither ``exploratory`` nor ``dry_run`` is set. An
-    exploratory run gives no verdict.
+    when a kind the experiment names has no adapter, or something it requires of this host
+    does not hold (:attr:`Plan.requirements` lists each beforehand, with whether it holds);
+    :class:`UnregisteredError` when the experiment has no registration and neither
+    ``exploratory`` nor ``dry_run`` is set. An exploratory run gives no verdict.
 
     ``dry_run`` runs the experiment as written with every subject on a stand-in (an agent
     session on matrix's ``mock`` runtime, replying with each probe's ``mock_response``) and
     the options only the real runtime takes set aside, each noted in ``Report.stood_in``. It
-    is exploratory, spends nothing, and checks the harness, never the subject: its report
+    is exploratory, calls no model, and checks the harness, never the subject: its report
     gives no verdict and no indication. A subject with no stand-in (a ``process``) is
-    refused with :class:`ConfigError`.
+    refused with :class:`ConfigError`. The environment has no stand-in: it is brought up for
+    real (a ``compose`` stack's containers, a ``process`` environment's services).
 
     ``repeats`` runs a pilot with that many repeats in place of the file's, noted in
     ``Report.overridden``; only with ``exploratory`` or ``dry_run`` (else
@@ -188,7 +189,7 @@ def configure_telemetry() -> Telemetry:
     they ask for nothing this does nothing. For a program's entry point (the ``ix`` command
     calls it), never for a library: the providers it installs are the process's own.
 
-    Returns its ``warnings`` (export asked for without matrix's ``otel`` extra), which a
+    Returns its ``warnings`` (export asked for in an install that cannot do it), which a
     command's documents carry, and ``shutdown()``, to call once the work is done.
     """
     return _root().configure_telemetry()

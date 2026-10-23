@@ -92,11 +92,10 @@ class TestExperimentRecord:
         compare_data["subjects"]["buffered"] = {
             "kind": "process",
             "description": "the current build",
-            "effects": ["binds :8080"],
             "command": ["./proxy"],
         }
         subject = _load(compare_data).subjects["buffered"]
-        assert (subject.kind, subject.effects) == ("process", ("binds :8080",))
+        assert (subject.kind, subject.description) == ("process", "the current build")
         assert subject.options == {"command": ["./proxy"]}
 
     def test_truth_is_a_field_of_the_probe_not_an_option(
@@ -291,13 +290,26 @@ class TestFileProblems:
     @pytest.mark.parametrize(
         "change",
         [{"repeats": 0}, {"seed": -1}, {"factors": {"size": []}}, {"factors": {"size": [1, 1]}},
-         {"subjects": {}}, {"spend": {"ceiling": -1}}, {"metrics": ["ttfb", "ttfb"]}],
+         {"subjects": {}}, {"metrics": ["ttfb", "ttfb"]}],
     )  # fmt: skip
     def test_invalid_values(self, compare_data: dict[str, Any], change: dict[str, Any]) -> None:
         experiment, problems = parse({**compare_data, **change})
         assert experiment is None
         assert {p.kind for p in problems} == {"invalid_value"}
         assert all(p.fix and "correct the value" not in p.fix for p in problems)
+
+    @pytest.mark.parametrize("levels", [[1, "1"], [True, "True"], [0.5, "0.5"]])
+    def test_levels_that_name_one_cell_are_one_level_repeated(
+        self, compare_data: dict[str, Any], levels: list[Any]
+    ) -> None:
+        """Regression: levels were told apart by ``repr``, and cells by ``str``, so ``1``
+        and ``"1"`` were accepted and their blocks merged into one cell, keeping one trial
+        of each block silently."""
+        experiment, problems = parse({**compare_data, "factors": {"size": levels}})
+        assert experiment is None
+        (problem,) = problems
+        assert (problem.path, problem.kind) == ("factors", "invalid_value")
+        assert "repeats a level" in problem.message
 
     def test_subjects_written_as_a_list(self, compare_data: dict[str, Any]) -> None:
         """A likely slip, answered with the shape that fixes it."""

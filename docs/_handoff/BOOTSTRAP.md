@@ -13,9 +13,11 @@ geist.sh, samsara) is *internal detail* — design rationale, never the public p
 
 **Acquire context in this order, then stop and tell me your plan before acting:**
 1. `~/.claude/CLAUDE.md` — the constitution.
-2. The **ci-scaffolds** skills — `~/.claude/plugins/cache/cix/ci-scaffolds/0.6.0/skills/`
-   (`crafting`, `collaborating`, `problem-solving`). Internalize them; the fidelity ladder
-   (dirt→cobble→tarmac) is the milestone framework, the collaboration model is how we work.
+2. The **ci-scaffolds** skills —
+   `~/.claude/plugins/cache/<marketplace>/ci-scaffolds/0.6.0/skills/` (`crafting`,
+   `collaborating`, `problem-solving`). Internalize them; the fidelity ladder
+   (dirt→cobble→tarmac) is the milestone framework, the collaboration model is how we
+   work.
 3. Your project memory (`MEMORY.md` and the files it indexes).
 4. The handoff kit, in order: `docs/_handoff/00-PROMPT.md` (full spec) →
    `01-RUBRIC-EXTENSION.md` → `02-PLAN.md` (the 6 phases / 7 milestones) →
@@ -34,10 +36,11 @@ then proceed. AI generates → human comprehends — don't run ahead of my under
 - **Positioning boundary.** Public registers (User/Start/Reference) = the standalone
   product. Cosmology lives only in Design. A public page explaining the gnx loop has
   leaked internal detail.
-- **Design = inherit cix.** Lift cix's brand layer + sigil from
-  `~/mox/products/cix/docs/experience/` (`src/lib/brand/{tokens.css,typography.css}`,
-  `static/sigil*.svg`, the Sigil components). Do not improvise a palette. The current
-  `app.css` (serif + terracotta) is off-brand and gets replaced.
+- **Design = inherit the predecessor's.** Lift its brand layer + sigil from the
+  predecessor plugin repository's `docs/experience/`
+  (`src/lib/brand/{tokens.css,typography.css}`, `static/sigil*.svg`, the Sigil
+  components). Do not improvise a palette. The current `app.css` (serif + terracotta) is
+  off-brand and gets replaced.
 - **Owed from last session:** re-gate docs `10` (projection) and `13` (composing) — their
   layout + protocol sections went in directly, ungated.
 - **Don't commit until Phase 6** (the git workflow yzavyas asked for first is still owed),

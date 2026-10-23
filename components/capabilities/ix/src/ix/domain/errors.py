@@ -39,13 +39,14 @@ EXIT_CODES: dict[str, int] = {
     "running": 13,
     "deviations": 14,
     "unregistered": 15,
+    "simulated": 16,
     "interrupted": 130,
 }
 
 #: What each kind in :data:`EXIT_CODES` means.
 EXIT_MEANINGS: dict[str, str] = {
     "ok": "done; for validate, the experiment is valid; for run and report, the verdict "
-    "holds or there is no verdict to give",
+    "holds, or there is no verdict to give and none was asked for (exploratory or dry)",
     "unknown": "a failure ix did not classify",
     "usage": "a bad flag or argument",
     "config": "the experiment is invalid, or it cannot be carried out here as written (a kind "
@@ -53,6 +54,8 @@ EXIT_MEANINGS: dict[str, str] = {
     "conflict": "register met an experiment that changed since its registration",
     "not_found": "no experiment file, no registration, or no run",
     "unregistered": "ix run was given an experiment with no registration",
+    "simulated": "a stand-in (a mock runtime) answered the trials of a run held to its "
+    "registration: it measured the harness, not the subject, and gives no gate result",
     "run_failed": "the harness could not finish the run; the record is kept",
     "deviations": "the experiment differs from its registration; from run and report, the "
     "run was not held to it and gives no gate result",
@@ -77,6 +80,9 @@ EXIT_NEXT: dict[str, str] = {
     "not_found": "check the path; register before `ix deviations`, run before `ix report`",
     "unregistered": "run `ix register <path>` and run again, or add `--exploratory` for a run "
     "that gives no verdict",
+    "simulated": "for a gate, give each agent subject a runtime that calls a model, amend the "
+    'registration (`ix register <path> --amend --reason "<why>"`) and run again; to check the '
+    "harness on purpose, run `ix run <path> --dry-run`",
     "run_failed": "read the report's errors and fix their cause (an environment service that "
     "could not start, was not up in time, found its address in use or went down), run again",
     "deviations": "`ix deviations <path>` lists them; restore the registered design, or amend "

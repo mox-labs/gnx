@@ -34,6 +34,12 @@ Ruled exception (the owner, 2026-10-14, under H6): genre and kind *declarations*
 not components. They stay YAML files found through ix's `ix.genre` / `ix.kind` entry
 points, are only ever parsed, and meet the registry's adapters in ix's one composition
 seam. Do not report this as an H3 failure; report only if that seam leaks.
+Ruled exception (the owner, 2026-10-22): hardline's backends register through hardline's own
+`hardline.backends` entry points, its built-ins included, since matrix depends on hardline and
+hardline cannot use matrix's `Registry` without a cycle. Composition discovers them like a
+third party's; no table names them. It moves to slick's registry later, like the others. Do
+not report this as an H3 failure; report a hard-coded backend table, or a discovery that lets
+one broken entry point fail the rows of another.
 
 **H6. Architect for evolution: no unexamined one-way doors.** The owner's main goal. A
 one-way door is anything outside code depends on once released: a document schema
@@ -92,7 +98,7 @@ comments all over.
 - When in doubt, leave it out (C14). No speculative options.
 - Conceptual integrity (C21): the same idea is done the same way across matrix, ix, recon
   and hardline. One stack: pydantic v2 for every record, rich-click for every CLI, rich
-  for terminal output, httpx for HTTP (async). Errors with `kind`, `message`, `fix`; exit
+  for terminal output, httpx2 for HTTP (async). Errors with `kind`, `message`, `fix`; exit
   codes from the shared `exit-codes.json`. A package that departs from the stack names why
   in one line, and the owner has accepted it.
 - No backwards compatibility shims. This is pre-release; the owner has said so.

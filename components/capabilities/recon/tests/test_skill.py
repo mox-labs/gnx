@@ -24,7 +24,8 @@ from recon.application.plan import build_plan
 
 SKILL = recon.skill()
 REFERENCES = {name: recon.skill(name) for name in recon.skill_references()}
-REPO = Path(recon.__file__).resolve().parents[5]
+PACKAGE = Path(__file__).resolve().parents[1]
+REPO = PACKAGE.parents[2]
 
 #: The top-level keys a skill's frontmatter may have and still upload (Claude Code docs).
 PORTABLE_KEYS = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
@@ -117,7 +118,7 @@ def test_the_plugin_copy_is_what_the_command_prints() -> None:
     directory = REPO / "plugins" / "recon" / "skills" / "recon"
     if not directory.is_dir():
         pytest.skip("not run from the repository")
-    script = Path(recon.__file__).resolve().parents[2] / "scripts" / "plugin_skill.py"
+    script = PACKAGE / "scripts" / "plugin_skill.py"
     spec = importlib.util.spec_from_file_location("plugin_skill", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -130,7 +131,7 @@ def test_the_capture_format_page_is_the_skill_reference() -> None:
     """The capture format is an interface other tools write to, so a person reads it in the
     docs and an agent in ``recon --skill -r capture-format``. One text: the docs page is a
     copy of the reference, and an edit to one without the other fails here."""
-    page = Path(recon.__file__).resolve().parents[2] / "docs" / "reference" / "capture-format.md"
+    page = PACKAGE / "docs" / "reference" / "capture-format.md"
     if not page.is_file():
         pytest.skip("not run from the repository")
     assert page.read_text(encoding="utf-8") == REFERENCES["capture-format"]
@@ -232,6 +233,48 @@ def test_every_mission_shown_plans_clean_in_this_build() -> None:
         assert plan.valid, (name, mission["collectors"][0]["name"], plan.problems)
 
 
+def _page_catalog(text: str) -> list[dict[str, Any]]:
+    """The sources a page shows, in a ``catalog:`` block or as a block of source entries
+    alone (a walkthrough that adds one source at a time); a source shown again is its last
+    showing."""
+    sources: list[dict[str, Any]] = []
+    for block in _yaml_blocks(text):
+        try:
+            parsed = yaml.safe_load(block)
+        except yaml.YAMLError:
+            continue  # a fragment of a mapping, shown indented under its key
+        if isinstance(parsed, dict) and isinstance(parsed.get("catalog"), list):
+            sources += parsed["catalog"]
+        elif isinstance(parsed, list) and all(
+            isinstance(i, dict) and ("url" in i or "command" in i) for i in parsed
+        ):
+            sources += parsed
+    return list({source.get("name"): source for source in sources}.values())
+
+
+def test_every_mission_the_docs_and_readme_show_plans_clean_in_this_build() -> None:
+    """The how-tos, the explanation and the README show missions too; a reader copies them
+    as the skill's are copied, so each must plan in this build. A ``collectors:`` block with
+    no ``catalog:`` of its own runs against the sources its page showed."""
+    plugins = composition.load_plugins()
+    pages = [PACKAGE / "README.md", *sorted((PACKAGE / "docs").glob("*/*.md"))]
+    shown = []
+    for page in pages:
+        # The record holds no missions; extending.md's mission uses the plugin type it builds.
+        if "design" in page.parts or page.name == "extending.md":
+            continue
+        text = page.read_text()
+        catalog = _page_catalog(text)
+        shown += [
+            (page.relative_to(PACKAGE), {"catalog": catalog, **mission})
+            for mission in _missions(text)
+        ]
+    assert shown, "the scan found the missions"
+    for page, mission in shown:
+        plan = build_plan(mission, plugins, {})
+        assert plan.valid, (str(page), mission["collectors"][0]["name"], plan.problems)
+
+
 def test_no_pointer_to_a_file_the_command_cannot_print() -> None:
     for name, text in ({"SKILL.md": SKILL} | REFERENCES).items():
         assert not re.search(r"\]\((?!https?:|#)[^)]+\)", text), f"{name}: a relative link"
@@ -331,3 +374,33 @@ def test_the_count_over_a_list_runs(surveyed: Path) -> None:
     [sql] = re.findall(r"`(SELECT author, count\(\*\) AS n FROM \(SELECT unnest[^`]+)`", SKILL)
     rows = json.loads(_invoke("query", "m", sql, "--json").stdout)["rows"]
     assert rows == [{"author": "a", "n": 2}, {"author": "b", "n": 1}]
+
+
+def _taught_sql() -> list[str]:
+    """Every query the skill and its references show: each ```sql block, each `recon query`
+    argument, and each inline `SELECT ...`."""
+    found = []
+    for text in [SKILL, *REFERENCES.values()]:
+        found += re.findall(r"```sql\n(.*?)```", text, re.DOTALL)
+        found += re.findall(r'recon query \S+ "([^"]+)"', text)
+        found += re.findall(r"`(SELECT [^`]+)`", text)
+    return found
+
+
+def test_no_query_the_skill_teaches_is_refused_as_a_write(tmp_path: Path) -> None:
+    """recon query runs SELECT statements only; nothing the skill teaches may be refused for
+    that. A taught query may name a table this archive lacks, which is a different error."""
+    from recon.adapters._out.archive_files import ArchiveFiles
+    from recon.adapters._out.duckdb_query import DuckdbQuery
+    from recon.adapters._out.system_clock import SystemClock
+
+    store = ArchiveFiles(SystemClock())
+    archive = store.create(tmp_path / "m", "2026-01-01-000000-000000")
+    store.write_table(archive, "papers", (r for r in [{"title": "q", "authors": ["a"]}]))
+    taught = _taught_sql()
+    assert len(taught) > 10, taught
+    for sql in taught:
+        try:
+            DuckdbQuery(store).execute(archive, sql)
+        except recon.QueryError as error:
+            assert "statements" not in error.details, sql

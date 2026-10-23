@@ -253,7 +253,7 @@ def _p_two_sided(statistic: float, df: float | None) -> float:
 # --- one sample --------------------------------------------------------------------------
 
 
-def spread(values: Sequence[float]) -> float:
+def sd(values: Sequence[float]) -> float:
     """The sample standard deviation (``n - 1`` in the denominator)."""
     centre = math.fsum(values) / len(values)
     return math.sqrt(math.fsum((value - centre) ** 2 for value in values) / (len(values) - 1))
@@ -263,7 +263,7 @@ def mean(values: Sequence[float]) -> Span:
     """Student's t interval for the mean of ``values``: two or more, not all equal."""
     n = len(values)
     centre = math.fsum(values) / n
-    error = spread(values) / math.sqrt(n)
+    error = sd(values) / math.sqrt(n)
     df = n - 1
 
     def at(alpha: float) -> Ends:
@@ -282,13 +282,22 @@ def mean(values: Sequence[float]) -> Span:
 def median(values: Sequence[float]) -> Span:
     """The order-statistic interval for the median of ``values``: ``[x_(k), x_(n-k+1)]``
     with the largest ``k`` whose coverage ``1 - 2 P(B <= k - 1)`` is at least the level's.
-    Unbounded at a level fewer values cannot reach."""
+    Unbounded at a level fewer values cannot reach. The sign test's tails are summed once,
+    so an interval over thousands of values costs a pass over them."""
     ordered = sorted(values)
     n = len(ordered)
+    # 2 P(B <= k) for every k an interval can use, summed once: in integers, then divided.
+    half = (n + 1) // 2
+    tails: list[float] = []
+    count, total = 1, 0
+    for k in range(half):
+        total += count
+        tails.append(2 * total / (1 << n))
+        count = count * (n - k) // (k + 1)
 
     def at(alpha: float) -> Ends:
         k = 0
-        while k + 1 <= (n + 1) // 2 and 2 * sign_cdf(k, n) <= alpha:
+        while k < half and tails[k] <= alpha:
             k += 1
         if k == 0:
             return -math.inf, math.inf
@@ -296,9 +305,9 @@ def median(values: Sequence[float]) -> Span:
 
     def level(beyond: int) -> float:
         # The low end passes a bound once k exceeds the number of values not above it.
-        if beyond + 1 > (n + 1) // 2:
+        if beyond >= half:
             return math.inf
-        return 2 * sign_cdf(beyond, n)
+        return tails[beyond]
 
     return Span(
         at,
@@ -386,7 +395,11 @@ def clustered_rate(events: Sequence[int], units: Sequence[int]) -> Span:
 
     def level(bound: float, *, low: bool) -> float:
         found = _score_level(rate, total, bound, None, low=low)
-        if effective is None or math.isinf(effective) or not math.isfinite(found) or found == 0:
+        # Over thousands of units the score test's level is often exactly 0; the t test at
+        # the effective size still applies then. Only a bound outside (0, 1) skips it.
+        if effective is None or math.isinf(effective) or not math.isfinite(found):
+            return found
+        if not 0 < bound < 1:
             return found
         return max(found, _score_level(rate, effective, bound, df, low=low))
 
@@ -422,7 +435,8 @@ def ratio(numerator: Sequence[float], denominator: Sequence[float]) -> Span:
     """Fieller's interval for ``mean(numerator) / mean(denominator)``, the two measured in the
     same blocks: the ratios ``R`` for which the t test of the paired values
     ``numerator - R * denominator`` does not reject a mean of zero. Unbounded (``-inf, inf``)
-    at a level where the denominator's own mean is not distinguishable from zero."""
+    at a level where the denominator's own mean is not distinguishable from zero. Two or
+    more pairs, not all equal on both sides."""
     n = len(numerator)
     df = n - 1
     x = math.fsum(numerator) / n

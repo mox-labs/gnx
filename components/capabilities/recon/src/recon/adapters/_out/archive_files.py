@@ -11,10 +11,16 @@
                               table succeeded
       captures.jsonl, raw/    the capture log, when the mission preserves raw
 
-A table that collected nothing holds one sentinel line, ``{"_empty": true}``, so DuckDB can
-still read the file; it is not a record and is not counted. ``meta.yaml`` is read back in
-the current shape whether it was written as ``format_version: 1`` (``collectors`` with an
-``error`` string) or 2 (``tables`` with ``error: {kind, message}``).
+A table that collected nothing holds one sentinel line, ``{"_empty": true}``, so a reader of
+the file sees it was written; it is not a record and is not counted. When the table's
+columns are known (its collector's ``normalize:`` spec), the line keeps them as
+``_columns``. :meth:`ArchiveFiles.tables` describes each table, the sentinel read, so no
+other adapter knows any of this. This is table layout :data:`TABLE_LAYOUT`, which
+``meta.yaml`` names as ``table_layout`` (an archive whose ``meta.yaml`` does not name one is
+in layout 1); a layout this recon does not know is refused rather than misread.
+``meta.yaml`` is read back in the current shape whether it was written as ``format_version:
+1`` (``collectors`` with an ``error`` string) or 2 (``tables`` with ``error: {kind,
+message}``).
 """
 
 from __future__ import annotations
@@ -22,23 +28,28 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.event_log import EventLog
-from recon.domain.archives import EVENT_LOG_NAME
+from recon.domain.archives import ARCHIVE_ID_FORMAT, EVENT_LOG_NAME, StoredTable
 from recon.domain.capture import CAPTURE_LOG_NAME
+from recon.domain.errors import QueryError
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Sequence
     from pathlib import Path
 
     from recon.domain.clock import Clock
 
 INCOMPLETE_MARKER = ".incomplete"
+
+#: The layout of an archive's tables this store writes and reads, named in ``meta.yaml``.
+TABLE_LAYOUT = 1
 
 #: The only line of a table that collected nothing.
 EMPTY_SENTINEL: dict[str, Any] = {"_empty": True}
@@ -58,7 +69,12 @@ class ArchiveFiles:
         return archive
 
     def write_table(
-        self, archive: Path, output: str, records: Generator[dict[str, Any], None, None]
+        self,
+        archive: Path,
+        output: str,
+        records: Generator[dict[str, Any], None, None],
+        *,
+        columns: Sequence[str] = (),
     ) -> int:
         path = archive / f"{output}.jsonl"
         tmp = path.with_suffix(".jsonl.tmp")
@@ -74,7 +90,10 @@ class ArchiveFiles:
                         f.flush()
                         os.fsync(f.fileno())
                 if count == 0:
-                    f.write(json.dumps(EMPTY_SENTINEL) + "\n")
+                    empty = (
+                        {**EMPTY_SENTINEL, "_columns": list(columns)} if columns else EMPTY_SENTINEL
+                    )
+                    f.write(json.dumps(empty) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, path)
@@ -96,8 +115,9 @@ class ArchiveFiles:
     def write_meta(self, archive: Path, meta: dict[str, Any]) -> None:
         path = archive / "meta.yaml"
         tmp = path.with_suffix(".yaml.tmp")
+        stamped = {**meta, "table_layout": TABLE_LAYOUT}
         try:
-            tmp.write_text(yaml.safe_dump(meta, default_flow_style=False, sort_keys=False))
+            tmp.write_text(yaml.safe_dump(stamped, default_flow_style=False, sort_keys=False))
             tmp.replace(path)
         except OSError:
             with contextlib.suppress(OSError):
@@ -108,7 +128,7 @@ class ArchiveFiles:
         archive = mission_dir / "archive"
         if not archive.is_dir():
             return []
-        return sorted(d for d in archive.iterdir() if d.is_dir())
+        return sorted(d for d in archive.iterdir() if d.is_dir() and _is_archive_id(d.name))
 
     def is_incomplete(self, archive: Path) -> bool:
         return (archive / INCOMPLETE_MARKER).exists()
@@ -132,23 +152,65 @@ class ArchiveFiles:
             }
         return {**raw, "tables": [t for t in raw.get("tables") or [] if isinstance(t, dict)]}
 
+    def tables(self, archive: Path) -> list[StoredTable]:
+        layout = self._table_layout(archive)
+        if layout != TABLE_LAYOUT:
+            raise QueryError(
+                f"archive {archive.name} holds its tables in table layout {layout}, which this "
+                f"recon does not read (it reads layout {TABLE_LAYOUT})",
+                fix="upgrade recon to the version that surveyed this archive, or later",
+                details={"archive": str(archive), "table_layout": layout},
+            )
+        tables = []
+        for file in _table_files(archive):
+            columns = _empty_table_columns(file)
+            empty = columns is not None
+            tables.append(StoredTable(file.stem, file, empty, tuple(columns or ())))
+        return tables
 
-def table_files(archive: Path) -> list[Path]:
+    def _table_layout(self, archive: Path) -> Any:
+        """The layout ``meta.yaml`` names; 1, the only one there was before it was named,
+        when it names none or there is no readable ``meta.yaml`` yet (a survey running, or
+        killed)."""
+        try:
+            raw = yaml.safe_load((archive / "meta.yaml").read_text())
+        except (OSError, yaml.YAMLError):
+            return TABLE_LAYOUT
+        return raw.get("table_layout", 1) if isinstance(raw, dict) else TABLE_LAYOUT
+
+
+def _is_archive_id(name: str) -> bool:
+    """Whether ``name`` is one a survey gives its archive: a stray ``notes/`` is not."""
+    try:
+        datetime.strptime(name, ARCHIVE_ID_FORMAT)
+    except ValueError:
+        return False
+    return True
+
+
+def _table_files(archive: Path) -> list[Path]:
     """The archive's tables: every JSONL file but the capture log and the event log."""
     logs = {CAPTURE_LOG_NAME, EVENT_LOG_NAME}
     return [p for p in sorted(archive.glob("*.jsonl")) if p.name not in logs]
 
 
-def is_empty_table(path: Path) -> bool:
-    """True when the table file holds the empty sentinel and nothing else."""
+def _empty_table_columns(path: Path) -> list[str] | None:
+    """The columns an empty table keeps (none when they were not known); None when the file
+    holds anything but the empty sentinel."""
     with open(path, encoding="utf-8") as f:
         first, second = f.readline(), f.readline()
     if second.strip():
-        return False
+        return None
     try:
-        return bool(json.loads(first) == EMPTY_SENTINEL)
+        line = json.loads(first)
     except json.JSONDecodeError:
-        return False
+        return None
+    if not isinstance(line, dict) or line.get("_empty") is not True:
+        return None
+    columns = line.get("_columns", [])
+    if set(line) - {"_empty", "_columns"} or not isinstance(columns, list):
+        return None
+    return [str(column) for column in columns]
 
 
 def _v1_table(entry: dict[str, Any]) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 [project]
 name = "ix"
-version = "0.5.0"
+version = "0.6.0"
 description = "Experiments on agents and services: one file with a genre, validated, planned, registered, run and reported"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,13 +24,22 @@ classifiers = [
 dependencies = [
     # This repository's matrix, not PyPI's project of that name: the workspace's
     # [tool.uv.sources] resolves it, from a checkout and from a git URL alike. Bounded to the
-    # minor ix is built against: before 1.0 a matrix minor may break.
-    "matrix>=0.6,<0.7",
-    "httpx>=0.27",
+    # minor ix is built against: before 1.0 a matrix minor may break. matrix brings every agent
+    # and model runtime, and the OpenTelemetry SDK and OTLP exporters: there are no extras.
+    "matrix>=0.7,<0.8",
+    # Pydantic's maintained continuation of httpx, the stack's one HTTP client; bounded to
+    # the major tested.
+    "httpx2>=2.10,<3",
     "opentelemetry-api>=1.20",
+    # The SDK's tracer provider, which a run whose sensors read spans installs, with no
+    # exporter, when none is installed. Imported only then.
+    "opentelemetry-sdk>=1.20",
     "rich-click>=1.8",
     "rich>=13",
     "pydantic>=2.0",
+    # The evaluator sensor wraps pydantic-evals' evaluators; imported only inside that adapter
+    # (ix.adapters._out.evaluators), so it costs nothing until an experiment names one.
+    "pydantic-evals>=2.59,<3",
 ]
 
 [project.urls]
@@ -52,13 +61,6 @@ ix = "ix.builtin.kinds"
 # extension is; `matrix catalog` lists them.
 [project.entry-points."matrix.extensions"]
 ix = "ix.composition.extension:register"
-
-# An agent session runs on one of matrix's runtimes; each brings what it needs.
-[project.optional-dependencies]
-claude = ["matrix[claude]"]   # the claude-sdk runtime: Claude Agent SDK sessions
-models = ["matrix[models]"]   # the model runtime: one call through hardline (a judge's default)
-otel = ["matrix[otel]"]       # export of ix's and matrix's spans from the OTEL_* variables
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
 ix = "ix.adapters._in.cli:main"

@@ -35,11 +35,13 @@ if TYPE_CHECKING:
 _MISSION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
-def project_root(start: Path) -> Path:
+def find_project(start: Path) -> tuple[Path, str]:
+    """The project root for ``start``, and how it was found: ``repository`` (the nearest
+    ancestor holding ``.git``) or ``working_directory`` (``start`` itself, outside one)."""
     for directory in (start, *start.parents):
         if (directory / ".git").exists():
-            return directory
-    return start
+            return directory, "repository"
+    return start, "working_directory"
 
 
 #: The config path that means standard input.
@@ -120,6 +122,9 @@ class MissionFiles:
                 return sum(1 for line in f if line.strip())
         except OSError:
             return 0
+
+    def is_directory(self, path: Path) -> bool:
+        return path.is_dir()
 
     def templates(self) -> list[Template]:
         files = importlib.resources.files("recon.configs")

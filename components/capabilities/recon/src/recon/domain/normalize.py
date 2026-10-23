@@ -14,15 +14,25 @@ not fail a table. A list-map gives ``None`` when any item lacks the rest of the 
 ``*`` per path; a second is a config error, reported by :func:`spec_problems` before a run.
 
 Transforms are extensions registered under the entry-point group ``recon.transforms`` and
-looked up by name without the ``$``; the pure built-ins live here.
+looked up by name without the ``$``; the pure built-ins live here. A built-in given a value
+of a type it does not take gives ``None``, as a path that does not resolve does: one record
+whose field has an unexpected type must not fail a table.
+
+A transform takes the resolved value. One that needs to know more says so with a
+keyword-only parameter, which whoever holds the answer binds (:func:`bound`): ``roots``, the
+directories a transform that reads files may read under (recon binds the mission's), and
+``base``, the directory a relative path in a record is relative to (a collector that knows
+it binds it: a ``cli`` collector, the directory its command ran in).
 """
 
 from __future__ import annotations
 
+import inspect
+from functools import partial
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any
 
-from recon.domain.errors import ConfigError
+from recon.domain.errors import ConfigError, NoRecordsError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -57,6 +67,24 @@ def _walk(value: Any, keys: list[str]) -> Any:
         rest = keys[index + 1 :]
         return [_walk(item, rest) for item in items] if rest else items
     return value
+
+
+def bound(transforms: Mapping[str, Transform], **values: Any) -> dict[str, Transform]:
+    """``transforms``, each given those of ``values`` it takes as keyword-only parameters."""
+    return {name: _bind(fn, values) for name, fn in transforms.items()}
+
+
+def _bind(fn: Transform, values: Mapping[str, Any]) -> Transform:
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # a callable whose signature cannot be read takes none
+        return fn
+    taken = {
+        name: value
+        for name, value in values.items()
+        if name in parameters and parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    return partial(fn, **taken) if taken else fn
 
 
 def path_problem(path: str) -> str | None:
@@ -145,14 +173,57 @@ def apply_normalize(
 def to_records(data: Any, extract: str | None) -> list[dict[str, Any]]:
     """The records in a parsed body: the value at ``extract`` (or the body), as a list of
     objects. A single object is one record; anything in a list that is not an object is
-    dropped."""
+    dropped. An empty body, or an empty list at ``extract``, has no records.
+
+    Raises NoRecordsError when a body that is not empty gives none: ``extract`` resolves to
+    nothing (absent, or null) in it, or what it names holds no object (a list of ids, a
+    string), so an empty table is never mistaken for a source that had nothing.
+    """
+    where = f"extract: {extract}" if extract else "the response"
     if extract and isinstance(data, dict | list):
-        data = resolve_path(data, extract)
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
+        found = resolve_path(data, extract)
+        if found is None and data:
+            raise NoRecordsError(
+                f"extract: {extract} resolved to nothing in a response that is not empty; "
+                f"its top level holds {_shape(data)}",
+                problem_kind="extract_unresolved",
+                field="extract",
+                fix="set extract: to the path of the records (survey once without it to see "
+                "the response whole), or read the response for an error the source sent with "
+                "a success status; a source that leaves the key out when it has no results "
+                "gives this too",
+            )
+        data = found
     if isinstance(data, dict):
         return [data]
-    return []
+    if isinstance(data, list):
+        records = [item for item in data if isinstance(item, dict)]
+        if data and not records:
+            raise _not_objects(f"the {len(data)} items at {where} are {_types(data)}, not objects")
+        return records
+    if data is None or data == "":
+        return []
+    raise _not_objects(f"{where} is a {type(data).__name__}, not an object or a list of them")
+
+
+def _not_objects(message: str) -> NoRecordsError:
+    return NoRecordsError(
+        f"{message}: a record is an object",
+        problem_kind="records_not_objects",
+        field="extract",
+        fix="point extract: at a list of objects (or at one object), not at its ids or names",
+    )
+
+
+def _shape(data: dict[str, Any] | list[Any]) -> str:
+    if isinstance(data, list):
+        return f"a list of {len(data)}"
+    keys = sorted(map(str, data))
+    return ", ".join(keys[:8]) + (f" and {len(keys) - 8} more" if len(keys) > 8 else "")
+
+
+def _types(items: list[Any]) -> str:
+    return " and ".join(sorted({type(item).__name__ for item in items}))
 
 
 def nested_records(record: dict[str, Any], *, depth: int = 4) -> tuple[str, int] | None:
@@ -208,34 +279,49 @@ class _TextExtractor(HTMLParser):
             self.parts.append(data)
 
 
-def html2text(html: str | None) -> str:
-    """The text of an HTML fragment: tags, scripts and styles removed, one line per block."""
-    if not html:
+def html2text(html: object) -> str | None:
+    """The text of an HTML fragment: tags, scripts and styles removed, one line per block;
+    None for a value that is not text."""
+    if html is None or html == "":
         return ""
+    if not isinstance(html, str):
+        return None
     parser = _TextExtractor()
     parser.feed(html)
     lines = "".join(parser.parts).splitlines()
     return "\n".join(line.strip() for line in lines if line.strip())
 
 
-def inverted_index(index: dict[str, list[int]] | None) -> str:
-    """The text an OpenAlex ``abstract_inverted_index`` encodes (word -> positions)."""
-    if not index:
+def inverted_index(index: object) -> str | None:
+    """The text an OpenAlex ``abstract_inverted_index`` encodes (word -> positions); None for
+    a value that is not an object of lists of positions."""
+    if index is None or index == {}:
         return ""
+    if not isinstance(index, dict) or not all(_positions(p) for p in index.values()):
+        return None
     placed = sorted((position, word) for word, positions in index.items() for position in positions)
     return " ".join(word for _, word in placed)
 
 
-def join(items: list[object] | None, separator: str = ", ") -> str:
-    if not items:
+def _positions(value: object) -> bool:
+    return isinstance(value, list) and all(type(item) is int for item in value)
+
+
+def join(items: object, separator: str = ", ") -> str | None:
+    """The items as text, separated; None for a value that is not a list."""
+    if items is None or items == []:
         return ""
+    if not isinstance(items, list):
+        return None
     return separator.join(str(item) for item in items)
 
 
-def first(items: list[object] | None) -> object | None:
-    if not items:
+def first(items: object) -> object | None:
+    """The first item of a list; None for an empty list or a value that is not one."""
+    if not isinstance(items, list) or not items:
         return None
-    return items[0]
+    item: object = items[0]
+    return item
 
 
 #: The pure built-ins. ``$markitdown`` is built in too, but it reads a file, so it is an

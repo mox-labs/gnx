@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 #: know: the set grows. The first eight are the kinds every capability shares
 #: (``components/capabilities/error-envelope.json``): ``name_unknown`` is a genre, kind,
 #: subject or parent genre named and not defined, ``name_taken`` a genre, kind or probe id
-#: defined twice; the rest are ix's.
+#: defined twice, or a sensor kind listed twice; the rest are ix's.
 PROBLEM_KINDS: frozenset[str] = frozenset(
     {
         # shared: the file as a document, and names
@@ -54,6 +54,7 @@ PROBLEM_KINDS: frozenset[str] = frozenset(
         "option_invalid",
         "option_inapplicable",
         "unobservable",
+        "adapter_failed",
         # metrics and the decision
         "metric_unprovided",
         "metric_ambiguous",
@@ -63,12 +64,10 @@ PROBLEM_KINDS: frozenset[str] = frozenset(
         "estimator_illegal",
         "judged_gate",
         "unit_mismatch",
-        # probes, placeholders and spend
+        # probes and placeholders
         "probes_empty",
         "truth_unclaimed",
         "unbound_placeholder",
-        "spend_over_ceiling",
-        "spend_unbounded",
         # genre and kind files
         "genre_invalid",
         "genre_depth",
@@ -86,7 +85,9 @@ PROBLEM_KINDS: frozenset[str] = frozenset(
 
 #: matrix's own kinds, which a problem carried over from matrix (a run that could not be
 #: wired, a telemetry warning) may have. ``validate`` reports none of them.
-CARRIED_KINDS: frozenset[str] = frozenset({"unprovided", "cycle", "extra_missing", "permissive"})
+CARRIED_KINDS: frozenset[str] = frozenset(
+    {"unprovided", "cycle", "dependency_missing", "permissive"}
+)
 
 
 class Problem(Record):

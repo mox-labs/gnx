@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Payload intake — translate a cix plugin unit into a gnx component payload.
+"""Payload intake — translate a source plugin unit into a gnx component payload.
 
 Bench step 3 ("pristine pass") made repeatable. This tool does the *mechanical*
 half of the translation the claim-extraction exemplar did by hand:
@@ -9,8 +9,8 @@ half of the translation the claim-extraction exemplar did by hand:
   2. Relocate `<example>` / `<commentary>` blocks out of `description` and into a
      "## When to invoke" body section as prose bullets, then leave `description` as
      a prose trigger summary that points at it. This is the format plugin-dev's
-     agent-development skill documents as current; cix authored the older XML-in-
-     description form.
+     agent-development skill documents as current; the source plugins authored the
+     older XML-in-description form.
   3. Repair the defects the survey found: colors outside the documented palette,
      and a missing required `model`.
   4. Record — never silently drop — every plugin-relative dependency, so the
@@ -22,8 +22,12 @@ scenarios, and the whole system prompt travel verbatim. Voice is the author's;
 this tool only moves text and fixes enumerated fields.
 
 Usage:
-  intake_payload.py --plan            # print what would change, write nothing
-  intake_payload.py --apply           # write components/ + the ledger
+  intake_payload.py --source-root DIR --plan     # print what would change, write nothing
+  intake_payload.py --source-root DIR --apply    # write components/ + the ledger
+
+DIR is the plugins directory of the plugin repository the units are lifted from: it
+holds <plugin>/agents/*.md and <plugin>/skills/*/SKILL.md. Ledger `source:` entries are
+recorded relative to it.
 
 Exit 0 = clean, 1 = a unit could not be translated (nothing written for it).
 """
@@ -39,9 +43,8 @@ from pathlib import Path
 import yaml
 
 GNX = Path(__file__).resolve().parent.parent
-CIX = Path.home() / "mox" / "products" / "cix" / "plugins"
 
-# The palette Claude Code documents. cix used six colors outside it; each maps to
+# The palette Claude Code documents. The source plugins used six colors outside it; each maps to
 # the documented color closest in *role*, per plugin-dev's own semantics
 # (blue/cyan = analysis+review, green = success, yellow = caution+validation,
 # red = critical+security, magenta = creative+generation).
@@ -56,7 +59,8 @@ VALID_COLORS = {"blue", "cyan", "green", "yellow", "magenta", "red"}
 VALID_MODELS = {"inherit", "sonnet", "opus", "haiku"}
 
 # Plugins that carry gen-0 units. `_radix.parked-while-tuning` is excluded: radix is
-# a declarative-only Capability that already landed, and cix itself parked it.
+# a declarative-only Capability that already landed, and the source repository itself
+# parked it.
 PLUGINS = [
     "antifragile",
     "ci-scaffolds",
@@ -76,7 +80,7 @@ COMMENTARY = re.compile(r"<commentary>(.*?)</commentary>", re.S)
 
 
 class Unit:
-    """One cix unit and its translated form."""
+    """One source unit and its translated form."""
 
     def __init__(self, plugin: str, kind: str, name: str, path: Path):
         self.plugin, self.kind, self.name, self.path = plugin, kind, name, path
@@ -105,7 +109,7 @@ def split_frontmatter(text: str) -> tuple[dict, str] | None:
 def parse_examples(desc: str) -> tuple[str, list[dict]]:
     """Split a description into (lead prose, [scenario, ...]).
 
-    A scenario keeps every line cix wrote — context, the user/assistant exchange,
+    A scenario keeps every line the author wrote — context, the user/assistant exchange,
     and the commentary — so relocating it loses nothing.
     """
     lead = desc[: desc.find("<example>")] if "<example>" in desc else desc
@@ -166,7 +170,7 @@ def build_description(lead: str, scenarios: list[dict]) -> str:
     """Prose trigger summary + pointer. The lead travels verbatim."""
     text = lead
     # The validator and the guidance both want the "use this agent when" pattern.
-    # cix wrote "Use when:" — the smallest faithful edit reaches the documented form.
+    # The source units wrote "Use when:" — the smallest faithful edit reaches the documented form.
     if not re.search(r"use this agent when", text, re.I):
         if re.search(r"\bUse when\b", text):
             text = re.sub(r"\bUse when\b", "Use this agent when", text, count=1)
@@ -178,7 +182,7 @@ def build_description(lead: str, scenarios: list[dict]) -> str:
     clauses = [c for c in clauses if c]
     parts = [" ".join(text.split())]
     if clauses:
-        # cix's Context lines are full sentences, not noun phrases, so plugin-dev's
+        # The source Context lines are full sentences, not noun phrases, so plugin-dev's
         # "Typical triggers include X and Y" template produces ungrammatical text
         # ("include code review shows questionable naming"). A colon-list carries the
         # same information and stays grammatical whatever shape the clause is.
@@ -225,7 +229,7 @@ def translate(unit: Unit) -> None:
     desc = str(fm.get("description", "") or "")
     lead, scenarios = parse_examples(desc)
 
-    # --- model: required; cix left it off one unit.
+    # --- model: required; one source unit left it off.
     model = fm.get("model")
     if model is None:
         model = "inherit"
@@ -250,12 +254,13 @@ def translate(unit: Unit) -> None:
     if tools is None:
         unit.notes.append("no `tools` field — inherits all tools (as authored)")
 
-    # --- skills: not a documented Claude Code field. It is cix's plugin-relative
-    #     dependency pointer. Preserved (dropping it would destroy provenance) AND
-    #     recorded in the ledger so manifest relations can be generated later.
-    #     cix authored this field inconsistently: a YAML list on some units, a bare
-    #     comma-separated string on others ("research, auditing"). Normalise to a list
-    #     so the ledger records two dependencies, not one named "research, auditing".
+    # --- skills: not a documented Claude Code field. It is the source plugins'
+    #     plugin-relative dependency pointer. Preserved (dropping it would destroy
+    #     provenance) AND recorded in the ledger so manifest relations can be generated
+    #     later. The source units authored this field inconsistently: a YAML list on
+    #     some units, a bare comma-separated string on others ("research, auditing").
+    #     Normalise to a list so the ledger records two dependencies, not one named
+    #     "research, auditing".
     skills = fm.get("skills")
     if skills:
         if isinstance(skills, str):
@@ -316,11 +321,11 @@ def render(unit: Unit) -> str:
 
 
 def translate_skill(unit: Unit) -> None:
-    """Skills need far less repair than agents: cix already authored third-person
-    descriptions with trigger phrases, and there is no model/color/tools surface.
+    """Skills need far less repair than agents: the source skills already carry
+    third-person descriptions with trigger phrases, and there is no model/color/tools surface.
 
     Body length is *reported*, never rewritten. plugin-dev targets 1,500-2,000 words
-    with detail pushed into references/; several cix skills exceed it. Restructuring
+    with detail pushed into references/; several source skills exceed it. Restructuring
     authored prose is a content decision, not a mechanical translation, so this tool
     surfaces the deviation and leaves the text alone.
     """
@@ -339,7 +344,7 @@ def translate_skill(unit: Unit) -> None:
 
     desc = str(fm["description"])
     if not re.search(r"this skill should be used", desc, re.I):
-        # cix wrote "Use when the user asks to ..." on two units — second person.
+        # Two source units wrote "Use when the user asks to ..." — second person.
         # The documented form is third person; this is the smallest faithful edit.
         if re.match(r"^\s*Use when\b", desc):
             desc = re.sub(r"^\s*Use when\b", "This skill should be used when", desc, count=1)
@@ -359,13 +364,13 @@ def translate_skill(unit: Unit) -> None:
     unit.fm, unit.body = fm, body.lstrip("\n")
 
 
-def known_unit_names() -> set[str]:
+def known_unit_names(root: Path) -> set[str]:
     """Every gen-0 unit name, for sibling-reference detection."""
     names = set()
     for plugin in PLUGINS:
-        for p in (CIX / plugin / "agents").glob("*.md"):
+        for p in (root / plugin / "agents").glob("*.md"):
             names.add(p.stem)
-        for p in (CIX / plugin / "skills").glob("*/SKILL.md"):
+        for p in (root / plugin / "skills").glob("*/SKILL.md"):
             names.add(p.parent.name)
     return names
 
@@ -373,7 +378,7 @@ def known_unit_names() -> set[str]:
 def find_sibling_refs(body: str, self_name: str, names: set[str]) -> list[str]:
     """Backticked references to other gen-0 units.
 
-    Inside a cix plugin these resolved implicitly by co-location. As independent gnx
+    Inside a source plugin these resolved implicitly by co-location. As independent gnx
     components they are cross-component edges, so they get recorded for the manifest
     pass instead of quietly becoming prose that points at nothing.
     """
@@ -384,14 +389,14 @@ def find_sibling_refs(body: str, self_name: str, names: set[str]) -> list[str]:
     return sorted(found)
 
 
-def collect() -> list[Unit]:
+def collect(root: Path) -> list[Unit]:
     units: list[Unit] = []
     for plugin in PLUGINS:
-        for path in sorted((CIX / plugin / "agents").glob("*.md")):
+        for path in sorted((root / plugin / "agents").glob("*.md")):
             if (plugin, path.stem) in ALREADY_PORTED:
                 continue
             units.append(Unit(plugin, "agents", path.stem, path))
-        for path in sorted((CIX / plugin / "skills").glob("*/SKILL.md")):
+        for path in sorted((root / plugin / "skills").glob("*/SKILL.md")):
             units.append(Unit(plugin, "skills", path.parent.name, path))
     return units
 
@@ -401,10 +406,28 @@ def main(argv: list[str]) -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--plan", action="store_true", help="report only, write nothing")
     g.add_argument("--apply", action="store_true", help="write payloads + ledger")
+    ap.add_argument(
+        "--source-root",
+        type=Path,
+        metavar="DIR",
+        help="plugins directory of the plugin repository the units are lifted from "
+        "(holds <plugin>/agents and <plugin>/skills)",
+    )
     args = ap.parse_args(argv[1:])
 
-    units = collect()
-    names = known_unit_names()
+    root = args.source_root
+    if root is None:
+        ap.error(
+            "--source-root is required: pass the plugins directory the units are "
+            "lifted from (it holds <plugin>/agents and <plugin>/skills)"
+        )
+    root = root.expanduser().resolve()
+    missing = [p for p in PLUGINS if not (root / p).is_dir()]
+    if missing:
+        ap.error(f"--source-root {root} does not hold the expected plugins: {', '.join(missing)}")
+
+    units = collect(root)
+    names = known_unit_names(root)
     for u in units:
         if u.kind == "skills":
             translate_skill(u)
@@ -416,7 +439,7 @@ def main(argv: list[str]) -> int:
     failed = [u for u in units if u.error]
     ok = [u for u in units if not u.error]
 
-    print(f"{len(units)} units collected from cix ({len(failed)} unparseable)\n")
+    print(f"{len(units)} units collected from {root} ({len(failed)} unparseable)\n")
     for u in ok:
         bits = []
         if u.repairs:
@@ -443,8 +466,8 @@ def main(argv: list[str]) -> int:
         dest = GNX / "components" / u.kind / u.name
         dest.mkdir(parents=True, exist_ok=True)
         entry = {
-            "source": f"cix/plugins/{u.plugin}/{u.kind}/{u.name}"
-                      + (".md" if u.kind == "agents" else "/SKILL.md"),
+            # Relative to --source-root, so the ledger names no machine's layout.
+            "source": u.path.relative_to(root).as_posix(),
             "plugin": u.plugin,
             "repairs": u.repairs,
             "notes": u.notes,
@@ -474,9 +497,11 @@ def main(argv: list[str]) -> int:
     (GNX / "harness" / "intake-ledger.yaml").write_text(
         "# Generated by harness/intake_payload.py --apply.\n"
         "# The record bench step 5 asks for, in a form manifests can be generated from\n"
-        "# once slick lands. `skills_dependency` is cix's plugin-relative pointer: each\n"
-        "# entry names a skill that is now its own gnx component, so these become\n"
-        "# manifest relations rather than bundled copies (INTAKE.md bench finding).\n"
+        "# once slick lands. `source` is relative to --source-root, the plugins directory\n"
+        "# the units were lifted from. `skills_dependency` is the source plugins'\n"
+        "# plugin-relative pointer: each entry names a skill that is now its own gnx\n"
+        "# component, so these become manifest relations rather than bundled copies\n"
+        "# (INTAKE.md bench finding).\n"
         + yaml.safe_dump(ledger, sort_keys=True, allow_unicode=True, width=100)
     )
     print(f"\nwrote {len(ok)} payloads + harness/intake-ledger.yaml")

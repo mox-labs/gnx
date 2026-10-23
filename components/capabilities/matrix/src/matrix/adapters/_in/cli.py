@@ -2,19 +2,18 @@
 
     matrix --skill [-r NAME]                the skill an agent reads, or one of its references
     matrix catalog [--point P] [--json]     every registered extension, and any that failed
-    matrix describe TYPE_URL [--json]       one extension: config schema, needs, effects
+    matrix describe TYPE_URL [--json]       one extension: config schema, needs
     matrix config [CONFIG]... [--sources]   the merged config a tool would see, and its files
     matrix check [CONFIG]... [--json]       compose runtimes and agents, wire the components
     matrix agents [CONFIG]... [--json]      the agents a config defines, with their runtimes
-    matrix plan [CONFIG]... [--json]        what a run would do and spend; runs nothing
+    matrix plan [CONFIG]... [--json]        what a run would do; runs nothing
     matrix run [CONFIG]... [--input KIND=PATH]... [--run-id ID] [--from RUN_ID] [--json]
-    matrix runs [CONFIG]... [--json]        the runs the configured store keeps, oldest first,
-                                            with what each spent
+    matrix runs [CONFIG]... [--json]        the runs the configured store keeps, oldest first
 
 Every command that reads config reads the tool's tiers (``--tool T``, default ``matrix``),
 with each ``CONFIG`` above them, in order, when any is named; ``-`` reads one from standard
 input. ``--only`` reads the ``CONFIG`` files alone, none of the tiers. ``plan`` before
-``run``: the plan is free, the run may spend.
+``run``: the plan calls nothing, the run may call models.
 
 Data goes to stdout, diagnostics to stderr. With ``--json``, every document carries a
 ``schema`` and its ``warnings``, and an error of any kind, a usage error and a defect
@@ -125,7 +124,7 @@ def catalog(point: str | None, as_json: bool) -> None:
 @click.argument("type_url")
 @_json_option
 def describe(type_url: str, as_json: bool) -> None:
-    """Show one extension's config schema, needs and effects."""
+    """Show one extension's config schema and needs."""
     found = matrix.describe_extension(type_url)
     text = "\n\n".join(json.dumps(e.document(), indent=2) for e in found.entries)
     _emit(found.document(), as_json, text)
@@ -156,8 +155,9 @@ def check(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> None
     """Compose runtimes and agents, wire components; call nothing."""
     report = matrix.check_config(tool, _locations(config), only=only)
     text = (
-        f"ok: {len(report.runtimes)} runtimes, {len(report.agents)} agents compose, "
-        f"{len(report.components)} components wire (nothing was called)"
+        f"ok: {len(report.agent_runtimes)} agent runtimes, {len(report.model_runtimes)} model "
+        f"runtimes, {len(report.agents)} agents compose, {len(report.components)} components "
+        "wire (nothing was called)"
     )
     _warn(report.warnings, as_json)
     _emit(report.document(), as_json, text)
@@ -182,24 +182,25 @@ def agents(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> Non
 @_only_option
 @_json_option
 def plan(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> None:
-    """Say what a run would do and spend: the order of work, each component's effects, the
-    agents and runtimes in use, every problem at once. Runs nothing."""
+    """Say what a run would do: the order of work, the agents and runtimes in use, how many
+    agent and model calls it makes, every problem at once. Runs nothing."""
     found = matrix.plan_config(tool, _locations(config), only=only)
     lines = [f"inputs: {', '.join(found.inputs) or '(none)'}"]
     for number, stage in enumerate(found.stages, start=1):
         lines.append(f"stage {number}: {', '.join(stage)}")
     for c in found.components:
-        effects = "unknown" if c.effects is None else ", ".join(c.effects) or "none"
-        agent = f" (agent {c.agent} on {c.runtime})" if c.agent else ""
-        lines.append(f"  {c.name:<20} {c.type}{agent}; effects: {effects}")
-    spend = found.spend
-    calls = "unknown" if spend.agent_calls_max is None else spend.agent_calls_max
-    cost = "unknown" if spend.cost_usd_max is None else f"${spend.cost_usd_max:.2f}"
-    ceiling = "" if spend.ceiling_usd is None else f", ceiling ${spend.ceiling_usd:.2f}"
-    lines.append(
-        f"spend: {spend.agent_calls_min} to {calls} agent calls, at most {cost}{ceiling} "
-        f"({spend.note})"
-    )
+        if c.agent:
+            on = f" (agent {c.agent} on {c.runtime})"
+        elif c.runtime:
+            on = f" (model {c.model or 'default'} on {c.runtime})"
+        else:
+            on = ""
+        lines.append(f"  {c.name:<20} {c.type}{on}")
+    for what, low, high in (
+        ("agent", found.agent_calls_min, found.agent_calls_max),
+        ("model", found.model_calls_min, found.model_calls_max),
+    ):
+        lines.append(f"{what} calls: {low} to {'unknown' if high is None else high}")
     lines.append(f"record: {found.store.location}")
     _warn(found.warnings, as_json)
     _emit(found.document(), as_json, "\n".join(lines))
@@ -235,7 +236,7 @@ def run_command(
     as_json: bool,
 ) -> None:
     """Run the configured components, recorded in the configured store. `matrix plan` first:
-    a run may call models and spend."""
+    a run may call models."""
     if reuse_from is not None and inputs:
         raise matrix.UsageError(
             "--from takes the recorded run's inputs; --input cannot be given with it",
@@ -317,20 +318,15 @@ def run_command(
 @_only_option
 @_json_option
 def runs(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> None:
-    """List the runs the configured store keeps, oldest first: id, status, start, where.
-    Builds only the store, so a config that does not compose still lists its runs."""
+    """List the runs the configured store keeps, oldest first: id, status, start, where;
+    then each record it skipped as damaged, with why. Builds only the store, so a config
+    that does not compose still lists its runs."""
     found = matrix.list_runs(tool, _locations(config), only=only)
     lines = [
-        f"{r.run_id:<26} {r.status:<11} {r.started or '-':<34} {_spent(r.spend_usd):<10} "
-        f"{r.location}"
-        for r in found.runs
-    ]
-    _emit(found.document(), as_json, "\n".join(lines) or "(no runs)")
-
-
-def _spent(spend_usd: float | None) -> str:
-    """What a run spent, as ``matrix runs`` prints it: ``-`` when no session reported a cost."""
-    return "-" if spend_usd is None else f"${spend_usd:.4f}"
+        f"{r.run_id:<26} {r.status:<11} {r.started or '-':<34} {r.location}" for r in found.runs
+    ] or ["(no runs)"]
+    lines += [f"damaged: {d.location}: {d.reason}" for d in found.damaged]
+    _emit(found.document(), as_json, "\n".join(lines))
 
 
 def _tables(container: matrix.Container, run_id: str) -> dict[str, Any]:
@@ -353,7 +349,7 @@ def _files(tables: dict[str, Any]) -> list[str]:
         f"  {str(info.get('file', '')):<{width}}  {_rows_of(info.get('rows', 0))} of {kind}"
         for kind, info in tables.items()
     ]
-    lines.append(f"  {'events.jsonl':<{width}}  the events, one a line; each agent's task as sent")
+    lines.append(f"  {'events.jsonl':<{width}}  the events, one a line: telemetry, lossy, no facts")
     lines.append("reading a run: matrix --skill -r running")
     return lines
 

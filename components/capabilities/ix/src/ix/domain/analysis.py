@@ -59,7 +59,8 @@ test's p-value where the interval inverts a test, otherwise searched down to 1e-
 **Calibration is a check.** Under A/A calibration the control runs twice in every block. The
 control's second sample is compared with its first, with the same method, at the level
 :data:`CHECK_LEVEL` shared out over every such check (Bonferroni), so a stable environment
-fails the check in at most one run in a hundred. A check that finds the control differing
+fails the check in at most one run in a hundred. A control that reads the same in both
+samples of every block held still, and passes. A check that finds the control differing
 from itself, or that cannot be made, makes the run inconclusive and says why. It never
 changes an interval.
 
@@ -92,12 +93,13 @@ Limits:
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from ix.domain import intervals
 from ix.domain.errors import ConfigError
-from ix.domain.experiment import ESTIMATORS, STATISTICS, Level
+from ix.domain.experiment import STATISTICS, Level, default_estimator
 from ix.domain.genre import CONTROL
 from ix.domain.intervals import MEDIAN_MIN, Span
 from ix.domain.run import CALIBRATION, cell_key, turns
@@ -256,7 +258,7 @@ class Analysis(Record):
     #: How many decisions Holm's procedure corrected together on the ``fails`` side.
     family: int = 0
     #: Holds only if every finding holds; fails if any fails; inconclusive, with ``reason``,
-    #: when the calibration check does not pass.
+    #: when the calibration check does not pass or no trial was carried out.
     outcome: Outcome | None = None
     reason: str = ""
     findings: tuple[Finding, ...] = ()
@@ -269,12 +271,6 @@ class Analysis(Record):
 # --- the run's data ----------------------------------------------------------------------
 
 
-def _median(values: Sequence[float]) -> float:
-    ordered = sorted(values)
-    middle = len(ordered) // 2
-    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
-
-
 def _mean(values: Sequence[float]) -> float:
     return math.fsum(values) / len(values)
 
@@ -282,7 +278,7 @@ def _mean(values: Sequence[float]) -> float:
 _COMBINE: dict[str, Callable[[Sequence[float]], float]] = {
     "mean": _mean,
     "rate": _mean,
-    "median": _median,
+    "median": statistics.median,
     "min": min,
     "max": max,
 }
@@ -387,7 +383,7 @@ class _Data:
 
 def _reductions(ref: MetricRef | Guardrail, metric: Metric) -> tuple[str, str]:
     statistic = ref.statistic or STATISTICS[metric.shape][0]
-    estimator = ref.estimator or ESTIMATORS[metric.shape][0]
+    estimator = ref.estimator or default_estimator(metric.shape)
     return statistic, estimator
 
 
@@ -558,15 +554,14 @@ def _gap(
             return _Estimated(n, problem="the control read 0 in a block, so there is no "
                               "relative difference there")  # fmt: skip
         relative = [(a - b) / abs(b) * 100 for a, b in zip(mine, base, strict=True)]
-        return _numbers(relative, "median", _median(relative))
+        return _numbers(relative, "median", statistics.median(relative))
 
     control_mean = _mean(base)
     if control_mean == 0:
         return _Estimated(n, problem="the control's estimate is 0, so there is no relative "
                           "difference")  # fmt: skip
     value = (_mean(mine) - control_mean) / abs(control_mean) * 100
-    ratio = _mean(mine) / control_mean
-    if all(a == ratio * b for a, b in zip(mine, base, strict=True)):
+    if min(mine) == max(mine) and min(base) == max(base):
         return _Estimated(n, value, problem=_FLAT)
     # The relative difference is (R - 1), turned when the control's mean is negative.
     span = intervals.ratio(mine, base).scaled(100.0, -100.0)
@@ -579,7 +574,7 @@ _JUDGED = "judged by a model: it never decides"
 
 
 @dataclass(frozen=True, eq=False)
-class _Pending:
+class Pending:
     """A decision before the family is settled: what it would be, and the smallest level at
     which it would be made. ``level`` is None only for a decision outside the family (judged
     by a model), and ``math.inf`` when no level makes it or it could not be computed."""
@@ -589,7 +584,7 @@ class _Pending:
     level: float | None = None
 
 
-def _settle(pending: Sequence[_Pending]) -> dict[_Pending, Decision]:
+def settle_family(pending: Sequence[Pending]) -> dict[Pending, Decision]:
     """Each decision as the family allows it. ``holds`` is read at the full level (the
     verdict needs every decision to hold); ``fails`` by Holm's step-down procedure over the
     whole family (the verdict needs only one to fail): in order of level, the decision at
@@ -599,12 +594,12 @@ def _settle(pending: Sequence[_Pending]) -> dict[_Pending, Decision]:
     size = len(family)
     settled = {item: item.decision for item in pending}
 
-    def fails_level(item: _Pending) -> float:
+    def fails_level(item: Pending) -> float:
         return item.level if item.candidate == "fails" and item.level is not None else math.inf
 
     #: For each decision whose candidate is ``fails``: its Holm level, and whether the
     #: step-down reached it before stopping.
-    holm: dict[_Pending, tuple[float, bool]] = {}
+    holm: dict[Pending, tuple[float, bool]] = {}
     going = True
     for index, item in enumerate(sorted(family, key=fails_level)):
         step = _ALPHA / (size - index)
@@ -650,7 +645,7 @@ def _threshold_levels(threshold: Threshold, span: Span) -> tuple[float, float]:
 
 def _against_threshold(
     data: _Data, who: _SubjectInCell, measure: _Measure, threshold: Threshold
-) -> _Pending:
+) -> Pending:
     metric = measure.metric
     own = _own(data, who, measure)
     decision = Decision(
@@ -667,13 +662,13 @@ def _against_threshold(
         n=own.n,
     )
     if metric.judged:
-        return _Pending(decision.model_copy(update={"reason": _JUDGED}))
+        return Pending(decision.model_copy(update={"reason": _JUDGED}))
     if own.span is None:
         reason = own.problem or _too_few(own.n, MIN_BLOCKS)
-        return _Pending(decision.model_copy(update={"reason": reason}), level=math.inf)
+        return Pending(decision.model_copy(update={"reason": reason}), level=math.inf)
     low, high = own.span(_ALPHA)
     candidate, level = _nearer(*_threshold_levels(threshold, own.span))
-    return _Pending(
+    return Pending(
         decision.model_copy(update={"interval": Interval(low=low, high=high)}), candidate, level
     )
 
@@ -714,7 +709,7 @@ def _against_control(
     *,
     form: Form,
     margin: Margin | None,
-) -> _Pending:
+) -> Pending:
     metric = measure.metric
     basis = _basis(measure, margin)
     decision = Decision(
@@ -728,11 +723,11 @@ def _against_control(
         better=metric.direction,
     )
 
-    def undecided(reason: str, **update: object) -> _Pending:
-        return _Pending(decision.model_copy(update={"reason": reason, **update}), level=math.inf)
+    def undecided(reason: str, **update: object) -> Pending:
+        return Pending(decision.model_copy(update={"reason": reason, **update}), level=math.inf)
 
     if metric.judged:
-        return _Pending(decision.model_copy(update={"reason": _JUDGED}))
+        return Pending(decision.model_copy(update={"reason": _JUDGED}))
     if metric.direction not in ("higher", "lower"):
         return undecided("the metric has no better direction")
     if form != "superiority" and margin is None:
@@ -746,7 +741,7 @@ def _against_control(
     gain = gap.span if metric.direction == "higher" else gap.span.negated()
     limit = margin.value if margin is not None else 0.0
     candidate, level = _nearer(*_comparison_levels(form, limit, gain))
-    return _Pending(
+    return Pending(
         decision.model_copy(update={**measured, "interval": Interval(low=low, high=high)}),
         candidate,
         level,
@@ -792,6 +787,18 @@ def _check(data: _Data, asked: _Checked, level: float) -> CalibrationCheck:
         difference=gap.value,
         confidence=1 - level,
     )
+    if gap.span is None and gap.problem == _FLAT and gap.value is not None:
+        # Both samples read alike in every block: the control held still, or moved by the
+        # same amount every time. Either is plain without an interval.
+        if gap.value == 0:
+            return check.model_copy(update={"stable": True})
+        return check.model_copy(
+            update={
+                "stable": False,
+                "reason": "the control differs from its own second sample by the same amount "
+                "in every block",
+            }
+        )
     if gap.span is None:
         return check.model_copy(update={"reason": f"the check could not be made: {gap.problem}"})
     low, high = gap.span(level)
@@ -824,10 +831,14 @@ def _unsettled(checks: Sequence[CalibrationCheck]) -> str:
     for check in checks:
         if check.stable is not True:
             where = cell_key(check.cell)
+            consequence = (
+                "the environment did not hold still enough to read a difference in"
+                if check.stable is False
+                else "nothing shows the environment held still enough to read a difference in"
+            )
             return (
                 f"calibration: on {check.metric} {check.statistic} in cell {where}, "
-                f"{check.reason}; the environment did not hold still enough to read a "
-                "difference in"
+                f"{check.reason}; {consequence}"
             )
     return ""
 
@@ -858,7 +869,7 @@ def _estimates(data: _Data) -> tuple[Estimate, ...]:
             measures.setdefault((metric.name, measured.statistic, measured.estimator), measured)
     for metric in design.metrics:
         if not any(name == metric.name for name, _, _ in measures):
-            defaults = (STATISTICS[metric.shape][0], ESTIMATORS[metric.shape][0])
+            defaults = (STATISTICS[metric.shape][0], default_estimator(metric.shape))
             measures[(metric.name, *defaults)] = _Measure("primary", metric, *defaults)
     found = []
     for cell in data.cells:
@@ -922,11 +933,11 @@ class _Asked:
 
 def _decisions(
     data: _Data, who: _SubjectInCell, primary: _Measure, asked: _Asked
-) -> tuple[_Pending, ...]:
+) -> tuple[Pending, ...]:
     """Every decision a subject's finding in one cell depends on, before the family is
     settled."""
     design = data.design
-    found: list[_Pending] = []
+    found: list[Pending] = []
 
     def compare(measure: _Measure, form: Form, margin: Margin | None) -> None:
         if design.calibration == "aa":
@@ -1002,7 +1013,7 @@ def analyze(
     drafts = [
         (who, _decisions(data, who, primary, asked), _forced(data, who)) for who in _decided(data)
     ]
-    settled = _settle([item for _, pending, _ in drafts for item in pending])
+    settled = settle_family([item for _, pending, _ in drafts for item in pending])
     findings: list[Finding] = []
     for who, pending, forced in drafts:
         decisions = tuple(settled[item] for item in pending)
@@ -1018,6 +1029,8 @@ def analyze(
         )
     checks = _calibration(data, asked.checks)
     unsettled = _unsettled(checks)
+    if not findings:
+        unsettled = "no trial was carried out, so nothing was measured"
     return base.model_copy(
         update={
             "family": sum(1 for item in settled if item.level is not None),
@@ -1087,7 +1100,7 @@ def spread(
         else:
             values = list(mine.values())
         if len(values) >= 2:
-            found.append((intervals.spread(values), len(values)))
+            found.append((intervals.sd(values), len(values)))
     if not found:
         return None
     sd, n = max(found)

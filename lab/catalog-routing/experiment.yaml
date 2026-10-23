@@ -23,11 +23,14 @@ subjects:
     # One turn: the Skill call happens in the first assistant turn, and stopping there
     # measures routing rather than paying for the whole task.
     max_turns: 1
-    # Hermetic: no ambient ~/.claude plugins leak in, so what is measured is this repo's
-    # projected catalog and nothing else.
-    setting_sources: []
-    # Unattended: no human is present to confirm a tool call.
-    permission_mode: bypassPermissions
+    # The claude-sdk runtime's own config, passed through as written
+    # (`matrix describe matrix.v1.agent-runtime.claude-sdk` lists what it takes).
+    runtime_options:
+      # Hermetic: no ambient ~/.claude plugins leak in, so what is measured is this repo's
+      # projected catalog and nothing else.
+      setting_sources: []
+      # Unattended: no human is present to confirm a tool call.
+      permission_mode: bypassPermissions
     # The catalog as projected today: three plugins.
     #
     # KNOWN GAP (2026-09-24): five of the eight probes expect skills that left the catalog
@@ -45,8 +48,6 @@ primary: {metric: activated_correctly}
 threshold: {op: ">=", value: 0.9}
 
 # 8 probes x 5 repeats = 40 sessions: the genre's minimum, and more than the 35 a pass
-# rate's interval needs to reach above 0.9 at all (the genre's default of 10 would cost
-# about 8 USD). The per-trial figure is an estimate; the ceiling is what stops a run that
-# goes wrong.
+# rate's interval needs to reach above 0.9 at all (the genre's default of 10 would double
+# the sessions).
 repeats: 5
-spend: {ceiling: 5.00, per_trial: 0.10}

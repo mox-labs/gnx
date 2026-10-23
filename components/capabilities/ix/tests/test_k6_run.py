@@ -22,18 +22,18 @@ from typing import Any
 import pytest
 import yaml
 
-import ix
 from ix.adapters._out.k6_load import K6Load
 from ix.adapters._out.matrix_process import MatrixLauncher
 from ix.adapters._out.processes import answers
-from ix.domain.run import Target
+from ix.domain.run import SubjectError, Target
 
 pytestmark = [
     pytest.mark.skipif(shutil.which("k6") is None, reason="k6 is not on PATH"),
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals"),
 ]
 
-SERVER = Path(ix.__file__).parents[2] / "examples" / "delay-server" / "server.py"
+SERVER = Path(__file__).resolve().parents[1] / "examples" / "delay-server" / "server.py"
+HANG_SERVER = Path(__file__).parent / "data" / "hang_server.py"
 
 
 def _free_port() -> int:
@@ -166,10 +166,12 @@ def test_ctrl_c_stops_the_run_cleanly_and_leaves_a_reportable_record(tmp_path: P
 
 
 def _slow_server(delay_ms: int) -> tuple[subprocess.Popen[bytes], str]:
+    return _server(SERVER, "--delay-ms", str(delay_ms))
+
+
+def _server(script: Path, *args: str) -> tuple[subprocess.Popen[bytes], str]:
     port = _free_port()
-    server = subprocess.Popen(
-        [sys.executable, str(SERVER), "--port", str(port), "--delay-ms", str(delay_ms)]
-    )
+    server = subprocess.Popen([sys.executable, str(script), "--port", str(port), *args])
     url = f"http://127.0.0.1:{port}"
     until = time.monotonic() + 20
     while not asyncio.run(answers(f"{url}/healthz")):
@@ -211,3 +213,41 @@ def test_throughput_counts_only_requests_answered_within_the_measured_time() -> 
         server.wait()
     assert seen["requests"] <= 3 * 2
     assert seen["throughput"] == seen["requests"] / 2.0
+
+
+@pytest.mark.parametrize(
+    "model",
+    [{"load_model": "closed", "concurrency": 8}, {"load_model": "open", "rate": "50/s"}],
+)
+def test_requests_a_subject_never_answers_are_errors(model: dict[str, Any]) -> None:
+    """Regression: a server that hangs on one request in four read ``error_rate`` 0. A
+    request still waiting when the window closed was cut off and counted nowhere, and k6's
+    60s timeout never fired inside the window. With a request timeout of 1s, every request
+    sent ends answered or timed out, and one in four is an error."""
+    server, url = _server(HANG_SERVER, "--hang-every", "4")
+    try:
+        seen = _load({"target": f"{url}/work", "duration": "3s", "timeout": "1s", **model})
+    finally:
+        server.kill()
+        server.wait()
+    assert seen["sent"] >= 8 and seen["requests"] > 0
+    assert abs(seen["failed"] - seen["sent"] / 4) <= 1, seen
+    assert seen["error_rate"] == pytest.approx(
+        (seen["failed"] + seen["dropped"]) / (seen["sent"] + seen["dropped"])
+    )
+
+
+def test_a_subject_that_answers_nothing_inside_the_window_fails_the_trial() -> None:
+    """Regression: a server that answers no request left k6 nothing to count, which was
+    read as the harness sending nothing, so the trial was dropped as missing data."""
+    server, url = _server(HANG_SERVER, "--hang-every", "1")
+    try:
+        with pytest.raises(SubjectError) as failed:
+            _load(
+                {"target": f"{url}/work", "load_model": "closed", "concurrency": 2,
+                 "duration": "1s", "timeout": "1s"}
+            )  # fmt: skip
+    finally:
+        server.kill()
+        server.wait()
+    assert failed.value.reason == "no_answer"

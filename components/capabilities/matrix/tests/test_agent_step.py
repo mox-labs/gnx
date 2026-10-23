@@ -24,8 +24,7 @@ from matrix import (
     RunError,
     compose,
 )
-from matrix.adapters._out.runtime.claude_sdk import _http_reason
-from matrix.adapters._out.runtime.mock import MockRuntime, MockRuntimeConfig
+from matrix.adapters._out.runtime.mock import MockAgentRuntime, MockAgentRuntimeConfig
 
 DIFF = "acme.v1.diff"
 REVIEW = "acme.v1.review"
@@ -40,7 +39,7 @@ def container(reply: str = '{"verdict": "ship"}') -> Any:
     return compose(
         MatrixConfig.model_validate(
             {
-                "runtimes": {"m": {"type": "mock", "default": reply}},
+                "agent_runtimes": {"m": {"type": "mock", "default": reply}},
                 "agents": {"reviewer": {"runtime": "m", "system_prompt": "Review."}},
             }
         )
@@ -68,9 +67,9 @@ async def test_an_agent_runs_as_a_component_with_the_rows_it_requires_rendered()
     assert wiring.components["rev"].requires == {DIFF}
     assert wiring.components["rev"].provides == {AGENT_RESPONSE, REVIEW}
     run = await box.executor().run(wiring, {DIFF: "+ added line"})
-    assert run.rows(REVIEW) == ({"verdict": "ship"},)
+    assert run.rows(REVIEW) == (Review(verdict="ship"),)
     assert isinstance(run.rows(AGENT_RESPONSE)[0], AgentResponse)
-    runtime = box.runtime("m")
+    runtime = box.agent_runtime("m")
     assert runtime.calls == [("reviewer", "Review:\n+ added line")]
 
 
@@ -147,8 +146,8 @@ async def test_the_task_as_sent_is_on_the_response_row_and_the_agent_start_event
 async def test_the_mock_replies_by_task_then_by_agent_then_by_default() -> None:
     """Regression: the mock's ``responses`` keys were undocumented, and two agent steps on
     one mock could not each get their own reply without matching the whole task text."""
-    mock = MockRuntime(
-        MockRuntimeConfig(
+    mock = MockAgentRuntime(
+        MockAgentRuntimeConfig(
             responses={"exact task": "by task"}, by_agent={"a": "by agent"}, default="default"
         )
     )
@@ -156,7 +155,7 @@ async def test_the_mock_replies_by_task_then_by_agent_then_by_default() -> None:
     assert (await mock.run(a, "exact task")).content == "by task"
     assert (await mock.run(a, "other")).content == "by agent"
     assert (await mock.run(b, "other")).content == "default"
-    assert (await MockRuntime().run(b, "t")).content == "mock:b:t"
+    assert (await MockAgentRuntime().run(b, "t")).content == "mock:b:t"
 
 
 async def test_several_rows_of_a_required_kind_are_rendered_as_a_list() -> None:
@@ -165,7 +164,7 @@ async def test_several_rows_of_a_required_kind_are_rendered_as_a_list() -> None:
         [{"name": "rev", "type": AGENT_STEP, "config": {"agent": "reviewer"}}], inputs=[TASK]
     )
     await box.executor().run(wiring, {TASK: ["a", "b"]})
-    assert box.runtime("m").calls == [("reviewer", '[\n  "a",\n  "b"\n]')]
+    assert box.agent_runtime("m").calls == [("reviewer", '[\n  "a",\n  "b"\n]')]
     with pytest.raises(RunError, match="handed over no rows"):
         await box.executor().run(wiring, {TASK: []})
 
@@ -176,7 +175,9 @@ async def test_a_fenced_json_block_is_accepted() -> None:
         agents={
             "a": BoundAgent(
                 AgentDefinition(name="a"),
-                MockRuntime(MockRuntimeConfig(default='ok\n```json\n{"verdict": "hold"}\n```')),
+                MockAgentRuntime(
+                    MockAgentRuntimeConfig(default='ok\n```json\n{"verdict": "hold"}\n```')
+                ),
             )
         },
     )
@@ -203,14 +204,14 @@ def test_several_inputs_need_a_template() -> None:
 
 async def test_bound_agents_report_to_observers() -> None:
     recorder = RecordingObserver()
-    agent = BoundAgent(AgentDefinition(name="a"), MockRuntime(), observers=[recorder])
+    agent = BoundAgent(AgentDefinition(name="a"), MockAgentRuntime(), observers=[recorder])
     await agent.run("hi")
     assert recorder.names() == ["matrix.agent.start", "matrix.agent.end"]
     assert recorder.events[-1].fields["status"] == "completed"
 
 
 def test_a_runtime_refuses_a_definition_at_binding() -> None:
-    class NoTools(MockRuntime):
+    class NoTools(MockAgentRuntime):
         def check(self, definition: AgentDefinition) -> None:
             if definition.tools:
                 raise ConfigError("no tools here")
@@ -219,7 +220,7 @@ def test_a_runtime_refuses_a_definition_at_binding() -> None:
         compose(
             MatrixConfig.model_validate(
                 {
-                    "runtimes": {"m": {"type": "mock"}},
+                    "agent_runtimes": {"m": {"type": "mock"}},
                     "agents": {"a": {"runtime": "m", "system_prompt": "x", "tools": ["Read"]}},
                 }
             ),
@@ -235,9 +236,7 @@ def _registry_with(cls: type) -> Any:
     registry = Registry()
     for e in base.entries():
         build = (lambda c, _cls=cls: _cls(c)) if e.type_url.endswith("runtime.mock") else e.build
-        registry.register(
-            e.point, e.type_url, build, config=e.config, needs=e.needs, effects=e.effects
-        )
+        registry.register(e.point, e.type_url, build, config=e.config, needs=e.needs)
     return registry
 
 
@@ -261,46 +260,17 @@ def test_runtime_failures_carry_whose_problem_they_are(
     assert error.payload()["error"]["details"]["reason"] == reason
 
 
-@pytest.mark.parametrize(
-    ("status", "reason"),
-    [
-        (429, "rate_limited"),
-        (401, "auth"),
-        (403, "auth"),
-        (529, "unavailable"),
-        (504, "timeout"),
-        (400, "failed"),
-        (None, "failed"),
-    ],
-)
-def test_sdk_http_statuses_map_to_reasons(status: Any, reason: str) -> None:
-    assert _http_reason(status) == reason
-
-
-def test_model_runtime_maps_hardline_failures() -> None:
-    pytest.importorskip("hardline")
-    from hardline import BackendError, SecretError
-
-    from matrix.adapters._out.runtime.model import _reason
-
-    assert _reason(BackendError("x", reason="rate_limit")) == "rate_limited"
-    assert _reason(BackendError("x", reason="auth")) == "auth"
-    assert _reason(BackendError("x", reason="bad_request")) == "incapable"
-    assert _reason(SecretError("x")) == "auth"
-    assert _reason(RuntimeError("x")) == "failed"
-
-
 async def test_an_agent_called_by_a_component_reports_as_its_child() -> None:
     recorder = RecordingObserver()
     box = compose(
         MatrixConfig.model_validate(
             {
-                "runtimes": {"m": {"type": "mock"}},
+                "agent_runtimes": {"m": {"type": "mock"}},
                 "agents": {"a": {"runtime": "m", "system_prompt": "x"}},
             }
         )
     )
-    agent = BoundAgent(box.agent("a").definition, box.runtime("m"), observers=[recorder])
+    agent = BoundAgent(box.agent("a").definition, box.agent_runtime("m"), observers=[recorder])
     step = AgentStep(AgentStepConfig(agent="a"), agents={"a": agent})
     from matrix import Executor, wire
 
@@ -309,15 +279,6 @@ async def test_an_agent_called_by_a_component_reports_as_its_child() -> None:
     agent_start = next(e for e in recorder.events if e.name == "matrix.agent.start")
     assert (agent_start.run_id, agent_start.parent) == (run.run_id, started.span)
     assert agent_start.component == "s"
-
-
-def test_a_wiring_carries_its_components_effects() -> None:
-    box = container()
-    wiring = box.wire(
-        [{"name": "rev", "type": AGENT_STEP, "config": {"agent": "reviewer"}}], inputs=[TASK]
-    )
-    assert wiring.effects == {"rev": frozenset()}  # the mock runtime touches nothing
-    assert wiring.declared_effects() == frozenset()
 
 
 def test_the_container_reports_unbuildable_entries_with_the_wiring_problems() -> None:
@@ -350,7 +311,7 @@ def test_the_container_wires_the_components_its_config_lists() -> None:
     box = compose(
         MatrixConfig.model_validate(
             {
-                "runtimes": {"m": {"type": "mock"}},
+                "agent_runtimes": {"m": {"type": "mock"}},
                 "agents": {"reviewer": {"runtime": "m", "system_prompt": "Review."}},
                 "inputs": [DIFF],
                 "components": [
@@ -364,26 +325,45 @@ def test_the_container_wires_the_components_its_config_lists() -> None:
         )
     )
     wiring = box.wire()
-    assert (wiring.inputs, wiring.order()) == ({DIFF}, ("rev",))
+    assert (wiring.inputs, wiring.order()) == (frozenset({DIFF}), ("rev",))
 
 
-async def test_every_offline_runtime_keeps_the_port_promise() -> None:
-    """A response always says why the session ended (agent_runtime.py: Guarantees)."""
-    pytest.importorskip("hardline")
-    box = compose(
-        MatrixConfig.model_validate(
-            {
-                "models": {"models": {"q": {"backend": "mock", "model": "q", "family": "qwen"}}},
-                "runtimes": {"mock": {"type": "mock"}, "model": {"type": "model"}},
-            }
-        )
-    )
-    for name in ("mock", "model"):
-        definition = AgentDefinition(name="a", model="q" if name == "model" else None, tools=())
-        response = await box.runtime(name).run(definition, "hi")
-        assert isinstance(response, AgentResponse) and response.stop, name
+async def test_the_offline_agent_runtime_says_its_session_completed() -> None:
+    """A response says why the session ended (agent_runtime.py: Guarantees). The mock's one
+    turn completes, a fact of the mock, so the test holds that value and not any truthy one.
+    A model call has no session to end: it is the model port's."""
+    box = compose(MatrixConfig.model_validate({"agent_runtimes": {"mock": {"type": "mock"}}}))
+    response = await box.agent_runtime("mock").run(AgentDefinition(name="a", tools=()), "hi")
+    assert (response.stop, response.num_turns) == ("completed", 1)
 
 
 def test_an_unknown_reason_is_a_failure_not_a_crash() -> None:
-    error = AgentRuntimeError("quota exhausted", reason="quota")  # type: ignore[arg-type]
+    error = AgentRuntimeError("quota exhausted", reason="quota")
     assert (error.kind, error.exit_code, error.retryable) == ("component", 8, False)
+
+
+@pytest.mark.parametrize(
+    ("task", "inputs", "said"),
+    [
+        ("Review:\n{dif}", {"diff": DIFF}, "'dif'"),  # a typo: no input of that name
+        ("Review the change", {"diff": DIFF}, "'diff'"),  # an input the task never uses
+        ("Review:\n{}", {"diff": DIFF}, "positional"),
+        ("Review:\n{diff", {"diff": DIFF}, "invalid"),
+    ],
+)
+def test_a_task_template_is_checked_against_its_inputs_when_the_step_is_built(
+    task: str, inputs: dict[str, str], said: str
+) -> None:
+    """Regression: a typo composed, wired and planned, and failed only when the
+    run reached the step, after its upstream work."""
+    with pytest.raises(ConfigError, match=said) as e:
+        AgentStep(AgentStepConfig(agent="a", inputs=inputs, task=task), agents={"a": object()})  # type: ignore[dict-item]
+    assert e.value.fix
+
+
+def test_a_template_may_index_an_input_and_escape_braces() -> None:
+    step = AgentStep(
+        AgentStepConfig(agent="a", inputs={"diff": DIFF}, task="{{literal}} {diff[0]}"),
+        agents={"a": object()},  # type: ignore[dict-item]
+    )
+    assert step.render({DIFF: ("xyz",)}) == "{literal} x"

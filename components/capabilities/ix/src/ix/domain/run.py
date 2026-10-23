@@ -3,8 +3,10 @@
 A **trial** is intent: one probe put to one subject in one cell in one repeat. What happened
 when it was carried out is an **interaction**; what an instrument made of it is a
 **reading**. They join on ``seq``, and are separate tables so that a failed measurement
-never costs an interaction already paid for. :func:`schedule` is a pure function of the
-design, so the plan a person reviewed is the list a run carries out.
+never costs an interaction already paid for. Each names the rows of the run's session table
+behind it (``sessions``): the model calls and agent sessions that answered. :func:`schedule`
+is a pure function of the design, so the plan a person reviewed is the list a run carries
+out.
 
 **Failures have an owner.** ``subject``: the thing under test broke. ``harness``: ix or a
 tool it drives did. ``sensor``: the instrument could not read an interaction that happened.
@@ -13,14 +15,16 @@ Only the first counts against the subject.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ix.domain import schema
 from ix.domain.experiment import Experiment, Level, ProbeSet, Shape, cells
 from ix.domain.problem import Problem
+from ix.domain.provenance import Content, Provenance
 from ix.domain.registration import Deviation
 from ix.domain.schema import Stored
 
@@ -31,10 +35,6 @@ if TYPE_CHECKING:
 
 #: The role of the control's second sample under A/A calibration.
 CALIBRATION = "calibration"
-
-#: The key under which a facet a probe leaves behind reports what applying it cost, in the
-#: experiment's spend currency. A run adds these up and holds them to its spend ceiling.
-COST = "cost_usd"
 
 Owner = Literal["subject", "harness", "sensor"]
 
@@ -61,8 +61,6 @@ class TrialError(Exception):
     def __init__(self, reason: str, message: str = "") -> None:
         super().__init__(message or reason)
         self.reason = reason
-        #: What the trial spent before it failed, where that is known.
-        self.cost_usd: float | None = None
 
 
 class SubjectError(TrialError):
@@ -114,12 +112,13 @@ class Interaction(Stored):
     watched: dict[str, dict[str, Any]] = {}
     #: Set when the trial could not be carried out. A failed trial is a row, never a gap.
     failure: Failure | None = None
-    #: What the trial cost, as the facets the probe left behind reported it (:data:`COST`);
-    #: None when none reported a cost.
-    cost_usd: float | None = None
     #: True when a stand-in answered instead of the subject (a mock runtime): nothing under
     #: test was measured in this trial.
     simulated: bool = False
+    #: The rows of the run's session table (``matrix.v1.session``) behind this trial: every
+    #: agent session and model call the subject made, failed ones included, in order. Each
+    #: names the runtime and the model that answered.
+    sessions: tuple[int, ...] = ()
 
 
 class Reading(Stored):
@@ -143,9 +142,37 @@ class Reading(Stored):
     #: What the sensor said about this trial beyond its numbers (the skill that fired, the
     #: tests that failed), the same for each metric it read from the trial.
     detail: dict[str, Any] = {}
-    #: What taking the reading cost (a model asked to judge), on the first of the readings
-    #: a sensor took from one trial, so that it is counted once.
-    cost_usd: float | None = None
+    #: The rows of the run's session table the sensor made to read this trial (a judge's
+    #: model calls or sessions), the same for each metric it read. The subject's sessions are
+    #: the interaction's, under the same ``seq``.
+    sessions: tuple[int, ...] = ()
+
+    @model_validator(mode="after")
+    def _inside_its_shape(self) -> Self:
+        """A reading is refused outside its shape's domain: a boolean is 0 or 1, a scalar
+        and every statistic finite, a count whole ``events`` from 0 to ``units``."""
+        found = self._outside()
+        if found:
+            raise ValueError(
+                f"a {self.shape} reading of {self.metric} is outside its domain: {found}"
+            )
+        return self
+
+    def _outside(self) -> str:
+        if self.shape == "boolean" and self.value is not None and self.value not in (0, 1):
+            return f"{self.value!r} is neither true nor false"
+        if self.value is not None and not math.isfinite(self.value):
+            return f"{self.value!r} is not finite"
+        not_finite = sorted(name for name, v in self.statistics.items() if not math.isfinite(v))
+        if not_finite:
+            return f"{', '.join(not_finite)} not finite"
+        events, units = self.statistics.get("events"), self.statistics.get("units")
+        if self.shape == "count" and events is not None and units is not None:
+            if not (events.is_integer() and units.is_integer()):
+                return f"{events:g} of {units:g} is not a count of whole units"
+            if not 0 <= events <= units or units < 1:
+                return f"{events:g} events of {units:g} units is not 0 to all of at least 1"
+        return ""
 
     def number(self, statistic: str) -> float | None:
         """This trial's reading as one number under ``statistic``, or None when it has none.
@@ -193,6 +220,12 @@ class RunManifest(Stored):
     #: The probes as resolved when the run started.
     probes: list[dict[str, Any]] = []
     probes_digest: str = ""
+    #: The digest of each file and folder the subjects and sensors name, as the run found
+    #: them when it started: what was tested. Paths and digests, never what the files hold.
+    contents: tuple[Content, ...] = ()
+    #: Where the run ran from: the commit, and the versions of what ran it. None in a
+    #: manifest an earlier ix wrote.
+    provenance: Provenance | None = None
     #: The registration the run is held to, as it stood when the run started; None for an
     #: exploratory run of an unregistered experiment.
     registration: dict[str, Any] | None = None
@@ -210,15 +243,10 @@ class RunManifest(Stored):
     #: What the run was told to change from the experiment as written, each in words: the
     #: repeats of a pilot (``ix run --repeats``). Never in a gated run.
     overridden: tuple[str, ...] = ()
-    #: What the run warned of before it started: a runtime that lets the agent use tools
+    #: What the run warned of before it started: what ``validate`` warns of in the
+    #: experiment run (a typo in prompt text), and a runtime that lets the agent use tools
     #: without asking. Said once per run, however many sessions were built.
     warnings: tuple[Problem, ...] = ()
-    #: Whether a kind the run uses spends money (declares the ``spend`` effect).
-    spends: bool = False
-    #: The most the run may spend, and where that came from: ``experiment`` (its
-    #: ``spend.ceiling``) or ``settings`` (ix's ``spend_cap``). None: no ceiling.
-    spend_ceiling: float | None = None
-    spend_ceiling_source: str = ""
     started_at: str = ""
     ix_version: str = ""
 
@@ -238,6 +266,16 @@ class Target(Stored):
 
 #: What an environment provides to the trials: each service by name, with how to reach it.
 Bindings = dict[str, dict[str, Any]]
+
+
+def bound(bindings: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """The bindings as the placeholders a subject or a probe names them by: ``{db.url}`` is
+    the ``url`` the environment bound for its service ``db``."""
+    return {
+        f"{service}.{key}": value
+        for service, found in bindings.items()
+        for key, value in found.items()
+    }
 
 
 def cell_key(cell: dict[str, Level]) -> str:
@@ -315,24 +353,22 @@ class RunRecord:
     errors: tuple[str, ...] = ()
     #: Each table's kind and the file that holds it, for a reader with ``jq`` or SQL.
     tables: Mapping[str, str] = field(default_factory=dict)
-    #: Set when the run stopped starting trials before its schedule was done.
-    halt: Halt | None = None
+
+    @property
+    def stood_in(self) -> bool:
+        """A stand-in answered: the run was a dry run, or a stand-in (a mock runtime) answered
+        any of its trials. Such a run measured the harness, not the subject."""
+        return self.manifest.dry_run or any(i.simulated for i in self.interactions)
+
+    @property
+    def gated(self) -> bool:
+        """Held to its registration, and measuring the subject: a run a gate may read. The
+        manifest's ``gated`` is written before any trial, so a stand-in found answering
+        afterwards ungates it here."""
+        return self.manifest.gated and not self.stood_in
 
 
 class BindingsRow(Stored):
     """What the environment provided: the one row of ``ix.v1.bindings``."""
 
     services: dict[str, dict[str, Any]] = {}
-
-
-class Halt(Stored):
-    """Why a run stopped starting trials before its schedule was done: the one row of
-    ``ix.v1.halt``, written only when that happened."""
-
-    #: ``spend_ceiling``: the next trial could have taken the run past its ceiling.
-    reason: str
-    message: str
-    #: The trials carried out before it stopped, and the spend so far.
-    carried_out: int = 0
-    spent: float = 0.0
-    ceiling: float | None = None

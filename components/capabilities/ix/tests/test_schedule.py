@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def _trials(data: dict[str, Any], vocabulary: Vocabulary) -> tuple[Trial, ...]:
-    examined = examine(data, vocabulary, base=".")
+    examined = examine(data, vocabulary)
     assert examined.problems == (), examined.problems
     assert examined.experiment and examined.design and examined.probes
     return schedule(examined.experiment, examined.design, examined.probes)
@@ -65,7 +65,7 @@ def test_interleaved_draws_the_order_from_the_seed_and_sequential_keeps_the_orde
     orders = {tuple(t.role for t in interleaved[i : i + 3]) for i in range(0, 36, 3)}
     assert len(orders) > 1  # 12 blocks of 3 turns do not all come out the same way
 
-    examined = examine(compare_data, vocabulary, base=".")
+    examined = examine(compare_data, vocabulary)
     assert examined.experiment and examined.design and examined.probes
     written = examined.design.model_copy(update={"order": "sequential"})
     sequential = schedule(examined.experiment, written, examined.probes)
@@ -109,7 +109,7 @@ def test_the_plan_counts_and_names_exactly_this_list(
 ) -> None:
     compare_data["factors"] = {"size": ["1MiB", "1GiB"]}
     compare_data["probes"][0]["target"] = "{url}/{size}"
-    examined = examine(compare_data, vocabulary, base=".")
+    examined = examine(compare_data, vocabulary)
     plan = make_plan(examined, vocabulary, None)
     trials = _trials(compare_data, vocabulary)
     assert plan.trials.total == len(trials)
@@ -120,7 +120,7 @@ def test_the_plan_digest_covers_the_order_of_the_trials(
     compare_data: dict[str, Any], vocabulary: Vocabulary
 ) -> None:
     """A changed seed changes the order and nothing else a plan counts; the digest moves."""
-    one = make_plan(examine({**compare_data, "seed": 1}, vocabulary, base="."), vocabulary, None)
-    two = make_plan(examine({**compare_data, "seed": 2}, vocabulary, base="."), vocabulary, None)
+    one = make_plan(examine({**compare_data, "seed": 1}, vocabulary), vocabulary, None)
+    two = make_plan(examine({**compare_data, "seed": 2}, vocabulary), vocabulary, None)
     assert one.trials == two.trials
     assert one.schedule_digest != two.schedule_digest and one.digest != two.digest

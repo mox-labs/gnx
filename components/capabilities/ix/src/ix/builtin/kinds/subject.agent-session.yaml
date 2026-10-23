@@ -1,27 +1,24 @@
 schema: ix.v1.kind
 name: ix.v1.subject.agent-session
-summary: An agent on a matrix runtime; each trial is a fresh session in a working directory of its own.
+summary: An agent on a matrix agent runtime; each trial is a fresh session in a working directory of its own.
 options:
   runtime:
     type: string
     required: true
-    description: "the matrix runtime that runs the agent: one of the choices, or any runtime installed. There is no default, so spending is never implicit"
+    description: "the matrix agent runtime that runs the agent: one of the choices, or any agent runtime installed. There is no default, so a model provider is never called implicitly"
     choices:
-      claude-sdk: the Claude Agent SDK, with tools; spends
-      model: one call through hardline, no tools; spends
-      mock: canned replies; spends nothing
+      claude-sdk: the Claude Agent SDK, with tools; calls a model provider
+      pydantic-ai: pydantic-ai's agent loop, every model call through hardline; calls a model provider
+      mock: canned replies; calls no model
   definition: {type: path, description: "a Claude Code agent file: its body is the system prompt; its tools, model and maxTurns apply unless set here"}
   model: {type: string, description: the model the agent uses}
-  system_prompt: {type: string, description: the system prompt}
+  system_prompt: {type: string, text: true, description: the system prompt}
   tools: {type: list, description: "the tools the agent may call; [] is none at all"}
   max_turns: {type: integer, description: turns after which the session is stopped}
-  permission_mode: {type: string, allowed: [default, acceptEdits, plan, bypassPermissions, dontAsk, auto], description: "claude-sdk: how tool calls are approved when nobody is present"}
-  setting_sources: {type: list, description: "claude-sdk: which ambient settings the session reads (user, project, local); [] reads none, so nothing on this machine leaks in"}
-  plugins: {type: list, description: "claude-sdk: plugin folders (relative to the experiment; a * matches several) or {type: local, path}"}
-  skills: {type: list, description: "claude-sdk: skill folders (each holding SKILL.md), copied into the session's .claude/skills"}
-  fixtures: {type: list, description: "files and folders, relative to the experiment, copied into each trial's working directory before the session starts"}
-  setup: {type: list, description: "a command run in the working directory after the fixtures are copied, before the session: [python3, seed.py]"}
-  loop: {type: mapping, description: "more rounds after the first: {strategy: self-review | test-feedback, rounds, prompt, until}"}
-  runtime_options: {type: mapping, description: "further options of the runtime's own config (model: temperature, max_tokens; claude-sdk: fallback_model)"}
-effects: [spend, tools, process, filesystem]
-offers: [agent, workdir]
+  plugins: {type: paths, description: "plugin folders (relative to the experiment; a * matches several) or {type: local, path}, handed to the runtime as its plugins with every path absolute; a runtime whose config takes none refuses them"}
+  skills: {type: paths, description: "skill folders (each holding SKILL.md), copied to where the agent runtime says a session finds its skills (claude-sdk: the session's .claude/skills, read as its project settings)"}
+  fixtures: {type: paths, description: "files and folders, relative to the experiment, copied into each trial's working directory before the session starts"}
+  setup: {type: command, description: "a command run in the working directory after the fixtures are copied, before the session: [python3, seed.py]; the program, and each file an argument names relative to the experiment, are digested as what was tested"}
+  loop: {type: mapping, text: true, binds: [prompt, response, failures, until], description: "more rounds after the first: {strategy: self-review | test-feedback, rounds, prompt, until}; a prompt is the next round's task, with {prompt}, {response}, {until} and, for test-feedback, {failures} filled in each round"}
+  runtime_options: {type: mapping, description: "the runtime's own config, passed through as written and checked by the runtime (claude-sdk: permission_mode, setting_sources, fallback_model, max_budget_usd, agents); `matrix describe matrix.v1.agent-runtime.<name>` lists a runtime's"}
+offers: [respondent, workdir]

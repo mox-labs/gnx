@@ -13,17 +13,34 @@ A `claude-sdk` runtime launches a Claude Agent SDK session as a subprocess. Insi
 session the agent may read and write files, run commands, and reach the network — bounded by
 the runtime's `permission_mode` and `cwd` and by the definition's `tools`.
 
-A `model` runtime makes one model call through hardline and carries no local authority; it
-refuses any definition that declares tools rather than run it without them. Where that call's
-data goes is decided by the hardline registry; hardline's own security notes cover it.
+A `pydantic-ai` runtime runs an agent session in this process. Its tools are Python functions
+the runtime's config names (`tools: {name: module:function}`). Building the runtime (and so
+`compose`, `matrix check`, `plan` and `agents`) only locates each module on the import path,
+without running it or its packages; a module is imported, and so run, when a session first
+offers its tool, and the function is called when the model asks. Each runs with the whole
+authority of the process, and
+no permission mode stands between the model's request and the call. **So naming a tool in
+config is a code-execution grant**, accepted as such (owner ruling 2026-10-22): review a
+config that names tools as you would the code it names. The model chooses the
+arguments; a function sees them validated against its own typed parameters, and nothing more.
+A definition's `tools` narrow the set (`[]` is none), never widen it. Every model call goes
+through hardline, so where the conversation goes, tool results included, is decided by the
+hardline registry, as for a model call.
+
+A `hardline` model runtime makes one model call and carries no local authority: it has no
+tools and no agent can be bound to it. Where that call's data goes is decided by the hardline
+registry; hardline's own security notes cover it.
 
 ## Trust boundaries
 
 ### 1. Config → agent authority
 
-`compose` builds runtimes from `matrix.runtimes.<name>` and binds agents from
-`matrix.agents.<name>`. Every authority-bearing value — `permission_mode`, `cwd`,
-`setting_sources`, `plugins`, a definition's `tools` — arrives from config: a `matrix:`
+`compose` builds agent runtimes from `matrix.agent_runtimes.<name>` and model runtimes from
+`matrix.model_runtimes.<name>`, and binds agents from `matrix.agents.<name>`. Every authority-bearing value — `permission_mode`, `cwd`,
+`setting_sources`, `plugins`, `skills`, inline subagents (`agents`, each with its own prompt
+and tools), a `pydantic-ai` runtime's `tools` (each a module imported, and so run, when a
+session first offers it; located, not run, when the runtime is built), a definition's
+`tools` — arrives from config: a `matrix:`
 section, an ix `experiment.yaml`, a markdown agent file.
 
 **A matrix config file, and every agent file in a `definitions` directory, is a capability
@@ -38,12 +55,28 @@ output, not only in the config. Relative plugin paths are resolved against the r
 
 What does not constrain it: nothing restricts `cwd`. A config naming `cwd: /` gets `/`.
 
+**The working directory is an ambient route to that grant.** Every `matrix` command, and every
+tool built on matrix, reads `./matrix.yaml` and `./<tool>.yaml` from the directory it runs in
+(tiers 3 and 4), unasked, and merges them over the user's own tiers; `$MATRIX_CONFIG` and
+`$<TOOL>_CONFIG` add files from the environment (tiers 5 and 6). So running in a checkout you
+did not write gives that checkout's config its authority: a `permission_mode`, `plugins` and
+`skills` for a session, a `models` row whose `base_url` receives every prompt a model step
+sends, a store `root` where the record is written, observers, and `definitions` directories
+whose agent files carry prompts and tools. In an untrusted directory, read
+`matrix config --sources` first: it lists every file consulted. `matrix run CONFIG --only`
+reads the named files alone, without the tiers.
+
 ### 2. Ambient environment → session behaviour
 
 The `claude-sdk` runtime does not touch `os.environ`. It used to pop `CLAUDECODE` for the
 duration of a call (M-3); the installed SDK (`claude-agent-sdk >= 0.1.51`) now strips
 `CLAUDECODE` from the child's own environment itself, so the runtime has nothing left to do
 there — see M-3, fixed.
+
+When OpenTelemetry is active, the runtime hands the CLI the trace context current when a
+session starts (`TRACEPARENT`, `TRACESTATE`) through the SDK's `env` option, for that child
+only: trace and span ids and the propagators' state, no content. With no span current it hands
+nothing, and the child inherits whatever the process's own environment holds.
 
 `setting_sources: []` is the hermetic setting — no ambient `~/.claude` or project plugin
 config leaks into the subprocess. Any evaluation that claims reproducibility should set it.
@@ -54,6 +87,32 @@ Each component receives `Inputs` holding only the rows of the kinds it requires,
 run's Construct, and a row of a kind it does not provide, or one that fails its kind's schema,
 raises `ContractError`. This is a correctness boundary, not a trust boundary: a component is
 in-process Python and can reach anything the process can.
+
+### 4. Events → an OpenTelemetry endpoint
+
+When the `OTEL_*` variables ask for export, every run gets the `otel` observer, and its spans
+go to whatever endpoint the environment names. So what a span carries leaves the machine.
+
+By default a span carries no content: the GenAI conventions' attributes (agent, model,
+provider, token counts, tool name and call id), matrix's statuses, reasons, error kinds,
+counts, times and ids, and the numbers and booleans a component passes to `ctx.span`. It does
+not carry an agent's task, a tool call's arguments, any error message (as an attribute or as
+the span's status description), or a component's string fields. `error.type` is always set on a failure.
+
+A `pydantic-ai` session adds no span of pydantic-ai's own. Its instrumentation records prompts,
+replies and tool arguments once anything in the process turns it on for every agent
+(`Agent.instrument_all()`), so the runtime switches it off on each agent it builds; hardline's
+`chat` spans, which carry no content, and the session's `invoke_agent` trace it instead.
+
+Content leaves only when the config asks: `observers: [{type: otel, capture_content: true}]`.
+That config is a grant to send prompts to the collector; review it like one. A `ctx.measure`'s
+attributes are exported as the component gives them.
+
+The local sinks are not filtered: the `jsonl` observer and a run's `events.jsonl` carry each
+task and error message as emitted. The run's record holds content too: a reply row keeps the
+task or prompt as sent, and so does the session row of a session or call that failed or was
+cancelled (owner ruling 2026-10-22). Nothing exports the record; whoever can read the store's
+root can read it.
 
 ## Findings
 
@@ -82,6 +141,16 @@ concurrent `claude-sdk` runs in one process raced on the variable. Closed: `clau
 itself, bisected against PyPI wheels) makes the mutation unnecessary, and the runtime no
 longer touches `os.environ` at all. Concurrent `claude-sdk` runs in one process are safe
 with that SDK version installed.
+
+### M-4 — every event field was a span attribute (fixed 2026-10-22)
+
+The `otel` observer copied every plain event field into span attributes: each agent's task as
+`matrix.task`, error messages as `matrix.error` and as the span's status description, and
+every field a component passed to `ctx.span`. Attached by the `OTEL_*` variables alone, it
+sent prompts to the collector with nothing in the config saying so. Fixed: span attributes
+come from an allowlist, and content needs `capture_content`. Regression tests:
+`test_otel_observer.py::test_no_content_leaves_on_a_span_by_default` and
+`::test_content_leaves_on_a_span_only_when_asked_for`.
 
 ## Not covered
 

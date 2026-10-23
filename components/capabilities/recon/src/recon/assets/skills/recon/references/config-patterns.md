@@ -17,7 +17,7 @@ Complete config examples for common recon use cases. Copy, adapt, write to `.rec
 
 ## Code Mining (Multi-Repo)
 
-Fan-out across multiple repositories. Collectors run against every catalog entry. Give `rg` an explicit path (`.`): with none it reads stdin, which recon's command inherits, and waits out its timeout.
+Fan-out across multiple repositories. Each collector runs against every catalog source of a kind it uses (`local`, for `cli`). Give `rg` an explicit path (`.`): with none it reads stdin, which is empty under recon, so it finds nothing.
 
 ```yaml
 catalog:
@@ -525,7 +525,7 @@ SELECT 'axum', title FROM issues_axum WHERE 'bug' = ANY(labels)
 
 Exa, Firecrawl, Serper, Tavily, Perplexity, Linkup, and most modern search APIs take a POST with a JSON body instead of GET + query-string. Recon supports this via `method: POST` + `body:` on the collector, and `auth.prefix:` on the source (for `Authorization: Bearer $KEY` style auth).
 
-**Keep configs as templates.** Put the changing values in `params:` and reference them as `{placeholder}` in `body:` string values. The substitution is recursive through dicts and lists; non-string values (ints, bools) pass through literally. This means swapping a search term is a one-line edit — no regeneration of the whole YAML, no LLM in the loop for a mechanical operation. **An unresolved `{foo}` is a plan problem** (`unresolved`, exit 3) naming the placeholder, so a forgotten `params:` entry fails before any request is sent. Every `params:` entry is also sent as a query parameter.
+**Keep configs as templates.** Put the changing values in `vars:` and reference them as `{placeholder}` in `body:` string values (or in `endpoint:`). The substitution is recursive through dicts and lists; non-string values (ints, bools) pass through literally. This means swapping a search term is a one-line edit — no regeneration of the whole YAML, no LLM in the loop for a mechanical operation. **An unresolved `{foo}` is a plan problem** (`unresolved`, exit 3) naming the placeholder, so a forgotten `vars:` entry fails before any request is sent. `vars:` are sent nowhere else; `params:` are the query string, sent as written.
 
 ### Exa — neural and keyword search
 
@@ -543,7 +543,7 @@ collectors:
     source: exa
     endpoint: /search
     method: POST
-    params:
+    vars:
       topic: "transformer attention mechanism survey"
       category: "research paper"
     body:
@@ -588,7 +588,7 @@ collectors:
     source: firecrawl
     endpoint: /v1/scrape
     method: POST
-    params:
+    vars:
       target_url: "https://example.com/article"
     body:
       url: "{target_url}"
@@ -624,7 +624,7 @@ collectors:
     source: tavily
     endpoint: /search
     method: POST
-    params:
+    vars:
       topic: "recent advances in state-space models"
     body:
       query: "{topic}"
@@ -656,7 +656,7 @@ collectors:
     source: serper
     endpoint: /search
     method: POST
-    params:
+    vars:
       query: "arxiv transformer survey 2025"
     body:
       q: "{query}"
@@ -692,7 +692,7 @@ collectors:
     source: perplexity
     endpoint: /chat/completions
     method: POST
-    params:
+    vars:
       question: "What are the most-cited papers on mixture of experts from 2024?"
     body:
       model: "sonar-large-online"
@@ -726,14 +726,14 @@ collectors:
     source: exa
     endpoint: /search
     method: POST
-    params:
+    vars:
       topic: "state space models post-Mamba"
     body: { query: "{topic}", numResults: 10, type: "neural" }
     extract: "results"
     normalize: { title: title, url: url, score: score }
 ```
 
-`recon init exa-discovery -c exa.yaml`, `recon survey exa-discovery`, then `recon query exa-discovery "SELECT url FROM discovery WHERE score > 0.6"`. Write a second mission with one Firecrawl `scrape` collector per URL, each with its own `params: {target_url: ...}`, and survey it.
+`recon init exa-discovery -c exa.yaml`, `recon survey exa-discovery`, then `recon query exa-discovery "SELECT url FROM discovery WHERE score > 0.6"`. Write a second mission with one Firecrawl `scrape` collector per URL, each with its own `vars: {target_url: ...}`, and survey it.
 
 ### Auth prefix cheatsheet
 

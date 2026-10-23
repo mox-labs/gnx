@@ -16,10 +16,10 @@ Collecting bridges eliciting and extracting. Eliciting produces `scope.md` and `
 
 The orchestrator (main Claude) runs this step directly — no subagent. The work is mechanical: translate the inventory into a recon config, run the survey, stage the results for extraction.
 
-**Invocation.** Recon is a separate tool, distributed from `tools/recon/` in the cix monorepo. Two ways to run it:
+**Invocation.** Recon is a separate tool, distributed from `components/capabilities/recon/` in the gnx repository. Two ways to run it:
 
-- Persistent: `uv tool install "git+https://github.com/mox-labs/cix#subdirectory=tools/recon"` then plain `recon …`
-- Ephemeral: `uvx --from "git+https://github.com/mox-labs/cix#subdirectory=tools/recon" recon …`
+- Persistent: `uv tool install "git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/recon"` then plain `recon …`
+- Ephemeral: `uvx --from "git+https://github.com/mox-labs/gnx#subdirectory=components/capabilities/recon" recon …`
 
 Verify with `recon --version` (expect `0.8.0` or later). To load recon's own skill inside Claude: `recon --skill` (installed) or the ephemeral `uvx --from "…" recon --skill` form.
 
@@ -57,7 +57,7 @@ Orchestrator writes recon config to .research/recon/config.yaml
   ↓
 `recon survey <mission>`
   ↓
-JSONL results land at .cix/recon/<mission>/archive/<timestamp>/
+JSONL results land at .recon/<mission>/archive/<timestamp>/
   ↓
 Orchestrator reads JSONL, stages source material for extraction
 ```
@@ -84,7 +84,7 @@ recon init <mission> \
   --from plugins/craft-research/skills/collecting/references/literature-catalog.yaml
 ```
 
-Then edit `.cix/recon/<mission>/config.yaml` to replace `{query}` and `{limit}` placeholders with actual values from the inventory. Customize by editing the copy, not the original — the catalog is craft-research's default choice, not a hard constraint.
+Then edit `.recon/<mission>/config.yaml` to replace `{query}` and `{limit}` placeholders with actual values from the inventory. Customize by editing the copy, not the original — the catalog is craft-research's default choice, not a hard constraint.
 
 **For code sources** (repositories, codebases):
 
@@ -116,7 +116,7 @@ Several sources in the craft-research catalog read credentials from environment 
 | arXiv | *(none)* | unauthenticated |
 | Zenodo | *(none)* | unauthenticated |
 
-To see which env vars a given config needs, grep the `auth:` blocks in `.cix/recon/<mission>/config.yaml` — each one has an `env: VAR_NAME` field. Recon reads these from `os.environ` at survey time; if a var is missing or empty the collector runs unauthenticated (which for S2 means tighter rate limits, for others may return 401).
+To see which env vars a given config needs, grep the `auth:` blocks in `.recon/<mission>/config.yaml` — each one has an `env: VAR_NAME` field. Recon reads these from `os.environ` at survey time; if a var is missing or empty the collector runs unauthenticated (which for S2 means tighter rate limits, for others may return 401).
 
 Source tokens in this repo live outside the working tree — do not commit them to mission configs. Export them into the shell session before running `recon survey`, or source them from your usual tokens file.
 
@@ -138,7 +138,7 @@ recon init rag-benchmarks \
   --from plugins/craft-research/skills/collecting/references/literature-catalog.yaml
 ```
 
-This writes `.cix/recon/rag-benchmarks/config.yaml` pre-populated with the four academic sources (S2, arXiv, OpenAlex, Zenodo) and `{query}` / `{limit}` placeholders.
+This writes `.recon/rag-benchmarks/config.yaml` pre-populated with the four academic sources (S2, arXiv, OpenAlex, Zenodo) and `{query}` / `{limit}` placeholders.
 
 **2. Resolve placeholders and trim unused collectors.** Edit the config so the collectors you actually want reference the inventory query. For probing, set `limit: "1"` on every collector:
 
@@ -168,7 +168,7 @@ export S2_API_KEY=...   # only if s2-search is kept
 recon survey rag-benchmarks
 ```
 
-Inspect `.cix/recon/rag-benchmarks/archive/<timestamp>/s2_search.jsonl` and `arxiv_search.jsonl`. Confirm each record has a usable title, abstract, authors, and year. If the normalize spec produced nulls or wrong fields, fix the paths in the config against the raw response shape.
+Inspect `.recon/rag-benchmarks/archive/<timestamp>/s2_search.jsonl` and `arxiv_search.jsonl`. Confirm each record has a usable title, abstract, authors, and year. If the normalize spec produced nulls or wrong fields, fix the paths in the config against the raw response shape.
 
 **5. Scale up and run the full survey.** Bump the limits to the real target (say `limit: "50"`) and re-run:
 
@@ -178,7 +178,7 @@ recon survey rag-benchmarks
 
 A new archive directory is created — the previous probe run is preserved.
 
-**6. Stage for extraction.** The JSONL under `.cix/recon/rag-benchmarks/archive/<latest>/` is the input for the `extracting/` spoke. Record the archive timestamp in `PLAN.md` so extraction reads the right run. If multiple collectors returned overlapping records (same paper from S2 + arXiv + OpenAlex), de-duplicate downstream — extraction groups by `doi` or title+year, not recon.
+**6. Stage for extraction.** The JSONL under `.recon/rag-benchmarks/archive/<latest>/` is the input for the `extracting/` spoke. Record the archive timestamp in `PLAN.md` so extraction reads the right run. If multiple collectors returned overlapping records (same paper from S2 + arXiv + OpenAlex), de-duplicate downstream — extraction groups by `doi` or title+year, not recon.
 
 ## After Collection
 

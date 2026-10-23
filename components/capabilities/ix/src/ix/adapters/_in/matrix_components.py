@@ -2,12 +2,13 @@
 
 matrix drives ix through them: ``environment`` provides ``ix.v1.bindings``; ``trials``
 requires them and provides ``ix.v1.interaction``, one row as each trial finishes, so a
-killed run keeps every trial it finished, and ``ix.v1.halt`` when it stopped starting
-trials early (its spend ceiling); ``sense`` requires the interactions and provides
+killed run keeps every trial it finished; ``sense`` requires the interactions and provides
 ``ix.v1.reading``. ``ix.v1.run`` (the manifest) and ``ix.v1.trial`` (the schedule) are run
 inputs. Each component needs :data:`NEED`, the :class:`~ix.application.running.Kit` of
 adapters the run uses, and passes its matrix context on as the run's scope, traced by the
-kit's tracer when it has one.
+kit's tracer when it has one. The scope is :class:`~ix.domain.ports.Recorded`: what it says
+of the sessions a trial or a sensor ran is matrix's ``RunContext.sessions()``, so each
+interaction and reading names its rows of ``matrix.v1.session``.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from ix.application import running
 from ix.domain import schema
-from ix.domain.run import BindingsRow, Halt, Interaction, Reading, RunManifest, Trial
+from ix.domain.run import BindingsRow, Interaction, Reading, RunManifest, Trial
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -53,7 +54,6 @@ PAYLOADS: dict[str, type[Stored]] = {
     schema.BINDINGS: BindingsRow,
     schema.INTERACTION: Interaction,
     schema.READING: Reading,
-    schema.HALT: Halt,
 }
 
 
@@ -63,6 +63,10 @@ class _TracedScope:
     def __init__(self, ctx: RunContext, tracer: Traced) -> None:
         self._ctx = ctx
         self._tracer = tracer
+
+    @property
+    def run_id(self) -> str:
+        return self._ctx.run_id
 
     @property
     def stopping(self) -> Flag:
@@ -76,6 +80,9 @@ class _TracedScope:
 
     def trace(self, name: str, /, **attributes: Any) -> AbstractContextManager[Span]:
         return self._tracer.trace(name, **attributes)
+
+    def sessions(self) -> tuple[int, ...]:
+        return self._ctx.sessions()
 
 
 def _scope(ctx: RunContext, kit: Kit) -> Scope:
@@ -100,7 +107,7 @@ class EnvironmentComponent:
         self._kit = kit
 
     async def run(self, inputs: Inputs, ctx: RunContext) -> Mapping[str, Any]:
-        bindings = await running.bring_up(_setup(inputs), self._kit, ctx)
+        bindings = await running.bring_up(_setup(inputs), self._kit, _scope(ctx, self._kit))
         return {schema.BINDINGS: BindingsRow(services=bindings)}
 
 
@@ -108,7 +115,7 @@ class TrialsComponent:
     """Carries out the schedule, one trial at a time, in order."""
 
     requires = (schema.RUN, schema.TRIAL, schema.BINDINGS)
-    provides = (schema.INTERACTION, schema.HALT)
+    provides = (schema.INTERACTION,)
 
     def __init__(self, kit: Kit) -> None:
         self._kit = kit
@@ -122,7 +129,6 @@ class TrialsComponent:
             bindings=bindings,
             scope=_scope(ctx, self._kit),
             land=lambda interaction: ctx.provide(schema.INTERACTION, interaction),
-            halt=lambda halt: ctx.provide(schema.HALT, halt),
         )
 
 
@@ -159,9 +165,7 @@ def _sense(*, ix_kit: Kit) -> SenseComponent:
     return SenseComponent(ix_kit)
 
 
-#: The three components by type URL: how each is built and what it does. Their effects are
-#: whatever the kinds of the experiment being run declare, so none is declared: unknown,
-#: never "none".
+#: The three components by type URL: how each is built and what it does.
 COMPONENTS: dict[str, tuple[Callable[..., object], str]] = {
     ENVIRONMENT: (
         _environment,
@@ -170,7 +174,7 @@ COMPONENTS: dict[str, tuple[Callable[..., object], str]] = {
     TRIALS: (
         _carry_out,
         "Carries out an experiment's trials in schedule order; provides ix.v1.interaction, "
-        "one row as each trial finishes, and ix.v1.halt when its spend ceiling stops it",
+        "one row as each trial finishes",
     ),
     SENSE: (_sense, "Reads each interaction with the experiment's sensors; provides ix.v1.reading"),
 }

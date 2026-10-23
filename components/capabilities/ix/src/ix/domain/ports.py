@@ -5,10 +5,15 @@ which tool applies a stimulus (:class:`Probe`), how a measurement is taken
 (:class:`Sensor`), and what is brought up around the subjects (:class:`Environment`).
 :class:`Scope` is all ix assumes of whatever runs its work. The rest are optional, so an
 adapter need not answer what it cannot tell: a subject or a sensor may also be a
-:class:`Review` and a :class:`StandIn`, a subject a :class:`Preflight`, an environment a
-:class:`Liveness`, and a scope :class:`Traced`. Without one there is nothing to check, to
-stand in or to trace, and the run proceeds. A kind's options, effects, facets and metrics
-are data (:mod:`ix.domain.kind`), not part of these ports.
+:class:`Review` and a :class:`StandIn`, any adapter a :class:`Preflight`, an environment a
+:class:`Liveness`, and a scope :class:`Traced` and :class:`Recorded`. Without one there is
+nothing to check, to stand in, to trace or to name, and the run proceeds. A sensor may also be
+a :class:`SpanReader`, so a run keeps the spans it reads. A kind's options,
+facets and metrics are data (:mod:`ix.domain.kind`), not part of these ports.
+
+The four kind ports are runtime-checkable: each is the port of its family's extension point,
+so a class registered there that lacks one of its members is refused when it is registered,
+and whatever a factory builds is held to it when it is built.
 
 Each port is named for what it is to a run; what an experiment writes for one is its config
 (:class:`~ix.domain.experiment.SubjectConfig`, ``ProbeConfig``, ``SensorConfig``,
@@ -22,9 +27,6 @@ Each port is named for what it is to a run; what an experiment writes for one is
   subject failed and :class:`~ix.domain.run.HarnessError` when the harness or its tool did;
   anything else is read as the harness's. None of these fails the run.
 * *Release.* Leaving ``reach`` releases everything it started, however it is left.
-* *Spend.* A facet ``apply`` returns reports what applying the probe cost under
-  :data:`~ix.domain.run.COST`; a sensor that spends to measure says so in :class:`Sensed`.
-  The run adds both up and holds them to its ceiling.
 * *Blocking.* Every method that waits is ``async`` and yields.
 """
 
@@ -51,12 +53,10 @@ type Measured = bool | float | Mapping[str, float]
 @dataclass(frozen=True)
 class Sensed:
     """What a sensor read from one interaction, when it has more to say than its numbers:
-    ``detail`` (the skill that fired, the tests that failed), kept with each of its readings,
-    and ``cost_usd``, what measuring cost (a model asked to judge)."""
+    ``detail`` (the skill that fired, the tests that failed), kept with each of its readings."""
 
     values: Mapping[str, Measured]
     detail: Mapping[str, Any] = field(default_factory=dict)
-    cost_usd: float | None = None
 
 
 class Flag(Protocol):
@@ -69,6 +69,11 @@ class Flag(Protocol):
 
 class Scope(Protocol):
     """All ix assumes of whatever runs its components."""
+
+    #: The run's id, unique to it: what an adapter names what it starts for the run after,
+    #: so that two runs, or a run and what a killed one left behind, do not collide.
+    @property
+    def run_id(self) -> str: ...
 
     #: Set when the run is asked to finish now. Work that returns soon after keeps what it
     #: has recorded.
@@ -92,8 +97,32 @@ class Span(Protocol):
         """Add attributes, as known by the time the work ends."""
         ...
 
-    def event(self, name: str, /, **attributes: Any) -> None:
-        """Record that something happened inside the span."""
+    def failed(self, reason: str) -> None:
+        """Say that the work ended in a failure, and its reason (``timeout``, ``exited``)."""
+        ...
+
+    def evaluated(
+        self,
+        metric: str,
+        *,
+        score: float | None = None,
+        label: str | None = None,
+        failure: str | None = None,
+    ) -> None:
+        """Record one metric read inside the span: its score as a number, or a pass/fail
+        ``label``, or the reason no value could be read (``failure``)."""
+        ...
+
+
+@runtime_checkable
+class Recorded(Protocol):
+    """Optional for a :class:`Scope`: the model sessions recorded on its behalf. Whatever
+    runs ix keeps a table of the agent sessions and model calls its adapters made, failed
+    ones included (matrix's ``matrix.v1.session``); this names their rows, so an interaction
+    or a reading can say which sessions are behind it."""
+
+    def sessions(self) -> tuple[int, ...]:
+        """The rows recorded since the scope last handed a row over, in the order made."""
         ...
 
 
@@ -105,9 +134,9 @@ class Traced(Protocol):
     def trace(self, name: str, /, **attributes: Any) -> AbstractContextManager[Span]: ...
 
 
+@runtime_checkable
 class Subject(Protocol):
-    """Brings one subject up for one trial and takes it down again. May also be a
-    :class:`Preflight`."""
+    """Brings one subject up for one trial and takes it down again."""
 
     def reach(
         self, name: str, subject: SubjectConfig, *, base: str
@@ -119,13 +148,32 @@ class Subject(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class Requirement:
+    """Something an adapter needs of this host to carry an entry out as written, and whether
+    it holds here now: a program on PATH, a daemon that answers, a variable that is set, a
+    file that is there, a runtime that resolves the model. ``need`` says what, in words that
+    stay the same whether it holds or not; ``why`` says what was found when it does not, and
+    ``fix`` how to make it hold."""
+
+    need: str
+    holds: bool
+    why: str = ""
+    fix: str = ""
+
+
 @runtime_checkable
 class Preflight(Protocol):
-    """Optional for a :class:`Subject`: what it can tell before anything starts."""
+    """Optional for any adapter (a subject, probe, sensor or environment): what it needs of
+    this host, each checked before anything starts. ``ix plan`` lists them with whether each
+    holds, and ``ix run`` refuses to start while one does not."""
 
-    def unstartable(self, subject: SubjectConfig, *, base: str) -> str | None:
-        """Why ``subject`` cannot be started as written, in words; None when nothing says it
-        cannot. ``base`` is the directory the experiment's relative paths resolve against."""
+    def requirements(self, options: Mapping[str, Any], *, base: str) -> Sequence[Requirement]:
+        """What carrying out an entry whose options are ``options`` needs of this host, each
+        checked now. ``base`` is the directory the experiment's relative paths resolve
+        against. It is asked once for each cell's options, a factor's ``{name}`` filled in;
+        a requirement that depends on a placeholder only a trial fills (an environment's
+        binding, ``{db.url}``) is left out: it is told when the trial starts."""
         ...
 
 
@@ -169,12 +217,13 @@ class StoodIn:
 @runtime_checkable
 class StandIn(Protocol):
     """Optional for a :class:`Subject`, :class:`Probe` or :class:`Sensor`: the same entry
-    on a stand-in that touches no model and spends nothing, for a dry run, which checks
-    the harness and never the subject. A subject without one cannot be dry run."""
+    on a stand-in that touches no model, for a dry run, which checks the harness and never
+    the subject. A subject without one cannot be dry run."""
 
     def stand_in(self, options: Mapping[str, Any]) -> StoodIn: ...
 
 
+@runtime_checkable
 class Probe(Protocol):
     """Applies one stimulus to a target."""
 
@@ -195,6 +244,7 @@ class Probe(Protocol):
         ...
 
 
+@runtime_checkable
 class Sensor(Protocol):
     """Measures: during the probe when it must (``watch``), from the interaction after."""
 
@@ -217,6 +267,17 @@ class Sensor(Protocol):
         ...
 
 
+@runtime_checkable
+class SpanReader(Protocol):
+    """Optional for a :class:`Sensor`: whether it reads the spans a trial leaves in this
+    process (a session's tool calls, its model requests), as its ``watch`` keeps them. A run
+    whose sensors read them keeps them in the process, exporting none unless export was
+    asked for."""
+
+    def reads_spans(self, options: Mapping[str, Any]) -> bool: ...
+
+
+@runtime_checkable
 class Environment(Protocol):
     """Brings up what the subjects need around them, once per run. May also be a
     :class:`Liveness`."""

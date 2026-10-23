@@ -8,18 +8,20 @@ to colleagues.
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote_plus
 
 import pytest
 
 from recon.adapters._out.capture_files import FilesystemCaptureLog, read_captures
 from recon.adapters._out.system_clock import SystemClock
 from recon.application.captures import record_hook_payload
-from recon.domain.capture import REDACTED, redact_headers
+from recon.domain.capture import REDACTED, credential_values, redact_credentials, redact_headers
 from recon.domain.errors import CollectionError, ConfigError
 
 
-def _record(log: FilesystemCaptureLog, body: bytes = b"{}", **overrides) -> dict:
-    kwargs = {
+def _record(log: FilesystemCaptureLog, body: bytes = b"{}", **overrides: Any) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
         "collector": "src",
         "source": "s",
         "kind": "http",
@@ -66,6 +68,65 @@ def test_ordinary_headers_pass_through_untouched() -> None:
     headers = {"Content-Type": "text/html", "ETag": 'W/"abc"', "Server": "nginx"}
 
     assert redact_headers(headers) == headers
+
+
+# --- a credential recon sends, in a captured result ---
+
+
+def test_a_long_credential_is_redacted_wherever_it_appears() -> None:
+    """Regression (gate B1): whether a credential stood whole was judged on the capture's
+    JSON text, where a newline or a tab is written ``\\n`` or ``\\t``, so a token at the
+    start of a line, after a tab, or after ``_``, ``-`` or a CJK letter was kept. One of eight
+    characters or more is replaced wherever it appears, in a key too."""
+    token = "t0kSecretValue"
+    result = {
+        "text": f"Your token is:\n{token}\nkeep it",
+        "tsv": f"NAME\tVALUE\nGITHUB_TOKEN\t{token}",
+        "crlf": f"a\r\n{token}",
+        "joined": [f"prefix_{token}", f"key-{token}", f"トークン{token}", f"/t/{token}/x"],
+        token: 1,
+    }
+    redacted = redact_credentials(result, [token])
+    assert token not in json.dumps(redacted, ensure_ascii=False)
+    assert redacted["tsv"] == f"NAME\tVALUE\nGITHUB_TOKEN\t{REDACTED}"
+    assert redacted["joined"][2] == f"トークン{REDACTED}"
+    assert redacted[REDACTED] == 1
+
+
+def test_a_short_credential_is_redacted_only_where_it_is_a_whole_value() -> None:
+    """Regression (gate B1-b): a short credential was redacted wherever it stood whole in the
+    capture's JSON text, so ``X-Api-Key-Version: 2`` blanked the number ``2`` and a cookie's
+    ``consent=true`` every ``true``, and the capture was no longer JSON. Under eight
+    characters, a credential is replaced only as a whole string, or a whole query parameter's
+    value in a URL; never in a number, a boolean or longer text."""
+    credentials = credential_values(
+        {"Authorization": "Bearer t0k", "X-Api-Key-Version": "2", "Cookie": "s=x; consent=true"}
+    )
+    result = {"auth": "Bearer t0k", "token": "t0k", "url": "/q?key=t0k&n=1#t0k",
+              "near": "/q?key=t0k2", "prose": "the t0k is t0k", "year": 2026, "api": "v2",
+              "n": 2, "two": "2", "ok": True, "flags": [True, "true", "truer"]}  # fmt: skip
+    marker = quote_plus(REDACTED)
+    assert redact_credentials(result, credentials) == {
+        **result,
+        "auth": REDACTED,
+        "token": REDACTED,
+        "url": f"/q?key={marker}&n=1#t0k",
+        "two": REDACTED,
+        "flags": [True, REDACTED, "truer"],
+    }
+
+
+def test_each_cookie_s_value_is_a_credential_and_the_rest_of_the_header_is_not() -> None:
+    """Regression: a value's first word was read as an auth scheme, so for ``Cookie: sid=abc;
+    theme=dark`` everything after the first space (``theme=dark``) was taken for the
+    credential. A cookie header's credentials are its whole value and each cookie's value."""
+    found = credential_values({"Cookie": "sid=s3ss10n; theme=dark"})
+    assert found == ["sid=s3ss10n; theme=dark", "s3ss10n", "dark"]
+    assert credential_values({"Authorization": "Basic dXNlcjpwYXNz"}) == [
+        "Basic dXNlcjpwYXNz",
+        "dXNlcjpwYXNz",
+    ]
+    assert credential_values({"X-Org": "acme"}) == []
 
 
 # --- the line format ---
@@ -138,7 +199,7 @@ def test_a_stream_is_hashed_and_moved_on_finalize(tmp_path: Path) -> None:
 # --- reading: the format is written by other tools, so the reader verifies ---
 
 
-def _write_log(tmp_path: Path, line: dict, body: bytes | None = b"x") -> Path:
+def _write_log(tmp_path: Path, line: dict[str, Any], body: bytes | None = b"x") -> Path:
     if body is not None:
         (tmp_path / "raw").mkdir(exist_ok=True)
         (tmp_path / "raw" / hashlib.sha256(body).hexdigest()).write_bytes(body)
@@ -147,7 +208,7 @@ def _write_log(tmp_path: Path, line: dict, body: bytes | None = b"x") -> Path:
     return log
 
 
-def _line(content: bytes = b"x", **overrides) -> dict:
+def _line(content: bytes = b"x", /, **overrides: Any) -> dict[str, Any]:
     sha = hashlib.sha256(content).hexdigest()
     line = {
         "schema": "recon.v1.capture",
@@ -176,14 +237,16 @@ def test_reader_ignores_unknown_fields(tmp_path: Path) -> None:
         ({"sha256": "0" * 64}, "does not match its sha256"),
     ],
 )
-def test_reader_refuses_what_it_cannot_trust(tmp_path: Path, override, message) -> None:
+def test_reader_refuses_what_it_cannot_trust(
+    tmp_path: Path, override: dict[str, Any], message: str
+) -> None:
     log = _write_log(tmp_path, _line(**override))
     with pytest.raises(CollectionError, match=message):
         list(read_captures(log))
 
 
 @pytest.mark.parametrize("field", ["id", "collector", "kind", "sha256"])
-def test_reader_refuses_a_line_without_a_field_required_to_read(tmp_path: Path, field) -> None:
+def test_reader_refuses_a_line_without_a_field_required_to_read(tmp_path: Path, field: str) -> None:
     """Regression: the format marks these required to read, and a line without
     ``sha256`` was accepted."""
     line = _line()
@@ -195,7 +258,7 @@ def test_reader_refuses_a_line_without_a_field_required_to_read(tmp_path: Path, 
 
 
 @pytest.mark.parametrize("field", ["id", "collector", "kind", "sha256"])
-def test_reader_refuses_a_required_field_that_is_not_a_string(tmp_path: Path, field) -> None:
+def test_reader_refuses_a_required_field_that_is_not_a_string(tmp_path: Path, field: str) -> None:
     log = _write_log(tmp_path, _line(**{field: 7}))
     with pytest.raises(CollectionError, match=rf"captures\.jsonl:1: .*'{field}'"):
         list(read_captures(log))
@@ -220,7 +283,7 @@ def test_reader_names_the_file_and_line_of_bad_json(tmp_path: Path) -> None:
 # --- Claude Code PostToolUse payloads ---
 
 
-def _payload(**overrides) -> dict:
+def _payload(**overrides: Any) -> dict[str, Any]:
     payload = {
         "session_id": "abc123",
         "transcript_path": "/tmp/t.jsonl",
@@ -253,6 +316,20 @@ def test_hook_payload_becomes_an_external_capture(tmp_path: Path) -> None:
     assert json.loads(body) == {"results": [{"title": "Mamba", "url": "https://x"}]}
 
 
+def test_a_hooks_tool_input_is_kept_as_given_and_security_md_says_so(tmp_path: Path) -> None:
+    """A tool's input is what the agent asked, so the capture keeps it whole: recon cannot
+    tell a credential an MCP tool takes as an argument from any other argument, and does
+    not redact by guessing at names. That is a stated boundary, not an accident:
+    the capture docstring said a credential never reaches the log, which held only for
+    what recon fetches itself."""
+    log = FilesystemCaptureLog(tmp_path, SystemClock())
+    tool_input = {"query": "q", "api_key": "sk-passed-as-an-argument"}
+    line = record_hook_payload(log, _payload(tool_input=tool_input)).document()
+    assert line["request"]["tool_input"] == tool_input
+    security = (Path(__file__).parents[1] / "SECURITY.md").read_text()
+    assert "`tool_input` is stored as the hook gives it" in " ".join(security.split())
+
+
 def test_hook_payload_prefers_the_mcp_server_object(tmp_path: Path) -> None:
     payload = _payload(mcp_server={"name": "plugin_research_exa", "source": "plugin"})
     line = record_hook_payload(FilesystemCaptureLog(tmp_path, SystemClock()), payload)
@@ -268,7 +345,9 @@ def test_hook_string_response_is_stored_as_text(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("payload", [[], "x", {"tool_name": "t"}, {"tool_response": {}}])
-def test_hook_payload_without_required_fields_is_a_config_error(tmp_path: Path, payload) -> None:
+def test_hook_payload_without_required_fields_is_a_config_error(
+    tmp_path: Path, payload: dict[str, Any] | list[Any] | str
+) -> None:
     with pytest.raises(ConfigError):
         record_hook_payload(FilesystemCaptureLog(tmp_path, SystemClock()), payload)
     assert not (tmp_path / "captures.jsonl").exists()
