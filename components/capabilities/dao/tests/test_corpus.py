@@ -23,7 +23,7 @@ CATALOG = """\
 |---|---|---|---|---|---|
 | aces-dx | craft | RAW_GATHERED | 24 | 6 | guild-arch:ace |
 | krishna | figure | DISTILLED | 33 | 9 | guild-arch:k |
-| tacit-knowledge-elicitation | craft | RAW_GATHERED | 5 | 3 | cix:radix, research:polanyi |
+| tacit-knowledge-elicitation | craft | RAW_GATHERED | 5 | 3 | toolkit:radix, research:polanyi |
 | mystery | wobble | RAW_GATHERED | 1 | 1 | nowhere:x |
 
 **Totals:** 63 sources · 12 could-not-fetch.
@@ -51,8 +51,8 @@ def test_fields_and_grounding() -> None:
 
 def test_multi_valued_informs_splits() -> None:
     tacit = next(x for x in parse_catalog(CATALOG) if x.name == "tacit-knowledge-elicitation")
-    assert tacit.informs == ("cix:radix", "research:polanyi")
-    assert tacit.informs_project("cix") == ("radix",)
+    assert tacit.informs == ("toolkit:radix", "research:polanyi")
+    assert tacit.informs_project("toolkit") == ("radix",)
     assert tacit.informs_project("research") == ("polanyi",)
     assert tacit.informs_project("guild-arch") == ()
 
@@ -60,7 +60,7 @@ def test_multi_valued_informs_splits() -> None:
 def test_projects_counts_edges_not_domains() -> None:
     counts = projects(parse_catalog(CATALOG))
     assert counts["guild-arch"] == 2
-    assert counts["cix"] == 1
+    assert counts["toolkit"] == 1
     assert counts["research"] == 1
 
 

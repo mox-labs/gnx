@@ -1,7 +1,7 @@
 """Read the agent-craft catalog from dao-corpus.
 
-dao-corpus is DATA (its README: "This is data. Tooling lives in cix"). This adapter only
-reads it — nothing here writes to the corpus, and a missing corpus degrades to an empty
+dao-corpus is DATA (its README: "This is data."; the tooling lives elsewhere). This adapter
+only reads it — nothing here writes to the corpus, and a missing corpus degrades to an empty
 catalog rather than an error, so `dao init` still works for a project that grounds its
 bench some other way.
 
@@ -88,7 +88,7 @@ def projects(domains: list[CorpusDomain]) -> dict[str, int]:
     """Every project the catalog's `informs` edges point at, with a domain count.
 
     Useful before selecting: it shows which projects the corpus already grounds
-    (guild-arch, moxlabs.studio, ziran.ink, chanakya, research, cix …).
+    (guild-arch, moxlabs.studio, ziran.ink, chanakya, research …).
     """
     counts: dict[str, int] = {}
     for d in domains:
