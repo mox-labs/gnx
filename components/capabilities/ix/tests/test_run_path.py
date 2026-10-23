@@ -259,8 +259,25 @@ class TestWhatCallersRelyOn:
     """The observable behaviours README's "What a caller may rely on" lists as contract,
     pinned. The exit kinds and codes are pinned in ``test_ix_cli.py``
     (``test_the_agreed_kinds_keep_their_agreed_codes``,
-    ``test_the_exit_codes_of_a_run_are_in_the_one_table``), and the span names in
-    ``test_agent_runs.py::TestTelemetry``."""
+    ``test_the_exit_codes_of_a_run_are_in_the_one_table``). The progress events are checked
+    here, and the span names in ``test_agent_runs.py::TestTelemetry``, as what ix does now:
+    telemetry names are not contract (owner ruling 2026-10-22)."""
+
+    def test_telemetry_names_are_listed_as_not_contract(self) -> None:
+        """Changed requirement (owner ruling 2026-10-22): span names, event names, their
+        attributes and fields, and metric names are telemetry, not contract. The README's
+        table said span names and the progress events' names and fields were."""
+        readme = (Path(ix.__file__).parents[2] / "README.md").read_text(encoding="utf-8")
+        start = readme.index("### What a caller may rely on")
+        rows = [
+            [cell.strip() for cell in line.strip("|").split("|")]
+            for line in readme[start : readme.index("## Output", start)].splitlines()
+            if line.startswith("| ") and not line.startswith("| behaviour")
+        ]
+        telemetry = [row for row in rows if "span" in row[0] or "on_event" in row[0]]
+        assert telemetry, "the table lists the telemetry names"
+        for behaviour, contract, *_ in telemetry:
+            assert contract.startswith("no:"), behaviour
 
     def test_a_runs_layout_and_table_names(self, root: Root, write_experiment: Write) -> None:
         file = write_experiment(experiment())

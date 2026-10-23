@@ -298,9 +298,10 @@
   for a block, and `Root(tracer=...)` takes where ix's spans go: a program that wires its own
   adapters no longer has to reach a private name to drive the command.
 - **`ix.domain` exports `TrialError`**, the base of `SubjectError` and `HarnessError`.
-- **What a caller may rely on is listed.** README names the run layout and table names, the
-  events and their fields, the span names and the exit kinds as contract, each pinned by a
-  test, and span attributes, the conventions' names and the human text as not.
+- **What a caller may rely on is listed.** README names the run layout and table names and
+  the exit kinds as contract, each pinned by a test, and the human text and every telemetry
+  name as not: span and event names, their attributes and fields, the conventions' names
+  (owner ruling 2026-10-22).
 
 ### Fixed
 

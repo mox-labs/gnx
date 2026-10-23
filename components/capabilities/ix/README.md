@@ -745,9 +745,8 @@ not:
 |---|---|---|
 | a run is a directory `<experiment directory>/.ix/runs/<run id>/` (or under the settings' `runs`), its id `<experiment>-<UTC time>-<4 hex>` | yes | `test_run_path.py::TestWhatCallersRelyOn` |
 | its tables `ix.v1.run`, `ix.v1.trial`, `ix.v1.bindings`, `ix.v1.interaction`, `ix.v1.reading`, each `<kind>.jsonl`, beside matrix's (`matrix.v1.session`, `matrix.v1.ledger`, `run.json`, whose layout is matrix's contract) | yes; a row gains fields only by addition | the same |
-| the events a run hands `on_event`: `ix.environment.up` (`kind`, `services`), `ix.trial.start` (`seq`, `total`, `subject`, `role`, `probe`, `cell`), `ix.trial.end` (`seq`, `total`, `subject`, `role`, `failure`, `duration_ms`), `ix.sense.end` (`readings`, `interactions`) | the names and these fields; an event is telemetry and may be dropped, so nothing reads a result from one | the same |
-| the span names `ix.plan`, `ix.run`, `ix.environment`, `ix.trial`, `ix.sensor` under the instrumentation scope `ix` | yes | `test_agent_runs.py::TestTelemetry` |
-| span attributes, and the GenAI conventions' event and attribute names (`gen_ai.evaluation.result`, `error.type`) | no: the conventions are Development status, and ix follows them as they move | |
+| the events a run hands `on_event`: `ix.environment.up` (`kind`, `services`), `ix.trial.start` (`seq`, `total`, `subject`, `role`, `probe`, `cell`), `ix.trial.end` (`seq`, `total`, `subject`, `role`, `failure`, `duration_ms`), `ix.sense.end` (`readings`, `interactions`) | no: an event is telemetry, and telemetry names are not contract (owner ruling 2026-10-22); an event may be dropped, so nothing reads a result from one | |
+| the span names `ix.plan`, `ix.run`, `ix.environment`, `ix.trial`, `ix.sensor` under the instrumentation scope `ix`, span attributes, and the GenAI conventions' event and attribute names (`gen_ai.evaluation.result`, `error.type`) | no: telemetry names are not contract (owner ruling 2026-10-22); the conventions are Development status, and ix follows them as they move | |
 | the exit kinds and codes in the table under Output | yes; the shared ones are every gnx capability's | `test_ix_cli.py::test_the_agreed_kinds_keep_their_agreed_codes`, `test_the_exit_codes_of_a_run_are_in_the_one_table` |
 | the human text of `ix` commands | no: read `--json` | |
 
