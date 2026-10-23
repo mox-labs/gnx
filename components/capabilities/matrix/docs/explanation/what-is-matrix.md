@@ -313,7 +313,10 @@ wires it and says what a run would do, calling nothing; `matrix run` runs it, an
 for a run: what a run costs depends on providers matrix does not see, so it cannot measure
 it. What a session reports is kept as a fact of that session (its tokens, and `cost_usd`
 when the runtime reports one), and a runtime may bound its own sessions with its own option
-(the `claude-sdk` runtime passes the SDK's `max_budget_usd`).
+(the `claude-sdk` runtime passes the SDK's `max_budget_usd`). The per-call token cap is kept
+as it is (owner ruling 2026-10-22): `max_tokens`, on a model runtime, the `pydantic-ai`
+runtime or a hardline row, bounds each reply, and a reply cut there says so; it bounds a reply,
+not a run's cost.
 
 ## One loader
 

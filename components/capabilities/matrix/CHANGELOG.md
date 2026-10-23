@@ -47,7 +47,10 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   What stays: each session's tokens and the cost a runtime reported (`AgentResponse.cost_usd`,
   the `matrix.agent.cost_usd` metric), as facts of that session. The `claude-sdk` runtime's
   `max_budget_usd` stays as the SDK's own option, passed as it stands; its stop is still
-  recorded (`stop: max_budget_usd`).
+  recorded (`stop: max_budget_usd`). The per-call token cap is kept as it is (owner ruling
+  2026-10-22): `max_tokens` on the `hardline` model runtime and the `pydantic-ai` agent
+  runtime (and on a hardline registry row) bounds each reply, and a reply cut there says so
+  (`finish_reason: length`). It bounds a reply, not what a run costs.
 
 ### Changed (breaking)
 
