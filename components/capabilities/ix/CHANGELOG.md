@@ -27,7 +27,7 @@
   plain install runs agent sessions on `claude-sdk` and exports spans. A requirement that
   names an extra (`ix[claude] @ ...`) now fails to resolve: drop the brackets. A warning
   matrix carries over for an install that lacks one is `dependency_missing` (was
-  `extra_missing`).
+  `extra_missing`; the rename is kept, owner ruling 2026-10-22).
 - **Spend.** ix no longer limits or estimates what a run costs. The ceiling was checked only
   between trials, rested on whatever cost an adapter chose to report (the `model` runtime
   reports none), and counted calls matrix already accounts for; it is gone, and not

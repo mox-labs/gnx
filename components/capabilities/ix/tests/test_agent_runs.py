@@ -2097,6 +2097,24 @@ def test_matrixs_problems_reach_ixs_envelope() -> None:
     ]
 
 
+def test_matrixs_own_kinds_reach_ixs_envelope_by_their_names() -> None:
+    """Owner ruling 2026-10-22: the warning for a dependency an install lacks stays
+    ``dependency_missing`` (the rename from ``extra_missing`` is kept). ix carries matrix's
+    own kinds by name, so one matrix has and ix does not carry would arrive as
+    ``invalid_value``."""
+    from matrix.domain.problems import MATRIX_PROBLEM_KINDS
+
+    from ix.adapters._out.matrix_errors import carried_over
+    from ix.domain.problem import CARRIED_KINDS
+
+    assert set(MATRIX_PROBLEM_KINDS) == CARRIED_KINDS
+    problem = matrix.Problem(path="matrix.observers.0", kind="dependency_missing", message="m")
+    error = matrix.ConfigError("bad config", fix="fix it")
+    error.problems = (problem,)
+    document = ix.error_document(carried_over("not carried out", error))["error"]
+    assert [p["kind"] for p in document["problems"]] == ["dependency_missing"]
+
+
 # --- what a second drive from ``--skill`` alone found ------------------------------------
 
 
