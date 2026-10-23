@@ -889,6 +889,9 @@ def _kind_line(kind: Kind, runnable: bool) -> str:
         facets.append(f"offers {', '.join(kind.offers)}")
     if kind.truth:
         facets.append(f"reads truth {', '.join(kind.truth)}")
+    if kind.service_keys:
+        keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
+        facets.append(f"binds each service as {keys}")
     if facets:
         parts.append(f"  {'; '.join(facets)}")
     for metric in kind.metrics:

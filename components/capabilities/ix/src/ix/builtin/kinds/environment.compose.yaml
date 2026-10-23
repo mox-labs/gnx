@@ -10,4 +10,4 @@ options:
   env_file: {type: path, description: "a file of variables compose substitutes into the file, relative to the experiment"}
   build: {type: boolean, description: "build the services' images before bringing them up; false when absent"}
   pull: {type: string, allowed: [always, missing, never], description: "when to pull the services' images; compose's own default when absent"}
-binds: [host, port, url]
+service_keys: [host, port, url]

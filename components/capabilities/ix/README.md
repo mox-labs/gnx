@@ -244,8 +244,9 @@ or `max` as its estimator.
 
 A subject, a probe, a sensor and the environment each name a **kind**. A kind is declared as
 data, the way a genre is: its options (with types, and which are required), the facets it
-offers and needs, and for a sensor the metrics it provides and whether a model
-judges them. `ix kinds` lists them.
+offers and needs, for a sensor the metrics it provides and whether a model judges them,
+and for an environment the keys each service it brings up is bound with (`service_keys:
+[host, port, url]`, named `{<service>.<key>}`). `ix kinds` lists them.
 
 | family | kinds |
 |---|---|

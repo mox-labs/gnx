@@ -683,13 +683,13 @@ def _placeholders(
     def served(bound: Sequence[str], value: Any) -> list[str]:
         """``bound`` and what the environment binds its services with: each service its
         options name, or, for one that names none (a compose file's every service), any
-        ``<service>.<key>`` with a key its kind binds, checked once it is up."""
+        ``<service>.<key>`` with one of its kind's ``service_keys``, checked once it is up."""
         found = {*bound, *(services or ())}
         if services is None and declared is not None:
             found |= {
                 name
                 for name in placeholders(value)
-                if "." in name and name.rpartition(".")[2] in declared.binds
+                if "." in name and name.rpartition(".")[2] in declared.service_keys
             }
         return sorted(found)
 

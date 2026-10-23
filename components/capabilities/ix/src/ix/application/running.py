@@ -636,12 +636,12 @@ async def carry_out(
 
 
 def _unbound(setup: Setup, kit: Kit, bindings: Bindings) -> tuple[str, ...]:
-    """Each ``{<service>.<key>}`` (a key the environment's kind binds) the subjects or probes
-    name that the environment, now up, did not bind: validation can hold them only to the
-    services an environment's options list."""
+    """Each ``{<service>.<key>}`` (a key of the environment kind's ``service_keys``) the
+    subjects or probes name that the environment, now up, did not bind: validation can hold
+    them only to the services an environment's options list."""
     environment = schema.url("environment", setup.experiment.environment.kind)
     declared = kit.kinds.get(environment)
-    keys = set(declared.binds) if declared is not None else set()
+    keys = set(declared.service_keys) if declared is not None else set()
     services = bound(bindings)
     factors = set(setup.experiment.factors)
     written = [subject.options for subject in setup.experiment.subjects.values()]

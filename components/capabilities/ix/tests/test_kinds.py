@@ -181,6 +181,25 @@ class TestBuiltInKinds:
         with pytest.raises(ValidationError, match="type URL"):
             Kind.model_validate({"name": "lab.v1.genre.x", "summary": "s"})
 
+    def test_an_environment_kind_declares_its_service_keys(self, builtin_kinds: Kinds) -> None:
+        """Changed requirement (owner ruling 2026-10-22): the keys an environment binds each
+        service with are its ``service_keys``, so the kind no longer shares the name ``binds``
+        with an option's placeholders its adapter fills. ``binds:`` on a kind is refused, with
+        no alias; an option's ``binds`` keeps its name."""
+        keys = {kind.label: kind.service_keys for kind in builtin_kinds.of("environment")}
+        assert keys == {"none": (), "process": ("host", "port", "url"),
+                        "compose": ("host", "port", "url")}  # fmt: skip
+        environment = {"name": "lab.v1.environment.x", "summary": "s"}
+        assert Kind.model_validate({**environment, "service_keys": ["url"]}).service_keys == (
+            "url",
+        )
+        with pytest.raises(ValidationError, match="extra"):
+            Kind.model_validate({**environment, "binds": ["url"]})
+        with pytest.raises(ValidationError, match="only an environment kind declares service_keys"):
+            Kind.model_validate(_sensor("x", service_keys=["url"]))
+        session = builtin_kinds.get("subject", "agent-session")
+        assert session is not None and "response" in session.options["loop"].binds
+
     def test_a_declaration_is_data_and_holds_no_code(self) -> None:
         with pytest.raises(ValidationError, match="extra"):
             Kind.model_validate(_sensor("x", implementation="acme.sensors:Timing"))

@@ -508,6 +508,15 @@ class TestEightyColumns:
             for name, option in kind.options.items():
                 assert (name + "*" if option.required else name) in flat.replace("│", ""), name
 
+    def test_kinds_shows_the_keys_each_environment_binds_a_service_with(self) -> None:
+        """Owner ruling 2026-10-22: an environment kind's ``service_keys`` are listed with it,
+        so an author reads which ``{<service>.<key>}`` a run fills."""
+        printed = _run("kinds").stdout
+        environments = printed[printed.index("Environment kinds") : printed.index("Metrics")]
+        assert "service keys" in environments
+        row = next(line for line in environments.splitlines() if "│ process" in line)
+        assert "host, port, url" in row
+
     def test_genres_shows_what_the_author_must_set(self) -> None:
         flat = " ".join(_run("genres").stdout.replace("│", " ").split())
         assert "regress" in flat and "characterize" in flat
@@ -675,6 +684,9 @@ class TestGenresAndKindsCommands:
         assert (load["needs"], load["offers"]) == (["url"], ["load"])
         judge = document["kinds"]["ix.v1.sensor.judge"]
         assert [m["judged"] for m in judge["metrics"]] == [True, True, True, True, False]
+        # Owner ruling 2026-10-22: an environment's keys are its service_keys; no binds.
+        process = document["kinds"]["ix.v1.environment.process"]
+        assert process["service_keys"] == ["host", "port", "url"] and "binds" not in process
 
     def test_a_labs_refused_files_are_listed_with_their_problems(
         self, compare_data: dict[str, Any], write_experiment: Write

@@ -232,8 +232,10 @@
 - **Environment bindings reach the trials.** `{<service>.url}`, `.host` and `.port` in a
   subject's or a probe's options are filled from what the environment bound for that
   service, and `validate` accepts them for each service the environment's options name. An
-  environment kind declares the keys it binds (`binds:`). `environment.process` binds where a
-  service listens: its new `url` option, or the address of its `ready` URL. A run whose
+  environment kind declares the keys it binds each service with (`service_keys:`; owner
+  ruling 2026-10-22: not `binds`, which a kind option keeps for the placeholders its
+  adapter fills, and with no alias). `environment.process` binds where a service listens:
+  its new `url` option, or the address of its `ready` URL. A run whose
   environment came up without a service the experiment names fails before any trial
   (`unbound`), naming what it did bind.
 - **A verdict traces to the model that answered.** Record §19 has the reasons.
