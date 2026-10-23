@@ -223,7 +223,9 @@ class TestSurvey:
     ) -> None:
         """Regression: a survey whose ``meta.yaml`` or completion step failed (a full disk)
         said ``status: ok`` and exited 0, and under --json the one word of it, an event,
-        went nowhere; the archive stayed incomplete and only a later query said so."""
+        went nowhere; the archive stayed incomplete and only a later query said so.
+        Changed requirement (owner ruling 2026-10-22): it exits with the shared contract's
+        ``store`` kind, 9, not ``run_failed``."""
 
         def fails(self: ArchiveFiles, archive: Path, *args: Any) -> NoReturn:
             raise OSError(28, "No space left on device")
@@ -233,7 +235,7 @@ class TestSurvey:
         _mission(project, "m", OK_CONFIG)
         result = _invoke("survey", "m", "--json", over=over)
 
-        assert result.exit_code == 8
+        assert result.exit_code == 9
         doc = _doc(result)
         assert doc["status"] == "incomplete"
         assert [t["status"] for t in doc["tables"]] == ["ok"]
@@ -241,15 +243,41 @@ class TestSurvey:
         assert "No space left on device" in warning["message"]
         assert warning["kind"] in recon.PROBLEM_KINDS
         error = _error(result)
-        assert error["kind"] == "run_failed"
+        assert error["kind"] == "store"
         assert "could not be finished" in error["message"]
         assert error["details"] == {"archive": doc["archive"], "failed": []}
         assert (Path(doc["archive"]) / ".incomplete").exists()
 
         human = _invoke("survey", "m", over=over)
-        assert human.exit_code == 8
+        assert human.exit_code == 9
         assert "No space left on device" in human.stderr
-        assert "error (run_failed):" in human.stderr
+        assert "error (store):" in human.stderr
+
+    def test_an_archive_that_could_not_be_finished_is_store_whatever_its_tables_did(
+        self, project: Path
+    ) -> None:
+        """Owner ruling 2026-10-22: an archive the survey could not finish exits ``store`` (9).
+        A table's failure is recorded in the ``meta.yaml`` that could not be written, so the
+        store's failure is the one to act on first; the failed tables are still named."""
+
+        def fails(self: ArchiveFiles, archive: Path, *args: Any) -> NoReturn:
+            raise OSError(28, "No space left on device")
+
+        over = root(archives=type("NoMeta", (ArchiveFiles,), {"write_meta": fails})(SystemClock()))
+        config = {
+            "collectors": [
+                {"name": "good", "type": "cli", "run": "echo '{\"a\": 1}'"},
+                {"name": "bad", "type": "cli", "run": "exit 7"},
+            ]
+        }
+        _mission(project, "m", config)
+        result = _invoke("survey", "m", "--json", over=over)
+
+        assert result.exit_code == 9
+        error = _error(result)
+        assert error["kind"] == "store"
+        assert error["details"]["failed"] == ["bad"]
+        assert "1 of 2 table(s) failed" in error["message"]
 
     def test_no_config_is_not_found(self, project: Path) -> None:
         result = _invoke("survey", "nope", "--json")
@@ -1124,7 +1152,7 @@ def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     tool's own kinds take codes from 10 up, one kind per code."""
     agreed = _contract("exit-codes.json")["kinds"]
     shared = set(agreed) & set(recon.EXIT_CODES)
-    assert shared == set(agreed) - {"store"}, "recon writes no separate store"
+    assert shared == set(agreed), "every agreed kind, store among them (owner ruling 2026-10-22)"
     assert {kind: recon.EXIT_CODES[kind] for kind in shared} == {k: agreed[k] for k in shared}
     own = set(recon.EXIT_CODES) - shared
     assert own == {"query"} and all(recon.EXIT_CODES[kind] >= 10 for kind in own)

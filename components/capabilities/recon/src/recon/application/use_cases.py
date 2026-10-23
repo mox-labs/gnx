@@ -296,10 +296,10 @@ class Recon:
             span.set("recon.tables", len(tables))
             span.set("recon.tables.failed", len(failed_tables))
             span.set("recon.records", sum(t.records for t in tables))
-            if (kind := failure_kind(tables)) is not None:
+            if not survey.finished:
+                span.fail("store", "the archive could not be finished")
+            elif (kind := failure_kind(tables)) is not None:
                 span.fail(kind, f"{len(failed_tables)} of {len(tables)} table(s) failed")
-            elif not survey.finished:
-                span.fail("run_failed", "the archive could not be finished")
             warnings += survey.warnings
             for unreadable in self._query.unreadable(archive):
                 warnings.append(unreadable)
