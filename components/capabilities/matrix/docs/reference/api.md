@@ -1055,8 +1055,9 @@ def register(registry):
 Frozen: `name`, `span`, `run_id: str | None`, `parent: str | None`, `fields: dict`,
 `component: str | None`, `time: datetime` (UTC), `schema: str = "matrix.v1.event"`.
 `document()` is the JSON-ready form every sink writes:
-`{schema, name, time, run_id, span, parent, component, fields}`. Within `matrix.v1.event` fields
-are only ever added.
+`{schema, name, time, run_id, span, parent, component, fields}`. Event names and their fields
+are telemetry, not contract: they may change without notice (owner ruling 2026-10-22), as may
+the span and metric names and attributes below.
 
 Names are namespaced, root first. matrix owns `matrix.*`; a component emits under its own
 root, and an observer treats a name it does not know as opaque. A `*.start`/`*.end` pair
@@ -1185,7 +1186,8 @@ the component chose for that metric.
 their repository, `open-telemetry/semantic-conventions-genai`: no release tagged there yet,
 every name at status Development, building on semantic conventions v1.44.0. The repository
 gives no schema URL yet, so matrix's tracer sets none. When the conventions are released,
-the names here are re-checked against that release.
+the names here are re-checked against that release. The span and metric names and their
+attributes are not contract (owner ruling 2026-10-22): they may change without notice.
 
 Spans, one per span of work, opened through `around` (above): in the task doing the work,
 **current** there while it goes on, and timed by the events' own times. So a span a library

@@ -295,7 +295,9 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 - **The observable behaviours callers rely on are listed** in the design record (section 16):
   the run layout and its file and table names, `run.json`'s keys, every `matrix.*` event and
   the fields it always carries, the span and metric names, and the exit kinds. Each is pinned
-  by a test or marked not contract.
+  by a test or marked not contract. Telemetry names (span, metric and event names, and their
+  attributes and fields) are not contract (owner ruling 2026-10-22): they are pinned by tests
+  so a change is deliberate, and may change without notice.
 
 ### Fixed
 

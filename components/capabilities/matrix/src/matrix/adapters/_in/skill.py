@@ -763,7 +763,8 @@ exports them too, as `matrix.task`, `matrix.error` and `<root>.<field>`.
 
 The GenAI semantic conventions as read on 2026-10-19 (repository
 `open-telemetry/semantic-conventions-genai`, no release tagged, status Development), scope
-`matrix`:
+`matrix`. These names (spans, metrics, events, attributes) are not contract (owner ruling
+2026-10-22): they may change without notice, so read facts from the record, not from them.
 
 - spans: `invoke_workflow` (a run), `matrix.component`, `invoke_agent {agent}` with
   `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`,

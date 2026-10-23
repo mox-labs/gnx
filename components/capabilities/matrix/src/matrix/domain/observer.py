@@ -13,7 +13,8 @@ observer that blocks the event loop is the one thing this cannot bound.
 **Event names are namespaced**, root first: matrix owns ``matrix.*``, and a component emits
 under its own root. A ``*.start``/``*.end`` pair matrix emits for a span of work shares a
 ``span`` id; an event a component emits with ``ctx.emit`` is one event, whatever its name
-ends with, and opens no span. Within ``matrix.v1.event`` fields are only ever added.
+ends with, and opens no span. Event names and fields are telemetry, not contract (owner
+ruling 2026-10-22): they may change without notice.
 
 **Around the work.** An observer may have one optional member besides ``on_event``, read with
 ``getattr`` so an observer written before it works unedited:

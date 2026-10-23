@@ -3,7 +3,8 @@
 The conventions followed are those of the OpenTelemetry GenAI semantic conventions
 repository (``open-telemetry/semantic-conventions-genai``) as read on 2026-10-19: no release
 tagged yet, status Development, building on semantic conventions v1.44.0. They may change;
-the names here are pinned to that reading, and ``docs/reference/api.md`` lists them.
+the names here are pinned to that reading, and ``docs/reference/api.md`` lists them. They are
+not contract (owner ruling 2026-10-22): a name may change without notice.
 
 **Spans**, under the instrumentation scope ``matrix``, each opened through the observer's
 ``around``: in the task doing the work, timed by the events' own times, and **current** in
