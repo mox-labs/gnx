@@ -24,8 +24,8 @@ Built on **ci-scaffolds discipline** (internalized 2026-06-14):
 
 1. Read, in order: `~/.claude/CLAUDE.md` (the constitution), the **ci-scaffolds** skills
    (`crafting`, `collaborating`, `problem-solving` at
-   `~/.claude/plugins/cache/cix/ci-scaffolds/0.6.0/skills/`), the memory files, then
-   `ground-truth.md` and the existing `content/01-13`.
+   `~/.claude/plugins/cache/<marketplace>/ci-scaffolds/0.6.0/skills/`), the memory files,
+   then `ground-truth.md` and the existing `content/01-13`.
 2. Crystallize the working method for this build in one short note: fidelity targets,
    checkpoint cadence, who authorizes what. This is the steward contract.
 
@@ -56,17 +56,17 @@ Two parts. (a) **Structure**: extend `content.ts` section union + read frontmatt
 the orientation spine prominently; redesign the cover as a multi-audience entry; add a
 per-doc maturity/fidelity badge.
 
-(b) **Lift cix's brand layer** (see `03-DESIGN.md` — the current look is improvised; gnx
-inherits the cix brand directly, sigil included). Copy `tokens.css` + `typography.css`,
-the sigil SVGs, and the `Sigil`/`CanonicalSigil`/`BrandHero` components from
-`~/mox/products/cix/docs/experience/`; replace the improvised `app.css` palette/type with
-them. Recolor the docsite chrome by role (Spark `--ci-blue` = links/emphasis, Constraint
-`--ci-red` = RETURN/boundaries, Emergence `--ci-green` = SHIP/code); retheme the diagrams
-to trichrome-by-role. Wire the maturity badges + established/open markers to the
-**evidence-brightness** scale. Place the cix sigil as cover mark + favicon (it's gnx's
-mark). cix's `typography.css` gives the cix·operator (IBM Plex Mono, tool-ness) register
-for docs by default; the public landing may later want the louder blueprints·billboard
-voice.
+(b) **Lift the predecessor's brand layer** (see `03-DESIGN.md` — the current look is
+improvised; gnx inherits that brand directly, sigil included). Copy `tokens.css` +
+`typography.css`, the sigil SVGs, and the `Sigil`/`CanonicalSigil`/`BrandHero` components
+from the predecessor plugin repository's `docs/experience/`; replace the improvised
+`app.css` palette/type with them. Recolor the docsite chrome by role (Spark `--ci-blue` =
+links/emphasis, Constraint `--ci-red` = RETURN/boundaries, Emergence `--ci-green` =
+SHIP/code); retheme the diagrams to trichrome-by-role. Wire the maturity badges +
+established/open markers to the **evidence-brightness** scale. Place the sigil as cover
+mark + favicon (it's gnx's mark). Its `typography.css` gives the operator (IBM Plex Mono,
+tool-ness) register for docs by default; the public landing may later want the louder
+blueprints·billboard voice.
 
 Gate: `bun run check` clean; existing docs render *on-brand*; composer + both decision
 explorers + select-to-comment verified in-browser; sanity-checked against
@@ -140,12 +140,12 @@ badges render. Clean up screenshot/`.playwright-mcp` artifacts with `rip`.
 
 ## Phase 6 — Close the original loop  ·  gate: committed
 
-The git workflow yzavyas asked for **first** (still owed): lift cix's `.githooks/` + wire
-`core.hooksPath` (cix never wired it — fix that); a `justfile` (gate SSOT, vaani pattern);
-`CONTRIBUTING.md` (GitHub Flow, conventional commits); `.github/workflows/ci.yml` (lint +
-typecheck + commit-lint); optional gitleaks from `~/mox/research`. Then commit on
-`feat/docsite`, conventional commits, one logical change each, Co-Authored-By trailer.
-Do not push or open a PR unless asked.
+The git workflow yzavyas asked for **first** (still owed): lift the predecessor's
+`.githooks/` + wire `core.hooksPath` (the predecessor never wired it — fix that); a
+`justfile` (gate SSOT, vaani pattern); `CONTRIBUTING.md` (GitHub Flow, conventional
+commits); `.github/workflows/ci.yml` (lint + typecheck + commit-lint); optional gitleaks
+from `~/mox/research`. Then commit on `feat/docsite`, conventional commits, one logical
+change each, Co-Authored-By trailer. Do not push or open a PR unless asked.
 
 ---
 
