@@ -60,11 +60,12 @@ provider's Retry-After) · `fallbacks` (distinct registry names tried once retri
 `limits` (bounds on a call, below) · `options` (the backend's own; see
 [Built-in backends](#built-in-backends)).
 
-**A call has its own bound.** One `extract` can make (schema repairs + 1) × the sum over its
-chain of (`retries` + 1) backend calls, each paid for in tokens; `timeout_s` bounds each phase of
-one (connecting, sending, each read), not the call as a whole.
-`limits` bounds the whole call, every retry, fallback and repair included, and is unset by
-default:
+**A call has its own bound.** One `complete` can make the sum over its chain of (`retries` + 1)
+backend calls, and one `extract` that much plus, for each schema repair, (`retries` + 1) of the
+chain's most-retried row, each paid for in tokens; `timeout_s` bounds each phase of one
+(connecting, sending, each read), not the call as a whole. `limits` bounds the whole call, every
+retry, fallback and repair included, and is unset by default (owner ruling 2026-10-22):
+`hardline check` shows each row's worst case, its limits applied:
 
 ```yaml
 models:
@@ -75,6 +76,9 @@ models:
       seconds: 300     # wall time from the call's start; a running attempt is cut when it passes
       tokens: 20000    # input + output tokens reported, checked between calls
 ```
+
+`tokens` bounds tokens, not spend, and the call that crosses it completes; it is kept as it is
+(owner ruling 2026-10-22).
 
 The row asked for sets the bounds; a fallback's own `limits` apply only when it is asked for by
 name. A call a limit stops raises what it would have raised anyway, with `limit` set to the bound
@@ -291,7 +295,7 @@ know, so it upgrades hardline before the program that writes the JSON does.
 | command | stdout JSON |
 |---|---|
 | `models --json` | `{"default": str\|null, "models": [ModelSpec without api_key, options]}`, each row's `base_url` filled |
-| `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null}], "warnings": [problem]}` |
+| `check --json` | `{"ok": bool, "tiers": [{"source": str, "present": bool}], "models": [{"name", "backend", "family", "ok": bool, "problem": str\|null, "worst_case": {"complete_calls": int, "extract_calls": int, "seconds": float\|null, "tokens": int\|null}}], "warnings": [problem]}`; `null` is no limit |
 | `complete --json` | the `Completion` without `raw`: `type_url, name, text, family, model, backend, local, usage, request_id, latency_ms, attempts, retries, fallback_from, finish_reason, native_finish_reason, refusal, tool_calls, params, attempt_log, turns_digest, row` |
 
 `complete --json` carries no hardline version: it is a `Completion`, and validates back into

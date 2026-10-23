@@ -50,6 +50,7 @@ from hardline.domain.types import (
     Answered,
     Attempt,
     AttemptFailed,
+    CallBound,
     CallEvent,
     Completion,
     FellBack,
@@ -325,6 +326,24 @@ class ModelRuntime:
                 except SecretError as e:
                     problems[spec.name] = str(e)
         return problems
+
+    def worst_case(self, model: str | None) -> CallBound:
+        """The most one call on the row ``model`` names (None: the default) can cost: what its
+        chain allows, lowered by its ``limits``. Each limit is unset by default (owner ruling
+        2026-10-22), so this is what a call costs at worst unless a row says less."""
+        spec = self._registry.get(model)
+        chain = [spec, *(self._registry.get(name) for name in spec.fallbacks)]
+        sends = [row.retries + 1 for row in chain]
+        complete, extract = sum(sends), sum(sends) + self._schema_retries * max(sends)
+        attempts = spec.limits.attempts
+        if attempts is not None:
+            complete, extract = min(complete, attempts), min(extract, attempts)
+        return CallBound(
+            complete_calls=complete,
+            extract_calls=extract,
+            seconds=spec.limits.seconds,
+            tokens=spec.limits.tokens,
+        )
 
     def check_tools(self, model: str | None) -> None:
         """Raise ``ConfigError`` unless the row ``model`` names, and each of its fallbacks, is
