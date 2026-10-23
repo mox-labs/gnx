@@ -395,6 +395,99 @@ async def test_a_cancelled_model_call_is_a_session_row_that_says_so() -> None:
     assert session.sent == call_sent(ModelRequest(prompt="rate it"))
 
 
+class _Down:
+    """A model runtime whose calls fail, classified."""
+
+    def check(self, _: Any) -> None:
+        return None
+
+    async def call(self, request: Any) -> Any:
+        from matrix import ModelRuntimeError
+
+        raise ModelRuntimeError("the provider is down", reason="unavailable")
+
+
+async def test_a_failed_or_cancelled_agent_session_keeps_the_task_as_sent() -> None:
+    """Owner ruling 2026-10-22: what a failed step was asked is in the record in full, not
+    only as a digest. A completed session's reply row keeps it (``AgentResponse.task``), so
+    its session row does not repeat it."""
+
+    def asks(agent: BoundAgent, task: str) -> Any:
+        class _Asks:
+            requires = frozenset({TASK})
+            provides = frozenset({"acme.v1.out"})
+
+            async def run(self, inputs: Any, ctx: Any) -> Any:
+                await agent.run(task)
+
+        return _Asks()
+
+    failing = BoundAgent(AgentDefinition(name="a"), _Failing(AgentRuntimeError("down")))
+    with pytest.raises(RunError) as e:
+        await Executor().run(wire({"a": asks(failing, "look at x")}, inputs=[TASK]), {TASK: "-"})
+    (session,) = e.value.run.rows(SESSION)
+    assert (session.status, session.task, session.prompt) == ("failed", "look at x", None)
+
+    hangs = BoundAgent(AgentDefinition(name="a"), _Hangs())
+    limits = Limits(deadline_s=0.05, grace_s=0, cleanup_s=1)
+    with pytest.raises(RunError) as e:
+        await Executor().run(
+            wire({"a": asks(hangs, "look at y")}, inputs=[TASK]), {TASK: "-"}, limits=limits
+        )
+    (session,) = e.value.run.rows(SESSION)
+    assert (session.status, session.task) == ("cancelled", "look at y")
+
+    box = _box()
+    wiring = box.wire(
+        [{"name": "review", "type": "matrix.v1.agent-step", "config": {"agent": "reviewer"}}],
+        inputs=[TASK],
+    )
+    run = await box.executor().run(wiring, {TASK: "look"})
+    (session,) = run.rows(SESSION)
+    assert (session.status, session.task) == ("completed", None)
+    assert run.rows(AGENT_RESPONSE)[0].task == "look"
+
+
+async def test_a_failed_or_cancelled_model_call_keeps_the_prompt_as_sent() -> None:
+    """Owner ruling 2026-10-22, as for an agent session: the prompt as sent, on the row of a
+    call that failed or was cancelled; a completed call's reply row keeps it
+    (``ModelCall.prompt``)."""
+    from matrix import ModelStep, ModelStepConfig, RunCancelled
+
+    step = ModelStep(ModelStepConfig(runtime="r"), model_runtimes={"r": _Down()})
+    with pytest.raises(RunError) as e:
+        await Executor().run(wire({"rate": step}, inputs=[PROMPT]), {PROMPT: "rate it"})
+    (session,) = e.value.run.rows(SESSION)
+    assert (session.status, session.reason) == ("failed", "unavailable")
+    assert (session.prompt, session.task) == ("rate it", None)
+
+    step = ModelStep(ModelStepConfig(runtime="r"), model_runtimes={"r": _Hangs()})
+    started = asyncio.Event()
+
+    class _Watch:
+        def on_event(self, event: Any) -> None:
+            if event.name == "matrix.model.start":
+                started.set()
+
+    running = asyncio.ensure_future(
+        Executor([_Watch()]).run(
+            wire({"rate": step}, inputs=[PROMPT]), {PROMPT: "rate that"}, limits=Limits(grace_s=0)
+        )
+    )
+    await started.wait()
+    running.cancel()
+    with pytest.raises(RunCancelled) as cancelled:
+        await running
+    (session,) = cancelled.value.run.rows(SESSION)
+    assert (session.status, session.prompt) == ("cancelled", "rate that")
+
+    box = _box()
+    run = await box.executor().run(box.wire(_model_step(), inputs=[PROMPT]), {PROMPT: "rate"})
+    (session,) = run.rows(SESSION)
+    assert (session.status, session.prompt) == ("completed", None)
+    assert run.rows(MODEL_CALL)[0].prompt == "rate"
+
+
 def _recorded(root: Path, **step: Any) -> Any:
     """A box that runs one model step and records it in a JSONL store under ``root``."""
     return _box(

@@ -549,7 +549,8 @@ error.
 
 `matrix run` prints where the record is and its files; `matrix runs` lists every recorded
 run, oldest first, a line each: id, status, start and where; with `--json`, `run_id`,
-`status`, `started`, `ended`, `location`.
+`status`, `started`, `ended`, `location`. A record it cannot read is skipped and named on a
+`damaged:` line with why (`damaged`: `location`, `reason`).
 With the default store a run is a directory under `.matrix/runs/<run_id>/`:
 
 - `run.json`: the run document, replaced once when the run ends: `status`, `components` (how
@@ -563,18 +564,20 @@ With the default store a run is a directory under `.matrix/runs/<run_id>/`:
   `runtime`, the
   model that answered, `stop`, `finish_reason`, `usage` (`input_tokens` counts the cache's),
   `cost_usd`, `session_id`, `request_id`, `trace_id` and `span_id`, `fallback_from`,
-  `attempts`, `attempt_log`, and `sent` (a digest of what was sent). The line's position
-  (from 0) is the row a reply's `session` names;
+  `attempts`, `attempt_log`, and `sent` (a digest of what was sent); a failed or cancelled
+  one keeps what it was asked, as sent (`task`, or `prompt` for a model call). The line's
+  position (from 0) is the row a reply's `session` names;
 - `matrix.v1.ledger.jsonl`: which component handed each row over, when, and the session
   rows behind it (`sessions`);
 - `events.jsonl`: the run's events, telemetry: lossy by design (`events_dropped` in
   `run.json` says how many are missing), so never read a fact from it. What a step that
-  failed was asked is not in the tables in full: its session row has `sent`, a digest.
+  failed was asked is on its session row (`task` or `prompt`).
 
 ```bash
 jq . .matrix/runs/RUN_ID/run.json
 jq -c '{task, content, session}' .matrix/runs/RUN_ID/acme.v1.claim-reply.jsonl
 jq -c '{status, reason, runtime, model, stop, usage}' .matrix/runs/RUN_ID/matrix.v1.session.jsonl
+jq -c 'select(.status != "completed")' .matrix/runs/RUN_ID/matrix.v1.session.jsonl
 ```
 
 A run killed mid-way keeps every row it had recorded. The first matrix command that reads
@@ -706,7 +709,8 @@ Agent runtimes (`matrix.agent_runtimes`):
   any family it has a row for. Options: `models` (a hardline registry; else `matrix.models`),
   `default_model`, `tools` (name to `module:function`, a Python function whose module is
   found when the runtime is built and imported when a session first offers it; one whose
-  import fails fails every session that offers it, and is not imported again),
+  import fails fails every session that offers it, and is not imported again; naming a
+  tool is a grant to run its code with the process's authority, owner ruling 2026-10-22),
   `temperature`, `max_tokens`. An agent's `tools` choose from the
   runtime's (unset: all; `[]`: none); `max_turns` bounds its model calls (`stop: max_turns`).
   A tool it does not have, a model hardline cannot resolve, or tools on a row whose backend
@@ -759,7 +763,8 @@ exports them too, as `matrix.task`, `matrix.error` and `<root>.<field>`.
 
 The GenAI semantic conventions as read on 2026-10-19 (repository
 `open-telemetry/semantic-conventions-genai`, no release tagged, status Development), scope
-`matrix`:
+`matrix`. These names (spans, metrics, events, attributes) are not contract (owner ruling
+2026-10-22): they may change without notice, so read facts from the record, not from them.
 
 - spans: `invoke_workflow` (a run), `matrix.component`, `invoke_agent {agent}` with
   `gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.response.model`,

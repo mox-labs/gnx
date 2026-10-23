@@ -27,7 +27,7 @@ from matrix.composition.container import build_store, compose, default_registry
 from matrix.domain.agent_step import AGENT_STEP
 from matrix.domain.errors import ConfigError, NotFoundError, UsageError, invalid
 from matrix.domain.model_step import MODEL_STEP
-from matrix.domain.ports._out.construct_store import location_of
+from matrix.domain.ports._out.construct_store import damaged_of, location_of
 from matrix.domain.problems import Problem, problem, sourced
 
 if TYPE_CHECKING:
@@ -188,12 +188,24 @@ class RunSummary(_Document):
     location: str
 
 
+class DamagedRun(_Document):
+    """A record the store found and could not list."""
+
+    #: Where it is: for the JSONL store, the directory holding its ``run.json``.
+    location: str
+    #: Why it could not be listed.
+    reason: str
+
+
 class Runs(_Document):
     schema_: Literal["matrix.v1.runs"] = Field(default="matrix.v1.runs", alias="schema")
     #: The configured store's type URL.
     store: str
     #: Oldest first.
     runs: list[RunSummary]
+    #: The records the store skipped, each with why; empty when there are none, or when the
+    #: store does not say what it skipped.
+    damaged: list[DamagedRun] = []
 
 
 class StorePlan(_Document):
@@ -453,8 +465,9 @@ def list_runs(
     only: bool = False,
 ) -> Runs:
     """The runs kept in ``tool``'s configured store, oldest first, each with its status,
-    times and location. Builds only the store: runtimes and agents are neither built nor
-    checked, so a config that does not compose still lists its runs.
+    times and location, and the records the store skipped as damaged, each with why. Builds
+    only the store: runtimes and agents are neither built nor checked, so a config that does
+    not compose still lists its runs.
 
     Raises ConfigError when the store cannot be built, StoreError when it cannot be read.
     """
@@ -477,7 +490,8 @@ def list_runs(
                 location=location_of(store, run_id),
             )
         )
-    return Runs(store=store_type_url(loaded.matrix.store.type), runs=found)
+    damaged = [DamagedRun(location=where, reason=why) for where, why in damaged_of(store)]
+    return Runs(store=store_type_url(loaded.matrix.store.type), runs=found, damaged=damaged)
 
 
 #: The needs that hand a component matrix's runtimes: the only way one that is neither an

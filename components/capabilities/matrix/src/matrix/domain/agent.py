@@ -358,6 +358,7 @@ class BoundAgent:
             runtime=self._runtime_url,
             drives=self._drives,
             error=error,
+            task=task,
         )
 
     async def _tool(

@@ -138,7 +138,7 @@ and model call a component runs, a failed one included, is a row of one more tab
 `matrix.v1.session`: whether it failed and why, the runtime, the model that answered, why it
 stopped, usage, ids (the runtime's, and the
 OpenTelemetry trace and span it ended in), fallback and attempts, and a digest of what was
-sent. A step's reply row points at it (`session`), and the ledger entry of every row a
+sent; a failed or cancelled one keeps the task or prompt as sent, in the record only. A step's reply row points at it (`session`), and the ledger entry of every row a
 component hands over names the sessions behind it. `docs/explanation/data-model.md` joins the
 three in DuckDB.
 
@@ -344,8 +344,9 @@ session runs on hardline's registry rows, with their retries, fallbacks, call li
 and telemetry, in any model family hardline has a row for. The runtime's `tools` are Python
 functions named `module:function`: each module is found when the runtime is built, without
 running it, and imported when a session first offers the tool. A module whose import fails
-fails that session and every later one that offers the tool, without being imported again. A
-function's typed parameters and docstring are what the model is told of it. An agent's `tools` choose from them
+fails that session and every later one that offers the tool, without being imported again.
+Naming a tool in config is a grant to run that code with the process's authority (owner
+ruling 2026-10-22; [SECURITY.md](SECURITY.md)). A function's typed parameters and docstring are what the model is told of it. An agent's `tools` choose from them
 (unset: all of them; `[]`: none), and `max_turns` bounds its model calls: a session that
 reaches it ends with `stop: max_turns`. Its reply is the run's output; its session row names
 the model that answered last, its finish reason, the usage summed over every call and
@@ -403,7 +404,8 @@ file that set it, and how many agent sessions and model calls a run makes
 (`agent_calls_min`, `agent_calls_max`, `model_calls_min`, `model_calls_max`; a maximum is
 null when a component other than an agent or a model step needs `agents` or
 `model_runtimes`, and so may make sessions of its own). matrix states no cost and keeps no spending ceiling: a run's cost is not
-something it can measure, so it does not pretend to. `run` prints the run id, where the record is, and its
+something it can measure, so it does not pretend to. The per-call token cap stays (owner ruling
+2026-10-22): `max_tokens` bounds each reply, not a run's cost. `run` prints the run id, where the record is, and its
 files: `run.json`, one `<kind>.jsonl` per kind (an agent step's reply row carries the task as
 sent, a model step's the prompt), `matrix.v1.session.jsonl`, `matrix.v1.ledger.jsonl` and
 `events.jsonl` (telemetry: lossy, never the result). Each session row keeps its tokens, and the cost the runtime reported when it

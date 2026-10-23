@@ -19,7 +19,9 @@ the runtime's config names (`tools: {name: module:function}`). Building the runt
 without running it or its packages; a module is imported, and so run, when a session first
 offers its tool, and the function is called when the model asks. Each runs with the whole
 authority of the process, and
-no permission mode stands between the model's request and the call. The model chooses the
+no permission mode stands between the model's request and the call. **So naming a tool in
+config is a code-execution grant**, accepted as such (owner ruling 2026-10-22): review a
+config that names tools as you would the code it names. The model chooses the
 arguments; a function sees them validated against its own typed parameters, and nothing more.
 A definition's `tools` narrow the set (`[]` is none), never widen it. Every model call goes
 through hardline, so where the conversation goes, tool results included, is decided by the
@@ -107,7 +109,10 @@ That config is a grant to send prompts to the collector; review it like one. A `
 attributes are exported as the component gives them.
 
 The local sinks are not filtered: the `jsonl` observer and a run's `events.jsonl` carry each
-task and error message as emitted.
+task and error message as emitted. The run's record holds content too: a reply row keeps the
+task or prompt as sent, and so does the session row of a session or call that failed or was
+cancelled (owner ruling 2026-10-22). Nothing exports the record; whoever can read the store's
+root can read it.
 
 ## Findings
 

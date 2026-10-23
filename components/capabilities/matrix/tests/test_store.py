@@ -780,20 +780,30 @@ def test_a_write_cut_short_leaves_no_torn_line_behind(
     assert (tmp_path / "r" / f"{TRIAL}.jsonl").read_text() == '{"seq": 0}\n'
 
 
-def test_a_damaged_run_record_is_skipped_when_runs_are_listed(
+def test_a_damaged_run_record_is_skipped_when_runs_are_listed_and_named_with_its_reason(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """One unreadable ``run.json`` made ``runs()`` fail, and with it ``matrix runs``: it
-    is skipped, and said."""
+    """One unreadable ``run.json`` made ``runs()`` fail, and with it ``matrix runs``: it is
+    skipped. Owner ruling 2026-10-22: what was skipped is data, not only a log line, so
+    ``damaged()`` names each record with why. A ``run.json`` that is JSON but not a record
+    (a list) is damaged too, where it raised an ``AttributeError``."""
+    from matrix.domain.ports._out.construct_store import damaged_of
+
     store = JsonlConstructStore(tmp_path)
     store.open(Run(run_id="good", construct=Construct([TRIAL]))).finish(
         Run(run_id="good", construct=Construct([TRIAL]))
     )
-    (tmp_path / "bad").mkdir()
-    (tmp_path / "bad" / "run.json").write_text("{trunc")
+    for name, text in (("bad", "{trunc"), ("listed", "[]")):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "run.json").write_text(text)
     with caplog.at_level("WARNING", logger="matrix.store"):
         assert store.runs() == ["good"]
-    assert any("bad" in r.getMessage() for r in caplog.records)
+    assert any("bad" in r.getMessage() for r in caplog.records)  # still logged, as before
+    damaged = dict(damaged_of(store))
+    assert sorted(damaged) == [str(tmp_path / "bad"), str(tmp_path / "listed")]
+    assert "JSONDecodeError" in damaged[str(tmp_path / "bad")]
+    assert "not a run record" in damaged[str(tmp_path / "listed")]
+    assert damaged_of(MemoryConstructStore()) == []  # a store that does not say: none
 
 
 def test_with_fsync_the_run_directory_is_flushed_too(

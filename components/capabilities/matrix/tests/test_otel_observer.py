@@ -664,6 +664,63 @@ async def test_content_leaves_on_a_span_only_when_asked_for() -> None:
     assert "matrix.arguments" not in spans["execute_tool Read"].attributes
 
 
+async def test_a_failed_session_keeps_its_task_in_the_record_and_on_no_span_or_metric() -> None:
+    """Owner ruling 2026-10-22: a failed or cancelled session's row keeps the task or prompt
+    as sent, in the local record only. No span, span event or metric carries it."""
+    from matrix import (
+        PROMPT,
+        SESSION,
+        AgentDefinition,
+        BoundAgent,
+        ModelRuntimeError,
+        ModelStep,
+        ModelStepConfig,
+    )
+
+    class Down:
+        def check(self, _: Any) -> None:
+            return None
+
+        async def call(self, request: Any) -> Any:
+            raise ModelRuntimeError("the provider is down", reason="unavailable")
+
+    reader = InMemoryMetricReader()
+    observer = _observer(reader)
+    refuses = BoundAgent(AgentDefinition(name="shy"), _Refuses(), observers=[observer])
+
+    class Asks:
+        requires: tuple[str, ...] = ()
+        provides = ("acme.v1.text",)
+
+        async def run(self, inputs: Inputs, ctx: RunContext) -> dict[str, Any]:
+            await refuses.run(f"{_SECRET} task")
+            return {"acme.v1.text": "x"}
+
+    _EXPORTER.clear()
+    with pytest.raises(RunError) as asked:
+        await Executor([observer]).run(wire({"asks": Asks()}))
+    step = ModelStep(ModelStepConfig(runtime="r"), model_runtimes={"r": Down()})
+    with pytest.raises(RunError) as rated:
+        await Executor([observer]).run(
+            wire({"rate": step}, inputs=[PROMPT]), {PROMPT: f"{_SECRET} prompt"}
+        )
+    assert asked.value.run.rows(SESSION)[0].task == f"{_SECRET} task"
+    assert rated.value.run.rows(SESSION)[0].prompt == f"{_SECRET} prompt"
+
+    exported: list[Any] = []
+    for span in _EXPORTER.get_finished_spans():
+        exported += [*_attrs(span).values(), span.status.description]
+        exported += [value for event in span.events for value in (event.attributes or {}).values()]
+    metrics = reader.get_metrics_data()
+    assert metrics is not None
+    for resource in metrics.resource_metrics:
+        for scope in resource.scope_metrics:
+            for metric in scope.metrics:
+                for point in metric.data.data_points:
+                    exported += list((point.attributes or {}).values())
+    assert exported and not [value for value in exported if _SECRET in str(value)]
+
+
 async def test_the_span_names_are_the_pinned_ones() -> None:
     """The span names a trace consumer relies on: a run, a component, an agent
     session, a timed tool call, a model step's call, a release and a component's own span."""

@@ -47,7 +47,10 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   What stays: each session's tokens and the cost a runtime reported (`AgentResponse.cost_usd`,
   the `matrix.agent.cost_usd` metric), as facts of that session. The `claude-sdk` runtime's
   `max_budget_usd` stays as the SDK's own option, passed as it stands; its stop is still
-  recorded (`stop: max_budget_usd`).
+  recorded (`stop: max_budget_usd`). The per-call token cap is kept as it is (owner ruling
+  2026-10-22): `max_tokens` on the `hardline` model runtime and the `pydantic-ai` agent
+  runtime (and on a hardline registry row) bounds each reply, and a reply cut there says so
+  (`finish_reason: length`). It bounds a reply, not what a run costs.
 
 ### Changed (breaking)
 
@@ -199,6 +202,11 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
     session (`claude-sdk` fills it from a result that says the session failed: its id, usage,
     cost, turns and model). `BoundAgent` and the model step record a failed session before
     re-raising; the row is the failed component's, and no ledger entry names it.
+  - A failed or cancelled session's row keeps what it was asked, as sent (owner ruling
+    2026-10-22): `task` for an agent session, `prompt` for a model call; a completed one's
+    reply row keeps it, so its session row does not. It is content, kept in the local record
+    only: no event, span or metric carries it. `agent_session` takes `task=` and
+    `call_session` `prompt=`.
   - A `BoundAgent` and a model step record their own rows; a component that calls a model
     runtime itself records with `record_session(call_session(...))`. `agent_session` and
     `call_session` take `error=` (an exception, or the `CancelledError`), and their record
@@ -223,7 +231,8 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
   pydantic-ai's run id; it reports no cost. A hardline failure is an `AgentRuntimeError` with
   its reason, carrying what the session had spent. pydantic-ai's own instrumentation is
   switched off on every agent, so it records no prompt or reply. It drives `pydantic-ai-slim`
-  and `hardline`.
+  and `hardline`. Naming a tool in its config is a grant to run that code with the process's
+  authority, accepted as such (owner ruling 2026-10-22; SECURITY.md).
   - **Composing a config runs no tool's module.** Building the runtime (and so `matrix check`,
     `matrix plan` and `matrix agents`) only finds each tool's module on the import path,
     without running it; a session imports a tool when it first offers it. A module that cannot
@@ -286,7 +295,9 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 - **The observable behaviours callers rely on are listed** in the design record (section 16):
   the run layout and its file and table names, `run.json`'s keys, every `matrix.*` event and
   the fields it always carries, the span and metric names, and the exit kinds. Each is pinned
-  by a test or marked not contract.
+  by a test or marked not contract. Telemetry names (span, metric and event names, and their
+  attributes and fields) are not contract (owner ruling 2026-10-22): they are pinned by tests
+  so a change is deliberate, and may change without notice.
 
 ### Fixed
 
@@ -412,9 +423,8 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 - **Nothing points readers at the events for a fact.** The skill told an agent to read a
   failed step's task from `events.jsonl` with `jq`, and `matrix run` described the file as
   "each agent's task as sent": the channel is lossy, so the fact might not be there. Events
-  are now called lossy wherever the record is described, and the docs say the one thing the
-  tables do not hold in full: what a step that failed was asked (its session row has `sent`,
-  a digest).
+  are now called lossy wherever the record is described. What a step that failed was asked
+  is on its session row as sent (`task` or `prompt`, above).
 - **A killed run reads without matrix.** A cut-short last line broke `jq` (exit 5) and
   DuckDB (`Malformed JSON`), though matrix's own reader skipped it, and `interrupted` was
   only what `describe` computed: `run.json` said `running` for ever. Now the first matrix
@@ -434,7 +444,12 @@ All notable changes to matrix. Versions follow semver; before 1.0 a minor may br
 - **A write the disk cuts short is taken back** before the `StoreError`, so a live run's
   table never holds half a line.
 - **`runs()` skips a damaged record**, logging it on `matrix.store`. One unreadable
-  `run.json` made `runs()`, `matrix runs` and `list_runs` fail.
+  `run.json` made `runs()`, `matrix runs` and `list_runs` fail. A `run.json` that is JSON but
+  not an object is damaged too (it raised `AttributeError`).
+- **`matrix runs` names the damaged records it skipped** (owner ruling 2026-10-22), each on a
+  `damaged:` line with why; `matrix.v1.runs` and `list_runs` carry them as `damaged`
+  (`location`, `reason`). A store says what it skipped through a new optional member,
+  `damaged()`, which `list_runs` reads; the JSONL store has it.
 - **`fsync=True` flushes the run's directory too**, once its files are made and once
   `run.json` is renamed in: a file's own flush does not make its name durable.
 - **A store root that is a file is said to be one**, not reported as "run already exists".

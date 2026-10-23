@@ -318,13 +318,15 @@ def run_command(
 @_only_option
 @_json_option
 def runs(config: tuple[str, ...], tool: str, only: bool, as_json: bool) -> None:
-    """List the runs the configured store keeps, oldest first: id, status, start, where.
-    Builds only the store, so a config that does not compose still lists its runs."""
+    """List the runs the configured store keeps, oldest first: id, status, start, where;
+    then each record it skipped as damaged, with why. Builds only the store, so a config
+    that does not compose still lists its runs."""
     found = matrix.list_runs(tool, _locations(config), only=only)
     lines = [
         f"{r.run_id:<26} {r.status:<11} {r.started or '-':<34} {r.location}" for r in found.runs
-    ]
-    _emit(found.document(), as_json, "\n".join(lines) or "(no runs)")
+    ] or ["(no runs)"]
+    lines += [f"damaged: {d.location}: {d.reason}" for d in found.damaged]
+    _emit(found.document(), as_json, "\n".join(lines))
 
 
 def _tables(container: matrix.Container, run_id: str) -> dict[str, Any]:

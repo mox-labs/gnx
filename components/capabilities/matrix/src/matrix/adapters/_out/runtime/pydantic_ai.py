@@ -97,7 +97,8 @@ if TYPE_CHECKING:
 
 class PydanticAiRuntimeConfig(BaseModel):
     """A pydantic-ai agent loop whose model calls go through hardline (a config that reaches
-    this is a capability grant: see the package's SECURITY.md). An agent's `model` on this
+    this is a capability grant, and naming a tool a grant to run its code, owner ruling
+    2026-10-22: see the package's SECURITY.md). An agent's `model` on this
     runtime is a model name in the hardline registry (`models`, `matrix.models`, or hardline's
     own tiers); unset, `default_model`, then the registry's default. `tools` are the tools an
     agent may be given, each a Python function named `module:function`: its module is found

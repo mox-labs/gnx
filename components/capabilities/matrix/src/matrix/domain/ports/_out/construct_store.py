@@ -33,9 +33,12 @@ Contract:
   that exist. Anything the store cannot write or read back is a StoreError.
 * ``location(run_id)``, optional, is where the run's record is (a path, or the id), whether
   or not it exists yet: what a caller prints. A store without it is located by the run id.
+* ``damaged()``, optional, names each record the store found and ``runs()`` skipped, as
+  ``(where, why)``: where as ``location`` gives it, why as a sentence. A store without it
+  says nothing of what it skipped.
 
-The two optional members were added after the others: a store written before them keeps
-working, and :func:`events_of` and :func:`location_of` read them for a caller.
+The optional members were added after the others: a store written before them keeps working,
+and :func:`events_of`, :func:`location_of` and :func:`damaged_of` read them for a caller.
 """
 
 from __future__ import annotations
@@ -81,3 +84,10 @@ def location_of(store: ConstructStore, run_id: str) -> str:
     """Where ``store`` keeps the run ``run_id``: its own answer, or the run id."""
     location = getattr(store, "location", None)
     return str(location(run_id)) if callable(location) else run_id
+
+
+def damaged_of(store: ConstructStore) -> list[tuple[str, str]]:
+    """The records ``store`` skipped when it listed its runs, each ``(where, why)``: its own
+    answer, or none."""
+    damaged = getattr(store, "damaged", None)
+    return [(str(where), str(why)) for where, why in damaged()] if callable(damaged) else []

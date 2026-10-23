@@ -375,6 +375,8 @@ class JsonlConstructStore:
             record: dict[str, Any] = json.loads(path.read_text())
         except (OSError, ValueError) as e:
             raise StoreError(f"could not read {path}: {type(e).__name__}: {e}") from e
+        if not isinstance(record, dict):
+            raise StoreError(f"{path} is not a run record: it holds a JSON {type(record).__name__}")
         return record
 
     def describe(self, run_id: str) -> dict[str, Any]:
@@ -454,18 +456,34 @@ class JsonlConstructStore:
 
     def runs(self) -> list[str]:
         """The runs under the root, oldest first. A directory whose ``run.json`` cannot be
-        read, or whose name is not a run id, is skipped, and logged on ``matrix.store``."""
-        if not self._root.is_dir():
-            return []
+        read, or whose name is not a run id, is skipped, logged on ``matrix.store``, and
+        named by :meth:`damaged`."""
+        started, damaged = self._scan()
+        for where, why in damaged:
+            logger.warning("skipped %s, whose record is damaged: %s", where, why)
+        return sorted(started, key=lambda name: (started[name], name))
+
+    def damaged(self) -> list[tuple[str, str]]:
+        """Each run directory :meth:`runs` skips, by name: where it is, and why its record
+        cannot be listed."""
+        _, damaged = self._scan()
+        return damaged
+
+    def _scan(self) -> tuple[dict[str, str], list[tuple[str, str]]]:
+        """Each listable run's start time by run id, and each damaged record's place and
+        reason."""
         started: dict[str, str] = {}
-        for path in self._root.iterdir():
+        damaged: list[tuple[str, str]] = []
+        if not self._root.is_dir():
+            return started, damaged
+        for path in sorted(self._root.iterdir()):
             if not (path / "run.json").exists():
                 continue
             try:
                 started[path.name] = str(self._record(path.name).get("started", ""))
             except (StoreError, ConfigError) as e:
-                logger.warning("skipped %s, whose record is damaged: %s", path, e)
-        return sorted(started, key=lambda name: (started[name], name))
+                damaged.append((str(path), e.message))
+        return started, damaged
 
 
 def _count_rows(record: dict[str, Any], directory: Path) -> None:
