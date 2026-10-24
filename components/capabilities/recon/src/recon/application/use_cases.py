@@ -64,7 +64,7 @@ from recon.domain.errors import (
     UsageError,
 )
 from recon.domain.normalize import apply_normalize
-from recon.domain.stream import StreamStop, window_index, window_opened
+from recon.domain.stream import window_index, window_opened
 from recon.domain.telemetry import QUERY, SURVEY
 
 if TYPE_CHECKING:
@@ -78,7 +78,7 @@ if TYPE_CHECKING:
     from recon.domain.documents import Capture
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
-    from recon.domain.stream import GapLog, WindowSpec
+    from recon.domain.stream import GapLog, Stop, WindowSpec
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
 
 
@@ -449,7 +449,7 @@ class Recon:
         config: Path | None = None,
         replace: bool = False,
         on_event: EventCallback | None = None,
-        stop: StreamStop | None = None,
+        stop: Stop | None = None,
     ) -> StreamDocument:
         """Plan, then run the stream of the mission's collector ``collector``, window after
         window, until ``windows`` are sealed, ``until`` comes, its source ends or fails, or it
@@ -514,7 +514,7 @@ class Recon:
         windows: int | None,
         until: datetime | None,
         on_event: EventCallback | None,
-        stop: StreamStop | None = None,
+        stop: Stop | None = None,
     ) -> tuple[StreamRun, list[Problem]]:
         """Run one stream of ``config`` through the window writer, over a collector built for
         it alone (its ``close()`` is what stops a source that would not); the run, and what it

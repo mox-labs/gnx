@@ -43,6 +43,7 @@ from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.application.collectors import COLLECTORS_GROUP, CollectorPorts, build_collectors
+from recon.application.stream import StreamStop as StreamStop
 from recon.application.use_cases import Recon as Recon
 from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
 from recon.domain.telemetry import Telemetry

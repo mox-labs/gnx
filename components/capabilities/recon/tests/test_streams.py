@@ -17,14 +17,20 @@ import pytest
 import yaml
 
 from recon.adapters._out.archive_files import ArchiveFiles
-from recon.application.stream import Arrivals, Stream, StreamGaps, StreamPlan, StreamRun
+from recon.application.stream import (
+    Arrivals,
+    Stream,
+    StreamGaps,
+    StreamPlan,
+    StreamRun,
+    StreamStop,
+)
 from recon.composition import root
 from recon.domain.models import CollectorEntry
 from recon.domain.stream import (
     POSITION_FIELD,
     BufferSpec,
     Overflow,
-    StreamStop,
     Windowing,
     WindowSpec,
 )

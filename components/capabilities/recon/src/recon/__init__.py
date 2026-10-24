@@ -12,6 +12,7 @@ application installs the SDK (:func:`configure_telemetry`, or its own setup).
 """
 
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING, Any
 
 from recon.api import (
     capture,
@@ -58,8 +59,22 @@ from recon.domain.errors import (
     ReconError,
     UsageError,
 )
-from recon.domain.stream import StreamStop
 from recon.skill_files import skill, skill_references
+
+if TYPE_CHECKING:
+    from recon.composition import StreamStop
+
+
+def __getattr__(name: str) -> Any:
+    """``StreamStop`` is the application's, which the facade reaches only through the
+    composition root, as each operation does: on first use, so ``import recon`` wires
+    nothing."""
+    if name == "StreamStop":
+        from recon.composition import StreamStop
+
+        return StreamStop
+    raise AttributeError(f"module 'recon' has no attribute {name!r}")
+
 
 try:
     __version__ = version("recon")

@@ -34,7 +34,7 @@ if TYPE_CHECKING:
         TemplatesDocument,
     )
     from recon.domain.errors import Problem
-    from recon.domain.stream import StreamStop
+    from recon.domain.stream import Stop
 
 
 def _root(project: Path | None) -> Recon:
@@ -114,7 +114,7 @@ def stream(
     config: Path | None = None,
     replace: bool = False,
     on_event: Callable[[dict[str, Any]], None] | None = None,
-    stop: StreamStop | None = None,
+    stop: Stop | None = None,
     root: Path | None = None,
 ) -> StreamDocument:
     """Plan, then collect the mission's stream ``collector`` (a collector with ``window:``,

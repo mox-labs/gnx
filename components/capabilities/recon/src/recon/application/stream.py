@@ -56,7 +56,6 @@ from recon.domain.errors import ErrorKind, Problem, ReconError
 from recon.domain.stream import (
     POSITION_FIELD,
     Gap,
-    StreamStop,
     WindowEnd,
     Windowing,
     window_id,
@@ -80,6 +79,7 @@ if TYPE_CHECKING:
         Overflow,
         Retain,
         SealReason,
+        Stop,
         WindowSpec,
     )
     from recon.domain.telemetry import EventCallback, Span, Telemetry
@@ -417,7 +417,59 @@ class StreamGaps:
             to.dropped_early()
 
 
-def _listen(stop: StreamStop, arrivals: Arrivals) -> None:
+class StreamStop:
+    """Asks a running stream to stop, from any thread or a signal handler (``recon stream``
+    asks from its SIGINT and SIGTERM handlers). The first ask seals the window being written
+    once what waits in the buffer is written, however busy the writer is when it comes; a
+    second seals it at once, what waits counted dropped. An ask made before the stream starts
+    stops it as it starts. One stop serves one run of one stream.
+
+    An ask touches nothing of the stream: a thread of the stream's own hears it and stops the
+    stream's buffer, so a signal handler that runs on the writer's thread, inside whatever it
+    is doing, leaves that undisturbed. It is the domain's :class:`~recon.domain.stream.Stop`."""
+
+    def __init__(self) -> None:
+        # Reentrant: a second signal's handler may run inside the first's ask.
+        self._cond = threading.Condition(threading.RLock())
+        self._asked = 0
+        self._heard = 0
+        self._over = False
+
+    def ask(self) -> None:
+        """Ask the stream to stop: safe from a signal handler."""
+        with self._cond:
+            self._asked += 1
+            self._cond.notify_all()
+
+    @property
+    def heard(self) -> int:
+        """How many asks the stream has acted on."""
+        with self._cond:
+            return self._heard
+
+    # --- the stream's side ---
+
+    def next_ask(self) -> bool:
+        """Wait for an ask the stream has not acted on yet; False once its run is over."""
+        with self._cond:
+            while self._asked == self._heard and not self._over:
+                self._cond.wait()
+            return not self._over
+
+    def acted(self) -> None:
+        """The stream acted on an ask."""
+        with self._cond:
+            self._heard += 1
+            self._cond.notify_all()
+
+    def end(self) -> None:
+        """The stream's run is over: no ask is waited for after this."""
+        with self._cond:
+            self._over = True
+            self._cond.notify_all()
+
+
+def _listen(stop: Stop, arrivals: Arrivals) -> None:
     """The listener's thread: each ask of ``stop`` to the buffer, outside the stop's lock,
     until the run is over."""
     while stop.next_ask():
@@ -501,7 +553,7 @@ class Stream:
         config_sha256: str | None = None,
         resolved: Mapping[str, Any] | None = None,
         on_window: Callable[[WindowOutcome], None] | None = None,
-        stop: StreamStop | None = None,
+        stop: Stop | None = None,
     ) -> StreamRun:
         """Run the stream until it ends: after ``windows`` windows, at ``until``, when its
         source ends or fails, or when it is asked to stop (``stop``) or the caller's thread is
@@ -535,7 +587,7 @@ class Stream:
         config_sha256: str | None,
         resolved: dict[str, Any],
         on_window: Callable[[WindowOutcome], None] | None,
-        stop: StreamStop | None,
+        stop: Stop | None,
     ) -> StreamRun:
         start = self._resume(mission_dir, plan)
         opened_wall, opened = self._clock.now(), self._clock.monotonic()
