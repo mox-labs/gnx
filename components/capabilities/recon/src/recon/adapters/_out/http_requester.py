@@ -7,7 +7,11 @@ clock port. Adapters construct HttpResponse domain value objects; collectors nev
 httpx2.Response.
 
 A body is read as a stream and counted against the source's ``max_bytes``, so a response
-that is larger than the mission allowed is refused instead of buffered.
+that is larger than the mission allowed is refused instead of buffered. A body that does not
+end (server-sent events) is read through :meth:`HttpRequester.follow` instead, line by line as
+it arrives, each line bounded by ``max_bytes``; closing it shuts its socket down, which is
+what ends a read blocked on it in another thread (closing the response or the client does
+not, measured on macOS against a loopback server).
 
 Every attempt to send a request is one ``recon.http.request`` span of kind client, with the
 attributes OpenTelemetry's HTTP client span conventions (semconv v1.44.0, stable) require:
@@ -54,8 +58,10 @@ How httpx2 (2.10) is used, each choice checked against its source:
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import math
+import socket
 from datetime import UTC
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
@@ -68,7 +74,7 @@ from recon.domain.http import HttpResponse, reported_url
 from recon.domain.telemetry import HTTP_REQUEST, Telemetry
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from datetime import datetime
 
     from recon.domain.clock import Clock
@@ -338,6 +344,66 @@ def _to_domain(resp: httpx2.Response, body: bytes) -> HttpResponse:
     )
 
 
+class _LiveBody:
+    """A streaming response's body, line by line as it arrives (``LiveBody``)."""
+
+    def __init__(self, resp: httpx2.Response, source: SourceEntry, shown: str) -> None:
+        self._resp = resp
+        self._source = source
+        self._shown = shown
+        self._closed = False
+
+    def __iter__(self) -> Iterator[str]:
+        pending = b""
+        try:
+            for chunk in self._resp.iter_bytes():
+                pending += chunk
+                *lines, pending = pending.split(b"\n")
+                if len(pending) > self._source.max_bytes:
+                    raise CollectionError(
+                        f"{self._shown} sent a line longer than max_bytes "
+                        f"({self._source.max_bytes:,} bytes) for source {self._source.name!r}",
+                        kind="run_failed",
+                        fix=f"raise max_bytes on source {self._source.name!r}, if its lines are "
+                        "meant to be that long",
+                    )
+                for line in lines:
+                    yield _text(line)
+        except httpx2.HTTPError as exc:
+            if self._closed:
+                return
+            raise _broke_off(exc, self._shown, self._source) from exc
+        if pending and not self._closed:
+            yield _text(pending)
+
+    def close(self) -> None:
+        """Shut the connection's socket down, which ends a read blocked on it in another
+        thread at once (closing the response would not: that read would wait on)."""
+        self._closed = True
+        stream = self._resp.extensions.get("network_stream")
+        sock = stream.get_extra_info("socket") if stream is not None else None
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+
+
+def _text(line: bytes) -> str:
+    return line.removesuffix(b"\r").decode("utf-8", errors="replace")
+
+
+def _broke_off(exc: httpx2.HTTPError, shown: str, source: SourceEntry) -> CollectionError:
+    """A followed request that failed to send, or whose body broke off: ``transient`` for a
+    transport failure (a reconnect may mend it), as :func:`classify_http_failure` says."""
+    kind = classify_http_failure(exc)
+    fix = _REQUEST_FIX.get(type(exc), _HTTP_FIX[kind])
+    if isinstance(exc, httpx2.TimeoutException):
+        fix = (
+            f"the source sent nothing for longer than its timeout ({source.timeout:g}s): raise "
+            f"timeout: on source {source.name!r} above the longest it goes quiet"
+        )
+    return CollectionError(f"{shown} broke off (httpx2.{type(exc).__name__})", kind=kind, fix=fix)
+
+
 class HttpRequester:
     """HTTP adapter with rate limiting and retry. Returns HttpResponse VO. ``clock`` dates a
     Retry-After given as an HTTP-date; ``telemetry`` receives a span per attempt;
@@ -533,3 +599,58 @@ class HttpRequester:
     ) -> HttpResponse:
         """Simple GET shortcut for the web collector. Same rate-limit path."""
         return self.request(source, "GET", url, headers=headers)
+
+    @contextlib.contextmanager
+    def follow(
+        self,
+        source: SourceEntry,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Iterator[_LiveBody]:
+        """One GET whose body is read as it arrives (``recon.domain.http.LiveBody``), for a
+        body that does not end: server-sent events. A token is drawn from the source's rate
+        limit first; a connect, and each read, times out after the source's ``timeout``; a
+        status other than success fails it as :meth:`request` would, with no retry, since a
+        stream's collector reconnects itself. The credential rule for redirects holds. The
+        response is closed when the block ends."""
+        try:
+            target = httpx2.URL(url).copy_merge_params(params or {})
+        except httpx2.InvalidURL as exc:
+            raise CollectionError(
+                f"source {source.name!r}: its url and the collector's endpoint do not make a "
+                f"URL that can be requested ({exc})",
+                kind="config",
+                fix="correct the source's url: and the collector's endpoint: so they join into "
+                "one URL",
+            ) from exc
+        client = self._session()
+        client.cookies.clear()
+        self._origin = (target, source.auth.header)
+        self._sending = None  # a stream's body has no end to hold it to
+        self._rate_limiter.acquire(source, self._deadline)
+        shown = reported_url(url, source.auth.param)
+        request = client.build_request(
+            "GET", target, headers=headers or {}, timeout=httpx2.Timeout(source.timeout)
+        )
+        try:
+            resp = client.send(request, stream=True)
+        except httpx2.HTTPError as exc:
+            raise _broke_off(exc, shown, source) from exc
+        try:
+            if not resp.is_success:
+                snippet = _decode(resp, resp.read()[:_ERROR_SNIPPET_BYTES])
+                status = httpx2.HTTPStatusError(
+                    f"HTTP {resp.status_code}", request=request, response=resp
+                )
+                kind = classify_http_failure(status)
+                raise CollectionError(
+                    f"HTTP {resp.status_code} from {shown}"
+                    + (f"\nResponse body: {snippet[:200]}" if snippet else ""),
+                    kind=kind,
+                    fix=_HTTP_FIX[kind],
+                ) from status
+            yield _LiveBody(resp, source, shown)
+        finally:
+            resp.close()

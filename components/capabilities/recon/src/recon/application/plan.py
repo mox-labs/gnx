@@ -296,8 +296,12 @@ def build_plan(
     )
 
 
+#: The source kinds whose ``url`` is a path on this host, relative to the project root.
+_PATH_KINDS = frozenset({"local", "file"})
+
+
 def _anchored(source: SourceEntry, base: Path | None) -> SourceEntry:
-    if source.type != "local" or base is None or Path(source.url).is_absolute():
+    if source.type not in _PATH_KINDS or base is None or Path(source.url).is_absolute():
         return source
     return source.model_copy(update={"url": str(base / source.url)})
 
