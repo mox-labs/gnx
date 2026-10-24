@@ -85,12 +85,13 @@ def confusion(design: Design, readings: Sequence[Reading]) -> tuple[ConfusionTab
     ``seq`` order, so the order the readings were landed in (which trials in flight make the
     order they finished in) changes nothing."""
     tables: list[ConfusionTable] = []
+    in_order = sorted(_measured(readings), key=lambda reading: reading.seq)
     for sensor in design.sensors:
         declared = sensor.confusion
         if declared is None:
             continue
         seen: dict[str, dict[int, tuple[str, str]]] = {}
-        for reading in sorted(_measured(readings), key=lambda reading: reading.seq):
+        for reading in in_order:
             expected = reading.detail.get(declared.expected)
             observed = reading.detail.get(declared.observed)
             if reading.sensor != sensor.kind or expected is None or observed is None:
