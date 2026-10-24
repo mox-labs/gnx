@@ -222,7 +222,7 @@ capabilities-standalone:
       printf '%s\n' 'collectors:' '  - name: releases' '    type: cli' '    run: |' \
         "      echo '{\"tag\": \"v1\", \"published\": \"2026-03-15T18:42:31Z\"}'" > mission.yaml
       recon init smoke -c mission.yaml --json | expect 'd["outcome"] == "created"'
-      recon survey smoke --json | expect 'd["status"] == "ok" and d["tables"][0]["records"] == 1'
+      recon survey smoke --json | expect 'd["status"] == "complete" and d["tables"][0]["records"] == 1'
       # A TIMESTAMP WITH TIME ZONE's value, which DuckDB returns through pytz: typeof()
       # alone would pass without it.
       recon query smoke "SELECT published::TIMESTAMPTZ AS t FROM releases" --json \
