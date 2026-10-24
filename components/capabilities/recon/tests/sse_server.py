@@ -5,14 +5,18 @@ Each ``GET /events`` sends the events that come after the ``Last-Event-ID`` it w
 at most ``per_connection`` of them before it drops the connection (a forced disconnect), and
 then, once every event is sent, holds the connection open with nothing more (a quiet
 source) until the server stops. It records each ``Last-Event-ID`` it was asked from.
-``status`` answers every request with that status and no events instead.
+``status`` answers every request with that status and no events instead. ``after_events``
+says what a connection does once its events are sent: ``holds`` it open (the default),
+``ends`` it, its body ended as a server ends one, or ``breaks`` it off, its body cut short of
+the length it declared, as a read that times out breaks one off: a quiet connection's end,
+with no wait on a timeout.
 """
 
 from __future__ import annotations
 
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -26,8 +30,10 @@ class SseServer:
         per_connection: int | None = None,
         status: int = 200,
         preamble: str = "",
+        after_events: Literal["holds", "ends", "breaks"] = "holds",
     ) -> None:
         self.events = list(events)
+        self.after_events = after_events
         self.per_connection = per_connection
         self.status = status
         self.preamble = preamble
@@ -45,6 +51,8 @@ class SseServer:
                     return
                 self.send_response(served.status)
                 self.send_header("Content-Type", "text/event-stream")
+                if served.after_events == "breaks":
+                    self.send_header("Content-Length", "1000000")  # never all sent
                 self.end_headers()
                 if served.status != 200:
                     self.wfile.write(b"refused")
@@ -58,7 +66,8 @@ class SseServer:
                     body = "".join(f"data: {line}\n" for line in data.split("\n"))
                     self.wfile.write(f"{head}{body}\n".encode())
                     self.wfile.flush()
-                served.stopping.wait(30)
+                if served.after_events == "holds":
+                    served.stopping.wait(30)
 
             def log_message(self, *args: Any) -> None:
                 pass

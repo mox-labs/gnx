@@ -520,7 +520,8 @@ def test_a_stream_that_ends_leaves_no_ticker_waiting_out_its_window(tmp_path: Pa
     assert run.last is not None and run.last.closed_by == "eof"
     started = time.monotonic()
     while any(t.name == "recon-stream-ticker" for t in threading.enumerate()):
-        assert time.monotonic() - started < 3, "the ticker sleeps on into the hour"
+        # A slice is a second; the failure is an hour. 15 s leaves a loaded machine room.
+        assert time.monotonic() - started < 15, "the ticker sleeps on into the hour"
         time.sleep(0.02)
 
 
