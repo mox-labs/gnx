@@ -243,19 +243,26 @@ class ArchiveFiles:
         records: Generator[dict[str, Any], None, None],
         *,
         columns: Sequence[str] = (),
+        keep_on_error: bool = False,
     ) -> int:
         path = archive / f"{output}.jsonl"
         tmp = path.with_suffix(".jsonl.tmp")
         count = 0
+        kept: BaseException | None = None
         try:
             # closing() is what runs the collector's own cleanup (a subprocess killed, a
             # client closed) when writing stops early.
             with contextlib.closing(records), _Lines(tmp, self._flush_bytes, self._flush_s) as f:
-                for record in records:
-                    f.write(json.dumps(record, default=str) + "\n")
-                    count += 1
-                    if count % _FSYNC_EVERY == 0:
-                        f.sync()
+                try:
+                    for record in records:
+                        f.write(json.dumps(record, default=str) + "\n")
+                        count += 1
+                        if count % _FSYNC_EVERY == 0:
+                            f.sync()
+                except BaseException as exc:
+                    if not keep_on_error:
+                        raise
+                    kept = exc  # raised once what was written is sealed
                 if count == 0:
                     empty = (
                         {**EMPTY_SENTINEL, "_columns": list(columns)} if columns else EMPTY_SENTINEL
@@ -267,6 +274,8 @@ class ArchiveFiles:
             with contextlib.suppress(OSError):
                 tmp.unlink()
             raise
+        if kept is not None:
+            raise kept
         return count
 
     def capture_log(self, archive: Path) -> FilesystemCaptureLog:

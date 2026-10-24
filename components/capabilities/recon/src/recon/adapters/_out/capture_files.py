@@ -20,7 +20,7 @@ import json
 import os
 import re
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from recon.domain.capture import CAPTURE_LOG_NAME, CAPTURE_SCHEMA, CaptureKind, redact_headers
 from recon.domain.documents import Capture
@@ -52,6 +52,8 @@ class FilesystemCaptureLog:
         self._clock = clock
         self.log_path = root / CAPTURE_LOG_NAME
         self._streams: dict[str, Path] = {}
+        #: The open file each ``tee`` appends to, by collector, until its body is finalized.
+        self._tees: dict[str, BinaryIO] = {}
 
     # --- writing ---
 
@@ -92,6 +94,12 @@ class FilesystemCaptureLog:
             self._streams[collector] = path
         return path
 
+    def tee(self, collector: str, data: bytes) -> None:
+        tee = self._tees.get(collector)
+        if tee is None:
+            tee = self._tees[collector] = open(self.stream_path(collector), "ab")  # noqa: SIM115 - closed by finalize_stream
+        tee.write(data)
+
     def finalize_stream(
         self,
         collector: str,
@@ -102,6 +110,9 @@ class FilesystemCaptureLog:
         status: int | None,
         content_type: str,
     ) -> Capture | None:
+        tee = self._tees.pop(collector, None)
+        if tee is not None:
+            tee.close()
         path = self._streams.pop(collector, None)
         if path is None:
             return None

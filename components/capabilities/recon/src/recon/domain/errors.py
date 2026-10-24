@@ -138,6 +138,10 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "telemetry_stuck",
     # what a survey that died while making its archive left behind, unlisted
     "archive_abandoned",
+    # records of a stream that arrived and were dropped: a full buffer, or one too large
+    "stream_overflow",
+    # a stream's source had not returned its next record when the stream stopped
+    "source_stuck",
 )
 
 

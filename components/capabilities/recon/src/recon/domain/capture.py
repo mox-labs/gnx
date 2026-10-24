@@ -155,7 +155,9 @@ def redact_query_params(url: str, names: Iterable[str], replacement: str = REDAC
     return urlunsplit(parts._replace(query=urlencode(pairs)))
 
 
-CaptureKind = Literal["http", "cli", "web", "mcp", "external"]
+#: ``stream``: one window's arrivals, each with its order and its offset in time from the
+#: window's open, from which the window replays (:mod:`recon.domain.stream`).
+CaptureKind = Literal["http", "cli", "web", "mcp", "external", "stream"]
 
 
 class CaptureLog(Protocol):
@@ -182,6 +184,11 @@ class CaptureLog(Protocol):
         Call ``finalize_stream`` with the same collector name once writing is done; the
         file is then hashed, moved under ``raw/`` and logged.
         """
+        ...
+
+    def tee(self, collector: str, data: bytes) -> None:
+        """Append ``data`` to the body streaming for ``collector`` (its ``stream_path``), for
+        a caller that writes no file itself."""
         ...
 
     def finalize_stream(

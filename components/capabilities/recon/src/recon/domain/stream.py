@@ -16,19 +16,31 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Literal
+from datetime import datetime
+from typing import Final, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from recon.domain.archives import ARCHIVE_ID_FORMAT
 from recon.domain.clock import LONGEST_WAIT
 
-if TYPE_CHECKING:
-    from datetime import datetime
-
 #: Why a window ended, when it ended well: its time, records or bytes bound was reached, its
 #: source ended, the stream was stopped by a signal, or it reached the stream's ``until``.
 SealReason = Literal["window", "records", "bytes", "eof", "signal", "until"]
+
+#: How a window was closed, as ``meta.yaml``'s ``stream.closed_by`` says it: a
+#: :data:`SealReason`, or ``error`` for a window its source's fatal error ended, which keeps
+#: the records it got.
+ClosedBy = Literal["window", "records", "bytes", "eof", "signal", "until", "error"]
+
+#: What a full buffer does with one more record (:class:`BufferSpec`). There is no ``fail``:
+#: a burst would cost the whole stream.
+Overflow = Literal["block", "drop_newest", "drop_oldest"]
+
+#: Who sets the pace a type's records arrive at (``CollectorType.paced_by``): ``recon``, which
+#: reads the next when it is ready for it (a file, a command, a polled API), or ``source``,
+#: which sends whether recon is ready or not (server-sent events, a socket).
+PacedBy = Literal["recon", "source"]
 
 #: By default, the seconds a window of a type that does not end spans, when its entry sets no
 #: ``window:``: windows of five minutes or more keep a query across them cheap.
@@ -62,6 +74,71 @@ class WindowSpec(BaseModel):
         return self
 
 
+class BufferSpec(BaseModel):
+    """``buffer:`` on a stream's entry: what may wait between the source and the window being
+    written. At most ``records`` records and ``bytes`` bytes of them wait; one more is an
+    overflow, which ``overflow`` settles: ``block`` waits for room (the source is read no
+    faster than the windows are written), ``drop_newest`` drops the one arriving,
+    ``drop_oldest`` the one waiting longest. A record of more than ``max_record_bytes`` bytes
+    is dropped as it arrives. Every drop is counted in its window. ``overflow`` left out is
+    :func:`default_overflow` of the collector type's ``paced_by``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    records: int = Field(default=10_000, ge=1)
+    bytes: int = Field(default=16 * 1024 * 1024, ge=1)
+    max_record_bytes: int = Field(default=1024 * 1024, ge=1)
+    overflow: Overflow | None = None
+
+
+def default_overflow(paced_by: PacedBy) -> Overflow:
+    """A full buffer's default: ``block`` for a source recon paces, which waits without loss;
+    ``drop_newest`` for a source that paces itself, whose sender does not wait, so a block
+    would only move the loss to it, out of sight."""
+    return "block" if paced_by == "recon" else "drop_newest"
+
+
+#: The field of a stream's record that holds where the record is in its source (a file's
+#: inode and offset, a server-sent event's id): the record's own, set by the collector, kept
+#: through ``normalize:``, and written with the record in one line, so a stream resumes from
+#: the last whole line it wrote. A collector type whose records have a position sets it;
+#: ``normalize:`` may not name a column so.
+POSITION_FIELD: Final = "_position"
+
+
+@dataclass(frozen=True)
+class Gap:
+    """A stretch when a stream's source was not read, so records it sent then may be missing:
+    from ``start`` (None when not known, as after a crash) to ``end``. ``resumed``: the
+    source was asked to go on from the last position kept, so nothing is missing if it did."""
+
+    start: datetime | None
+    end: datetime
+    resumed: bool
+
+    def document(self) -> dict[str, object]:
+        return {
+            "from": None if self.start is None else self.start.isoformat(),
+            "to": self.end.isoformat(),
+            "resumed": self.resumed,
+        }
+
+
+class GapLog(Protocol):
+    """Where a collector of a stream says its source was not read for a while (a dropped
+    connection, a file truncated under it): ``CollectorContext.gaps``. The gap is recorded in
+    the window being filled when it is said."""
+
+    def gap(self, gap: Gap) -> None: ...
+
+
+class NoGaps:
+    """The :class:`GapLog` of a survey's snapshot tables, which keep no gaps."""
+
+    def gap(self, gap: Gap) -> None:
+        return None
+
+
 @dataclass(frozen=True)
 class WindowEnd:
     """A window that ended: its index, why, and its span ``[opened, closed)`` on the clock's
@@ -84,15 +161,25 @@ class Windowing:
     stamp of the arrival that reached the bound, and the next opens at that stamp."""
 
     def __init__(
-        self, spec: WindowSpec, opened: float, *, until: float | None = None, index: int = 0
+        self,
+        spec: WindowSpec,
+        opened: float,
+        *,
+        until: float | None = None,
+        index: int = 0,
+        last: int | None = None,
     ) -> None:
+        """``index`` is the first window's; ``last``, when given, is the index of the window
+        the stream ends with, as ``until`` ends it at a time."""
         self._spec = spec
         self._until = until
+        self._last = last
         self.index = index
         self.opened = opened
         self.records = 0
         self.bytes = 0
-        #: True once ``until`` has passed: no arrival falls in any window after it.
+        #: True once ``until`` has passed or the ``last`` window has ended: no arrival falls in
+        #: any window after it.
         self.ended = False
 
     @property
@@ -110,8 +197,7 @@ class Windowing:
         while not self.ended and (close := self.close) is not None and now >= close:
             reason: SealReason = "until" if close == self._until else "window"
             ends.append(self._end(reason, close))
-            if reason == "until":
-                self.ended = True
+            self.ended = self.ended or reason == "until"
         return ends
 
     def arrive(
@@ -135,6 +221,7 @@ class Windowing:
 
     def _end(self, reason: SealReason, closed: float) -> WindowEnd:
         end = WindowEnd(self.index, reason, self.opened, closed)
+        self.ended = self.index == self._last
         self.index += 1
         self.opened = closed
         self.records = 0
@@ -150,8 +237,6 @@ def window_id(index: int, opened: datetime) -> str:
 
 def window_index(name: str) -> int | None:
     """The index a window's id holds; None for a name that is not a window's id."""
-    from datetime import datetime
-
     found = _WINDOW_ID.match(name)
     if found is None:
         return None

@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
 from recon.domain.errors import ErrorKind, ReconError
+from recon.domain.stream import ClosedBy  # noqa: TC001
 
 #: Whether a survey's archive holds every table it was asked for: :data:`ArchiveState`
 #: once the survey has ended, so never ``writing``. ``incomplete``: a table failed, the
@@ -121,6 +122,30 @@ class TableOutcome(Document):
     records: int = 0
     seconds: float = 0.0
     error: TableError | None = None
+
+
+class WindowOutcome(Document):
+    """One window of a stream, sealed: which, where, the span it covers, how it was closed,
+    what it dropped, and its one table (whose ``status`` is the window's: ``error`` when its
+    source failed, its records kept)."""
+
+    stream: str
+    index: int
+    #: The window's archive id, as ``recon status`` lists it, and its directory.
+    id: str
+    archive: str
+    #: ISO 8601, from the clock port: the window covers ``[opened_at, closed_at)``.
+    opened_at: str
+    closed_at: str
+    closed_by: ClosedBy
+    #: Records that arrived in the window and were not written: a full buffer's overflow, or
+    #: a record larger than ``max_record_bytes``.
+    dropped: int
+    #: The most records that waited in the buffer while the window was filled: at most the
+    #: stream's ``buffer.records``. It depends on how fast the window was written, so it is
+    #: here and not in the window's ``meta.yaml``, which the same arrivals keep the same.
+    high_water: int
+    table: TableOutcome
 
 
 class SurveyDocument(Document):

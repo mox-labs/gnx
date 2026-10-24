@@ -76,7 +76,7 @@ PURE_STDLIB = frozenset(
 #: (``domain/clock.py``); it starts no thread. Accepted (owner ruling 2026-10-22).
 LAYER_STDLIB = {
     "domain": frozenset({"threading"}),
-    "application": frozenset({"hashlib", "json"}),
+    "application": frozenset({"hashlib", "json", "threading"}),
 }
 
 #: Third-party packages an inner layer may import.
