@@ -189,6 +189,41 @@ class TestASurveyRunsOneWindow:
         assert (window.stream, window.closed_by, window.table.status) == ("events", "seconds", "ok")
         assert window.table.records == 9
 
+    @pytest.mark.parametrize(
+        ("snapshot", "deadline", "returns"),
+        [(False, None, 30.0), (True, 5, 35.0), (True, None, None)],
+    )
+    def test_survey_dry_run_says_how_long_its_windows_hold_it(
+        self, tmp_path: Path, snapshot: bool, deadline: float | None, returns: float | None
+    ) -> None:
+        """Polish R3 (Ace 1-2): a survey runs one window of each stream, one after another,
+        so two streams of 10 s and 20 s hold it 30 s past its snapshot tables; the plan says
+        so as ``survey.returns``, adding the snapshot tables' ``deadline:``, and null when
+        nothing bounds them."""
+        clock = VirtualClock()
+        collectors: list[dict[str, Any]] = [
+            {"name": "events", "type": "feed", "window": {"seconds": 10}, "retain": "all"},
+            {"name": "log", "type": "feed", "window": {"seconds": 20}, "retain": "all"},
+        ]
+        if snapshot:
+            collectors.insert(0, {"name": "now", "type": "cli", "run": "echo '{\"a\": 1}'"})
+        config: dict[str, Any] = {"collectors": collectors}
+        if deadline is not None:
+            config["deadline"] = deadline
+        mission = tmp_path / ".recon" / "m"
+        mission.mkdir(parents=True)
+        (mission / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+
+        result = CliRunner().invoke(main, ["survey", "m", "--dry-run", "--json"],
+                                    obj=_root(tmp_path, clock, Feed(clock, 1.0, 3)))  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        said = {v["path"]: v for v in json.loads(result.stdout)["provenance"]}
+        assert said["survey.returns"]["value"] == returns
+        assert "in turn" in said["survey.returns"]["note"]
+        if returns is None:
+            assert "deadline:" in said["survey.returns"]["note"], "it says what would bound it"
+
 
 class TestWatchAcrossWindows:
     def test_watch_follows_a_stream_from_window_to_window(self, tmp_path: Path) -> None:
@@ -424,6 +459,33 @@ class TestTheCommandLine:
         assert (events[0]["name"], events[0]["returns_s"]) == ("events", 10.0)
         assert result.exit_code == 0, result.output
         assert "returns within 10s" in result.stderr.splitlines()[0]
+
+    def test_under_json_the_run_s_document_says_when_it_returns(self, tmp_path: Path) -> None:
+        """Polish R3 (Ace 1-2): the notice of when the run returns went to stderr for a
+        person and to ``on_event`` for a program, and to a ``--json`` caller nowhere. It is
+        in the run's document; stderr stays the error envelope's alone."""
+        clock = VirtualClock()
+        _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
+
+        result = CliRunner().invoke(main, ["stream", "m", "--stream", "events", "--json"],
+                                    obj=_root(tmp_path, clock, Feed(clock, 1.0, 30)))  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        document = json.loads(result.stdout)
+        assert document["returns_s"] == 10.0
+        assert "returns within 10s" in document["returns"]
+        assert result.stderr == ""
+
+    def test_the_help_says_how_long_a_stream_holds_the_command_and_to_plan_first(self) -> None:
+        """Polish R3 (Ace 1-2): one window of the default 300 s can outlast an agent's tool
+        call, so the help says so, and that ``--dry-run`` says when the run returns."""
+        streaming = " ".join(CliRunner().invoke(main, ["stream", "--help"]).output.split())
+        surveying = " ".join(CliRunner().invoke(main, ["survey", "--help"]).output.split())
+
+        for said in ("300 s", "tool call", "--dry-run", "stream.returns"):
+            assert said in streaming, said
+        for said in ("one window of each stream", "in turn", "survey.returns"):
+            assert said in surveying, said
 
     def test_recon_stream_names_its_stream_with_stream_as_watch_and_query_do(
         self, tmp_path: Path

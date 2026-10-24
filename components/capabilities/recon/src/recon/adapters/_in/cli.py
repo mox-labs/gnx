@@ -272,7 +272,10 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
 
     Every survey validates first: an invalid config exits 3 listing every problem, before
     anything is fetched or written. A survey with failed tables still writes its archive
-    (marked incomplete); the exit code says what to do about the failures.
+    (marked incomplete); the exit code says what to do about the failures. A mission with
+    streams runs one window of each stream, in turn, after its snapshot tables, each up to
+    its window: (300 s by default): --dry-run says when the survey returns at the latest,
+    as survey.returns.
 
     \b
     recon survey my-scan --dry-run
@@ -370,9 +373,12 @@ def stream(
     """Collect a stream: a source that does not end, into windows, each sealed as an archive.
 
     Each window ends when the first of its entry's window: bounds is reached (seconds,
-    records, bytes). It runs one window unless told otherwise, so it returns. Run again,
-    it goes on from the last window, after the last record it kept. Follow it as it is
-    written with `recon watch NAME --stream COLLECTOR`; query it with --stream.
+    records, bytes). It runs one window unless told otherwise, so it returns, but it holds
+    the command until then: a window of the default 300 s is five minutes, longer than a
+    tool call may wait. Run --dry-run first and read stream.returns, the seconds the run
+    lasts at most; when that is too long, set a shorter window: or run it in the background.
+    Run again, it goes on from the last window, after the last record it kept. Follow it as
+    it is written with `recon watch NAME --stream COLLECTOR`; query it with --stream.
 
     \b
     recon stream my-feed --stream events --dry-run

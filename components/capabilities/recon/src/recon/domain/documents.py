@@ -199,6 +199,12 @@ class StreamDocument(Document):
     stream: str
     #: The stream's directory, holding its windows.
     path: str
+    #: When the run was to return at the latest, as it said when it started: seconds from its
+    #: start (null when only a stop or its source's end bounded it), and that in words. Under
+    #: ``--json`` this document is all that is printed, so the notice is here too; to know it
+    #: before running, ``--dry-run`` says it as ``stream.returns``.
+    returns_s: float | None
+    returns: str
     state: ArchiveState | None
     windows: int
     records: int

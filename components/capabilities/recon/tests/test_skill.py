@@ -183,6 +183,16 @@ def test_the_streaming_page_is_the_skill_reference() -> None:
         assert taught in REFERENCES["streaming"], taught
 
 
+def test_the_skill_says_how_long_a_stream_holds_the_command() -> None:
+    """Polish R3 (Ace 1-2): an agent reading only the skill learns that a stream's window,
+    300 s by default, can outlast its tool call, that the dry run says when the run returns,
+    and that a survey runs one window of each stream in turn."""
+    [streams] = [p for p in SKILL.split("\n\n") if p.startswith("**Streams.**")]
+    for said in ("300 s", "tool call", "--dry-run", "`stream.returns`", "`survey.returns`",
+                 "in turn"):  # fmt: skip
+        assert said in streams, said
+
+
 # --- frontmatter and budget ------------------------------------------------------------
 
 

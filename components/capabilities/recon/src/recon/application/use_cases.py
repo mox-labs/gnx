@@ -241,7 +241,9 @@ class Recon:
         ``forever``: it refuses what that refuses, and ``provenance`` also says how long the
         run is and why (``stream.windows``, one by default; ``stream.until``;
         ``stream.forever``), and when it returns at the latest (``stream.returns``: seconds
-        from its start, or null when only a stop or its source ends it)."""
+        from its start, or null when only a stop or its source ends it). Without it, a
+        mission with streams has ``survey.returns``: a survey runs one window of each, in
+        turn, after its snapshot tables."""
         bound = None if stream is None else _stream_bound(
             windows, until, forever, self._clock.now(), name, stream
         )  # fmt: skip
@@ -256,6 +258,8 @@ class Recon:
             provenance.append(
                 SourcedValue(path="stream.returns", value=returns_s, source="recon", note=returns)
             )
+        elif plan.streams:
+            provenance.append(_survey_returns(plan.config, plan.streams))
         requirements, said, broken = self._preflight(mission, plan.config)
         return PlanDocument(
             mission=name,
@@ -471,8 +475,8 @@ class Recon:
         mission = self._missions.mission_dir(name)
         sha256 = hashlib.sha256(source.text).hexdigest()
         started: list[Problem] = []
+        returns_s, returns = _returns(planned.window, windows, until, forever, now)
         if on_event is not None:
-            returns_s, returns = _returns(planned.window, windows, until, forever, now)
             try:
                 on_event({"kind": "stream", "name": collector, "returns_s": returns_s,
                           "returns": returns})  # fmt: skip
@@ -495,6 +499,8 @@ class Recon:
             mission=name,
             stream=collector,
             path=str(mission / "streams" / collector),
+            returns_s=returns_s,
+            returns=returns,
             state=self._archives.stream_state(mission, collector),
             windows=run.windows,
             records=run.records,
@@ -1172,6 +1178,34 @@ def _returns(
         f"returns within {most:g}s; sooner when its source ends or a window's records or bytes "
         "end it first. To not wait: a shorter window: seconds, or run it in the background"
     )
+
+
+def _survey_returns(config: ReconConfig, streams: list[PlannedStream]) -> SourcedValue:
+    """When a survey of ``config`` returns at the latest, in seconds from its start: its
+    snapshot tables (as long as the mission's ``deadline:`` lets them), then one window of
+    each stream, in turn. Null when one of them has no time bound."""
+    snapshot = len(streams) < len(config.collectors)
+    spans = [stream.window.seconds for stream in streams]
+    each = ", ".join(
+        f"{stream.name} {stream.window.seconds:g}s"
+        if stream.window.seconds is not None
+        else f"{stream.name} no time bound"
+        for stream in streams
+    )
+    note = f"one window of each of {len(streams)} stream(s), in turn ({each})"
+    first: float | None = 0.0
+    if snapshot:
+        first = config.deadline
+        note += ", after the snapshot tables, " + (
+            f"which deadline: bounds at {first:g}s"
+            if first is not None
+            else "which no deadline: bounds: set deadline: to bound them"
+        )
+    if None in spans:
+        note += "; a window with no seconds: ends on its records or bytes, or its source's end"
+    timed = [span for span in spans if span is not None]
+    value = None if first is None or len(timed) < len(spans) else first + sum(timed)
+    return SourcedValue(path="survey.returns", value=value, source="recon", note=note)
 
 
 def _collect(
