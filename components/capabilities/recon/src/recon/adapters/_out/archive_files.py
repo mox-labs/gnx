@@ -16,12 +16,12 @@
 **Writing, complete, incomplete.** The writer holds an ``flock`` on ``writer.lock`` from
 :meth:`ArchiveFiles.create` until :meth:`ArchiveFiles.release` or its death, as matrix's
 JSONL store does, so a pid reused by another process cannot make a dead survey read as one
-running. :meth:`ArchiveFiles.state` reads ``writing`` while the lock is held; else
-``incomplete`` while the marker is there; else ``complete`` once ``meta.yaml`` is. An archive
-with none of the three is being made (the lock is taken before the marker is written), and
-reads ``writing``; one with an unlocked ``writer.lock`` and neither of the others was left by
-a writer that died while making it, and reads ``incomplete``. Whether a writer is alive is
-known on its own host only.
+running. An archive is made whole, its lock held and its marker written, under a name no
+reader lists (``.<archive id>.<pid>.making``), then renamed into place, so no archive is
+ever seen without them; a writer that dies while making one leaves only that hidden
+directory. :meth:`ArchiveFiles.state` reads ``writing`` while the lock is held; else
+``incomplete`` while the marker is there; else ``complete`` once ``meta.yaml`` is; else
+``incomplete``. Whether a writer is alive is known on its own host only.
 
 **Reading as it is written.** :meth:`ArchiveFiles.read_since` reads each table's file from a
 byte offset to its last whole line, the live ``.tmp`` of a table being written included, and
@@ -72,7 +72,7 @@ from recon.domain.archives import (
     WriteState,
 )
 from recon.domain.capture import CAPTURE_LOG_NAME
-from recon.domain.errors import QueryError, UsageError
+from recon.domain.errors import QueryError, ReconError, UsageError
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
 
 if TYPE_CHECKING:
@@ -119,9 +119,32 @@ class ArchiveFiles:
 
     def create(self, mission_dir: Path, archive_id: str) -> Path:
         archive = mission_dir / "archive" / archive_id
-        archive.mkdir(parents=True, exist_ok=True)
-        self._held[archive] = _hold(archive / WRITER_LOCK)
-        (archive / INCOMPLETE_MARKER).write_text("")
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        # Made whole under a name no reader lists, then renamed into place: an archive is
+        # never seen without its lock and marker, whenever its writer dies.
+        making = archive.with_name(f".{archive_id}.{os.getpid()}.making")
+        making.mkdir()
+        descriptor = _hold(making / WRITER_LOCK)
+        try:
+            (making / INCOMPLETE_MARKER).write_text("")
+            if archive.exists():
+                raise ReconError(
+                    f"archive {archive_id} already exists in {archive.parent}; an archive is "
+                    "never written twice",
+                    kind="store",
+                    fix="survey again: a new survey's archive is named for the moment it starts",
+                    details={"archive": str(archive)},
+                )
+            making.rename(archive)
+        except BaseException:
+            os.close(descriptor)
+            for leftover in (making / WRITER_LOCK, making / INCOMPLETE_MARKER):
+                with contextlib.suppress(OSError):
+                    leftover.unlink()
+            with contextlib.suppress(OSError):
+                making.rmdir()
+            raise
+        self._held[archive] = descriptor
         return archive
 
     def release(self, archive: Path) -> None:
@@ -141,7 +164,7 @@ class ArchiveFiles:
             return "incomplete"
         if (archive / "meta.yaml").exists():
             return "complete"
-        return "incomplete" if lock.exists() else "writing"
+        return "incomplete"  # a directory no survey made whole: nothing will finish it
 
     def write_table(
         self,
@@ -494,18 +517,13 @@ def _is_empty_sentinel(line: bytes) -> bool:
 
 
 def _hold(path: Path) -> int:
-    """Hold an exclusive lock on ``path`` until the descriptor is closed. The file is locked
-    under another name and renamed into place, so no reader finds ``path`` unlocked while
-    it is being made, and none can hold a test of it as the writer takes it."""
-    making = path.with_name(f".{path.name}.{os.getpid()}")
-    descriptor = os.open(making, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    """Hold an exclusive lock on ``path``, made if need be, until the descriptor is closed.
+    It is made in an archive no reader lists yet, so none can test it as it is taken."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        os.replace(making, path)
     except OSError:
         os.close(descriptor)
-        with contextlib.suppress(OSError):
-            making.unlink()
         raise
     return descriptor
 

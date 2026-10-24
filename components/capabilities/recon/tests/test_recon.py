@@ -854,12 +854,46 @@ class TestAnArchiveSaysWhetherItIsBeingWritten:
         assert reader.state(archive) == "complete"
         assert not (archive / "writer.lock").exists(), "a finished archive holds its data alone"
 
+    def test_a_writer_killed_while_making_its_archive_leaves_none_that_reads_writing(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression (review, Dijkstra F1): the archive's directory was made, then locked;
+        a writer killed in between left a directory with neither lock, marker nor meta.yaml,
+        which read ``writing`` forever. The archive is now made whole under a name no reader
+        lists, and renamed into place."""
+        dies = (
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "import recon.adapters._out.archive_files as files\n"
+            "from recon.adapters._out.system_clock import SystemClock\n"
+            "files.fcntl = type('F', (), {'flock': staticmethod(lambda *a: os._exit(9)),\n"
+            "                             'LOCK_EX': 2, 'LOCK_NB': 4})\n"
+            "files.ArchiveFiles(SystemClock()).create(Path(sys.argv[1]), sys.argv[2])\n"
+        )
+        id_ = "2026-01-02-030405-000001"
+        done = subprocess.run([sys.executable, "-c", dies, str(tmp_path), id_], check=False)
+        store = ArchiveFiles(SystemClock())
+
+        assert done.returncode == 9
+        assert [store.state(a) for a in store.archives(tmp_path)] == [], (
+            "no archive is listed, and none reads writing with no writer"
+        )
+
+    def test_an_archive_id_already_taken_is_refused_not_merged(self, tmp_path: Path) -> None:
+        store = ArchiveFiles(SystemClock())
+        first = store.create(tmp_path, "2026-01-02-030405-000001")
+        store.release(first)
+        with pytest.raises(recon.ReconError) as raised:
+            store.create(tmp_path, "2026-01-02-030405-000001")
+        assert raised.value.kind == "store" and raised.value.fix
+        assert sorted(p.name for p in (tmp_path / "archive").iterdir()) == [first.name]
+
     def test_a_reader_testing_the_lock_as_the_writer_takes_it_cannot_stop_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Regression: the lock file was made, then locked. A reader testing it in between
         held it shared for that moment, and the writer's exclusive lock, which does not
-        wait, failed, and the survey with it. It is now locked before it has its name."""
+        wait, failed, and the survey with it. It is now locked before the archive has its name."""
         import fcntl
 
         held: list[int] = []
