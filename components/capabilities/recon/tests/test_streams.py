@@ -29,7 +29,7 @@ from recon.domain.telemetry import Telemetry
 from tests.recon_fakes import StalledArchives, VirtualClock
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator, Iterator, Sequence
 
     from recon.domain.clock import Clock
     from recon.domain.documents import WindowOutcome
@@ -428,6 +428,52 @@ class TestEveryRecordIsCountedWhenTheStreamBreaks:
 
         assert window.closed_by == "error", "no ticker, no until: still it ends"
         assert run.records == 1
+
+
+class TestTheMetaIsTheSealedFile:
+    """Review item 1 (Dijkstra F1, Erlang #2): a window's ``meta.yaml`` says what its sealed
+    table holds, read from the table, so a store that fails mid-window leaves no claim of a
+    record the file lacks, and a resume does not skip it."""
+
+    def test_a_store_that_fails_mid_window_leaves_meta_equal_to_the_file(
+        self, tmp_path: Path
+    ) -> None:
+        clock = VirtualClock()
+
+        class Failing(ArchiveFiles):
+            def write_table(
+                self,
+                archive: Path,
+                output: str,
+                records: Generator[dict[str, Any], None, None],
+                *,
+                columns: Sequence[str] = (),
+                keep_on_error: bool = False,
+            ) -> int:
+                def failing() -> Generator[dict[str, Any], None, None]:
+                    for n, record in enumerate(records):
+                        if n == 3:  # the store takes the fourth, and fails on it
+                            raise OSError("no space left on device")
+                        yield record
+
+                return super().write_table(
+                    archive, output, failing(), columns=columns, keep_on_error=keep_on_error
+                )
+
+        timeline = [(float(i), {"seq": i, POSITION_FIELD: i}) for i in range(6)]
+        run, [window], _ = _run(
+            tmp_path, clock, _plan(WindowSpec(seconds=60)), Script(clock, timeline),
+            store=Failing(clock),
+        )  # fmt: skip
+
+        rows = _rows(window)
+        source = _meta(window)["stream"]["sources"][0]
+        assert window.closed_by == "error"
+        assert [r["seq"] for r in rows] == [0, 1, 2]
+        assert (window.table.records, source["records"]) == (3, 3)
+        assert _meta(window)["tables"][0]["records"] == 3
+        assert (source["first"], source["last"]) == (0, 2), "a resume goes on after 2"
+        assert window.dropped == 3 and run.records + run.dropped == 6
 
 
 class TestSealedIsSealed:

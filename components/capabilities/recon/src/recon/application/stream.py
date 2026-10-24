@@ -130,14 +130,23 @@ class StreamRun:
 
 @dataclass
 class _Ledger:
-    """What a window's arrivals came to besides its records: the drops, the most records that
-    waited, the gaps its source reported, and the order of its first and last admitted."""
+    """What a window's arrivals came to besides its records: the drops counted so far (for its
+    progress), those of records never admitted (``refused``: too large, or overflow's newest,
+    and what later windows that will never be written held), the most records that waited,
+    the gaps its source reported, and the order of its first and last admitted. A window's
+    drops are, once it is sealed, the records admitted to it that its table does not hold,
+    and those refused."""
 
     dropped: int = 0
+    refused: int = 0
     high_water: int = 0
     gaps: list[Gap] = field(default_factory=list)
     first: int | None = None
     last: int | None = None
+
+    @property
+    def admitted(self) -> int:
+        return 0 if self.first is None or self.last is None else self.last - self.first + 1
 
 
 @dataclass(frozen=True)
@@ -194,7 +203,7 @@ class Arrivals:
             if not self._advance():
                 return False
             if len(line) > self._buffer.max_record_bytes:
-                self._ledger(self._windowing.index).dropped += 1
+                self._refuse(self._windowing.index)
                 return True
             if self._overflow == "block":
                 while self._admitting and self._full():
@@ -203,7 +212,7 @@ class Arrivals:
                     return False
             elif self._full():
                 if self._overflow == "drop_newest":
-                    self._ledger(self._windowing.index).dropped += 1
+                    self._refuse(self._windowing.index)
                     return True
                 self._evict_oldest()
             stamp = self._clock.monotonic()
@@ -273,12 +282,6 @@ class Arrivals:
                 self._bytes -= len(event.line)
                 self._cond.notify_all()
 
-    def holds(self, event: _Event) -> bool:
-        """Whether ``event`` still waits: an interrupt may have come before or after it was
-        popped, and only the buffer can say which."""
-        with self._cond:
-            return any(waiting is event for waiting in self._events)
-
     def stop(self) -> None:
         """Stop the stream, as a signal does: nothing more is admitted, and the stream ends
         once what waits is written."""
@@ -291,17 +294,18 @@ class Arrivals:
     def abandon(self, into: int | None = None) -> None:
         """Stop the stream at once, as a second signal or a failure does: nothing more is
         admitted or written, and what waits is dropped, its stream's end the one event left.
-        With ``into``, the window being written (or about to be), every record that waited
-        is counted dropped there, and so is what later windows that will never be written
-        counted (their drops, their gaps), so nothing admitted goes uncounted."""
+        With ``into``, the window being written (or about to be), what later windows that will
+        never be written held (the records admitted to them, their refusals, their gaps) is
+        counted there, so nothing admitted goes uncounted; that window's own records that
+        waited are admitted to it, so its seal counts them dropped."""
         with self._cond:
             self._admitting = False
             if into is not None:
                 ledger = self._ledger(into)
-                ledger.dropped += sum(1 for e in self._events if isinstance(e, _Arrival))
                 for later in sorted(w for w in self._ledgers if w > into):
                     gone = self._ledgers.pop(later)
-                    ledger.dropped += gone.dropped
+                    ledger.refused += gone.admitted + gone.refused
+                    ledger.dropped += gone.admitted + gone.refused
                     ledger.gaps += gone.gaps
             self._events.clear()
             self._events.append(_End("signal", self._clock.monotonic()))
@@ -318,10 +322,13 @@ class Arrivals:
             return self._ledgers[window].dropped if window in self._ledgers else 0
 
     def noted(self, window: int) -> bool:
-        """Whether a drop or a gap was counted in window ``window``."""
+        """Whether anything was counted in window ``window``: a record admitted, a drop, a
+        gap."""
         with self._cond:
             ledger = self._ledgers.get(window)
-            return ledger is not None and bool(ledger.dropped or ledger.gaps)
+            return ledger is not None and bool(
+                ledger.admitted or ledger.refused or ledger.dropped or ledger.gaps
+            )
 
     # --- under the lock ---
 
@@ -350,6 +357,12 @@ class Arrivals:
 
     def _ledger(self, window: int) -> _Ledger:
         return self._ledgers.setdefault(window, _Ledger())
+
+    def _refuse(self, window: int) -> None:
+        """A record dropped before it was admitted, counted in ``window``."""
+        ledger = self._ledger(window)
+        ledger.dropped += 1
+        ledger.refused += 1
 
 
 class StreamGaps:
@@ -382,10 +395,6 @@ class _Window:
     last: Any = None
     end: WindowEnd | _End | None = None
     error: BaseException | None = None
-    #: The arrival the writer holds between taking it from the buffer and handing it to the
-    #: store: dropped, if the window ends before it is handed on.
-    pending: _Arrival | None = None
-    dropped_late: int = 0
     frames: bool = True
 
 
@@ -573,12 +582,8 @@ class Stream:
         return False
 
     def _halt(self, window: _Window, arrivals: Arrivals) -> None:
-        """Stop the stream now, in ``window``: the arrival the writer held, if the buffer no
-        longer has it, and what waits are counted dropped in it."""
-        held = window.pending
-        if held is not None and not arrivals.holds(held):
-            window.dropped_late += 1
-        window.pending = None
+        """Stop the stream now, in ``window``: what waits, and what the writer held, are
+        admitted to it and not in its table, so its seal counts them dropped."""
         arrivals.abandon(into=window.index)
 
     def _window(
@@ -629,7 +634,15 @@ class Stream:
                     self._halt(window, arrivals)
                     window.end = window.end or _End(None, self._clock.monotonic(), exc)
                 ledger = arrivals.ledger(window.index)
-                window_dropped = ledger.dropped + window.dropped_late
+                # What the window holds is what its table holds, read from it: a record the
+                # writer took and the store never kept is no record of it, and a dropped one.
+                ends = self._archives.table_ends(window.archive, output)
+                window.records = ends.records
+                if ends.first is not None:
+                    window.first = ends.first.get(POSITION_FIELD)
+                if ends.last is not None and POSITION_FIELD in ends.last:
+                    window.last = ends.last[POSITION_FIELD]
+                window_dropped = max(0, ledger.admitted - ends.records) + ledger.refused
                 span.set("recon.records", window.records)
                 span.set("recon.dropped", window_dropped)
                 error = window.error or (window.end.error if isinstance(window.end, _End) else None)
@@ -688,7 +701,6 @@ class Stream:
                 arrivals.pop()
                 window.end = event
                 return
-            window.pending = event  # before it is popped: an interrupt may come between
             arrivals.pop()
             raw = json.loads(event.line)
             if captures is not None:
@@ -704,10 +716,7 @@ class Stream:
                 return
             if POSITION_FIELD in raw:
                 record = {**record, POSITION_FIELD: raw[POSITION_FIELD]}
-                window.first = raw[POSITION_FIELD] if window.records == 0 else window.first
-                window.last = raw[POSITION_FIELD]
-            window.records += 1
-            window.pending = None  # handed to the store: written, from here on
+            window.records += 1  # handed to the store; its seal counts what it kept
             yield record
             if event.stamp - reported >= self._progress_s:
                 time.pin(event.stamp)

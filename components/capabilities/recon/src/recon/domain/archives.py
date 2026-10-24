@@ -104,6 +104,16 @@ class StoredTable:
 
 
 @dataclass(frozen=True)
+class TableEnds:
+    """What a table holds, read from where its store keeps it: how many records, and its
+    first and last (None when it has none)."""
+
+    records: int
+    first: dict[str, Any] | None = None
+    last: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class TableRecord:
     """One record of one of an archive's tables, by the table's output name."""
 
@@ -158,6 +168,12 @@ class ArchiveStore(Protocol):
 
     def streams(self, mission_dir: Path) -> list[str]:
         """The names of the mission's streams, sorted."""
+        ...
+
+    def table_ends(self, archive: Path, output: str) -> TableEnds:
+        """What the table ``output`` holds as stored now, sealed or not: its records counted,
+        its first and its last read from the file. A stream's window says what it holds from
+        this, so it never claims a record its table lacks."""
         ...
 
     def size(self, archive: Path) -> int:

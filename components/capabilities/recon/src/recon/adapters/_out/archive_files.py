@@ -81,6 +81,7 @@ from recon.domain.archives import (
     ArchiveState,
     NewRecords,
     StoredTable,
+    TableEnds,
     TableRecord,
 )
 from recon.domain.capture import CAPTURE_LOG_NAME
@@ -220,6 +221,25 @@ class ArchiveFiles:
         if not directory.is_dir():
             return []
         return sorted(d.name for d in directory.iterdir() if d.is_dir())
+
+    def table_ends(self, archive: Path, output: str) -> TableEnds:
+        sealed = archive / f"{output}.jsonl"
+        path = sealed if sealed.exists() else archive / f"{output}{_LIVE}"
+        if not path.exists():
+            return TableEnds(0)
+        count = 0
+        first: bytes | None = None
+        last: bytes | None = None
+        with open(path, "rb") as f:
+            for line in f:
+                if not line.endswith(b"\n"):
+                    break  # a line not yet whole is no record
+                if count == 0 and _is_empty_sentinel(line):
+                    return TableEnds(0)
+                first = first or line
+                last = line
+                count += 1
+        return TableEnds(count, _object(first), _object(last))
 
     def size(self, archive: Path) -> int:
         return sum(path.stat().st_size for path in archive.rglob("*") if path.is_file())
@@ -737,6 +757,14 @@ def _read_table(
                 offset += len(line)
             return lines, (offset, False), sealed and offset == size
     return None
+
+
+def _object(line: bytes | None) -> dict[str, Any] | None:
+    """A record's line as its object; None for no line, or one that holds no object."""
+    if line is None:
+        return None
+    parsed = json.loads(line)
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _is_empty_sentinel(line: bytes) -> bool:
