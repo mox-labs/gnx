@@ -425,6 +425,28 @@ def _running(pid: int) -> bool:
     return True
 
 
+def test_a_stream_that_ends_leaves_no_ticker_waiting_out_its_window(tmp_path: Path) -> None:
+    """Erlang's re-check: the ticker slept on the clock until the open window's close, so a
+    stream that ended early left it asleep for up to a window, an hour here, in a host that
+    lives on. It sleeps in slices of at most a second, on the clock still, and looks between."""
+    clock = SystemClock()
+    store = ArchiveFiles(clock)
+    events: list[dict[str, Any]] = []
+    stream = Stream(store, clock, "test", telemetry=_telemetry(store, events))
+
+    def ends_soon(after: Any) -> Iterator[dict[str, Any]]:
+        yield {"seq": 0}
+        time.sleep(0.3)  # the ticker is asleep on the hour by now
+
+    run = stream.run(tmp_path, _plan(WindowSpec(seconds=3600)), ends_soon, dict, close=lambda: None)
+
+    assert run.last is not None and run.last.closed_by == "eof"
+    started = time.monotonic()
+    while any(t.name == "recon-stream-ticker" for t in threading.enumerate()):
+        assert time.monotonic() - started < 3, "the ticker sleeps on into the hour"
+        time.sleep(0.02)
+
+
 def test_memory_stays_flat_over_a_long_stream(tmp_path: Path) -> None:
     """B10 #11: 60 windows of 500 records, at a modest rate on a virtual clock, each window
     captured (``preserve_raw``, review item 17); what the stream holds does not grow with the

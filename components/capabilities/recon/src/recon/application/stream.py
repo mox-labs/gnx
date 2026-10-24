@@ -88,6 +88,10 @@ if TYPE_CHECKING:
 #: its collector is closed.
 STOP_S = 5.0
 
+#: The longest the ticker sleeps at once before it looks whether the stream has ended: a
+#: window is a second at least, so it wakes no more than once a window to no purpose.
+TICK_S = 1.0
+
 #: Opens one window's telemetry over the clock given, its event log among the sinks: the
 #: telemetry and the callback the window's outcome events go to, both ended when the block
 #: ends.
@@ -1058,11 +1062,14 @@ def _pump(
 
 def _tick(clock: Clock, arrivals: Arrivals) -> None:
     """The ticker's thread: wake the buffer whenever the clock reaches the open window's
-    time, until the stream ends. It waits on the clock port, so a test's clock decides it."""
+    time, until the stream ends. It waits on the clock port, so a test's clock decides it,
+    and in slices of at most :data:`TICK_S`, looking between, so a stream that ends leaves
+    it asleep no longer than that. When it wakes changes no window: each closes at its
+    spec's time, whatever the time the buffer is told."""
     while (close := arrivals.close()) is not None:
         left = close - clock.monotonic()
         if left > 0:
-            clock.sleep(left)
+            clock.sleep(min(left, TICK_S))
         else:
             arrivals.advance()
 
