@@ -26,9 +26,9 @@ and runs what a config declares from the command line: `matrix plan`, then `matr
 
 ```bash
 # the library, in a project
-uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.7.0#subdirectory=components/capabilities/matrix"
+uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
 # the matrix command
-uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.7.0#subdirectory=components/capabilities/matrix"
+uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
 ```
 
 matrix is installed from its repository at the release's tag; it is not on a package index,

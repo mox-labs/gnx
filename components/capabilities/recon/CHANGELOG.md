@@ -1,6 +1,6 @@
 # Changelog — recon
 
-## Unreleased
+## 0.13.0 — 2026-10-24
 
 ### Changed (breaking)
 
@@ -16,6 +16,7 @@
 - **`stream_overflow` is `records_dropped`, and `many_windows` is `windows_many`**: a problem kind names its subject, then its state, as `env_unset`, `events_dropped` and `source_stuck` do. `records_dropped` is now one warning for each cause (a full buffer, a record too large, a stop at once), each at the path of its own key with its own fix, where `stream_overflow` was one warning that named every knob. Renamed before 1.0, with no alias.
 - **A window closed by its time bound says `closed_by: seconds`**, not `window`: each bound of `window:` is named by its key, as `records` and `bytes` already were (in `meta.yaml`'s `stream.closed_by`, a window outcome's `closed_by` and the `window` event). Renamed before 1.0, with no alias.
 - **The `ArchiveStore` port keeps streams too**: `create(..., stream=)` and `archives(..., stream=)` make and list a stream's windows; `hold_stream`, `release_stream`, `stream_state`, `streams`, `last_record`, `size`, `retire` and `retired` are new; `write_table` takes `keep_on_error`. `ArchiveQuery` gains `execute_across(archives, sql)`, and `CaptureLog` gains `tee(collector, data)`. A store, query or capture log of your own given to `root()` implements them.
+- **The `TelemetryFactory` a `Recon` is built with** takes the survey's channel as a second argument, None for an operation with none.
 
 ### Added
 
@@ -33,7 +34,6 @@
 - **A capture of kind `stream`**: with `preserve_raw`, each window keeps one, each record as its collector gave it with its order and its offset from the window's open, from which the window replays to the same table.
 - **`busy`, a new error kind (exit 11)**: another recon is writing the stream. `conflict` keeps its one meaning, a config that would be overwritten. The writer keeps its pid in the stream's `writer.lock`, so `busy` names it in `details.pid` and in its fix, `kill -TERM <pid>`, which seals the window it is writing.
 - `source_stuck`, a new warning kind: a stream's source that had not returned its next record when the stream stopped. Its `got` is the collector type, and its fix says whose the type is: for recon's own (`tail`, `sse`), a bug to report in recon; for a third party's, the package that registered it (`Plugins.collector_packages`, new: each collector type's distribution, as its entry point was installed).
-
 - **`recon watch <mission>`** follows an archive as a survey writes it: each record as a JSON line, or under `--json` each read as a `recon.v1.records-since` line, and returns when the archive is no longer being written and all of it is printed (at once for a finished archive). `--once` reads once; `--interval` sets the seconds between reads (1 by default); `--cursor` reads on from an earlier read; `--max-bytes` bounds a read's bytes (1 MiB by default); `--archive` names an archive other than the latest. A cursor recon did not give, or an interval of 0 or less, exits 2 with a fix. `recon.watch(...)` is the same in a program. Its contract: `docs/reference/live-reading.md`, which `recon --skill -r live-reading` prints for an agent; a walk-through: `docs/how-to/watch-a-survey.md`.
 - **`recon.read_since(mission, cursor=None, *, archive=None, max_records=1000, max_bytes=1048576)`** follows an archive while a survey writes it. It returns `recon.v1.records-since`: the whole records written since the cursor, from sealed tables and the one being written, at most `max_records` of them and `max_bytes` of their bytes, cut at a whole record and at least one, with `more` when a bound cut it; the archive's `state`; the tables `exhausted` (sealed, and read to their end) and `retracted` since, each told once; and the opaque `cursor` to read on from. A cursor recon did not give for that archive, or a `max_records` or `max_bytes` below 1, is a `usage` error with a fix.
 
@@ -45,7 +45,6 @@
 - **The skill and `recon --skill -r live-reading` teach an agent to poll**: `recon watch --once --json`, then the next read with `--cursor`, since a watch holds its command while the writer runs and one of a `--forever` stream never returns. The skill's telemetry and capture paragraphs point to their references for what those already hold.
 - **The hook that captures MCP results moved from the skill to `recon --skill -r config-patterns`** (MCP Results Captured by a Hook), so the skill keeps within its budget; the skill points there.
 - **The skill teaches telemetry through `recon --skill -r telemetry`**, one text with `docs/reference/telemetry.md`, so the skill stays within its budget.
-- **The `TelemetryFactory` a `Recon` is built with** takes the survey's channel as a second argument, None for an operation with none.
 - **No receiver slows a survey.** OpenTelemetry's sink and the `on_event` callback receive a survey's events through a bounded queue (`ThreadChannel(queue=4096, drain_s=10.0)`, `root(channel=)`) that a thread drains, so a slow one neither slows the writing of the archive nor changes it. An event the queue cannot hold, or that the survey's end could not wait for, is dropped and counted in an `events_dropped` warning, a new problem kind. **An `on_event` that raises no longer fails the survey**: it gets nothing more, and is a `telemetry_failed` warning. A receiver that never returns from an event cannot hold the survey past the drain time: it is named in a `telemetry_stuck` warning, a new problem kind, and is not closed. `on_event` is called on that thread, not the survey's, and every call is made before `survey` returns.
 - **A table's progress is in its telemetry.** While a table is written, its `recon.collect` span has a `recon.collect.progress` event at most once a second (`Survey(progress_s=)`, 1.0 by default, timed by the clock port), carrying `recon.records`, the records written so far: a line in the archive's `telemetry.jsonl`, and a span event in OpenTelemetry.
 - **The event log opens its file once per survey**, not once per event, writes each event in one write as it happens, and closes it when the survey ends (`Telemetry.close()`).

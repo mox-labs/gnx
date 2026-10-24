@@ -13,9 +13,9 @@ disturbed by it) and reports a verdict: `holds`, `fails` or `inconclusive`. The 
 
 ```bash
 # the ix command
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.6.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
 # the library, in a project
-uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.6.0#subdirectory=components/capabilities/ix"
+uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
 ```
 
 ix is installed from its repository at the release's tag. It is on no package index, and the

@@ -2,7 +2,7 @@
 
 All notable changes to matrix. Versions follow semver; before 1.0 a minor may break.
 
-## Unreleased
+## 0.8.0 — 2026-10-24
 
 ### Added
 

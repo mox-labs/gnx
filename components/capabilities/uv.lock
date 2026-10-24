@@ -965,7 +965,7 @@ wheels = [
 
 [[package]]
 name = "ix"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "ix" }
 dependencies = [
     { name = "httpx2" },
@@ -1370,7 +1370,7 @@ all = [
 
 [[package]]
 name = "matrix"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "matrix" }
 dependencies = [
     { name = "claude-agent-sdk" },
@@ -2384,7 +2384,7 @@ wheels = [
 
 [[package]]
 name = "recon"
-version = "0.12.0"
+version = "0.13.0"
 source = { editable = "recon" }
 dependencies = [
     { name = "duckdb" },

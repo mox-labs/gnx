@@ -19,7 +19,7 @@ For the full argument, see [docs/explanation/capability.md](docs/explanation/cap
 recon is a package in the [gnx](https://github.com/mox-labs/gnx) repository, installed from it at the release's tag; it is not on a package index:
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.12.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.13.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 

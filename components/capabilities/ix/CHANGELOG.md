@@ -1,8 +1,8 @@
 # Changelog — ix
 
-## Unreleased
+## 0.7.0 — 2026-10-24
 
-`docs/design/2026-10-19-record.md` §27 has the reasons for these changes.
+`docs/design/2026-10-19-record.md` has the reasons for this release's changes, in §27.
 
 ### Changed (breaking)
 
@@ -22,6 +22,11 @@
   made in that task and the tasks it starts (matrix's `RunContext.attributed()`), in place
   of `sessions()`, which named every row since the scope's last hand-over. A scope that
   implemented `sessions()` is no longer `Recorded`, and its trials name no sessions.
+- **`MaxDuration` gives `eval_duration_passed`, not `eval_passed`.** The evaluator sensor
+  reads how long the probe took into a metric of its own, declared contended, so a
+  decision on it is refused with trials in flight. An experiment that decided `eval_passed`
+  on a `MaxDuration` entry is refused (`metric_unprovided`, its fix naming
+  `eval_duration_passed`): rename the metric and amend the registration.
 
 ### Added
 
@@ -81,14 +86,6 @@
 - **`overlap` on a genre's `design`** (`allowed` when unsaid): whether its trials may
   overlap at all. A genre that extends another may tighten it to `forbidden`, never loosen
   it (`genre_narrowing`). `regress` forbids it; the other built-ins allow it.
-
-### Changed (breaking)
-
-- **`MaxDuration` gives `eval_duration_passed`, not `eval_passed`.** The evaluator sensor
-  reads how long the probe took into a metric of its own, declared contended, so a
-  decision on it is refused with trials in flight. An experiment that decided `eval_passed`
-  on a `MaxDuration` entry is refused (`metric_unprovided`, its fix naming
-  `eval_duration_passed`): rename the metric and amend the registration.
 
 ### Fixed
 
