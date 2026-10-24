@@ -48,7 +48,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from recon.application.changes import changes_failed, failed
 from recon.application.survey import PROGRESS_S
@@ -896,17 +896,6 @@ class Stream:
         table = table.model_copy(
             update={"records": window.records, "seconds": round(closed - window.opened, 2)}
         )
-        spec = plan.entry.changes
-        if error is None and spec is not None and self._changes is not None:
-            # Against what the chain has told, never a delete (ruling C7).
-            try:
-                table = self._changes.window(
-                    window.archive, plan.name, window.previous, table, spec, plan.entry.normalize
-                )
-            except Exception as exc:  # the window's changes fail, never the window (F6)
-                warning = changes_failed(plan.at, table.name, exc)
-                self.warnings = [w for w in self.warnings if w.kind != warning.kind] + [warning]
-                table = failed(table, exc)
         reproducible = captures is not None and dropped == 0
         if captures is not None:
             captures.finalize_stream(
@@ -929,30 +918,52 @@ class Stream:
             if ledger.first is None
             else {"first": ledger.first, "last": ledger.last},
         }
-        document = {
-            "format_version": META_FORMAT_VERSION,
-            "recon_version": self._recon_version,
-            "config_sha256": meta["config_sha256"],
-            "started_at": opened_at,
-            "timestamp": closed_at,
-            "preserve_raw": meta["preserve_raw"],
-            "resolved": meta["resolved"],
-            # How the window's writer ended it: stopped on request, as a stopped survey says.
-            "ended": "stopped" if closed_by == "stopped" else "finished",
-            "tables": [table.document()],
-            "stream": {
-                "name": plan.name,
-                "index": window.index,
-                "previous": window.previous,
-                "opened_at": opened_at,
-                "closed_at": closed_at,
-                "closed_by": closed_by,
-                "window": plan.window.model_dump(exclude_none=True),
-                "sources": [source],
-                "reproducible": reproducible,
-            },
-        }
-        self._archives.write_meta(window.archive, document)
+
+        def document(table: TableOutcome, ended: Literal["finished", "stopped"] | None) -> Any:
+            return {
+                "format_version": META_FORMAT_VERSION,
+                "recon_version": self._recon_version,
+                "config_sha256": meta["config_sha256"],
+                "started_at": opened_at,
+                "timestamp": closed_at,
+                "preserve_raw": meta["preserve_raw"],
+                "resolved": meta["resolved"],
+                # How the window's writer ended it: stopped on request, as a survey says;
+                # null while it compares, read as crashed if it is never written again.
+                "ended": ended,
+                "tables": [table.document()],
+                "stream": {
+                    "name": plan.name,
+                    "index": window.index,
+                    "previous": window.previous,
+                    "opened_at": opened_at,
+                    "closed_at": closed_at,
+                    "closed_by": closed_by,
+                    "window": plan.window.model_dump(exclude_none=True),
+                    "sources": [source],
+                    "reproducible": reproducible,
+                },
+            }
+
+        spec = plan.entry.changes
+        if spec is not None and self._changes is not None:
+            # Against what the chain has told, never a delete (ruling C7); a window whose
+            # source failed holds records too, and tells them (Dijkstra F1). Its summary is
+            # in meta.yaml before its first row can be read (F3).
+            try:
+                table = self._changes.window(
+                    window.archive, plan.name, window.previous, table, spec,
+                    plan.entry.normalize,
+                    pending=lambda told: self._archives.write_meta(
+                        window.archive, document(told, None)),
+                )  # fmt: skip
+            except Exception as exc:  # the window's changes fail, never the window (F6)
+                warning = changes_failed(plan.at, table.name, exc)
+                self.warnings = [w for w in self.warnings if w.kind != warning.kind] + [warning]
+                table = failed(table, exc)
+        self._archives.write_meta(
+            window.archive, document(table, "stopped" if closed_by == "stopped" else "finished")
+        )
         if error is None:
             self._archives.mark_complete(window.archive)
         return WindowOutcome(

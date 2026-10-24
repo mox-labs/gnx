@@ -335,8 +335,8 @@ def told_lines(
 @dataclass(frozen=True)
 class _Compared:
     """An earlier table that was compared: where, how many records it held, whether its
-    deletes were told, whether it started the told index again, and the one compared before
-    it."""
+    deletes were told, whether it started the told index again, the one compared before it,
+    and the windows whose writer died that it told before its own records."""
 
     archive: Path
     records: int
@@ -344,6 +344,7 @@ class _Compared:
     rebaselined: bool
     previous: str | None
     normalize: str | None
+    crashed: tuple[str, ...] = ()
 
 
 @dataclass
@@ -436,24 +437,44 @@ class ChangeDetector:
         the told index, then the summary (``pending``), then the change table."""
         hasher = Hasher(spec, self._secret)
         by_name = {a.name: a for a in earlier}
+        crashed: list[Path] = []
         if chain is None:
             previous = self._previous_snapshot(earlier, table)
-            seen = previous is not None or self._sealed_before(earlier, table)
+            before = previous is None and self._sealed_before(earlier, table)
         else:
-            found = by_name.get(chain)
-            previous = self._compared(found, table) if found is not None else None
-            seen = found is not None
-        rebaselined = seen and (previous is None or previous.normalize != shape)
+            previous, crashed = self._chain(earlier, chain, table)
+            before = False  # a window's records are its own: nothing to flood
+        rebaselined = before or (previous is not None and previous.normalize != shape)
+        if rebaselined:
+            crashed = []  # what a dead window held is in the told index started again here
         told = _Told(None) if rebaselined or previous is None else (
             self._told(previous, table, hasher, by_name)
         )  # fmt: skip
-        new = self._reader(archive, table.name)
+        dead: list[Comparison] = []
         try:
+            # What windows whose writer died held, told here, oldest first (Dijkstra F1).
+            for window in crashed:
+                held = Comparison(
+                    self._reader(window, table.name, unsealed=True),
+                    told.pairs,
+                    hasher,
+                    self._join(told.keys),
+                    whole=True,
+                    deletes=False,
+                )
+                dead.append(held)
+                told.close()
+                told = _Told(held.told(), held.told_count())
+            new = self._reader(archive, table.name)
             comparison = Comparison(new, told.pairs, hasher, self._join(table.records, told.keys),
                                     whole=whole)  # fmt: skip
+        except BaseException:
+            for held in dead:
+                held.close()
+            raise
         finally:
             told.close()
-        counts = comparison.counts
+        every = [*dead, comparison]
 
         def summary(written: int) -> ChangeSummary:
             return ChangeSummary(
@@ -463,14 +484,15 @@ class ChangeDetector:
                 spec=hasher.digest,
                 normalize=shape,
                 rows=written,
-                inserts=counts.inserts,
-                updates=counts.updates,
-                deletes=counts.deletes,
+                inserts=sum(c.counts.inserts for c in every),
+                updates=sum(c.counts.updates for c in every),
+                deletes=comparison.counts.deletes,
                 rebaselined=rebaselined,
-                keyless=counts.keyless,
-                ambiguous=counts.ambiguous,
-                deletes_withheld=None if rebaselined else counts.withheld,
+                keyless=sum(c.counts.keyless for c in every),
+                ambiguous=sum(c.counts.ambiguous for c in every),
+                deletes_withheld=None if rebaselined else comparison.counts.withheld,
                 deletes_told=comparison.deletes,
+                crashed=[window.name for window in crashed],
             )
 
         try:
@@ -479,16 +501,17 @@ class ChangeDetector:
             )
             if pending is not None:
                 pending(table.model_copy(update={"changes": summary(0)}))
-            rows = (
+            rows: Iterable[dict[str, Any]] = (
                 iter([{"op": "rebaselined", "key": None, "record": None}])
                 if rebaselined
-                else comparison.rows()
+                else (row for c in every for row in c.rows())
             )
             written = self._archives.write_table(
                 archive, changes_output(table.name), _generator(rows), columns=CHANGE_COLUMNS
             )
         finally:
-            comparison.close()
+            for c in every:
+                c.close()
         return table.model_copy(update={"changes": summary(written)})
 
     def _join(self, *sizes: int) -> KeyJoin:
@@ -523,6 +546,21 @@ class ChangeDetector:
             found = by_name.get(current.previous) if current.previous else None
             current = self._compared(found, table) if found is not None else None
         for compared in reversed(again):
+            # A table is folded as it was told: after what the dead windows before it held.
+            for name in () if compared.rebaselined else compared.crashed:
+                window = by_name.get(name)
+                if window is None:
+                    continue
+                held = Comparison(
+                    self._reader(window, table.name, unsealed=True),
+                    told.pairs,
+                    hasher,
+                    self._join(told.keys),
+                    whole=True,
+                    deletes=False,
+                )
+                told.close()
+                told = _Told(held.told(), held.told_count(), [held])
             comparison = Comparison(
                 self._reader(compared.archive, table.name),
                 None if compared.rebaselined else told.pairs,
@@ -534,6 +572,27 @@ class ChangeDetector:
             told.close()
             told = _Told(comparison.told(), comparison.told_count(), [comparison])
         return told
+
+    def _chain(
+        self, windows: Sequence[Path], chain: str, table: TableOutcome
+    ) -> tuple[_Compared | None, list[Path]]:
+        """A window's previous compared window, walking back from ``chain`` (the window before
+        it), and the windows passed on the way whose writer died before it compared them,
+        oldest first, whose whole records this window tells (Dijkstra F1). A window sealed and
+        never compared (before ``changes:`` was set) ends the walk with nothing told."""
+        names = [window.name for window in windows]
+        if chain not in names:
+            return None, []
+        crashed: list[Path] = []
+        for window in reversed(windows[: names.index(chain) + 1]):
+            compared = self._compared(window, table)
+            if compared is not None:
+                return compared, crashed[::-1]
+            meta = self._archives.read_meta(window)
+            if meta.get("format_version") is not None and meta.get("ended", "") is not None:
+                break  # sealed, and never compared
+            crashed.append(window)
+        return None, crashed[::-1]
 
     def _previous_snapshot(self, earlier: Sequence[Path], table: TableOutcome) -> _Compared | None:
         """The latest earlier table of the same name and source that was compared, however
@@ -560,11 +619,15 @@ class ChangeDetector:
         return False
 
     def _entry(self, archive: Path, table: TableOutcome) -> dict[str, Any] | None:
-        for entry in self._archives.read_meta(archive).get("tables") or []:
+        """The table's entry in ``archive``'s ``meta.yaml``: sealed ``ok``, or, for a window,
+        sealed however its source ended (its records are told whatever, F1)."""
+        meta = self._archives.read_meta(archive)
+        window = isinstance(meta.get("stream"), dict)
+        for entry in meta.get("tables") or []:
             if (
                 entry.get("name") == table.name
                 and entry.get("source") == table.source
-                and entry.get("status") == "ok"
+                and (entry.get("status") == "ok" or window)
             ):
                 return dict(entry)
         return None
@@ -576,16 +639,20 @@ class ChangeDetector:
             return None  # never compared, or its changes failed: it told nothing
         if self._archives.read_table(archive, changes_output(table.name)) is None:
             return None  # its summary was written, and it died before its rows were
+        crashed = changes.get("crashed") or []
         return _Compared(archive, int(entry.get("records") or 0),
                          changes.get("deletes_told") is True, bool(changes.get("rebaselined")),
-                         changes.get("previous"), changes.get("normalize"))  # fmt: skip
+                         changes.get("previous"), changes.get("normalize"),
+                         tuple(str(name) for name in crashed))  # fmt: skip
 
     def _ended(self, archive: Path) -> Any:
         return self._archives.read_meta(archive).get("ended")
 
-    def _reader(self, archive: Path, output: str) -> Callable[[], Iterable[dict[str, Any]]]:
+    def _reader(
+        self, archive: Path, output: str, *, unsealed: bool = False
+    ) -> Callable[[], Iterable[dict[str, Any]]]:
         def read() -> Iterable[dict[str, Any]]:
-            records = self._archives.read_table(archive, output)
+            records = self._archives.read_table(archive, output, unsealed=unsealed)
             return records if records is not None else ()
 
         return read

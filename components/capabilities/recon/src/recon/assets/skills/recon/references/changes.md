@@ -67,7 +67,7 @@ Changing `key` or `volatile` makes every kept index stale: what was told is comp
 
 ## Streams
 
-A stream's window is compared with the told index of the window before it, the same chain through each window's `previous`, and keeps its own. A window **never tells a delete**: it holds what arrived in it, not all its source holds. A window's index that does not hold is computed again from its earliest window kept; a key known only in windows `retain:` removed is then new again. `retain:` removes a window's change table and key index with it.
+A stream's window is compared with the told index of the window before it, the same chain through each window's `previous`, and keeps its own. A window **never tells a delete**: it holds what arrived in it, not all its source holds. A window sealed with its source's error is compared too: what it holds arrived. A window whose writer died (killed mid-window, no `meta.yaml`) is never compared by itself; the next window, walking back to the last window compared, tells the dead window's whole records first, then its own, and its outcome names it in `changes.crashed`, so nothing that arrived is lost and no key is told twice. The told index starts again (`rebaselined`) only for a new `normalize:`. A window's index that does not hold is computed again from its earliest window kept; a key known only in windows `retain:` removed is then new again. `retain:` removes a window's change table and key index with it.
 
 ## What the plan says
 

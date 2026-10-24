@@ -283,9 +283,13 @@ class ArchiveStore(Protocol):
         has none."""
         ...
 
-    def read_table(self, archive: Path, output: str) -> Iterator[dict[str, Any]] | None:
+    def read_table(
+        self, archive: Path, output: str, *, unsealed: bool = False
+    ) -> Iterator[dict[str, Any]] | None:
         """The records of the sealed table ``output``, in the order written (none for a table
-        that collected nothing); None when ``archive`` has no such sealed table."""
+        that collected nothing); None when ``archive`` has no such sealed table. With
+        ``unsealed``, a table its writer died writing gives its whole lines, its last line cut
+        short left out, and the file left as it is."""
         ...
 
     def capture_log(self, archive: Path) -> CaptureLog: ...

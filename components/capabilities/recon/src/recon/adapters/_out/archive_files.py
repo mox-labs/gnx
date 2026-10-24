@@ -418,11 +418,16 @@ class ArchiveFiles:
             return None
         return _sidecar_lines(path)
 
-    def read_table(self, archive: Path, output: str) -> Iterator[dict[str, Any]] | None:
+    def read_table(
+        self, archive: Path, output: str, *, unsealed: bool = False
+    ) -> Iterator[dict[str, Any]] | None:
         path = archive / f"{output}.jsonl"
-        if not path.is_file():
-            return None
-        return _table_records(path)
+        if path.is_file():
+            return _table_records(path)
+        live = archive / f"{output}{_LIVE}"
+        if unsealed and live.is_file():
+            return _table_records(live, whole=True)
+        return None
 
     def capture_log(self, archive: Path) -> FilesystemCaptureLog:
         return FilesystemCaptureLog(archive, self._clock)
@@ -720,11 +725,14 @@ def _sidecar_lines(path: Path) -> Iterator[dict[str, Any]]:
             yield json.loads(line)
 
 
-def _table_records(path: Path) -> Iterator[dict[str, Any]]:
+def _table_records(path: Path, *, whole: bool = False) -> Iterator[dict[str, Any]]:
     """A sealed table's records: each line, but a table's that collected nothing, whose one
-    line is the empty sentinel."""
+    line is the empty sentinel. ``whole``: a table its writer died writing, whose last line
+    may be cut short: each line that ends, and no other."""
     with path.open("rb") as f:
         for line in f:
+            if whole and not line.endswith(b"\n"):
+                break
             record = json.loads(line)
             if isinstance(record, dict) and record.get("_empty") is True:
                 continue

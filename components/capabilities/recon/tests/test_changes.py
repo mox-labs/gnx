@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import stat
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +21,9 @@ from recon.application.changes import Comparison, Hasher, MemoryJoin, canonical
 from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
 from recon.domain.changes import ChangesSpec
+from recon.domain.errors import CollectionError
 from recon.domain.http import HttpResponse
+from recon.domain.stream import window_id
 from tests.recon_fakes import FixedClock, VirtualClock, plugins_with
 from tests.test_paginated_survey import PagedApi
 
@@ -806,6 +809,77 @@ class TestStreams:
         meta = ArchiveFiles(FixedClock()).read_meta(ambiguous)
         assert meta["tables"][0]["changes"]["ambiguous"] == 1
         assert _window_ops(third) == []
+
+    def _crashed_window(self, tmp_path: Path, index: int, records: list[dict[str, Any]]) -> Path:
+        """A window as a writer killed mid-window leaves it: made, its lock let go, its
+        ``.incomplete`` marker, its table's whole lines and one cut short, no ``meta.yaml``."""
+        store = ArchiveFiles(FixedClock())
+        opened = datetime(2026, 1, 2, 4, 0, index, tzinfo=UTC)
+        window = store.create(tmp_path / ".recon" / "m", window_id(index, opened), stream="s")
+        lines = b"".join(json.dumps(r).encode() + b"\n" for r in records)
+        (window / "s.jsonl.tmp").write_bytes(lines + b'{"id": "torn')
+        store.release(window)
+        return window
+
+    def test_a_window_killed_mid_way_is_told_by_the_next_and_nothing_twice(
+        self, tmp_path: Path
+    ) -> None:
+        """Dijkstra F1: a window whose writer died has no meta. The next window's previous
+        names it, and it was never compared: walking back to the last window that was, the
+        next window tells the dead window's whole records, then its own, so none is lost and
+        no key told before is told again as new."""
+        _stream_mission(tmp_path)
+        records = self.RECORDS + [{"id": "e", "v": 1}, {"id": "a", "v": 3}]
+        feed = _Feed(records[:2])
+        recon = root({}, project=tmp_path, clock=VirtualClock(), plugins=plugins_with(feed=feed))
+        recon.stream("m", "s", windows=1)  # a1, b1
+        dead = self._crashed_window(tmp_path, 1, [{**records[2], "_position": 2},
+                                                 {**records[3], "_position": 3}])  # fmt: skip
+        feed.records = records[:6]
+        recon.stream("m", "s", windows=1)  # resumed after 3: b1, d1
+        first, crashed, resumed = _windows(tmp_path)
+        assert crashed == dead
+        assert _window_ops(resumed) == [("update", "a"), ("insert", "c"), ("insert", "d")]
+        summary = ArchiveFiles(FixedClock()).read_meta(resumed)["tables"][0]["changes"]
+        assert summary["previous"] == first.name and summary["crashed"] == [dead.name]
+        assert summary["rebaselined"] is False
+
+        # The resumed window's told index, rebuilt, folds the dead window's records too.
+        (resumed / "s.keys.jsonl").unlink()
+        feed.records = records
+        recon.stream("m", "s", windows=1)  # e1, a3
+        last = _windows(tmp_path)[-1]
+        assert _window_ops(last) == [("insert", "e"), ("update", "a")]
+
+    def test_a_window_whose_source_failed_is_told_and_the_chain_goes_on(
+        self, tmp_path: Path
+    ) -> None:
+        """F1: a window sealed with its source's error holds records too; it tells them, and
+        the next window is compared with it, never rebaselined."""
+
+        class FailsAt(_Feed):
+            fail_at: int | None = 3
+
+            def collect(self, entry: Any, source: Any, *, captures: Any = None,
+                        after: Any = None) -> Iterator[dict[str, Any]]:  # fmt: skip
+                for record in super().collect(entry, source, captures=captures, after=after):
+                    if record["_position"] == self.fail_at:
+                        raise CollectionError("the source broke", kind="transient")
+                    yield record
+
+        _stream_mission(tmp_path)
+        feed = FailsAt(self.RECORDS)
+        recon = root({}, project=tmp_path, clock=VirtualClock(), plugins=plugins_with(feed=feed))
+        recon.stream("m", "s", windows=3)  # a1 b1 | a2, then the error
+        feed.fail_at = None
+        recon.stream("m", "s", windows=1)  # resumed after 2: c1, b1
+        first, failed, resumed = _windows(tmp_path)
+        meta = ArchiveFiles(FixedClock()).read_meta(failed)
+        assert meta["tables"][0]["status"] == "error"
+        assert _window_ops(failed) == [("update", "a")]
+        assert _window_ops(resumed) == [("insert", "c")]
+        assert ArchiveFiles(FixedClock()).read_meta(resumed)["tables"][0]["changes"][
+            "previous"] == failed.name  # fmt: skip
 
     def test_a_window_whose_changes_fail_is_sealed_and_says_so(self, tmp_path: Path) -> None:
         """F6 for a stream: the change phase never fails a window."""
