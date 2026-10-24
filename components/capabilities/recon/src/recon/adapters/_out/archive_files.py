@@ -95,15 +95,25 @@ EMPTY_SENTINEL: dict[str, Any] = {"_empty": True}
 #: Records written between two fsyncs: the most a crash can lose from a table being written.
 _FSYNC_EVERY = 1000
 
-#: A table's lines wait in memory until this many bytes wait, or :data:`_WRITE_SECONDS` have
-#: passed, then are written together (ruling A2's fallback, measured: see :class:`_Lines`).
-_WRITE_BYTES = 64 * 1024
-_WRITE_SECONDS = 0.25
+#: By default, a table's lines wait in memory until this many bytes wait, or
+#: :data:`FLUSH_S` seconds have passed, then are written together (ruling A2's fallback,
+#: measured: see :class:`_Lines`). ``ArchiveFiles(flush_bytes=, flush_s=)`` sets others.
+FLUSH_BYTES = 64 * 1024
+FLUSH_S = 0.25
 
 
 class ArchiveFiles:
-    def __init__(self, clock: Clock) -> None:
+    def __init__(
+        self, clock: Clock, *, flush_bytes: int = FLUSH_BYTES, flush_s: float = FLUSH_S
+    ) -> None:
+        """``flush_bytes`` and ``flush_s`` bound how long a table's records wait before a
+        reader of the table can see them: in bytes waiting, and in seconds."""
+        if flush_bytes < 1 or flush_s <= 0:
+            raise ValueError(f"flush_bytes must be >= 1 and flush_s > 0, got {flush_bytes}, "
+                             f"{flush_s}")  # fmt: skip
         self._clock = clock
+        self._flush_bytes = flush_bytes
+        self._flush_s = flush_s
         #: The lock held on each archive this store is writing, by archive.
         self._held: dict[Path, int] = {}
 
@@ -147,7 +157,7 @@ class ArchiveFiles:
         try:
             # closing() is what runs the collector's own cleanup (a subprocess killed, a
             # client closed) when writing stops early.
-            with contextlib.closing(records), _Lines(tmp) as f:
+            with contextlib.closing(records), _Lines(tmp, self._flush_bytes, self._flush_s) as f:
                 for record in records:
                     f.write(json.dumps(record, default=str) + "\n")
                     count += 1
@@ -272,10 +282,11 @@ class ArchiveFiles:
 
 
 class _Lines:
-    """A file a table is written to, in whole lines: what is given waits in memory until 64
-    KiB of it is waiting or 250 ms have passed, then goes to the file in one ``write`` of
-    whole lines, so a reader of the file sees every line written by then, each whole, and no
-    part of the next, at most 250 ms late however slowly the lines come. A write the disk
+    """A file a table is written to, in whole lines: what is given waits in memory until
+    ``flush_bytes`` of it wait or ``flush_s`` seconds have passed (64 KiB and 250 ms by
+    default), then goes to the file in one ``write`` of whole lines, so a reader of the file
+    sees every line written by then, each whole, and no part of the next, at most
+    ``flush_s`` late however slowly the lines come. A write the disk
     cuts short is taken back before the error is raised. What reaches the disk itself is
     left to :meth:`sync`.
 
@@ -285,8 +296,10 @@ class _Lines:
     writes what waits on time, so a collector that is slow to give its next record does not
     hold back the last one."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, flush_bytes: int, flush_s: float) -> None:
         self._descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        self._flush_bytes = flush_bytes
+        self._flush_s = flush_s
         self._size = 0
         self._waiting: list[bytes] = []
         self._waiting_bytes = 0
@@ -312,7 +325,7 @@ class _Lines:
                 raise self._failed
             self._waiting.append(data)
             self._waiting_bytes += len(data)
-            if self._waiting_bytes >= _WRITE_BYTES:
+            if self._waiting_bytes >= self._flush_bytes:
                 self._write_waiting()
 
     def sync(self) -> None:
@@ -338,7 +351,7 @@ class _Lines:
         self._size += written
 
     def _write_on_time(self) -> None:
-        while not self._stop.wait(_WRITE_SECONDS):
+        while not self._stop.wait(self._flush_s):
             with self._lock:
                 try:
                     self._write_waiting()

@@ -10,7 +10,7 @@ root, with three table writers in turn, and prints the median of each and its lo
 the first:
 
 * ``buffered``: the writer before A2, buffered and flushed every 1000 records;
-* ``per line``: one ``write`` per line (the store with its batch bound set to one byte);
+* ``per line``: one ``write`` per line (``ArchiveFiles(flush_bytes=1)``);
 * ``as built``: the store as it is, whole lines written every 64 KiB or 250 ms.
 
 All three fsync every 1000 records. The command runs locally and reaches no network. It is
@@ -33,13 +33,12 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from recon.adapters._out import archive_files
-from recon.adapters._out.archive_files import EMPTY_SENTINEL, ArchiveFiles
+from recon.adapters._out.archive_files import EMPTY_SENTINEL, FLUSH_BYTES, ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import root
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterator, Sequence
+    from collections.abc import Generator, Sequence
 
 
 class BufferedArchiveFiles(ArchiveFiles):
@@ -71,17 +70,6 @@ class BufferedArchiveFiles(ArchiveFiles):
         return count
 
 
-@contextlib.contextmanager
-def _batch_bound(size: int) -> Iterator[None]:
-    """The store's batch bound set to ``size`` bytes while the block runs."""
-    kept = archive_files._WRITE_BYTES
-    archive_files._WRITE_BYTES = size
-    try:
-        yield
-    finally:
-        archive_files._WRITE_BYTES = kept
-
-
 def _survey(project: Path, archives: ArchiveFiles) -> float:
     started = time.perf_counter()
     document = root({}, project=project, archives=archives).survey("bench")
@@ -102,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         "'line': n % 400, 'text': 'TODO: ' + 'x' * (n % 60)}) + '\\n')\n"
     )
     clock = SystemClock()
-    bounds = {"buffered": None, "per line": 1, "as built": archive_files._WRITE_BYTES}
+    bounds = {"buffered": None, "per line": 1, "as built": FLUSH_BYTES}
     timings: dict[str, list[float]] = {name: [] for name in bounds}
     with tempfile.TemporaryDirectory() as directory:
         project = Path(directory)
@@ -118,8 +106,8 @@ def main(argv: list[str] | None = None) -> int:
                 if bound is None:
                     timings[name].append(_survey(project, BufferedArchiveFiles(clock)))
                     continue
-                with _batch_bound(bound):
-                    timings[name].append(_survey(project, ArchiveFiles(clock)))
+                store = ArchiveFiles(clock, flush_bytes=bound)
+                timings[name].append(_survey(project, store))
     medians = {name: statistics.median(times) for name, times in timings.items()}
     base = medians["buffered"]
     print(f"{args.records} records, median of {args.repeats} surveys each:")

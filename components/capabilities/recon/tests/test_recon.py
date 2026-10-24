@@ -425,6 +425,24 @@ class TestATableIsWrittenInWholeLines:
         assert all(data.endswith(b"\n") for data in writes), "every write ends a line"
         assert (tmp_path / "out.jsonl").read_bytes() == b"".join(writes)
 
+    def test_the_bounds_are_the_store_s_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        writes: list[bytes] = []
+
+        def counted(descriptor: int, data: bytes) -> int:
+            writes.append(bytes(data))
+            written: int = os.write(descriptor, data)
+            return written
+
+        monkeypatch.setattr(STORE_OS, _os_with(write=counted))
+        store = ArchiveFiles(SystemClock(), flush_bytes=1)
+        store.write_table(tmp_path, "out", ({"n": n} for n in range(3)))
+        assert writes == [b'{"n": 0}\n', b'{"n": 1}\n', b'{"n": 2}\n']
+        for bad in ({"flush_bytes": 0}, {"flush_s": 0}):
+            with pytest.raises(ValueError, match="flush_bytes must be >= 1 and flush_s > 0"):
+                ArchiveFiles(SystemClock(), **bad)
+
     def test_a_line_is_one_write_however_long(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
