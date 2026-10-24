@@ -26,6 +26,15 @@
   deciding metric (`primary`, a guardrail) is contended or the genre is `exclusive`: the
   fix names each and says `trials_in_flight: 1`. A contended metric only reported is a
   warning.
+- **Trials in flight.** A run starts its trials in the plan's order with at most
+  `trials_in_flight` in flight, each in a task of its own, and lands each as it is
+  finished and confirmed. With a `Liveness` environment, one checker asks whether it is
+  still up, one call at a time and each within `Kit.liveness_timeout_s` (30s; a check that
+  does not answer is a loss): a trial lands as carried out only once a check that began
+  after it ended found the environment up. On a loss nothing more starts and every trial
+  unconfirmed lands as `environment_lost`; on a stop nothing more starts and every trial in
+  flight lands, its own outcome or `cancelled`. At 1 the run is the serial run it was.
+  `invoke` takes the flag its probe races (`stopping=`; the scope's when not given).
 - **`isolation` on every kind, `contended` on every metric.** A kind says whether two trials
   may use it at once (`isolation: shared | exclusive`; a kind that says nothing, a third
   party's included, is `exclusive`), and a metric whether its reading moves with whatever

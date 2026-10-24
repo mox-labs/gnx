@@ -2,8 +2,9 @@
 
 Written over the ports of :mod:`ix.domain.ports` and a :class:`~ix.domain.ports.Scope`, so it
 names no host. :func:`prepare` decides before anything starts whether the experiment may run;
-:func:`invoke` carries out one trial; :func:`carry_out` does that for every trial in order;
-:func:`sense` turns interactions into readings.
+:func:`invoke` carries out one trial; :func:`carry_out` does that for every trial, started
+in order, as many at once as the design's ``trials_in_flight``; :func:`sense` turns
+interactions into readings.
 
 A failed trial never raises out of :func:`invoke` and never stops the run: it is an
 interaction carrying a failure with an owner (see :mod:`ix.domain.run`).
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
     from ix.domain.ports import (
         Attribution,
         Environment,
+        Flag,
         Measured,
         Probe,
         Scope,
@@ -76,6 +78,9 @@ TRIAL_START = "ix.trial.start"
 TRIAL_END = "ix.trial.end"
 SENSE_END = "ix.sense.end"
 
+#: How long one liveness check may take by default (:attr:`Kit.liveness_timeout_s`).
+LIVENESS_TIMEOUT_S = 30.0
+
 
 @dataclass(frozen=True)
 class Kit:
@@ -91,6 +96,9 @@ class Kit:
     kinds: Mapping[str, Kind] = field(default_factory=dict)
     #: Spans of ix's own work; None traces nothing.
     tracer: Traced | None = None
+    #: How long one check that the environment is still up may take; one that takes longer
+    #: confirms nothing, and the run ends as for an environment lost.
+    liveness_timeout_s: float = LIVENESS_TIMEOUT_S
 
 
 class _Quiet:
@@ -401,13 +409,13 @@ async def bring_up(setup: Setup, kit: Kit, scope: Scope) -> Bindings:
 
 
 async def _apply(
-    kind: Probe, options: Mapping[str, Any], target: Target, seed: int, scope: Scope
+    kind: Probe, options: Mapping[str, Any], target: Target, seed: int, stopping: Flag
 ) -> dict[str, dict[str, Any]]:
     """Apply a probe under its budget, raced against the stop flag. Raises
     :class:`HarnessError` (``timeout``, ``cancelled``) when the probe does not finish."""
     budget_s = kind.budget_s(options)
     applying = asyncio.ensure_future(kind.apply(options, target, seed=seed))
-    stopped = asyncio.ensure_future(scope.stopping.wait())
+    stopped = asyncio.ensure_future(stopping.wait())
     try:
         await asyncio.wait(
             {applying, stopped}, timeout=budget_s, return_when=asyncio.FIRST_COMPLETED
@@ -473,9 +481,12 @@ async def invoke(
     *,
     hold: list[AsyncExitStack] | None = None,
     bindings: Bindings | None = None,
+    stopping: Flag | None = None,
 ) -> Interaction:
     """Carry out one trial and say what happened. A failure of an adapter becomes the
-    trial's failure; a defect in ix itself raises.
+    trial's failure; a defect in ix itself raises. The probe stops early, a harness failure
+    (``cancelled``), when ``stopping`` is set: the scope's stop flag unless another is
+    given.
 
     The subject's options are filled from the trial's cell and the environment's
     ``bindings`` (``{db.url}``); the probe's from those, the subject's options and what the
@@ -490,7 +501,9 @@ async def invoke(
     release it.
     """
     async with _attributed(scope) as attribution:
-        interaction = await _carried(trial, setup, kit, scope, hold=hold, bindings=bindings)
+        interaction = await _carried(
+            trial, setup, kit, hold=hold, bindings=bindings, stopping=stopping or scope.stopping
+        )
     return interaction.model_copy(update={"sessions": attribution.sessions()})
 
 
@@ -498,10 +511,10 @@ async def _carried(
     trial: Trial,
     setup: Setup,
     kit: Kit,
-    scope: Scope,
     *,
     hold: list[AsyncExitStack] | None,
     bindings: Bindings | None,
+    stopping: Flag,
 ) -> Interaction:
     """One trial carried out as :func:`invoke` says, before its sessions are named."""
     started = kit.clock_ns()
@@ -537,7 +550,7 @@ async def _carried(
                 fill_options(probe.options, known, probe_kind),
                 target,
                 trial.seed,
-                scope,
+                stopping,
             )
         except Exception as error:
             failure = _failure(error)
@@ -590,14 +603,23 @@ async def carry_out(
     scope: Scope,
     land: Callable[[Interaction], None],
 ) -> int:
-    """Carry out ``trials`` in order, one at a time, handing each interaction to ``land`` as
-    it finishes. Returns how many were carried out.
+    """Carry out ``trials``, starting them in order with at most the design's
+    ``trials_in_flight`` in flight, and hand each interaction to ``land`` once it is
+    finished and confirmed. Returns how many were landed. Every row carries its ``seq``;
+    nothing reorders them.
 
-    Stops between trials when the scope says to; a trial in flight then ends as a harness
-    failure (``cancelled``) and is landed like any other. After each trial it asks the
-    environment whether it is still up (when its provider is a :class:`Liveness`): when it
-    is not, that trial is landed as a harness failure (``environment_lost``) and
-    :class:`HarnessError` ends the run.
+    Each trial runs in a task of its own (:func:`invoke` names its sessions from it). When
+    the environment's provider is a :class:`Liveness`, one checker asks it, one call at a
+    time and each within the kit's ``liveness_timeout_s``, whether it is still up: a trial
+    is landed as carried out only once a check that began after it ended found it up. On
+    the first check that does not, nothing more starts, every trial in flight and every one
+    finished and not yet confirmed lands as a harness failure (``environment_lost``), and
+    :class:`HarnessError` ends the run. A check that does not answer in time is such a
+    check.
+
+    When the scope says to stop, nothing more starts, and each trial in flight ends as it
+    ends or as a harness failure (``cancelled``), and is landed like any other. One trial in
+    flight is exactly the serial run: start, finish, check, land, start the next.
     """
     environment = _environment(setup, kit)
     unbound = _unbound(setup, kit, bindings)
@@ -614,48 +636,146 @@ async def carry_out(
             await stack.aclose()
 
     scope.defer(release_open)  # the backstop, for a trial abandoned mid-flight
-    done = 0
-    for trial in trials:
-        if scope.stopping.is_set():
-            break
-        scope.emit(
-            TRIAL_START,
-            seq=trial.seq,
-            total=len(trials),
-            subject=trial.subject,
-            role=trial.role,
-            probe=trial.probe,
-            cell=dict(trial.cell),
-        )
-        with _span(scope, "ix.trial", **_trial_attributes(trial, setup)) as span:
-            interaction = await invoke(trial, setup, kit, scope, hold=open_now, bindings=bindings)
-            lost = await environment.lost(bindings) if isinstance(environment, Liveness) else None
-            if lost is not None:
-                interaction = interaction.model_copy(
-                    update={
-                        "observations": {},
-                        "failure": Failure(
-                            owner="harness", reason="environment_lost", message=lost
-                        ),
-                    }
+    slots = asyncio.Semaphore(setup.design.trials_in_flight)
+    halt = asyncio.Event()  # set on a stop or a loss: the probes in flight end early
+    checker = _Checker(environment, bindings, kit.liveness_timeout_s, halt)
+    landed = 0
+
+    async def one(trial: Trial) -> None:
+        nonlocal landed
+        try:
+            with _span(scope, "ix.trial", **_trial_attributes(trial, setup)) as span:
+                interaction = await invoke(
+                    trial, setup, kit, scope, hold=open_now, bindings=bindings, stopping=halt
                 )
-            span.set(**_trial_outcome(interaction))
-            if interaction.failure is not None:
-                span.failed(interaction.failure.reason)
-        land(interaction)
-        done += 1
-        scope.emit(
-            TRIAL_END,
-            seq=trial.seq,
-            total=len(trials),
-            subject=trial.subject,
-            role=trial.role,
-            failure=None if interaction.failure is None else interaction.failure.document(),
-            duration_ms=interaction.duration_ns // 1_000_000,
-        )
-        if lost is not None:
-            raise HarnessError("environment_lost", f"the environment went down: {lost}")
-    return done
+                lost = await checker.confirm()
+                if lost is not None:
+                    interaction = interaction.model_copy(
+                        update={
+                            "observations": {},
+                            "failure": Failure(
+                                owner="harness", reason="environment_lost", message=lost
+                            ),
+                        }
+                    )
+                span.set(**_trial_outcome(interaction))
+                if interaction.failure is not None:
+                    span.failed(interaction.failure.reason)
+            land(interaction)
+            landed += 1
+            scope.emit(
+                TRIAL_END,
+                seq=trial.seq,
+                total=len(trials),
+                subject=trial.subject,
+                role=trial.role,
+                failure=None if interaction.failure is None else interaction.failure.document(),
+                duration_ms=interaction.duration_ns // 1_000_000,
+            )
+        finally:
+            slots.release()
+
+    beside = [asyncio.ensure_future(_relay(scope.stopping, halt))]
+    if checker.live:
+        beside.append(asyncio.ensure_future(checker.run()))
+    try:
+        async with asyncio.TaskGroup() as group:
+            for trial in trials:
+                await slots.acquire()
+                if scope.stopping.is_set() or checker.lost is not None:
+                    slots.release()
+                    break
+                scope.emit(
+                    TRIAL_START,
+                    seq=trial.seq,
+                    total=len(trials),
+                    subject=trial.subject,
+                    role=trial.role,
+                    probe=trial.probe,
+                    cell=dict(trial.cell),
+                )
+                group.create_task(one(trial))
+    except BaseExceptionGroup as failed:
+        # A defect in ix in one trial ended them all; it raises as it would have alone.
+        raise failed.exceptions[0] from failed
+    finally:
+        for task in beside:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+    if checker.lost is not None:
+        raise HarnessError("environment_lost", f"the environment went down: {checker.lost}")
+    return landed
+
+
+async def _relay(flag: Flag, to: asyncio.Event) -> None:
+    """Set ``to`` once ``flag`` is set."""
+    await flag.wait()
+    to.set()
+
+
+class _Checker:
+    """The one serial check of a run that its environment is still up (dijkstra's I3).
+
+    A finished trial asks :meth:`confirm` and waits. Each check takes every trial waiting
+    when it began, and only those: a trial that finishes while a check is under way waits
+    for the next one, so the trials waiting are never more than those in flight. The first
+    check that finds the environment lost (or does not answer within ``timeout_s``, or
+    raises) settles every trial waiting then and every trial that asks after, and sets
+    ``halt``."""
+
+    def __init__(
+        self, environment: Environment, bindings: Bindings, timeout_s: float, halt: asyncio.Event
+    ) -> None:
+        self._liveness = environment if isinstance(environment, Liveness) else None
+        self._bindings = bindings
+        self._timeout_s = timeout_s
+        self._halt = halt
+        self._waiting: list[asyncio.Future[str | None]] = []
+        self._wake = asyncio.Event()
+        #: Why the environment is no longer up, once a check found it; None until then.
+        self.lost: str | None = None
+
+    @property
+    def live(self) -> bool:
+        """Whether there is anything to ask: the environment's provider is a Liveness."""
+        return self._liveness is not None
+
+    def confirm(self) -> asyncio.Future[str | None]:
+        """For a trial that has just ended: None once a check begun after now finds the
+        environment up; why it is lost otherwise."""
+        settled: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+        if self._liveness is None or self.lost is not None:
+            settled.set_result(self.lost)
+        else:
+            self._waiting.append(settled)
+            self._wake.set()
+        return settled
+
+    async def run(self) -> None:
+        while self.lost is None:
+            await self._wake.wait()
+            self._wake.clear()
+            asked, self._waiting = self._waiting, []
+            found = await self._ask()
+            if found is not None:
+                self.lost = found
+                self._halt.set()
+                asked, self._waiting = [*asked, *self._waiting], []
+            for settled in asked:
+                if not settled.done():  # its trial may have been cancelled meanwhile
+                    settled.set_result(found)
+
+    async def _ask(self) -> str | None:
+        liveness = self._liveness
+        if liveness is None:
+            return None
+        try:
+            return await asyncio.wait_for(liveness.lost(self._bindings), self._timeout_s)
+        except TimeoutError:
+            return f"the environment did not say whether it is up within {self._timeout_s:g}s"
+        except Exception as error:
+            return f"checking whether it is up raised {type(error).__name__}: {error}"
 
 
 def _unbound(setup: Setup, kit: Kit, bindings: Bindings) -> tuple[str, ...]:

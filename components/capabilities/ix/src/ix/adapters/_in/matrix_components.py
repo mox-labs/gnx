@@ -114,7 +114,8 @@ class EnvironmentComponent:
 
 
 class TrialsComponent:
-    """Carries out the schedule, one trial at a time, in order."""
+    """Carries out the schedule, starting the trials in order, as many in flight at once as
+    the design's ``trials_in_flight``."""
 
     requires = (schema.RUN, schema.TRIAL, schema.BINDINGS)
     provides = (schema.INTERACTION,)
@@ -179,8 +180,8 @@ COMPONENTS: dict[str, tuple[Callable[..., object], str]] = {
     ),
     TRIALS: (
         _carry_out,
-        "Carries out an experiment's trials in schedule order; provides ix.v1.interaction, "
-        "one row as each trial finishes",
+        "Carries out an experiment's trials, started in schedule order, trials_in_flight at "
+        "once; provides ix.v1.interaction, one row as each trial finishes",
     ),
     SENSE: (_sense, "Reads each interaction with the experiment's sensors; provides ix.v1.reading"),
 }
