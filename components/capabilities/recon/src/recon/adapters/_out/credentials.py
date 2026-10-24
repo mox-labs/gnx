@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from recon.domain.capture import credential_values, redact_credentials
 from recon.domain.credentials import reference
 from recon.domain.errors import CollectionError
 
@@ -114,6 +115,8 @@ class Credentials:
         self._deadline = deadline
         self._tokens: dict[str, str | None] = {}
         self._helped: dict[str, dict[str, str]] = {}
+        #: Each source's secret as it was read, before its ``auth.prefix``.
+        self._read: dict[str, str] = {}
 
     def token(self, source: SourceEntry) -> str | None:
         """The secret the source's ``auth.token`` names, with its ``auth.prefix``; None when
@@ -126,7 +129,28 @@ class Credentials:
                 else None
             )
             self._tokens[source.name] = f"{auth.prefix}{value}" if value else None
+            if value:
+                self._read[source.name] = value
         return self._tokens[source.name]
+
+    def secrets(self, source: SourceEntry) -> list[str]:
+        """What of the source's credentials has been resolved this survey, to redact where a
+        server may write it back (a captured body, an error's snippet): its token, with and
+        without its prefix, and each header its helper printed, every one of them a
+        credential (Vector, round-4 review S5)."""
+        found = [self._read.get(source.name), self._tokens.get(source.name)]
+        helped = self._helped.get(source.name, {})
+        found += list(helped.values()) + credential_values(helped)
+        return [value for value in found if value]
+
+    def redacted(self, source: SourceEntry, error: CollectionError) -> CollectionError:
+        """``error``, its message with the source's credentials redacted: a server that
+        echoes what it was sent puts them in the snippet of its answer the error quotes."""
+        secrets = self.secrets(source)
+        message = redact_credentials(str(error), secrets) if secrets else str(error)
+        if message == str(error):
+            return error
+        return CollectionError(message, kind=error.kind, fix=error.fix, details=error.details)
 
     def helped(self, source: SourceEntry) -> dict[str, str]:
         """The headers the source's ``auth.headers_helper`` prints; none without one."""

@@ -39,7 +39,7 @@ from recon.adapters._out.http_source import (
 )
 from recon.adapters._out.parsing import parse_body
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
-from recon.domain.capture import redact_query_params
+from recon.domain.capture import redact_credentials, redact_query_params
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
 from recon.domain.http import reported_url
@@ -174,14 +174,20 @@ class ApiCollector:
         page's capture names its ordinal (``page``), so a replay gives its records the same
         ``_position``."""
         url, params = target
-        resp = self._requester.request(
-            source,
-            settings.method,
-            url,
-            params={**params, **self._auth_params(source)},
-            headers=self._build_headers(source),
-            json_body=body,
-        )
+        try:
+            resp = self._requester.request(
+                source,
+                settings.method,
+                url,
+                params={**params, **self._auth_params(source)},
+                headers=self._build_headers(source),
+                json_body=body,
+            )
+        except CollectionError as exc:
+            redacted = self._credentials.redacted(source, exc)
+            if redacted is exc:
+                raise
+            raise redacted from None  # the original quotes the credential
 
         if captures is not None:
             request: dict[str, Any] = {
@@ -202,7 +208,7 @@ class ApiCollector:
                 status=resp.status_code,
                 content_type=resp.content_type,
                 headers=resp.headers,
-                body=resp.body,
+                body=_without(resp.body, self._credentials.secrets(source)),
             )
 
         return parse_body(resp.text, settings.response_format, origin=resp.url), resp
@@ -217,6 +223,17 @@ class ApiCollector:
 
     def _auth_params(self, source: SourceEntry) -> dict[str, str]:
         return auth_params(source, self._credentials)
+
+
+def _without(body: bytes, secrets: list[str]) -> bytes:
+    """A body as a capture keeps it: each of the source's credentials a server wrote back in
+    it redacted (``redact_credentials`` on its text: a long one wherever it is, a short one
+    only as a whole value), every other byte as it came."""
+    if not secrets:
+        return body
+    text = body.decode("utf-8", "surrogateescape")
+    kept = redact_credentials(text, secrets)
+    return body if kept == text else kept.encode("utf-8", "surrogateescape")
 
 
 def _found(spec: PaginateSpec, data: Any, resp: HttpResponse) -> Any:

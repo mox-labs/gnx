@@ -20,6 +20,7 @@ from recon.adapters._out.credentials import resolve_reference
 from recon.adapters._out.http_requester import HttpRequester
 from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
+from recon.domain.capture import REDACTED
 from recon.domain.errors import CollectionError
 from recon.domain.models import AuthConfig, SourceEntry
 from recon.domain.ratelimit import RateLimiter
@@ -207,6 +208,65 @@ def test_an_mcp_token_file_is_held_to_the_same_rule(tmp_path: Path) -> None:
     _secret(tmp_path / "t", "tok", 0o644)
     with pytest.raises(CollectionError):
         resolve_reference("file:t", {}, tmp_path, "token")
+
+
+class _Echoes(PagedApi):
+    """A server that writes back the credential it was sent: in a body's field no extract
+    reads, or in the error a request fails with."""
+
+    fails = False
+
+    def request(self, source: SourceEntry, method: str, url: str, **kw: Any) -> Any:
+        sent = {**(kw.get("headers") or {}), **(kw.get("params") or {})}
+        echoed = " ".join(str(v) for v in sent.values())
+        if self.fails:
+            raise CollectionError(f"HTTP request failed: {url} (HTTP 401)\nResponse body: "
+                                  f"invalid token {echoed}", kind="auth")  # fmt: skip
+        response = super().request(source, method, url, **kw)
+        body = json.loads(response.text)
+        text = json.dumps({**body, "debug": {"you sent": echoed}})
+        return response.model_copy(update={"text": text, "body": text.encode()})
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        {"token": "file:key.txt", "header": "Authorization", "prefix": "Bearer "},
+        {"token": "file:key.txt", "param": "api_key"},
+        "helper",
+    ],
+    ids=["header", "param", "helper"],
+)
+@pytest.mark.parametrize("fails", [False, True], ids=["captured", "failed"])
+def test_a_credential_a_server_echoes_is_in_no_archive_byte(
+    tmp_path: Path, auth: Any, fails: bool
+) -> None:
+    """Vector S5: a server that echoes the token puts it in what recon keeps of the answer:
+    the raw body a capture holds, and a failed request's error, which reaches meta.yaml and
+    the event log. recon redacts the source's credentials, its token and every header its
+    helper printed, from both, as the mcp collector does."""
+    mission_dir = tmp_path / ".recon" / "m"
+    mission_dir.mkdir(parents=True)
+    _secret(mission_dir / "key.txt", "s3cretTokenZZ")
+    if auth == "helper":
+        helper = tmp_path / "helper.sh"
+        helper.write_text('#!/bin/sh\necho \'{"X-Session": "h3lperSessionZZ"}\'\n')
+        helper.chmod(0o755)
+        auth = {"headers_helper": str(helper)}
+    api = _Echoes("cursor", 2, 1)
+    api.fails = fails
+    document = _survey(tmp_path, api, auth, {}, preserve_raw=True)
+
+    [table] = document.tables
+    assert (table.status == "error") is fails
+    if fails:
+        assert REDACTED in (table.error.message or "")
+    archive = Path(document.path)
+    for path in archive.rglob("*"):
+        if path.is_file():
+            data = path.read_bytes()
+            assert b"s3cretTokenZZ" not in data and b"h3lperSessionZZ" not in data, path
+    assert "s3cretTokenZZ" not in json.dumps(document.document())
 
 
 def test_no_secret_is_written_to_the_archive(tmp_path: Path) -> None:

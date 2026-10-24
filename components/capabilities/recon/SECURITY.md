@@ -83,6 +83,11 @@ environment, as a `cli` command does (boundary 1): name it by an absolute path. 
 - Secrets are never written to the JSONL output and never logged. Request headers are
   never persisted. In captures, response headers are persisted with credential-bearing
   values redacted (R-2), and an `auth.param` value is redacted from the captured URL (R-4).
+  A server that writes back what it was sent puts the credential in its answer: an `api`
+  source's captured body, and an `api` or `sse` source's failed request (whose message
+  quotes the start of the answer, into `meta.yaml` and the event log), have the source's
+  token and every header its helper printed redacted, as an `mcp` source's are (round-4
+  review S5). A record the source returns holding it is the source's data, kept as given.
 
 An unset `auth.token` variable sends the request without credentials; the plan warns
 about it before anything is sent.

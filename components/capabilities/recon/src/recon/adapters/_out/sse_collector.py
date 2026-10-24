@@ -195,7 +195,10 @@ class SseCollector:
                 if self._closed.is_set():
                     return
                 if exc.kind != "transient":
-                    raise
+                    redacted = self._credentials.redacted(source, exc)
+                    if redacted is exc:
+                        raise
+                    raise redacted from None  # the original quotes the credential
             finally:
                 self._body = None
             if self._closed.is_set():
