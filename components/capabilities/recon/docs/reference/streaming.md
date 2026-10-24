@@ -111,7 +111,7 @@ A stream killed mid-window (SIGKILL, a crash) leaves that window unsealed: it re
 | | Does |
 |---|---|
 | `recon watch <mission> --stream <name>` | follows the stream from its latest window (or `--archive <window id>`) into each window after it, exactly as an archive is followed; returns once nothing extends the stream and its last window is read. The cursor carries the window; one whose window `retain:` removed since goes on from the next window kept |
-| `recon query <mission> "<SQL>" --stream <name>` | each table is the union of its windows' records, by column name; `--since` and `--until` choose the windows that meet `[since, until)` from their ids alone; `--archive` names one window. Windows collected under different configs are refused (`query`, exit 10) with the ranges to narrow to. `recon.v1.query-rows` gains `stream` and `windows` |
+| `recon query <mission> "<SQL>" --stream <name>` | each table is the union of its windows' records, by column name; `--since` and `--until` choose the windows that meet `[since, until)` from their ids alone; `--archive` names one window. Windows collected under different configs are refused (`query`, exit 10) with the ranges to narrow to. `recon.v1.query-rows` gains `stream` and `windows`: `{first, last, count}`, the windows it read. Past 300 windows it warns `many_windows`, with how to narrow |
 | `recon status <mission> --json` | each mission's `streams`: `name`, `path`, `state` (`writing` while a stream runs, else its last window's), `windows`, `first`, `latest`, `retired` |
 
 A window's id is its index, then when it opened (`00000003-2026-10-24-010203-456789`), so ids sort by order and say when each window began.

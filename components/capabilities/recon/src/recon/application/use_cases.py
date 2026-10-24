@@ -50,6 +50,7 @@ from recon.domain.documents import (
     TemplateInfo,
     TemplatesDocument,
     WindowOutcome,
+    WindowRange,
     failure_kind,
 )
 from recon.domain.errors import (
@@ -115,6 +116,10 @@ class TelemetryFactory(Protocol):
 ChannelFactory = Callable[[], "Channel"]
 
 DEFAULT_TEMPLATE = "code-forensics"
+
+#: Past this many windows, a query of a stream warns (``many_windows``) how to narrow it:
+#: each window is a file DuckDB opens.
+MANY_WINDOWS = 300
 
 
 class Recon:
@@ -804,6 +809,19 @@ class Recon:
         rows = [dict(zip(columns, row, strict=True)) for row in result.rows]
         last = selected[-1]
         state = self._archives.stream_state(mission, stream) or self._archives.state(last)
+        wide = []
+        if len(selected) > MANY_WINDOWS:
+            wide.append(
+                Problem(
+                    "",
+                    f"the query read {len(selected)} windows of stream {stream}, each a file "
+                    "DuckDB opens: it costs each window it reads",
+                    kind="many_windows",
+                    fix=f"narrow it to the windows it needs: --since and --until (`recon status "
+                    f"{name}` gives the stream's first and latest window)",
+                    got=len(selected),
+                )
+            )
         return QueryRows(
             mission=name,
             archive=str(mission / "streams" / stream),
@@ -813,9 +831,9 @@ class Recon:
             columns=columns,
             rows=rows,
             count=len(rows),
-            warnings=[w.document() for w in result.warnings + _dropped(telemetry)],
+            warnings=[w.document() for w in result.warnings + _dropped(telemetry) + wide],
             stream=stream,
-            windows=[window.name for window in selected],
+            windows=WindowRange(first=selected[0].name, last=last.name, count=len(selected)),
         )
 
     def _windows(self, name: str, stream: str) -> list[Path]:

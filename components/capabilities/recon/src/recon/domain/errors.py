@@ -149,6 +149,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "source_stuck",
     # a stream that keeps every window because its entry sets no retain:
     "retain_unset",
+    # a query of a stream that read more windows than it is cheap to open
+    "many_windows",
 )
 
 

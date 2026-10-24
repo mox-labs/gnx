@@ -294,6 +294,16 @@ class StatusDocument(Document):
     warnings: list[dict[str, Any]] = []
 
 
+class WindowRange(Document):
+    """A run of a stream's windows, by the ids of its first and last (null when they are no
+    longer known: a retired window's tombstone gone), and how many there are: a range stays
+    this size however many windows it spans."""
+
+    first: str | None
+    last: str | None
+    count: int
+
+
 class QueryRows(Document):
     schema_: Literal["recon.v1.query-rows"] = Field(default="recon.v1.query-rows", alias="schema")
     mission: str
@@ -306,10 +316,10 @@ class QueryRows(Document):
     rows: list[dict[str, Any]]
     count: int
     warnings: list[dict[str, Any]]
-    #: A query of a stream: its name, and the windows read, by id (``archive`` is then the
+    #: A query of a stream: its name, and the range of windows read (``archive`` is then the
     #: stream's directory, ``archive_id`` its last window read, and ``state`` the stream's).
     stream: str | None = None
-    windows: list[str] = []
+    windows: WindowRange | None = None
 
 
 class RecordsSince(Document):

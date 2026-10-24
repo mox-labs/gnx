@@ -264,9 +264,33 @@ class TestQueryAcrossWindows:
         )
 
         assert every.rows == [{"n": 35}]
-        assert len(every.windows) == 4
+        status = recon_.status("m").missions[0].streams[0]
+        assert every.windows is not None and status.latest is not None
+        assert (every.windows.first, every.windows.last, every.windows.count) == (
+            status.first,
+            status.latest.id,
+            4,
+        ), "the range read, not every id (review item 11)"
         assert later.rows == [{"lo": 19, "n": 16}]
-        assert len(later.windows) == 2, "windows that ended before since are not read"
+        assert later.windows is not None
+        assert later.windows.count == 2, "windows that ended before since are not read"
+        assert not [w for w in every.warnings if w["kind"] == "many_windows"]
+
+    def test_a_query_of_many_windows_warns_how_to_narrow_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from recon.application import use_cases
+
+        monkeypatch.setattr(use_cases, "MANY_WINDOWS", 3)
+        clock = VirtualClock()
+        _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
+        recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 35, ends=True))
+        recon_.stream("m", "events", forever=True)
+
+        rows = recon_.query("m", "SELECT count(*) AS n FROM events", stream="events")
+
+        [warning] = [w for w in rows.warnings if w["kind"] == "many_windows"]
+        assert warning["got"] == 4 and "--since" in warning["fix"]
 
     def test_windows_of_two_configs_are_refused_with_a_fix(self, tmp_path: Path) -> None:
         clock = VirtualClock()
