@@ -4,7 +4,7 @@
 #   python3 ../delay-server/server.py --port 18474 --delay-ms 40 &
 #   ix validate examples/trials-in-flight/k6-control.yaml
 #
-# Its kinds are exclusive (an http subject, http-load, timing), so ix refuses to run it with
+# Its kinds forbid overlap (an http subject, http-load, timing), so ix refuses to run it with
 # trials in flight: in its P runs the load comes from four `ix run`s of this file started at
 # once against the one server (README.md beside this file). Its latency should move by more
 # than 5% between S and P. If the test calls S and P equivalent here, it cannot tell them

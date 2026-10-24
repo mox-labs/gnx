@@ -22,8 +22,8 @@
   line). `ix run --trials-in-flight N` (`ix.run(trials_in_flight=N)`) overrides it for one
   run, noted under `Changed`; like `--repeats`, only with `--exploratory` or `--dry-run`.
 - **The problems `trials_in_flight_refused` and `trials_in_flight_contended`.** A width
-  above 1 is refused, never lowered on its own, where a kind in use is `exclusive`, a
-  deciding metric (`primary`, a guardrail) is contended or the genre is `exclusive`: the
+  above 1 is refused, never lowered on its own, where a kind in use or the genre forbids
+  overlap, or a deciding metric (`primary`, a guardrail) is contended: the
   fix names each and says `trials_in_flight: 1`. A contended metric only reported is a
   warning.
 - **Trials in flight.** A run starts its trials in the plan's order with at most
@@ -37,12 +37,12 @@
   `invoke` takes the flag its probe races (`stopping=`; the scope's when not given).
 - **Sensing at the same width.** `sense` reads as many interactions at once as
   `trials_in_flight`, each reading in a task of its own, naming only the sessions its
-  sensor made for that trial; a sensor whose kind is not `shared` reads one at a time. Its
+  sensor made for that trial; a sensor whose kind forbids overlap reads one at a time. Its
   readings come in `seq` order whatever order the interactions were landed in. It still
   begins only once every trial has ended.
-- **`isolation` on every kind, `contended` on every metric.** A kind says whether two trials
-  may use it at once (`isolation: shared | exclusive`; a kind that says nothing, a third
-  party's included, is `exclusive`), and a metric whether its reading moves with whatever
+- **`overlap` on every kind, `contended` on every metric.** A kind says whether two trials
+  may use it at once (`overlap: allowed | forbidden`; a kind that says nothing, a third
+  party's included, forbids it), and a metric whether its reading moves with whatever
   runs beside the trial (`contended: true`; false when unsaid). The built-in kinds and
   metrics declare theirs; `--skill` shows both. Neither enters a plan's digest or a
   registration: they are checked each time an experiment is.
@@ -50,9 +50,9 @@
   An agent experiment, a k6 negative control and the protocol (eight exploratory runs, S P
   P S P S S P, then an equivalence test with margins of 5pp and 5%) that decides whether
   `regress` may let its trials overlap.
-- **`isolation` on a genre's `design`** (`shared` when unsaid): whether its trials may
-  overlap at all. A genre that extends another may tighten it to `exclusive`, never loosen
-  it (`genre_narrowing`). `regress` is `exclusive`; the other built-ins are `shared`.
+- **`overlap` on a genre's `design`** (`allowed` when unsaid): whether its trials may
+  overlap at all. A genre that extends another may tighten it to `forbidden`, never loosen
+  it (`genre_narrowing`). `regress` forbids it; the other built-ins allow it.
 
 ### Fixed
 

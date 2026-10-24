@@ -52,7 +52,7 @@ ix run examples/trials-in-flight --exploratory --trials-in-flight 4    # P
 Each P report lists `trials_in_flight: 4 in place of 1 (--trials-in-flight)` under
 `Changed` and `4 trials in flight` on its `Run` line; check both before reading on.
 
-The control's kinds are exclusive, so ix refuses it a width above one. Its P runs are four
+The control's kinds forbid overlap, so ix refuses it a width above one. Its P runs are four
 `ix run`s of the same file started together against the one server, so each S run has the
 server alone and each P run shares it four ways:
 

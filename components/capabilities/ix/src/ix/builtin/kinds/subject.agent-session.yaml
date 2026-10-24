@@ -1,7 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.subject.agent-session
 summary: An agent on a matrix agent runtime; each trial is a fresh session in a working directory of its own.
-isolation: shared
+overlap: allowed
 options:
   runtime:
     type: string

@@ -166,7 +166,7 @@ class TestEachTrialNamesItsOwnSessions:
 
 def _canned(tmp_path: Path, **changes: Any) -> Path:
     """An ``evaluate`` of an agent on matrix's mock runtime, every reply canned: it calls no
-    model, and every kind it uses is ``shared``."""
+    model, and every kind it uses allows overlap."""
     data: dict[str, Any] = {
         "name": "canned",
         "question": "Does the reply start with BANANA?",
@@ -257,14 +257,14 @@ def _refusal_at(found: ix.Validation, width: int) -> Problem:
 
 class TestOverlapIsRefusedWhereItWouldConfound:
     """X5: a width above one is a validation problem, never a clamp, when a kind in use is
-    ``exclusive``, a deciding metric is ``contended`` or the genre is ``exclusive``; its fix
+    ``overlap: forbidden``, a deciding metric is ``contended`` or the genre forbids it; its fix
     names each and says ``trials_in_flight: 1``."""
 
     def test_shared_kinds_and_uncontended_decisions_may_overlap(self, tmp_path: Path) -> None:
         found = ix.validate(_canned(tmp_path, trials_in_flight=4))
         assert found.valid and found.warnings == ()
 
-    def test_each_exclusive_kind_and_contended_decision_is_named(
+    def test_each_kind_that_forbids_overlap_and_contended_decision_is_named(
         self, write_experiment: Write
     ) -> None:
         file = write_experiment(experiment(trials_in_flight=2))
@@ -304,15 +304,15 @@ class TestOverlapIsRefusedWhereItWouldConfound:
 
     def test_a_third_partys_kind_declares_both_as_a_built_in_does(self, tmp_path: Path) -> None:
         """ACES, extensible: a kind file of a lab (read as a package's ``ix.kind`` files
-        are) declares ``isolation`` and ``contended`` and is held to them; one that says
-        nothing of its isolation is ``exclusive``."""
+        are) declares ``overlap`` and ``contended`` and is held to them; one that says
+        nothing of its overlap forbids it."""
         sensor = {
             "name": "lab.v1.sensor.waiting", "summary": "How long the reply took.",
-            "needs": ["response"], "isolation": "shared",
+            "needs": ["response"], "overlap": "allowed",
             "metrics": [{"name": "wait", "unit": "ms", "direction": "lower",
                          "shape": "scalar", "contended": True}],
         }  # fmt: skip
-        silent = {**sensor, "name": "lab.v1.sensor.silent", "isolation": None}
+        silent = {**sensor, "name": "lab.v1.sensor.silent", "overlap": None}
         silent = {key: value for key, value in silent.items() if value is not None}
         silent["metrics"] = [{"name": "quiet", "direction": "lower", "shape": "scalar"}]
         folder = _canned(tmp_path, metrics=["wait"], trials_in_flight=2)
@@ -734,10 +734,10 @@ class _Judging:
 
 
 def _sensed(
-    write: Write, width: int, isolation: str, builtin: Kinds
+    write: Write, width: int, overlap: str, builtin: Kinds
 ) -> tuple[list[Reading], tuple[Session, ...], _Judging]:
     """Sense eight interactions, given in reverse, at ``width``, inside a matrix run (so its
-    scope is Recorded), with the timing sensor's kind declared ``isolation``."""
+    scope is Recorded), with the timing sensor's kind declaring ``overlap``."""
     prepared = _prepared(write(experiment()))
     setup = running.setup_of(prepared.manifest)
     setup = dataclasses.replace(
@@ -754,7 +754,7 @@ def _sensed(
     kit = dataclasses.replace(
         _kit(_Answering()),
         sensors={timing.name: sensor},
-        kinds={timing.name: timing.model_copy(update={"isolation": isolation})},
+        kinds={timing.name: timing.model_copy(update={"overlap": overlap})},
     )
     found: list[Reading] = []
 
@@ -778,7 +778,7 @@ class TestSensing:
         """X8: sensing runs at the same width as the trials, each reading in a task of its
         own, so each names only its own model call; the readings come in seq order whatever
         order the interactions were given in."""
-        readings, sessions, sensor = _sensed(write_experiment, 4, "shared", builtin_kinds)
+        readings, sessions, sensor = _sensed(write_experiment, 4, "allowed", builtin_kinds)
         assert sensor.most == 4
         assert [r.seq for r in readings] == sorted(r.seq for r in readings)
         assert {r.seq for r in readings} == set(range(8))
@@ -802,10 +802,10 @@ class TestSensing:
         assert LOG.count("sense") == 15
         assert not [line for line in LOG[first:] if line != "sense"]
 
-    def test_an_exclusive_sensor_reads_one_trial_at_a_time(
+    def test_a_sensor_that_forbids_overlap_reads_one_trial_at_a_time(
         self, write_experiment: Write, builtin_kinds: Kinds
     ) -> None:
-        readings, _, sensor = _sensed(write_experiment, 4, "exclusive", builtin_kinds)
+        readings, _, sensor = _sensed(write_experiment, 4, "forbidden", builtin_kinds)
         assert sensor.most == 1 and {r.seq for r in readings} == set(range(8))
 
     def test_a_shuffled_record_gives_the_same_report_byte_for_byte(
@@ -980,7 +980,7 @@ SLICE = Path(__file__).resolve().parents[1] / "examples" / "trials-in-flight"
 
 def test_the_live_slice_is_what_its_protocol_says(tmp_path: Path) -> None:
     """X10's live slice is never run here; what is checked is that it can be run as its
-    README says: the agent experiment writes no width and takes 4 (every kind shared, its
+    README says: the agent experiment writes no width and takes 4 (every kind allows overlap, its
     decision uncontended), and the control is refused one, so its load must come from
     separate runs."""
     agent = yaml.safe_load((SLICE / "experiment.yaml").read_text())

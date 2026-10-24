@@ -1,7 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.timing
 summary: Latency and throughput, read from what a load probe recorded.
-isolation: exclusive
+overlap: forbidden
 needs: [load]
 metrics:
   - {name: latency, unit: ms, direction: lower, shape: histogram, contended: true, description: time from request sent to response complete}

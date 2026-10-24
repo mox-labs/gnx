@@ -1,7 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.tool-usage
 summary: Whether the agent used the expected tool with the expected command and arguments, called directly or through Bash.
-isolation: shared
+overlap: allowed
 options:
   tool: {type: string, required: true, description: "the tool expected: a tool's name, or a program the agent runs through Bash (memex)"}
 needs: [response]

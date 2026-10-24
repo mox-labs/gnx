@@ -970,7 +970,7 @@ async def sense(
     before it got this far.
 
     It reads as many interactions at once as the design's ``trials_in_flight``, each reading
-    in a task of its own; a sensor whose kind is not ``shared`` (or is not declared here)
+    in a task of its own; a sensor whose kind does not allow overlap (or is not declared here)
     reads one interaction at a time. The readings come in ``seq`` order, then the design's
     order of sensors and metrics, whatever order the interactions were given in.
     """
@@ -982,7 +982,7 @@ async def sense(
     alone = {
         selected.kind: asyncio.Lock()
         for selected in setup.design.sensors
-        if (declared := kit.kinds.get(selected.kind)) is None or declared.isolation != "shared"
+        if (declared := kit.kinds.get(selected.kind)) is None or declared.overlap != "allowed"
     }
     found: dict[tuple[int, int], list[Reading]] = {}
 

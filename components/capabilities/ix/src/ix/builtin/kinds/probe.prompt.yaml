@@ -1,7 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.probe.prompt
 summary: One prompt put to an agent session or a model call; what it said and did is what is measured.
-isolation: shared
+overlap: allowed
 options:
   prompt: {type: string, required: true, text: true, description: "the text put to the agent or the model; a probe file's body"}
   collect: {type: list, description: "files of an agent session's working directory, read back after the session and kept in the record for sensors to grade; a model call writes none"}

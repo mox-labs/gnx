@@ -1,7 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.evaluator
 summary: "One of pydantic-evals' evaluators reads the trial: the reply, the probe's expected output, how long the probe took, and the spans of the session's tool calls."
-isolation: shared
+overlap: allowed
 options:
   evaluator: {type: string, required: true, description: "the pydantic-evals evaluator, by its name: Equals, EqualsExpected, Contains, IsInstance, MaxDuration, HasMatchingSpan, ToolCorrectness, TrajectoryMatch, ArgumentCorrectness, MaxToolCalls and MaxModelRequests call no model; LLMJudge and GEval call one"}
   arguments: {type: mapping, description: "the evaluator's own arguments, by name, as pydantic-evals documents them: {value: Paris} for Contains, {expected_tools: [Read, Grep]} for ToolCorrectness. A judge's model is never one of them"}

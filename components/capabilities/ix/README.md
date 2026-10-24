@@ -234,10 +234,10 @@ add report sections. It may not loosen its parent, change the analysis or add a 
 it, change the estimator or the verdict form, or add a role. A genre file that breaks this is
 refused with a `genre_narrowing` problem for each place it does.
 
-A genre's `design` (repeats, order, calibration, estimator, isolation) carries a note on its
-standing. Its `isolation` (`shared` when unsaid) says whether its trials may overlap at all:
-`regress` is `exclusive`, so a gate's trials run one at a time whatever its kinds allow; a
-genre that extends another may make it `exclusive`, never `shared` again.
+A genre's `design` (repeats, order, calibration, estimator, overlap) carries a note on its
+standing. Its `overlap` (`allowed` when unsaid) says whether its trials may overlap at all:
+`regress` says `forbidden`, so a gate's trials run one at a time whatever its kinds allow;
+a genre that extends another may forbid it, never allow it again.
 The built-in genres need at least 5 repeats to decide (3 for `characterize`) and default to
 10 (5); their methods are checked by simulation at those counts (see
 [the method](#the-verdict-and-the-method-behind-it)). A genre that decides cannot use `min`
@@ -251,13 +251,13 @@ offers and needs, for a sensor the metrics it provides and whether a model judge
 and for an environment the keys each service it brings up is bound with (`service_keys:
 [host, port, url]`, named `{<service>.<key>}`). `ix kinds` lists them.
 
-Every kind also says whether two trials may use it at once (`isolation: shared`, or
-`exclusive`, which a kind that says nothing is), and each metric whether what it reads moves
+Every kind also says whether two trials may use it at once (`overlap: allowed`, or
+`forbidden`, which a kind that says nothing is), and each metric whether what it reads moves
 with whatever runs beside the trial (`contended: true`: a time, a throughput, a memory
 peak). Of the built-ins, `agent-session`, `model-call`, `prompt`, `inspect-task`, `none` and
-every sensor that reads what a trial stored are `shared`; `process` and `http` subjects,
-`http-load`, `timing`, `memory` and the `process` and `compose` environments are
-`exclusive`. Every metric of `timing` and `memory` is contended, and `usage`'s `duration`.
+every sensor that reads what a trial stored allow overlap; `process` and `http` subjects,
+`http-load`, `timing`, `memory` and the `process` and `compose` environments forbid it.
+Every metric of `timing` and `memory` is contended, and `usage`'s `duration`.
 
 | family | kinds |
 |---|---|
@@ -332,7 +332,7 @@ def register(registry):
 - a probe's truth key that no sensor in use reads is refused (`truth_unclaimed`), so a typo
   does not pass silently;
 - `trials_in_flight` above 1 is refused (`trials_in_flight_refused`) where a kind in use
-  is `exclusive`, a deciding metric is contended or the genre is `exclusive`; the fix names
+  or the genre forbids overlap, or a deciding metric is contended; the fix names
   each and says `trials_in_flight: 1`. A contended metric only reported is a warning
   (`trials_in_flight_contended`);
 - a `{name}` placeholder must be bound to what a trial fills it with
@@ -441,6 +441,8 @@ carries out the trials, starting them in the order the plan fixed (`plan` and `r
 it), one at a time unless the experiment writes `trials_in_flight` (below). For each
 trial: start the subject, let the sensors that must watch begin, apply the probe, stop the
 watchers, stop the subject. The sensors then read every trial that was carried out.
+Progress goes to stderr (a bar on a terminal, one line per trial otherwise, nothing under
+`--json`); the report goes to stdout.
 
 **Trials in flight.** `trials_in_flight: 4` carries four trials out at once: each trial
 starts in the plan's order as another lands, and each row carries its `seq`, which every
@@ -451,13 +453,12 @@ is part of the design: the plan states it (`Order:`), its digest covers it, and
 registration freezes it, so a gate is never passed at a width nobody registered.
 `ix run --trials-in-flight N` tries a width with `--exploratory` or `--dry-run` only, and is
 listed under `Changed`. A width above 1 is refused (`trials_in_flight_refused`, its fix
-`trials_in_flight: 1`) where any kind in use is `exclusive`, a deciding metric is contended
-or the genre is `exclusive` ([Kinds](#kinds)); in practice, agent sessions and model calls
-judged on what they said or did. With an environment, a trial counts as carried out only
-once a check that began after it ended finds the environment still up; on the first that
-does not, nothing more starts and every trial not yet confirmed is `environment_lost`. The
-sensors read at the same width, one at a time for a kind that is not `shared`. Progress goes to stderr (a bar on a terminal, one line per trial otherwise,
-nothing under `--json`); the report goes to stdout.
+`trials_in_flight: 1`) where any kind in use or the genre forbids overlap, or a deciding
+metric is contended ([Kinds](#kinds)); in practice, agent sessions and model calls judged on
+what they said or did. With an environment, a trial counts as carried out only once a check
+that began after it ended finds the environment still up; on the first that does not,
+nothing more starts and every trial not yet confirmed is `environment_lost`. The sensors
+read at the same width, one at a time for a kind that forbids overlap.
 
 - **Register first.** `ix run` refuses an unregistered experiment (exit 15).
   `--exploratory` runs it anyway; that run gives no verdict, its report shows what it found
@@ -681,7 +682,7 @@ between two samples is missed.
 ### Not built
 
 Trials of a `process` or `http` subject, of `http-load`, or under `timing` or `memory`
-cannot run in flight: those kinds are `exclusive`, and no measurement says yet what
+cannot run in flight: those kinds forbid overlap, and no measurement says yet what
 several at once would do to them. A subject left running by a run that was
 killed outright is not found and stopped later: in the next run, each trial of a subject
 whose address already answers is recorded as a harness failure (`address_in_use`) instead

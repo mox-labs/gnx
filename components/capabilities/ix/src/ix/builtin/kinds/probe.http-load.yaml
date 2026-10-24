@@ -1,7 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.probe.http-load
 summary: HTTP load against a URL for a fixed time, driven by a load tool.
-isolation: exclusive
+overlap: forbidden
 options:
   target: {type: string, required: true, description: the URL to load}
   load_model: {type: string, required: true, allowed: [open, closed], description: "open holds an arrival rate; closed holds a number of clients. It changes what latency means"}

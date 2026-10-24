@@ -38,9 +38,8 @@ from ix.domain.schema import DeclarationFile, Record
 #: The families of kind, in the order a run uses them; closed (see the module docstring).
 KIND_FAMILIES: tuple[str, ...] = ("subject", "probe", "sensor", "environment")
 
-#: Whether two trials may overlap in a kind's use, or a genre's trials at all: ``shared``
-#: when they may, ``exclusive`` when they may not.
-Isolation = Literal["exclusive", "shared"]
+#: Whether two trials may overlap in a kind's use, or a genre's trials at all.
+Overlap = Literal["forbidden", "allowed"]
 
 OptionType = Literal[
     "string",
@@ -315,11 +314,11 @@ class Kind(Record):
     #: Environment kinds only: the keys each service it brings up is bound with (``host``,
     #: ``port``, ``url``), which a subject's or a probe's option names as ``{<service>.<key>}``.
     service_keys: tuple[str, ...] = ()
-    #: Whether two trials may use this kind at once: ``shared`` when neither changes what
-    #: the other measures (a fresh session each), ``exclusive`` when they would (a fixed
+    #: Whether two trials may use this kind at once: ``allowed`` when neither changes what
+    #: the other measures (a fresh session each), ``forbidden`` when they would (a fixed
     #: port, a load generator, an environment brought up once for every trial). A kind
-    #: that does not say is ``exclusive``.
-    isolation: Isolation = "exclusive"
+    #: that does not say forbids it.
+    overlap: Overlap = "forbidden"
 
     @model_validator(mode="after")
     def _coherent(self) -> Kind:

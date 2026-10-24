@@ -201,30 +201,30 @@ class TestBuiltInKinds:
         assert session is not None and "response" in session.options["loop"].binds
 
     def test_each_kind_says_whether_two_uses_of_it_may_overlap(self, builtin_kinds: Kinds) -> None:
-        """Ruling X3 (record §27): a kind is ``shared`` when two trials may use it at once
-        without one changing what the other measures, ``exclusive`` otherwise; a kind that
-        does not say is exclusive. A port or a load generator is one machine's, and a run
+        """Ruling X3 (record §27): a kind allows overlap when two trials may use it at once
+        without one changing what the other measures, and forbids it otherwise; a kind
+        that does not say forbids it. A port or a load generator is one machine's, and a run
         brings its environment up once for every trial."""
-        shared = {
+        allowed = {
             "subject": {"agent-session", "model-call"},
             "probe": {"prompt", "inspect-task"},
             "environment": {"none"},
             "sensor": {"judge", "evaluator", "text-match", "tool-usage", "outcome",
                        "activation", "usage", "function-test"},
         }  # fmt: skip
-        exclusive = {
+        forbidden = {
             "subject": {"process", "http"},
             "probe": {"http-load"},
             "environment": {"process", "compose"},
             "sensor": {"timing", "memory"},
         }
-        for family in shared:
-            declared = {kind.label: kind.isolation for kind in builtin_kinds.of(family)}
+        for family in allowed:
+            declared = {kind.label: kind.overlap for kind in builtin_kinds.of(family)}
             assert declared == {
-                **dict.fromkeys(shared[family], "shared"),
-                **dict.fromkeys(exclusive[family], "exclusive"),
+                **dict.fromkeys(allowed[family], "allowed"),
+                **dict.fromkeys(forbidden[family], "forbidden"),
             }
-        assert Kind.model_validate(_sensor("x")).isolation == "exclusive"
+        assert Kind.model_validate(_sensor("x")).overlap == "forbidden"
 
     def test_a_reading_of_time_or_of_a_resource_is_contended(self, builtin_kinds: Kinds) -> None:
         """Ruling X3: a metric is ``contended`` when what it reads (time, memory, a load

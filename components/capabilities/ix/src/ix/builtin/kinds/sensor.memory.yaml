@@ -1,7 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.memory
 summary: Peak resident memory of the subject's process group, sampled while the probe runs.
-isolation: exclusive
+overlap: forbidden
 options:
   interval: {type: duration, description: time between samples; 200ms when absent}
 needs: [pid]

@@ -763,11 +763,11 @@ whether it came from the experiment, the genre or ix.
   changes is the load around each trial (a provider's rate limits, a timeout that a
   slowed session now meets), which is why the width is part of the design, digested by
   the plan and frozen by registration. Above 1 is refused (`trials_in_flight_refused`,
-  at `trials_in_flight`) where any kind in use is `isolation: exclusive` (a `process` or
+  at `trials_in_flight`) where any kind in use is `overlap: forbidden` (a `process` or
   `http` subject, `http-load`, `timing`, `memory`, a `process` or `compose` environment),
   where a deciding metric (`primary`, a guardrail) is contended (a time, a throughput, a
-  memory peak, `usage`'s `duration`), or where the genre keeps its trials apart
-  (`regress`). Its `fix` names each and says `trials_in_flight: 1`. A contended metric
+  memory peak, `usage`'s `duration`), or where the genre forbids overlap (`regress`).
+  Its `fix` names each and says `trials_in_flight: 1`. A contended metric
   that is only reported is a warning (`trials_in_flight_contended`): its readings were
   taken under that load. `ix run --trials-in-flight N` tries a width without editing the
   file, with `--exploratory` or `--dry-run` only.
@@ -840,8 +840,8 @@ def _genre_section(genre: Genre) -> str:
     ]
     if design.calibration != "none":
         supplied.append(f"calibration {design.calibration} (the control against itself)")
-    if design.isolation == "exclusive":
-        supplied.append("isolation exclusive (its trials never overlap)")
+    if design.overlap == "forbidden":
+        supplied.append("overlap forbidden (its trials run one at a time)")
     if genre.default_comparison is not None:
         supplied.append(f"comparison {genre.default_comparison}")
     lines = [
@@ -917,7 +917,7 @@ def _kind_line(kind: Kind, runnable: bool) -> str:
     if kind.service_keys:
         keys = ", ".join(f"`{{<service>.{key}}}`" for key in kind.service_keys)
         facets.append(f"binds each service as {keys}")
-    facets.append(f"isolation {kind.isolation}")
+    facets.append(f"overlap {kind.overlap}")
     parts.append(f"  {'; '.join(facets)}")
     for metric in kind.metrics:
         traits = [metric.shape, f"{metric.direction} is better"]
@@ -966,10 +966,10 @@ A `process` subject is up when its `ready` URL answers an HTTP GET with a status
 without `ready`, when its `url` accepts a connection; with neither, as soon as it starts. One
 that is not up within `startup_timeout` (30s) fails the trial as the subject's (`not_ready`).
 
-Each kind's `isolation` says whether two trials may use it at once: `shared` when neither
-changes what the other measures (a fresh agent session each), `exclusive` when they would (a
+Each kind's `overlap` says whether two trials may use it at once: `allowed` when neither
+changes what the other measures (a fresh agent session each), `forbidden` when they would (a
 fixed port, a load tool, an environment brought up once for the run); a kind that does not
-say is `exclusive`. A metric marked **CONTENDED** moves with whatever else runs beside the
+say forbids it. A metric marked **CONTENDED** moves with whatever else runs beside the
 trial (a time, a throughput, a memory peak).
 
 {families}

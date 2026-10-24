@@ -964,8 +964,9 @@ def _in_flight(
     kinds: Kinds,
 ) -> tuple[list[Problem], list[Problem]]:
     """Whether the trials may overlap at the width written: a problem naming every kind in
-    use that is ``exclusive``, every deciding metric that is ``contended`` and an
-    ``exclusive`` genre; and a warning naming each contended metric only reported."""
+    use whose ``overlap`` is ``forbidden``, every deciding metric that is ``contended`` and
+    a genre that forbids overlap; and a warning naming each contended metric only
+    reported."""
     width = experiment.trials_in_flight
     if width <= 1:
         return [], []
@@ -976,13 +977,16 @@ def _in_flight(
         used.setdefault(selected.kind, "sensors")
     blocking = [
         (
-            f"{declared.family} kind {declared.label} ({used[name]})"
-            if declared.family != "sensor"
-            else f"sensor {declared.label}",
+            (
+                f"{declared.family} kind {declared.label} ({used[name]})"
+                if declared.family != "sensor"
+                else f"sensor {declared.label}"
+            )
+            + " forbids overlap",
             declared.label,
         )
         for name in used
-        if (declared := kinds.kinds.get(name)) is not None and declared.isolation == "exclusive"
+        if (declared := kinds.kinds.get(name)) is not None and declared.overlap == "forbidden"
     ]
     deciding = [("primary", experiment.primary.metric)] if experiment.primary else []
     deciding += [
@@ -995,8 +999,8 @@ def _in_flight(
         for path, name in deciding
         if name in contended
     ]
-    if genre is not None and genre.design.isolation == "exclusive":
-        blocking.append((f"genre {genre.label} keeps its trials apart", genre.label))
+    if genre is not None and genre.design.overlap == "forbidden":
+        blocking.append((f"genre {genre.label} forbids overlap", genre.label))
     problems = []
     if blocking:
         problems.append(
@@ -1007,8 +1011,8 @@ def _in_flight(
                 "what is measured: " + "; ".join(said for said, _ in blocking),
                 fix="trials_in_flight: 1 (blocked by "
                 + ", ".join(dict.fromkeys(name for _, name in blocking))
-                + "); or use only shared kinds, decide on uncontended metrics and a genre "
-                "that allows overlap (`ix kinds` gives each kind's isolation)",
+                + "); or use only kinds that allow overlap, decide on uncontended metrics, "
+                "in a genre that allows it (`ix kinds` gives each kind's overlap)",
                 got=width,
             )
         )

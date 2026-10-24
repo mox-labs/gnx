@@ -1,7 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.judge
 summary: A model scores the response against a rubric. Its readings never decide a verdict.
-isolation: shared
+overlap: allowed
 options:
   rubric: {type: string, text: true, description: "the rubric; or rubric_file"}
   rubric_file: {type: path, description: "a file holding the rubric, relative to the experiment"}

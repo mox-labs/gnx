@@ -12,7 +12,7 @@
 #
 # The file writes no trials_in_flight: S and P are the same file, the width given on the
 # command line (`--exploratory --trials-in-flight 4`), so the two arms differ in nothing
-# else. Every kind here is shared and no deciding metric is contended, so ix accepts the
+# else. Every kind here allows overlap and no deciding metric is contended, so ix accepts the
 # width; `ix plan` shows it as 1, from ix.
 name: trials-in-flight
 question: Does a claude-sdk agent answer as it does alone when four of its sessions run at once?
