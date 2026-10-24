@@ -14,7 +14,13 @@ import dataclasses
 import itertools
 import json
 import random
+import re
+import socket
+import subprocess
+import sys
 import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1197,6 +1203,46 @@ def _crowding(write: Write, width: int, crowded: bool) -> dict[tuple[int, str, s
 
 
 SLICE = Path(__file__).resolve().parents[1] / "examples" / "trials-in-flight"
+DELAY_SERVER = SLICE.parent / "delay-server" / "server.py"
+
+
+def _served(*args: str) -> tuple[subprocess.Popen[bytes], str]:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = subprocess.Popen([sys.executable, str(DELAY_SERVER), "--port", str(port), *args])
+    url = f"http://127.0.0.1:{port}"
+    until = time.monotonic() + 20
+    while True:
+        try:
+            urllib.request.urlopen(f"{url}/healthz", timeout=1).read()
+            return server, url
+        except OSError:
+            assert time.monotonic() < until and server.poll() is None, "the server is not up"
+            time.sleep(0.05)
+
+
+def _four_at_once(url: str) -> float:
+    began = time.monotonic()
+    with ThreadPoolExecutor(4) as pool:
+        replies = list(pool.map(lambda _: urllib.request.urlopen(f"{url}/work").read(), range(4)))
+    assert replies == [b"ok\n"] * 4
+    return time.monotonic() - began
+
+
+def test_the_delay_server_queues_what_it_has_no_capacity_for() -> None:
+    """The live slice's control needs its server to have a capacity (review, ixian), so
+    load from runs side by side queues there as it would at a real service: four requests
+    at once to a server of capacity 1 wait in turn; with no capacity given, they do not."""
+    for args, at_least, under in ((("--capacity", "1"), 0.38, None), ((), 0.0, 0.38)):
+        server, url = _served("--delay-ms", "100", *args)
+        try:
+            took = _four_at_once(url)
+        finally:
+            server.terminate()
+            server.wait()
+        assert took >= at_least, (args, took)
+        assert under is None or took < under, (args, took)
 
 
 def test_the_live_slice_is_what_its_protocol_says(tmp_path: Path) -> None:
@@ -1218,3 +1264,38 @@ def test_the_live_slice_is_what_its_protocol_says(tmp_path: Path) -> None:
     _refusal_at(ix.validate(wide), 4)
     readme = (SLICE / "README.md").read_text()
     assert "S P P S P S S P" in readme and "5 percentage points" in readme and "5%" in readme
+    assert "95% interval" in readme and "Wald" in readme  # no Wald: named to be refused
+
+
+def _slice_query(after: str, files: list[Path]) -> str:
+    """The SQL block of the slice's README that follows ``after``, reading ``files``."""
+    readme = (SLICE / "README.md").read_text()
+    sql = readme[readme.index(after) :].split("```sql\n", 1)[1].split("```", 1)[0]
+    listed = "[" + ", ".join(f"'{file}'" for file in files) + "]"
+    return re.sub(r"\['<run 1>/[^\]]*\]", listed, sql)
+
+
+def test_the_slices_queries_read_what_they_say(tmp_path: Path) -> None:
+    """The overlap and the per-run means the protocol records, run over two small runs
+    written as ix writes its tables."""
+    duckdb = pytest.importorskip("duckdb")
+    first, second = tmp_path / "first", tmp_path / "second"
+    spans = {first: [(0, 10), (20, 10)], second: [(5, 10), (40, 10)]}
+    for run, held in spans.items():
+        run.mkdir()
+        rows = [{"seq": n, "started_ns": at, "duration_ns": d} for n, (at, d) in enumerate(held)]
+        (run / "ix.v1.interaction.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        readings = [
+            {"seq": n, "metric": "text_matched", "value": n == 0, "statistics": {"p50": 0.0},
+             "failure": None}
+            for n in range(2)
+        ]  # fmt: skip
+        (run / "ix.v1.reading.jsonl").write_text("".join(json.dumps(r) + "\n" for r in readings))
+    interactions = [run / "ix.v1.interaction.jsonl" for run in spans]
+    most, share = duckdb.sql(_slice_query("Record how much", interactions)).fetchone()
+    # Busy over [0, 15), [20, 30) and [40, 50); two at once over [5, 10): 5 of 35.
+    assert most == 2 and share == pytest.approx(5 / 35)
+    means = duckdb.sql(
+        _slice_query("The unit is the run, not", [run / "ix.v1.reading.jsonl" for run in spans])
+    ).fetchall()
+    assert sorted(row[3] for row in means) == [0.5, 0.5]
