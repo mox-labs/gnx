@@ -198,9 +198,9 @@ def test_watch_finds_its_archive_once_not_at_every_read(tmp_path: Path) -> None:
     listed: list[Path] = []
 
     class Counting(ArchiveFiles):
-        def archives(self, mission_dir: Path) -> list[Path]:
+        def archives(self, mission_dir: Path, *, stream: str | None = None) -> list[Path]:
             listed.append(mission_dir)
-            return super().archives(mission_dir)
+            return super().archives(mission_dir, stream=stream)
 
     clock = FixedClock()
     watching = root({}, project=tmp_path, clock=clock, archives=Counting(clock))
@@ -374,9 +374,11 @@ class TestNoReceiverSlowsTheWrite:
         written: list[float] = []
 
         class Timed(ArchiveFiles):
-            def create(self, mission_dir: Path, archive_id: str) -> Path:
+            def create(
+                self, mission_dir: Path, archive_id: str, *, stream: str | None = None
+            ) -> Path:
                 written.append(time.monotonic())
-                return super().create(mission_dir, archive_id)
+                return super().create(mission_dir, archive_id, stream=stream)
 
             def write_meta(self, archive: Path, meta: dict[str, Any]) -> None:
                 super().write_meta(archive, meta)

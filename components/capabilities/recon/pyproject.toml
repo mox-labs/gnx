@@ -70,6 +70,8 @@ cli = "recon.adapters._out.cli_collector:collector_type"
 web = "recon.adapters._out.web_collector:collector_type"
 capture = "recon.adapters._out.capture_collector:collector_type"
 mcp = "recon.adapters._out.mcp_collector:collector_type"
+tail = "recon.adapters._out.tail_collector:collector_type"
+sse = "recon.adapters._out.sse_collector:collector_type"
 
 [project.entry-points."recon.transforms"]
 html2text = "recon.domain.normalize:html2text"

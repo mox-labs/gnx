@@ -15,7 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field
 # Pydantic reads the field types when the models are built, so they are imported to run.
 from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
-from recon.domain.errors import ErrorKind, ReconError
+from recon.domain.errors import ERROR_KINDS, ErrorKind, ReconError
+from recon.domain.stream import ClosedBy  # noqa: TC001
 
 #: Whether a survey's archive holds every table it was asked for: :data:`ArchiveState`
 #: once the survey has ended, so never ``writing``. ``incomplete``: a table failed, the
@@ -56,6 +57,24 @@ class PlanWrites(Document):
     config: str | None
     archive: str
     captures: bool
+    #: The directory of each stream the mission has, where its windows are written.
+    streams: list[str] = []
+
+
+#: Where an effective setting came from: the mission's config, its collector type's
+#: declaration (a stream's overflow, from the type's ``paced_by``), the command's own flag
+#: (or the call's argument: ``recon stream --windows``), or recon's default.
+Origin = Literal["mission", "type", "command", "recon"]
+
+
+class SourcedValue(Document):
+    """One effective setting the plan resolved, by its path in the config, and where it came
+    from. ``note`` says why, when it is not the config's own."""
+
+    path: str
+    value: Any
+    source: Origin
+    note: str = ""
 
 
 class Required(Document):
@@ -96,6 +115,9 @@ class PlanDocument(Document):
     #: What this dry run did to check the requirements, by collector type (``mcp: started
     #: each stdio server a run names ...``); empty when it ran, fetched and wrote nothing.
     preflight: list[str] = []
+    #: Each setting of a stream the survey would use, with where it came from: what the
+    #: mission wrote, and every default recon filled in (a window, a buffer, retain).
+    provenance: list[SourcedValue] = []
 
 
 # --- survey ---------------------------------------------------------------------------------
@@ -123,17 +145,68 @@ class TableOutcome(Document):
     error: TableError | None = None
 
 
+class WindowOutcome(Document):
+    """One window of a stream, sealed: which, where, the span it covers, how it was closed,
+    what it dropped, and its one table (whose ``status`` is the window's: ``error`` when its
+    source failed, its records kept)."""
+
+    stream: str
+    index: int
+    #: The window's archive id, as ``recon status`` lists it, and its directory.
+    id: str
+    archive: str
+    #: ISO 8601, from the clock port: the window covers ``[opened_at, closed_at)``.
+    opened_at: str
+    closed_at: str
+    closed_by: ClosedBy
+    #: Records that arrived in the window and were not written: a full buffer's overflow, or
+    #: a record larger than ``max_record_bytes``.
+    dropped: int
+    #: The most records that waited in the buffer while the window was filled: at most the
+    #: stream's ``buffer.records``. It depends on how fast the window was written, so it is
+    #: here and not in the window's ``meta.yaml``, which the same arrivals keep the same.
+    high_water: int
+    table: TableOutcome
+
+
 class SurveyDocument(Document):
+    """A survey: its archive of snapshot tables and, for each entry that is a stream, the one
+    window it ran of it (``windows``), in config order. ``status`` is ``incomplete`` when a
+    table or a window failed."""
+
     schema_: Literal["recon.v1.survey"] = Field(default="recon.v1.survey", alias="schema")
     mission: str
     archive: str
     status: SurveyStatus
     tables: list[TableOutcome]
     warnings: list[dict[str, Any]]
+    windows: list[WindowOutcome] = []
 
     @property
     def failed(self) -> list[TableOutcome]:
-        return [table for table in self.tables if table.status == "error"]
+        every = self.tables + [window.table for window in self.windows]
+        return [table for table in every if table.status == "error"]
+
+
+class StreamDocument(Document):
+    """One run of a stream: how many windows it sealed and what they held, the last of them
+    (whose ``closed_by`` says why the run stopped), and the stream's ``state`` once it had.
+    Each window is listed in ``recon status`` and followed by ``recon watch --stream``; the
+    run's own list stays this size however long it runs."""
+
+    schema_: Literal["recon.v1.stream"] = Field(default="recon.v1.stream", alias="schema")
+    mission: str
+    stream: str
+    #: The stream's directory, holding its windows.
+    path: str
+    state: ArchiveState | None
+    windows: int
+    records: int
+    dropped: int
+    #: The first window this run sealed, by id; None when it sealed none.
+    first: str | None
+    last: WindowOutcome | None
+    warnings: list[dict[str, Any]]
 
 
 # --- status, query, templates ---------------------------------------------------------------
@@ -164,6 +237,21 @@ class ArchiveStatus(Document):
     tables: list[TableStatus]
 
 
+class StreamStatus(Document):
+    """A stream of a mission: ``writing`` while a ``recon stream`` (or a survey) extends it,
+    else its last window's state; its windows, the first and the latest."""
+
+    name: str
+    path: str
+    state: ArchiveState | None
+    windows: int
+    #: The first window's id, which ``watch --stream --archive`` takes to read from the start.
+    first: str | None
+    latest: ArchiveStatus | None
+    #: The windows ``retain:`` removed, each leaving a tombstone beside the windows.
+    retired: int = 0
+
+
 class MissionStatus(Document):
     name: str
     config: str
@@ -173,6 +261,7 @@ class MissionStatus(Document):
     #: Every archive, oldest first, when ``status`` was asked about this mission alone;
     #: None otherwise. Each ``id`` is what ``query --archive`` takes.
     history: list[ArchiveStatus] | None = None
+    streams: list[StreamStatus] = []
 
 
 class CollectorTypeInfo(Document):
@@ -205,6 +294,16 @@ class StatusDocument(Document):
     warnings: list[dict[str, Any]] = []
 
 
+class WindowRange(Document):
+    """A run of a stream's windows, by the ids of its first and last (null when they are no
+    longer known: a retired window's tombstone gone), and how many there are: a range stays
+    this size however many windows it spans."""
+
+    first: str | None
+    last: str | None
+    count: int
+
+
 class QueryRows(Document):
     schema_: Literal["recon.v1.query-rows"] = Field(default="recon.v1.query-rows", alias="schema")
     mission: str
@@ -217,6 +316,10 @@ class QueryRows(Document):
     rows: list[dict[str, Any]]
     count: int
     warnings: list[dict[str, Any]]
+    #: A query of a stream: its name, and the range of windows read (``archive`` is then the
+    #: stream's directory, ``archive_id`` its last window read, and ``state`` the stream's).
+    stream: str | None = None
+    windows: WindowRange | None = None
 
 
 class RecordsSince(Document):
@@ -248,6 +351,14 @@ class RecordsSince(Document):
     #: A bound (``limit`` records, ``max_bytes`` bytes) cut this read before all that was
     #: written by then was read: read again at once.
     more: bool
+    #: A read of a stream: its name. ``archive`` and ``archive_id`` are then the window read,
+    #: ``state`` that window's, and ``cursor`` carries the window, so the next read goes on
+    #: into the next window once this one is read to its end.
+    stream: str | None = None
+    #: A read of a stream whose cursor's window was retired since: the windows it jumped,
+    #: from the cursor's to the one before ``archive_id`` (``last`` is None when no
+    #: tombstone names it). Their records, and the rest of the cursor's window, are gone.
+    skipped: WindowRange | None = None
 
 
 class TemplateInfo(Document):
@@ -355,12 +466,14 @@ def survey_failure(document: SurveyDocument) -> ReconError | None:
     2026-10-22), whatever its tables did: a failed table's error is recorded in the
     ``meta.yaml`` that could not be written, so the store is the failure to act on first, and
     its ``archive_unfinished`` warning says why. Otherwise the kind is ``auth``,
-    ``transient`` or ``run_failed``. The details name the archive and the failed tables."""
-    kind = failure_kind(document.tables)
+    ``transient`` or ``run_failed``. The details name the archive and the failed tables. A
+    stream's window that failed counts as a failed table."""
+    every = document.tables + [window.table for window in document.windows]
+    kind = failure_kind(every)
     failed = [t.name for t in document.failed]
     if any(w.get("kind") == "archive_unfinished" for w in document.warnings):
         tables = (
-            f"{len(failed)} of {len(document.tables)} table(s) failed, and "
+            f"{len(failed)} of {len(every)} table(s) failed, and "
             if failed
             else "every table succeeded, but "
         )
@@ -375,8 +488,28 @@ def survey_failure(document: SurveyDocument) -> ReconError | None:
     if kind is None:
         return None
     return ReconError(
-        f"{len(failed)} of {len(document.tables)} table(s) failed; the archive is incomplete",
+        f"{len(failed)} of {len(every)} table(s) failed; the archive is incomplete",
         kind=kind,
         fix=_SURVEY_FAILURE_FIX[kind].format(n=document.mission),
         details={"archive": document.archive, "failed": failed},
+    )
+
+
+def stream_failure(document: StreamDocument) -> ReconError | None:
+    """The error a stream's run ended on, or None when its last window was sealed ``ok``. A
+    source that fails ends the stream, so only its last window can have: that window keeps
+    the records it got, and its error's kind is the run's."""
+    last = document.last
+    if last is None or last.table.error is None:
+        return None
+    error = last.table.error
+    kind: ErrorKind = next((known for known in ERROR_KINDS if known == error.kind), "unknown")
+    return ReconError(
+        f"stream {document.stream} stopped: its source failed in window {last.id}, which keeps "
+        f"the {last.table.records} record(s) it got: {error.message}",
+        kind=kind,
+        fix=error.fix
+        or f"read the window's error, fix its cause, then: recon stream {document.mission} "
+        f"--stream {document.stream}",
+        details={"archive": last.archive, "window": last.id},
     )

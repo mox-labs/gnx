@@ -12,6 +12,10 @@
       writer.lock             locked by the writing process from create to release, then
                               removed; left unlocked by a writer that died
       captures.jsonl, raw/    the capture log, when the mission preserves raw
+    <mission>/streams/<stream>/
+      writer.lock             locked by the stream's one writer while it runs; kept
+      <window id>/            each window, an archive as above, of one table
+      retired.jsonl           a line for each window retain: removed: what, and why
 
 **Writing, complete, incomplete.** The writer holds an ``flock`` on ``writer.lock`` from
 :meth:`ArchiveFiles.create` until :meth:`ArchiveFiles.release` or its death, as matrix's
@@ -22,6 +26,13 @@ ever seen without them; a writer that dies while making one leaves only that hid
 directory. :meth:`ArchiveFiles.state` reads ``writing`` while the lock is held; else
 ``incomplete`` while the marker is there; else ``complete`` once ``meta.yaml`` is; else
 ``incomplete``. Whether a writer is alive is known on its own host only.
+
+**Streams.** A stream's windows are archives in the stream's own directory, so listing one
+stream reads that directory alone. A window's id starts with its index
+(:func:`~recon.domain.stream.window_id`), and one writer at a time holds the stream (an
+``flock`` on its ``writer.lock``, which stays when it is let go, so no two writers ever hold
+two files of one name), so the index it gives each new window is one no other writer gives.
+The stream is ``writing`` while that lock is held, and otherwise reads as its last window.
 
 **Reading as it is written.** :meth:`ArchiveFiles.read_since` reads each table's file from a
 byte offset to its last whole line, the live ``.tmp`` of a table being written included, and
@@ -55,9 +66,10 @@ import contextlib
 import fcntl
 import json
 import os
+import shutil
 import threading
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 import yaml
 
@@ -69,10 +81,12 @@ from recon.domain.archives import (
     ArchiveState,
     NewRecords,
     StoredTable,
+    TableEnds,
     TableRecord,
 )
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.errors import QueryError, ReconError, UsageError
+from recon.domain.stream import window_index
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
 
 if TYPE_CHECKING:
@@ -83,8 +97,19 @@ if TYPE_CHECKING:
 
 INCOMPLETE_MARKER = ".incomplete"
 
-#: Locked by the writing process while it writes the archive.
+#: Locked by the writing process while it writes the archive, or extends the stream.
 WRITER_LOCK = "writer.lock"
+
+#: The directory under a mission that holds its streams, each a directory of its windows.
+STREAMS = "streams"
+
+#: Where a table's torn last line is moved: a write a dying writer cut short.
+TORN = ".torn"
+
+#: A stream's tombstones, one line a retired window, appended beside the windows; and the
+#: suffix of a window being removed, out of every listing.
+RETIRED = "retired.jsonl"
+RETIRING = ".retiring"
 
 #: The layout of an archive's tables this store writes and reads, named in ``meta.yaml``.
 TABLE_LAYOUT = 1
@@ -116,9 +141,12 @@ class ArchiveFiles:
         self._flush_s = flush_s
         #: The lock held on each archive this store is writing, by archive.
         self._held: dict[Path, int] = {}
+        #: The lock held on each stream this store is extending, by its directory.
+        self._streams: dict[Path, int] = {}
 
-    def create(self, mission_dir: Path, archive_id: str) -> Path:
-        archive = mission_dir / "archive" / archive_id
+    def create(self, mission_dir: Path, archive_id: str, *, stream: str | None = None) -> Path:
+        home = mission_dir / "archive" if stream is None else _stream_dir(mission_dir, stream)
+        archive = home / archive_id
         archive.parent.mkdir(parents=True, exist_ok=True)
         # Made whole under a name no reader lists, then renamed into place: an archive is
         # never seen without its lock and marker, whenever its writer dies.
@@ -160,6 +188,110 @@ class ArchiveFiles:
             (archive / WRITER_LOCK).unlink()
         os.close(descriptor)  # closing releases the lock
 
+    def hold_stream(self, mission_dir: Path, stream: str) -> None:
+        directory = _stream_dir(mission_dir, stream)
+        directory.mkdir(parents=True, exist_ok=True)
+        if directory in self._streams:
+            return
+        try:
+            self._streams[directory] = _hold(directory / WRITER_LOCK)
+        except OSError as exc:
+            raise ReconError(
+                f"another recon is writing stream {stream} of {mission_dir.name}; a stream has "
+                "one writer at a time",
+                kind="busy",
+                fix=f"let it run, or stop it (`recon status {mission_dir.name}` shows the "
+                "stream writing); then stream again",
+                details={"stream": stream},
+            ) from exc
+
+    def release_stream(self, mission_dir: Path, stream: str) -> None:
+        descriptor = self._streams.pop(_stream_dir(mission_dir, stream), None)
+        if descriptor is not None:
+            os.close(descriptor)  # closing releases the lock; the file stays
+
+    def stream_state(self, mission_dir: Path, stream: str) -> ArchiveState | None:
+        if _locked(_stream_dir(mission_dir, stream) / WRITER_LOCK):
+            return "writing"
+        windows = self.archives(mission_dir, stream=stream)
+        return self.state(windows[-1]) if windows else None
+
+    def streams(self, mission_dir: Path) -> list[str]:
+        directory = mission_dir / STREAMS
+        if not directory.is_dir():
+            return []
+        return sorted(d.name for d in directory.iterdir() if d.is_dir())
+
+    def table_ends(self, archive: Path, output: str) -> TableEnds:
+        sealed = archive / f"{output}.jsonl"
+        path = sealed if sealed.exists() else archive / f"{output}{_LIVE}"
+        if not path.exists():
+            return TableEnds(0)
+        count = 0
+        first: bytes | None = None
+        last: bytes | None = None
+        with open(path, "rb") as f:
+            for line in f:
+                if not line.endswith(b"\n"):
+                    break  # a line not yet whole is no record
+                if count == 0 and _is_empty_sentinel(line):
+                    return TableEnds(0)
+                first = first or line
+                last = line
+                count += 1
+        return TableEnds(count, _object(first), _object(last))
+
+    def size(self, archive: Path) -> int:
+        return sum(path.stat().st_size for path in archive.rglob("*") if path.is_file())
+
+    def retire(self, archive: Path, tombstone: dict[str, Any]) -> None:
+        home = archive.parent
+        for leftover in home.glob(f".*{RETIRING}"):  # a retirement a dead writer began
+            shutil.rmtree(leftover, ignore_errors=True)
+        # The tombstone first, appended whole in one write (only the stream's writer retires):
+        # a writer that dies after it leaves the window listed, and the next retirement
+        # retires it again; a reader keeps the last tombstone of an id.
+        line = (json.dumps(tombstone, default=str) + "\n").encode()
+        descriptor = os.open(home / RETIRED, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(descriptor, line)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        # Out of every listing at once, then removed: a writer that dies between leaves a
+        # hidden directory the next retirement removes, never half a window.
+        going = home / f".{archive.name}.{os.getpid()}{RETIRING}"
+        archive.rename(going)
+        shutil.rmtree(going)
+
+    def retired(self, mission_dir: Path, stream: str) -> list[dict[str, Any]]:
+        path = _stream_dir(mission_dir, stream) / RETIRED
+        if not path.is_file():
+            return []
+        stones: dict[Any, dict[str, Any]] = {}
+        for line in path.read_bytes().split(b"\n"):
+            if line.strip():
+                stone = json.loads(line)
+                stones[stone.get("id")] = stone
+        return list(stones.values())
+
+    def retired_count(self, mission_dir: Path, stream: str) -> int:
+        path = _stream_dir(mission_dir, stream) / RETIRED
+        return path.read_bytes().count(b"\n") if path.is_file() else 0
+
+    def last_record(self, archive: Path, output: str) -> dict[str, Any] | None:
+        sealed = archive / f"{output}.jsonl"
+        path = sealed if sealed.exists() else archive / f"{output}{_LIVE}"
+        if not path.exists():
+            return None
+        if path is not sealed:
+            _move_torn_tail(path)
+        line = _last_line(path)
+        if line is None or _is_empty_sentinel(line):
+            return None
+        record = json.loads(line)
+        return record if isinstance(record, dict) else None
+
     def state(self, archive: Path) -> ArchiveState:
         lock = archive / WRITER_LOCK
         if _locked(lock):
@@ -177,19 +309,26 @@ class ArchiveFiles:
         records: Generator[dict[str, Any], None, None],
         *,
         columns: Sequence[str] = (),
+        keep_on_error: bool = False,
     ) -> int:
         path = archive / f"{output}.jsonl"
         tmp = path.with_suffix(".jsonl.tmp")
         count = 0
+        kept: BaseException | None = None
         try:
             # closing() is what runs the collector's own cleanup (a subprocess killed, a
             # client closed) when writing stops early.
             with contextlib.closing(records), _Lines(tmp, self._flush_bytes, self._flush_s) as f:
-                for record in records:
-                    f.write(json.dumps(record, default=str) + "\n")
-                    count += 1
-                    if count % _FSYNC_EVERY == 0:
-                        f.sync()
+                try:
+                    for record in records:
+                        f.write(json.dumps(record, default=str) + "\n")
+                        count += 1
+                        if count % _FSYNC_EVERY == 0:
+                            f.sync()
+                except BaseException as exc:
+                    if not keep_on_error:
+                        raise
+                    kept = exc  # raised once what was written is sealed
                 if count == 0:
                     empty = (
                         {**EMPTY_SENTINEL, "_columns": list(columns)} if columns else EMPTY_SENTINEL
@@ -201,6 +340,8 @@ class ArchiveFiles:
             with contextlib.suppress(OSError):
                 tmp.unlink()
             raise
+        if kept is not None:
+            raise kept
         return count
 
     def capture_log(self, archive: Path) -> FilesystemCaptureLog:
@@ -225,25 +366,34 @@ class ArchiveFiles:
             raise
 
     def abandoned(self, mission_dir: Path) -> list[Path]:
-        archive = mission_dir / "archive"
-        if not archive.is_dir():
-            return []
+        homes = [mission_dir / "archive"]
+        homes += [_stream_dir(mission_dir, stream) for stream in self.streams(mission_dir)]
         left = []
-        for path in sorted(archive.iterdir()):
-            parts = path.name.split(".")  # "", archive id, pid, "making"
-            if (
-                path.is_dir()
-                and len(parts) == 4
-                and parts[0] == ""
-                and parts[3] == "making"
-                and _is_archive_id(parts[1])
-                and parts[2].isdigit()
-                and not _alive(int(parts[2]))
-            ):
-                left.append(path)
+        for home in homes:
+            if not home.is_dir():
+                continue
+            for path in sorted(home.iterdir()):
+                parts = path.name.split(".")  # "", archive or window id, pid, "making"
+                if (
+                    path.is_dir()
+                    and len(parts) == 4
+                    and parts[0] == ""
+                    and parts[3] == "making"
+                    and (_is_archive_id(parts[1]) or window_index(parts[1]) is not None)
+                    and parts[2].isdigit()
+                    and not _alive(int(parts[2]))
+                ):
+                    left.append(path)
         return left
 
-    def archives(self, mission_dir: Path) -> list[Path]:
+    def archives(self, mission_dir: Path, *, stream: str | None = None) -> list[Path]:
+        if stream is not None:
+            directory = _stream_dir(mission_dir, stream)
+            if not directory.is_dir():
+                return []
+            indexed = [(window_index(d.name), d) for d in directory.iterdir()]
+            windows = sorted((i, d) for i, d in indexed if i is not None)
+            return [d for _, d in windows if d.is_dir()]
         archive = mission_dir / "archive"
         if not archive.is_dir():
             return []
@@ -423,6 +573,48 @@ class _Lines:
                     return
 
 
+def _stream_dir(mission_dir: Path, stream: str) -> Path:
+    return mission_dir / STREAMS / stream
+
+
+def _move_torn_tail(path: Path) -> None:
+    """Move a cut-short last line of ``path`` aside to ``<path>.torn``, as matrix's store
+    does; the whole lines before it are left as they are."""
+    with open(path, "rb+") as f:
+        size = f.seek(0, os.SEEK_END)
+        whole = _end_of_last_line(f, size)
+        if whole == size:
+            return
+        f.seek(whole)
+        path.with_name(path.name + TORN).write_bytes(f.read())
+        f.truncate(whole)
+
+
+def _end_of_last_line(f: BinaryIO, size: int) -> int:
+    """The offset just past the last newline in the first ``size`` bytes of the open file
+    ``f`` (0 when there is none), read backwards a block at a time."""
+    end = size
+    while end > 0:
+        start = max(0, end - 65536)
+        f.seek(start)
+        found = f.read(end - start).rfind(b"\n")
+        if found != -1:
+            return start + found + 1
+        end = start
+    return 0
+
+
+def _last_line(path: Path) -> bytes | None:
+    """The last whole line of ``path``; None when it has none."""
+    with open(path, "rb") as f:
+        end = _end_of_last_line(f, f.seek(0, os.SEEK_END))
+        if end == 0:
+            return None
+        start = _end_of_last_line(f, end - 1)
+        f.seek(start)
+        return f.read(end - start)
+
+
 def _is_archive_id(name: str) -> bool:
     """Whether ``name`` is one a survey gives its archive: a stray ``notes/`` is not."""
     try:
@@ -480,7 +672,7 @@ def _decode(cursor: str | None, archive: Path) -> dict[str, tuple[int, bool]]:
         or body.get("format") != _CURSOR_FORMAT
         or not isinstance(body.get("archive"), str)
         or not isinstance(tables, dict)
-        or not all(_is_position(position) for position in tables.values())
+        or not all(_is_offset(offset) for offset in tables.values())
     ):
         raise UsageError(
             "the cursor is not one recon gave: pass on the cursor the last read returned, "
@@ -497,14 +689,16 @@ def _decode(cursor: str | None, archive: Path) -> dict[str, tuple[int, bool]]:
     return {str(name): (int(offset), bool(told)) for name, (offset, told) in tables.items()}
 
 
-def _is_position(position: Any) -> bool:
+def _is_offset(offset: Any) -> bool:
+    """A cursor's say of one table: ``[offset, told]``, the byte offset read to and whether
+    the table's seal or retraction was told. Not a record's ``_position``."""
     return (
-        isinstance(position, list)
-        and len(position) == 2
-        and isinstance(position[0], int)
-        and not isinstance(position[0], bool)
-        and position[0] >= 0
-        and isinstance(position[1], bool)
+        isinstance(offset, list)
+        and len(offset) == 2
+        and isinstance(offset[0], int)
+        and not isinstance(offset[0], bool)
+        and offset[0] >= 0
+        and isinstance(offset[1], bool)
     )
 
 
@@ -575,6 +769,14 @@ def _read_table(
                 offset += len(line)
             return lines, (offset, False), sealed and offset == size
     return None
+
+
+def _object(line: bytes | None) -> dict[str, Any] | None:
+    """A record's line as its object; None for no line, or one that holds no object."""
+    if line is None:
+        return None
+    parsed = json.loads(line)
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _is_empty_sentinel(line: bytes) -> bool:

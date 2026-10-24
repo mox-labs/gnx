@@ -29,14 +29,24 @@ from pydantic import BaseModel, ValidationError
 
 from recon.domain.archives import EVENT_LOG_NAME, table_name
 from recon.domain.capture import CAPTURE_LOG_NAME
+from recon.domain.documents import SourcedValue
 from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
+from recon.domain.stream import (
+    DEFAULT_WINDOW_S,
+    POSITION_FIELD,
+    BufferSpec,
+    WindowSpec,
+    default_overflow,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping
 
     from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
+    from recon.domain.documents import Origin
+    from recon.domain.stream import Overflow, Retain
 
 _TOP_LEVEL_KEYS = tuple(sorted(ReconConfig.model_fields))
 
@@ -69,8 +79,11 @@ class PlannedRun:
     type_url: str
     effects: list[str] | None  # None: the type did not declare its effects (unknown)
     detail: dict[str, Any]
+    #: The stream the run is, by name, when it is one: its table is written window by window.
+    stream: str | None = None
 
     def document(self) -> dict[str, Any]:
+        stream = {} if self.stream is None else {"stream": self.stream}
         return {
             "output": self.output,
             "file": f"{self.output}.jsonl",
@@ -79,8 +92,22 @@ class PlannedRun:
             "source": self.source,
             "type_url": self.type_url,
             "effects": self.effects if self.effects is not None else "unknown",
+            **stream,
             **self.detail,
         }
+
+
+@dataclass(frozen=True)
+class PlannedStream:
+    """A stream the plan resolved: its entry's position in ``collectors``, its name (the
+    collector's), and its effective window, buffer and overflow, and what it retains."""
+
+    index: int
+    name: str
+    window: WindowSpec
+    buffer: BufferSpec
+    overflow: Overflow
+    retain: Retain
 
 
 @dataclass(frozen=True)
@@ -100,7 +127,9 @@ class SkippedSource:
 class Plan:
     """``complete`` is false when part of the config could not be checked, so more problems
     may follow a fix. ``skipped`` names each catalog source an unpinned collector does not
-    run against, since its type does not accept the source's kind."""
+    run against, since its type does not accept the source's kind. ``streams`` are the
+    entries that are streams, with their effective settings, and ``provenance`` says where
+    each of those settings came from."""
 
     config: ReconConfig | None
     runs: list[PlannedRun] = field(default_factory=list)
@@ -108,6 +137,8 @@ class Plan:
     warnings: list[Problem] = field(default_factory=list)
     complete: bool = True
     skipped: list[SkippedSource] = field(default_factory=list)
+    streams: list[PlannedStream] = field(default_factory=list)
+    provenance: list[SourcedValue] = field(default_factory=list)
 
     @property
     def valid(self) -> bool:
@@ -202,6 +233,8 @@ def build_plan(
     produced_by: dict[str, tuple[int, str]] = {}
     used_sources: set[str] = set()
     settings_whole = True
+    streams: list[PlannedStream] = []
+    provenance: list[SourcedValue] = []
     for i, entry in entries:
         ctype = plugins.collector_types.get(entry.type)
         found, checked = _entry_problems(i, entry, catalog, plugins, unchecked)
@@ -216,7 +249,18 @@ def build_plan(
             passed = [src for src in catalog.values() if src.type not in accepts]
             skipped += [SkippedSource(entry.name, src.name, src.type) for src in passed]
             problems.extend(_no_accepted_source(i, entry, catalog, accepts, plugins, unchecked))
-        for source, output in fan_out(entry, catalog, accepts):
+        is_stream = entry.window is not None or (ctype is not None and ctype.unbounded)
+        targets = fan_out(entry, catalog, accepts)
+        if is_stream:
+            problems.extend(_stream_problems(i, entry, targets))
+            if ctype is not None:
+                stream, values, unset = _stream(i, entry, ctype)
+                streams.append(stream)
+                provenance += values
+                warnings += unset
+        else:
+            problems.extend(_not_a_stream(i, entry))
+        for source, output in targets:
             problems.extend(_output_problems(i, output, produced_by))
             for key in _table_keys(output):
                 produced_by.setdefault(key, (i, output))
@@ -226,7 +270,8 @@ def build_plan(
             judged = source is None or source.name not in refused
             if ctype is not None and checked is not None and judged:
                 problems.extend(_run_problems(i, checked, source, ctype))
-                runs.append(_planned_run(checked, output, source, ctype))
+                name = entry.name if is_stream else None
+                runs.append(_planned_run(checked, output, source, ctype, stream=name))
 
     if is_directory is not None:
         problems += _directory_problems(sources, used_sources, is_directory, base)
@@ -246,17 +291,28 @@ def build_plan(
         warnings=warnings,
         complete=sources_whole and entries_whole and settings_whole and not refused,
         skipped=skipped,
+        streams=streams,
+        provenance=provenance,
     )
 
 
+#: The source kinds whose ``url`` is a path on this host, relative to the project root.
+_PATH_KINDS = frozenset({"local", "file"})
+
+
 def _anchored(source: SourceEntry, base: Path | None) -> SourceEntry:
-    if source.type != "local" or base is None or Path(source.url).is_absolute():
+    if source.type not in _PATH_KINDS or base is None or Path(source.url).is_absolute():
         return source
     return source.model_copy(update={"url": str(base / source.url)})
 
 
 def _planned_run(
-    entry: CollectorEntry, output: str, source: SourceEntry | None, ctype: CollectorType
+    entry: CollectorEntry,
+    output: str,
+    source: SourceEntry | None,
+    ctype: CollectorType,
+    *,
+    stream: str | None = None,
 ) -> PlannedRun:
     target = entry if output == entry.name else entry.model_copy(update={"name": output})
     return PlannedRun(
@@ -267,7 +323,143 @@ def _planned_run(
         type_url=entry.type_url,
         effects=sorted(ctype.effects) if ctype.effects is not None else None,
         detail=ctype.describe(target, source),
+        stream=stream,
     )
+
+
+def _stream(
+    i: int, entry: CollectorEntry, ctype: CollectorType
+) -> tuple[PlannedStream, list[SourcedValue], list[Problem]]:
+    """A stream entry's effective settings, where each came from, and the warning when it
+    keeps every window by default."""
+    at = f"collectors.{i}"
+    values: list[SourcedValue] = []
+    if entry.window is None:
+        window = WindowSpec(seconds=DEFAULT_WINDOW_S)
+        note = f"a {entry.type} collector's records do not end, and the entry sets no window:"
+        values.append(SourcedValue(path=f"{at}.window.seconds", value=DEFAULT_WINDOW_S,
+                                   source="recon", note=note))  # fmt: skip
+    else:
+        window = entry.window
+        values += [
+            SourcedValue(path=f"{at}.window.{key}", value=value, source="mission")
+            for key, value in window.model_dump(exclude_none=True).items()
+        ]
+    given = entry.buffer or BufferSpec()
+    for key in ("records", "bytes", "max_record_bytes"):
+        origin: Origin = "mission" if key in given.model_fields_set else "recon"
+        values.append(SourcedValue(path=f"{at}.buffer.{key}", value=getattr(given, key),
+                                   source=origin))  # fmt: skip
+    overflow: Overflow
+    if given.overflow is not None:
+        overflow = given.overflow
+        values.append(SourcedValue(path=f"{at}.buffer.overflow", value=overflow,
+                                   source="mission"))  # fmt: skip
+    else:
+        overflow = default_overflow(ctype.paced_by)
+        note = f"the {entry.type} type declares paced_by: {ctype.paced_by}"
+        values.append(SourcedValue(path=f"{at}.buffer.overflow", value=overflow, source="type",
+                                   note=note))  # fmt: skip
+    retain: Retain = entry.retain if entry.retain is not None else "all"
+    shown = retain if isinstance(retain, str) else retain.model_dump(exclude_none=True)
+    unset = entry.retain is None
+    values.append(
+        SourcedValue(
+            path=f"{at}.retain",
+            value=shown,
+            source="recon" if unset else "mission",
+            note="no window is removed unless the mission says so" if unset else "",
+        )
+    )
+    stream = PlannedStream(i, entry.name, window, given.model_copy(update={"overflow": overflow}),
+                           overflow, retain)  # fmt: skip
+    return stream, values, [_retain_unset(at, entry.name, window)] if unset else []
+
+
+def _retain_unset(at: str, name: str, window: WindowSpec) -> Problem:
+    """The warning for a stream that keeps every window because its entry says nothing."""
+    if window.seconds is not None:
+        per_day = 86400 / window.seconds
+        growth = f"up to {per_day:g} windows a day, one each {window.seconds:g}s"
+        keep = f"retain: {{windows: {max(1, int(per_day))}}} keeps a day of them"
+    else:
+        bound = f"{window.records} records" if window.records else f"{window.bytes} bytes"
+        growth = f"a window each {bound}"
+        keep = "retain: {windows: 100} keeps the last 100"
+    size = f", each at most {window.bytes} bytes of records" if window.bytes else ""
+    return Problem(
+        f"{at}.retain",
+        f"stream {name} keeps every window it seals ({growth}{size}), and nothing removes them",
+        kind="retain_unset",
+        fix=f"{keep}; retain: {{seconds: 2592000}} keeps 30 days of them; or write retain: all "
+        "to keep every window and say so",
+    )
+
+
+def _stream_problems(
+    i: int, entry: CollectorEntry, targets: list[tuple[SourceEntry | None, str]]
+) -> list[Problem]:
+    """What a stream's entry may not hold: more than one run, a deadline, a normalize column
+    named as a record's position, or a record larger than its buffer."""
+    at = f"collectors.{i}"
+    problems = []
+    if len(targets) > 1:
+        names = ", ".join(source.name for source, _ in targets if source is not None)
+        problems.append(
+            Problem(
+                f"{at}.source",
+                f"a stream runs against one source, and collector {entry.name!r} would run "
+                f"against {len(targets)}: {names}",
+                fix="pin one with source:, and add a collector for each other source to stream",
+            )
+        )
+    if entry.deadline is not None:
+        problems.append(
+            Problem(
+                f"{at}.deadline",
+                "a stream's window ends by window:, and as a success; deadline: bounds a "
+                "snapshot table, and would fail the window",
+                fix="remove deadline:, and bound each window with window: {seconds: N}",
+                got=entry.deadline,
+            )
+        )
+    if POSITION_FIELD in (entry.normalize or {}):
+        problems.append(
+            Problem(
+                f"{at}.normalize.{POSITION_FIELD}",
+                f"{POSITION_FIELD} is the field recon keeps a stream's record's position in its "
+                "source in, and writes beside the columns normalize: makes",
+                kind="name_taken",
+                fix=f"name the column something else; {POSITION_FIELD} is in every row already",
+                got=POSITION_FIELD,
+            )
+        )
+    buffer = entry.buffer
+    if buffer is not None and buffer.max_record_bytes > buffer.bytes:
+        problems.append(
+            Problem(
+                f"{at}.buffer.max_record_bytes",
+                f"a record of up to {buffer.max_record_bytes} bytes is kept, and the buffer "
+                f"holds {buffer.bytes}: such a record would fit no buffer",
+                fix="raise buffer.bytes to max_record_bytes or more, or lower max_record_bytes",
+                got=buffer.max_record_bytes,
+            )
+        )
+    return problems
+
+
+def _not_a_stream(i: int, entry: CollectorEntry) -> list[Problem]:
+    """``buffer:`` and ``retain:`` on an entry that is no stream: they would do nothing."""
+    return [
+        Problem(
+            f"collectors.{i}.{key}",
+            f"{key}: is a stream's, and collector {entry.name!r} is not one: its type's records "
+            "end, and it sets no window:",
+            fix=f"add window: to collect it as a stream, or remove {key}:",
+        )
+        for key, value in (("buffer", entry.buffer), ("retain", entry.retain))
+        if value is not None
+    ]
 
 
 def _ignored(key: Any) -> bool:
@@ -378,7 +570,7 @@ def _without_unknown_keys(item: Any, exc: ValidationError) -> Any:
     for err in exc.errors():
         if err["type"] != "extra_forbidden":
             continue
-        *parents, last = err["loc"]
+        *parents, last = (part for part in err["loc"] if not _member_label(part))
         holder: Any = pruned
         for part in parents:
             child = holder.get(part) if isinstance(holder, dict) else None
@@ -390,9 +582,30 @@ def _without_unknown_keys(item: Any, exc: ValidationError) -> Any:
     return pruned
 
 
+def _member_label(part: int | str) -> bool:
+    """Whether a part of pydantic's error location names a member of a union, not a key:
+    ``literal['all']``, ``function-after[_one_rule(), RetainSpec]``, ``RetainSpec``. A config
+    key is lower case and holds no bracket."""
+    return isinstance(part, str) and ("[" in part or part[:1].isupper())
+
+
+def _other_member(err: Mapping[str, Any]) -> bool:
+    """Whether an error under a union is the member the value was not written for: ``all``
+    refused for a mapping, or a mapping's model refused for a word. Each value gets the
+    errors of the shape it has."""
+    value = err.get("input")
+    if err["type"] == "literal_error":
+        return isinstance(value, dict)
+    return err["type"] in ("model_type", "dict_type") and isinstance(value, str)
+
+
 def _from_pydantic(prefix: str, model: type[BaseModel], exc: ValidationError) -> list[Problem]:
     problems = []
     for err in exc.errors():
+        if any(_member_label(part) for part in err["loc"]):
+            if _other_member(err):
+                continue
+            err = {**err, "loc": tuple(p for p in err["loc"] if not _member_label(p))}
         path = ".".join([prefix, *(str(part) for part in err["loc"])])
         kind = _problem_kind(err)
         fix = {

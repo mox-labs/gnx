@@ -7,6 +7,7 @@ ports a test stands in for.
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,13 +15,14 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from recon.adapters._out.archive_files import ArchiveFiles
 from recon.composition import load_plugins, root
 from recon.domain.collector import CollectorType, Plugins
 from recon.domain.http import HttpResponse
 from recon.domain.models import CollectorEntry, ReconConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterator, Mapping
+    from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 
     from recon.composition import RequesterFactory
     from recon.domain.capture import CaptureLog
@@ -69,6 +71,69 @@ class HurriedClock:
 
     def sleep(self, seconds: float) -> None:
         self.slept.append(seconds)
+
+
+class VirtualClock:
+    """A clock whose time moves only when told (:meth:`set`, :meth:`advance`), shared by the
+    threads of a stream: a wait asked of it returns once the time reaches its end, so a test
+    runs a stream's hours in milliseconds, in the order its script says. A wait whose end
+    the script never reaches returns after a little real time instead, so a thread waiting on
+    it looks again at what it waits for; nothing sleeps for the time it was asked."""
+
+    def __init__(self, at: datetime = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)) -> None:
+        self._start = at
+        self._t = 0.0
+        self._cond = threading.Condition()
+
+    def now(self) -> datetime:
+        with self._cond:
+            return self._start + timedelta(seconds=self._t)
+
+    def monotonic(self) -> float:
+        with self._cond:
+            return self._t
+
+    def sleep(self, seconds: float) -> None:
+        with self._cond:
+            end = self._t + seconds
+            self._cond.wait_for(lambda: self._t >= end, timeout=0.05)
+
+    def set(self, t: float) -> None:
+        """Move the time to ``t``; never back."""
+        with self._cond:
+            self._t = max(self._t, t)
+            self._cond.notify_all()
+
+    def advance(self, seconds: float) -> None:
+        with self._cond:
+            self._t += seconds
+            self._cond.notify_all()
+
+
+class StalledArchives(ArchiveFiles):
+    """The archive store, but a table is not written until :attr:`go` is set: a store too
+    slow for its stream, so what arrives meanwhile waits in the buffer or is dropped."""
+
+    def __init__(self, clock: Clock) -> None:
+        super().__init__(clock)
+        self.go = threading.Event()
+        #: Set once a writer is inside a table's write, held there until :attr:`go`.
+        self.writing = threading.Event()
+
+    def write_table(
+        self,
+        archive: Path,
+        output: str,
+        records: Generator[dict[str, Any], None, None],
+        *,
+        columns: Sequence[str] = (),
+        keep_on_error: bool = False,
+    ) -> int:
+        self.writing.set()
+        assert self.go.wait(10), "the test never let the store go"
+        return super().write_table(
+            archive, output, records, columns=columns, keep_on_error=keep_on_error
+        )
 
 
 class ScriptedRequester:

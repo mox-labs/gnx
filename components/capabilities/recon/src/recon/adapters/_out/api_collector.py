@@ -19,6 +19,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict
 
+from recon.adapters._out.http_source import auth_headers, auth_params, build_url
 from recon.adapters._out.parsing import parse_body
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.capture import redact_query_params
@@ -127,37 +128,10 @@ class ApiCollector:
     # --- Private ---
 
     def _build_headers(self, source: SourceEntry) -> dict[str, str]:
-        headers = {"User-Agent": source.user_agent or self._user_agent}
-        secret = self._secret(source)
-        if secret is not None and source.auth.header:
-            headers[source.auth.header] = secret
-        return headers
+        return auth_headers(source, self._env, self._user_agent)
 
     def _auth_params(self, source: SourceEntry) -> dict[str, str]:
-        secret = self._secret(source)
-        if secret is None or not source.auth.param:
-            return {}
-        return {source.auth.param: secret}
-
-    def _secret(self, source: SourceEntry) -> str | None:
-        """The prefixed credential, or None when no env var is named or it is unset.
-
-        An unset variable sends the request without credentials (optional auth, e.g. a
-        higher rate limit); ``survey --dry-run`` warns about it before anything is sent.
-        """
-        auth = source.auth
-        if not auth.env:
-            return None
-        value = self._env.get(auth.env, "")
-        if not value:
-            return None
-        return f"{auth.prefix}{value}"
-
-
-def build_url(base_url: str, endpoint: str, values: Mapping[str, str]) -> str:
-    """The source's url and the endpoint, its ``{placeholders}`` filled from ``values``."""
-    path = substitute(endpoint, dict(values))
-    return f"{base_url.rstrip('/')}{path}"
+        return auth_params(source, self._env)
 
 
 # --- Registration ---

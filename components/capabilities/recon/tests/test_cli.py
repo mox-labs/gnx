@@ -1169,7 +1169,7 @@ def test_the_agreed_kinds_keep_their_agreed_codes() -> None:
     assert shared == set(agreed), "every agreed kind, store among them (owner ruling 2026-10-22)"
     assert {kind: recon.EXIT_CODES[kind] for kind in shared} == {k: agreed[k] for k in shared}
     own = set(recon.EXIT_CODES) - shared
-    assert own == {"query"} and all(recon.EXIT_CODES[kind] >= 10 for kind in own)
+    assert own == {"query", "busy"} and all(recon.EXIT_CODES[kind] >= 10 for kind in own)
     codes = list(recon.EXIT_CODES.values())
     assert len(codes) == len(set(codes)), "one kind per code"
     tables = (recon.EXIT_MEANINGS, recon.EXIT_NEXT)

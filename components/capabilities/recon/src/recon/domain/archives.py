@@ -1,7 +1,10 @@
 """The archive ports: where a survey's tables are written, and how they are queried.
 
 An archive is one survey's output: a table per collector and source, a ``meta.yaml``, the
-survey's event log and, unless the survey finished with every table, an incomplete marker.
+survey's event log and, unless the survey finished with every table, an incomplete marker. A
+stream's window (:mod:`recon.domain.stream`) is an archive too, of one table, kept with the
+other windows of its stream rather than with the survey's archives; one writer at a time
+extends a stream, from :meth:`ArchiveStore.hold_stream` to :meth:`ArchiveStore.release_stream`.
 The marker is written when the archive is created and removed only once the survey has
 finished, so a survey that dies at any point, however it was stopped, leaves an archive
 that reads incomplete. While a survey writes its archive it holds it, from :meth:`create`
@@ -101,6 +104,16 @@ class StoredTable:
 
 
 @dataclass(frozen=True)
+class TableEnds:
+    """What a table holds, read from where its store keeps it: how many records, and its
+    first and last (None when it has none)."""
+
+    records: int
+    first: dict[str, Any] | None = None
+    last: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class TableRecord:
     """One record of one of an archive's tables, by the table's output name."""
 
@@ -128,9 +141,65 @@ class NewRecords:
 
 
 class ArchiveStore(Protocol):
-    def create(self, mission_dir: Path, archive_id: str) -> Path:
+    def create(self, mission_dir: Path, archive_id: str, *, stream: str | None = None) -> Path:
         """A new archive of the mission, named ``archive_id``, holding only the incomplete
-        marker, and held by this writer until :meth:`release`: its state is ``writing``."""
+        marker, and held by this writer until :meth:`release`: its state is ``writing``. With
+        ``stream``, a window of that stream (``archive_id`` is a window's id), which this
+        writer holds (:meth:`hold_stream`). Raises ReconError (``store``) when the id is
+        taken."""
+        ...
+
+    def hold_stream(self, mission_dir: Path, stream: str) -> None:
+        """Hold the mission's ``stream`` for this writer until :meth:`release_stream` or its
+        death: no other writer, in this process or another on this host, can hold it
+        meanwhile, so the windows it adds take ids no other writer takes. Raises
+        ReconError (``busy``) when another writer holds it."""
+        ...
+
+    def release_stream(self, mission_dir: Path, stream: str) -> None:
+        """Let go of a stream :meth:`hold_stream` held; one this writer does not hold is left
+        as it is."""
+        ...
+
+    def stream_state(self, mission_dir: Path, stream: str) -> ArchiveState | None:
+        """``writing`` while a writer holds the stream; else its last window's state; None
+        for a stream with no window."""
+        ...
+
+    def streams(self, mission_dir: Path) -> list[str]:
+        """The names of the mission's streams, sorted."""
+        ...
+
+    def table_ends(self, archive: Path, output: str) -> TableEnds:
+        """What the table ``output`` holds as stored now, sealed or not: its records counted,
+        its first and its last read from the file. A stream's window says what it holds from
+        this, so it never claims a record its table lacks."""
+        ...
+
+    def size(self, archive: Path) -> int:
+        """The bytes ``archive`` takes where it is stored."""
+        ...
+
+    def retire(self, archive: Path, tombstone: dict[str, Any]) -> None:
+        """Remove a sealed window of a stream, as its stream's ``retain:`` says, and keep
+        ``tombstone`` (what it was, and why it went) in its place, so its absence reads as
+        retention. The tombstone is kept before the window goes. For a stream this writer
+        holds."""
+        ...
+
+    def retired(self, mission_dir: Path, stream: str) -> list[dict[str, Any]]:
+        """The tombstones of the stream's retired windows, oldest first, one per window."""
+        ...
+
+    def retired_count(self, mission_dir: Path, stream: str) -> int:
+        """How many windows of the stream were retired, counted without reading each."""
+        ...
+
+    def last_record(self, archive: Path, output: str) -> dict[str, Any] | None:
+        """The last whole record of the table ``output``, sealed or left unsealed by a writer
+        that died; None when it has none. A torn last line, a write a dying writer cut short,
+        is first moved aside (it is no record), and every whole line is left as it was. For an
+        archive no writer holds."""
         ...
 
     def release(self, archive: Path) -> None:
@@ -151,17 +220,21 @@ class ArchiveStore(Protocol):
         records: Generator[dict[str, Any], None, None],
         *,
         columns: Sequence[str] = (),
+        keep_on_error: bool = False,
     ) -> int:
         """Write every record to the table ``output`` and return how many there were.
 
         While the table is written, a record is written whole or not at all: a reader of the
         live table sees whole records, soon after each is given, and never part of one. The
         table is sealed when this returns, and the survey's ``recon.collect`` end event says
-        how it ended. Until then its records are provisional: on any error, including one the
-        records raise, the table is retracted (nothing of it is left, the records a reader
-        already saw included) and the error propagates. ``records`` is closed either way.
-        ``columns`` are the table's columns when they are known (a ``normalize:`` spec's): a
-        table that collected nothing keeps them, so a query of them still binds.
+        how it ended. Until then a snapshot table's records are provisional: on any error,
+        including one the records raise, the table is retracted (nothing of it is left, the
+        records a reader already saw included) and the error propagates. A stream's window
+        writes with ``keep_on_error``, since what its source sent cannot be fetched again: on
+        an error the records raise, or an interrupt, the records written so far are sealed,
+        then the error propagates. ``records`` is closed either way. ``columns`` are the
+        table's columns when they are known (a ``normalize:`` spec's): a table that collected
+        nothing keeps them, so a query of them still binds.
         """
         ...
 
@@ -180,14 +253,15 @@ class ArchiveStore(Protocol):
         ...
 
     def abandoned(self, mission_dir: Path) -> list[Path]:
-        """What a survey that died while making an archive of the mission left behind, which
-        :meth:`archives` never lists: each only once its maker is gone on this host. Nothing
-        is removed."""
+        """What a survey or a stream that died while making an archive or a window of the
+        mission left behind, which :meth:`archives` never lists: each only once its maker is
+        gone on this host. Nothing is removed."""
         ...
 
-    def archives(self, mission_dir: Path) -> list[Path]:
+    def archives(self, mission_dir: Path, *, stream: str | None = None) -> list[Path]:
         """The mission's archives, oldest first: its directories named by
-        :data:`ARCHIVE_ID_FORMAT`, and no other."""
+        :data:`ARCHIVE_ID_FORMAT`, and no other. With ``stream``, that stream's windows
+        instead, by index, at the cost of that stream's windows alone."""
         ...
 
     def read_meta(self, archive: Path) -> dict[str, Any]:
@@ -235,6 +309,12 @@ class ArchiveQuery(Protocol):
         NotFoundError when the archive has no tables, QueryError when the SQL fails, reaches
         outside or uses a table that cannot be read.
         """
+        ...
+
+    def execute_across(self, archives: Sequence[Path], sql: str) -> Rows:
+        """Run ``sql`` as :meth:`execute` does, against the sealed tables of every one of
+        ``archives`` (a stream's windows, in order, in one directory) at once: each table is
+        the union of its records in each, by column name. Raises as :meth:`execute` does."""
         ...
 
     def unreadable(self, archive: Path) -> list[Problem]:

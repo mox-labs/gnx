@@ -167,6 +167,22 @@ def test_the_live_reading_page_is_the_skill_reference() -> None:
         assert taught in REFERENCES["live-reading"], taught
 
 
+def test_the_streaming_page_is_the_skill_reference() -> None:
+    """Streams are taught in full by ``recon --skill -r streaming``, and the skill points
+    there in one line; one text with its docs page, as live-reading's is. An agent reading
+    it learns each key and flag, its default, and its refusals."""
+    page = PACKAGE / "docs" / "reference" / "streaming.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["streaming"]
+    assert "recon --skill -r streaming" in SKILL
+    for taught in ("window", "buffer.overflow", "drop_newest", "retain_unset", "provenance",
+                   "--windows", "--until", "--forever", "--stream", "--since", "closed_by",
+                   "_position", "stream_overflow", "unbounded", "paced_by", "busy",
+                   "usage", "tail", "sse", "Last-Event-ID", "tombstone"):  # fmt: skip
+        assert taught in REFERENCES["streaming"], taught
+
+
 # --- frontmatter and budget ------------------------------------------------------------
 
 

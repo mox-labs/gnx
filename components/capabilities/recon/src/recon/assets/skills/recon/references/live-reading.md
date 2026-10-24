@@ -20,7 +20,7 @@ The survey holds an `flock` on `writer.lock` in the archive while it writes, and
 
 - A table's records reach its file as whole lines, at most 64 KiB or 250 ms after the collector gives them. A reader never sees part of a record.
 - A table is **sealed** when its writer renames it into place as it ends: it gains and loses no line after that. A table a survey that died was writing is never sealed: it stays unsealed, and `query` never reads it.
-- A table that **fails** is **retracted**: its file is removed, and the records read from it while it was written are void. The table's error is in `meta.yaml`.
+- A table that **fails** is **retracted**: its file is removed, and the records read from it while it was written are void. The table's error is in `meta.yaml`. A stream's window is never retracted: one whose source failed is sealed with the records it got (`recon --skill -r streaming`), and `recon watch --stream` follows a stream's windows one after another.
 - `recon query` reads sealed tables only. On an archive being written it sees the tables finished so far, and the table being written is not a view yet.
 
 ## `recon watch`
@@ -58,6 +58,7 @@ Refused, with exit 2 (`usage`) and a fix:
 | `sealed` | the tables whose last record is now read |
 | `retracted` | the tables that failed after records of theirs were read: void those records |
 | `more` | a bound (`limit`, `max_bytes`) cut this read before all that was written was read: read again at once |
+| `stream`, `skipped` | a read of a stream (`--stream`): its name, and the windows `retain:` retired before the cursor reached them, `{first, last, count}`, or null; see `streaming` |
 
 Along a chain of cursors each table is told sealed, or retracted, once. Because `state` is read before the records, a read that says the archive is no longer `writing` and has no `more` holds the archive's last records.
 
