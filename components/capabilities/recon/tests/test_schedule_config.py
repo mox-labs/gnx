@@ -322,6 +322,67 @@ class TestATickRunsTheCodeItWasInstalledWith:
         assert _unpinned(_server(plugins, "npx", ["-y", "server-everything"])) == {}
         assert _unpinned(_cli(plugins, "uvx ruff check .")) == {}
 
+    # The owner's ruling, round-4 review S7: every fetcher of the kind, helpers too, the
+    # command word alone, and a commit as a pin.
+
+    @pytest.mark.parametrize(
+        ("run", "got", "pinned"),
+        [
+            ("bunx some-tool --json", "some-tool", "some-tool@<version>"),
+            ("pnpm dlx some-tool", "some-tool", "some-tool@<version>"),
+            ("npm exec -- some-tool@latest", "some-tool@latest", "some-tool@<version>"),
+            ("pipx run some-tool", "some-tool", "some-tool==<version>"),
+            ("pipx run --spec 'some-tool>=2' tool", "some-tool>=2", "some-tool==<version>"),
+            ("uv tool run ruff check .", "ruff", "ruff==<version>"),
+            ("env FOO=1 npx -y some-tool", "some-tool", "some-tool@<version>"),
+            ("FOO=1 BAR=2 uvx some-tool", "some-tool", "some-tool==<version>"),
+            ("uvx --from git+https://github.com/o/r@main r", "git+https://github.com/o/r@main",
+             None),
+            ("npx github:o/r", "github:o/r", None),
+        ],
+    )  # fmt: skip
+    def test_every_fetcher_of_the_kind_is_judged(
+        self, plugins: Plugins, run: str, got: str, pinned: str | None
+    ) -> None:
+        [warning] = _unpinned(_cli(plugins, run, schedule={"every": 600})).values()
+        assert warning.got == got
+        assert pinned is None or pinned in warning.fix
+
+    @pytest.mark.parametrize(
+        "run",
+        [
+            "bunx some-tool@1.2.3",
+            "pnpm dlx some-tool@1.2.3",
+            "npm exec -- some-tool@1.0.0",
+            "pipx run some-tool==1.0.0",
+            "pipx run --spec some-tool==1.0.0 tool",
+            "uv tool run ruff==0.6.9 check .",
+            "uvx --from git+https://github.com/o/r@0123456789abcdef0123456789abcdef01234567 r",
+            "npx github:o/r#0123456789abcdef0123456789abcdef01234567",
+            "echo npx some-tool",
+            "grep -c uvx build.log",
+            "printf 'run pnpm dlx x'",
+        ],
+    )
+    def test_a_pin_or_a_fetcher_that_is_no_command_is_not_warned(
+        self, plugins: Plugins, run: str
+    ) -> None:
+        assert _unpinned(_cli(plugins, run, schedule={"every": 600})) == {}
+
+    def test_a_headers_helper_that_fetches_is_warned_at_its_key(self, plugins: Plugins) -> None:
+        sources: list[dict[str, Any]] = [
+            {"name": "mail", "type": "api", "url": "https://mail.example.org",
+             "auth": {"headers_helper": "npx -y mail-token-helper"}},
+            {"name": "r", "type": "mcp", "url": "https://x.test/mcp",
+             "headers_helper": "uvx --from 'mcp-auth>=1' mcp-auth"},
+        ]  # fmt: skip
+        plan = _sourced(plugins, sources, schedule={"every": 600})
+
+        assert {path: w.got for path, w in _unpinned(plan).items()} == {
+            "catalog.0.auth.headers_helper": "mail-token-helper",
+            "catalog.1.headers_helper": "mcp-auth>=1",
+        }
+
     def test_the_kind_is_a_warning_kind_recon_publishes(self) -> None:
         from recon.domain.errors import PROBLEM_KINDS
 

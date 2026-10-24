@@ -349,7 +349,7 @@ the config a persistence vector, and the scheduler's files a place a secret coul
   `/dev/null`.
 - **What the digest does not cover**: the config's bytes are held to the digest installed,
   not what they name. A script a `cli` collector's `run:` calls, a `headers_helper` command,
-  a stdio server's program, and a package `npx` or `uvx` fetches can each change between
+  a stdio server's program, and a package a fetcher (`npx`, `uvx`...) fetches can each change between
   ticks without the config changing (the plan warns `package_unpinned` for the last). Keep
   what a scheduled config runs where only you can write it, and name it by absolute path.
 - **Where they go**: the user's own domain alone (`~/Library/LaunchAgents`, the user's
@@ -362,11 +362,13 @@ the config a persistence vector, and the scheduler's files a place a secret coul
   boundary 2), never a secret in the config.
 - **Two ticks never overlap**: each survey holds the mission's lock; a tick that finds it
   held is skipped and logged (`busy`).
-- **The code a tick runs**: the config is held to its digest, but `npx` and `uvx` fetch a
-  package anew each time unless it names an exact version, so a server or command written
-  without one runs whatever was last published, every tick, with nobody watching. The plan
-  of a scheduled mission warns `package_unpinned` for each, with the pinned form as its fix;
-  it does not refuse, and it judges only `npx` and `uvx`.
+- **The code a tick runs**: the config is held to its digest, but `npx`, `npm exec`, `bunx`,
+  `pnpm dlx`, `uvx`, `uv tool run` and `pipx run` fetch a package anew each time unless it
+  names an exact version (a repository: a whole commit), so a server, command or helper
+  written without one runs whatever was last published, every tick, with nobody watching.
+  The plan of a scheduled mission warns `package_unpinned` for each fetcher in command
+  position, with the pinned form as its fix; it does not refuse, and a fetcher reached
+  through a variable, an alias or a script of its own is not seen.
 
 What this does **not** do: anything about who may write the config before it is
 installed, or about the scheduler's own files being changed by hand afterwards (`recon

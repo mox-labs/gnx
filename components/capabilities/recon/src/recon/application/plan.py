@@ -36,7 +36,7 @@ from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
 from recon.domain.paginate import COUNTED, crawl_floor_s
-from recon.domain.schedule import ScheduleSpec, every_fix, unpinned
+from recon.domain.schedule import ScheduleSpec, every_fix, pinned_form, unpinned
 from recon.domain.stream import (
     DEFAULT_WINDOW_S,
     POSITION_FIELD,
@@ -1456,47 +1456,51 @@ def _unpinned_packages(
     entries: list[tuple[int, CollectorEntry]],
     sources: list[tuple[int, SourceEntry]],
 ) -> list[Problem]:
-    """A scheduled mission's warning for each package a run's commands have ``npx`` or
-    ``uvx`` fetch without an exact version (``recon.domain.schedule.unpinned``), once a
-    path: every tick would run whatever was published last. The commands are what the run's
-    type describes (``CollectorType.describe``): a stdio server's command line as ``server``
-    (an ``mcp`` source's, at ``catalog.<i>``), shell lines as ``commands`` (a ``cli`` entry's,
-    at ``collectors.<i>``), so a type of a third party's that describes its commands so is
-    held to it too."""
+    """A scheduled mission's warning for each package a command it runs has a fetcher
+    (``npx``, ``uvx``, ``pnpm dlx``...: ``recon.domain.schedule.FETCHERS``) fetch without an
+    exact version (``recon.domain.schedule.unpinned``), once a path: every tick would run
+    whatever was published last. The commands are what each run's type describes
+    (``CollectorType.describe``): a server's command line as ``server`` (an ``mcp``
+    source's, at ``catalog.<i>``), shell lines as ``commands`` (a ``cli`` entry's, at
+    ``collectors.<i>``), a ``headers_helper`` (an ``mcp`` source's, at
+    ``catalog.<i>.headers_helper``), so a type of a third party's that describes its commands
+    so is held to it too; and each source's own ``auth.headers_helper``."""
     entry_at = {entry.name: i for i, entry in entries}
     source_at = {source.name: i for i, source in sources}
+    by_name = {source.name: source for _, source in sources}
     found: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def judge(path: str, line: str | list[str]) -> None:
+        shown = line if isinstance(line, str) else " ".join(line)
+        for fetcher, package in unpinned(line):
+            found.setdefault((path, package), (fetcher, shown))
+
     for run in runs:
+        at = f"catalog.{source_at[run.source]}" if run.source in source_at else None
         server = run.detail.get("server")
-        if isinstance(server, str) and run.source in source_at:
+        if isinstance(server, str) and at is not None:
             # Joined from an argument list: split back on spaces, never as a shell would.
-            for fetcher, package in unpinned(server.split()):
-                found.setdefault((f"catalog.{source_at[run.source]}", package), (fetcher, server))
+            judge(at, server.split())
+        source = by_name.get(run.source) if run.source is not None else None
+        own = source.auth.headers_helper if source is not None else None
+        if own and at is not None:
+            judge(f"{at}.auth.headers_helper", own)
+        helper = run.detail.get("headers_helper")
+        if isinstance(helper, str) and helper != own and at is not None:
+            judge(f"{at}.headers_helper", helper)  # a kind's own key (an mcp source's)
         commands = run.detail.get("commands")
         for line in commands if isinstance(commands, list) else []:
             if isinstance(line, str) and run.collector in entry_at:
-                for fetcher, package in unpinned(line):
-                    path = f"collectors.{entry_at[run.collector]}"
-                    found.setdefault((path, package), (fetcher, line))
+                judge(f"collectors.{entry_at[run.collector]}", line)
     return [
         Problem(
             path,
             f"{fetcher} fetches {package!r} without an exact version every time {line!r} "
             "starts, so every tick of the schedule runs whatever was published last",
             kind="package_unpinned",
-            fix=f"pin it to an exact version, {_pinned_form(fetcher, package)}, so each tick "
+            fix=f"pin it to an exact version, {pinned_form(fetcher, package)}, so each tick "
             "runs the code you reviewed; then `recon schedule install` again",
             got=package,
         )
         for (path, package), (fetcher, line) in found.items()
     ]
-
-
-def _pinned_form(fetcher: str, package: str) -> str:
-    """How ``package`` is written pinned, for ``fetcher``."""
-    if fetcher == "npx":
-        name, at, _ = package.rpartition("@")
-        return f"`{name if at and name else package}@<version>` (npx -y)"
-    project = re.match(r"[A-Za-z0-9._-]+(?:\[[^\]]*\])?", package)
-    pinned = f"{project.group(0) if project else package}==<version>"
-    return f"`{pinned}` (uvx; `uvx --from '{pinned}' <command>` when its command is another name)"

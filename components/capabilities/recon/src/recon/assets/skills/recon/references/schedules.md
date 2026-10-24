@@ -97,7 +97,7 @@ Never put a secret in the config, or in the scheduler's files, which recon never
 
 ## What a tick runs
 
-A tick runs the config that was installed, and the commands in it run as they are written. `npx` and `uvx` fetch the package they are given each time they start unless it names an exact version, so a stdio server or a `cli` command written `npx -y @scope/server` or `uvx some-server` runs, every tick, whatever was published last. The plan of a scheduled mission warns `package_unpinned` for each, with `got` the package; pin it, `npx -y @scope/server@1.4.2` or `uvx some-server==2025.4.7` (`uvx --from 'some-server==2025.4.7' its-command` when the command has another name), and install again.
+A tick runs the config that was installed, and the commands in it run as they are written. `npx`, `npm exec`, `bunx`, `pnpm dlx`, `uvx`, `uv tool run` and `pipx run` fetch the package they are given each time they start unless it names an exact version, so a stdio server, a `cli` command or a `headers_helper` written `npx -y @scope/server` or `uvx some-server` runs, every tick, whatever was published last. The plan of a scheduled mission warns `package_unpinned` for each, with `got` the package, wherever the fetcher is the command (after variable assignments and a wrapper such as `env`; `echo npx` is no fetch); pin it, `npx -y @scope/server@1.4.2` or `uvx some-server==2025.4.7` (`uvx --from 'some-server==2025.4.7' its-command` when the command has another name), a repository by its whole commit (`git+https://github.com/o/r@<40-hex commit>`, `github:o/r#<commit>`: a branch or a tag can move), and install again.
 
 ## The log, and status
 
@@ -130,7 +130,7 @@ The log is bounded: at 1 MiB it becomes `schedule.log.1`, replacing the one befo
 | a tick while another survey holds the mission | `busy` (11), `details.skips` | let it run; from the second skip in a row, raise `every` or lower `deadline:` |
 | `missed: once` under cron | `missed_ignored` warning | install for launchd or systemd, or write `missed: skip` |
 | a credential named `env:NAME` in a scheduled mission | `env_unscheduled` warning in the plan, at the reference's path | name it as `file:PATH` (mode 0600), or `headers_helper` for a token, then install again |
-| an `npx` or `uvx` package with no exact version, in a stdio server or a `cli` command | `package_unpinned` warning in the plan, at `catalog.<i>` or `collectors.<i>` | pin it, `pkg@<version>` (npx) or `pkg==<version>` (uvx), then install again |
+| a package `npx`, `npm exec`, `bunx`, `pnpm dlx`, `uvx`, `uv tool run` or `pipx run` fetches with no exact version, in a stdio server, a `cli` command or a `headers_helper` | `package_unpinned` warning in the plan, at `catalog.<i>`, `collectors.<i>` or the helper's key | pin it, `pkg@<version>` (npm's) or `pkg==<version>` (Python's), a repository by its whole commit, then install again |
 | a config changed since install | `config_changed` warning in `status` | read it, then install again |
 | two or more busy skips in a row | `schedule_overrun` warning in `status` | raise `every`, or lower `deadline:` |
 

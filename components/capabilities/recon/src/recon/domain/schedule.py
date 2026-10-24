@@ -75,72 +75,160 @@ def every_fix(every: int) -> str:
     return f"set {nearest}: whole minutes that divide a day (86400 s), in seconds"
 
 
-#: The commands that fetch the package they are given each time they run, unless it names an
-#: exact version: npm's ``npx`` (``--yes`` or not: it assumes yes without a terminal, as a
-#: tick has none) and uv's ``uvx``. A tick that starts one runs whatever was published last.
-FETCHERS = ("npx", "uvx")
+@dataclass(frozen=True)
+class _Fetcher:
+    """A command that fetches the package it is given each time it runs, unless it names an
+    exact version: the ``words`` that start it, how its packages are written (``npm``'s or
+    Python's), its options whose value is a package, and those whose value is something else
+    to step over (a Python, an index)."""
 
-#: The options of each fetcher whose value is the next word: a package (``-p``, ``--from``,
-#: ``--with``), or something else to step over (a Python, an index).
-_PACKAGE_OPTIONS = {"npx": ("-p", "--package"), "uvx": ("--from", "--with")}
-_VALUE_OPTIONS = {
-    "npx": ("-c", "--call", "--registry", "--cache", "--prefix", "-w", "--workspace"),
-    "uvx": ("-p", "--python", "--index", "--index-url", "--extra-index-url",
-            "--default-index", "--with-editable", "--with-requirements", "-c", "--constraints",
-            "--overrides", "--cache-dir", "--directory", "--project", "--config-file"),
-}  # fmt: skip
+    words: tuple[str, ...]
+    ecosystem: Literal["npm", "python"]
+    packages: tuple[str, ...]
+    values: tuple[str, ...] = ()
+
+
+_NPM_VALUES = ("-c", "--call", "--registry", "--cache", "--prefix", "-w", "--workspace")
+_UV_PACKAGES = ("--from", "--with")
+_UV_VALUES = ("-p", "--python", "--index", "--index-url", "--extra-index-url", "--default-index",
+              "--with-editable", "--with-requirements", "-c", "--constraints", "--overrides",
+              "--cache-dir", "--directory", "--project", "--config-file")  # fmt: skip
+
+#: The fetchers judged (the owner's ruling, round-4 review S7). ``npx`` with ``--yes`` or not:
+#: it assumes yes without a terminal, as a tick has none.
+_FETCHERS = (
+    _Fetcher(("npx",), "npm", ("-p", "--package"), _NPM_VALUES),
+    _Fetcher(("npm", "exec"), "npm", ("-p", "--package"), _NPM_VALUES),
+    _Fetcher(("bunx",), "npm", ("-p", "--package")),
+    _Fetcher(("pnpm", "dlx"), "npm", ("--package",), ("--reporter",)),
+    _Fetcher(("uvx",), "python", _UV_PACKAGES, _UV_VALUES),
+    _Fetcher(("uv", "tool", "run"), "python", _UV_PACKAGES, _UV_VALUES),
+    _Fetcher(("pipx", "run"), "python", ("--spec",), ("--python", "--pip-args", "--index-url")),
+)
+
+#: Each fetcher judged, as it is written.
+FETCHERS: tuple[str, ...] = tuple(" ".join(fetcher.words) for fetcher in _FETCHERS)
+_BY_NAME = {" ".join(fetcher.words): fetcher for fetcher in _FETCHERS}
 
 #: An exact version: npm's semver, and a Python version with no wildcard.
 _EXACT_NPM = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 _EXACT_PYTHON = re.compile(r"^\d[0-9A-Za-z.+!-]*$")
 
+#: A repository named by its commit, the only pin a repository has: a whole SHA-1 or SHA-256
+#: after ``@`` (pip's, uv's) or ``#`` (npm's). A branch, a tag or a short hash can move.
+_COMMIT = re.compile(r"[@#](?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_REPOSITORY = ("git+", "github:", "gitlab:", "bitbucket:", "git:")
+
 #: What separates one simple command from the next in a shell line.
-_SHELL_OPERATORS = frozenset({";", "&", "&&", "|", "||", "(", ")", "|&", ";;"})
+_SHELL_OPERATORS = frozenset({";", "&", "&&", "|", "||", "(", ")", "|&", ";;", "\n"})
+
+#: Words that start another command after them, and their options that take a value.
+_WRAPPERS = frozenset({"env", "exec", "command", "nohup", "time", "nice", "sudo"})
+_WRAPPER_VALUES = frozenset({"-u", "-g", "-n", "-C"})
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def unpinned(line: str | Sequence[str]) -> list[tuple[str, str]]:
-    """Each package a command ``line`` (a shell line, or an argument list) has a fetcher run
-    without an exact version, as ``(fetcher, package)``, in order: ``npx pkg``,
-    ``npx pkg@latest``, ``uvx pkg``, ``uvx --from 'pkg>=1' cmd``. ``pkg@1.2.3`` for npx, and
-    ``pkg==1.2.3`` or ``pkg@1.2.3`` for uvx, are pinned; a local path is not fetched. A shell
-    line that does not parse (an open quote) gives nothing: it would not run either."""
+    """Each package a command ``line`` (a shell line, or an argument list) has a fetcher
+    (:data:`FETCHERS`) run without an exact version, as ``(fetcher, package)``, in order:
+    ``npx pkg``, ``pnpm dlx pkg@latest``, ``uvx pkg``, ``pipx run --spec 'pkg>=1' cmd``, a
+    repository at a branch. Only a fetcher in command position counts: the first word of a
+    simple command, after its variable assignments and a wrapper (``env``, ``exec``), never
+    an argument (``echo npx``). ``pkg@1.2.3`` (npm's), ``pkg==1.2.3`` or ``pkg@1.2.3``
+    (Python's), a repository at a whole commit, and a local path are pinned. A shell line
+    that does not parse (an open quote) gives nothing: it would not run either."""
     try:
-        words = list(line) if not isinstance(line, str) else _shell_words(line)
+        commands = [list(line)] if not isinstance(line, str) else _simple(_shell_words(line))
     except ValueError:
         return []
     found: list[tuple[str, str]] = []
-    for at, word in enumerate(words):
-        fetcher = word.rsplit("/", 1)[-1]
-        if fetcher in FETCHERS:
-            found += [(fetcher, p) for p in _fetched(fetcher, words[at + 1 :]) if not
-                      _pinned(fetcher, p)]  # fmt: skip
+    for words in commands:
+        named = _command(words)
+        for fetcher in _FETCHERS:
+            size = len(fetcher.words)
+            if (
+                named[:1]
+                and named[0].rsplit("/", 1)[-1] == fetcher.words[0]
+                and tuple(named[1:size]) == fetcher.words[1:]
+            ):
+                found += [(" ".join(fetcher.words), package)
+                          for package in _fetched(fetcher, named[size:])
+                          if not _pinned(fetcher, package)]  # fmt: skip
+                break
     return found
+
+
+def pinned_form(fetcher: str, package: str) -> str:
+    """How ``package`` is written pinned, for ``fetcher`` (one of :data:`FETCHERS`)."""
+    if _repository(package):
+        at = "#" if _BY_NAME[fetcher].ecosystem == "npm" else "@"
+        return (
+            f"`{re.split(r'[@#]', package.split('://', 1)[-1], maxsplit=1)[0]}...{at}<commit>` "
+            "(a whole commit hash; a branch or a tag can move)"
+        )
+    if _BY_NAME[fetcher].ecosystem == "npm":
+        name, at, _ = package.rpartition("@")
+        return f"`{name if at and name else package}@<version>` ({fetcher})"
+    project = re.match(r"[A-Za-z0-9._-]+(?:\[[^\]]*\])?", package)
+    pinned = f"{project.group(0) if project else package}==<version>"
+    named = {"pipx run": "--spec"}.get(fetcher, "--from")
+    return (
+        f"`{pinned}` ({fetcher}; `{fetcher} {named} '{pinned}' <command>` when its command "
+        "is another name)"
+    )
 
 
 def _shell_words(line: str) -> list[str]:
     lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""  # a "#" inside a word (npm's github:o/r#<commit>) is no comment
     return list(lexer)
 
 
-def _fetched(fetcher: str, words: Sequence[str]) -> list[str]:
+def _simple(words: Sequence[str]) -> list[list[str]]:
+    """A shell line's words, as its simple commands."""
+    commands: list[list[str]] = [[]]
+    for word in words:
+        if word in _SHELL_OPERATORS:
+            commands.append([])
+        else:
+            commands[-1].append(word)
+    return [command for command in commands if command]
+
+
+def _command(words: Sequence[str]) -> list[str]:
+    """A simple command's words from its command word on: past its variable assignments,
+    and past a wrapper (``env``, ``exec``, ``sudo``...) with its options and assignments."""
+    at = 0
+    while at < len(words):
+        word = words[at]
+        if _ASSIGNMENT.match(word):
+            at += 1
+        elif word.rsplit("/", 1)[-1] in _WRAPPERS:
+            at += 1
+            while at < len(words) and (words[at].startswith("-") or _ASSIGNMENT.match(words[at])):
+                at += 2 if words[at] in _WRAPPER_VALUES else 1
+        else:
+            break
+    return list(words[at:])
+
+
+def _fetched(fetcher: _Fetcher, words: Sequence[str]) -> list[str]:
     """The packages ``fetcher`` is given by ``words``, its arguments: each a package option
     names, else the first word that is no option (the command's own arguments follow it)."""
     named: list[str] = []
     expects: str | None = None
     for word in words:
-        if word in _SHELL_OPERATORS:
-            break
         if expects is not None:
             if expects == "package":
                 named.append(word)
             expects = None
             continue
         option, has_value, value = word.partition("=")
-        if option in _PACKAGE_OPTIONS[fetcher]:
+        if option in fetcher.packages:
             named += [value] if has_value else []
             expects = None if has_value else "package"
-        elif option in _VALUE_OPTIONS[fetcher]:
+        elif option in fetcher.values:
             expects = None if has_value else "value"
         elif not word.startswith("-"):
             # Given packages by option, the first word is the command they provide.
@@ -148,10 +236,16 @@ def _fetched(fetcher: str, words: Sequence[str]) -> list[str]:
     return named
 
 
-def _pinned(fetcher: str, package: str) -> bool:
+def _repository(package: str) -> bool:
+    return "://" in package or package.startswith(_REPOSITORY) or package.endswith(".git")
+
+
+def _pinned(fetcher: _Fetcher, package: str) -> bool:
     if package.startswith((".", "/", "~", "file:")):
         return True  # a local path: nothing is fetched
-    if fetcher == "npx":
+    if _repository(package):
+        return _COMMIT.search(package) is not None
+    if fetcher.ecosystem == "npm":
         name, at, version = package.rpartition("@")
         return bool(at) and bool(name) and _EXACT_NPM.match(version) is not None
     for pin in ("===", "==", "@"):
