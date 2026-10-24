@@ -14,7 +14,8 @@ service comparison and an agent evaluation.
 
 | Document | What it covers |
 |----------|----------------|
-| [Evaluating an agent](how-to/evaluate-an-agent.md) | An agent evaluation from the question to the verdict: the subject, probes as files, the metric that decides, a dry run, a pilot, the report; then routing, a skill of your own, tool use, a check of the reply's text, your own graders and a judge |
+| [Evaluating an agent](how-to/evaluate-an-agent.md) | An agent evaluation from the question to the verdict: the subject, probes as files, the metric that decides, a dry run, a pilot (and trying several trials at once), the report; then routing, a skill of your own, tool use, a check of the reply's text, your own graders and a judge |
+| [The trials-in-flight slice](../examples/trials-in-flight/README.md) | The protocol, run by hand, that tests whether a real provider measures the same with four trials in flight as with one |
 
 ## Reference
 
@@ -30,4 +31,4 @@ service comparison and an agent evaluation.
 
 | Document | What it covers |
 |----------|----------------|
-| [Design record, 2026-10-19](design/2026-10-19-record.md) | Every design judgment ix rests on, one row each with its test and evidence: the verdict's statistics with their sources and simulations, the agent path, the runtime ports, what a verdict is tied to, requirements in place of effects, environments, the layer map, the evaluator sensor, and the owner's rulings they follow |
+| [Design record, 2026-10-19](design/2026-10-19-record.md) | Every design judgment ix rests on, one row each with its test and evidence: the verdict's statistics with their sources and simulations, the agent path, the runtime ports, what a verdict is tied to, requirements in place of effects, environments, the layer map, the evaluator sensor, trials in flight, and the owner's rulings they follow |

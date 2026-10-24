@@ -1,5 +1,103 @@
 # Changelog — ix
 
+## 0.7.0 — 2026-10-24
+
+`docs/design/2026-10-19-record.md` has the reasons for this release's changes, in §27.
+
+### Changed (breaking)
+
+- **Where a design value came from is `origin`, not `source`.** Each entry of a design's
+  and a plan's `provenance` (`SourcedValue`) is `{path, value, origin, note}`; `origin` is
+  `experiment`, `genre` or `ix`, the name its type `Origin` and recon's provenance already
+  use. Who chose a sensor is `origin` too (`SelectedSensor.origin`, `sensors[].origin` in
+  the plan and the design). Read `.origin` where you read `.source`. A registration holds no
+  provenance, so its design values still match; but an experiment that lists `sensors:`
+  has a sensor whose `origin` is `experiment`, which the plan digest covers, so its digest
+  moves and its registration shows a `plan_digest` deviation: amend it
+  (`ix register <path> --amend --reason "origin rename"`). One whose sensors ix chose keeps
+  its digest. A run keeps its design whole, so `ix report` on a run recorded by an earlier
+  ix is refused (`config`): read it with the ix that wrote it.
+- **The `Recorded` scope port names sessions per task.** Its one member is now
+  `attributed()`, an async context whose `Attribution.sessions()` names the session rows
+  made in that task and the tasks it starts (matrix's `RunContext.attributed()`), in place
+  of `sessions()`, which named every row since the scope's last hand-over. A scope that
+  implemented `sessions()` is no longer `Recorded`, and its trials name no sessions.
+- **`MaxDuration` gives `eval_duration_passed`, not `eval_passed`.** The evaluator sensor
+  reads how long the probe took into a metric of its own, declared contended, so a
+  decision on it is refused with trials in flight. An experiment that decided `eval_passed`
+  on a `MaxDuration` entry is refused (`metric_unprovided`, its fix naming
+  `eval_duration_passed`): rename the metric and amend the registration.
+
+### Added
+
+- **`trials_in_flight`**: how many trials a run carries out at once, 1 when left out. It is
+  a value of the design (`Design.trials_in_flight`, with where it came from in the plan's
+  provenance), so it is in the plan's digest and frozen by registration; writing `1`
+  digests as leaving it out. The plan's `order` states it (`OrderPlan.trials_in_flight`,
+  and its description), and so does the report (`Report.trials_in_flight`, and its `Run`
+  line). `ix run --trials-in-flight N` (`ix.run(trials_in_flight=N)`) overrides it for one
+  run, noted under `Changed`; like `--repeats`, only with `--exploratory` or `--dry-run`,
+  and a run that gives a verdict refuses either flag as `usage` (exit 2), its
+  `details.path` the flag.
+- **`ix plan --trials-in-flight N`** (`ix.plan(trials_in_flight=N)`): the plan of the run
+  `ix run --exploratory --trials-in-flight N` would carry out, at that width, with the
+  change in `Plan.overridden` (`Changed`), as the run's report words it, and the refusal or
+  warnings that run would meet. It runs nothing and writes nothing.
+- **The problems `trials_in_flight_refused` and `trials_in_flight_contended`.** A width
+  above 1 is refused, never lowered on its own, where a kind in use or the genre forbids
+  overlap, or a deciding metric (`primary`, a guardrail) is contended: the
+  fix names each and says `trials_in_flight: 1`. A contended metric only reported is a
+  warning.
+- **Trials in flight.** A run starts its trials in the plan's order with at most
+  `trials_in_flight` in flight, each in a task of its own, and lands each as it is
+  finished and confirmed. With a `Liveness` environment, one checker asks whether it is
+  still up, one call at a time and each within `Kit.liveness_timeout_s` (30s; a check that
+  does not answer is a loss): a trial lands as carried out only once a check that began
+  after it ended found the environment up. On a loss nothing more starts and every trial
+  unconfirmed lands as `environment_lost`; on a stop nothing more starts and every trial in
+  flight lands, its own outcome or `cancelled`. At 1 the run is the serial run it was.
+  `invoke` takes the flag its probe races (`stopping=`; the scope's when not given). The
+  trials a hard stop cuts off are released together, within the one `cleanup_s` matrix
+  gives the release; one that cannot be released strands none of the others, and the
+  release reports each that failed (`release_failed`).
+- **Sensing at the same width.** `sense` reads as many interactions at once as
+  `trials_in_flight`, each reading in a task of its own, naming only the sessions its
+  sensor made for that trial; a sensor whose kind forbids overlap reads one at a time. Its
+  readings come in `seq` order whatever order the interactions were landed in. It still
+  begins only once every trial has ended.
+- **`overlap` on every kind, `contended` on every metric.** A kind says whether two trials
+  may use it at once (`overlap: allowed | forbidden`; a kind that says nothing, a third
+  party's included, forbids it), and a metric whether its reading moves with whatever
+  runs beside the trial (`contended: true`; false when unsaid). The built-in kinds and
+  metrics declare theirs; `--skill` shows both (`-r experiment` names each kind and genre
+  that forbids overlap and each contended metric, read from the declarations), and so does
+  `ix kinds`: an `overlap`
+  column in each kind table, and `judged` and `contended` columns in the metrics table,
+  which lists each sensor's metrics under it (`--json` gives both fields). Neither enters a
+  plan's digest or a registration: they are checked each time an experiment is.
+- **`examples/trials-in-flight/`**: the live validation slice, run by hand and never in CI.
+  Ten deterministic probes (five that read a fixture with tools), screened by a pilot;
+  ten S and ten P runs paired by run, probe and repeat (200 pairs, the n at which it can
+  show non-inferiority; about 450 sessions and 680 requests with the pilot); the decision in `analysis.py`
+  (non-inferiority of the pass rate by Newcombe's paired interval, one-sided 2.5%, 5pp;
+  tokens and turns by TOST at 5%; registered inconclusive rules), which CI tests and
+  simulates; a k6 negative control on a delay server that takes `--capacity N`. A pass
+  lets `regress` allow overlap only for what it tested.
+- **`overlap` on a genre's `design`** (`allowed` when unsaid): whether its trials may
+  overlap at all. A genre that extends another may tighten it to `forbidden`, never loosen
+  it (`genre_narrowing`). `regress` forbids it; the other built-ins allow it.
+
+### Fixed
+
+- **Each row's ledger entry names its own sessions.** The `sense` component handed its
+  readings over at once, so matrix's ledger credited every reading with every judgement of
+  the run; each reading is now handed over naming the sessions its sensor made reading that
+  trial (`Reading.sessions`), and each interaction those of its own trial.
+- **A report does not depend on the order rows were landed in.** The confusion table was
+  built in the order its readings came, so the same run read with its rows in another order
+  gave another document; it is read in `seq` order now, and a shuffled record gives the
+  same report byte for byte.
+
 ## 0.6.0 — 2026-10-22
 
 `docs/design/2026-10-19-record.md` has the reasons for this release's changes, from §16 on.

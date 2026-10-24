@@ -6,23 +6,30 @@ two are identical; start one with a longer delay and it is slower by a known amo
     python3 server.py --port 18473 --delay-ms 40
 
 ``GET /healthz`` answers at once, so a harness can tell when the server is up. Every other
-path sleeps ``--delay-ms`` and then answers ``ok``.
+path sleeps ``--delay-ms`` and then answers ``ok``. With ``--capacity N`` it serves at most N
+such requests at once and the rest wait their turn, as a service with N workers does; with
+none, every request is served at once.
 """
 
 from __future__ import annotations
 
 import argparse
+import threading
 import time
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-def handler(delay_s: float) -> type[BaseHTTPRequestHandler]:
+def handler(delay_s: float, capacity: int = 0) -> type[BaseHTTPRequestHandler]:
+    workers = threading.BoundedSemaphore(capacity) if capacity else nullcontext()
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"  # keep connections open, as a real service would
 
         def do_GET(self) -> None:  # noqa: N802 - the name http.server calls
             if self.path != "/healthz":
-                time.sleep(delay_s)
+                with workers:
+                    time.sleep(delay_s)
             body = b"ok\n"
             try:
                 self.send_response(200)
@@ -43,8 +50,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=18473)
     parser.add_argument("--delay-ms", type=float, default=40.0)
+    parser.add_argument(
+        "--capacity", type=int, default=0, help="requests served at once; 0, every one"
+    )
     arguments = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", arguments.port), handler(arguments.delay_ms / 1000))
+    serves = handler(arguments.delay_ms / 1000, arguments.capacity)
+    server = ThreadingHTTPServer(("127.0.0.1", arguments.port), serves)
     server.daemon_threads = True
     server.serve_forever()
 

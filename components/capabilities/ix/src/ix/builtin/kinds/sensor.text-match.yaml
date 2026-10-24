@@ -1,6 +1,7 @@
 schema: ix.v1.kind
 name: ix.v1.sensor.text-match
 summary: Checks the reply's text against plain rules (starts with, ends with, contains, excludes, equals, matches a regular expression), no code of your own needed.
+overlap: allowed
 options:
   starts_with: {type: string, description: "the reply starts with this"}
   ends_with: {type: string, description: "the reply ends with this"}

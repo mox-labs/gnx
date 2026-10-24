@@ -210,12 +210,15 @@ class TestEvaluatorsThatReadTheReply:
             await _read({"evaluator": "EqualsExpected"}, _trial("4"))
 
     async def test_max_duration_reads_how_long_the_probe_took(self) -> None:
+        """MaxDuration reads a time, so it has a metric of its own, ``eval_duration_passed``,
+        which the sensor declares contended (record §27); never ``eval_passed``, which the
+        evaluators that read the reply give."""
         trial = _trial("4", watched={"duration_s": 1.5, "spans": []})
         assert (await _read(_agentic("MaxDuration", seconds=2), trial)).values == {
-            "eval_passed": True
+            "eval_duration_passed": True
         }
         assert (await _read(_agentic("MaxDuration", seconds=1), trial)).values == {
-            "eval_passed": False
+            "eval_duration_passed": False
         }
 
     async def test_an_evaluator_that_reads_no_span_needs_no_sdk(self) -> None:
@@ -522,6 +525,33 @@ class TestValidate:
         problems = Root(registry=_registry(), settings=_settings()).validate(lab).problems
         (wrong,) = [p for p in problems if p.kind == "metric_unprovided"]
         assert wrong.got == "judged_eval_passed" and "eval_passed" in wrong.fix
+
+    def test_max_duration_gives_its_own_metric_and_no_other(self, tmp_path: Path) -> None:
+        """Review (ixian): a time read through ``eval_passed`` hid that the reading is
+        contended. ``eval_passed`` from a MaxDuration entry is refused, its fix naming
+        ``eval_duration_passed``; that one from any other evaluator is refused too."""
+        timed = {"kind": "evaluator", "evaluator": "MaxDuration", "arguments": {"seconds": 60}}
+        root = Root(registry=_registry(), settings=_settings())
+        problems = root.validate(_experiment(tmp_path, sensors=[timed])).problems
+        (wrong,) = [p for p in problems if p.kind == "metric_unprovided"]
+        assert (wrong.path, wrong.got) == ("sensors.0.evaluator", "eval_passed")
+        assert "eval_duration_passed" in wrong.fix
+        passed = _experiment(tmp_path, sensors=[timed], primary={"metric": "eval_duration_passed"})
+        assert root.validate(passed).problems == ()
+        equals = {"kind": "evaluator", "evaluator": "Equals", "arguments": {"value": "4"}}
+        other = _experiment(tmp_path, sensors=[equals], primary={"metric": "eval_duration_passed"})
+        (wrong,) = [p for p in root.validate(other).problems if p.kind == "metric_unprovided"]
+        assert wrong.got == "eval_duration_passed" and "eval_passed" in wrong.fix
+
+    def test_a_decision_on_max_duration_is_refused_trials_in_flight(self, tmp_path: Path) -> None:
+        timed = {"kind": "evaluator", "evaluator": "MaxDuration", "arguments": {"seconds": 60}}
+        lab = _experiment(
+            tmp_path, sensors=[timed], primary={"metric": "eval_duration_passed"},
+            trials_in_flight=2,
+        )  # fmt: skip
+        problems = Root(registry=_registry(), settings=_settings()).validate(lab).problems
+        (refused,) = [p for p in problems if p.kind == "trials_in_flight_refused"]
+        assert "eval_duration_passed (primary) is contended" in refused.message
 
 
 def _judged_by_a_hardline_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Root, Path]:

@@ -128,6 +128,7 @@ from .domain.ref import REF, Ref
 from .domain.registry import Entry, Extension, Failure, Registry
 from .domain.session import (
     SESSION,
+    Attribution,
     Session,
     agent_session,
     call_sent,
@@ -177,6 +178,7 @@ __all__ = [
     "AgentStep",
     "AgentStepConfig",
     "Agents",
+    "Attribution",
     "BesideFile",
     "BoundAgent",
     "CallAttempt",

@@ -117,7 +117,7 @@ class TestEveryProblemWithAPath:
         paths = _paths(plan)
         assert not plan.valid
         assert "unknown collector type 'ftp'" in paths["collectors.0.type"]
-        assert "api, capture, cli, mcp, web" in paths["collectors.0.type"], (
+        assert "api, capture, cli, mcp, sse, tail, web" in paths["collectors.0.type"], (
             "names what is installed"
         )
         assert "source 'nowhere' not in catalog" in paths["collectors.1.source"]
@@ -803,8 +803,8 @@ class TestSourceKinds:
             "name_unknown",
             "git",
         )
-        assert problem.allowed == ("api", "local", "mcp", "web")
-        assert "api, local, mcp, web" in problem.message
+        assert problem.allowed == ("api", "file", "local", "mcp", "web")
+        assert "api, file, local, mcp, web" in problem.message
 
     @pytest.mark.parametrize(
         ("source", "collector", "kinds"),

@@ -200,6 +200,48 @@ class TestBuiltInKinds:
         session = builtin_kinds.get("subject", "agent-session")
         assert session is not None and "response" in session.options["loop"].binds
 
+    def test_each_kind_says_whether_two_uses_of_it_may_overlap(self, builtin_kinds: Kinds) -> None:
+        """Ruling X3 (record §27): a kind allows overlap when two trials may use it at once
+        without one changing what the other measures, and forbids it otherwise; a kind
+        that does not say forbids it. A port or a load generator is one machine's, and a run
+        brings its environment up once for every trial."""
+        allowed = {
+            "subject": {"agent-session", "model-call"},
+            "probe": {"prompt"},
+            "environment": {"none"},
+            "sensor": {"judge", "evaluator", "text-match", "tool-usage", "outcome",
+                       "activation", "usage", "function-test"},
+        }  # fmt: skip
+        forbidden = {
+            "subject": {"process", "http"},
+            "probe": {"http-load", "inspect-task"},
+            "environment": {"process", "compose"},
+            "sensor": {"timing", "memory"},
+        }
+        for family in allowed:
+            declared = {kind.label: kind.overlap for kind in builtin_kinds.of(family)}
+            assert declared == {
+                **dict.fromkeys(allowed[family], "allowed"),
+                **dict.fromkeys(forbidden[family], "forbidden"),
+            }
+        assert Kind.model_validate(_sensor("x")).overlap == "forbidden"
+
+    def test_a_reading_of_time_or_of_a_resource_is_contended(self, builtin_kinds: Kinds) -> None:
+        """Ruling X3: a metric is ``contended`` when what it reads (time, memory, a load
+        tool's throughput) moves with what else runs beside the trial. Every metric of
+        ``timing`` and ``memory`` is, and ``usage``'s ``duration``; no other built-in is."""
+        contended = {
+            (kind.label, metric.name)
+            for kind in builtin_kinds.of("sensor")
+            for metric in kind.metrics
+            if metric.contended
+        }
+        assert contended == {
+            ("timing", "latency"), ("timing", "ttfb"), ("timing", "throughput"),
+            ("timing", "error_rate"), ("memory", "memory_peak"), ("usage", "duration"),
+            ("evaluator", "eval_duration_passed"),
+        }  # fmt: skip
+
     def test_a_declaration_is_data_and_holds_no_code(self) -> None:
         with pytest.raises(ValidationError, match="extra"):
             Kind.model_validate(_sensor("x", implementation="acme.sensors:Timing"))
@@ -542,7 +584,7 @@ class TestMetricProviders:
         assert isinstance(experiment.probes, tuple)
         found = select_sensors(experiment, builtin_kinds, probe_set(experiment.probes))
         assert found.problems == ()
-        assert {s.label: (s.metrics, s.source) for s in found.sensors} == {
+        assert {s.label: (s.metrics, s.origin) for s in found.sensors} == {
             "timing": (("ttfb", "throughput"), "ix"),
             "memory": (("memory_peak",), "ix"),
         }
@@ -580,7 +622,7 @@ class TestMetricProviders:
         assert checked.problems == ()
         assert checked.design is not None
         (sensor,) = checked.design.sensors
-        assert (sensor.label, sensor.source) == ("timing", "experiment")
+        assert (sensor.label, sensor.origin) == ("timing", "experiment")
 
     def test_two_listed_providers_are_still_ambiguous(
         self, compare_data: dict[str, Any], builtin_genres: Genres, builtin_kinds: Kinds

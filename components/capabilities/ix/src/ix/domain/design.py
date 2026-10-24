@@ -52,11 +52,11 @@ Origin = Literal["experiment", "genre", "ix"]
 
 
 class SourcedValue(Record):
-    """One resolved value of the design and where it came from."""
+    """One resolved value of the design and where it came from (``origin``)."""
 
     path: str
     value: Level | None
-    source: Origin
+    origin: Origin
     note: str = ""
 
 
@@ -69,13 +69,13 @@ class RoleAssignment(Record):
 
 
 class SelectedSensor(Record):
-    """A sensor a run would use, the metrics it is there for, and who chose it; and the
-    confusion its kind declares, which a report tabulates."""
+    """A sensor a run would use, the metrics it is there for, and who chose it (``origin``);
+    and the confusion its kind declares, which a report tabulates."""
 
     kind: str
     metrics: tuple[str, ...]
     options: dict[str, Any] = {}
-    source: Origin = "ix"
+    origin: Origin = "ix"
     confusion: Confusion | None = None
 
     @property
@@ -105,6 +105,8 @@ class Design(Record):
     sensors: tuple[SelectedSensor, ...] = ()
     repeats: int
     seed: int
+    #: How many trials a run carries out at once (the experiment's ``trials_in_flight``).
+    trials_in_flight: int = 1
     order: Order
     calibration: Calibration
     analysis: AnalysisRef
@@ -421,7 +423,7 @@ def _selected(
             kind=sensor.name,
             metrics=(),
             options=dict(experiment.sensors[index].options),
-            source="experiment",
+            origin="experiment",
             confusion=sensor.confusion,
         )
         for index, sensor in listed
@@ -432,7 +434,7 @@ def _selected(
             kind=sensor.name,
             metrics=(*(current.metrics if current else ()), metric),
             options=current.options if current else options,
-            source=current.source if current else origin,
+            origin=current.origin if current else origin,
             confusion=sensor.confusion,
         )
     for name, selected in list(by_sensor.items()):
@@ -682,7 +684,7 @@ def _reductions(
 
 
 def _from(origin: Origin, *, path: str, value: Level | None, note: str = "") -> SourcedValue:
-    return SourcedValue(path=path, value=value, source=origin, note=note)
+    return SourcedValue(path=path, value=value, origin=origin, note=note)
 
 
 @dataclass(frozen=True)
@@ -720,6 +722,14 @@ def _settings(experiment: Experiment, genre: Genre, control: str | None) -> _Set
         seed = _derived_seed(experiment)
         note = "derived from the experiment's name; state seed: to pin it"
         sourced.append(_from("ix", path="seed", value=seed, note=note))
+
+    if "trials_in_flight" in experiment.model_fields_set:
+        sourced.append(
+            _from("experiment", path="trials_in_flight", value=experiment.trials_in_flight)
+        )
+    else:
+        note = "one trial at a time; state trials_in_flight: to carry more out at once"
+        sourced.append(_from("ix", path="trials_in_flight", value=1, note=note))
 
     sourced.append(_from("genre", path="order", value=genre.design.order))
     sourced.append(_from("genre", path="calibration", value=genre.design.calibration))
@@ -799,6 +809,7 @@ def resolve(
         sensors=instruments.sensors,
         repeats=settings.repeats,
         seed=settings.seed,
+        trials_in_flight=experiment.trials_in_flight,
         order=genre.design.order,
         calibration=genre.design.calibration,
         analysis=genre.analysis,

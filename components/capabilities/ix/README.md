@@ -8,14 +8,14 @@ to be relied on. For a service: is the new build no slower than the old one, doe
 
 You write the question, the systems and the measurement that decides it in one YAML file.
 ix checks the file, shows what a run would do, freezes the design before anything
-runs, runs it one trial at a time and reports a verdict: `holds`, `fails` or
-`inconclusive`. The exit code is the verdict, so a run can gate a merge or a release.
+runs, runs its trials (one at a time, or several at once where nothing they measure is
+disturbed by it) and reports a verdict: `holds`, `fails` or `inconclusive`. The exit code is the verdict, so a run can gate a merge or a release.
 
 ```bash
 # the ix command
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.6.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
 # the library, in a project
-uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.6.0#subdirectory=components/capabilities/ix"
+uv add "ix @ git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
 ```
 
 ix is installed from its repository at the release's tag. It is on no package index, and the
@@ -234,7 +234,10 @@ add report sections. It may not loosen its parent, change the analysis or add a 
 it, change the estimator or the verdict form, or add a role. A genre file that breaks this is
 refused with a `genre_narrowing` problem for each place it does.
 
-A genre's `design` (repeats, order, calibration, estimator) carries a note on its standing.
+A genre's `design` (repeats, order, calibration, estimator, overlap) carries a note on its
+standing. Its `overlap` (`allowed` when unsaid) says whether its trials may overlap at all:
+`regress` says `forbidden`, so a gate's trials run one at a time whatever its kinds allow;
+a genre that extends another may forbid it, never allow it again.
 The built-in genres need at least 5 repeats to decide (3 for `characterize`) and default to
 10 (5); their methods are checked by simulation at those counts (see
 [the method](#the-verdict-and-the-method-behind-it)). A genre that decides cannot use `min`
@@ -247,6 +250,17 @@ data, the way a genre is: its options (with types, and which are required), the 
 offers and needs, for a sensor the metrics it provides and whether a model judges them,
 and for an environment the keys each service it brings up is bound with (`service_keys:
 [host, port, url]`, named `{<service>.<key>}`). `ix kinds` lists them.
+
+Every kind also says whether two trials may use it at once (`overlap: allowed`, or
+`forbidden`, which a kind that says nothing is), and each metric whether what it reads moves
+with whatever runs beside the trial (`contended: true`: a time, a throughput, a memory
+peak). Of the built-ins, `agent-session`, `model-call`, `prompt`, `none` and every sensor
+that reads what a trial stored allow overlap; `process` and `http` subjects, `http-load`,
+`inspect-task` (an Inspect task may bring up sandboxes its samples share), `timing`,
+`memory` and the `process` and `compose` environments forbid it.
+Every metric of `timing` and `memory` is contended, and `usage`'s `duration` and the
+evaluator's `eval_duration_passed`. `ix kinds` shows both: each kind's `overlap`, and each
+metric's `judged` and `contended`.
 
 | family | kinds |
 |---|---|
@@ -274,7 +288,7 @@ A declaration is not an adapter. ix can **run** these:
 | sensor | `text-match` | `text_matched`: the reply starts or ends with, equals, contains, excludes or matches (a regular expression) what the probe's truth or the sensor's options say; no code of your own |
 | sensor | `usage` | tokens, `cost`, `turns`, `tool_calls`, `duration`, `rounds`, and `hit_limit`, as the runtime reported them; what it did not report (a model call's cost or turns) is left out |
 | sensor | `judge` | a model scores the reply against a rubric, by one call on the model runtime `model_runtime` names or a one-turn session on the agent runtime `agent_runtime` names; its metrics are reported and never decide |
-| sensor | `evaluator` | one of pydantic-evals' evaluators, named by `evaluator` with its `arguments`, reads the trial: the reply, the probe's truth `expected_output` and `metadata`, how long the probe took, and the spans that ended in the trial (matrix's `execute_tool` spans, for `ToolCorrectness`, `TrajectoryMatch`, `MaxToolCalls`). Its assertions are `eval_passed` and its score `eval_score`; an evaluator that calls a model (`LLMJudge`, `GEval`) gives `judged_eval_passed` and `judged_eval_score`, on the model its `model_runtime` gives, never pydantic-evals' default. ix keeps the loop: `Dataset.evaluate` is not used |
+| sensor | `evaluator` | one of pydantic-evals' evaluators, named by `evaluator` with its `arguments`, reads the trial: the reply, the probe's truth `expected_output` and `metadata`, how long the probe took, and the spans that ended in the trial (matrix's `execute_tool` spans, for `ToolCorrectness`, `TrajectoryMatch`, `MaxToolCalls`). Its assertions are `eval_passed` and its score `eval_score`, but `MaxDuration`'s is `eval_duration_passed`, a time and so contended; an evaluator that calls a model (`LLMJudge`, `GEval`) gives `judged_eval_passed` and `judged_eval_score`, on the model its `model_runtime` gives, never pydantic-evals' default. ix keeps the loop: `Dataset.evaluate` is not used |
 | environment | `none`, `process` | nothing; or programs started before the trials and stopped when the run ends, each bound with where it listens (`{<service>.url}`, `.host`, `.port`), which a subject's or a probe's options name |
 | environment | `compose` | a docker compose project brought up once for the run (`docker compose up -d --wait`, healthchecks included) and down after it (`down -v --remove-orphans`, deferred before `up`, so a stack that came up in part still comes down); each running service bound with its first published port (`{web.url}`) and the image id it runs, in the run's bindings row; a service found stopped or unhealthy after a trial fails the run. Without `project`, the project is named for the run, and a stack a killed run left is swept; a `project` written that already has containers is refused |
 
@@ -320,6 +334,10 @@ def register(registry):
   sensor under `sensors:` settles an ambiguity or gives it options;
 - a probe's truth key that no sensor in use reads is refused (`truth_unclaimed`), so a typo
   does not pass silently;
+- `trials_in_flight` above 1 is refused (`trials_in_flight_refused`) where a kind in use
+  or the genre forbids overlap, or a deciding metric is contended; the fix names
+  each and says `trials_in_flight: 1`. A contended metric only reported is a warning
+  (`trials_in_flight_contended`);
 - a `{name}` placeholder must be bound to what a trial fills it with
   (`unbound_placeholder`). A subject's options are filled with the cell's levels, so a
   factor binds them: `characterize` over `factors: {rounds: [1, 2, 3]}` with `loop:
@@ -422,11 +440,29 @@ env/a.yaml]` the program and its config. A program found on PATH is not the expe
 A run brings the environment up once, binds each service it brought up with how to reach
 it (a subject's or a probe's option names `{<service>.url}`, `.host`, `.port`; a run whose
 environment comes up without a service the experiment names fails before any trial), then
-carries out the trials one at a time in the order the plan fixed (`plan` and `run` compute the same list, and the plan's digest covers
-it). For each trial: start the subject, let the sensors that must watch begin, apply the
-probe, stop the watchers, stop the subject. The sensors then read every trial that was
-carried out. Progress goes to stderr (a bar on a terminal, one line per trial otherwise,
-nothing under `--json`); the report goes to stdout.
+carries out the trials, starting them in the order the plan fixed (`plan` and `run` compute the same list, and the plan's digest covers
+it), one at a time unless the experiment writes `trials_in_flight` (below). For each
+trial: start the subject, let the sensors that must watch begin, apply the probe, stop the
+watchers, stop the subject. The sensors then read every trial that was carried out.
+Progress goes to stderr (a bar on a terminal, one line per trial otherwise, nothing under
+`--json`); the report goes to stdout.
+
+**Trials in flight.** `trials_in_flight: 4` carries four trials out at once: each trial
+starts in the plan's order as another lands, and each row carries its `seq`, which every
+reader orders by. It is 1 when left out. The trials, and the n each estimate rests on, are
+the same at any width; what changes is the load around each trial: a provider's rate
+limits, and a session slowed by its neighbours that now meets its `timeout`. So the width
+is part of the design: the plan states it (`Order:`), its digest covers it, and
+registration freezes it, so a gate is never passed at a width nobody registered.
+`ix run --trials-in-flight N` tries a width with `--exploratory` or `--dry-run` only, and is
+listed under `Changed`; `ix plan --trials-in-flight N` shows that run's plan first, with the
+refusal or warnings it would meet, and runs nothing. A width above 1 is refused (`trials_in_flight_refused`, its fix
+`trials_in_flight: 1`) where any kind in use or the genre forbids overlap, or a deciding
+metric is contended ([Kinds](#kinds)); in practice, agent sessions and model calls judged on
+what they said or did. With an environment, a trial counts as carried out only once a check
+that began after it ended finds the environment still up; on the first that does not,
+nothing more starts and every trial not yet confirmed is `environment_lost`. The sensors
+read at the same width, one at a time for a kind that forbids overlap.
 
 - **Register first.** `ix run` refuses an unregistered experiment (exit 15).
   `--exploratory` runs it anyway; that run gives no verdict, its report shows what it found
@@ -649,7 +685,9 @@ between two samples is missed.
 
 ### Not built
 
-Trials run one at a time; there is no concurrency. A subject left running by a run that was
+Trials of a `process` or `http` subject, of `http-load`, or under `timing` or `memory`
+cannot run in flight: those kinds forbid overlap, and no measurement says yet what
+several at once would do to them. A subject left running by a run that was
 killed outright is not found and stopped later: in the next run, each trial of a subject
 whose address already answers is recorded as a harness failure (`address_in_use`) instead
 of being measured. The sensors cannot be run again over a stored run and written back.
@@ -697,7 +735,7 @@ import ix
 
 result = ix.validate("examples/proxy-streaming")  # ix.Validation: valid, complete, problems
 plan = ix.plan("examples/proxy-streaming")  # ix.Plan; raises ix.InvalidExperimentError
-design = ix.resolve("examples/proxy-streaming")  # ix.Design: every value, with its source
+design = ix.resolve("examples/proxy-streaming")  # ix.Design: every value, with its origin
 genres, kinds = ix.genres(), ix.kinds()  # ix.Genres, ix.Kinds
 
 slower = "examples/delay-server/slower.yaml"

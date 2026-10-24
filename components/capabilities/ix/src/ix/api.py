@@ -62,7 +62,11 @@ def resolve(source: Source, *, base: PathLike | None = None) -> Design:
 
 
 def plan(
-    source: Source, *, base: PathLike | None = None, registration: PathLike | None = None
+    source: Source,
+    *,
+    base: PathLike | None = None,
+    registration: PathLike | None = None,
+    trials_in_flight: int | None = None,
 ) -> Plan:
     """What a run would do. Runs nothing and writes nothing.
 
@@ -73,8 +77,18 @@ def plan(
     ``registration`` names the registration file to compare with; for a path source it
     defaults to the file beside the experiment. Raises :class:`InvalidExperimentError` when
     the experiment is invalid.
+
+    ``trials_in_flight`` plans the run :func:`run` would carry out given the same width in
+    place of the file's: the plan's ``order`` and digest are at that width, and
+    ``Plan.overridden`` notes the change. It is refused as that run would refuse it: below 1
+    (:class:`UsageError`), and where the experiment's kinds, deciding metrics or genre
+    forbid overlap (:class:`InvalidExperimentError`, problem ``trials_in_flight_refused``).
+    A run that gives a verdict refuses the width as an override, so the run to try it is
+    ``exploratory`` or ``dry_run``.
     """
-    return _root().plan(source, base=base, registration=registration)
+    return _root().plan(
+        source, base=base, registration=registration, trials_in_flight=trials_in_flight
+    )
 
 
 def register(
@@ -108,6 +122,7 @@ def run(
     exploratory: bool = False,
     dry_run: bool = False,
     repeats: int | None = None,
+    trials_in_flight: int | None = None,
     base: PathLike | None = None,
     registration: PathLike | None = None,
     on_event: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -115,8 +130,8 @@ def run(
     """Run the experiment and return its report.
 
     A run starts the subjects, applies the probes and takes the measurements the experiment
-    declares, one trial at a time, and records everything under
-    ``<experiment directory>/.ix/runs/<run id>/``.
+    declares, one trial at a time unless the experiment writes ``trials_in_flight``, and
+    records everything under ``<experiment directory>/.ix/runs/<run id>/``.
 
     Raises before anything starts: :class:`InvalidExperimentError`; :class:`ConfigError`
     when a kind the experiment names has no adapter, or something it requires of this host
@@ -136,6 +151,11 @@ def run(
     ``Report.overridden``; only with ``exploratory`` or ``dry_run`` (else
     :class:`UsageError`: a run that gives a verdict is held to its registered design), and
     never below the genre's minimum (:class:`InvalidExperimentError`).
+    ``trials_in_flight`` carries that many trials out at once in place of the file's width,
+    noted in ``Report.overridden``; only with ``exploratory`` or ``dry_run`` (else
+    :class:`UsageError`, as ``repeats`` is), at least 1 (else :class:`UsageError`), and
+    refused where the experiment's kinds, deciding metrics or genre forbid overlap
+    (:class:`InvalidExperimentError`, problem ``trials_in_flight_refused``).
     ``Report.best_case`` says when the run is too small for even every trial passing to
     show a pass rate's threshold.
 
@@ -152,6 +172,7 @@ def run(
         exploratory=exploratory,
         dry_run=dry_run,
         repeats=repeats,
+        trials_in_flight=trials_in_flight,
         base=base,
         registration=registration,
         on_event=on_event,

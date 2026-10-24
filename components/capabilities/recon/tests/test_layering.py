@@ -76,7 +76,7 @@ PURE_STDLIB = frozenset(
 #: (``domain/clock.py``); it starts no thread. Accepted (owner ruling 2026-10-22).
 LAYER_STDLIB = {
     "domain": frozenset({"threading"}),
-    "application": frozenset({"hashlib", "json"}),
+    "application": frozenset({"hashlib", "json", "threading"}),
 }
 
 #: Third-party packages an inner layer may import.
@@ -271,7 +271,11 @@ def test_a_driving_adapter_reaching_past_recon_all_is_found(
 def test_the_clock_is_read_only_through_its_port() -> None:
     """Determinism rests on this: the time of day and the passing of time reach recon only
     through ``Clock``, whose one real implementation is the system clock adapter. A unique
-    id is drawn only for a capture, the contract's one stated exception."""
+    id is drawn only for a capture, the contract's one stated exception. The ``sse``
+    collector draws its reconnect waits unseeded, so processes streaming from one server do
+    not reconnect in step, and waits them on a ``threading.Event`` a stop ends: when it
+    reconnected is in the gaps it records from the clock port, so the record of a stream
+    keeps the contract (review items 8 and 9, Erlang)."""
     reads_clock = {
         _relative(f)
         for f in _files()
@@ -284,7 +288,7 @@ def test_the_clock_is_read_only_through_its_port() -> None:
         for f in _files()
         if {"uuid", "random"} & {m.split(".")[0] for m in _imports(f)}
     }
-    assert draws_ids == {"adapters/_out/capture_files.py"}
+    assert draws_ids == {"adapters/_out/capture_files.py", "adapters/_out/sse_collector.py"}
 
 
 def test_recon_names_no_matrix() -> None:
@@ -306,18 +310,22 @@ class TestLibrarySurface:
         collector types lives in ``recon.domain.collector`` and is not re-exported.
 
         Changed requirement: the operations return typed documents, so their types are
-        declared names too."""
+        declared names too. Changed again (review item 6): a control an operation takes to be
+        steered while it runs, ``StreamStop``, is declared too."""
         operations = {"init", "plan", "survey", "status", "query", "templates", "capture",
                       "survey_failure", "error_document", "skill", "skill_references",
-                      "configure_telemetry"}  # fmt: skip
+                      "configure_telemetry", "read_since", "watch", "stream",
+                      "stream_failure"}  # fmt: skip
         documents = {"MissionDocument", "PlanDocument", "SurveyDocument", "TableOutcome",
                      "StatusDocument", "QueryRows", "TemplatesDocument", "Capture",
-                     "ErrorDocument"}  # fmt: skip
+                     "ErrorDocument", "RecordsSince", "StreamDocument",
+                     "WindowOutcome"}  # fmt: skip
         errors = {"ReconError", "UsageError", "ConfigError", "ConflictError", "NotFoundError",
                   "QueryError", "CollectionError", "Problem"}  # fmt: skip
         tables = {"ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "PROBLEM_KINDS",
                   "__version__"}  # fmt: skip
-        assert set(recon.__all__) == operations | documents | errors | tables
+        controls = {"StreamStop"}  # what an operation takes to be steered while it runs
+        assert set(recon.__all__) == operations | documents | errors | tables | controls
 
     def test_no_declared_name_is_shadowed_by_a_subpackage(self) -> None:
         """Importing ``recon.<sub>`` binds ``<sub>`` on ``recon``; a function of the same
@@ -465,6 +473,9 @@ def test_the_public_names_are_the_ones_callers_use() -> None:
         "NotFoundError", "PROBLEM_KINDS", "PlanDocument", "Problem", "QueryError", "QueryRows",
         "ReconError", "StatusDocument", "SurveyDocument", "TableOutcome", "TemplatesDocument",
         "UsageError", "__version__", "capture", "configure_telemetry", "error_document", "init",
-        "plan", "query", "skill", "skill_references", "status", "survey", "survey_failure",
+        "plan", "query", "read_since", "RecordsSince", "skill", "skill_references", "status",
+        "survey", "survey_failure", "watch",
         "templates",
+        "stream", "stream_failure", "StreamDocument", "WindowOutcome",
+        "StreamStop",
     }  # fmt: skip

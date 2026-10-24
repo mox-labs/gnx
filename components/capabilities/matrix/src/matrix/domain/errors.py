@@ -92,7 +92,7 @@ EXIT_NEXT: dict[str, str] = {
 
 #: The repository tag of this release. matrix is not published to a package index: it is
 #: installed from the repository at this tag. The tests hold it to the package's version.
-RELEASE_TAG = "matrix-v0.7.0"
+RELEASE_TAG = "matrix-v0.8.0"
 
 #: Where this release is installed from, as a uv source.
 SOURCE = (

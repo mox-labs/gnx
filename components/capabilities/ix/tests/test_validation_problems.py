@@ -351,6 +351,15 @@ def _subjects_differ_in(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return {(p.path, p.kind) for p in examine(c, v).warnings}
 
 
+def _trials_in_flight_refused(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    return _found({**c, "trials_in_flight": 2}, v)
+
+
+def _trials_in_flight_contended(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
+    examined = examine({**e, "metrics": ["duration"], "trials_in_flight": 2}, v)
+    return {(p.path, p.kind) for p in examined.warnings}
+
+
 def _genre_rejected(c: Any, e: Any, v: Vocabulary, write: Write) -> Pairs:
     return _lab(write, c, "genres", _LOOSE)
 
@@ -466,6 +475,16 @@ CASES: dict[str, tuple[Any, str, str]] = {
     "estimator_illegal": (_estimator_illegal, "primary.estimator", "estimator_illegal"),
     "judged_gate": (_judged_gate, "primary.metric", "judged_gate"),
     "unit_mismatch": (_unit_mismatch, "guardrails.0.threshold.value", "unit_mismatch"),
+    "trials_in_flight_refused": (
+        _trials_in_flight_refused,
+        "trials_in_flight",
+        "trials_in_flight_refused",
+    ),
+    "trials_in_flight_contended": (
+        _trials_in_flight_contended,
+        "trials_in_flight",
+        "trials_in_flight_contended",
+    ),
     "probes_empty": (_probes_empty, "probes", "probes_empty"),
     "probe_file": (_probe_file, "", "yaml_syntax"),
     "probes_folder_missing": (_probes_folder_missing, "probes", "probes_empty"),

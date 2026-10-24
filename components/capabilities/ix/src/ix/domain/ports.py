@@ -114,15 +114,26 @@ class Span(Protocol):
         ...
 
 
+class Attribution(Protocol):
+    """The sessions one block of work made: what :meth:`Recorded.attributed` yields."""
+
+    def sessions(self) -> tuple[int, ...]:
+        """The rows recorded in the block's task, and in the tasks it started, while the
+        block was open, in the order made. Final once the block has been left."""
+        ...
+
+
 @runtime_checkable
 class Recorded(Protocol):
     """Optional for a :class:`Scope`: the model sessions recorded on its behalf. Whatever
     runs ix keeps a table of the agent sessions and model calls its adapters made, failed
     ones included (matrix's ``matrix.v1.session``); this names their rows, so an interaction
-    or a reading can say which sessions are behind it."""
+    or a reading can say which sessions are behind it, whatever else runs beside it."""
 
-    def sessions(self) -> tuple[int, ...]:
-        """The rows recorded since the scope last handed a row over, in the order made."""
+    def attributed(self) -> AbstractAsyncContextManager[Attribution]:
+        """``async with scope.attributed() as attribution:`` names in
+        ``attribution.sessions()`` exactly the sessions made in this task, and in the
+        tasks started inside the block, while it is open: none a concurrent task made."""
         ...
 
 

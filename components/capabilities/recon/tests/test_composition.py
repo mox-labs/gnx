@@ -20,6 +20,7 @@ from recon.application.collectors import (
     SurveyCollectors,
 )
 from recon.application.collectors import build_collectors as build
+from recon.application.plan import build_plan
 from recon.composition import (
     TRANSFORMS_GROUP,
     Discover,
@@ -67,11 +68,22 @@ def test_builtins_register_through_the_entry_point_groups() -> None:
     """The installed package declares its own types and transforms like any plugin would:
     ``mcp`` among them, the type added after the others with no edit to the plan or survey."""
     registry = load_plugins()
-    assert {"api", "cli", "web", "capture", "mcp"} <= set(registry.collector_types)
+    assert {"api", "cli", "web", "capture", "mcp", "tail", "sse"} <= set(registry.collector_types)
     assert {"html2text", "inverted_index", "join", "first", "markitdown"} <= set(
         registry.transforms
     )
     assert registry.broken == []
+
+
+def test_each_collector_type_says_the_package_that_registered_it(plugin_module: None) -> None:
+    """Polish R6: a warning about a type can name whose it is. recon's own types are
+    registered by recon; one whose entry point has no package found is absent."""
+    registry = load_plugins()
+    for name in ("api", "cli", "web", "capture", "mcp", "tail", "sse"):
+        assert registry.collector_packages[name] == "recon", name
+
+    unpackaged = load_plugins(_discover([("good", "recon_test_plugins:good", COLLECTORS_GROUP)]))
+    assert "good" not in unpackaged.collector_packages
 
 
 def test_the_types_that_read_extract_say_so() -> None:
@@ -124,6 +136,35 @@ def test_a_plugin_that_raises_on_import_is_reported_and_others_load(plugin_modul
     assert "RuntimeError: boom on import" in by_name["boom"].error
     assert "expected a recon.domain.collector.CollectorType" in by_name["wrong"].error
     assert "ModuleNotFoundError" in by_name["missing"].error
+
+
+def test_a_plugin_type_declares_a_stream_through_the_entry_point_a_built_in_uses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ACES, extensible: a third party's type that never ends declares ``unbounded`` and
+    ``paced_by`` on its ``CollectorType``, registered under ``recon.collectors`` as ``tail``
+    and ``sse`` are, and the plan makes a stream of it with the defaults those declare."""
+    (tmp_path / "recon_test_feed.py").write_text(
+        "from recon.domain.collector import CollectorType\n"
+        "feed = CollectorType(create=lambda ctx: object(), effects=frozenset({'network'}),\n"
+        "                     unbounded=True, paced_by='source')\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        types, broken = load_collector_types(
+            _discover([("feed", "recon_test_feed:feed", COLLECTORS_GROUP)])
+        )
+    finally:
+        sys.modules.pop("recon_test_feed", None)
+    assert broken == []
+    installed = load_plugins()
+    plugins = Plugins({**installed.collector_types, **types}, installed.transforms, [])
+
+    plan = build_plan({"collectors": [{"name": "ticks", "type": "feed"}]}, plugins, {})
+
+    assert plan.valid, plan.problems
+    [stream] = plan.streams
+    assert (stream.window.seconds, stream.overflow) == (300.0, "drop_newest")
 
 
 def test_transforms_load_by_name_and_reject_non_callables(plugin_module: None) -> None:

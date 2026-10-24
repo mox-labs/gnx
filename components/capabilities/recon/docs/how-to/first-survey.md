@@ -9,7 +9,7 @@ You'll learn the **probe → normalize → survey** workflow by doing it. Total 
 Install recon from the gnx repository:
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.12.0#subdirectory=components/capabilities/recon"
+uv tool install "git+https://github.com/mox-labs/gnx@recon-v0.13.0#subdirectory=components/capabilities/recon"
 recon --version
 ```
 
@@ -223,6 +223,8 @@ recon survey dep-releases
 
 Three JSONL files in the latest archive, one per collector. The `probe` collector is gone because you renamed it — that file only lives in the earlier archive.
 
+A longer survey can be read while it runs: in another terminal, `recon watch dep-releases` prints each record as it is written and returns when the survey ends ([watch-a-survey.md](./watch-a-survey.md)).
+
 ## Stage 5 — Query
 
 DuckDB reads JSONL natively. Table names derive from filenames, every character but a letter, digit or `_` becoming `_` (hyphens become underscores). Query the latest archive:
@@ -272,4 +274,5 @@ If a table fails (GitHub down, token expired), the archive is still written and 
 - `recon --skill -r config-patterns` — domain patterns (code mining, RSS, dependency audits, issue triage, doc surveys, modern search APIs) as complete copy-and-adapt configs
 - `recon --skill -r normalize-spec` — full normalize spec syntax including the built-in transforms (`$html2text`, `$inverted_index`, `$join`, `$first`, `$markitdown`)
 - [capture-mcp-results.md](./capture-mcp-results.md) — normalize results an MCP tool already fetched, captured by a Claude Code hook
+- [watch-a-survey.md](./watch-a-survey.md) — read a survey's records while it runs
 - [capability.md](../explanation/capability.md) — the deeper "why" behind the tool

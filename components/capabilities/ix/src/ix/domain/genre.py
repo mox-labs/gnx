@@ -22,7 +22,7 @@ from typing import Any, Literal
 from pydantic import Field, ValidationError, model_validator
 
 from ix.domain import schema
-from ix.domain.kind import settle, unreadable
+from ix.domain.kind import Overlap, settle, unreadable
 from ix.domain.problem import Problem, from_validation_error, problem
 from ix.domain.schema import DeclarationFile, Record
 
@@ -91,6 +91,10 @@ class GenreDesign(Record):
     #: How the trials' numbers combine when the experiment names no estimator. A boolean
     #: or a count metric always combines as a rate.
     estimator: Literal["mean", "median", "min", "max"] = "mean"
+    #: Whether this genre's trials may overlap (``trials_in_flight`` above one): ``allowed``
+    #: leaves it to the kinds and metrics in use, ``forbidden`` keeps them apart whatever
+    #: those say. The word means what it means on a kind.
+    overlap: Overlap = "allowed"
     #: The standing of these choices, printed once under a plan.
     note: str = Field(min_length=1)
 
@@ -241,6 +245,7 @@ class Genre(Record):
 #: Stricter comes later: a child may move right, never left.
 _ORDER_STRICTNESS = ("sequential", "interleaved")
 _CALIBRATION_STRICTNESS = ("none", "aa")
+_OVERLAP_STRICTNESS = ("allowed", "forbidden")
 
 
 #: One way a child loosens its parent: (path, what is wrong, the fix).
@@ -338,7 +343,11 @@ def _design_loosened(parent: Genre, child: Genre) -> list[_Loosened]:
                 f"min: {was.repeats.min} or more",
             )
         )
-    for field, scale in (("order", _ORDER_STRICTNESS), ("calibration", _CALIBRATION_STRICTNESS)):
+    for field, scale in (
+        ("order", _ORDER_STRICTNESS),
+        ("calibration", _CALIBRATION_STRICTNESS),
+        ("overlap", _OVERLAP_STRICTNESS),
+    ):
         strict, relaxed = getattr(was, field), getattr(now, field)
         if scale.index(relaxed) < scale.index(strict):
             found.append(

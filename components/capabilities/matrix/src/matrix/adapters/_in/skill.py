@@ -280,6 +280,11 @@ need not import matrix. This runs as written:
 - **`ctx.provide(kind, row)`** hands one row over while still running; when it returns the
   row is checked, recorded and durable. Use it for long work: a run given a store
   (`Executor().run(..., store=JsonlConstructStore(dir))`) and then killed keeps it.
+- **`ctx.attributed()`**: for work run in tasks side by side (trials in flight), open
+  `async with ctx.attributed() as trial:` in each task and hand its row over with
+  `ctx.provide(kind, row, sessions=trial.sessions())`: its ledger entry then names the agent
+  sessions and model calls of that task alone, never a neighbour's. Without it, a row names
+  every session the component ran since its last hand-over.
 - **`ctx.stopping`** is an `asyncio.Event` set when the run asks the component to finish
   (its deadline, another component's failure, a cancel). Check it and return what you
   have: it is recorded, and the component ends `stopped` (past its deadline, `failed`), not

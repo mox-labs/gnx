@@ -121,8 +121,11 @@ class Report(Record):
     #: a stand-in.
     dry_run: bool = False
     stood_in: tuple[str, ...] = ()
-    #: What the run changed from the experiment as written: a pilot's ``--repeats``.
+    #: What the run changed from the experiment as written: a pilot's ``--repeats``, a
+    #: ``--trials-in-flight``.
     overridden: tuple[str, ...] = ()
+    #: How many trials the run carried out at once.
+    trials_in_flight: int = 1
     registered_at: str = ""
     #: How the experiment differed from its registration when the run started.
     deviations: tuple[Deviation, ...] = ()
@@ -275,6 +278,7 @@ def report(
         shows=() if stood_in else shows(design, analysis.findings),
         best_case=best_case(design, design.repeats * len(manifest.probes)),
         overridden=manifest.overridden,
+        trials_in_flight=design.trials_in_flight,
         warnings=manifest.warnings,
         run=record.run,
         location=record.location,

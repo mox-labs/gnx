@@ -36,12 +36,14 @@ from recon import __version__
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.cli_collector import PopenRunner
 from recon.adapters._out.duckdb_query import DuckdbQuery
+from recon.adapters._out.event_channel import ThreadChannel
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.mission_files import MissionFiles, find_project
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.application.collectors import COLLECTORS_GROUP, CollectorPorts, build_collectors
+from recon.application.stream import StreamStop as StreamStop
 from recon.application.use_cases import Recon as Recon
 from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
 from recon.domain.telemetry import Telemetry
@@ -49,6 +51,7 @@ from recon.domain.telemetry import Telemetry
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
+    from recon.application.use_cases import ChannelFactory
     from recon.domain.archives import ArchiveStore
     from recon.domain.clock import Clock
     from recon.domain.collector import Transform
@@ -58,7 +61,7 @@ if TYPE_CHECKING:
     from recon.domain.http import Requester
     from recon.domain.ratelimit import RateLimiter
     from recon.domain.shell import ShellRunner
-    from recon.domain.telemetry import EventSink
+    from recon.domain.telemetry import Channel, EventSink
 
 TRANSFORMS_GROUP = "recon.transforms"
 
@@ -76,9 +79,7 @@ def _discover(group: str) -> list[EntryPoint]:
 def _load(
     group: str, accept: Callable[[Any], bool], expected: str, discover: Discover
 ) -> tuple[dict[str, Any], list[BrokenPlugin]]:
-    found = list(discover(group))
-    # recon's own registrations first, so a third party cannot shadow a built-in.
-    found.sort(key=lambda ep: (getattr(ep.dist, "name", None) != "recon", ep.name))
+    found = _ours_first(discover(group))
     loaded: dict[str, Any] = {}
     broken: list[BrokenPlugin] = []
     for ep in found:
@@ -120,10 +121,38 @@ def load_transforms(
 
 
 def load_plugins(discover: Discover = _discover) -> Plugins:
-    """Every installed collector type and transform, and the plugins that failed to load."""
+    """Every installed collector type and transform, the plugins that failed to load, and
+    the package that registered each collector type."""
     types, broken_types = load_collector_types(discover)
     transforms, broken_transforms = load_transforms(discover)
-    return Plugins(types, transforms, broken_types + broken_transforms)
+    packages = {
+        name: package
+        for name, package in _packages(COLLECTORS_GROUP, discover).items()
+        if name in types
+    }
+    return Plugins(types, transforms, broken_types + broken_transforms, packages)
+
+
+def _packages(group: str, discover: Discover) -> dict[str, str]:
+    """The package (the distribution, as installed) of each name's entry point in ``group``
+    that :func:`_load` keeps: recon's own before any other's. A name whose entry point has no
+    package found is left out."""
+    packages: dict[str, str] = {}
+    seen: set[str] = set()
+    for ep in _ours_first(discover(group)):
+        if ep.name in seen:
+            continue  # shadowed: _load refused it
+        seen.add(ep.name)
+        package = getattr(ep.dist, "name", None)
+        if isinstance(package, str):
+            packages[ep.name] = package
+    return packages
+
+
+def _ours_first(found: Iterable[EntryPoint]) -> list[EntryPoint]:
+    """``found`` with recon's own registrations first, so a third party cannot shadow a
+    built-in, each part by name."""
+    return sorted(found, key=lambda ep: (getattr(ep.dist, "name", None) != "recon", ep.name))
 
 
 def root(
@@ -136,6 +165,7 @@ def root(
     requester: RequesterFactory | None = None,
     shell: ShellRunner | None = None,
     converter: DocumentConverter | None = None,
+    channel: ChannelFactory | None = None,
 ) -> Recon:
     """recon wired to this process: missions under ``project`` (default: the project root of
     the working directory), and the environment ``env`` (default: the process environment).
@@ -143,8 +173,9 @@ def root(
 
     Each port the rest names is bound to its real adapter unless one is given: the clock,
     the installed plugins, the archive store, the survey's Requester (built per survey by
-    ``requester`` from the survey's telemetry), the shell and the document converter. A
-    test's root is this one with fakes given for the ports it stands in for."""
+    ``requester`` from the survey's telemetry), the shell, the document converter, and each
+    survey's event channel (``channel``, default a :class:`ThreadChannel` with its defaults).
+    A test's root is this one with fakes given for the ports it stands in for."""
     clock = clock or SystemClock()
     process_env = os.environ if env is None else env
     plugins = plugins if plugins is not None else load_plugins()
@@ -157,11 +188,14 @@ def root(
         clock=clock,
     )
 
-    def telemetry(archive: Path | None) -> Telemetry:
-        sinks: list[EventSink] = [OtelEvents(__version__)]
+    def telemetry(
+        archive: Path | None, channel: Channel | None, reads: Clock | None = None, /
+    ) -> Telemetry:
+        otel = OtelEvents(__version__)
+        sinks: list[EventSink] = [otel if channel is None else channel.sink(otel)]
         if archive is not None:
             sinks.insert(0, archives.event_log(archive))
-        return Telemetry(sinks, clock)
+        return Telemetry(sinks, reads or clock)
 
     found, found_by = (project.resolve(), "argument") if project else find_project(Path.cwd())
     missions = MissionFiles(found, clock)
@@ -178,6 +212,7 @@ def root(
         env=process_env,
         version=__version__,
         root_found_by=found_by,
+        channel=channel or ThreadChannel,
     )
 
 

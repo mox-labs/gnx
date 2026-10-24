@@ -222,7 +222,19 @@ class TestBuiltInGenres:
         assert compare is not None and regress is not None
         assert regress.factors == compare.factors
         assert regress.verdict_form == compare.verdict_form
-        assert regress.design == compare.design
+        # Its one design choice of its own: its trials do not overlap (the next test).
+        assert regress.design == compare.design.model_copy(update={"overlap": "forbidden"})
+
+    def test_only_a_gates_trials_may_not_overlap(self, builtin_genres: Genres) -> None:
+        """Ruling X4 (record §27): regress forbids overlap until the live validation slice
+        passes, since a gate is taken up mechanically and a confound it missed would ship;
+        the other genres allow it and leave it to their kinds."""
+        overlap = {g.label: g.design.overlap for g in builtin_genres.genres.values()}
+        assert overlap == {
+            "characterize": "allowed", "compare": "allowed", "evaluate": "allowed",
+            "regress": "forbidden",
+        }  # fmt: skip
+        assert Genre.model_validate(_genre()).design.overlap == "allowed"
 
     def test_compare_has_one_control_and_one_or_more_variants(self, builtin_genres: Genres) -> None:
         compare = builtin_genres.get("compare")
@@ -383,6 +395,17 @@ class TestExtension:
         parent["design"]["calibration"] = "aa"
         found = _genres(parent, _child(design={"calibration": "none"}))
         assert _paths(found) == ["design.calibration"]
+
+    def test_a_child_may_keep_its_trials_apart_and_may_not_let_them_overlap(self) -> None:
+        """Ruling X4: a genre's ``overlap`` only tightens, allowed to forbidden, as order and
+        calibration do: a finding under the child is still one under the parent."""
+        assert _genres(_genre(), _child(design={"overlap": "forbidden"})).rejected == {}
+        parent = _genre()
+        parent["design"]["overlap"] = "forbidden"
+        found = _genres(parent, _child(design={"overlap": "allowed"}))
+        assert _paths(found) == ["design.overlap"]
+        (refused,) = found.rejected[CHILD]
+        assert refused.fix == "overlap: forbidden"
 
     @pytest.mark.parametrize(
         ("parent", "child"),

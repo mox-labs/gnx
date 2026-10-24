@@ -6,7 +6,9 @@ Every table is a view named by :func:`~recon.domain.archives.table_name` (non-id
 characters become ``_``). A table that collected nothing is a view with no rows, whose
 columns are the ones the store says it keeps (its collector's ``normalize:`` spec's),
 null-typed, so a query of them binds as it would on a full table; ``_empty`` is a column of
-it too, for queries written against the sentinel line an empty table's file holds.
+it too, for queries written against the sentinel line an empty table's file holds. A query
+across a stream's windows (:meth:`DuckdbQuery.execute_across`) makes each view of the
+table's file in every window, read as one, by column name.
 
 A view is made per table, and one that cannot be made does not stop the others. DuckDB reads
 a JSON object as a struct, so an object keyed by data rather than by field names (OpenAlex's
@@ -40,6 +42,7 @@ from recon.domain.archives import Rows, table_name
 from recon.domain.errors import NotFoundError, Problem, QueryError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
     from recon.domain.archives import ArchiveStore, StoredTable
@@ -90,17 +93,23 @@ class DuckdbQuery:
         self._archives = archives
 
     def execute(self, archive: Path, sql: str) -> Rows:
+        return self._execute([archive.absolute()], sql)
+
+    def execute_across(self, archives: Sequence[Path], sql: str) -> Rows:
+        return self._execute([archive.absolute() for archive in archives], sql)
+
+    def _execute(self, archives: list[Path], sql: str) -> Rows:
         import duckdb  # only a query needs it
 
-        archive = archive.absolute()
-        tables = self._archives.tables(archive)
+        archive = archives[-1]
+        tables = _grouped([_sealed(self._archives.tables(a)) for a in archives])
         if not tables:
             raise NotFoundError(f"no tables in archive {archive}")
         conn = duckdb.connect()
         try:
             _confine(conn, archive.parent)
             unreadable = _views(conn, tables)
-            names = [table_name(table.output) for table in tables]
+            names = list(tables)
             readable = [name for name in names if name not in unreadable]
             try:
                 _reads_only(conn, sql)
@@ -135,7 +144,7 @@ class DuckdbQuery:
     def unreadable(self, archive: Path) -> list[Problem]:
         import duckdb
 
-        tables = self._archives.tables(archive.absolute())
+        tables = _grouped([_sealed(self._archives.tables(archive.absolute()))])
         if not tables:
             return []
         conn = duckdb.connect()
@@ -148,26 +157,51 @@ class DuckdbQuery:
             conn.close()
 
 
-def _views(conn: Any, tables: list[StoredTable]) -> dict[str, tuple[Path, str]]:
-    """Make a view of each table; return the tables that got none, with their file and why."""
+def _sealed(tables: list[StoredTable]) -> list[StoredTable]:
+    """The tables SQL reads: a table not yet sealed holds provisional records, and its file
+    is not where the store says it will be."""
+    return [table for table in tables if table.sealed]
+
+
+def _grouped(archives: list[list[StoredTable]]) -> dict[str, list[StoredTable]]:
+    """Each table by the name SQL knows it by, with its part in each archive read, in the
+    archives' order: one part for a single archive, a window's each for a stream's."""
+    grouped: dict[str, list[StoredTable]] = {}
+    for tables in archives:
+        for table in tables:
+            grouped.setdefault(table_name(table.output), []).append(table)
+    return grouped
+
+
+def _views(conn: Any, tables: dict[str, list[StoredTable]]) -> dict[str, tuple[Path, str]]:
+    """Make a view of each table, of all its parts; return the tables that got none, with a
+    file of theirs and why. Parts read together are joined by column name, so a column one
+    part lacks is null in its rows."""
     import duckdb
 
     unreadable: dict[str, tuple[Path, str]] = {}
-    for table in tables:
-        name = table_name(table.output)
-        if table.empty:
-            kept = [f"NULL AS {_identifier(column)}" for column in table.columns]
-            if "_empty" not in table.columns:
+    for name, parts in tables.items():
+        files = [part.file for part in parts if not part.empty]
+        if not files:
+            columns = list(dict.fromkeys(column for part in parts for column in part.columns))
+            kept = [f"NULL AS {_identifier(column)}" for column in columns]
+            if "_empty" not in columns:
                 kept.append("NULL::BOOLEAN AS _empty")
             body = f"SELECT {', '.join(kept)} WHERE false"
+        elif len(files) == 1:
+            body = f"SELECT * FROM read_json_auto({_literal(files[0])})"
         else:
-            quoted = str(table.file).replace("'", "''")
-            body = f"SELECT * FROM read_json_auto('{quoted}')"
+            listed = ", ".join(_literal(file) for file in files)
+            body = f"SELECT * FROM read_json_auto([{listed}], union_by_name = true)"
         try:
             conn.execute(f'CREATE VIEW "{name}" AS {body}')
         except duckdb.Error as exc:
-            unreadable[name] = (table.file, _first_line(exc))
+            unreadable[name] = ((files or [parts[0].file])[0], _first_line(exc))
     return unreadable
+
+
+def _literal(path: Path) -> str:
+    return "'" + str(path).replace("'", "''") + "'"
 
 
 def _identifier(name: str) -> str:

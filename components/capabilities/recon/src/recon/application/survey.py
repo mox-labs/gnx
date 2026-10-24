@@ -10,16 +10,28 @@ Determinism (the contract the tests in ``test_determinism.py`` hold):
     archive is the same: its name, every table, and ``meta.yaml``. The one exception is the
     capture log a mission with ``preserve_raw`` keeps: each capture has a unique ``id``.
 
+    A stream's window keeps the same contract, window by window (``stream.py``): given the
+    same records arriving at the same stamps on the clock port, each window holds the same
+    records, in the same order, with the same ``meta.yaml`` and event log, whatever thread
+    wrote it. Which window a record falls in is a pure function of its order of arrival, its
+    stamp and the window spec, and a window kept with ``preserve_raw`` replays from its
+    capture to the same table under any clock. What a full buffer drops depends on how fast
+    the windows are written, so a window that dropped records says it cannot be replayed.
+
 Tables run one at a time, in config order, each collector against each of its sources in
 catalog order. A table that fails is recorded with its error and the rest still run. A
 mission's ``deadline:`` bounds them all, and a collector's each of its tables
 (:mod:`recon.domain.deadline`): a table cut short fails as ``transient``, and so does each
 table not started when the survey's deadline has passed; the archive is still finished. The
 archive is created incomplete and marked complete only after ``meta.yaml`` is written with
-every table succeeded, so a survey that fails a table, is interrupted or is killed leaves an
-archive that reads incomplete. A survey that cannot write ``meta.yaml`` or mark the archive
-complete is not ``finished``, and says why in an ``archive_unfinished`` warning. Each table
-is a ``recon.collect`` span.
+every table succeeded, so a survey that fails a table, is stopped or is killed leaves an
+archive that reads incomplete. ``meta.yaml`` says how the survey ended (``ended``):
+``finished``, or ``stopped`` when it was stopped on request (a ``KeyboardInterrupt``, which
+the command line raises for Ctrl-C and SIGTERM), the tables that ended before it recorded. A
+survey that cannot write ``meta.yaml`` or mark the archive complete is not ``finished``, and
+says why in an ``archive_unfinished`` warning. Each table
+is a ``recon.collect`` span, which says how many of its records are written, while it is
+written, at most once a second by the clock (``recon.collect.progress``).
 
 A table of a type that reads ``extract:`` (``CollectorType.extracts``) that gets exactly one
 record holding a list of objects, with neither ``extract:`` nor ``normalize:`` shaping it,
@@ -36,8 +48,8 @@ nothing.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Generator, Mapping
-from typing import TYPE_CHECKING, Any
+import contextlib
+from typing import TYPE_CHECKING, Any, Literal
 
 from recon.application.plan import fan_out
 from recon.domain.archives import META_FORMAT_VERSION
@@ -45,9 +57,10 @@ from recon.domain.deadline import Deadline, DeadlineExceededError
 from recon.domain.documents import TableError, TableOutcome
 from recon.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem, ReconError
 from recon.domain.normalize import nested_records
-from recon.domain.telemetry import COLLECT
+from recon.domain.telemetry import COLLECT, EventCallback
 
 if TYPE_CHECKING:
+    from collections.abc import Collection, Generator, Mapping
     from datetime import datetime
     from pathlib import Path
 
@@ -58,9 +71,8 @@ if TYPE_CHECKING:
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
     from recon.domain.telemetry import Span, Telemetry
 
-#: Receives each table's outcome as it lands: ``{"kind": "ok" | "error" | "table_warning" |
-#: "archive_warning", ...}``. The survey prints nothing itself.
-EventCallback = Callable[[dict[str, Any]], None]
+#: By default, the least seconds between two ``recon.collect.progress`` events of a table.
+PROGRESS_S = 1.0
 
 
 class CollectorError(CollectionError):
@@ -88,7 +100,8 @@ class Survey:
     collector runs against the sources the plan resolved for it; ``warnings`` collects
     what the run found worth saying about tables that succeeded, and about an archive it
     could not finish. ``finished`` is false when ``meta.yaml`` could not be written or the
-    archive could not be marked complete, so it reads incomplete whatever its tables did."""
+    archive could not be marked complete, so it reads incomplete whatever its tables did.
+    ``progress_s`` is the least time between two progress events of a table."""
 
     def __init__(
         self,
@@ -101,8 +114,10 @@ class Survey:
         extracts: Collection[str] = (),
         kinds: Mapping[str, Collection[str]] | None = None,
         deadline: Deadline | None = None,
+        progress_s: float = PROGRESS_S,
     ) -> None:
         self._archives = archives
+        self._progress_s = progress_s
         self._clock = clock
         self._deadline = deadline if deadline is not None else Deadline(clock)
         self._recon_version = recon_version
@@ -122,29 +137,41 @@ class Survey:
         started: datetime,
         config_sha256: str | None = None,
         resolved: Mapping[str, Any] | None = None,
+        streams: Collection[int] = (),
     ) -> list[TableOutcome]:
         """Run every table into ``archive``, a new one :meth:`ArchiveStore.create` made at
         ``started``, and write its ``meta.yaml``. Returns the tables, which also land in
         ``meta.yaml`` under ``tables``. ``resolved`` says where what the survey resolved came
         from (how its project root was found, which declared variables were set), and is
-        written as given."""
+        written as given. The entries at the positions in ``streams`` are streams, written
+        window by window into their own archives, so they are no table here."""
         captures = self._archives.capture_log(archive) if config.preserve_raw else None
         tables: list[TableOutcome] = []
         what = f"the survey's deadline ({config.deadline:g}s)" if config.deadline else ""
         fix = "raise deadline: at the top of the mission, or survey fewer tables"
-        with self._deadline.bound(config.deadline, what, fix):
-            for index, entry in enumerate(config.collectors):
-                tables += self._run_entry(index, entry, config, collectors, archive, captures)
-        meta = {
+        meta: dict[str, Any] = {
             "format_version": META_FORMAT_VERSION,
             "recon_version": self._recon_version,
             "config_sha256": config_sha256,
             "started_at": started.isoformat(),
-            "timestamp": self._clock.now().isoformat(),
+            "timestamp": None,  # when it ended: set by _meta, here so the key keeps its place
             "preserve_raw": config.preserve_raw,
             "resolved": dict(resolved or {}),
-            "tables": [table.document() for table in tables],
         }
+        try:
+            with self._deadline.bound(config.deadline, what, fix):
+                for index, entry in enumerate(config.collectors):
+                    if index in streams:
+                        continue
+                    tables += self._run_entry(index, entry, config, collectors, archive, captures)
+        except KeyboardInterrupt:
+            # Stopped on request (Ctrl-C, SIGTERM): the tables that ended are recorded, and
+            # that it was stopped, so it never reads as a survey that died. One that cannot
+            # write it reads crashed, as one that died does: it left no record of its end.
+            with contextlib.suppress(OSError):
+                self._archives.write_meta(archive, self._meta(meta, tables, "stopped"))
+            raise
+        meta = self._meta(meta, tables, "finished")
         try:
             self._archives.write_meta(archive, meta)
             if all(table.status == "ok" for table in tables):
@@ -160,6 +187,22 @@ class Survey:
             self.warnings.append(warning)
             self._emit({"kind": "archive_warning", "reason": warning.message, "fix": warning.fix})
         return tables
+
+    def _meta(
+        self,
+        head: dict[str, Any],
+        tables: list[TableOutcome],
+        ended: Literal["finished", "stopped"],
+    ) -> dict[str, Any]:
+        """The archive's ``meta.yaml``: ``head``, when the survey ended, how (``ended``, the
+        :data:`~recon.domain.archives.Ended` its writer can know: ``crashed`` is a reader's),
+        and its tables."""
+        return {
+            **head,
+            "timestamp": self._clock.now().isoformat(),
+            "ended": ended,
+            "tables": [table.document() for table in tables],
+        }
 
     def _run_entry(
         self,
@@ -214,9 +257,15 @@ class Survey:
         raise_it = f"raise deadline: on collector {entry.name!r}, or narrow what it asks for"
         try:
             with self._deadline.bound(entry.deadline, what, raise_it):
-                records = _within(
-                    self._deadline,
-                    _keeping_first(_tagged(collector, target, source, captures), first),
+                records = _reporting(
+                    self._telemetry,
+                    span,
+                    self._clock,
+                    self._progress_s,
+                    _within(
+                        self._deadline,
+                        _keeping_first(_tagged(collector, target, source, captures), first),
+                    ),
                 )
                 columns = list(entry.normalize or ())
                 try:
@@ -339,6 +388,30 @@ def _within(
         for record in records:
             deadline.check()
             yield record
+    finally:
+        records.close()
+
+
+def _reporting(
+    telemetry: Telemetry,
+    span: Span,
+    clock: Clock,
+    progress_s: float,
+    records: Generator[dict[str, Any], None, None],
+) -> Generator[dict[str, Any], None, None]:
+    """``records``, each counted once the store has it, and the count reported on ``span``
+    when ``progress_s`` seconds have passed since the table began or it was last reported. Closing
+    this closes ``records``."""
+    written = 0
+    reported = clock.monotonic()
+    try:
+        for record in records:
+            yield record
+            written += 1
+            now = clock.monotonic()
+            if now - reported >= progress_s:
+                telemetry.progress(span, {"recon.records": written})
+                reported = now
     finally:
         records.close()
 

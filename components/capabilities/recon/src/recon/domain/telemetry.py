@@ -1,12 +1,21 @@
 """Telemetry: what a survey or a query did, as events, for whoever wants to know.
 
 recon opens spans; each span is a ``<name>.start`` and a ``<name>.end`` event sharing a
-``span`` id, under the span that was open when it began. :class:`EventSink` is the port:
-an event log in the archive and OpenTelemetry are the sinks recon wires. Attribute keys
+``span`` id, under the span that was open when it began. Between them, a span may report how
+far its work has got, as ``<name>.progress`` events with the same ``span`` id
+(:meth:`Telemetry.progress`); a sink that knows only starts and ends ignores them.
+:class:`EventSink` is the port: an event log in the archive and OpenTelemetry are the sinks
+recon wires. Attribute keys
 are OpenTelemetry attribute names, the semantic conventions' where one exists
 (``http.request.method``, ``error.type``) and ``recon.*`` otherwise, so a sink passes them
 on unchanged. Metrics are derived from the events, never measured separately, so an event
 log replays into the numbers an exporter saw.
+
+**No receiver slows the work.** A survey hands OpenTelemetry's sink and its caller's
+``on_event`` their events through a :class:`Channel`, a bounded queue drained by a thread,
+so a slow receiver neither slows the archive's writing nor changes it: what the queue
+cannot hold is dropped and counted. The archive's event log is not behind it: it is archive
+data, written as each event happens.
 
 **Telemetry is not data.** Nothing a survey writes depends on an event being delivered. A
 sink that raises is dropped for the rest of the operation and named in ``failed``, which
@@ -27,12 +36,14 @@ with ``on_event`` alone is never asked for them:
 * ``trace_headers(span)`` returns the headers that carry the trace context of the open span
   ``span`` (its id) to a server, W3C ``traceparent`` and ``tracestate``; the requester sends
   every sink's, merged by ``Telemetry.trace_headers``.
-* ``close()`` is called once when the sink is dropped, so it can end whatever it holds open:
-  the OpenTelemetry sink ends its open spans as failed, and they are exported.
+* ``close()`` is called once, when the sink is dropped or when the operation ends
+  (:meth:`Telemetry.close`), so it can end whatever it holds open: the event log closes its
+  file, and the OpenTelemetry sink ends any span still open as failed, so it is exported.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -50,6 +61,7 @@ EVENT_SCHEMA = "recon.v1.event"
 #: The spans recon opens, and the attributes each carries beyond ``error.type``.
 SURVEY = "recon.survey"  # recon.mission, recon.archive; at its end recon.tables, .failed, .records
 COLLECT = "recon.collect"  # recon.table, .collector, .collector.type, .source?; end: .records
+#                            progress, at most once a second: recon.records written so far
 HTTP_REQUEST = "recon.http.request"  # the HTTP client span attributes, semconv v1.44.0
 MCP_CALL = "recon.mcp.call"  # mcp.method.name, gen_ai.tool.name?, recon.source
 QUERY = "recon.query"  # recon.mission, recon.archive; at its end recon.rows
@@ -99,12 +111,53 @@ class EventSink(Protocol):
     def on_event(self, event: Event) -> None: ...
 
 
-class Span:
-    """An open span: its ``id`` (the events' ``span``), attributes to add before it ends,
-    and how it failed."""
+#: Receives each of a survey's table outcomes as it lands: ``{"kind": "ok" | "error" |
+#: "table_warning" | "archive_warning", ...}``. The survey prints nothing itself.
+EventCallback = Callable[[dict[str, Any]], None]
 
-    def __init__(self, span_id: str, attributes: Mapping[str, AttributeValue | None]) -> None:
+
+class Channel(Protocol):
+    """Where a survey's events go on to receivers that may be slow, without the survey
+    waiting for them: a bounded queue a thread drains. ``dropped`` counts the events a
+    receiver never got (the queue was full, or the survey's end could not wait for them);
+    ``failed`` names each callback that raised, which gets nothing more; ``stuck`` names each
+    receiver that had not returned from an event when the survey ended. Nothing waits
+    longer than a bounded drain time, however a receiver behaves."""
+
+    dropped: int
+    failed: list[str]
+    stuck: list[str]
+
+    def sink(self, sink: EventSink) -> EventSink:
+        """``sink``, its events delivered through the channel; its ``around`` and
+        ``trace_headers`` answered at once."""
+        ...
+
+    def callback(self, callback: EventCallback) -> EventCallback:
+        """``callback``, called through the channel."""
+        ...
+
+    def close(self) -> None:
+        """Give the receivers a bounded time to get what is queued, then stop: what they
+        did not get is dropped."""
+        ...
+
+
+class Span:
+    """An open span: its ``id`` (the events' ``span``), its ``name`` and ``parent`` (the
+    open span it began under, by id), attributes to add before it ends, and how it failed."""
+
+    def __init__(
+        self,
+        span_id: str,
+        attributes: Mapping[str, AttributeValue | None],
+        *,
+        name: str = "",
+        parent: str | None = None,
+    ) -> None:
         self.id = span_id
+        self.name = name
+        self.parent = parent
         self.attributes: dict[str, AttributeValue] = {}
         self.error: tuple[str, str] | None = None
         for key, value in attributes.items():
@@ -148,7 +201,7 @@ class Telemetry:
         span_id = str(self._next_id)
         self._next_id += 1
         parent = self._open[-1] if self._open else None
-        span = Span(span_id, attributes or {})
+        span = Span(span_id, attributes or {}, name=name, parent=parent)
         start = self._clock.monotonic()
         now = self._clock.now()
         started = Event(f"{name}.start", span_id, parent, now, kind, dict(span.attributes))
@@ -181,6 +234,32 @@ class Telemetry:
                     duration_ms=round((self._clock.monotonic() - start) * 1000, 3),
                 )
             )
+
+    def progress(self, span: Span, attributes: Mapping[str, AttributeValue]) -> None:
+        """Say how far the open ``span``'s work has got: a ``<name>.progress`` event with
+        ``attributes``, between its start and its end. The caller says how often."""
+        self._emit(
+            Event(
+                f"{span.name}.progress",
+                span.id,
+                span.parent,
+                self._clock.now(),
+                attributes=dict(attributes),
+            )
+        )
+
+    def close(self) -> None:
+        """End the operation's telemetry: close each sink that has a ``close``, and send
+        nothing more. A sink whose ``close`` raises is named in ``failed``."""
+        sinks, self._sinks = self._sinks, []
+        for sink in sinks:
+            close = getattr(sink, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception as exc:  # a sink must not fail the work it observed
+                self.failed.append(f"{type(sink).__name__}: {type(exc).__name__}: {exc}")
 
     def trace_headers(self, span: Span) -> dict[str, str]:
         """The headers that carry ``span``'s trace context to a server, from every sink that

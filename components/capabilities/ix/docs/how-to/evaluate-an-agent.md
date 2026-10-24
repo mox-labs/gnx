@@ -10,7 +10,7 @@ the reply's text, your own graders, and a judge.
 ## What you need
 
 ```bash
-uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.6.0#subdirectory=components/capabilities/ix"
+uv tool install "git+https://github.com/mox-labs/gnx@ix-v0.7.0#subdirectory=components/capabilities/ix"
 ```
 
 ix comes with the `claude-sdk` agent runtime, which runs each session through the Claude
@@ -259,7 +259,15 @@ ix run lab/parse-duration --exploratory --repeats 5
 `--repeats` pilots with that many repeats in place of the file's, and leaves the file as it
 will be registered; the report lists the change under `Changed`. A pilot gives no verdict.
 One too small for even every trial passing to show a pass rate's threshold says so under
-`Best case`: that is its size, not the agent. Read the screen at the end of the report. A probe that every trial passed (`ceiling`) or
+`Best case`: that is its size, not the agent. To try several trials at once, plan it first
+(`ix plan <path> --trials-in-flight 4` says whether the width is refused, and why), then add
+`--trials-in-flight 4` to the pilot: agent sessions judged on what they said and did may overlap, and the
+report's `Run` line says the width. If the pilot behaves as it did one at a time, write
+`trials_in_flight: 4` in the file before you register it: the width is part of the design
+a verdict rests on, so `ix run` without `--exploratory` refuses the flag. A metric of time
+(`usage`'s `duration`) cannot decide a run with trials in flight
+(`trials_in_flight_refused`, its fix `trials_in_flight: 1`), and is a warning when only
+reported. Read the screen at the end of the report. A probe that every trial passed (`ceiling`) or
 every trial failed (`floor`), or one whose readings spread over more than 0.35 of the range
 for one subject (`noisy`), cannot tell one subject from another: fix it or drop it before
 the real run. `ix plan` now states the smallest difference a run of this size can show (`Sensitivity:`); a difference smaller than
@@ -506,8 +514,9 @@ primary: {metric: eval_passed}
 What it gives becomes these metrics:
 
 - `eval_passed` is true when every assertion the evaluator gave held: `Equals`, `Contains`,
-  `IsInstance`, `MaxDuration`, `ToolCorrectness`, `MaxToolCalls` and `ArgumentCorrectness`
-  give one each.
+  `IsInstance`, `ToolCorrectness`, `MaxToolCalls` and `ArgumentCorrectness` give one each.
+- `eval_duration_passed` is `MaxDuration`'s: whether the probe took no longer than its
+  `seconds`. It is a time, so it is contended: it cannot decide a run with trials in flight.
 - `eval_score` is its score, on its own scale: `TrajectoryMatch` gives an F1 from 0 to 1.
   When an evaluator gives more than one score, `result` names the one to read.
 - Labels, and every result with its reason, are kept in the reading's detail.

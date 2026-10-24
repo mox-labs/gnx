@@ -40,6 +40,29 @@ def _help(*command: str) -> str:
     return unstyle(_run(*command, "--help").stdout)
 
 
+def _tables(printed: str) -> dict[str, tuple[list[str], list[list[str]]]]:
+    """Each table a command printed, by its title: its header, a wrapped one joined by
+    column, and the cells of each of its rows."""
+    tables: dict[str, tuple[list[str], list[list[str]]]] = {}
+    title, header, rows = "", list[str](), list[list[str]]()
+    for line in printed.splitlines():
+        if line.startswith("┃"):
+            cells = [cell.strip() for cell in line.split("┃")[1:-1]]
+            header = (
+                [f"{a} {b}".strip() for a, b in zip(header, cells, strict=True)]
+                if header
+                else cells
+            )
+        elif line.startswith("│"):
+            rows.append([cell.strip() for cell in line.split("│")[1:-1]])
+        elif line.startswith("└"):
+            tables[title] = (header, rows)
+            header, rows = [], []
+        elif not line.startswith(("┏", "┡", "├")):
+            title = line.strip()
+    return tables
+
+
 def _json(result: Result) -> dict[str, Any]:
     document = json.loads(result.stdout)
     assert isinstance(document, dict) and "schema" in document, result.stdout
@@ -353,10 +376,10 @@ class TestPlanCommand:
             "question", "decides", "comparison", "guardrails", "verdict_form", "subjects",
             "control", "factors", "probes", "calibration", "trials", "schedule_digest", "duration",
             "order", "sensors", "requirements", "registration", "sensitivity",
-            "provenance", "unimplemented", "notes", "warnings", "runnable",
+            "provenance", "unimplemented", "notes", "overridden", "warnings", "runnable",
         ]  # fmt: skip
         assert re.fullmatch(r"[0-9a-f]{64}", document["schedule_digest"])
-        assert document["unimplemented"] == []
+        assert document["unimplemented"] == [] and document["overridden"] == []
         # Its subjects run ./proxy, which is not there: the plan only shows, so it exits 0,
         # and says in the document as on the terminal that a run here would not start.
         (proxy,) = [r for r in document["requirements"] if not r["holds"]][:1]
@@ -379,8 +402,8 @@ class TestPlanCommand:
             "location": str(file.parent / "experiment.registration.json"),
         }
         for value in document["provenance"]:
-            assert set(value) == {"path", "value", "source", "note"}
-            assert value["source"] in ("experiment", "genre", "ix")
+            assert set(value) == {"path", "value", "origin", "note"}
+            assert value["origin"] in ("experiment", "genre", "ix")
         for required in document["requirements"]:
             assert set(required) == {"need", "holds", "why", "fix", "needed_by"}
 
@@ -687,6 +710,30 @@ class TestGenresAndKindsCommands:
         # Owner ruling 2026-10-22: an environment's keys are its service_keys; no binds.
         process = document["kinds"]["ix.v1.environment.process"]
         assert process["service_keys"] == ["host", "port", "url"] and "binds" not in process
+        for name, kind in ix.kinds().kinds.items():
+            assert document["kinds"][name]["overlap"] == kind.overlap
+            for shown, metric in zip(document["kinds"][name]["metrics"], kind.metrics, strict=True):
+                assert (shown["name"], shown["contended"]) == (metric.name, metric.contended)
+
+    def test_kinds_shows_each_kinds_overlap_and_each_metrics_contended(self) -> None:
+        """Review (Ace 6): ``trials_in_flight_refused`` sends the author to ``ix kinds``
+        for each kind's overlap, and the table did not have it, nor whether a metric is
+        contended. Each kind's row says its ``overlap``, each metric's row whether it is
+        ``judged`` and ``contended``, as the declarations do."""
+        tables = _tables(_run("kinds").stdout)
+        for family in ("Subject", "Probe", "Sensor", "Environment"):
+            header, _ = tables[f"{family} kinds"]
+            assert header[-2:] == ["overlap", "runs"], header
+        header, metrics = tables["Metrics"]
+        assert header[-2:] == ["judged", "contended"]
+        for kind in ix.kinds().kinds.values():
+            _, rows = tables[f"{kind.family.capitalize()} kinds"]
+            (row,) = [row for row in rows if row[0] == kind.label]
+            assert row[-2] == kind.overlap, (kind.label, row)
+            for metric in kind.metrics:
+                (row,) = [row for row in metrics if row[0] == metric.name]
+                expected = ["yes" if metric.judged else "no", "yes" if metric.contended else "no"]
+                assert row[-2:] == expected, (metric.name, row)
 
     def test_a_labs_refused_files_are_listed_with_their_problems(
         self, compare_data: dict[str, Any], write_experiment: Write
@@ -742,7 +789,9 @@ def _lab() -> Path:
 
 
 class TestExamplesAndLab:
-    @pytest.mark.parametrize("example", ["proxy-streaming", "harness-integrity"])
+    @pytest.mark.parametrize(
+        "example", ["proxy-streaming", "harness-integrity", "trials-in-flight"]
+    )
     def test_each_example_validates_and_plans_clean(self, example: str) -> None:
         path = str(EXAMPLES_DIR / example)
         validated = _run("validate", path, "--json")

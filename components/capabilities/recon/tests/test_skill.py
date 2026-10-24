@@ -137,6 +137,81 @@ def test_the_capture_format_page_is_the_skill_reference() -> None:
     assert page.read_text(encoding="utf-8") == REFERENCES["capture-format"]
 
 
+def test_the_telemetry_page_is_the_skill_reference() -> None:
+    """Telemetry is taught in full by ``recon --skill -r telemetry``, and the skill points
+    there; one text with its docs page."""
+    page = PACKAGE / "docs" / "reference" / "telemetry.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["telemetry"]
+    assert "recon --skill -r telemetry" in SKILL
+    for taught in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                   "configure_telemetry", "traceparent", "recon.event.span", "REDACTED",
+                   "events_dropped", "telemetry_stuck", "otel_unavailable",
+                   "http.request.resend_count", "gen_ai.tool.name",
+                   "BatchSpanProcessor"):  # fmt: skip
+        assert taught in REFERENCES["telemetry"], taught
+
+
+def test_the_live_reading_page_is_the_skill_reference() -> None:
+    """Watching a survey, ``read_since`` and an archive's states are taught in full by
+    ``recon --skill -r live-reading``, and the skill points there (progressive disclosure:
+    the skill stays in its budget). One text, as the capture format's is."""
+    page = PACKAGE / "docs" / "reference" / "live-reading.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["live-reading"]
+    assert "recon --skill -r live-reading" in SKILL
+    for taught in ("--max-bytes", "--interval", "--once", "--cursor", "`ended`", "`more`",
+                   "retracted", "sealed", "exhausted", "usage"):  # fmt: skip
+        assert taught in REFERENCES["live-reading"], taught
+
+
+def test_the_streaming_page_is_the_skill_reference() -> None:
+    """Streams are taught in full by ``recon --skill -r streaming``, and the skill points
+    there in one line; one text with its docs page, as live-reading's is. An agent reading
+    it learns each key and flag, its default, and its refusals."""
+    page = PACKAGE / "docs" / "reference" / "streaming.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["streaming"]
+    assert "recon --skill -r streaming" in SKILL
+    for taught in ("window", "buffer.overflow", "drop_newest", "retain_unset", "provenance",
+                   "--windows", "--until", "--forever", "--stream", "--since", "closed_by",
+                   "_position", "records_dropped", "windows_many", "unbounded", "paced_by", "busy",
+                   "usage", "tail", "sse", "Last-Event-ID", "tombstone"):  # fmt: skip
+        assert taught in REFERENCES["streaming"], taught
+
+
+def test_the_skill_says_how_long_a_stream_holds_the_command() -> None:
+    """Polish R3 (Ace 1-2): an agent reading only the skill learns that a stream's window,
+    300 s by default, can outlast its tool call, that the dry run says when the run returns,
+    and that a survey runs one window of each stream in turn."""
+    [streams] = [p for p in SKILL.split("\n\n") if p.startswith("**Streams.**")]
+    for said in ("300 s", "tool call", "--dry-run", "`stream.returns`", "`survey.returns`",
+                 "in turn"):  # fmt: skip
+        assert said in streams, said
+
+
+def test_the_skill_teaches_an_agent_to_poll_with_once_and_a_cursor() -> None:
+    """Polish R5 (Ace 4): ``watch --stream`` of a ``--forever`` writer never returns, so an
+    agent that follows a stream polls: one bounded read a call, ``--once``, then the next
+    from the ``--cursor`` the last printed. The skill says so, and the reference in full."""
+    [watch] = [p for p in SKILL.split("\n\n") if p.startswith("**Watch.**")]
+    for said in ("--once", "--cursor", "--forever", "never returns"):
+        assert said in watch, said
+    for said in ("--once --json", "--cursor", "never returns", "`more`"):
+        assert said in REFERENCES["live-reading"], said
+
+
+def test_what_json_prints_is_said_as_it_is() -> None:
+    """Polish R12: the loop said every ``--json`` prints one document, but ``recon watch
+    --json`` prints one a line, a read each; an agent parsing stdout as one document fails
+    on it. The sentence says which is which, and the command shows it."""
+    [said] = [line for line in SKILL.splitlines() if "Every command takes `--json`" in line]
+    assert "`recon watch --json`" in said and "a line" in said
+
+
 # --- frontmatter and budget ------------------------------------------------------------
 
 

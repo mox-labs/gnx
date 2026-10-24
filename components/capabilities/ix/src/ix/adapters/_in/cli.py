@@ -272,7 +272,7 @@ def _print_plan_decision(plan: ix.Plan) -> None:
         _field("Comparison", plan.comparison)
     margin = next((value for value in plan.provenance if value.path == "margin"), None)
     if margin is not None:
-        _field("Margin", f"{_text(margin.value)}, {_SOURCED[margin.source]}: {margin.note}")
+        _field("Margin", f"{_text(margin.value)}, {_SOURCED[margin.origin]}: {margin.note}")
     if plan.guardrails:
         _field("Guardrails", *plan.guardrails)
     _field("Verdict", plan.verdict)
@@ -304,6 +304,8 @@ def _print_plan_work(plan: ix.Plan) -> None:
     _field("Trials", plan.trials.text())
     _field("Duration", plan.duration.text())
     _field("Order", f"{plan.order.scheme}, seed {plan.order.seed}", plan.order.description)
+    if plan.overridden:
+        _field("Changed", *plan.overridden)
     if plan.sensors:
         _field(
             "Sensors",
@@ -337,7 +339,7 @@ def _print_plan_design(plan: ix.Plan, path: str) -> None:
         design.add_column(column)
     footnotes = []
     for value in plan.provenance:
-        design.add_row(escape(value.path), escape(_text(value.value)), value.source)
+        design.add_row(escape(value.path), escape(_text(value.value)), value.origin)
         if value.note and value.path != "margin":  # the margin's is on its own line above
             footnotes.append(f"{value.path}: {value.note}")
     out.print(design)
@@ -350,6 +352,8 @@ def _print_plan_design(plan: ix.Plan, path: str) -> None:
         "matches": f"ix run {path}",
         "deviations": f"ix deviations {path}",
     }[plan.registration.status]
+    if plan.overridden:  # a width to try: a run that gives a verdict refuses it
+        next_step = f"ix run {path} --exploratory --trials-in-flight {plan.order.trials_in_flight}"
     err.print(f"[dim]Next: {escape(next_step)}[/dim]", soft_wrap=True)
 
 
@@ -365,8 +369,16 @@ def _print_plan(plan: ix.Plan, path: str) -> None:
 
 @main.command(epilog=EXIT_CODES)
 @_path_argument
+@click.option(
+    "--trials-in-flight",
+    type=click.IntRange(min=1),
+    metavar="N",
+    help="Plan the run `ix run --exploratory --trials-in-flight N` would carry out: N trials "
+    "at once in place of the file's trials_in_flight (1 when it writes none), refused "
+    "where a kind in use or the genre forbids overlap, or a deciding metric is contended",
+)
 @_json_option
-def plan(path: str, as_json: bool) -> None:
+def plan(path: str, trials_in_flight: int | None, as_json: bool) -> None:
     """Show the decision a run would inform and how many trials it takes. Runs nothing.
 
     States the question, the hypothesis rendered from the genre, the guardrails and the form
@@ -375,11 +387,17 @@ def plan(path: str, as_json: bool) -> None:
     where the experiment stands against its registration. The plan's digest changes when a
     value a run would use changes.
 
+    `--trials-in-flight N` previews a width without editing the file: the plan at that width,
+    the change listed under `Changed` (`overridden`), and the refusal or warnings the run
+    would meet. A run that gives a verdict refuses the flag, so it is tried with
+    `ix run --exploratory` or `--dry-run`; to decide on a width, write `trials_in_flight:`
+    in the file and register it.
+
     PATH is the experiment file, a directory that holds experiment.yaml, or - for standard
     input (which has no registration).
     """
     try:
-        result = ix.plan(path)
+        result = ix.plan(path, trials_in_flight=trials_in_flight)
     except ix.IxError as error:
         _fail(error, as_json=as_json)
     if as_json:
@@ -566,7 +584,12 @@ def _print_outcome(report: ix.Report) -> None:
         _field("Why", report.analysis.reason)
     if report.best_case:
         _field("Best case", report.best_case)
-    _field("Run", f"{report.status}; {report.trials.text()}")
+    width = report.trials_in_flight
+    _field(
+        "Run",
+        f"{report.status}; {report.trials.text()}"
+        + (f"; {width} trials in flight" if width > 1 else ""),
+    )
     if report.overridden:
         _field("Changed", *report.overridden)
     if _stood_in(report) and not report.no_verdict.startswith("Dry run"):
@@ -855,8 +878,9 @@ _CODE = ix.EXIT_CODES
 _RUN_HELP = f"""Carry out an experiment and report what it found.
 
 Starts the subjects, applies the probes and takes the measurements the experiment
-declares, one trial at a time, and records each trial as it finishes under
-<experiment directory>/.ix/runs/<run id>/. Then prints the report (ix.v1.report).
+declares, one trial at a time unless it writes `trials_in_flight: N`, and records each
+trial as it finishes under <experiment directory>/.ix/runs/<run id>/. Then prints the report
+(ix.v1.report).
 
 The experiment must be registered first (`ix register`), or the run refused (exit
 {_CODE["unregistered"]}); `--exploratory` runs it anyway and gives no verdict, and so does a
@@ -866,7 +890,11 @@ stand-in (an agent session on the mock runtime, replying with each probe's mock_
 setting aside the options only the real runtime takes: it checks the harness, calls no
 model and gives no verdict. `--repeats N` pilots either with N repeats in place of the
 file's (never below the genre's minimum); a run that gives a verdict refuses it (exit
-{_CODE["usage"]}). PATH may be - for an experiment on standard input, which
+{_CODE["usage"]}). `--trials-in-flight N` carries N trials out at once in place of the
+file's width, with `--exploratory` or `--dry-run` only (a run that gives a verdict refuses
+it, exit {_CODE["usage"]}), and only where every kind in use allows overlap, no deciding
+metric is contended and the genre allows it (`trials_in_flight_refused` names what blocks it).
+PATH may be - for an experiment on standard input, which
 runs only with `--exploratory` or `--dry-run` and keeps its runs under the current
 directory. The exit code
 is the verdict: {_CODE["ok"]} holds (or no verdict to give), {_CODE["fails"]} fails,
@@ -908,12 +936,32 @@ finish and {_CODE["simulated"]} for a registered run a stand-in answered; and
     help="A pilot: N repeats in place of the file's, with --exploratory or --dry-run only "
     "(a run that gives a verdict is held to its registered design)",
 )
+@click.option(
+    "--trials-in-flight",
+    type=click.IntRange(min=1),
+    metavar="N",
+    help="Carry N trials out at once in place of the file's trials_in_flight (1 when it "
+    "writes none), with --exploratory or --dry-run only; refused where a kind in use or "
+    "the genre forbids overlap, or a deciding metric is contended",
+)
 @_json_option
-def run(path: str, exploratory: bool, dry_run: bool, repeats: int | None, as_json: bool) -> None:
+def run(
+    path: str,
+    exploratory: bool,
+    dry_run: bool,
+    repeats: int | None,
+    trials_in_flight: int | None,
+    as_json: bool,
+) -> None:
     on_event, bar = _progress(as_json)
     try:
         report = ix.run(
-            path, exploratory=exploratory, dry_run=dry_run, repeats=repeats, on_event=on_event
+            path,
+            exploratory=exploratory,
+            dry_run=dry_run,
+            repeats=repeats,
+            trials_in_flight=trials_in_flight,
+            on_event=on_event,
         )
     except ix.IxError as error:
         if bar is not None:
@@ -1039,10 +1087,13 @@ def kinds(lab: str | None, as_json: bool) -> None:
     """List the subject kinds, probe kinds, sensors and environment kinds.
 
     Each kind declares its options (required ones marked *), the facets it needs and offers,
-    for a sensor the metrics it provides and, for an environment, the keys each service it
-    brings up is bound with (`service_keys`: `{<service>.url}`). `runs` says whether this ix
-    has an adapter for the kind: one without can be validated, planned and registered, not
-    run.
+    for an environment the keys each service it brings up is bound with (`service_keys`:
+    `{<service>.url}`), and its `overlap`: whether two trials in flight may use it at once
+    (`allowed` or `forbidden`). `runs` says whether this ix has an adapter for the kind: one
+    without can be validated, planned and registered, not run. The metrics are listed under
+    the sensor that provides each, with whether a model judges it (`judged`: it decides no
+    verdict) and whether what runs beside a trial moves it (`contended`: it decides no run
+    with trials_in_flight above 1).
     """
     try:
         found = ix.kinds(lab)
@@ -1051,21 +1102,24 @@ def kinds(lab: str | None, as_json: bool) -> None:
     if as_json:
         _emit(found.document())
         return
-    widest = max(
-        (len(name) + 1 for kind in found.kinds.values() for name in kind.options), default=1
-    )
     tables: dict[str, Table] = {}
     for family in ("subject", "probe", "sensor", "environment"):
+        # A table is as wide as its own longest option, so each still fits in 80 columns.
+        widest = max(
+            (len(name) + 1 for kind in found.of(family) for name in kind.options), default=1
+        )
         table = Table(title=f"{family.capitalize()} kinds", title_justify="left")
         table.add_column("kind", no_wrap=True)
-        table.add_column("options (* required)", overflow="fold", min_width=widest)
+        table.add_column("options", overflow="fold", min_width=widest)
         table.add_column("needs > offers")
         if family == "environment":
-            table.add_column("service keys")
+            table.add_column("service keys", no_wrap=True)
+        table.add_column("overlap", no_wrap=True)
         table.add_column("runs", no_wrap=True)
         tables[family] = table
+    # Each sensor heads its metrics: a column of its own would not leave 80 for the rest.
     metrics = Table(title="Metrics", title_justify="left")
-    for column in ("metric", "sensor", "unit", "shape", "better", "judged"):
+    for column in ("sensor / metric", "unit", "shape", "better", "judged", "contended"):
         metrics.add_column(column, no_wrap=column != "unit")
     for kind in found.kinds.values():
         label = kind.label
@@ -1080,23 +1134,30 @@ def kinds(lab: str | None, as_json: bool) -> None:
             escape(options or "-"),
             escape(facets),
             *keys,
+            kind.overlap,
             "yes" if kind.name in found.runnable else "no",
         )
-        for metric in kind.metrics:
+        if kind.metrics:
+            metrics.add_row(f"[bold]{escape(label)}[/bold]")
+        for index, metric in enumerate(kind.metrics, start=1):
             metrics.add_row(
-                escape(metric.name),
-                escape(label),
+                f"  {escape(metric.name)}",
                 escape(metric.unit or "-"),
                 metric.shape,
                 metric.direction,
                 "yes" if metric.judged else "no",
+                "yes" if metric.contended else "no",
+                end_section=index == len(kind.metrics),
             )
     for table in tables.values():
         out.print(table)
     out.print(metrics)
     err.print(
-        "[dim]runs: whether this ix has an adapter for the kind that builds here. One "
-        "without can be validated, planned and registered, and `ix run` refuses it.[/dim]"
+        "[dim]options: * marks a required one. overlap: whether two trials in flight may use "
+        "the kind at once. runs: whether this ix has an adapter for the kind that builds "
+        "here. One without can be validated, planned and registered, and `ix run` refuses "
+        "it. contended: the metric moves with what runs beside a trial, so it decides no run "
+        "with trials_in_flight above 1.[/dim]"
     )
     _print_rejected(found.rejected)
     for name, why in found.unbuildable.items():

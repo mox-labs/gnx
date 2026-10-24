@@ -36,6 +36,7 @@ from matrix import (
     LEDGER,
     Session,
     SESSION,
+    Attribution,
     digest,
     agent_session,
     call_sent,
@@ -242,11 +243,16 @@ components.
 | `emit(name, **fields)` | emit one event |
 | `measure(name, value, *, unit="", kind="gauge", **attrs)` | record a number as a `matrix.measure` event; `kind` is `gauge`, `counter` or `histogram` |
 | `span(name, **fields)` | an async context manager emitting `<name>.start` and `<name>.end` (`status`, `duration_ms`); OpenTelemetry gets only its number and boolean fields unless content is asked for ([the `otel` observer](#the-otel-observer)) |
-| `sessions()` | the rows of `matrix.v1.session` the component has run since it last handed a row over, failed ones included: what the ledger entry of its next row will name. A row that should name its sessions itself reads them here. `()` outside a run |
+| `sessions()` | the rows of `matrix.v1.session` the component has run that no row it handed over has named yet, failed ones included: what the ledger entry of its next row will name unless it names its own. Without `attributed()`, the sessions since it last handed a row over. A row that should name its sessions itself reads them here. `()` outside a run |
+| `attributed()` | an async context manager giving an `Attribution`: `async with ctx.attributed() as trial:` names in `trial.sessions()` exactly the sessions made in this task, and in tasks started inside the block, while it is open. Work done concurrently in one component (trials in flight) opens one per task and hands each row over with its own sessions |
 
 `provide` is synchronous. When it returns, the row has been validated against the kind's
-registered schema, appended to the Construct, and is durable in the run's store. It raises
-`ContractError` for a kind the component does not provide or a row that fails the schema, and
+registered schema, appended to the Construct, and is durable in the run's store. Its ledger
+entry names the sessions behind it: by default every one `sessions()` gives, or, with
+`provide(kind, row, sessions=trial.sessions())`, exactly those; either way they are named
+from then on, and the rest stay for the next row. It raises
+`ContractError` for a kind the component does not provide, a row that fails the schema, or a
+named session the component did not run, and
 `StoreError` when the store could not keep the row (the run then fails with kind `store`,
 whatever the component does with the exception). Once the store has failed, every later
 `provide` in the run raises `StoreError` too, so no call returns for a row the record lacks.
@@ -549,6 +555,25 @@ call = await call_model(runtime, request, name="judge")  # call.session: the row
 
 `call_sent`, `call_session` and `record_session` are the parts `call_model` is made of, for a
 caller that records a call made some other way.
+
+`Attribution` is what `RunContext.attributed()` gives: `sessions() -> tuple[int, ...]`, the
+rows of this table recorded in the scope's task, and in tasks started inside it, while it was
+open, in the order recorded. A scope opened inside another names its sessions in both; one
+that has been left names no more, so what it gives then is final. A session made in another
+task of the same component, or in a run started inside the scope, is never named. Without a
+scope, a component's rows name its sessions as before, since its last hand-over:
+
+```python
+async def trial(ctx, case):
+    async with ctx.attributed() as trial:
+        reply = await agent.run(case)  # its session is recorded here, in this task
+    ctx.provide("acme.v1.reply", reply.content, sessions=trial.sessions())
+
+
+async with asyncio.TaskGroup() as group:  # in flight together, each names only its own
+    for case in cases:
+        group.create_task(trial(ctx, case))
+```
 
 ### `Ref` and `REF`
 

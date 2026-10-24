@@ -34,6 +34,7 @@ from recon.domain.collector import BrokenPlugin, CollectorContext
 from recon.domain.errors import CollectionError, ReconError
 from recon.domain.normalize import apply_normalize, bound
 from recon.domain.ratelimit import RateLimiter
+from recon.domain.stream import NoGaps
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
     from recon.domain.shell import ShellRunner
+    from recon.domain.stream import GapLog
     from recon.domain.telemetry import Telemetry
 
 COLLECTORS_GROUP = "recon.collectors"
@@ -71,7 +73,8 @@ class CollectorPorts:
 class SurveyCollectors:
     """One survey's collectors by type name, the types whose factory raised, what to end
     when the survey ends, and, by type name, each collector's ``requirements`` when it has
-    one."""
+    one. ``raw`` is each collector as its type built it, before ``normalize:`` is applied to
+    what it yields: a stream normalizes each record itself, after it has captured it."""
 
     collectors: dict[str, Collector]
     failed: list[BrokenPlugin]
@@ -79,6 +82,7 @@ class SurveyCollectors:
     requirements: dict[
         str, Callable[[CollectorEntry, SourceEntry | None], Collection[Requirement]]
     ] = field(default_factory=dict)
+    raw: dict[str, Collector] = field(default_factory=dict)
 
     def close(self) -> list[BrokenPlugin]:
         """Close each collector that has a ``close()``, then the survey's Requester, once
@@ -203,11 +207,13 @@ def build_collectors(
     deadline: Deadline,
     *,
     project: Path | None = None,
+    gaps: GapLog | None = None,
 ) -> SurveyCollectors:
     """One collector for each installed type ``config`` uses, sharing one Requester and the
     survey's ``telemetry``, and the types whose factory raised. Each factory is handed a
     ``ScopedEnv`` over ``env`` holding only the variables ``config`` declares for that type's
-    sources, and ``project``, the project root."""
+    sources, ``project``, the project root, the clock, and ``gaps``, where a stream's
+    collector says when its source was not read (none kept, without one)."""
     transforms = confined_transforms(plugins.transforms, config, mission_dir)
     rate_limiter = RateLimiter(ports.clock)
     requester = ports.requester(telemetry, deadline, rate_limiter)
@@ -223,6 +229,8 @@ def build_collectors(
         env={},
         user_agent=ports.user_agent,
         project_dir=project,
+        clock=ports.clock,
+        gaps=gaps if gaps is not None else NoGaps(),
     )
     declared = declared_env(config, plugins.collector_types)
     built = SurveyCollectors({}, [])
@@ -244,6 +252,7 @@ def build_collectors(
         if ct.preflight and callable(requirements):
             built.requirements[name] = requirements
         built.collectors[name] = collector if ct.normalizes else Normalizing(collector, transforms)
+        built.raw[name] = collector
     close = getattr(requester, "close", None)
     if callable(close):
         built._ends.append(("requester", close))

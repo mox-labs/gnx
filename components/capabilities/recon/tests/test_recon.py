@@ -4,8 +4,12 @@ import hashlib
 import inspect
 import json
 import math
+import os
+import subprocess
+import sys
 import tempfile
 import time
+import types
 from collections.abc import Generator, Iterator
 from pathlib import Path
 from typing import Any, ClassVar, NoReturn
@@ -360,6 +364,146 @@ class TestAtomicJsonlWrite:
             assert not (archive / "t.jsonl.tmp").exists()
 
 
+#: The ``os`` the archive store calls, replaced in a test by :func:`_os_with`, so what the
+#: test counts is the store's calls alone.
+STORE_OS = "recon.adapters._out.archive_files.os"
+
+
+def _os_with(**replaced: Any) -> types.ModuleType:
+    """``os``, with the functions ``replaced`` names standing in for its own."""
+    stand_in = types.ModuleType("os")
+    stand_in.__dict__.update(os.__dict__)
+    stand_in.__dict__.update(replaced)
+    return stand_in
+
+
+class TestATableIsWrittenInWholeLines:
+    """While a table is written, a reader of its file sees each record within 250 ms of its
+    being written, as a whole line, and never part of one (A2). Lines are written together,
+    whole, so a burst of records is not a write each; flushing to the disk stays batched."""
+
+    def test_a_record_is_visible_while_the_collector_waits_for_its_next(
+        self, tmp_path: Path
+    ) -> None:
+        live = tmp_path / "out.jsonl.tmp"
+        seen: list[bytes] = []
+        waited: list[float] = []
+
+        def make() -> Generator[dict[str, Any], None, None]:
+            yield {"n": 0}
+            started = time.monotonic()
+            while time.monotonic() - started < 5 and not (
+                live.exists() and live.read_bytes().endswith(b"\n")
+            ):
+                time.sleep(0.01)
+            seen.append(live.read_bytes())
+            waited.append(time.monotonic() - started)
+            yield {"n": 1}
+
+        ArchiveFiles(SystemClock()).write_table(tmp_path, "out", make())
+        assert seen == [b'{"n": 0}\n'], (
+            "a record written is on disk, whole, while the collector has not yet given the "
+            "next: a slow source does not hold back what it already gave"
+        )
+        assert waited[0] < 2, "within the 250 ms bound, with room for a slow machine"
+
+    def test_lines_added_while_the_timer_writes_keep_their_order(self, tmp_path: Path) -> None:
+        """Adding a line takes no lock, while the timer's thread writes what waits: every
+        line still reaches the file once, in the order given."""
+        store = ArchiveFiles(SystemClock(), flush_bytes=1 << 30, flush_s=0.0005)
+        store.write_table(tmp_path, "out", ({"n": n} for n in range(50_000)))
+        lines = (tmp_path / "out.jsonl").read_text().splitlines()
+        assert [json.loads(line)["n"] for line in lines] == list(range(50_000))
+
+    def test_a_burst_of_records_is_written_in_few_writes_of_whole_lines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        writes: list[bytes] = []
+        real = os.write
+
+        def counted(descriptor: int, data: bytes) -> int:
+            writes.append(bytes(data))
+            written: int = real(descriptor, data)
+            return written
+
+        monkeypatch.setattr(STORE_OS, _os_with(write=counted))
+        records = ({"n": n, "text": "x" * 50} for n in range(5000))
+        ArchiveFiles(SystemClock()).write_table(tmp_path, "out", records)
+        assert 1 < len(writes) < 100, "lines are written together, not a write each"
+        assert all(data.endswith(b"\n") for data in writes), "every write ends a line"
+        assert (tmp_path / "out.jsonl").read_bytes() == b"".join(writes)
+
+    def test_the_bounds_are_the_store_s_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        writes: list[bytes] = []
+
+        def counted(descriptor: int, data: bytes) -> int:
+            writes.append(bytes(data))
+            written: int = os.write(descriptor, data)
+            return written
+
+        monkeypatch.setattr(STORE_OS, _os_with(write=counted))
+        store = ArchiveFiles(SystemClock(), flush_bytes=1)
+        store.write_table(tmp_path, "out", ({"n": n} for n in range(3)))
+        assert writes == [b'{"n": 0}\n', b'{"n": 1}\n', b'{"n": 2}\n']
+        for bad in ({"flush_bytes": 0}, {"flush_s": 0}):
+            with pytest.raises(ValueError, match="flush_bytes must be >= 1 and flush_s > 0"):
+                ArchiveFiles(SystemClock(), **bad)
+
+    def test_a_line_is_one_write_however_long(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        writes: list[int] = []
+        real = os.write
+
+        def counted(descriptor: int, data: bytes) -> int:
+            writes.append(len(data))
+            written: int = real(descriptor, data)
+            return written
+
+        monkeypatch.setattr(STORE_OS, _os_with(write=counted))
+        long = {"text": "x" * 200_000}
+        given: list[dict[str, Any]] = [long, {"n": 1}]
+        ArchiveFiles(SystemClock()).write_table(tmp_path, "out", (r for r in given))
+        assert writes == [len(json.dumps(long)) + 1, len('{"n": 1}') + 1], (
+            "a line longer than any buffer still goes to the file in one write, so a reader "
+            "sees all of it or none of it"
+        )
+
+    def test_flushing_to_the_disk_stays_batched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        synced: list[int] = []
+        monkeypatch.setattr(STORE_OS, _os_with(fsync=synced.append))
+        records = ({"n": n} for n in range(2500))
+        ArchiveFiles(SystemClock()).write_table(tmp_path, "out", records)
+        assert len(synced) == 3, "one fsync per 1000 records, and one when the table ends"
+
+    def test_a_write_the_disk_cuts_short_is_taken_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = os.write
+        live = tmp_path / "out.jsonl.tmp"
+        sizes: list[int] = []
+
+        def short(descriptor: int, data: bytes) -> int:
+            if b'"n": 1' in data:
+                sizes.append(live.stat().st_size)
+                cut: int = real(descriptor, data[:3])
+                return cut
+            written: int = real(descriptor, data)
+            return written
+
+        monkeypatch.setattr(STORE_OS, _os_with(write=short))
+        first = {"n": 0, "text": "x" * 70_000}  # past 64 KiB: written before the next comes
+        given: list[dict[str, Any]] = [first, {"n": 1}]
+        with pytest.raises(OSError, match="wrote 3 of"):
+            ArchiveFiles(SystemClock()).write_table(tmp_path, "out", (r for r in given))
+        assert sizes == [len(json.dumps(first)) + 1], "taken back to the last whole line"
+        assert not live.exists() and not (tmp_path / "out.jsonl").exists()
+
+
 class TestIncompleteSentinel:
     def test_sentinel_on_collector_error(self) -> None:
         """A failed collector should produce a .incomplete sentinel so
@@ -658,6 +802,187 @@ class TestSinkClosesTheGenerator:
             ArchiveFiles(SystemClock()).write_table(tmp_path, "out", make())
         assert not out.exists()
         assert not out.with_suffix(out.suffix + ".tmp").exists(), "partial .tmp must be cleaned"
+
+
+class TestAnArchiveSaysWhetherItIsBeingWritten:
+    """A3: a writer holds a lock on its archive from ``create`` to ``release``, so a reader
+    tells an archive being written (``writing``) from one whose writer stopped without
+    finishing it (``incomplete``), and both from one finished (``complete``)."""
+
+    def test_writing_while_the_survey_runs_then_complete(self, tmp_path: Path) -> None:
+        seen: list[str] = []
+
+        class Looks:
+            def collect(
+                self,
+                entry: CollectorEntry,
+                source: SourceEntry | None,
+                *,
+                captures: CaptureLog | None = None,
+            ) -> Iterator[dict[str, Any]]:
+                [archive] = (tmp_path / ".recon" / "m" / "archive").iterdir()
+                seen.append(ArchiveFiles(SystemClock()).state(archive))
+                yield {"a": 1}
+
+        config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
+        archive, _ = run(config, tmp_path, plugins=plugins_with(x=Looks()))
+        assert seen == ["writing"]
+        assert ArchiveFiles(SystemClock()).state(archive) == "complete"
+
+    def test_a_survey_that_failed_a_table_is_incomplete_once_it_ends(self, tmp_path: Path) -> None:
+        config = ReconConfig.model_validate(
+            {"collectors": [{"name": "t", "type": "cli", "run": "exit 3"}]}
+        )
+        archive, _ = run(config, tmp_path)
+        assert ArchiveFiles(SystemClock()).state(archive) == "incomplete"
+
+    def test_an_archive_whose_writer_died_is_incomplete(self, tmp_path: Path) -> None:
+        """The writer's process ends without releasing the archive, as a kill leaves it."""
+        dies = (
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "from recon.adapters._out.archive_files import ArchiveFiles\n"
+            "from recon.adapters._out.system_clock import SystemClock\n"
+            "ArchiveFiles(SystemClock()).create(Path(sys.argv[1]), sys.argv[2])\n"
+            "os._exit(9)\n"
+        )
+        id_ = "2026-01-02-030405-000001"
+        done = subprocess.run([sys.executable, "-c", dies, str(tmp_path), id_], check=False)
+        assert done.returncode == 9
+        assert ArchiveFiles(SystemClock()).state(tmp_path / "archive" / id_) == "incomplete"
+
+    def test_a_writer_in_this_process_is_writing_until_it_releases(self, tmp_path: Path) -> None:
+        store, reader = ArchiveFiles(SystemClock()), ArchiveFiles(SystemClock())
+        archive = store.create(tmp_path, "2026-01-02-030405-000001")
+        assert reader.state(archive) == "writing"
+        store.write_meta(archive, {"format_version": 2, "tables": []})
+        store.mark_complete(archive)
+        assert reader.state(archive) == "writing", "complete only once the writer lets go"
+        store.release(archive)
+        assert reader.state(archive) == "complete"
+        assert not (archive / "writer.lock").exists(), "a finished archive holds its data alone"
+
+    def test_a_writer_killed_while_making_its_archive_leaves_none_that_reads_writing(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression (review, Dijkstra F1): the archive's directory was made, then locked;
+        a writer killed in between left a directory with neither lock, marker nor meta.yaml,
+        which read ``writing`` forever. The archive is now made whole under a name no reader
+        lists, and renamed into place."""
+        dies = (
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "import recon.adapters._out.archive_files as files\n"
+            "from recon.adapters._out.system_clock import SystemClock\n"
+            "files.fcntl = type('F', (), {'flock': staticmethod(lambda *a: os._exit(9)),\n"
+            "                             'LOCK_EX': 2, 'LOCK_NB': 4})\n"
+            "files.ArchiveFiles(SystemClock()).create(Path(sys.argv[1]), sys.argv[2])\n"
+        )
+        id_ = "2026-01-02-030405-000001"
+        done = subprocess.run([sys.executable, "-c", dies, str(tmp_path), id_], check=False)
+        store = ArchiveFiles(SystemClock())
+
+        assert done.returncode == 9
+        assert [store.state(a) for a in store.archives(tmp_path)] == [], (
+            "no archive is listed, and none reads writing with no writer"
+        )
+
+    def test_an_archive_id_already_taken_is_refused_not_merged(self, tmp_path: Path) -> None:
+        store = ArchiveFiles(SystemClock())
+        first = store.create(tmp_path, "2026-01-02-030405-000001")
+        store.release(first)
+        with pytest.raises(recon.ReconError) as raised:
+            store.create(tmp_path, "2026-01-02-030405-000001")
+        assert raised.value.kind == "store" and raised.value.fix
+        assert sorted(p.name for p in (tmp_path / "archive").iterdir()) == [first.name]
+
+    def test_an_archive_id_taken_while_this_one_is_made_is_refused_as_store(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review (Dijkstra): the check that an id is free and the rename into place are not
+        one step; a survey taking the same id between them made the rename raise a bare
+        OSError. It is a ``store`` error with a fix, and nothing of this one is left."""
+        real = Path.rename
+
+        def raced(self: Path, target: Any) -> Path:
+            Path(target).mkdir()
+            (Path(target) / "meta.yaml").write_text("tables: []\n")  # the other survey's
+            return real(self, target)
+
+        monkeypatch.setattr(Path, "rename", raced)
+        with pytest.raises(recon.ReconError) as raised:
+            ArchiveFiles(SystemClock()).create(tmp_path, "2026-01-02-030405-000001")
+        monkeypatch.undo()
+        assert raised.value.kind == "store" and raised.value.fix
+        assert [p.name for p in (tmp_path / "archive").iterdir()] == ["2026-01-02-030405-000001"]
+
+    def test_a_reader_testing_the_lock_as_the_writer_takes_it_cannot_stop_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the lock file was made, then locked. A reader testing it in between
+        held it shared for that moment, and the writer's exclusive lock, which does not
+        wait, failed, and the survey with it. It is now locked before the archive has its name."""
+        import fcntl
+
+        held: list[int] = []
+
+        def flock(descriptor: int, operation: int) -> None:
+            lock = tmp_path / "archive" / "2026-01-02-030405-000001" / "writer.lock"
+            if operation & fcntl.LOCK_EX and lock.exists():  # a reader, at that moment
+                reader = os.open(lock, os.O_RDONLY)
+                fcntl.flock(reader, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                held.append(reader)
+            fcntl.flock(descriptor, operation)
+
+        stand_in = types.ModuleType("fcntl")
+        stand_in.__dict__.update(fcntl.__dict__)
+        stand_in.__dict__["flock"] = flock
+        monkeypatch.setattr("recon.adapters._out.archive_files.fcntl", stand_in)
+        store = ArchiveFiles(SystemClock())
+        try:
+            archive = store.create(tmp_path, "2026-01-02-030405-000001")
+            assert store.state(archive) == "writing"
+            store.release(archive)
+        finally:
+            for reader in held:
+                os.close(reader)
+
+    def test_an_archive_an_earlier_recon_wrote_reads_as_its_marker_says(
+        self, tmp_path: Path
+    ) -> None:
+        store = ArchiveFiles(SystemClock())
+        finished = tmp_path / "2026-01-02-030405-000001"
+        finished.mkdir()
+        (finished / "meta.yaml").write_text("format_version: 2\ntables: []\n")
+        killed = tmp_path / "2026-01-02-030405-000002"
+        killed.mkdir()
+        (killed / ".incomplete").write_text("")
+        assert (store.state(finished), store.state(killed)) == ("complete", "incomplete")
+
+    def test_a_table_being_written_is_listed_unsealed(self, tmp_path: Path) -> None:
+        listed: list[list[tuple[str, bool]]] = []
+
+        class Looks:
+            def collect(
+                self,
+                entry: CollectorEntry,
+                source: SourceEntry | None,
+                *,
+                captures: CaptureLog | None = None,
+            ) -> Iterator[dict[str, Any]]:
+                yield {"a": 1}
+                if entry.name == "second":
+                    [archive] = (tmp_path / ".recon" / "m" / "archive").iterdir()
+                    tables = ArchiveFiles(SystemClock()).tables(archive)
+                    listed.append([(t.output, t.sealed) for t in tables])
+
+        config = ReconConfig.model_validate(
+            {"collectors": [{"name": "first", "type": "x"}, {"name": "second", "type": "x"}]}
+        )
+        archive, _ = run(config, tmp_path, plugins=plugins_with(x=Looks()))
+        assert listed == [[("first", True), ("second", False)]]
+        tables = ArchiveFiles(SystemClock()).tables(archive)
+        assert [(t.output, t.sealed) for t in tables] == [("first", True), ("second", True)]
 
 
 class TestAnUnfinishedArchiveReadsIncomplete:
@@ -1023,5 +1348,5 @@ class TestWhatASurveyResolved:
         mission.mkdir(parents=True)
         (mission / "config.yaml").write_text("collectors: [{name: c, type: cli, run: 'true'}]\n")
         document = root({}).survey("m")
-        meta = yaml.safe_load((Path(document.archive) / "meta.yaml").read_text())
+        meta = yaml.safe_load((Path(document.path) / "meta.yaml").read_text())
         assert meta["resolved"]["root"] == found_by

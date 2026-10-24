@@ -26,9 +26,9 @@ and runs what a config declares from the command line: `matrix plan`, then `matr
 
 ```bash
 # the library, in a project
-uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.7.0#subdirectory=components/capabilities/matrix"
+uv add "matrix @ git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
 # the matrix command
-uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.7.0#subdirectory=components/capabilities/matrix"
+uv tool install "git+https://github.com/mox-labs/gnx@matrix-v0.8.0#subdirectory=components/capabilities/matrix"
 ```
 
 matrix is installed from its repository at the release's tag; it is not on a package index,
@@ -487,9 +487,9 @@ Every other exported name is public but may still change in a minor release, sai
 changelog: the extension-author surface (`Entry`, `Extension`, `Failure`, `Loader`,
 `DocumentSource`, `Document`, `BesideFile`, `Accumulate`, `ConstructStore`, `RunWriter`,
 the stores, `Reuse`, the observers' types), the session table (`Session`, `SESSION`,
-`digest`, `agent_session`, `call_sent`, `call_session`, `record_session`), the model step's
-call path (`call_model`), the command's document records (`Catalog`,
-`Plan`, ...) and telemetry (`configure_telemetry`, `Telemetry`). Names under
+`digest`, `agent_session`, `call_sent`, `call_session`, `record_session`, `Attribution`), the
+model step's call path (`call_model`), the command's document records (`Catalog`, `Plan`,
+...) and telemetry (`configure_telemetry`, `Telemetry`). Names under
 `matrix.domain`, `matrix.adapters` and `matrix.composition` are internal.
 
 ## Documentation

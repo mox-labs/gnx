@@ -8,7 +8,8 @@ here, one row per session, beside the board rows the session produced:
   a consumer acts on, and points at its session row (``session``, the row's position in this
   table);
 * the **ledger entry** of every row a component hands over names the sessions that
-  component ran since its previous hand-over (``LedgerEntry.sessions``).
+  component ran since its previous hand-over (``LedgerEntry.sessions``), or the ones it
+  names itself: those an :class:`Attribution` gives, when its work runs in tasks side by side.
 
 A session that **failed** is a row too (``status: failed``, with its ``reason`` and
 ``error``): it was asked for, and it may have spent tokens and made attempts. The row holds
@@ -37,6 +38,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -51,7 +53,7 @@ from matrix.domain.model_call import (  # noqa: TC001 -- pydantic reads them at 
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
 
     from matrix.domain.agent import AgentResponse
     from matrix.domain.model_call import ModelCall, ModelRequest
@@ -315,3 +317,53 @@ def record_cancelled(session: Session) -> None:
         record_session(session)
     except Exception:
         logger.exception("a cancelled session could not be recorded")
+
+
+class Attribution:
+    """The sessions one block of a component made: what ``ctx.attributed()`` gives.
+
+    While the block runs, every session recorded in its task, or in a task started inside
+    it, is named here; nothing recorded in any other task is, whatever runs concurrently in
+    the same component. A scope opened inside another names its sessions in both. Once the
+    block is left nothing more is added, so what :meth:`sessions` returns then is final.
+    """
+
+    def __init__(self, outer: Attribution | None = None) -> None:
+        self._outer = outer
+        self._rows: list[int] = []
+        self._open = True
+
+    def sessions(self) -> tuple[int, ...]:
+        """The rows of ``matrix.v1.session`` the block made so far, in the order recorded:
+        what a row it hands over names (``ctx.provide(kind, row, sessions=...)``)."""
+        return tuple(self._rows)
+
+    def __repr__(self) -> str:
+        return f"Attribution(sessions={self.sessions()!r})"
+
+
+#: The innermost scope open in this task, which tasks started inside it inherit. The
+#: executor clears it in each component's task: a scope never reaches into a run started
+#: inside it, whose session table is not its own.
+CURRENT_ATTRIBUTION: ContextVar[Attribution | None] = ContextVar("matrix_attribution", default=None)
+
+
+@asynccontextmanager
+async def attributed() -> AsyncIterator[Attribution]:
+    """Open a scope in this task: see :class:`Attribution`."""
+    scope = Attribution(CURRENT_ATTRIBUTION.get())
+    token = CURRENT_ATTRIBUTION.set(scope)
+    try:
+        yield scope
+    finally:
+        CURRENT_ATTRIBUTION.reset(token)
+        scope._open = False
+
+
+def attribute(row: int) -> None:
+    """Name session ``row`` in every scope open in this task, innermost first."""
+    scope = CURRENT_ATTRIBUTION.get()
+    while scope is not None:
+        if scope._open:
+            scope._rows.append(row)
+        scope = scope._outer

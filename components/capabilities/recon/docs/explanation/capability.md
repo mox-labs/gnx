@@ -52,7 +52,7 @@ Six concrete capabilities follow from the one thesis.
 
 **Cross-source composition.** Normalize heterogeneous sources to one schema, then query across them. Academic papers from Semantic Scholar, issues from `gh`, release notes from RSS, dependency trees from `cargo` — all become JSONL, all queryable from one SQL interface. Questions that span sources become one query instead of a manual join.
 
-**Scheduled and offline execution.** Because recon is mechanical, it runs without Claude awake. Cron it. Run it overnight. A scheduled agent runs `recon survey` hourly and Claude reads the latest archive in the morning, reasoning about what's new. The collection loop and the reasoning loop can be decoupled.
+**Scheduled and offline execution.** Because recon is mechanical, it runs without Claude awake. Cron it. Run it overnight. A scheduled agent runs `recon survey` hourly and Claude reads the latest archive in the morning, reasoning about what's new. The collection loop and the reasoning loop can be decoupled, or run side by side: `recon watch` prints each record as a survey writes it, so Claude can start on the first tables of a long survey while the rest are collected. A source that never finishes (a log that keeps growing, a server that keeps sending events) is collected as a stream: `recon stream` seals it into windows, each an archive Claude can query on its own or with the windows before it, and Claude follows the newest as it is written (`recon watch --stream`).
 
 **Claude's inference stays focused.** No cycles burned on retry logic, rate-limit arithmetic, response parsing, or authentication ceremony. The inference budget goes to thinking. This is the capability the other five rest on.
 
@@ -68,7 +68,8 @@ Reach for recon when:
 Reach for something else when:
 
 - You need one-off ad-hoc exploration — `curl` piped into the chat is faster
-- You need live streaming or pub/sub — recon does snapshots, not streams
+- You need records pushed to subscribers as they arrive — a survey or a stream writes its records into archives, which a reader follows (`recon watch`); nothing is pushed
+- You need to act on each event within milliseconds of it — a stream's records reach its window's file in whole lines up to a quarter-second late, and a stream is collected for reasoning over, not for reacting to
 - You want an autonomous research agent that decides what to fetch — recon runs the config you wrote, it doesn't decide
 
 In a literature review recon is the first link: it collects, and extracting claims per source, verifying them and synthesizing happen downstream, over the tables it wrote. Recon is useful anywhere Claude needs structured indirection over external data, research or not.
