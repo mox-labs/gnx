@@ -9,7 +9,15 @@ A field name has one shape in every document. ``archive`` is an archive's id (a 
 its id too), what ``--archive`` takes; ``path`` is the directory of what the record is
 about, and ``<what>_path`` another's. ``records`` and ``windows`` are counts, as they are in
 ``meta.yaml``; a list of them is named for what it holds (``table_records``,
-``stream_windows``), and a range of windows is ``window_range``.
+``stream_windows``), and a range of windows is ``window_range``. ``first`` and ``last`` are
+the ends of a span, ids where they name windows (a whole window outcome is ``last_window``).
+``source`` is a catalog source's name (a setting's provenance is its ``origin``), ``streams``
+the stream statuses (a plan's directories are ``stream_paths``), ``captures`` a count (whether
+a plan keeps captures is its ``preserve_raw``), ``skipped`` the sources a plan passed over (a
+read's retired windows are its ``retired_range``). ``status`` is an outcome: a survey's
+``complete`` or ``incomplete``, a table's ``ok`` or ``error``. The capture line
+(:class:`Capture`) is the format other tools write, versioned by its own schema, and keeps
+its own names: its ``status`` is the response's.
 """
 
 from __future__ import annotations
@@ -63,9 +71,11 @@ class PlanWrites(Document):
     config: str | None
     #: The directory the survey's archive would be (its id the moment it starts).
     archive_path: str
-    captures: bool
+    #: Whether the survey keeps every fetched body in a capture log: the mission's own
+    #: ``preserve_raw``.
+    preserve_raw: bool
     #: The directory of each stream the mission has, where its windows are written.
-    streams: list[str] = []
+    stream_paths: list[str] = []
 
 
 #: Where an effective setting came from: the mission's config, its collector type's
@@ -76,11 +86,11 @@ Origin = Literal["mission", "type", "command", "recon"]
 
 class SourcedValue(Document):
     """One effective setting the plan resolved, by its path in the config, and where it came
-    from. ``note`` says why, when it is not the config's own."""
+    from (``origin``). ``note`` says why, when it is not the config's own."""
 
     path: str
     value: Any
-    source: Origin
+    origin: Origin
     note: str = ""
 
 
@@ -200,7 +210,8 @@ class SurveyDocument(Document):
 
 class StreamDocument(Document):
     """One run of a stream: how many windows it sealed and what they held, the last of them
-    (whose ``closed_by`` says why the run stopped), and the stream's ``state`` once it had.
+    (``last_window``, whose ``closed_by`` says why the run stopped), and the stream's ``state``
+    once it had.
     Each window is listed in ``recon status`` and followed by ``recon watch --stream``; the
     run's own list stays this size however long it runs."""
 
@@ -221,7 +232,8 @@ class StreamDocument(Document):
     dropped: int
     #: The first window this run sealed, by id; None when it sealed none.
     first: str | None
-    last: WindowOutcome | None
+    #: The last window this run sealed, whole; None when it sealed none.
+    last_window: WindowOutcome | None
     warnings: list[dict[str, Any]]
 
 
@@ -377,7 +389,7 @@ class RecordsSince(Document):
     #: A read of a stream whose cursor's window was retired since: the windows it jumped,
     #: from the cursor's to the one before ``archive`` (``last`` is None when no
     #: tombstone names it). Their records, and the rest of the cursor's window, are gone.
-    skipped: WindowRange | None = None
+    retired_range: WindowRange | None = None
 
 
 class TemplateInfo(Document):
@@ -517,7 +529,7 @@ def stream_failure(document: StreamDocument) -> ReconError | None:
     """The error a stream's run ended on, or None when its last window was sealed ``ok``. A
     source that fails ends the stream, so only its last window can have: that window keeps
     the records it got, and its error's kind is the run's."""
-    last = document.last
+    last = document.last_window
     if last is None or last.table.error is None:
         return None
     error = last.table.error

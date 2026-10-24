@@ -256,7 +256,7 @@ class Recon:
             provenance += _run_bound(bound, windows, until, forever)
             returns_s, returns = _returns(planned.window, bound, until, forever, self._clock.now())
             provenance.append(
-                SourcedValue(path="stream.returns", value=returns_s, source="recon", note=returns)
+                SourcedValue(path="stream.returns", value=returns_s, origin="recon", note=returns)
             )
         elif plan.streams:
             provenance.append(_survey_returns(plan.config, plan.streams))
@@ -269,8 +269,8 @@ class Recon:
             writes=PlanWrites(
                 config=str(copy_to) if copy_to else None,
                 archive_path=str(mission / "archive" / "<archive id>"),
-                captures=bool(plan.config and plan.config.preserve_raw),
-                streams=[str(mission / "streams" / stream.name) for stream in plan.streams],
+                preserve_raw=bool(plan.config and plan.config.preserve_raw),
+                stream_paths=[str(mission / "streams" / s.name) for s in plan.streams],
             ),
             problems=[p.document() for p in plan.problems],
             warnings=[w.document() for w in plan.warnings + broken],
@@ -446,7 +446,7 @@ class Recon:
     def stream(
         self,
         name: str,
-        collector: str,
+        stream: str,
         *,
         windows: int | None = None,
         until: datetime | None = None,
@@ -456,21 +456,21 @@ class Recon:
         on_event: EventCallback | None = None,
         stop: Stop | None = None,
     ) -> StreamDocument:
-        """Plan, then run the stream of the mission's collector ``collector``, window after
+        """Plan, then run the mission's stream ``stream`` (its collector's name), window after
         window, until ``windows`` are sealed, ``until`` comes, its source ends or fails, or it
         is stopped: ``stop`` asked (as the command line's SIGINT and SIGTERM ask it), or the
         caller's thread interrupted. The window being written is then sealed ``stopped`` once
         what waits is written (a second stop seals it at once), and this returns. With none
         of ``windows``, ``until`` and ``forever``, it runs one window, so it always returns
         unless told otherwise. Raises UsageError for a bound it cannot keep, NotFoundError
-        for a collector that is no stream of the mission, ReconError (``busy``) when another
+        for a name that is no stream of the mission, ReconError (``busy``) when another
         writer holds the stream; a window whose source failed is in the document, and
         :func:`~recon.domain.documents.stream_failure` says what it adds up to."""
         now = self._clock.now()
-        windows = _stream_bound(windows, until, forever, now, name, collector)
+        windows = _stream_bound(windows, until, forever, now, name, stream)
         source, plan, copy_to = self._prepare(name, config, replace)
         assert plan.config is not None  # _prepare raises on an invalid plan
-        planned = _planned_stream(plan, name, collector)
+        planned = _planned_stream(plan, name, stream)
         if copy_to is not None:
             self._missions.write_config(name, source.text)
         mission = self._missions.mission_dir(name)
@@ -479,7 +479,7 @@ class Recon:
         returns_s, returns = _returns(planned.window, windows, until, forever, now)
         if on_event is not None:
             try:
-                on_event({"kind": "stream", "name": collector, "returns_s": returns_s,
+                on_event({"kind": "stream", "name": stream, "returns_s": returns_s,
                           "returns": returns})  # fmt: skip
             except Exception as exc:  # a receiver that fails is said, never the stream's end
                 started.append(
@@ -498,16 +498,16 @@ class Recon:
         found = started + found
         return StreamDocument(
             mission=name,
-            stream=collector,
-            path=str(mission / "streams" / collector),
+            stream=stream,
+            path=str(mission / "streams" / stream),
             returns_s=returns_s,
             returns=returns,
-            state=self._archives.stream_state(mission, collector),
+            state=self._archives.stream_state(mission, stream),
             windows=run.windows,
             records=run.records,
             dropped=run.dropped,
             first=run.first,
-            last=run.last,
+            last_window=run.last,
             warnings=[w.document() for w in plan.warnings + found],
         )
 
@@ -955,10 +955,10 @@ class Recon:
         done = read.state != "writing" and not read.more
         if done and later:
             on = _stream_cursor(stream, later[0].name, None)
-            update = {"cursor": on, "more": True, "stream": stream, "skipped": skipped}
+            update = {"cursor": on, "more": True, "stream": stream, "retired_range": skipped}
             return read.model_copy(update=update), False
         on = _stream_cursor(stream, path.name, read.cursor)
-        update = {"cursor": on, "stream": stream, "skipped": skipped}
+        update = {"cursor": on, "stream": stream, "retired_range": skipped}
         return read.model_copy(update=update), done and not writing
 
     def _skipped(self, mission: Path, stream: str, since: str, kept: str) -> WindowRange:
@@ -1142,20 +1142,20 @@ def _run_bound(
             SourcedValue(
                 path="stream.windows",
                 value=bound,
-                source="command" if given else "recon",
+                origin="command" if given else "recon",
                 note=""
                 if given
                 else "no --windows, --until or --forever: one window, so the run returns",
             )
         )
     if until is not None:
-        said.append(SourcedValue(path="stream.until", value=until.isoformat(), source="command"))
+        said.append(SourcedValue(path="stream.until", value=until.isoformat(), origin="command"))
     if forever:
         said.append(
             SourcedValue(
                 path="stream.forever",
                 value=True,
-                source="command",
+                origin="command",
                 note="runs until stopped: Ctrl-C or SIGTERM seals the window being written",
             )
         )
@@ -1209,7 +1209,7 @@ def _survey_returns(config: ReconConfig, streams: list[PlannedStream]) -> Source
         note += "; a window with no seconds: ends on its records or bytes, or its source's end"
     timed = [span for span in spans if span is not None]
     value = None if first is None or len(timed) < len(spans) else first + sum(timed)
-    return SourcedValue(path="survey.returns", value=value, source="recon", note=note)
+    return SourcedValue(path="survey.returns", value=value, origin="recon", note=note)
 
 
 def _collect(

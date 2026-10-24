@@ -479,7 +479,7 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
     if not plan.runnable:
         out.print("[red]Runnable: no[/]: a survey fails each table whose requirement is NO")
     for value in plan.provenance:
-        said = f"{value.path} = {json.dumps(value.value)} ({value.source}"
+        said = f"{value.path} = {json.dumps(value.value)} ({value.origin}"
         said += f": {value.note})" if value.note else ")"
         out.print(f"[dim]{escape(said)}[/]")
     if plan.writes.config:
@@ -829,8 +829,8 @@ def watch(
 
 
 def _print_read(read: recon.RecordsSince) -> None:
-    if read.skipped is not None:
-        jumped = read.skipped
+    if read.retired_range is not None:
+        jumped = read.retired_range
         err.print(f"[yellow]  {jumped.count} window(s) from {escape(str(jumped.first))} were "
                   f"retired before they were read: going on from {read.archive}[/]")  # fmt: skip
     for record in read.table_records:

@@ -7,6 +7,7 @@ group through CliRunner, and uses `cli` collectors running `echo`/`printf` — n
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import os
 import signal
@@ -116,21 +117,42 @@ class TestOneFieldNameOneShape:
     ``archive`` is always an archive's id, what ``--archive`` takes, and a directory is
     ``path``; ``records`` and ``windows`` are always counts, as they are in ``meta.yaml``."""
 
-    def test_each_name_has_one_shape_across_the_documents(self) -> None:
+    @staticmethod
+    def _shapes(*, leaving_out: frozenset[str] = frozenset()) -> dict[str, set[str]]:
+        """Each field name of recon's documents, and the shapes it has in them."""
         documents = [
             shape
-            for shape in vars(documents_module).values()
-            if isinstance(shape, type) and issubclass(shape, documents_module.Document)
+            for name, shape in vars(documents_module).items()
+            if isinstance(shape, type)
+            and issubclass(shape, documents_module.Document)
+            and name not in leaving_out
         ]
         shapes: dict[str, set[str]] = {}
         for document in documents:
             for field, info in document.model_fields.items():
                 shown = str(info.annotation).replace(" | None", "").replace("Optional[", "")
                 shapes.setdefault(info.serialization_alias or field, set()).add(shown)
+        return shapes
+
+    def test_each_name_has_one_shape_across_the_documents(self) -> None:
+        shapes = self._shapes()
         assert shapes["archive"] == {"<class 'str'>"}
         assert shapes["path"] == {"<class 'str'>"}
         assert shapes["records"] <= {"<class 'int'>", "int"}
         assert shapes["windows"] <= {"<class 'int'>", "int"}
+
+    def test_the_rest_of_the_names_have_one_shape_too(self) -> None:
+        """Polish, after R9: ``last``, ``captures``, ``skipped``, ``source`` and ``streams``
+        had two shapes each; each now has one, or the second meaning a name of its own. The
+        capture line (``recon.v1.capture``) is left out: it is the format other tools write,
+        versioned by its own schema, whose ``status`` is a response's."""
+        shapes = self._shapes(leaving_out=frozenset({"Capture"}))
+        for name in ("last", "captures", "skipped", "source", "streams"):
+            assert len(shapes[name]) == 1, (name, shapes[name])
+        parameters = inspect.signature(recon.stream).parameters
+        assert "stream" in parameters and "collector" not in parameters, (
+            "the stream is named stream=, as read_since, watch, query and plan name it"
+        )
 
     def test_every_archive_a_document_names_is_one_archive_takes(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)

@@ -338,27 +338,27 @@ def _stream(
         window = WindowSpec(seconds=DEFAULT_WINDOW_S)
         note = f"a {entry.type} collector's records do not end, and the entry sets no window:"
         values.append(SourcedValue(path=f"{at}.window.seconds", value=DEFAULT_WINDOW_S,
-                                   source="recon", note=note))  # fmt: skip
+                                   origin="recon", note=note))  # fmt: skip
     else:
         window = entry.window
         values += [
-            SourcedValue(path=f"{at}.window.{key}", value=value, source="mission")
+            SourcedValue(path=f"{at}.window.{key}", value=value, origin="mission")
             for key, value in window.model_dump(exclude_none=True).items()
         ]
     given = entry.buffer or BufferSpec()
     for key in ("records", "bytes", "max_record_bytes"):
         origin: Origin = "mission" if key in given.model_fields_set else "recon"
         values.append(SourcedValue(path=f"{at}.buffer.{key}", value=getattr(given, key),
-                                   source=origin))  # fmt: skip
+                                   origin=origin))  # fmt: skip
     overflow: Overflow
     if given.overflow is not None:
         overflow = given.overflow
         values.append(SourcedValue(path=f"{at}.buffer.overflow", value=overflow,
-                                   source="mission"))  # fmt: skip
+                                   origin="mission"))  # fmt: skip
     else:
         overflow = default_overflow(ctype.paced_by)
         note = f"the {entry.type} type declares paced_by: {ctype.paced_by}"
-        values.append(SourcedValue(path=f"{at}.buffer.overflow", value=overflow, source="type",
+        values.append(SourcedValue(path=f"{at}.buffer.overflow", value=overflow, origin="type",
                                    note=note))  # fmt: skip
     retain: Retain = entry.retain if entry.retain is not None else "all"
     shown = retain if isinstance(retain, str) else retain.model_dump(exclude_none=True)
@@ -367,7 +367,7 @@ def _stream(
         SourcedValue(
             path=f"{at}.retain",
             value=shown,
-            source="recon" if unset else "mission",
+            origin="recon" if unset else "mission",
             note="no window is removed unless the mission says so" if unset else "",
         )
     )

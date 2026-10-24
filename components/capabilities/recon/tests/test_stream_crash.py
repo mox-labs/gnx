@@ -180,7 +180,7 @@ class TestKilledThenResumed:
         assert (dead / "log.jsonl.tmp.torn").read_bytes() == b'{"seq": 9'
         seqs = [row["seq"] for w in after for row in _rows(w, "log")]
         assert seqs == list(range(total)), "every line once, in order"
-        assert document.last is not None
+        assert document.last_window is not None
         first_resumed = yaml.safe_load((after[len(windows)] / "meta.yaml").read_text())
         assert first_resumed["stream"]["previous"] == dead.name
         # The restart is in the chain, resumed from the position kept (nothing was missed:
@@ -257,8 +257,8 @@ class TestKilledThenResumed:
         sealed = store.read_meta(last).get("stream")
         document = root({}, project=tmp_path).stream("m", "count", windows=1)
 
-        assert document.last is not None
-        meta = yaml.safe_load((Path(document.last.path) / "meta.yaml").read_text())
+        assert document.last_window is not None
+        meta = yaml.safe_load((Path(document.last_window.path) / "meta.yaml").read_text())
         [gap] = meta["stream"]["sources"][0]["gaps"]
         assert gap["resumed"] is False, "the source could not go on from where it was"
         # Since when is known when the last window was sealed (the kill came between two
@@ -307,9 +307,9 @@ def test_a_signal_seals_the_window_with_every_record_it_had(
     assert process.returncode == 0, err.decode()
     document = json.loads(out)
     assert (document["windows"], document["records"], document["dropped"]) == (1, lines, 0)
-    assert document["last"]["closed_by"] == "stopped"
+    assert document["last_window"]["closed_by"] == "stopped"
     assert document["state"] == "complete"
-    meta = yaml.safe_load((Path(document["last"]["path"]) / "meta.yaml").read_text())
+    meta = yaml.safe_load((Path(document["last_window"]["path"]) / "meta.yaml").read_text())
     assert (meta["stream"]["closed_by"], meta["ended"]) == ("stopped", "stopped")
     [listed] = recon.status("m", root=tmp_path).missions[0].streams
     assert listed.latest is not None and listed.latest.ended == "stopped", (
@@ -400,8 +400,8 @@ def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) ->
 
     document = root({}, project=tmp_path).stream("m", "quiet", windows=1)
 
-    assert document.last is not None
-    [row] = _rows(Path(document.last.path), "quiet")
+    assert document.last_window is not None
+    [row] = _rows(Path(document.last_window.path), "quiet")
     started = time.monotonic()
     while _running(row["pid"]):
         assert time.monotonic() - started < 5, "the command outlived the stream"

@@ -80,13 +80,13 @@ Refused, with exit 2 (`usage`) and a fix:
 | `exhausted` | the tables read to their end: sealed, and every record of them read along this chain of cursors, so none come after and what was read of them stands |
 | `retracted` | the tables that failed after records of theirs were read: void those records |
 | `more` | a bound (`max_records`, `max_bytes`) cut this read before all that was written was read: read again at once |
-| `stream`, `skipped` | a read of a stream (`--stream`): its name, and the windows `retain:` retired before the cursor reached them, `{first, last, count}`, or null; see `streaming` |
+| `stream`, `retired_range` | a read of a stream (`--stream`): its name, and the windows `retain:` retired before the cursor reached them, `{first, last, count}`, or null; see `streaming` |
 
 Along a chain of cursors each table is told exhausted, or retracted, once. `sealed` is a table's own state, that its writer renamed it into place; `exhausted` is a reader's, that it has read all of a sealed table. Because `state` is read before the records, a read that says the archive is no longer `writing` and has no `more` holds the archive's last records.
 
 ## Field names
 
-A field name has one shape in every recon document. `archive` is an archive's id (a stream window's is its id), what `--archive` takes; `path` is the directory of what the document is about (`archive_path`, in a plan, the directory a survey would write). `records` and `windows` are counts, as in `meta.yaml`; a list of records read is `table_records`, a survey's windows of its streams are `stream_windows`, and a run of windows a query read is `window_range`, `{first, last, count}`.
+A field name has one shape in every recon document. `archive` is an archive's id (a stream window's is its id), what `--archive` takes; `path` is the directory of what the document is about (`archive_path`, in a plan, the directory a survey would write). `records`, `windows` and `captures` are counts, as in `meta.yaml`; a list of records read is `table_records`, a survey's windows of its streams are `stream_windows`, and a run of windows a query read is `window_range`, `{first, last, count}`. `first` and `last` are the two ends of a span: window ids in a range of windows (a whole window outcome is `last_window`), and in a window's `meta.yaml` a source's positions (`sources[]`) or orders of arrival (`arrivals`). `source` is a catalog source's name; where a plan's setting came from is its `origin`. `streams` lists a mission's streams; a plan's stream directories are `writes.stream_paths`, and whether it keeps captures is `writes.preserve_raw`. `skipped` lists the catalog sources a plan passed over; the windows a read of a stream jumped are its `retired_range`. `status` is an outcome: a survey's `complete` or `incomplete`, a table's `ok` or `error`. The one exception is the capture line, `recon.v1.capture` (`recon --skill -r capture-format`): other tools write it, and it keeps the names its schema gives, its `status` a response's HTTP status or a command's exit code.
 
 ## In a program
 

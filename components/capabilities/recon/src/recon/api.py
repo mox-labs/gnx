@@ -106,7 +106,7 @@ def survey(
 
 def stream(
     name: str,
-    collector: str,
+    stream: str,
     *,
     windows: int | None = None,
     until: datetime | None = None,
@@ -117,8 +117,9 @@ def stream(
     stop: Stop | None = None,
     root: Path | None = None,
 ) -> StreamDocument:
-    """Plan, then collect the mission's stream ``collector`` (a collector with ``window:``,
-    or of a type whose records do not end) window after window, each sealed as an archive.
+    """Plan, then collect the mission's stream ``stream`` (a collector with ``window:``, or
+    of a type whose records do not end, by its name, as ``read_since``, ``watch`` and
+    ``query`` take ``stream=``) window after window, each sealed as an archive.
     ``recon.v1.stream``.
 
     It stops after ``windows`` windows, at ``until`` (a time with its zone), when its source
@@ -129,11 +130,11 @@ def stream(
     ``forever``, after one window, so it returns unless told otherwise. A later call goes on
     from the last window, its source resumed after the last record kept. ``on_event``
     receives each window as it is sealed. Raises UsageError for a bound it cannot keep,
-    NotFoundError for a collector that is no stream of the mission, ReconError (``busy``) while
+    NotFoundError for a name that is no stream of the mission, ReconError (``busy``) while
     another writer holds the stream. A window whose source failed is in the document:
     :func:`stream_failure` turns it into the error to act on."""
     return _root(root).stream(
-        name, collector, windows=windows, until=until, forever=forever, config=config,
+        name, stream, windows=windows, until=until, forever=forever, config=config,
         replace=replace, on_event=on_event, stop=stop,
     )  # fmt: skip
 

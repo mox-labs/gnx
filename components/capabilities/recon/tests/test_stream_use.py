@@ -102,8 +102,11 @@ class TestReconStream:
         document = _root(tmp_path, clock, feed).stream("m", "events")
 
         assert document.windows == 1
-        assert document.last is not None
-        assert (document.last.closed_by, document.last.table.records) == ("seconds", 9)
+        assert document.last_window is not None
+        assert (document.last_window.closed_by, document.last_window.table.records) == (
+            "seconds",
+            9,
+        )
         assert document.state == "complete"
         assert feed.closed.is_set()
 
@@ -120,16 +123,16 @@ class TestReconStream:
 
         assert (first.windows, first.records) == (2, 10)
         assert feed.started == [None, 9], "the second run went on after the last kept"
-        assert second.last is not None and second.last.index == 2
-        meta = yaml.safe_load((Path(second.last.path) / "meta.yaml").read_text())
-        assert first.last is not None and meta["stream"]["previous"] == first.last.id
+        assert second.last_window is not None and second.last_window.index == 2
+        meta = yaml.safe_load((Path(second.last_window.path) / "meta.yaml").read_text())
+        assert first.last_window is not None and meta["stream"]["previous"] == first.last_window.id
         # Every restart is in the chain (review item 3): the stretch no process read, here
         # resumed from a position, so a source that does not honour it shows where.
         [gap] = meta["stream"]["sources"][0]["gaps"]
-        assert (gap["from"], gap["resumed"]) == (first.last.closed_at, True)
+        assert (gap["from"], gap["resumed"]) == (first.last_window.closed_at, True)
         rows = [
             json.loads(line)["seq"]
-            for line in (Path(second.last.path) / "events.jsonl").read_text().splitlines()
+            for line in (Path(second.last_window.path) / "events.jsonl").read_text().splitlines()
         ]
         assert rows == [10, 11, 12, 13, 14], "exactly once across the two runs"
 
@@ -170,8 +173,8 @@ class TestReconStream:
         )
 
         assert document.windows == 3
-        assert document.last is not None
-        assert (document.last.closed_by, document.last.table.records) == ("until", 5)
+        assert document.last_window is not None
+        assert (document.last_window.closed_by, document.last_window.table.records) == ("until", 5)
 
 
 class TestASurveyRunsOneWindow:
@@ -256,10 +259,10 @@ class TestWatchAcrossWindows:
         assert after.archive != read.archive
         assert [r["record"]["seq"] for r in after.table_records][:1] == [18], "window 2's first"
         stones = [stone["id"] for stone in _retired(tmp_path)]
-        assert after.skipped is not None, "a read that jumps windows says which it jumped"
-        assert (after.skipped.first, after.skipped.count) == (read.archive, 2)
-        assert after.skipped.last == stones[-1]
-        assert recon_.read_since("m", after.cursor, stream="events").skipped is None
+        assert after.retired_range is not None, "a read that jumps windows says which it jumped"
+        assert (after.retired_range.first, after.retired_range.count) == (read.archive, 2)
+        assert after.retired_range.last == stones[-1]
+        assert recon_.read_since("m", after.cursor, stream="events").retired_range is None
 
     def test_a_watcher_attached_changes_no_byte_of_the_stream(self, tmp_path: Path) -> None:
         """B10 #9: the same stream, with and without a reader following it as it is written."""
@@ -389,7 +392,7 @@ class TestTheCommandLine:
         assert result.exit_code == 0, result.output
         document = json.loads(result.stdout)
         assert document["schema"] == "recon.v1.plan"
-        said = {v["path"]: (v["value"], v["source"]) for v in document["provenance"]}
+        said = {v["path"]: (v["value"], v["origin"]) for v in document["provenance"]}
         assert said["collectors.0.window.seconds"] == (300.0, "recon")
         assert said["collectors.0.retain"] == ("all", "recon")
         assert said["collectors.0.buffer.overflow"] == ("block", "type")
@@ -418,7 +421,7 @@ class TestTheCommandLine:
         assert result.exit_code == 0, result.output
         provenance = json.loads(result.stdout)["provenance"]
         path, value, source = said
-        assert {(v["path"], v["value"], v["source"]) for v in provenance} >= {said}
+        assert {(v["path"], v["value"], v["origin"]) for v in provenance} >= {said}
         assert path.startswith("stream.")
 
     @pytest.mark.parametrize(
