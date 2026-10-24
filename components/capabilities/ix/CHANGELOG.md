@@ -53,8 +53,9 @@
   may use it at once (`overlap: allowed | forbidden`; a kind that says nothing, a third
   party's included, forbids it), and a metric whether its reading moves with whatever
   runs beside the trial (`contended: true`; false when unsaid). The built-in kinds and
-  metrics declare theirs; `--skill` shows both (`-r experiment` names each kind that
-  forbids overlap, read from the declarations), and so does `ix kinds`: an `overlap`
+  metrics declare theirs; `--skill` shows both (`-r experiment` names each kind and genre
+  that forbids overlap and each contended metric, read from the declarations), and so does
+  `ix kinds`: an `overlap`
   column in each kind table, and `judged` and `contended` columns in the metrics table,
   which lists each sensor's metrics under it (`--json` gives both fields). Neither enters a
   plan's digest or a registration: they are checked each time an experiment is.

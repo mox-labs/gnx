@@ -408,6 +408,38 @@ class TestTheReferencesTeachFromTheRecords:
         assert ("probe", "inspect-task") in declared
         assert named == declared
 
+    def test_the_metrics_it_says_are_contended_are_the_ones_declared(self) -> None:
+        """Review (coordinator, after Ace 7): the contended metrics in the same rule were a
+        hand-written sample. They are made from the metric declarations, sensor by sensor,
+        so ``eval_duration_passed`` and a third party's contended metric are named too."""
+        text = " ".join(_reference("experiment").split())
+        said = text.split("a throughput or a memory peak is (", 1)[1].split(")", 1)[0]
+        named = {
+            (sensor.strip("`"), name)
+            for part in said.split("; ")
+            for sensor, _, names in [part.partition(": ")]
+            for name in re.findall(r"`([^`]+)`", names)
+        }
+        declared = {
+            (kind.label, metric.name)
+            for kind in ix.kinds().kinds.values()
+            for metric in kind.metrics
+            if metric.contended
+        }
+        assert ("evaluator", "eval_duration_passed") in declared
+        assert named == declared
+
+    def test_the_genres_it_says_forbid_overlap_are_the_ones_declared(self) -> None:
+        text = " ".join(_reference("experiment").split())
+        said = text.split("where the genre forbids overlap (", 1)[1].split(")", 1)[0]
+        declared = {
+            genre.label
+            for genre in ix.genres().genres.values()
+            if genre.design.overlap == "forbidden"
+        }
+        assert declared == {"regress"}
+        assert set(re.findall(r"`([^`]+)`", said)) == declared
+
     def test_what_it_says_about_unknown_keys_is_true(
         self, compare_data: dict[str, Any], write_experiment: Write
     ) -> None:

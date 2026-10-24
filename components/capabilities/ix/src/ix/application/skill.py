@@ -704,7 +704,23 @@ def _overlap_forbidden(kinds: Kinds) -> str:
     return "; ".join(families) or "none installed"
 
 
-def _experiment(kinds: Kinds) -> str:
+def _contended(kinds: Kinds) -> str:
+    """The contended metrics, sensor by sensor, as their declarations say."""
+    sensors = []
+    for kind in kinds.of("sensor"):
+        names = [f"`{metric.name}`" for metric in kind.metrics if metric.contended]
+        if names:
+            sensors.append(f"`{kind.label}`: {', '.join(names)}")
+    return "; ".join(sensors) or "none installed"
+
+
+def _genres_forbidding_overlap(genres: Genres) -> str:
+    """The genres that forbid overlap, as their declarations say."""
+    names = [f"`{g.label}`" for g in genres.genres.values() if g.design.overlap == "forbidden"]
+    return ", ".join(names) or "none installed"
+
+
+def _experiment(genres: Genres, kinds: Kinds) -> str:
     template = f"""\
 {SHAPE_MARK}
 schema: ix.v1.experiment       # optional; absent means ix.v1.experiment
@@ -782,8 +798,9 @@ whether it came from the experiment, the genre or ix.
   the plan and frozen by registration. Above 1 is refused (`trials_in_flight_refused`,
   at `trials_in_flight`) where any kind in use is `overlap: forbidden`
   ({_overlap_forbidden(kinds)}),
-  where a deciding metric (`primary`, a guardrail) is contended (a time, a throughput, a
-  memory peak, `usage`'s `duration`), or where the genre forbids overlap (`regress`).
+  where a deciding metric (`primary`, a guardrail) is contended, as a time, a throughput or
+  a memory peak is ({_contended(kinds)}),
+  or where the genre forbids overlap ({_genres_forbidding_overlap(genres)}).
   Its `fix` names each and says `trials_in_flight: 1`. A contended metric
   that is only reported is a warning (`trials_in_flight_contended`): its readings were
   taken under that load. `ix run --trials-in-flight N` tries a width without editing the
@@ -1408,7 +1425,7 @@ def render(
         )
     match reference:
         case "experiment":
-            body = _experiment(kinds)
+            body = _experiment(genres, kinds)
         case "genres":
             body = _genres(genres)
         case "kinds":
