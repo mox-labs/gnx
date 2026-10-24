@@ -1348,5 +1348,5 @@ class TestWhatASurveyResolved:
         mission.mkdir(parents=True)
         (mission / "config.yaml").write_text("collectors: [{name: c, type: cli, run: 'true'}]\n")
         document = root({}).survey("m")
-        meta = yaml.safe_load((Path(document.archive) / "meta.yaml").read_text())
+        meta = yaml.safe_load((Path(document.path) / "meta.yaml").read_text())
         assert meta["resolved"]["root"] == found_by

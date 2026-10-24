@@ -88,11 +88,50 @@ class TestOneWriterAStream:
             _store().hold_stream(tmp_path, "events")
         assert raised.value.kind == "busy"
         assert raised.value.exit_code == EXIT_CODES["busy"] == 11
-        assert raised.value.fix and "recon status" in raised.value.fix
+        assert raised.value.fix, "what to do: its fix names the writer (the tests below)"
         assert "busy" in EXIT_MEANINGS and "busy" in EXIT_NEXT
         assert "stream" not in EXIT_MEANINGS["conflict"], "conflict keeps its one meaning"
         held.release_stream(tmp_path, "events")
         _store().hold_stream(tmp_path, "events")
+
+    def test_busy_names_the_writer_s_process_and_how_to_stop_it(self, tmp_path: Path) -> None:
+        """Polish R4 (Ace 3): ``busy``'s fix said "stop it" without saying which process. The
+        writer's pid is kept in the stream's lock, so the error names it, in ``details`` and
+        in a fix an agent can run: ``kill -TERM`` seals the window the writer is writing."""
+        holds = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from recon.adapters._out.archive_files import ArchiveFiles\n"
+            "from recon.adapters._out.system_clock import SystemClock\n"
+            "ArchiveFiles(SystemClock()).hold_stream(Path(sys.argv[1]), 'events')\n"
+            "print('held', flush=True)\n"
+            "sys.stdin.read()\n"
+        )
+        writer = subprocess.Popen(
+            [sys.executable, "-c", holds, str(tmp_path)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )  # fmt: skip
+        try:
+            assert writer.stdout is not None and writer.stdout.readline() == "held\n"
+            with pytest.raises(ReconError) as raised:
+                _store().hold_stream(tmp_path, "events")
+        finally:
+            writer.communicate("", timeout=10)
+
+        assert raised.value.kind == "busy"
+        assert raised.value.details == {"stream": "events", "pid": writer.pid}
+        assert raised.value.fix and f"kill -TERM {writer.pid}" in raised.value.fix
+
+    def test_busy_in_the_writer_s_own_process_never_says_to_kill_it(self, tmp_path: Path) -> None:
+        held = _store()
+        held.hold_stream(tmp_path, "events")
+
+        with pytest.raises(ReconError) as raised:
+            _store().hold_stream(tmp_path, "events")
+
+        assert raised.value.details["pid"] == os.getpid()
+        assert raised.value.fix and "kill" not in raised.value.fix
+        assert "this process" in raised.value.fix
 
     def test_a_stream_reads_writing_while_held_then_its_last_window_s_state(
         self, tmp_path: Path

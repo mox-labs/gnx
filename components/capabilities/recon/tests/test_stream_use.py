@@ -102,8 +102,11 @@ class TestReconStream:
         document = _root(tmp_path, clock, feed).stream("m", "events")
 
         assert document.windows == 1
-        assert document.last is not None
-        assert (document.last.closed_by, document.last.table.records) == ("window", 9)
+        assert document.last_window is not None
+        assert (document.last_window.closed_by, document.last_window.table.records) == (
+            "seconds",
+            9,
+        )
         assert document.state == "complete"
         assert feed.closed.is_set()
 
@@ -120,16 +123,16 @@ class TestReconStream:
 
         assert (first.windows, first.records) == (2, 10)
         assert feed.started == [None, 9], "the second run went on after the last kept"
-        assert second.last is not None and second.last.index == 2
-        meta = yaml.safe_load((Path(second.last.archive) / "meta.yaml").read_text())
-        assert first.last is not None and meta["stream"]["previous"] == first.last.id
+        assert second.last_window is not None and second.last_window.index == 2
+        meta = yaml.safe_load((Path(second.last_window.path) / "meta.yaml").read_text())
+        assert first.last_window is not None and meta["stream"]["previous"] == first.last_window.id
         # Every restart is in the chain (review item 3): the stretch no process read, here
         # resumed from a position, so a source that does not honour it shows where.
         [gap] = meta["stream"]["sources"][0]["gaps"]
-        assert (gap["from"], gap["resumed"]) == (first.last.closed_at, True)
+        assert (gap["from"], gap["resumed"]) == (first.last_window.closed_at, True)
         rows = [
             json.loads(line)["seq"]
-            for line in (Path(second.last.archive) / "events.jsonl").read_text().splitlines()
+            for line in (Path(second.last_window.path) / "events.jsonl").read_text().splitlines()
         ]
         assert rows == [10, 11, 12, 13, 14], "exactly once across the two runs"
 
@@ -170,8 +173,8 @@ class TestReconStream:
         )
 
         assert document.windows == 3
-        assert document.last is not None
-        assert (document.last.closed_by, document.last.table.records) == ("until", 5)
+        assert document.last_window is not None
+        assert (document.last_window.closed_by, document.last_window.table.records) == ("until", 5)
 
 
 class TestASurveyRunsOneWindow:
@@ -185,9 +188,44 @@ class TestASurveyRunsOneWindow:
 
         assert document.status == "complete"
         assert [t.name for t in document.tables] == ["now"]
-        [window] = document.windows
-        assert (window.stream, window.closed_by, window.table.status) == ("events", "window", "ok")
+        [window] = document.stream_windows
+        assert (window.stream, window.closed_by, window.table.status) == ("events", "seconds", "ok")
         assert window.table.records == 9
+
+    @pytest.mark.parametrize(
+        ("snapshot", "deadline", "returns"),
+        [(False, None, 30.0), (True, 5, 35.0), (True, None, None)],
+    )
+    def test_survey_dry_run_says_how_long_its_windows_hold_it(
+        self, tmp_path: Path, snapshot: bool, deadline: float | None, returns: float | None
+    ) -> None:
+        """Polish R3 (Ace 1-2): a survey runs one window of each stream, one after another,
+        so two streams of 10 s and 20 s hold it 30 s past its snapshot tables; the plan says
+        so as ``survey.returns``, adding the snapshot tables' ``deadline:``, and null when
+        nothing bounds them."""
+        clock = VirtualClock()
+        collectors: list[dict[str, Any]] = [
+            {"name": "events", "type": "feed", "window": {"seconds": 10}, "retain": "all"},
+            {"name": "log", "type": "feed", "window": {"seconds": 20}, "retain": "all"},
+        ]
+        if snapshot:
+            collectors.insert(0, {"name": "now", "type": "cli", "run": "echo '{\"a\": 1}'"})
+        config: dict[str, Any] = {"collectors": collectors}
+        if deadline is not None:
+            config["deadline"] = deadline
+        mission = tmp_path / ".recon" / "m"
+        mission.mkdir(parents=True)
+        (mission / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+
+        result = CliRunner().invoke(main, ["survey", "m", "--dry-run", "--json"],
+                                    obj=_root(tmp_path, clock, Feed(clock, 1.0, 3)))  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        said = {v["path"]: v for v in json.loads(result.stdout)["provenance"]}
+        assert said["survey.returns"]["value"] == returns
+        assert "in turn" in said["survey.returns"]["note"]
+        if returns is None:
+            assert "deadline:" in said["survey.returns"]["note"], "it says what would bound it"
 
 
 class TestWatchAcrossWindows:
@@ -200,11 +238,11 @@ class TestWatchAcrossWindows:
         [mission] = recon_.status("m").missions
         first = mission.streams[0].first
 
-        reads = list(recon_.watch("m", stream="events", archive=first, limit=4))
+        reads = list(recon_.watch("m", stream="events", archive=first, max_records=4))
 
-        seqs = [r["record"]["seq"] for read in reads for r in read.records]
+        seqs = [r["record"]["seq"] for read in reads for r in read.table_records]
         assert seqs == list(range(25))
-        assert len({read.archive_id for read in reads}) == 3
+        assert len({read.archive for read in reads}) == 3
         assert all(read.stream == "events" for read in reads)
 
     def test_a_cursor_into_a_retired_window_goes_on_from_the_next_one(self, tmp_path: Path) -> None:
@@ -218,13 +256,13 @@ class TestWatchAcrossWindows:
 
         after = recon_.read_since("m", read.cursor, stream="events")
 
-        assert after.archive_id != read.archive_id
-        assert [r["record"]["seq"] for r in after.records][:1] == [18], "window 2's first"
+        assert after.archive != read.archive
+        assert [r["record"]["seq"] for r in after.table_records][:1] == [18], "window 2's first"
         stones = [stone["id"] for stone in _retired(tmp_path)]
-        assert after.skipped is not None, "a read that jumps windows says which it jumped"
-        assert (after.skipped.first, after.skipped.count) == (read.archive_id, 2)
-        assert after.skipped.last == stones[-1]
-        assert recon_.read_since("m", after.cursor, stream="events").skipped is None
+        assert after.retired_range is not None, "a read that jumps windows says which it jumped"
+        assert (after.retired_range.first, after.retired_range.count) == (read.archive, 2)
+        assert after.retired_range.last == stones[-1]
+        assert recon_.read_since("m", after.cursor, stream="events").retired_range is None
 
     def test_a_watcher_attached_changes_no_byte_of_the_stream(self, tmp_path: Path) -> None:
         """B10 #9: the same stream, with and without a reader following it as it is written."""
@@ -270,16 +308,16 @@ class TestQueryAcrossWindows:
 
         assert every.rows == [{"n": 35}]
         status = recon_.status("m").missions[0].streams[0]
-        assert every.windows is not None and status.latest is not None
-        assert (every.windows.first, every.windows.last, every.windows.count) == (
+        assert every.window_range is not None and status.latest is not None
+        assert (every.window_range.first, every.window_range.last, every.window_range.count) == (
             status.first,
             status.latest.id,
             4,
         ), "the range read, not every id (review item 11)"
         assert later.rows == [{"lo": 19, "n": 16}]
-        assert later.windows is not None
-        assert later.windows.count == 2, "windows that ended before since are not read"
-        assert not [w for w in every.warnings if w["kind"] == "many_windows"]
+        assert later.window_range is not None
+        assert later.window_range.count == 2, "windows that ended before since are not read"
+        assert not [w for w in every.warnings if w["kind"] == "windows_many"]
 
     def test_a_query_of_many_windows_warns_how_to_narrow_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -294,7 +332,7 @@ class TestQueryAcrossWindows:
 
         rows = recon_.query("m", "SELECT count(*) AS n FROM events", stream="events")
 
-        [warning] = [w for w in rows.warnings if w["kind"] == "many_windows"]
+        [warning] = [w for w in rows.warnings if w["kind"] == "windows_many"]
         assert warning["got"] == 4 and "--since" in warning["fix"]
 
     def test_windows_of_two_configs_are_refused_with_a_fix(self, tmp_path: Path) -> None:
@@ -331,7 +369,7 @@ class TestTheCommandLine:
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 100))
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "events", "--json"], obj=recon_
+            main, ["stream", "m", "--stream", "events", "--json"], obj=recon_
         )
 
         assert result.exit_code == 0, result.output
@@ -348,13 +386,13 @@ class TestTheCommandLine:
         recon_ = root({}, project=tmp_path, clock=clock, plugins=plugins)
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "events", "--dry-run", "--json"], obj=recon_
+            main, ["stream", "m", "--stream", "events", "--dry-run", "--json"], obj=recon_
         )
 
         assert result.exit_code == 0, result.output
         document = json.loads(result.stdout)
         assert document["schema"] == "recon.v1.plan"
-        said = {v["path"]: (v["value"], v["source"]) for v in document["provenance"]}
+        said = {v["path"]: (v["value"], v["origin"]) for v in document["provenance"]}
         assert said["collectors.0.window.seconds"] == (300.0, "recon")
         assert said["collectors.0.retain"] == ("all", "recon")
         assert said["collectors.0.buffer.overflow"] == ("block", "type")
@@ -376,14 +414,14 @@ class TestTheCommandLine:
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 3))
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "events", "--dry-run", "--json", *flags],
+            main, ["stream", "m", "--stream", "events", "--dry-run", "--json", *flags],
             obj=recon_,
         )  # fmt: skip
 
         assert result.exit_code == 0, result.output
         provenance = json.loads(result.stdout)["provenance"]
         path, value, source = said
-        assert {(v["path"], v["value"], v["source"]) for v in provenance} >= {said}
+        assert {(v["path"], v["value"], v["origin"]) for v in provenance} >= {said}
         assert path.startswith("stream.")
 
     @pytest.mark.parametrize(
@@ -399,7 +437,7 @@ class TestTheCommandLine:
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 3))
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "events", "--dry-run", "--json", *flags],
+            main, ["stream", "m", "--stream", "events", "--dry-run", "--json", *flags],
             obj=recon_,
         )  # fmt: skip
 
@@ -416,7 +454,7 @@ class TestTheCommandLine:
         again = VirtualClock()
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "events"],
+            main, ["stream", "m", "--stream", "events"],
             obj=_root(tmp_path, again, Feed(again, 1.0, 30)),
         )  # fmt: skip
 
@@ -425,20 +463,52 @@ class TestTheCommandLine:
         assert result.exit_code == 0, result.output
         assert "returns within 10s" in result.stderr.splitlines()[0]
 
+    def test_under_json_the_run_s_document_says_when_it_returns(self, tmp_path: Path) -> None:
+        """Polish R3 (Ace 1-2): the notice of when the run returns went to stderr for a
+        person and to ``on_event`` for a program, and to a ``--json`` caller nowhere. It is
+        in the run's document; stderr stays the error envelope's alone."""
+        clock = VirtualClock()
+        _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
+
+        result = CliRunner().invoke(main, ["stream", "m", "--stream", "events", "--json"],
+                                    obj=_root(tmp_path, clock, Feed(clock, 1.0, 30)))  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        document = json.loads(result.stdout)
+        assert document["returns_s"] == 10.0
+        assert "returns within 10s" in document["returns"]
+        assert result.stderr == ""
+
+    def test_the_help_says_how_long_a_stream_holds_the_command_and_to_plan_first(self) -> None:
+        """Polish R3 (Ace 1-2): one window of the default 300 s can outlast an agent's tool
+        call, so the help says so, and that ``--dry-run`` says when the run returns."""
+        streaming = " ".join(CliRunner().invoke(main, ["stream", "--help"]).output.split())
+        surveying = " ".join(CliRunner().invoke(main, ["survey", "--help"]).output.split())
+
+        for said in ("300 s", "tool call", "--dry-run", "stream.returns"):
+            assert said in streaming, said
+        for said in ("one window of each stream", "in turn", "survey.returns"):
+            assert said in surveying, said
+
     def test_recon_stream_names_its_stream_with_stream_as_watch_and_query_do(
         self, tmp_path: Path
     ) -> None:
         """Review item 22 (Knuth 3): one thing, one word: ``--stream`` names the stream on
-        ``recon stream`` as it does on ``watch`` and ``query``; ``--collector`` stays."""
+        ``recon stream`` as it does on ``watch`` and ``query``. Polish R11 (Karman 9): the
+        ``--collector`` alias is gone, so the stream has one name on the command line."""
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 30))
 
         result = CliRunner().invoke(main, ["stream", "m", "--stream", "events", "--json"],
                                     obj=recon_)  # fmt: skip
+        alias = CliRunner().invoke(main, ["stream", "m", "--collector", "events", "--json"],
+                                   obj=recon_)  # fmt: skip
 
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["stream"] == "events"
+        assert alias.exit_code == recon.EXIT_CODES["usage"], "no alias: --collector is unknown"
+        assert "--collector" not in CliRunner().invoke(main, ["stream", "--help"]).output
 
     def test_recon_stream_dry_run_refuses_what_the_run_would(self, tmp_path: Path) -> None:
         clock = VirtualClock()
@@ -446,7 +516,7 @@ class TestTheCommandLine:
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 3))
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "nope", "--dry-run", "--json"], obj=recon_
+            main, ["stream", "m", "--stream", "nope", "--dry-run", "--json"], obj=recon_
         )
 
         assert result.exit_code == 4, "no stream nope: not_found, before anything runs"
@@ -458,7 +528,7 @@ class TestTheCommandLine:
 
         result = CliRunner().invoke(
             main,
-            ["stream", "m", "--collector", "events", "--forever", "--windows", "2", "--json"],
+            ["stream", "m", "--stream", "events", "--forever", "--windows", "2", "--json"],
             obj=recon_,
         )
 

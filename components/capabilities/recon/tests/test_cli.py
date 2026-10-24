@@ -7,6 +7,7 @@ group through CliRunner, and uses `cli` collectors running `echo`/`printf` — n
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import os
 import signal
@@ -28,6 +29,7 @@ from recon.adapters._in.cli import main
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import load_plugins, root
+from recon.domain import documents as documents_module
 from recon.domain.collector import BrokenPlugin, CollectorContext, CollectorType
 from recon.domain.errors import CollectionError, ErrorKind
 from recon.domain.type_url import is_type_url
@@ -110,6 +112,63 @@ def test_version_prints_the_installed_version() -> None:
     assert result.stdout.strip() == f"recon, version {recon.__version__}"
 
 
+class TestOneFieldNameOneShape:
+    """Polish R9 (Karman 4-5): a field name has one shape in every recon document.
+    ``archive`` is always an archive's id, what ``--archive`` takes, and a directory is
+    ``path``; ``records`` and ``windows`` are always counts, as they are in ``meta.yaml``."""
+
+    @staticmethod
+    def _shapes(*, leaving_out: frozenset[str] = frozenset()) -> dict[str, set[str]]:
+        """Each field name of recon's documents, and the shapes it has in them."""
+        documents = [
+            shape
+            for name, shape in vars(documents_module).items()
+            if isinstance(shape, type)
+            and issubclass(shape, documents_module.Document)
+            and name not in leaving_out
+        ]
+        shapes: dict[str, set[str]] = {}
+        for document in documents:
+            for field, info in document.model_fields.items():
+                shown = str(info.annotation).replace(" | None", "").replace("Optional[", "")
+                shapes.setdefault(info.serialization_alias or field, set()).add(shown)
+        return shapes
+
+    def test_each_name_has_one_shape_across_the_documents(self) -> None:
+        shapes = self._shapes()
+        assert shapes["archive"] == {"<class 'str'>"}
+        assert shapes["path"] == {"<class 'str'>"}
+        assert shapes["records"] <= {"<class 'int'>", "int"}
+        assert shapes["windows"] <= {"<class 'int'>", "int"}
+
+    def test_the_rest_of_the_names_have_one_shape_too(self) -> None:
+        """Polish, after R9: ``last``, ``captures``, ``skipped``, ``source`` and ``streams``
+        had two shapes each; each now has one, or the second meaning a name of its own. The
+        capture line (``recon.v1.capture``) is left out: it is the format other tools write,
+        versioned by its own schema, whose ``status`` is a response's."""
+        shapes = self._shapes(leaving_out=frozenset({"Capture"}))
+        for name in ("last", "captures", "skipped", "source", "streams"):
+            assert len(shapes[name]) == 1, (name, shapes[name])
+        parameters = inspect.signature(recon.stream).parameters
+        assert "stream" in parameters and "collector" not in parameters, (
+            "the stream is named stream=, as read_since, watch, query and plan name it"
+        )
+
+    def test_every_archive_a_document_names_is_one_archive_takes(self, project: Path) -> None:
+        _mission(project, "m", OK_CONFIG)
+        survey = _doc(_invoke("survey", "m", "--json"))
+        _invoke("survey", "m", "--json")  # so the first is not the latest
+
+        assert Path(survey["path"]).name == survey["archive"]
+        assert Path(survey["path"]).is_dir()
+        query = _doc(_invoke("query", "m", "SELECT * FROM hello", "--archive", survey["archive"],
+                             "--json"))  # fmt: skip
+        watch = _invoke("watch", "m", "--once", "--archive", survey["archive"], "--json")
+        [read] = [json.loads(line) for line in watch.stdout.splitlines()]
+        for document in (query, read):
+            assert (document["archive"], document["path"]) == (survey["archive"], survey["path"])
+
+
 class TestSurvey:
     def test_ok_json_document(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
@@ -123,7 +182,7 @@ class TestSurvey:
             ("hello", "ok", 2)
         ]
         assert doc["tables"][0]["type_url"] == "recon.v1.records"
-        assert Path(doc["archive"]).parent == project / ".recon" / "m" / "archive"
+        assert Path(doc["path"]).parent == project / ".recon" / "m" / "archive"
 
     def test_human_mode_prints_the_archive_path_on_stdout(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
@@ -176,7 +235,7 @@ class TestSurvey:
         assert error["kind"] == "run_failed"
         assert error["details"]["failed"] == ["bad"]
         assert error["fix"]
-        archive = Path(error["details"]["archive"])
+        archive = Path(error["details"]["path"])
         assert (archive / ".incomplete").exists()
         assert (archive / "good.jsonl").exists()
 
@@ -245,8 +304,13 @@ class TestSurvey:
         error = _error(result)
         assert error["kind"] == "store"
         assert "could not be finished" in error["message"]
-        assert error["details"] == {"archive": doc["archive"], "failed": []}
-        assert (Path(doc["archive"]) / ".incomplete").exists()
+        assert error["details"] == {"archive": doc["archive"], "path": doc["path"], "failed": []}
+        assert (Path(doc["path"]) / ".incomplete").exists()
+        latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
+        assert latest["ended"] == ("crashed" if step == "write_meta" else "finished"), (
+            "a survey that could not write meta.yaml left no record that it was stopped, so "
+            "it never reads stopped"
+        )
 
         human = _invoke("survey", "m", over=over)
         assert human.exit_code == 9
@@ -601,7 +665,7 @@ class TestQueryProvenance:
         [archive] = (project / ".recon" / "m" / "archive").iterdir()
 
         doc = _doc(_invoke("query", "m", "SELECT a FROM hello", "--json"))
-        assert doc["archive_id"] == archive.name and doc["archive"] == str(archive)
+        assert doc["archive"] == archive.name and doc["path"] == str(archive)
         human = _invoke("query", "m", "SELECT a FROM hello")
         assert f"archive {archive.name}" in human.stderr
 
@@ -753,7 +817,7 @@ class TestArchiveHistory:
         assert first["started_at"] and first["finished_at"]
         assert [t["status"] for t in first["tables"]] == ["ok", "error"]
         rows = _doc(_invoke("query", "m", "SELECT * FROM ok", "--archive", first["id"], "--json"))
-        assert rows["archive_id"] == first["id"]
+        assert rows["archive"] == first["id"]
         human = _invoke("status", "m")
         assert first["id"] in human.stdout and second["id"] in human.stdout
 
@@ -1349,6 +1413,8 @@ def test_a_terminated_survey_reads_incomplete_and_leaves_no_command_running(proj
     assert not alive, "the command of the table being collected outlived the survey"
     latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
     assert latest["state"] == "incomplete"
+    assert latest["ended"] == "stopped", "stopped on request, and its meta.yaml says so"
+    assert [(t["name"], t["status"]) for t in latest["tables"]] == [("first", "ok")]
     query = _doc(_invoke("query", "m", "SELECT * FROM first", "--json"))
     assert query["state"] == "incomplete"
     [archive] = (project / ".recon" / "m" / "archive").iterdir()
@@ -1393,9 +1459,9 @@ class TestWatch:
             {"table": "hello", "record": {"a": 1}},
             {"table": "hello", "record": {"a": 2}},
         ]
-        assert "hello sealed" in unstyle(human.stderr)
+        assert "hello: every record read" in unstyle(human.stderr)
         assert [r["schema"] for r in reads] == ["recon.v1.records-since"]
-        assert (reads[0]["state"], reads[0]["count"], reads[0]["sealed"]) == (
+        assert (reads[0]["state"], reads[0]["count"], reads[0]["exhausted"]) == (
             "complete",
             2,
             ["hello"],
@@ -1423,9 +1489,9 @@ class TestWatch:
         reads = [json.loads(line) for line in result.stdout.splitlines()]
         assert result.exit_code == 0
         assert reads[0]["state"] == "writing" and reads[-1]["state"] == "complete"
-        assert [r["record"]["n"] for read in reads for r in read["records"]] == [1, 2, 3]
-        assert len([read for read in reads if read["records"]]) > 1, "seen as it was written"
-        assert [t for read in reads for t in read["sealed"]] == ["slow"]
+        assert [r["record"]["n"] for read in reads for r in read["table_records"]] == [1, 2, 3]
+        assert len([read for read in reads if read["table_records"]]) > 1, "seen as it was written"
+        assert [t for read in reads for t in read["exhausted"]] == ["slow"]
 
     def test_max_bytes_cuts_each_read_and_watch_reads_on_at_once(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
@@ -1442,7 +1508,7 @@ class TestWatch:
         first = json.loads(_invoke("watch", "m", "--once", "--json").stdout)
         again = _invoke("watch", "m", "--cursor", first["cursor"], "--json")
         assert first["count"] == 2
-        assert json.loads(again.stdout)["records"] == []
+        assert json.loads(again.stdout)["table_records"] == []
 
     def test_a_bad_cursor_or_interval_is_a_usage_error_with_a_fix(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)
@@ -1490,7 +1556,7 @@ def test_a_killed_survey_reads_incomplete(project: Path) -> None:
 
     latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
     assert latest["state"] == "incomplete" and latest["format_version"] is None
-    assert latest["ended"] == "stopped", "killed before it finished, not a failed table"
+    assert latest["ended"] == "crashed", "it died: no meta.yaml, no writer, never stopped"
 
 
 def test_ctrl_c_under_json_prints_the_envelope_and_nothing_before_it(project: Path) -> None:

@@ -78,12 +78,15 @@ class VirtualClock:
     threads of a stream: a wait asked of it returns once the time reaches its end, so a test
     runs a stream's hours in milliseconds, in the order its script says. A wait whose end
     the script never reaches returns after a little real time instead, so a thread waiting on
-    it looks again at what it waits for; nothing sleeps for the time it was asked."""
+    it looks again at what it waits for; nothing sleeps for the time it was asked.
+    ``waited`` is set once a thread has asked it to wait: a test waits on it for a thread
+    to reach its first wait, rather than sleeping and hoping it has."""
 
     def __init__(self, at: datetime = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)) -> None:
         self._start = at
         self._t = 0.0
         self._cond = threading.Condition()
+        self.waited = threading.Event()
 
     def now(self) -> datetime:
         with self._cond:
@@ -94,6 +97,7 @@ class VirtualClock:
             return self._t
 
     def sleep(self, seconds: float) -> None:
+        self.waited.set()
         with self._cond:
             end = self._t + seconds
             self._cond.wait_for(lambda: self._t >= end, timeout=0.05)
@@ -272,4 +276,4 @@ def run_survey(
         converter=converter,
     )
     document = recon.survey(name, on_event=on_event)
-    return Path(document.archive), document.tables
+    return Path(document.path), document.tables

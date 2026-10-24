@@ -23,8 +23,8 @@ from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
 from recon.application.survey import CollectorError, Survey
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
-    READ_LIMIT,
     READ_MAX_BYTES,
+    READ_MAX_RECORDS,
     WATCH_INTERVAL_S,
 )
 from recon.domain.deadline import Deadline
@@ -117,7 +117,7 @@ ChannelFactory = Callable[[], "Channel"]
 
 DEFAULT_TEMPLATE = "code-forensics"
 
-#: Past this many windows, a query of a stream warns (``many_windows``) how to narrow it:
+#: Past this many windows, a query of a stream warns (``windows_many``) how to narrow it:
 #: each window is a file DuckDB opens.
 MANY_WINDOWS = 300
 
@@ -241,7 +241,9 @@ class Recon:
         ``forever``: it refuses what that refuses, and ``provenance`` also says how long the
         run is and why (``stream.windows``, one by default; ``stream.until``;
         ``stream.forever``), and when it returns at the latest (``stream.returns``: seconds
-        from its start, or null when only a stop or its source ends it)."""
+        from its start, or null when only a stop or its source ends it). Without it, a
+        mission with streams has ``survey.returns``: a survey runs one window of each, in
+        turn, after its snapshot tables."""
         bound = None if stream is None else _stream_bound(
             windows, until, forever, self._clock.now(), name, stream
         )  # fmt: skip
@@ -254,8 +256,10 @@ class Recon:
             provenance += _run_bound(bound, windows, until, forever)
             returns_s, returns = _returns(planned.window, bound, until, forever, self._clock.now())
             provenance.append(
-                SourcedValue(path="stream.returns", value=returns_s, source="recon", note=returns)
+                SourcedValue(path="stream.returns", value=returns_s, origin="recon", note=returns)
             )
+        elif plan.streams:
+            provenance.append(_survey_returns(plan.config, plan.streams))
         requirements, said, broken = self._preflight(mission, plan.config)
         return PlanDocument(
             mission=name,
@@ -264,9 +268,9 @@ class Recon:
             effects=plan.effects(),
             writes=PlanWrites(
                 config=str(copy_to) if copy_to else None,
-                archive=str(mission / "archive" / "<archive id>"),
-                captures=bool(plan.config and plan.config.preserve_raw),
-                streams=[str(mission / "streams" / stream.name) for stream in plan.streams],
+                archive_path=str(mission / "archive" / "<archive id>"),
+                preserve_raw=bool(plan.config and plan.config.preserve_raw),
+                stream_paths=[str(mission / "streams" / s.name) for s in plan.streams],
             ),
             problems=[p.document() for p in plan.problems],
             warnings=[w.document() for w in plan.warnings + broken],
@@ -421,27 +425,28 @@ class Recon:
             warnings += _dropped(telemetry) + _undelivered(channel)
         finally:
             self._archives.release(archive)
-        windows: list[WindowOutcome] = []
+        stream_windows: list[WindowOutcome] = []
         for stream in plan.streams:
             run, found = self._run_stream(
                 mission, plan.config, stream, sha256, windows=1, until=None, on_event=caller
             )
             warnings += found
-            windows += [run.last] if run.last is not None else []
-        failed = failed_tables or any(w.table.status == "error" for w in windows)
+            stream_windows += [run.last] if run.last is not None else []
+        failed = failed_tables or any(w.table.status == "error" for w in stream_windows)
         return SurveyDocument(
             mission=name,
-            archive=str(archive),
+            archive=archive.name,
+            path=str(archive),
             status="incomplete" if failed or not survey.finished else "complete",
             tables=tables,
             warnings=[w.document() for w in warnings],
-            windows=windows,
+            stream_windows=stream_windows,
         )
 
     def stream(
         self,
         name: str,
-        collector: str,
+        stream: str,
         *,
         windows: int | None = None,
         until: datetime | None = None,
@@ -451,30 +456,30 @@ class Recon:
         on_event: EventCallback | None = None,
         stop: Stop | None = None,
     ) -> StreamDocument:
-        """Plan, then run the stream of the mission's collector ``collector``, window after
+        """Plan, then run the mission's stream ``stream`` (its collector's name), window after
         window, until ``windows`` are sealed, ``until`` comes, its source ends or fails, or it
         is stopped: ``stop`` asked (as the command line's SIGINT and SIGTERM ask it), or the
-        caller's thread interrupted. The window being written is then sealed ``signal`` once
+        caller's thread interrupted. The window being written is then sealed ``stopped`` once
         what waits is written (a second stop seals it at once), and this returns. With none
         of ``windows``, ``until`` and ``forever``, it runs one window, so it always returns
         unless told otherwise. Raises UsageError for a bound it cannot keep, NotFoundError
-        for a collector that is no stream of the mission, ReconError (``busy``) when another
+        for a name that is no stream of the mission, ReconError (``busy``) when another
         writer holds the stream; a window whose source failed is in the document, and
         :func:`~recon.domain.documents.stream_failure` says what it adds up to."""
         now = self._clock.now()
-        windows = _stream_bound(windows, until, forever, now, name, collector)
+        windows = _stream_bound(windows, until, forever, now, name, stream)
         source, plan, copy_to = self._prepare(name, config, replace)
         assert plan.config is not None  # _prepare raises on an invalid plan
-        planned = _planned_stream(plan, name, collector)
+        planned = _planned_stream(plan, name, stream)
         if copy_to is not None:
             self._missions.write_config(name, source.text)
         mission = self._missions.mission_dir(name)
         sha256 = hashlib.sha256(source.text).hexdigest()
         started: list[Problem] = []
+        returns_s, returns = _returns(planned.window, windows, until, forever, now)
         if on_event is not None:
-            returns_s, returns = _returns(planned.window, windows, until, forever, now)
             try:
-                on_event({"kind": "stream", "name": collector, "returns_s": returns_s,
+                on_event({"kind": "stream", "name": stream, "returns_s": returns_s,
                           "returns": returns})  # fmt: skip
             except Exception as exc:  # a receiver that fails is said, never the stream's end
                 started.append(
@@ -493,14 +498,16 @@ class Recon:
         found = started + found
         return StreamDocument(
             mission=name,
-            stream=collector,
-            path=str(mission / "streams" / collector),
-            state=self._archives.stream_state(mission, collector),
+            stream=stream,
+            path=str(mission / "streams" / stream),
+            returns_s=returns_s,
+            returns=returns,
+            state=self._archives.stream_state(mission, stream),
             windows=run.windows,
             records=run.records,
             dropped=run.dropped,
             first=run.first,
-            last=run.last,
+            last_window=run.last,
             warnings=[w.document() for w in plan.warnings + found],
         )
 
@@ -561,6 +568,7 @@ class Recon:
                 overflow=planned.overflow,
                 columns=tuple(entry.normalize or ()),
                 retain=planned.retain,
+                package=self._plugins.collector_packages.get(entry.type),
             )
             run = engine.run(
                 mission,
@@ -775,8 +783,8 @@ class Recon:
         rows = [dict(zip(columns, row, strict=True)) for row in result.rows]
         return QueryRows(
             mission=name,
-            archive=str(path),
-            archive_id=path.name,
+            archive=path.name,
+            path=str(path),
             state=(state := self._archives.state(path)),
             ended=self._ended(path, state),
             columns=columns,
@@ -843,7 +851,7 @@ class Recon:
                     "",
                     f"the query read {len(selected)} windows of stream {stream}, each a file "
                     "DuckDB opens: it costs each window it reads",
-                    kind="many_windows",
+                    kind="windows_many",
                     fix=f"narrow it to the windows it needs: --since and --until (`recon status "
                     f"{name}` gives the stream's first and latest window)",
                     got=len(selected),
@@ -851,8 +859,8 @@ class Recon:
             )
         return QueryRows(
             mission=name,
-            archive=str(mission / "streams" / stream),
-            archive_id=last.name,
+            archive=last.name,
+            path=str(mission / "streams" / stream),
             state=state,
             ended=self._ended(last, state),
             columns=columns,
@@ -860,7 +868,7 @@ class Recon:
             count=len(rows),
             warnings=[w.document() for w in result.warnings + _dropped(telemetry) + wide],
             stream=stream,
-            windows=WindowRange(first=selected[0].name, last=last.name, count=len(selected)),
+            window_range=WindowRange(first=selected[0].name, last=last.name, count=len(selected)),
         )
 
     def _windows(self, name: str, stream: str) -> list[Path]:
@@ -896,11 +904,11 @@ class Recon:
         *,
         archive: str | None = None,
         stream: str | None = None,
-        limit: int = READ_LIMIT,
+        max_records: int = READ_MAX_RECORDS,
         max_bytes: int = READ_MAX_BYTES,
     ) -> RecordsSince:
         """The records of the mission's latest archive, or the one named, written since
-        ``cursor`` (None: from its first), at most ``limit`` and ``max_bytes`` of them. The
+        ``cursor`` (None: from its first), at most ``max_records`` and ``max_bytes`` of them. The
         archive's state is read before its records, so a read that finds it no longer
         ``writing`` and has no ``more`` holds its last records.
 
@@ -908,8 +916,8 @@ class Recon:
         names, or where ``cursor`` left off; a read that ends a window that is sealed, with a
         later one there, gives the cursor to that one and ``more``."""
         if stream is not None:
-            return self._read_stream(name, stream, cursor, archive, limit, max_bytes)[0]
-        return self._read(name, self._archive(name, archive), cursor, limit, max_bytes)
+            return self._read_stream(name, stream, cursor, archive, max_records, max_bytes)[0]
+        return self._read(name, self._archive(name, archive), cursor, max_records, max_bytes)
 
     def _read_stream(
         self,
@@ -917,7 +925,7 @@ class Recon:
         stream: str,
         cursor: str | None,
         archive: str | None,
-        limit: int,
+        max_records: int,
         max_bytes: int,
     ) -> tuple[RecordsSince, bool]:
         """One read of a stream, and whether it is the stream's last: no writer extends it,
@@ -942,15 +950,15 @@ class Recon:
             path = self._window(name, stream, windows, archive)
         else:
             path = windows[-1]
-        read = self._read(name, path, inner, limit, max_bytes)
+        read = self._read(name, path, inner, max_records, max_bytes)
         later = [w for w in windows if (window_index(w.name) or 0) > (window_index(path.name) or 0)]
         done = read.state != "writing" and not read.more
         if done and later:
             on = _stream_cursor(stream, later[0].name, None)
-            update = {"cursor": on, "more": True, "stream": stream, "skipped": skipped}
+            update = {"cursor": on, "more": True, "stream": stream, "retired_range": skipped}
             return read.model_copy(update=update), False
         on = _stream_cursor(stream, path.name, read.cursor)
-        update = {"cursor": on, "stream": stream, "skipped": skipped}
+        update = {"cursor": on, "stream": stream, "retired_range": skipped}
         return read.model_copy(update=update), done and not writing
 
     def _skipped(self, mission: Path, stream: str, since: str, kept: str) -> WindowRange:
@@ -965,21 +973,21 @@ class Recon:
         return WindowRange(first=since, last=str(last) if last else None, count=end - start)
 
     def _read(
-        self, name: str, path: Path, cursor: str | None, limit: int, max_bytes: int
+        self, name: str, path: Path, cursor: str | None, max_records: int, max_bytes: int
     ) -> RecordsSince:
         """One read of the archive at ``path``, its state read first."""
         state = self._archives.state(path)
-        read = self._archives.read_since(path, cursor, limit=limit, max_bytes=max_bytes)
+        read = self._archives.read_since(path, cursor, max_records=max_records, max_bytes=max_bytes)
         return RecordsSince(
             mission=name,
-            archive=str(path),
-            archive_id=path.name,
+            archive=path.name,
+            path=str(path),
             state=state,
             ended=self._ended(path, state),
-            records=[{"table": r.table, "record": r.record} for r in read.records],
+            table_records=[{"table": r.table, "record": r.record} for r in read.records],
             count=len(read.records),
             cursor=read.cursor,
-            sealed=read.sealed,
+            exhausted=read.exhausted,
             retracted=read.retracted,
             more=read.more,
         )
@@ -992,7 +1000,7 @@ class Recon:
         archive: str | None = None,
         stream: str | None = None,
         interval_s: float = WATCH_INTERVAL_S,
-        limit: int = READ_LIMIT,
+        max_records: int = READ_MAX_RECORDS,
         max_bytes: int = READ_MAX_BYTES,
     ) -> Iterator[RecordsSince]:
         """Follow the mission's latest archive, or the one named, from ``cursor``: each
@@ -1011,21 +1019,23 @@ class Recon:
                 fix="leave the interval at its default (1 second), or give a number above 0",
             )
         if stream is not None:
-            read, end = self._read_stream(name, stream, cursor, archive, limit, max_bytes)
+            read, end = self._read_stream(name, stream, cursor, archive, max_records, max_bytes)
             yield read
             while not end:
                 if not read.more:
                     self._clock.sleep(interval_s)
-                read, end = self._read_stream(name, stream, read.cursor, None, limit, max_bytes)
+                read, end = self._read_stream(
+                    name, stream, read.cursor, None, max_records, max_bytes
+                )
                 yield read
             return
         path = self._archive(name, archive)  # once: the archive followed does not change
-        read = self._read(name, path, cursor, limit, max_bytes)
+        read = self._read(name, path, cursor, max_records, max_bytes)
         yield read
         while read.state == "writing" or read.more:
             if not read.more:
                 self._clock.sleep(interval_s)
-            read = self._read(name, path, read.cursor, limit, max_bytes)
+            read = self._read(name, path, read.cursor, max_records, max_bytes)
             yield read
 
     def _ended(self, archive: Path, state: ArchiveState) -> Ended | None:
@@ -1132,20 +1142,20 @@ def _run_bound(
             SourcedValue(
                 path="stream.windows",
                 value=bound,
-                source="command" if given else "recon",
+                origin="command" if given else "recon",
                 note=""
                 if given
                 else "no --windows, --until or --forever: one window, so the run returns",
             )
         )
     if until is not None:
-        said.append(SourcedValue(path="stream.until", value=until.isoformat(), source="command"))
+        said.append(SourcedValue(path="stream.until", value=until.isoformat(), origin="command"))
     if forever:
         said.append(
             SourcedValue(
                 path="stream.forever",
                 value=True,
-                source="command",
+                origin="command",
                 note="runs until stopped: Ctrl-C or SIGTERM seals the window being written",
             )
         )
@@ -1172,6 +1182,34 @@ def _returns(
         f"returns within {most:g}s; sooner when its source ends or a window's records or bytes "
         "end it first. To not wait: a shorter window: seconds, or run it in the background"
     )
+
+
+def _survey_returns(config: ReconConfig, streams: list[PlannedStream]) -> SourcedValue:
+    """When a survey of ``config`` returns at the latest, in seconds from its start: its
+    snapshot tables (as long as the mission's ``deadline:`` lets them), then one window of
+    each stream, in turn. Null when one of them has no time bound."""
+    snapshot = len(streams) < len(config.collectors)
+    spans = [stream.window.seconds for stream in streams]
+    each = ", ".join(
+        f"{stream.name} {stream.window.seconds:g}s"
+        if stream.window.seconds is not None
+        else f"{stream.name} no time bound"
+        for stream in streams
+    )
+    note = f"one window of each of {len(streams)} stream(s), in turn ({each})"
+    first: float | None = 0.0
+    if snapshot:
+        first = config.deadline
+        note += ", after the snapshot tables, " + (
+            f"which deadline: bounds at {first:g}s"
+            if first is not None
+            else "which no deadline: bounds: set deadline: to bound them"
+        )
+    if None in spans:
+        note += "; a window with no seconds: ends on its records or bytes, or its source's end"
+    timed = [span for span in spans if span is not None]
+    value = None if first is None or len(timed) < len(spans) else first + sum(timed)
+    return SourcedValue(path="survey.returns", value=value, origin="recon", note=note)
 
 
 def _collect(
@@ -1271,11 +1309,14 @@ def _meeting(windows: list[Path], since: datetime | None, until: datetime | None
 
 
 def _ended(state: ArchiveState, meta: Mapping[str, Any]) -> Ended | None:
-    """Whether the survey of an archive in ``state``, whose ``meta.yaml`` reads ``meta``, ran
-    to its end: it did when it wrote ``meta.yaml``. None while it is being written."""
+    """How the writer of an archive in ``state``, whose ``meta.yaml`` reads ``meta``, ended:
+    as its ``meta.yaml`` says (``finished`` when one an older recon wrote does not say), or
+    ``crashed`` when it wrote none. None while it is being written."""
     if state == "writing":
         return None
-    return "finished" if meta.get("format_version") is not None else "stopped"
+    if meta.get("format_version") is None:
+        return "crashed"
+    return "stopped" if meta.get("ended") == "stopped" else "finished"
 
 
 def _unique(columns: list[str]) -> list[str]:

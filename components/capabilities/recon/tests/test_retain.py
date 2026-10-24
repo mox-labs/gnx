@@ -100,7 +100,7 @@ class TestTombstones:
         ), "no file per retired window"
         assert store.retired_count(tmp_path, "s") == len(outcomes) - 1
         assert not (stream / outcomes[0].id).exists()
-        newest = yaml_of(Path(outcomes[-1].archive))
+        newest = yaml_of(Path(outcomes[-1].path))
         assert newest["stream"]["previous"] == outcomes[-2].id, "the chain still names it"
 
 

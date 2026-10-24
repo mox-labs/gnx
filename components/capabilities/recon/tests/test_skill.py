@@ -163,7 +163,7 @@ def test_the_live_reading_page_is_the_skill_reference() -> None:
     assert page.read_text(encoding="utf-8") == REFERENCES["live-reading"]
     assert "recon --skill -r live-reading" in SKILL
     for taught in ("--max-bytes", "--interval", "--once", "--cursor", "`ended`", "`more`",
-                   "retracted", "sealed", "usage"):  # fmt: skip
+                   "retracted", "sealed", "exhausted", "usage"):  # fmt: skip
         assert taught in REFERENCES["live-reading"], taught
 
 
@@ -178,9 +178,38 @@ def test_the_streaming_page_is_the_skill_reference() -> None:
     assert "recon --skill -r streaming" in SKILL
     for taught in ("window", "buffer.overflow", "drop_newest", "retain_unset", "provenance",
                    "--windows", "--until", "--forever", "--stream", "--since", "closed_by",
-                   "_position", "stream_overflow", "unbounded", "paced_by", "busy",
+                   "_position", "records_dropped", "windows_many", "unbounded", "paced_by", "busy",
                    "usage", "tail", "sse", "Last-Event-ID", "tombstone"):  # fmt: skip
         assert taught in REFERENCES["streaming"], taught
+
+
+def test_the_skill_says_how_long_a_stream_holds_the_command() -> None:
+    """Polish R3 (Ace 1-2): an agent reading only the skill learns that a stream's window,
+    300 s by default, can outlast its tool call, that the dry run says when the run returns,
+    and that a survey runs one window of each stream in turn."""
+    [streams] = [p for p in SKILL.split("\n\n") if p.startswith("**Streams.**")]
+    for said in ("300 s", "tool call", "--dry-run", "`stream.returns`", "`survey.returns`",
+                 "in turn"):  # fmt: skip
+        assert said in streams, said
+
+
+def test_the_skill_teaches_an_agent_to_poll_with_once_and_a_cursor() -> None:
+    """Polish R5 (Ace 4): ``watch --stream`` of a ``--forever`` writer never returns, so an
+    agent that follows a stream polls: one bounded read a call, ``--once``, then the next
+    from the ``--cursor`` the last printed. The skill says so, and the reference in full."""
+    [watch] = [p for p in SKILL.split("\n\n") if p.startswith("**Watch.**")]
+    for said in ("--once", "--cursor", "--forever", "never returns"):
+        assert said in watch, said
+    for said in ("--once --json", "--cursor", "never returns", "`more`"):
+        assert said in REFERENCES["live-reading"], said
+
+
+def test_what_json_prints_is_said_as_it_is() -> None:
+    """Polish R12: the loop said every ``--json`` prints one document, but ``recon watch
+    --json`` prints one a line, a read each; an agent parsing stdout as one document fails
+    on it. The sentence says which is which, and the command shows it."""
+    [said] = [line for line in SKILL.splitlines() if "Every command takes `--json`" in line]
+    assert "`recon watch --json`" in said and "a line" in said
 
 
 # --- frontmatter and budget ------------------------------------------------------------

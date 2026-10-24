@@ -38,7 +38,7 @@ def _plan(entry: dict[str, Any], plugins: Plugins, **top: Any) -> Plan:
 
 
 def _values(plan: Plan) -> dict[str, tuple[Any, str]]:
-    return {v.path: (v.value, v.source) for v in plan.provenance}
+    return {v.path: (v.value, v.origin) for v in plan.provenance}
 
 
 def _problems(plan: Plan) -> dict[str, tuple[str, str]]:
@@ -68,7 +68,7 @@ class TestTheDefaultsAreFilledAndSaid:
         plan = _plan({"type": kind}, plugins)
 
         [overflowing] = [v for v in plan.provenance if v.path.endswith("buffer.overflow")]
-        assert (overflowing.value, overflowing.source) == (overflow, "type")
+        assert (overflowing.value, overflowing.origin) == (overflow, "type")
         assert "paced_by" in overflowing.note
 
     def test_what_the_mission_writes_is_its_own(self, plugins: Plugins) -> None:

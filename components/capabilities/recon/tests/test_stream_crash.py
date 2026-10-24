@@ -150,7 +150,7 @@ class TestKilledThenResumed:
              "interval": 0.02, "window": {"records": K}, "retain": "all"},
             [{"name": "app", "type": "file", "url": "app.log"}],
         )  # fmt: skip
-        command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "log", "--forever"]
+        command = [sys.executable, "-c", CLI, "stream", "m", "--stream", "log", "--forever"]
 
         _killed_at(stream, "log", kill_at, command, tmp_path)
 
@@ -180,7 +180,7 @@ class TestKilledThenResumed:
         assert (dead / "log.jsonl.tmp.torn").read_bytes() == b'{"seq": 9'
         seqs = [row["seq"] for w in after for row in _rows(w, "log")]
         assert seqs == list(range(total)), "every line once, in order"
-        assert document.last is not None
+        assert document.last_window is not None
         first_resumed = yaml.safe_load((after[len(windows)] / "meta.yaml").read_text())
         assert first_resumed["stream"]["previous"] == dead.name
         # The restart is in the chain, resumed from the position kept (nothing was missed:
@@ -204,7 +204,7 @@ class TestKilledThenResumed:
              "interval": 0.02, "window": {"records": K}, "retain": "all"},
             [{"name": "app", "type": "file", "url": "app.log"}],
         )  # fmt: skip
-        command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "log", "--forever"]
+        command = [sys.executable, "-c", CLI, "stream", "m", "--stream", "log", "--forever"]
         appender = _Appender(log)
         appender.start()
         try:
@@ -248,7 +248,7 @@ class TestKilledThenResumed:
              "run": f"{sys.executable} {script}", "window": {"records": K}, "retain": "all"},
             [{"name": "here", "type": "local", "url": ".", "timeout": 3600}],
         )  # fmt: skip
-        command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "count", "--forever"]
+        command = [sys.executable, "-c", CLI, "stream", "m", "--stream", "count", "--forever"]
         kill_at = random.Random(20261025).randint(2 * K, 5 * K)
 
         killed = _killed_at(stream, "count", kill_at, command, tmp_path)
@@ -257,8 +257,8 @@ class TestKilledThenResumed:
         sealed = store.read_meta(last).get("stream")
         document = root({}, project=tmp_path).stream("m", "count", windows=1)
 
-        assert document.last is not None
-        meta = yaml.safe_load((Path(document.last.archive) / "meta.yaml").read_text())
+        assert document.last_window is not None
+        meta = yaml.safe_load((Path(document.last_window.path) / "meta.yaml").read_text())
         [gap] = meta["stream"]["sources"][0]["gaps"]
         assert gap["resumed"] is False, "the source could not go on from where it was"
         # Since when is known when the last window was sealed (the kill came between two
@@ -288,7 +288,7 @@ def test_a_signal_seals_the_window_with_every_record_it_had(
          "interval": 0.02, "window": {"seconds": 300}, "retain": "all"},
         [{"name": "app", "type": "file", "url": "app.log"}],
     )  # fmt: skip
-    command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "log", "--forever",
+    command = [sys.executable, "-c", CLI, "stream", "m", "--stream", "log", "--forever",
                "--json"]  # fmt: skip
     process = subprocess.Popen(command, cwd=tmp_path, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)  # fmt: skip
@@ -307,8 +307,14 @@ def test_a_signal_seals_the_window_with_every_record_it_had(
     assert process.returncode == 0, err.decode()
     document = json.loads(out)
     assert (document["windows"], document["records"], document["dropped"]) == (1, lines, 0)
-    assert document["last"]["closed_by"] == "signal"
+    assert document["last_window"]["closed_by"] == "stopped"
     assert document["state"] == "complete"
+    meta = yaml.safe_load((Path(document["last_window"]["path"]) / "meta.yaml").read_text())
+    assert (meta["stream"]["closed_by"], meta["ended"]) == ("stopped", "stopped")
+    [listed] = recon.status("m", root=tmp_path).missions[0].streams
+    assert listed.latest is not None and listed.latest.ended == "stopped", (
+        "stopped on request, the same word in the window's status"
+    )
 
 
 class TestTheCommandsHandlerAsksItNeverRaises:
@@ -358,7 +364,7 @@ class TestTheCommandsHandlerAsksItNeverRaises:
         )
 
         assert stop.heard == 1
-        assert (window.closed_by, window.table.records, window.dropped) == ("signal", 10, 0)
+        assert (window.closed_by, window.table.records, window.dropped) == ("stopped", 10, 0)
 
     def test_a_handler_that_raises_would_halt_the_window_instead(self, tmp_path: Path) -> None:
         """Check the checker: the assertions above fail under the handler they replaced."""
@@ -377,7 +383,7 @@ class TestTheCommandsHandlerAsksItNeverRaises:
         stop, [window] = self._signalled_while_writing(tmp_path, raising)
 
         assert stop.heard == 0
-        assert (window.closed_by, window.table.records, window.dropped) == ("signal", 0, 10)
+        assert (window.closed_by, window.table.records, window.dropped) == ("stopped", 0, 10)
 
 
 def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) -> None:
@@ -394,8 +400,8 @@ def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) ->
 
     document = root({}, project=tmp_path).stream("m", "quiet", windows=1)
 
-    assert document.last is not None
-    [row] = _rows(Path(document.last.archive), "quiet")
+    assert document.last_window is not None
+    [row] = _rows(Path(document.last_window.path), "quiet")
     started = time.monotonic()
     while _running(row["pid"]):
         assert time.monotonic() - started < 5, "the command outlived the stream"
@@ -514,7 +520,8 @@ def test_a_stream_that_ends_leaves_no_ticker_waiting_out_its_window(tmp_path: Pa
     assert run.last is not None and run.last.closed_by == "eof"
     started = time.monotonic()
     while any(t.name == "recon-stream-ticker" for t in threading.enumerate()):
-        assert time.monotonic() - started < 3, "the ticker sleeps on into the hour"
+        # A slice is a second; the failure is an hour. 15 s leaves a loaded machine room.
+        assert time.monotonic() - started < 15, "the ticker sleeps on into the hour"
         time.sleep(0.02)
 
 

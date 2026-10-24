@@ -8,7 +8,7 @@ from __future__ import annotations
 import random
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 
@@ -46,6 +46,11 @@ class Longest(random.Random):
 
 #: Unset: the collector's own default.
 DEFAULT: Any = object()
+
+#: What a prompt stop is held to, on the wall clock: well under the sixty seconds a stop that
+#: waited out the read timeout or the jitter would take, and far over what a loaded machine
+#: adds to an event-driven close (a bound of 2 s left that to chance).
+PROMPT_S = 15.0
 
 
 class Listening:
@@ -111,7 +116,7 @@ class Listening:
     def stop(self) -> float:
         started = time.monotonic()
         self.collector.close()
-        self.thread.join(5)
+        self.thread.join(PROMPT_S + 5)
         assert not self.thread.is_alive(), "close() ended the read in progress"
         return time.monotonic() - started
 
@@ -135,7 +140,7 @@ class TestEvents:
              "_position": "2"},
             {"id": "2", "event": "message", "data": "no id", "_position": "2"},
         ]  # fmt: skip
-        assert took < 2, "a stream stops promptly, even while its server is quiet"
+        assert took < PROMPT_S, "a stream stops promptly, even while its server is quiet"
         assert server.headers[0]["Accept"] == "text/event-stream"
 
     def test_a_resumed_stream_asks_for_the_events_after_its_position(self) -> None:
@@ -225,23 +230,31 @@ class TestDisconnects:
                 time.sleep(0.005)
             took = listening.stop()
 
-        assert took < 2, "not the sixty seconds the jitter asked"
+        assert took < PROMPT_S, "not the sixty seconds the jitter asked"
         assert len(server.asked) == 1
 
-    def test_a_quiet_connection_spends_none_of_the_budget(self) -> None:
+    @pytest.mark.parametrize("after_events", ["ends", "breaks"])
+    def test_a_quiet_connection_spends_none_of_the_budget(
+        self, after_events: Literal["ends", "breaks"]
+    ) -> None:
         """Review item 18 (Erlang): only a connect that fails is spent; a healthy quiet
-        stream whose reads time out reconnects for as long as it runs."""
-        with SseServer([]) as server:
-            listening = Listening(server.url, reconnect=1, timeout=0.05)
+        stream whose connections end, or break off as a read that times out does, reconnects
+        for as long as it runs. Each connection here ends as soon as it is made, so the test
+        waits on no real timeout: a read timeout of 0.05 s made the connect itself time out
+        under load, a spent reconnect, and the test flaky."""
+        with SseServer([], after_events=after_events) as server:
+            listening = Listening(server.url, reconnect=1)
             started = time.monotonic()
-            while len(server.asked) < 4:
+            # Waited for on the collector's side: the server counts a connection as it is
+            # asked, before the collector, given its answer, records the gap it closes.
+            while len(listening.gaps.said) < 3:
                 assert listening.error is None, listening.error
-                assert time.monotonic() - started < 10, "it never reconnected"
+                assert time.monotonic() - started < PROMPT_S, "it never reconnected"
                 time.sleep(0.005)
             listening.stop()
 
         assert listening.error is None
-        assert len(listening.gaps.said) >= 3, "each quiet stretch is still a gap"
+        assert len(server.asked) >= 4, "three reconnects, each a quiet stretch and a gap"
 
 
 class TestLargeEvents:

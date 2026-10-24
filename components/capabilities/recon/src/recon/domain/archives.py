@@ -45,7 +45,7 @@ EVENT_LOG_NAME = "telemetry.jsonl"
 #: The most records one read of an archive returns unless told otherwise
 #: (:meth:`ArchiveStore.read_since`): enough to keep up with a survey read once a second,
 #: few enough that a read of a large archive's start stays small.
-READ_LIMIT = 1000
+READ_MAX_RECORDS = 1000
 
 #: The most bytes of records one read of an archive returns unless told otherwise: it stops
 #: before the record that would pass it, and always returns at least one record.
@@ -58,16 +58,20 @@ WATCH_INTERVAL_S = 1.0
 #: An archive's state, as the store and every document say it. ``writing``: a survey holds
 #: it and is writing it. ``complete``: its survey finished it with every table.
 #: ``incomplete``: no survey holds it and it was never completed (a table failed, or its
-#: survey was stopped or died; :data:`Ended` says which). A reader who sees ``writing`` and
-#: reads again later sees it change; the other two never change. A state, where a table's
-#: ``ok`` or ``error`` is an outcome.
+#: survey was stopped or crashed; :data:`Ended` says which). A reader who sees ``writing``
+#: and reads again later sees it change; the other two never change. A state, where a
+#: table's ``ok`` or ``error`` is an outcome.
 ArchiveState = Literal["writing", "complete", "incomplete"]
 
-#: Whether an archive's survey ran to its end. ``finished``: it did and wrote ``meta.yaml``,
-#: so an ``incomplete`` archive's tables failed, or it could not be marked complete.
-#: ``stopped``: it was stopped or died first (or could not write ``meta.yaml``). None while
-#: it is ``writing``.
-Ended = Literal["finished", "stopped"]
+#: How an archive's writer ended, once no writer holds it (None while it is ``writing``).
+#: ``finished``: it ran to its end and wrote ``meta.yaml`` saying so, so an ``incomplete``
+#: archive's tables failed, or it could not be marked complete. ``stopped``: it was stopped
+#: on request (Ctrl-C, SIGTERM, a stream's stop) and wrote ``meta.yaml`` saying so. Both are
+#: written by the writer, in ``meta.yaml``'s ``ended``. ``crashed``: it left no ``meta.yaml``,
+#: so it died (killed, or its host went down) or could not write one (a full disk; such a
+#: survey says so as it ends, ``archive_unfinished``): never written, read from that absence,
+#: since the record that would tell the two apart is the one that is missing.
+Ended = Literal["finished", "stopped", "crashed"]
 
 _NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
 
@@ -126,16 +130,19 @@ class NewRecords:
     """What :meth:`ArchiveStore.read_since` read: the records written since the cursor it
     was given, in whole, and the cursor to read on from.
 
-    ``cursor`` is opaque: only the store that gave it reads it. ``sealed`` names each table
-    whose last record is now read (it gains no more), and ``retracted`` each table this
-    cursor had read from that failed, so the records read from it are void. Each table is
-    told sealed or retracted once along a chain of cursors. ``more``: a bound (records or
-    bytes) ended the read before all that was written by then was read; read again at once.
+    ``cursor`` is opaque: only the store that gave it reads it. ``exhausted`` names each
+    table that is sealed and whose last record is now read, so this reader gets no more of it
+    and what it read of it stands; ``retracted`` each table this cursor had read from that
+    failed, so the records read from it are void. Each table is told exhausted or retracted
+    once along a chain of cursors. (``sealed`` is a table's own state, :class:`StoredTable`'s:
+    a table is exhausted for a reader once it is sealed and that reader has read it all.)
+    ``more``: a bound (records or bytes) ended the read before all that was written by then
+    was read; read again at once.
     """
 
     records: list[TableRecord]
     cursor: str
-    sealed: list[str] = field(default_factory=list)
+    exhausted: list[str] = field(default_factory=list)
     retracted: list[str] = field(default_factory=list)
     more: bool = False
 
@@ -271,13 +278,13 @@ class ArchiveStore(Protocol):
         ...
 
     def read_since(
-        self, archive: Path, cursor: str | None, *, limit: int, max_bytes: int
+        self, archive: Path, cursor: str | None, *, max_records: int, max_bytes: int
     ) -> NewRecords:
         """The records of ``archive`` written since ``cursor`` (None: from the start), at
-        most ``limit`` of them and ``max_bytes`` of their lines, whole records only and at
+        most ``max_records`` of them and ``max_bytes`` of their lines, whole records only and at
         least one, from its sealed tables and the ones being written alike, table by table
         in output-name order; ``more`` when a bound cut it. Raises UsageError for a cursor
-        this store did not give for this archive, and for a ``limit`` or ``max_bytes``
+        this store did not give for this archive, and for a ``max_records`` or ``max_bytes``
         below 1."""
         ...
 

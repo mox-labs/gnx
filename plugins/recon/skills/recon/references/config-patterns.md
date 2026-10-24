@@ -14,6 +14,7 @@ Complete config examples for common recon use cases. Copy, adapt, write to `.rec
 - [Doc Site Survey](#doc-site-survey)
 - [Issue Triage Across Repos](#issue-triage-across-repos)
 - [Modern Search APIs (POST body)](#modern-search-apis-post-body)
+- [MCP Results Captured by a Hook](#mcp-results-captured-by-a-hook)
 
 ## Code Mining (Multi-Repo)
 
@@ -749,3 +750,13 @@ collectors:
 | GitHub (modern) | `Authorization` | `"Bearer "` | fine-grained token |
 
 When in doubt, probe with the minimal config (no normalize), inspect the JSONL, then add the normalize spec.
+
+## MCP Results Captured by a Hook
+
+A server behind OAuth that signs in through a browser cannot be called by an `mcp` collector: the agent calls its tools, and a hook captures the results. `recon capture <mission>` appends one Claude Code `PostToolUse` hook payload, read from stdin, to the mission's log. To make those results a table: `recon init mcp -t mcp-captures`, then add this hook to `.claude/settings.json`, and `recon survey mcp` normalizes what it captured (the `cd` makes recon find `.recon/` at the project root wherever the session's directory is):
+
+```json
+{"hooks": {"PostToolUse": [{"matcher": "mcp__.*", "hooks": [{"type": "command", "command": "cd \"$CLAUDE_PROJECT_DIR\" && recon capture mcp"}]}]}}
+```
+
+In the capture collector's `normalize:`, `_capture.*` reaches the capture line itself (`_capture.request.tool_input.query`). The line format: `recon --skill -r capture-format`.

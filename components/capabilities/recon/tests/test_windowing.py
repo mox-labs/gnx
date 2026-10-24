@@ -5,11 +5,19 @@ thread and no file."""
 from __future__ import annotations
 
 import math
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
 
-from recon.domain.stream import WindowEnd, Windowing, WindowSpec, window_id, window_index
+from recon.domain.stream import (
+    SealReason,
+    WindowEnd,
+    Windowing,
+    WindowSpec,
+    window_id,
+    window_index,
+)
 
 
 def _assign(
@@ -34,7 +42,7 @@ class TestTimeWindowsAreHalfOpen:
         placed, ends = _assign(WindowSpec(seconds=60), [(s, 1) for s in stamps])
 
         assert placed == [0, 0, 1, 1]
-        assert ends == [WindowEnd(0, "window", 0.0, 60.0)], (
+        assert ends == [WindowEnd(0, "seconds", 0.0, 60.0)], (
             "window 0 is [0, 60): it ends when the arrival at 60.0 comes, at 60.0"
         )
 
@@ -56,7 +64,7 @@ class TestTimeWindowsAreHalfOpen:
 
         assert placed == [0, 1, None]
         assert [(e.index, e.reason, e.closed) for e in ends] == [
-            (0, "window", 60.0),
+            (0, "seconds", 60.0),
             (1, "until", 90.0),
         ]
 
@@ -88,7 +96,7 @@ class TestCountWindows:
         assert placed == [0, 0, 1, 2], "window 1 is [7, 67): the arrival at 67 opens window 2"
         assert [(e.index, e.reason, e.opened, e.closed) for e in ends] == [
             (0, "records", 0.0, 7.0),
-            (1, "window", 7.0, 67.0),
+            (1, "seconds", 7.0, 67.0),
         ]
 
 
@@ -108,6 +116,25 @@ class TestTheAssignmentIsAPureFunction:
 
 
 class TestTheSpec:
+    @pytest.mark.parametrize(
+        ("bound", "arrivals"),
+        [
+            ({"seconds": 10}, [(0.0, 1), (10.0, 1)]),
+            ({"records": 1}, [(0.0, 1)]),
+            ({"bytes": 10}, [(0.0, 10)]),
+        ],
+    )
+    def test_a_window_its_own_bound_ends_is_closed_by_that_bound_s_key(
+        self, bound: dict[str, int], arrivals: list[tuple[float, int]]
+    ) -> None:
+        """``closed_by`` names the bound by the key ``window:`` sets it with, so a reader
+        finds why a window closed under the word it wrote."""
+        [key] = bound
+        _, ends = _assign(WindowSpec.model_validate(bound), arrivals)
+
+        assert ends[0].reason == key
+        assert set(WindowSpec.model_fields) <= set(get_args(SealReason))
+
     def test_a_window_needs_one_bound(self) -> None:
         with pytest.raises(ValidationError, match="at least one of seconds, records, bytes"):
             WindowSpec()

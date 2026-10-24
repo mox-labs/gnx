@@ -121,7 +121,9 @@ class TestFollowing:
         log = tmp_path / "app.log"
         _append(log, '{"n": 1}')
         following = Following(log, start="end")
-        time.sleep(0.2)  # the follower's thread has opened the file
+        # Its first wait comes once it has opened the file at its end and found nothing new:
+        # a sleep in its place lost the race under load, the line appended before the open.
+        assert following.clock.waited.wait(10), "the follower never waited for more"
         _append(log, '{"n": 2}')
 
         records = following.until(lambda got: len(got) == 1)

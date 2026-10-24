@@ -269,8 +269,11 @@ class BrokenPlugin:
 @dataclass(frozen=True)
 class Plugins:
     """Everything installed: collector types and transforms by name, and what failed to
-    load."""
+    load. ``collector_packages`` names the package that registered each collector type, as
+    far as it is known (``recon`` for its own), so what is said of a type can say whose it
+    is."""
 
     collector_types: dict[str, CollectorType]
     transforms: dict[str, Transform]
     broken: list[BrokenPlugin]
+    collector_packages: dict[str, str] = field(default_factory=dict)

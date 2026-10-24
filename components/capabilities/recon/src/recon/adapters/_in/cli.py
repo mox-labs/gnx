@@ -5,7 +5,8 @@ An inbound adapter over the library API and nothing else: every call goes throug
 commands print. ``main(obj=...)`` runs the commands over the operations given instead, a
 root built with other ports: that is how a test drives the command line.
 
-Data goes to stdout and commentary to stderr. ``--json`` prints one versioned document. A
+Data goes to stdout and commentary to stderr. ``--json`` prints one versioned document
+(``watch --json``: one a line, a read each). A
 command that fails, a usage error, Ctrl-C and a defect in recon included, prints the
 ``recon.v1.error`` envelope on stderr (one JSON line under ``--json``) and exits with the
 code its kind maps to. A survey whose tables failed still prints its document on stdout,
@@ -148,7 +149,8 @@ class _Group(click.RichGroup):
             interrupted = recon.ReconError(
                 "interrupted before the command finished",
                 kind="interrupted",
-                fix="run the command again; an interrupted survey's archive is marked incomplete",
+                fix="run the command again; a survey stopped so leaves its archive incomplete, "
+                "ended: stopped",
             )
             _fail(interrupted, as_json=as_json)
         except recon.ReconError as error:
@@ -271,7 +273,10 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
 
     Every survey validates first: an invalid config exits 3 listing every problem, before
     anything is fetched or written. A survey with failed tables still writes its archive
-    (marked incomplete); the exit code says what to do about the failures.
+    (marked incomplete); the exit code says what to do about the failures. A mission with
+    streams runs one window of each stream, in turn, after its snapshot tables, each up to
+    its window: (300 s by default): --dry-run says when the survey returns at the latest,
+    as survey.returns.
 
     \b
     recon survey my-scan --dry-run
@@ -296,7 +301,7 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
     if as_json:
         _emit(document.document())
     else:
-        click.echo(document.archive)
+        click.echo(document.path)
     failure = recon.survey_failure(document)
     if failure is not None:
         _fail(failure, as_json=as_json)
@@ -322,12 +327,11 @@ def _instant(ctx: click.Context, param: click.Parameter, value: str | None) -> d
 @click.argument("name")
 @click.option(
     "--stream",
-    "--collector",
     "collector",
     required=True,
     metavar="NAME",
     help="The stream to run: a collector of the mission with window:, or of a type whose "
-    "records do not end (--stream, as watch and query name it; --collector is the same)",
+    "records do not end (--stream, as watch and query name it)",
 )
 @click.option(
     "--windows",
@@ -369,9 +373,12 @@ def stream(
     """Collect a stream: a source that does not end, into windows, each sealed as an archive.
 
     Each window ends when the first of its entry's window: bounds is reached (seconds,
-    records, bytes). It runs one window unless told otherwise, so it returns. Run again,
-    it goes on from the last window, after the last record it kept. Follow it as it is
-    written with `recon watch NAME --stream COLLECTOR`; query it with --stream.
+    records, bytes). It runs one window unless told otherwise, so it returns, but it holds
+    the command until then: a window of the default 300 s is five minutes, longer than a
+    tool call may wait. Run --dry-run first and read stream.returns, the seconds the run
+    lasts at most; when that is too long, set a shorter window: or run it in the background.
+    Run again, it goes on from the last window, after the last record it kept. Follow it as
+    it is written with `recon watch NAME --stream COLLECTOR`; query it with --stream.
 
     \b
     recon stream my-feed --stream events --dry-run
@@ -472,7 +479,7 @@ def _print_plan(name: str, plan: recon.PlanDocument) -> None:
     if not plan.runnable:
         out.print("[red]Runnable: no[/]: a survey fails each table whose requirement is NO")
     for value in plan.provenance:
-        said = f"{value.path} = {json.dumps(value.value)} ({value.source}"
+        said = f"{value.path} = {json.dumps(value.value)} ({value.origin}"
         said += f": {value.note})" if value.note else ")"
         out.print(f"[dim]{escape(said)}[/]")
     if plan.writes.config:
@@ -703,7 +710,7 @@ def query(
     if as_json:
         _emit(document.document())
         return
-    err.print(f"[dim]archive {document.archive_id} ({escape(document.archive)})[/]")
+    err.print(f"[dim]archive {document.archive} ({escape(document.path)})[/]")
     _print_warnings(document.warnings)
     if document.state == "incomplete":
         err.print(
@@ -822,20 +829,20 @@ def watch(
 
 
 def _print_read(read: recon.RecordsSince) -> None:
-    if read.skipped is not None:
-        jumped = read.skipped
+    if read.retired_range is not None:
+        jumped = read.retired_range
         err.print(f"[yellow]  {jumped.count} window(s) from {escape(str(jumped.first))} were "
-                  f"retired before they were read: going on from {read.archive_id}[/]")  # fmt: skip
-    for record in read.records:
+                  f"retired before they were read: going on from {read.archive}[/]")  # fmt: skip
+    for record in read.table_records:
         click.echo(json.dumps(record, default=str))
-    for table in read.sealed:
-        err.print(f"[dim]  {escape(table)} sealed[/]")
+    for table in read.exhausted:
+        err.print(f"[dim]  {escape(table)}: every record read[/]")
     for table in read.retracted:
         err.print(f"[yellow]  {escape(table)} failed and was retracted: the records printed "
                   "from it are void[/]")  # fmt: skip
     if read.state != "writing":
         shown = "[yellow]incomplete[/]" if read.state == "incomplete" else read.state
-        err.print(f"[dim]archive {read.archive_id}:[/] {shown}")
+        err.print(f"[dim]archive {read.archive}:[/] {shown}")
 
 
 # --- templates and capture ---------------------------------------------------------------

@@ -18,7 +18,7 @@ recon watch my-scan
 
 Each record is a line on stdout, `{"table": "...", "record": {...}}`, as soon as it is written (at most a quarter of a second after the collector gives it). Stderr says when each table is sealed, and the archive's state when the survey ends. `recon watch` then returns.
 
-For an agent, `--json` prints each read as one `recon.v1.records-since` document a line, with its `state`, its `records`, the tables `sealed` and `retracted` since, and a `cursor`:
+For an agent, `--json` prints each read as one `recon.v1.records-since` document a line, with its `state`, its `table_records`, the tables `exhausted` (read to their end) and `retracted` since, and a `cursor`:
 
 ```bash
 recon watch my-scan --json
@@ -27,8 +27,8 @@ recon watch my-scan --json
 To look once and come back later, read once and keep the cursor:
 
 ```bash
-recon watch my-scan --once --json          # note "archive_id" and "cursor"
-recon watch my-scan --archive <archive_id> --cursor <cursor> --json
+recon watch my-scan --once --json          # note "archive" and "cursor"
+recon watch my-scan --archive <archive> --cursor <cursor> --json
 ```
 
 The cursor is recon's: pass it on unchanged. One recon did not give for that archive exits 2, and its fix says to read without it.
@@ -45,7 +45,7 @@ A table that fails is retracted: the records printed from it are void, and stder
 recon query my-scan "SELECT count(*) FROM first_table" --json
 ```
 
-The table being written is not a table yet: query it once `recon watch` says it is sealed.
+The table being written is not a table yet: query it once `recon watch` says every record of it is read (it is `exhausted`: sealed, and read to its end).
 
 ## 5. Follow a stream
 
@@ -55,6 +55,13 @@ A stream (a collector with `window:`, or a `tail` or `sse` one) writes window af
 recon stream my-feed --stream events --forever &   # or from cron: recon survey my-feed
 recon watch my-feed --stream events --json
 recon query my-feed "SELECT count(*) FROM events" --stream events --json
+```
+
+A stream run `--forever` is never done, so that watch never returns. An agent, whose tool call must return, polls instead: one read a call, each from the cursor the last printed.
+
+```bash
+recon watch my-feed --stream events --once --json                    # note "cursor"
+recon watch my-feed --stream events --once --cursor <cursor> --json  # and again
 ```
 
 A window whose source failed keeps the records it got: nothing printed from a stream is ever void.

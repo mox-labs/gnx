@@ -13,7 +13,8 @@
                               removed; left unlocked by a writer that died
       captures.jsonl, raw/    the capture log, when the mission preserves raw
     <mission>/streams/<stream>/
-      writer.lock             locked by the stream's one writer while it runs; kept
+      writer.lock             locked by the stream's one writer while it runs, holding its
+                              pid (so a writer refused is told whose); kept, emptied
       <window id>/            each window, an archive as above, of one table
       retired.jsonl           a line for each window retain: removed: what, and why
 
@@ -36,7 +37,7 @@ The stream is ``writing`` while that lock is held, and otherwise reads as its la
 
 **Reading as it is written.** :meth:`ArchiveFiles.read_since` reads each table's file from a
 byte offset to its last whole line, the live ``.tmp`` of a table being written included, and
-hands back a cursor: the offset reached in each table, and which tables it has told sealed,
+hands back a cursor: the offset reached in each table, and which tables it has told exhausted,
 as base64url JSON naming the archive. Only this store reads it; the ``.tmp`` path never
 leaves it. A table this cursor read from whose file is gone, with no sealed file in its
 place, failed and was retracted.
@@ -160,7 +161,7 @@ class ArchiveFiles:
                 "never written twice",
                 kind="store",
                 fix="survey again: a new survey's archive is named for the moment it starts",
-                details={"archive": str(archive)},
+                details={"archive": archive_id, "path": str(archive)},
             )
             if archive.exists():
                 raise taken
@@ -194,20 +195,34 @@ class ArchiveFiles:
         if directory in self._streams:
             return
         try:
-            self._streams[directory] = _hold(directory / WRITER_LOCK)
+            descriptor = _hold(directory / WRITER_LOCK)
         except OSError as exc:
+            pid = _holder(directory / WRITER_LOCK)
+            if pid == os.getpid():
+                stop = "this process already writes it: stream it once the run there returns"
+            elif pid is not None:
+                stop = (f"let it run, or stop it: kill -TERM {pid} (its pid) seals the window "
+                        "it is writing; then stream again")  # fmt: skip
+            else:
+                stop = (f"let it run, or stop it (`recon status {mission_dir.name}` shows the "
+                        "stream writing); then stream again")  # fmt: skip
             raise ReconError(
                 f"another recon is writing stream {stream} of {mission_dir.name}; a stream has "
                 "one writer at a time",
                 kind="busy",
-                fix=f"let it run, or stop it (`recon status {mission_dir.name}` shows the "
-                "stream writing); then stream again",
-                details={"stream": stream},
+                fix=stop,
+                details={"stream": stream} | ({} if pid is None else {"pid": pid}),
             ) from exc
+        # The holder's pid, so a writer refused can name it; cleared before it lets go.
+        os.ftruncate(descriptor, 0)
+        os.pwrite(descriptor, f"{os.getpid()}\n".encode(), 0)
+        self._streams[directory] = descriptor
 
     def release_stream(self, mission_dir: Path, stream: str) -> None:
         descriptor = self._streams.pop(_stream_dir(mission_dir, stream), None)
         if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.ftruncate(descriptor, 0)  # no pid of a writer that has let go
             os.close(descriptor)  # closing releases the lock; the file stays
 
     def stream_state(self, mission_dir: Path, stream: str) -> ArchiveState | None:
@@ -419,12 +434,13 @@ class ArchiveFiles:
         return {**raw, "tables": [t for t in raw.get("tables") or [] if isinstance(t, dict)]}
 
     def read_since(
-        self, archive: Path, cursor: str | None, *, limit: int, max_bytes: int
+        self, archive: Path, cursor: str | None, *, max_records: int, max_bytes: int
     ) -> NewRecords:
-        if limit < 1:
+        if max_records < 1:
             raise UsageError(
-                f"a read's limit is the most records it returns, 1 or more; got {limit}",
-                fix="read with a limit of 1 or more, or leave it at its default",
+                f"a read's max_records is the most records it returns, 1 or more; got "
+                f"{max_records}",
+                fix="read with a max_records of 1 or more, or leave it at its default (1000)",
             )
         if max_bytes < 1:
             raise UsageError(
@@ -435,9 +451,9 @@ class ArchiveFiles:
         positions = _decode(cursor, archive)
         files = dict(_table_files(archive))
         records: list[TableRecord] = []
-        sealed: list[str] = []
+        exhausted: list[str] = []
         retracted = [n for n, (_, told) in positions.items() if not told and n not in files]
-        budget = _Budget(limit, max_bytes)
+        budget = _Budget(max_records, max_bytes)
         for name, path in files.items():
             offset, told = positions.get(name, (0, False))
             if told:
@@ -454,11 +470,11 @@ class ArchiveFiles:
             records += [TableRecord(name, json.loads(line)) for line in lines]
             if ended:
                 positions[name] = (positions[name][0], True)
-                sealed.append(name)
+                exhausted.append(name)
         for name in retracted:
             positions.pop(name, None)
         cursor = _encode(archive, positions)
-        return NewRecords(records, cursor, sealed, sorted(retracted), more=budget.cut)
+        return NewRecords(records, cursor, exhausted, sorted(retracted), more=budget.cut)
 
     def tables(self, archive: Path) -> list[StoredTable]:
         layout = self._table_layout(archive)
@@ -467,7 +483,11 @@ class ArchiveFiles:
                 f"archive {archive.name} holds its tables in table layout {layout}, which this "
                 f"recon does not read (it reads layout {TABLE_LAYOUT})",
                 fix="upgrade recon to the version that surveyed this archive, or later",
-                details={"archive": str(archive), "table_layout": layout},
+                details={
+                    "archive": archive.name,
+                    "path": str(archive),
+                    "table_layout": layout,
+                },
             )
         tables = []
         for output, file in _table_files(archive):
@@ -647,7 +667,7 @@ _CURSOR_FORMAT = 1
 
 
 def _encode(archive: Path, positions: dict[str, tuple[int, bool]]) -> str:
-    """The cursor at ``positions``: each table's offset, and whether it was told sealed."""
+    """The cursor at ``positions``: each table's offset, and whether it was told exhausted."""
     body = {
         "format": _CURSOR_FORMAT,
         "archive": archive.name,
@@ -797,6 +817,19 @@ def _hold(path: Path) -> int:
         os.close(descriptor)
         raise
     return descriptor
+
+
+def _holder(path: Path) -> int | None:
+    """The pid the holder of a stream's lock wrote in it, when it is a process alive on this
+    host; None when it has not written it yet, or the file says something else."""
+    try:
+        said = path.read_text().strip()
+    except OSError:
+        return None
+    if not said.isdigit():
+        return None
+    pid = int(said)
+    return pid if _alive(pid) else None
 
 
 def _alive(pid: int) -> bool:

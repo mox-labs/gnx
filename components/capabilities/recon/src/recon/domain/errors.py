@@ -80,8 +80,8 @@ EXIT_MEANINGS: dict[str, str] = {
     "store": "the survey could not finish its archive; it is kept, marked incomplete",
     "query": "the SQL failed, or reached outside the mission's archives",
     "busy": "another recon is writing the stream; one writes a stream at a time",
-    "interrupted": "the command was interrupted (Ctrl-C or SIGTERM) before it finished; a "
-    "survey's archive is marked incomplete",
+    "interrupted": "Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: "
+    "stopped` (a stopped `recon stream` exits 0)",
 }
 
 #: What to do next on each kind in :data:`EXIT_CODES`.
@@ -101,7 +101,8 @@ EXIT_NEXT: dict[str, str] = {
     "store": "free space where the archive is, or make it writable, then survey again",
     "query": "correct the SQL as the error's `fix` says; for a missing table, it names the "
     "tables there are",
-    "busy": "let that stream run, or stop it (`recon status` shows it writing), then stream again",
+    "busy": "let that stream run, or stop its writer as the `fix` says (`kill -TERM <pid>`, "
+    "the pid in `details`, seals its window), then stream again",
     "interrupted": "run the command again",
 }
 
@@ -143,14 +144,15 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "telemetry_stuck",
     # what a survey that died while making its archive left behind, unlisted
     "archive_abandoned",
-    # records of a stream that arrived and were dropped: a full buffer, or one too large
-    "stream_overflow",
+    # records of a stream that arrived and were dropped, one warning a cause (a full buffer,
+    # one too large, a stop at once), at the path of the key that governs it
+    "records_dropped",
     # a stream's source had not returned its next record when the stream stopped
     "source_stuck",
     # a stream that keeps every window because its entry sets no retain:
     "retain_unset",
     # a query of a stream that read more windows than it is cheap to open
-    "many_windows",
+    "windows_many",
 )
 
 

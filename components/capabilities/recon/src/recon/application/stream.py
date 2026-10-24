@@ -14,9 +14,10 @@ Three threads take part, and only the first writes anything:
 buffer's lock, and assigned to its window there (:class:`~recon.domain.stream.Windowing`), so
 which window a record falls in is a pure function of its order of arrival, its stamp and the
 window spec, whatever thread delivered it. A window ends at its time (half-open), on its
-``records`` or ``bytes``, at the stream's ``until``, when its source ends (``eof``) or when a
-signal stops the stream; it is then sealed ``ok`` with that reason. A source that fails seals
-its window ``error`` and **keeps its records**: what a source sent cannot be fetched again.
+``records`` or ``bytes``, at the stream's ``until``, when its source ends (``eof``) or when the
+stream is stopped on request (``stopped``); it is then sealed ``ok`` with that reason. A
+source that fails seals its window ``error`` and **keeps its records**: what a source sent
+cannot be fetched again.
 
 **Flow.** At most ``buffer.records`` records and ``buffer.bytes`` bytes wait (one record more
 may be admitted while fewer bytes wait, so a stream holds at most ``bytes`` +
@@ -104,7 +105,9 @@ WindowTelemetry = Callable[
 class StreamPlan:
     """One stream, as its plan resolved it: its name (the collector's), where its entry is in
     the config (``collectors.<i>``), the entry its window table is written for (named for its
-    output) and its source, and the effective window, buffer and overflow."""
+    output) and its source, and the effective window, buffer and overflow. ``package`` is
+    the package that registered the entry's collector type, when it is known (``recon`` for
+    its own), so a warning about the type says whose it is."""
 
     name: str
     at: str
@@ -115,6 +118,7 @@ class StreamPlan:
     overflow: Overflow
     columns: tuple[str, ...] = ()
     retain: Retain = "all"
+    package: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,10 +161,13 @@ class _Ledger:
     and what later windows that will never be written held), the most records that waited,
     the gaps its source reported, and the order of its first and last admitted. A window's
     drops are, once it is sealed, the records admitted to it that its table does not hold,
-    and those refused."""
+    and those refused. Of them, ``oversize`` were larger than ``max_record_bytes`` and
+    ``overflow`` met a full buffer; the rest waited when the stream stopped at once."""
 
     dropped: int = 0
     refused: int = 0
+    oversize: int = 0
+    overflow: int = 0
     high_water: int = 0
     gaps: list[Gap] = field(default_factory=list)
     first: int | None = None
@@ -184,8 +191,8 @@ class _Arrival:
 
 @dataclass(frozen=True)
 class _End:
-    """The stream's last event: its source ended (``eof``), a signal stopped it (``signal``),
-    or its source failed (``error``)."""
+    """The stream's last event: its source ended (``eof``), it was stopped on request
+    (``stopped``), or its source failed (``error``)."""
 
     reason: SealReason | None
     stamp: float
@@ -229,7 +236,7 @@ class Arrivals:
             if not self._advance():
                 return False
             if len(line) > self._buffer.max_record_bytes:
-                self._refuse(self._windowing.index)
+                self._refuse(self._windowing.index, oversize=True)
                 return True
             if self._overflow == "block":
                 while self._admitting and self._full():
@@ -238,7 +245,7 @@ class Arrivals:
                     return False
             elif self._full():
                 if self._overflow == "drop_newest":
-                    self._refuse(self._windowing.index)
+                    self._refuse(self._windowing.index, oversize=False)
                     return True
                 self._evict_oldest()
             stamp = self._clock.monotonic()
@@ -272,7 +279,7 @@ class Arrivals:
         window open now, as one the buffer refused."""
         with self._cond:
             if self._advance():
-                self._refuse(self._windowing.index)
+                self._refuse(self._windowing.index, oversize=True)
 
     def end(self, error: BaseException | None = None) -> None:
         """The source ended, or failed with ``error``: the stream ends after what waits. Said
@@ -321,7 +328,7 @@ class Arrivals:
         with self._cond:
             if self._admitting:
                 self._admitting = False
-                self._events.append(_End("signal", self._clock.monotonic()))
+                self._events.append(_End("stopped", self._clock.monotonic()))
             self._cond.notify_all()
 
     def interrupt(self) -> bool:
@@ -355,12 +362,14 @@ class Arrivals:
                     gone = self._ledgers.pop(later)
                     ledger.refused += gone.admitted + gone.refused
                     ledger.dropped += gone.admitted + gone.refused
+                    ledger.oversize += gone.oversize
+                    ledger.overflow += gone.overflow
                     ledger.gaps += gone.gaps
             else:
                 discarded = sum(gone.admitted + gone.refused for gone in self._ledgers.values())
                 self._ledgers.clear()
             self._events.clear()
-            self._events.append(_End("signal", self._clock.monotonic()))
+            self._events.append(_End("stopped", self._clock.monotonic()))
             self._records = self._bytes = 0
             self._cond.notify_all()
             return discarded
@@ -407,17 +416,24 @@ class Arrivals:
                 del self._events[at]
                 self._records -= 1
                 self._bytes -= len(event.line)
-                self._ledger(event.window).dropped += 1
+                ledger = self._ledger(event.window)
+                ledger.dropped += 1
+                ledger.overflow += 1
                 return
 
     def _ledger(self, window: int) -> _Ledger:
         return self._ledgers.setdefault(window, _Ledger())
 
-    def _refuse(self, window: int) -> None:
-        """A record dropped before it was admitted, counted in ``window``."""
+    def _refuse(self, window: int, *, oversize: bool) -> None:
+        """A record dropped before it was admitted, counted in ``window``: too large
+        (``oversize``), or the buffer full."""
         ledger = self._ledger(window)
         ledger.dropped += 1
         ledger.refused += 1
+        if oversize:
+            ledger.oversize += 1
+        else:
+            ledger.overflow += 1
 
 
 class StreamGaps:
@@ -557,7 +573,8 @@ class Stream:
         self._progress_s = progress_s
         self._stop_s = stop_s
         self.warnings: list[Problem] = []
-        self._overflowed = (0, 0)  # windows that dropped records, and how many they dropped
+        #: By cause, the windows that dropped records and how many they dropped.
+        self._dropped: dict[str, tuple[int, int]] = {}
 
     def run(
         self,
@@ -579,7 +596,7 @@ class Stream:
         """Run the stream until it ends: after ``windows`` windows, at ``until``, when its
         source ends or fails, or when it is asked to stop (``stop``) or the caller's thread is
         interrupted (``KeyboardInterrupt``): the window being written is then sealed
-        ``signal`` once what waits is written; a second stop seals it at once, what waits
+        ``stopped`` once what waits is written; a second stop seals it at once, what waits
         dropped. An interrupt that lands in the store's write seals the window at once.
         ``collect(after)`` starts the source after the position ``after`` (None: from its
         start); ``normalize`` shapes each record; ``close`` ends the collector, which ends a
@@ -748,7 +765,7 @@ class Stream:
                     # Interrupted away from a wait (writing, shaping): what was written is
                     # sealed, and the stream ends here, what it held or still waits dropped.
                     self._halt(window, arrivals)
-                    window.end = window.end or _End("signal", self._clock.monotonic())
+                    window.end = window.end or _End("stopped", self._clock.monotonic())
                 except Exception as exc:  # the store failed: what was written is sealed
                     window.error = window.error or exc
                     self._halt(window, arrivals)
@@ -789,7 +806,10 @@ class Stream:
                 }
             )
             if window_dropped:
-                self._warn_overflow(plan, window_dropped, emit)
+                halted = window_dropped - ledger.oversize - ledger.overflow
+                causes = {"overflow": ledger.overflow, "oversize": ledger.oversize,
+                          "halted": halted}  # fmt: skip
+                self._warn_dropped(plan, causes, emit)
         return outcome
 
     def _records(
@@ -814,7 +834,7 @@ class Stream:
                 event = arrivals.peek()
             except KeyboardInterrupt:
                 if arrivals.interrupt():  # a second: seal now
-                    window.end = _End("signal", self._clock.monotonic())
+                    window.end = _End("stopped", self._clock.monotonic())
                     return
                 continue
             if not isinstance(event, _Arrival):
@@ -902,6 +922,8 @@ class Stream:
             "timestamp": closed_at,
             "preserve_raw": meta["preserve_raw"],
             "resolved": meta["resolved"],
+            # How the window's writer ended it: stopped on request, as a stopped survey says.
+            "ended": "stopped" if closed_by == "stopped" else "finished",
             "tables": [table.document()],
             "stream": {
                 "name": plan.name,
@@ -922,7 +944,7 @@ class Stream:
             stream=plan.name,
             index=window.index,
             id=window.id,
-            archive=str(window.archive),
+            path=str(window.archive),
             opened_at=opened_at,
             closed_at=closed_at,
             closed_by=closed_by,
@@ -1007,25 +1029,44 @@ class Stream:
             self._archives.retire(window, tombstone)
             sizes.pop(window.name, None)
 
-    def _warn_overflow(self, plan: StreamPlan, dropped: int, emit: EventCallback) -> None:
-        """One ``stream_overflow`` warning for the run, its counts kept current."""
-        windows, total = self._overflowed
-        self._overflowed = (windows + 1, total + dropped)
-        warning = Problem(
-            f"{plan.at}.buffer",
-            f"stream {plan.name}: {total + dropped} record(s) dropped in {windows + 1} "
-            "window(s): they arrived faster than the windows were written, or were larger "
-            "than buffer.max_record_bytes; each window's meta.yaml counts its own",
-            kind="stream_overflow",
-            fix="raise buffer: records and bytes (or max_record_bytes), or set overflow: block "
-            "for a source recon reads at its own pace",
-            got=total + dropped,
-        )
-        self.warnings = [w for w in self.warnings if w.kind != "stream_overflow"] + [warning]
-        emit({"kind": "table_warning", "name": plan.entry.name, "reason": str(warning),
-              "fix": warning.fix})  # fmt: skip
+    def _warn_dropped(self, plan: StreamPlan, causes: dict[str, int], emit: EventCallback) -> None:
+        """One ``records_dropped`` warning for the run for each cause a window's drops had,
+        at the path of the key that governs it, its counts kept current: ``overflow`` (a full
+        buffer, ``buffer``), ``oversize`` (``buffer.max_record_bytes``) and ``halted`` (what
+        waited when the stream stopped at once: the entry itself, no key to raise)."""
+        for cause, dropped in causes.items():
+            if not dropped:
+                continue
+            windows, total = self._dropped.get(cause, (0, 0))
+            windows, total = windows + 1, total + dropped
+            self._dropped[cause] = (windows, total)
+            path, why, fix = _DROP_CAUSES[cause]
+            warning = Problem(
+                path.format(at=plan.at),
+                f"stream {plan.name}: {total} record(s) dropped in {windows} window(s): "
+                f"{why.format(buffer=plan.buffer, overflow=plan.overflow)}; each window's "
+                "meta.yaml counts its own",
+                kind="records_dropped",
+                fix=fix,
+                got=total,
+            )
+            self.warnings = [
+                w for w in self.warnings if (w.kind, w.path) != (warning.kind, warning.path)
+            ] + [warning]
+            emit({"kind": "table_warning", "name": plan.entry.name, "reason": str(warning),
+                  "fix": warning.fix})  # fmt: skip
 
     def _warn_stuck(self, plan: StreamPlan) -> None:
+        """One ``source_stuck`` warning, whose fix says whose the type is: recon's own is a
+        bug in recon; another's is its package's, to report there or upgrade."""
+        kind = plan.entry.type
+        if plan.package == "recon":
+            whose = (f"collector type {kind} is recon's own: report this as a bug in recon, "
+                     "with the stream's entry")  # fmt: skip
+        else:
+            package = plan.package or f"the package that registers collector type {kind}"
+            whose = (f"report it to {package}, or upgrade it: its type's close() should end a "
+                     "read in progress, or the read should time out")  # fmt: skip
         self.warnings.append(
             Problem(
                 "",
@@ -1033,10 +1074,34 @@ class Stream:
                 f"{self._stop_s:g}s after the stream stopped and its collector was closed; its "
                 "thread is left until it does, and what it returns is not kept",
                 kind="source_stuck",
-                fix="the windows are whole; give the collector type a close() that ends a "
-                "read in progress, or a timeout on it",
+                fix=f"the windows are whole; {whose}",
+                got=kind,
             )
         )
+
+
+#: Each cause of a stream's drops: the path its ``records_dropped`` warning is at (``at`` is
+#: the entry's), why the records went, and the fix, which names the key to change.
+_DROP_CAUSES: dict[str, tuple[str, str, str]] = {
+    "overflow": (
+        "{at}.buffer",
+        "they arrived faster than the windows were written, and the buffer was full "
+        "({buffer.records} records or {buffer.bytes} bytes; overflow: {overflow})",
+        "raise buffer.records and buffer.bytes; for a source recon reads at its own pace, "
+        "overflow: block waits instead of dropping",
+    ),
+    "oversize": (
+        "{at}.buffer.max_record_bytes",
+        "each was larger than buffer.max_record_bytes ({buffer.max_record_bytes})",
+        "raise buffer.max_record_bytes above the largest record (no higher than buffer.bytes)",
+    ),
+    "halted": (
+        "{at}",
+        "they waited when the stream stopped at once: a second stop, or its source or store failed",
+        "stop a stream once: a single Ctrl-C or SIGTERM seals the window once what waits is "
+        "written; if a window failed, its meta.yaml has the error",
+    ),
+}
 
 
 def _pump(

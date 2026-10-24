@@ -75,6 +75,17 @@ def test_builtins_register_through_the_entry_point_groups() -> None:
     assert registry.broken == []
 
 
+def test_each_collector_type_says_the_package_that_registered_it(plugin_module: None) -> None:
+    """Polish R6: a warning about a type can name whose it is. recon's own types are
+    registered by recon; one whose entry point has no package found is absent."""
+    registry = load_plugins()
+    for name in ("api", "cli", "web", "capture", "mcp", "tail", "sse"):
+        assert registry.collector_packages[name] == "recon", name
+
+    unpackaged = load_plugins(_discover([("good", "recon_test_plugins:good", COLLECTORS_GROUP)]))
+    assert "good" not in unpackaged.collector_packages
+
+
 def test_the_types_that_read_extract_say_so() -> None:
     """A survey suggests a missing ``extract:`` only for a type that takes one."""
     types = load_plugins().collector_types
