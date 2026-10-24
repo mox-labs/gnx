@@ -313,14 +313,7 @@ class Schedules:
             slot = self._slot(every, offset, started)
         if hashlib.sha256(text).hexdigest() != config_sha256:
             self._log(mission, slot, started, "stale", None, "config_changed")
-            raise ReconError(
-                f"mission {name}'s config is not the one its schedule was installed for: a "
-                "tick runs only the config installed",
-                kind="stale",
-                fix=f"read what changed in the config (it runs unattended), then: recon "
-                f"schedule install {name}",
-                details={"mission": name, "config_sha256": config_sha256},
-            )
+            raise stale(name, config_sha256)
         _, plan = self._prepare(name)
         schedule = plan.config.schedule if plan.config is not None else None
         if schedule is not None:
@@ -333,11 +326,13 @@ class Schedules:
                 survey=None,
             )  # fmt: skip
         try:
+            # The survey checks the digest again, of the bytes it plans and runs, read once
+            # under the mission lock: a config swapped since the check above is refused.
             document = survey({"scheduled_at": _iso(slot), "late_s": late_s})
         except ReconError as error:
-            skipped: Skipped | None = "busy" if error.kind == "busy" else None
+            skipped: Skipped | None = _SKIPPED_BY.get(error.kind)
             self._log(mission, slot, started, error.kind, None, skipped)
-            if skipped is not None:
+            if skipped == "busy":
                 raise _skipped(
                     name, error, _in_a_row(self._store.lines(mission), "busy")
                 ) from error
@@ -440,6 +435,24 @@ def _late(slot: datetime, now: datetime, last: TickOutcome | None, installed_at:
     if isinstance(installed_at, str) and _seconds(datetime.fromisoformat(installed_at), slot) > 0:
         return 0.0
     return _seconds(now, slot)
+
+
+#: The ticks a survey's refusal skips, by its kind: another holds the mission, or the config
+#: it read under the lock is not the one installed.
+_SKIPPED_BY: dict[str, Skipped] = {"busy": "busy", "stale": "config_changed"}
+
+
+def stale(name: str, config_sha256: str) -> ReconError:
+    """The refusal of a tick whose mission's config is not the one installed (its digest is
+    not ``config_sha256``)."""
+    return ReconError(
+        f"mission {name}'s config is not the one its schedule was installed for: a tick runs "
+        "only the config installed",
+        kind="stale",
+        fix=f"read what changed in the config (it runs unattended), then: recon schedule "
+        f"install {name}",
+        details={"mission": name, "config_sha256": config_sha256},
+    )
 
 
 def _skipped(name: str, busy: ReconError, skips: int) -> ReconError:

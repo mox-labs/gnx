@@ -20,7 +20,7 @@ from recon.application.captures import record_hook_payload
 from recon.application.changes import MEMORY_KEYS, ChangeDetector
 from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
-from recon.application.schedules import Schedules
+from recon.application.schedules import Schedules, stale
 from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
 from recon.application.survey import CollectorError, Survey, TablePages
 from recon.domain.archives import (
@@ -388,13 +388,17 @@ class Recon:
         finally:
             self._archives.release_mission(mission)
 
-    def _scheduled_survey(self, name: str, scheduled: dict[str, Any]) -> SurveyDocument:
+    def _scheduled_survey(
+        self, name: str, scheduled: dict[str, Any], config_sha256: str
+    ) -> SurveyDocument:
         """:meth:`survey` as a tick runs it, its archive's ``meta.yaml`` saying when the tick
-        was due and how late it started (``scheduled``)."""
-        source, plan, _ = self._prepare(name, None, False)
+        was due and how late it started (``scheduled``). The mission is held first; then its
+        config is read once, and those bytes are what is checked against ``config_sha256``,
+        planned and run, so no config swapped after a check runs (Dijkstra, Vector F4)."""
         mission = self._missions.mission_dir(name)
         self._archives.hold_mission(mission)
         try:
+            source, plan, _ = self._prepare(name, None, False, expect_sha256=config_sha256)
             return self._survey(name, source, plan, None, None, scheduled=scheduled)
         finally:
             self._archives.release_mission(mission)
@@ -699,8 +703,10 @@ class Recon:
             warnings += _dropped(telemetry) + _undelivered(channel)
 
     def _prepare(
-        self, name: str, config: Path | None, replace: bool
+        self, name: str, config: Path | None, replace: bool, *, expect_sha256: str | None = None
     ) -> tuple[ConfigFile, Plan, Path | None]:
+        """The config read once, and its plan. ``expect_sha256``: the digest its bytes must
+        have (a tick's), else it is refused ``stale`` before it is planned."""
         mission_config = self._missions.config_path(name)
         path = config or mission_config
         try:
@@ -711,6 +717,8 @@ class Recon:
                 fix=f"recon init {name} --template <name> (see `recon templates`), "
                 f"or recon survey {name} -c <config.yaml>",
             ) from exc
+        if expect_sha256 is not None and hashlib.sha256(source.text).hexdigest() != expect_sha256:
+            raise stale(name, expect_sha256)
         plan = build_plan(
             source.data,
             self._plugins,
@@ -774,7 +782,9 @@ class Recon:
         whose digest the schedule holds (``stale``), another survey holds the mission
         (``busy``, logged skipped), or it is a missed tick under ``missed: skip``."""
         return self._scheduling().tick(
-            name, config_sha256, lambda scheduled: self._scheduled_survey(name, scheduled)
+            name,
+            config_sha256,
+            lambda scheduled: self._scheduled_survey(name, scheduled, config_sha256),
         )
 
     # --- status, query, templates, capture ----------------------------------------------

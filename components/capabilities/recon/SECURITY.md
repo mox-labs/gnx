@@ -329,7 +329,10 @@ the config a persistence vector, and the scheduler's files a place a secret coul
 - **The config a tick runs is the one installed.** `install` records the config's sha256
   in the scheduler's file, as the tick's `--config-sha256`; a tick whose config has another
   refuses to run (`stale`, exit 12, logged) until `recon schedule install` runs again. A change to
-  a scheduled config, by hand, by an agent or by a merge, is read before it runs.
+  a scheduled config, by hand, by an agent or by a merge, is read before it runs. The digest
+  checked is of the bytes the tick plans and runs, read once while it holds the mission: one
+  read for the check and another to run would let a config swapped between them run
+  unattended (Dijkstra and Vector, round-4 review F4).
 - **What the files hold**: recon by the absolute path of the installation that installed
   it, as an argument list (cron alone hands its line to `/bin/sh`: each argument is quoted
   whole), the mission's name (checked as every mission name is), the absolute project, and
