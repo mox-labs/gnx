@@ -1,5 +1,16 @@
 # Changelog — recon
 
+## Unreleased
+
+### Pagination
+
+- **`paginate:` on an `api` collector reads its source page by page** into one table: `{type: link | header | cursor | offset, pages: 100, next, param}`. `link` follows the URL at the body path `next`, `header` the `Link` header's `rel="next"`, `cursor` sends the value at `next` as the query parameter `param`, `offset` sends the records read so far as `param`; each type needs the keys it reads and takes no other. Every page is a request through the requester, so it draws a rate-limit token, is retried as any request is, and is captured with `preserve_raw`. A next page off the source's origin (scheme, host, port) fails the table, `run_failed`: the source's credential would go with it. The contract: `docs/reference/pagination.md`, which `recon --skill -r pagination` prints.
+- **Every stop is recorded.** No next token is the end (and an `offset` page with no records). `pages` pages read with more to read, a token the crawl used already (any earlier one, not only the last), or three empty pages in a row that still link on stop the crawl: the table is sealed `ok` and `truncated`, its outcome says `truncated: true` and `truncated_by` (`pages`, `loop`, `empty`), and the survey warns `page_cap`, `paginate_loop` or `paginate_empty`, new problem kinds, each with a fix. A page a loop names is not asked for again.
+- **Each record of a paginated table carries `_position`, `{page, i}`**, and the table's page log, `<output>.pages.jsonl`, keeps each page's token once (a URL with the source's `auth.param` redacted), written once the table is sealed; it is no table. A page's capture names its `page`, so a `capture` collector reading a crawl's captures gives each record the same `_position` and the table replays byte for byte.
+- **The plan reports the crawl**: the run's `paginate`, `provenance` entries for `collectors.<i>.paginate.pages` (its origin) and, for each run, `collectors.<i>.paginate.floor_s`, the least seconds the crawl takes at its source's rate limit, `(pages - burst) / rps`, against the deadline that bounds its table; and a `deadline_short` warning, a new problem kind, when that deadline is shorter. It refuses `paginate:` on a type that does not declare `paginates` and on a stream, a type's missing or extra key, a `normalize:` column named `_position`, a `params:` key the crawl sends, and an output named as a page log (`<name>.pages`).
+- **A collector type of your own may paginate**: `CollectorType.paginates`, `CollectorContext.pages` (a `PageLog`), and `recon.domain.paginate` (`PaginateSpec`, `Crawl`, `position`), as `docs/reference/extending.md` says.
+- **The `ArchiveStore` port gains `write_sidecar` and `read_sidecar`**, what a table keeps beside it that is no table (its page log); a store of your own given to `root()` implements them, and leaves a sidecar out of `tables()`.
+
 ## 0.13.0 — 2026-10-24
 
 ### Changed (breaking)

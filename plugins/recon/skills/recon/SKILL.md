@@ -18,7 +18,6 @@ Do not use recon:
 - to read one page or one API response once: fetch it directly.
 - for a page that renders its content with JavaScript: the `web` collector does one HTTP GET and converts what comes back.
 - to write to a remote system: recon only reads.
-- to follow pagination: a collector makes one request per source; list one collector per page, or use a `cli` collector whose command pages.
 
 ## Prerequisites
 
@@ -115,7 +114,7 @@ A survey whose tables failed exits 6 if any failed on credentials, 5 if every fa
 {"schema": "recon.v1.error", "error": {"kind": "config", "message": "<file>: 1 problem(s)", "fix": "fix each problem, then: recon survey m --dry-run", "complete": true, "problems": [{"path": "collectors.0.type", "kind": "name_unknown", "message": "unknown collector type 'ftp'; installed: api, capture, cli, mcp, sse, tail, web", "fix": "use one of: api, capture, cli, mcp, sse, tail, web", "allowed": ["api", "capture", "cli", "mcp", "sse", "tail", "web"], "got": "ftp", "source": ""}], "details": {}}}
 ```
 
-A problem's `path` is dotted from the top of the file, list positions included (`collectors.0.type`); `allowed` lists the legal values where the set is closed; `got` is the value written, when there is one. `details` carries structured values: a failed survey's `archive` and `failed` tables, a wrong `value` and the `allowed` ones. A problem's `kind` is one of `yaml_syntax`, `wrong_shape`, `unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, `name_taken`, `unresolved`, `env_unset`, `plugin_broken`, `otel_unavailable`, `telemetry_failed`, `extract_missing`, `table_unreadable`, `archive_unfinished`, `extract_unresolved`, `records_not_objects`, `captures_unmatched`, `result_empty`, `events_dropped`, `telemetry_stuck`, `archive_abandoned`, `records_dropped`, `source_stuck`, `retain_unset`, `windows_many`; the last eighteen are warnings. `error.kind` is one of `unknown`, `usage`, `config`, `not_found`, `transient`, `auth`, `conflict`, `run_failed`, `store`, `query`, `busy`, `interrupted`. A warning is a problem record in the document's `warnings` list (`recon.v1.plan`, `recon.v1.survey`, `recon.v1.query-rows`): it does not stop the command.
+A problem's `path` is dotted from the top of the file, list positions included (`collectors.0.type`); `allowed` lists the legal values where the set is closed; `got` is the value written, when there is one. `details` carries structured values: a failed survey's `archive` and `failed` tables, a wrong `value` and the `allowed` ones. A problem's `kind` is one of `yaml_syntax`, `wrong_shape`, `unknown_key`, `missing_key`, `invalid_value`, `name_unknown`, `name_taken`, `unresolved`, `env_unset`, `plugin_broken`, `otel_unavailable`, `telemetry_failed`, `extract_missing`, `table_unreadable`, `archive_unfinished`, `extract_unresolved`, `records_not_objects`, `captures_unmatched`, `result_empty`, `events_dropped`, `telemetry_stuck`, `archive_abandoned`, `records_dropped`, `source_stuck`, `retain_unset`, `windows_many`, `page_cap`, `paginate_loop`, `paginate_empty`, `deadline_short`; the last twenty-two are warnings. `error.kind` is one of `unknown`, `usage`, `config`, `not_found`, `transient`, `auth`, `conflict`, `run_failed`, `store`, `query`, `busy`, `interrupted`. A warning is a problem record in the document's `warnings` list (`recon.v1.plan`, `recon.v1.survey`, `recon.v1.query-rows`): it does not stop the command.
 
 Documents name their shape in `schema`: `recon.v1.plan`, `recon.v1.survey`, `recon.v1.status`, `recon.v1.query-rows`, `recon.v1.templates`, `recon.v1.mission`, `recon.v1.capture`, `recon.v1.records-since`, `recon.v1.error`, and `recon.v1.event` for the lines of an archive's event log. A reader ignores a field it does not know, and handles an error or problem kind it does not know by the exit code; both sets grow. A document whose schema has another major version (`recon.v2.*`) is not a `recon.v1` document.
 
@@ -143,6 +142,7 @@ collectors:                    # what to ask; required, at least one
     type_url: recon.v1.records # what the records are: <namespace>.v<N>.<kebab-name>
     normalize: {<column>: "<path>|$<transform>"}   # every type; omit to keep records whole
     extract: <path>            # api, capture and mcp: where the records are in a body
+    paginate: {type: link}     # api: page by page; -r pagination
     deadline: 120              # optional: seconds each of its tables may take (> 0)
     # Every other key is the type's own:
     # api:     endpoint, params (the query), vars (fill {placeholders}),
@@ -212,7 +212,7 @@ Every survey writes its event log, `telemetry.jsonl`, into its archive, a `recon
 
 ## Captures
 
-`preserve_raw: true` keeps every fetched body (an HTTP response, a command's stdout, an MCP tool's or resource's result) in the archive's capture log, content-addressed, with credential headers, the `auth.param` value and every credential an `mcp` source resolved redacted. A `capture` collector reads such logs back with a new `normalize:`, so an archive can be reshaped without fetching again.
+`preserve_raw: true` keeps every fetched body (an HTTP response, a command's stdout, an MCP tool's or resource's result) in the archive's capture log, content-addressed, with every credential recon sends or receives redacted. A `capture` collector reads such logs back with a new `normalize:`, so an archive can be reshaped without fetching again.
 
 Two ways to make an MCP server's answers a table. An `mcp` collector calls the server itself, the same way every survey (`recon init files -t mcp-server` shows one): use it for a stdio server, or a remote one that takes a token or a header. A server behind OAuth that signs in through a browser is reached the second way: the agent calls its tools, and a `PostToolUse` hook running `recon capture <mission>` captures the results; the hook and the mission: `recon --skill -r config-patterns`.
 
@@ -233,4 +233,5 @@ Each prints with `recon --skill -r <name>`:
 | `capture-format` | the `recon.v1.capture` line format and how a `capture` collector reads it |
 | `telemetry` | the event log, every span and attribute, exporting through OpenTelemetry |
 | `streaming` | stream keys, defaults, refusals; `tail`, `sse`; `--stream` |
+| `pagination` | `paginate:` keys, defaults, stops, refusals |
 | `live-reading` | `recon watch` and `recon.read_since`: archive states, sealing, the cursor, every flag, default and refusal |

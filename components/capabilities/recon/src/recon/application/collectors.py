@@ -33,6 +33,7 @@ from recon.application.plan import accepted_kinds, fan_out
 from recon.domain.collector import BrokenPlugin, CollectorContext
 from recon.domain.errors import CollectionError, ReconError
 from recon.domain.normalize import apply_normalize, bound
+from recon.domain.paginate import NoPages
 from recon.domain.ratelimit import RateLimiter
 from recon.domain.stream import NoGaps
 
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from recon.domain.deadline import Deadline
     from recon.domain.http import Requester
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+    from recon.domain.paginate import PageLog
     from recon.domain.shell import ShellRunner
     from recon.domain.stream import GapLog
     from recon.domain.telemetry import Telemetry
@@ -208,12 +210,14 @@ def build_collectors(
     *,
     project: Path | None = None,
     gaps: GapLog | None = None,
+    pages: PageLog | None = None,
 ) -> SurveyCollectors:
     """One collector for each installed type ``config`` uses, sharing one Requester and the
     survey's ``telemetry``, and the types whose factory raised. Each factory is handed a
     ``ScopedEnv`` over ``env`` holding only the variables ``config`` declares for that type's
-    sources, ``project``, the project root, the clock, and ``gaps``, where a stream's
-    collector says when its source was not read (none kept, without one)."""
+    sources, ``project``, the project root, the clock, ``gaps``, where a stream's collector
+    says when its source was not read, and ``pages``, where a paginated table's collector says
+    its pages (none kept, without one)."""
     transforms = confined_transforms(plugins.transforms, config, mission_dir)
     rate_limiter = RateLimiter(ports.clock)
     requester = ports.requester(telemetry, deadline, rate_limiter)
@@ -231,6 +235,7 @@ def build_collectors(
         project_dir=project,
         clock=ports.clock,
         gaps=gaps if gaps is not None else NoGaps(),
+        pages=pages if pages is not None else NoPages(),
     )
     declared = declared_env(config, plugins.collector_types)
     built = SurveyCollectors({}, [])

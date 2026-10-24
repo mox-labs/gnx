@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
 from recon.domain.errors import ERROR_KINDS, ErrorKind, ReconError
+from recon.domain.paginate import TruncatedBy  # noqa: TC001
 from recon.domain.stream import ClosedBy  # noqa: TC001
 
 #: Whether a survey's archive holds every table it was asked for: :data:`ArchiveState`
@@ -148,7 +149,11 @@ class TableError(Document):
 
 
 class TableOutcome(Document):
-    """One table of a survey: what produced it and how it ended."""
+    """One table of a survey: what produced it and how it ended. ``truncated``: its crawl
+    stopped short of its source's end (``paginate:``), so it is sealed ``ok`` and is not a
+    whole snapshot of the source; ``truncated_by`` says what cut it: ``pages`` (its cap),
+    ``loop`` (a token it had used already) or ``empty`` (empty pages in a row that still
+    linked on)."""
 
     name: str
     file: str
@@ -160,6 +165,8 @@ class TableOutcome(Document):
     records: int = 0
     seconds: float = 0.0
     error: TableError | None = None
+    truncated: bool = False
+    truncated_by: TruncatedBy | None = None
 
 
 class WindowOutcome(Document):

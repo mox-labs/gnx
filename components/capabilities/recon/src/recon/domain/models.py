@@ -18,6 +18,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from recon.domain.clock import LONGEST_WAIT
+from recon.domain.paginate import PaginateSpec  # noqa: TC001
 from recon.domain.ratelimit import wait_for_token
 
 # Pydantic reads the field types when the models are built, so they are imported to run.
@@ -146,7 +147,8 @@ class CollectorEntry(BaseModel):
     that declares ``extracts``) and `deadline` (the seconds each of its tables may take).
     `window` makes the entry a stream, collected into windows that each end at the first of
     its bounds; `buffer` and `retain` are a stream's too (:mod:`recon.domain.stream`); left
-    out, the plan fills in their defaults and says so.
+    out, the plan fills in their defaults and says so. `paginate` reads the source page by
+    page, for a type that declares ``paginates`` (:mod:`recon.domain.paginate`).
     Every other key is the type's own setting (`run:` for `cli`, `endpoint:` for `api`),
     kept in :attr:`settings` and validated by the type's own schema at plan time.
     """
@@ -163,6 +165,7 @@ class CollectorEntry(BaseModel):
     window: WindowSpec | None = None
     buffer: BufferSpec | None = None
     retain: Retain | None = None
+    paginate: PaginateSpec | None = None
 
     @property
     def settings(self) -> dict[str, Any]:

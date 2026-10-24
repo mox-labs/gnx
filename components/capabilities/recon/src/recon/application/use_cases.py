@@ -20,7 +20,7 @@ from recon.application.captures import record_hook_payload
 from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
 from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
-from recon.application.survey import CollectorError, Survey
+from recon.application.survey import CollectorError, Survey, TablePages
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
     READ_MAX_BYTES,
@@ -78,6 +78,7 @@ if TYPE_CHECKING:
     from recon.domain.documents import Capture
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+    from recon.domain.paginate import PageLog
     from recon.domain.stream import GapLog, Stop, WindowSpec
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
 
@@ -86,7 +87,8 @@ class CollectorFactory(Protocol):
     """Builds a collector for each installed type a mission uses, reporting through the
     survey's telemetry, with the types whose factory failed (which a survey reports and whose
     tables fail with a config error), and what to close when the survey ends; ``gaps`` is where
-    a stream's collector says when its source was not read."""
+    a stream's collector says when its source was not read, and ``pages`` where a paginated
+    table's collector says its pages."""
 
     def __call__(
         self,
@@ -97,6 +99,7 @@ class CollectorFactory(Protocol):
         /,
         *,
         gaps: GapLog | None = None,
+        pages: PageLog | None = None,
     ) -> SurveyCollectors: ...
 
 
@@ -367,8 +370,9 @@ class Recon:
                 on_event = emit = channel.callback(on_event)
             about = {"recon.mission": name, "recon.archive": archive.name}
             deadline = Deadline(self._clock)
+            pages = TablePages()
             with _ending(telemetry, channel), telemetry.span(SURVEY, about) as span:
-                built = self._build_collectors(mission, snapshot, telemetry, deadline)
+                built = self._build_collectors(mission, snapshot, telemetry, deadline, pages=pages)
                 try:
                     for broken in built.failed:
                         warnings.append(plugin_warning(broken))
@@ -391,7 +395,7 @@ class Recon:
                     }
                     survey = Survey(
                         self._archives, self._clock, self._version, telemetry, on_event,
-                        extracts=extracts, kinds=kinds, deadline=deadline,
+                        extracts=extracts, kinds=kinds, deadline=deadline, pages=pages,
                     )  # fmt: skip
                     tables = survey.run(
                         plan.config,

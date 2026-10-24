@@ -4,6 +4,7 @@
 
     <mission>/archive/<archive id>/
       <output>.jsonl          one table per collector and source, one record per line
+      <output>.pages.jsonl    a paginated table's page log, each page's token: no table
       meta.yaml               recon version, config sha256, times, and per table: type_url,
                               records, status, seconds, error {kind, message[, fix]}
       telemetry.jsonl         the survey's recon.v1.event lines, as they happened
@@ -79,8 +80,10 @@ from recon.adapters._out.event_log import EventLog
 from recon.domain.archives import (
     ARCHIVE_ID_FORMAT,
     EVENT_LOG_NAME,
+    SIDECARS,
     ArchiveState,
     NewRecords,
+    Sidecar,
     StoredTable,
     TableEnds,
     TableRecord,
@@ -91,7 +94,7 @@ from recon.domain.stream import window_index
 from recon.domain.type_url import DEFAULT_RECORDS_TYPE_URL
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Sequence
+    from collections.abc import Generator, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from recon.domain.clock import Clock
@@ -358,6 +361,29 @@ class ArchiveFiles:
         if kept is not None:
             raise kept
         return count
+
+    def write_sidecar(
+        self, archive: Path, output: str, sidecar: Sidecar, lines: Iterable[dict[str, Any]]
+    ) -> None:
+        path = archive / f"{output}.{sidecar}.jsonl"
+        tmp = path.with_suffix(".jsonl.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as f:
+                for line in lines:
+                    f.write(json.dumps(line, default=str) + "\n")
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
+
+    def read_sidecar(
+        self, archive: Path, output: str, sidecar: Sidecar
+    ) -> Iterator[dict[str, Any]] | None:
+        path = archive / f"{output}.{sidecar}.jsonl"
+        if not path.is_file():
+            return None
+        return _sidecar_lines(path)
 
     def capture_log(self, archive: Path) -> FilesystemCaptureLog:
         return FilesystemCaptureLog(archive, self._clock)
@@ -648,13 +674,27 @@ def _is_archive_id(name: str) -> bool:
 _LIVE = ".jsonl.tmp"
 
 
+def _sidecar_lines(path: Path) -> Iterator[dict[str, Any]]:
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            yield json.loads(line)
+
+
+def _is_sidecar(name: str) -> bool:
+    """Whether ``name`` is a table's sidecar (``<output>.pages.jsonl``), being written or not."""
+    stem = name.removesuffix(".tmp").removesuffix(".jsonl")
+    return any(stem.endswith(f".{sidecar}") for sidecar in SIDECARS)
+
+
 def _table_files(archive: Path) -> list[tuple[str, Path]]:
     """The archive's tables by output name, each with its file: every JSONL file but the
-    capture log and the event log, and each table being written (its ``.jsonl.tmp``) that has
-    no sealed file yet."""
+    capture log, the event log and the tables' sidecars, and each table being written (its
+    ``.jsonl.tmp``) that has no sealed file yet."""
     logs = {CAPTURE_LOG_NAME, EVENT_LOG_NAME}
     found: dict[str, Path] = {}
     for path in archive.glob("*.jsonl*"):
+        if _is_sidecar(path.name):
+            continue
         if path.name.endswith(".jsonl") and path.name not in logs:
             found[path.name.removesuffix(".jsonl")] = path
         elif path.name.endswith(_LIVE):

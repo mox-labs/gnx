@@ -153,6 +153,13 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "retain_unset",
     # a query of a stream that read more windows than it is cheap to open
     "windows_many",
+    # a paginated table's crawl stopped short, so the table is truncated: at its cap of
+    # pages, at a token it had used already, or at empty pages in a row that still linked on
+    "page_cap",
+    "paginate_loop",
+    "paginate_empty",
+    # a deadline shorter than the least time a crawl takes at its source's rate limit
+    "deadline_short",
 )
 
 

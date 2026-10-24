@@ -183,6 +183,22 @@ def test_the_streaming_page_is_the_skill_reference() -> None:
         assert taught in REFERENCES["streaming"], taught
 
 
+def test_the_pagination_page_is_the_skill_reference() -> None:
+    """Pagination is taught in full by ``recon --skill -r pagination``, and the skill points
+    there in one line; one text with its docs page. An agent reading it learns each key, its
+    default, every stop and what records it, and every refusal."""
+    page = PACKAGE / "docs" / "reference" / "pagination.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["pagination"]
+    assert "recon --skill -r pagination" in SKILL or "`pagination`" in SKILL
+    for taught in ("`link`", "`header`", "`cursor`", "`offset`", "`pages`", "`100`", "`next`",
+                   "`param`", "truncated_by", "page_cap", "paginate_loop", "paginate_empty",
+                   "_position", ".pages.jsonl", "floor_s", "deadline_short", "provenance",
+                   "rate_limit", "origin", "preserve_raw", "crashed"):  # fmt: skip
+        assert taught in REFERENCES["pagination"], taught
+
+
 def test_the_skill_says_how_long_a_stream_holds_the_command() -> None:
     """Polish R3 (Ace 1-2): an agent reading only the skill learns that a stream's window,
     300 s by default, can outlast its tool call, that the dry run says when the run returns,

@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Sequence
+    from collections.abc import Generator, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from recon.domain.capture import CaptureLog
@@ -72,6 +72,14 @@ ArchiveState = Literal["writing", "complete", "incomplete"]
 #: survey says so as it ends, ``archive_unfinished``): never written, read from that absence,
 #: since the record that would tell the two apart is the one that is missing.
 Ended = Literal["finished", "stopped", "crashed"]
+
+#: What a table may keep beside it that is no table: ``pages``, its page log (each page's
+#: token, once a page: :mod:`recon.domain.paginate`). Written with the table once it is
+#: sealed, and gone with its archive.
+Sidecar = Literal["pages"]
+
+#: Each sidecar's suffix to its table's output name: an output named so would be one.
+SIDECARS: tuple[Sidecar, ...] = ("pages",)
 
 _NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
 
@@ -243,6 +251,21 @@ class ArchiveStore(Protocol):
         table's columns when they are known (a ``normalize:`` spec's): a table that collected
         nothing keeps them, so a query of them still binds.
         """
+        ...
+
+    def write_sidecar(
+        self, archive: Path, output: str, sidecar: Sidecar, lines: Iterable[dict[str, Any]]
+    ) -> None:
+        """Keep ``lines`` as the table ``output``'s ``sidecar``, whole or not at all, in place
+        of any it had. A sidecar is never one of :meth:`tables`, and goes with its archive.
+        Raises OSError when it cannot."""
+        ...
+
+    def read_sidecar(
+        self, archive: Path, output: str, sidecar: Sidecar
+    ) -> Iterator[dict[str, Any]] | None:
+        """The lines of the table ``output``'s ``sidecar``, in the order written; None when it
+        has none."""
         ...
 
     def capture_log(self, archive: Path) -> CaptureLog: ...

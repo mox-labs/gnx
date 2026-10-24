@@ -189,10 +189,11 @@ The tests run offline, except the live integration tests against OpenAlex, arXiv
 - [docs/reference/capture-format.md](docs/reference/capture-format.md) — the capture log format (`recon.v1.capture`), for a tool that writes captures
 - [docs/reference/telemetry.md](docs/reference/telemetry.md) — the event log, the spans and attributes, exporting through OpenTelemetry, and its warnings
 - [docs/reference/live-reading.md](docs/reference/live-reading.md) — `recon watch`, `read_since` and archive states: the contract, the defaults, the refusals
+- [docs/reference/pagination.md](docs/reference/pagination.md) — `paginate:` on an `api` collector: `link`, `header`, `cursor`, `offset`; every stop, what it records, every default and refusal
 - [docs/reference/streaming.md](docs/reference/streaming.md) — streams: `window:`, `buffer:`, `retain:`, the `tail` and `sse` types, `recon stream`, `--stream`; every default and refusal
 - [docs/design/2026-10-19-record.md](docs/design/2026-10-19-record.md) — the design judgments behind 0.11.0 and 0.12.0, and recon's claims
 - [CHANGELOG.md](CHANGELOG.md)
-- `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r telemetry` for the references. The plugin's copy is generated from it (`just recon-skill`).
+- `recon --skill` — the skill Claude uses to author missions; `-r normalize-spec`, `-r config-patterns`, `-r capture-format`, `-r live-reading`, `-r streaming`, `-r pagination`, `-r telemetry` for the references. The plugin's copy is generated from it (`just recon-skill`).
 
 ## License
 

@@ -27,12 +27,13 @@ from typing import TYPE_CHECKING, Any, get_args
 
 from pydantic import BaseModel, ValidationError
 
-from recon.domain.archives import EVENT_LOG_NAME, table_name
+from recon.domain.archives import EVENT_LOG_NAME, SIDECARS, table_name
 from recon.domain.capture import CAPTURE_LOG_NAME
 from recon.domain.documents import SourcedValue
 from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
 from recon.domain.normalize import path_problem, spec_problems
+from recon.domain.paginate import crawl_floor_s
 from recon.domain.stream import (
     DEFAULT_WINDOW_S,
     POSITION_FIELD,
@@ -260,6 +261,11 @@ def build_plan(
                 warnings += unset
         else:
             problems.extend(_not_a_stream(i, entry))
+            if entry.paginate is not None:
+                problems.extend(_position_problems(i, entry))
+                values, short = _paginate(i, entry, targets, raw.get("deadline"))
+                provenance += values
+                warnings += short
         for source, output in targets:
             problems.extend(_output_problems(i, output, produced_by))
             for key in _table_keys(output):
@@ -423,15 +429,14 @@ def _stream_problems(
                 got=entry.deadline,
             )
         )
-    if POSITION_FIELD in (entry.normalize or {}):
+    problems += _position_problems(i, entry)
+    if entry.paginate is not None:
         problems.append(
             Problem(
-                f"{at}.normalize.{POSITION_FIELD}",
-                f"{POSITION_FIELD} is the field recon keeps a stream's record's position in its "
-                "source in, and writes beside the columns normalize: makes",
-                kind="name_taken",
-                fix=f"name the column something else; {POSITION_FIELD} is in every row already",
-                got=POSITION_FIELD,
+                f"{at}.paginate",
+                "a stream does not read its source page by page yet: paginate: is a snapshot "
+                "table's",
+                fix="remove window: to survey it as a snapshot table, or remove paginate:",
             )
         )
     buffer = entry.buffer
@@ -446,6 +451,74 @@ def _stream_problems(
             )
         )
     return problems
+
+
+def _position_problems(i: int, entry: CollectorEntry) -> list[Problem]:
+    """A ``normalize:`` column named as the field recon keeps a record's position in, in an
+    entry whose records carry one (a stream's, a paginated table's)."""
+    if POSITION_FIELD not in (entry.normalize or {}):
+        return []
+    return [
+        Problem(
+            f"collectors.{i}.normalize.{POSITION_FIELD}",
+            f"{POSITION_FIELD} is the field recon keeps a record's position in its source in "
+            "(a stream's, or a paginated table's), and writes beside the columns normalize: makes",
+            kind="name_taken",
+            fix=f"name the column something else; {POSITION_FIELD} is in every row already",
+            got=POSITION_FIELD,
+        )
+    ]
+
+
+def _paginate(
+    i: int,
+    entry: CollectorEntry,
+    targets: list[tuple[SourceEntry | None, str]],
+    deadline: Any,
+) -> tuple[list[SourcedValue], list[Problem]]:
+    """A paginated entry's cap and where it came from; for each run, the least seconds its
+    crawl takes at its source's rate limit (``(pages - burst) / rps``), against the deadline
+    that bounds its table; and a warning for each run whose deadline is shorter than that."""
+    spec = entry.paginate
+    assert spec is not None
+    at = f"collectors.{i}.paginate"
+    origin: Origin = "mission" if "pages" in spec.model_fields_set else "recon"
+    values = [SourcedValue(path=f"{at}.pages", value=spec.pages, origin=origin)]
+    warnings: list[Problem] = []
+    # The mission's deadline as written: one that is not a number is its own problem.
+    numeric = isinstance(deadline, int | float) and not isinstance(deadline, bool)
+    written = [
+        (entry.deadline, f"collectors.{i}.deadline"),
+        (deadline if numeric else None, "deadline"),
+    ]
+    bounds = [(seconds, path) for seconds, path in written if seconds is not None]
+    for source, output in targets:
+        if source is None:
+            continue
+        rate = source.rate_limit
+        floor = crawl_floor_s(spec.pages, burst=rate.burst, rps=rate.rps)
+        bound = min(bounds, key=lambda bounded: bounded[0], default=None)
+        against = f"the deadline ({bound[1]}: {bound[0]:g}s)" if bound else "no deadline: bounds it"
+        note = (
+            f"{output}: {spec.pages} page(s) at source {source.name!r}'s rate_limit "
+            f"({rate.rps:g} rps, burst {rate.burst}) take at least {floor:g}s; {against}"
+        )
+        values.append(SourcedValue(path=f"{at}.floor_s", value=floor, origin="recon", note=note))
+        if bound is not None and floor > bound[0]:
+            warnings.append(
+                Problem(
+                    bound[1],
+                    f"{output} may read {spec.pages} page(s), which take at least {floor:g}s at "
+                    f"source {source.name!r}'s rate_limit, past the deadline of {bound[0]:g}s: "
+                    "a crawl that long fails its table as transient",
+                    kind="deadline_short",
+                    fix=f"raise {bound[1]} to {floor:g} or more, lower paginate.pages on "
+                    f"collector {entry.name!r}, or raise the source's rate_limit if the API "
+                    "allows it",
+                    got=bound[0],
+                )
+            )
+    return values, warnings
 
 
 def _not_a_stream(i: int, entry: CollectorEntry) -> list[Problem]:
@@ -758,6 +831,27 @@ def _entry_problems(
                 f"{at}.extract", problem, fix="use at most one * in the path", got=entry.extract
             )
         )
+    paginate = entry.paginate
+    if paginate is not None and ctype is not None and not ctype.paginates:
+        problems.append(
+            Problem(
+                f"{at}.paginate",
+                f"a {entry.type} collector does not read its source page by page, so it takes "
+                "no paginate:",
+                kind="unknown_key",
+                fix="remove paginate: (an api collector reads pages)",
+                allowed=_entry_keys(ctype),
+            )
+        )
+    elif paginate is not None and paginate.next and (problem := path_problem(paginate.next)):
+        problems.append(
+            Problem(
+                f"{at}.paginate.next",
+                problem,
+                fix="use at most one * in the path",
+                got=paginate.next,
+            )
+        )
     transforms = tuple(sorted(f"${name}" for name in plugins.transforms))
     for column, message in spec_problems(entry.normalize or {}, plugins.transforms).items():
         unknown = message.startswith("unknown transform")
@@ -861,6 +955,7 @@ def _entry_keys(ctype: CollectorType) -> tuple[str, ...]:
     """Every key an entry of this type may hold: recon's own and the type's settings."""
     own = set(ctype.settings.model_fields) if ctype.settings is not None else set()
     shared = set(CollectorEntry.model_fields) - (set() if ctype.extracts else {"extract"})
+    shared -= set() if ctype.paginates else {"paginate"}
     return tuple(sorted(shared | own))
 
 
@@ -1012,6 +1107,17 @@ def _output_problems(
             Problem(
                 at,
                 f"output {output!r} is reserved for a file recon writes into every archive",
+                kind="name_taken",
+                fix="rename the collector",
+                got=output,
+            )
+        )
+    elif suffix := next((s for s in SIDECARS if output.casefold().endswith(f".{s}")), None):
+        problems.append(
+            Problem(
+                at,
+                f"output {output!r} is named as recon names a table's {suffix} file, which it "
+                f"writes beside the table (<table>.{suffix}.jsonl)",
                 kind="name_taken",
                 fix="rename the collector",
                 got=output,

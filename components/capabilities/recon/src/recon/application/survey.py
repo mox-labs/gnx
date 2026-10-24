@@ -44,6 +44,12 @@ before its first record (an ``extract:`` that resolves to nothing in a response 
 empty, items that are not objects, captures no filter kept): the survey keeps the table,
 empty, and warns with the reason, so an empty table never reads as a source that had
 nothing.
+
+A table read page by page (``paginate:``) says each page and why its crawl stopped short
+through the survey's page log (:class:`TablePages`, the collectors' ``CollectorContext.pages``).
+Once the table is sealed its page log is kept beside it (``<output>.pages.jsonl``); a crawl
+cut short seals the table ``ok`` and ``truncated``, with what cut it, and warns
+(``page_cap``, ``paginate_loop``, ``paginate_empty``). A table that fails keeps no page log.
 """
 
 from __future__ import annotations
@@ -69,6 +75,7 @@ if TYPE_CHECKING:
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+    from recon.domain.paginate import TruncatedBy
     from recon.domain.telemetry import Span, Telemetry
 
 #: By default, the least seconds between two ``recon.collect.progress`` events of a table.
@@ -92,6 +99,30 @@ class CollectorError(CollectionError):
         super().__init__(f"[{where}] {cause}", kind=kind, fix=fix)
 
 
+class TablePages:
+    """The page log of a survey's tables (``recon.domain.paginate.PageLog``), one table at a
+    time, as tables run: :meth:`begin` starts a table's, and :meth:`end` hands it over. Each
+    page is one entry, ``{"page", "token"}``, so it holds a crawl's ``pages`` entries at most."""
+
+    def __init__(self) -> None:
+        self.pages: list[dict[str, Any]] = []
+        self.truncated_by: TruncatedBy | None = None
+
+    def page(self, index: int, token: Any) -> None:
+        self.pages.append({"page": index, "token": token})
+
+    def truncated(self, by: TruncatedBy) -> None:
+        self.truncated_by = by
+
+    def begin(self) -> None:
+        self.pages, self.truncated_by = [], None
+
+    def end(self) -> tuple[list[dict[str, Any]], TruncatedBy | None]:
+        taken = self.pages, self.truncated_by
+        self.begin()
+        return taken
+
+
 class Survey:
     """One survey's run: the ports it writes through and the tables it has recorded.
 
@@ -101,7 +132,8 @@ class Survey:
     what the run found worth saying about tables that succeeded, and about an archive it
     could not finish. ``finished`` is false when ``meta.yaml`` could not be written or the
     archive could not be marked complete, so it reads incomplete whatever its tables did.
-    ``progress_s`` is the least time between two progress events of a table."""
+    ``progress_s`` is the least time between two progress events of a table. ``pages`` is the
+    page log its collectors were built with (``CollectorContext.pages``)."""
 
     def __init__(
         self,
@@ -115,8 +147,10 @@ class Survey:
         kinds: Mapping[str, Collection[str]] | None = None,
         deadline: Deadline | None = None,
         progress_s: float = PROGRESS_S,
+        pages: TablePages | None = None,
     ) -> None:
         self._archives = archives
+        self._pages = pages if pages is not None else TablePages()
         self._progress_s = progress_s
         self._clock = clock
         self._deadline = deadline if deadline is not None else Deadline(clock)
@@ -251,6 +285,7 @@ class Survey:
         # its table share the name.
         target = entry if output == entry.name else entry.model_copy(update={"name": output})
         start = self._clock.monotonic()
+        self._pages.begin()
         first: list[dict[str, Any]] = []
         nothing: NoRecordsError | None = None
         what = f"table {output}'s deadline ({entry.deadline:g}s)" if entry.deadline else ""
@@ -297,7 +332,30 @@ class Survey:
             )
         if count == 1:
             self._check_extract(index, entry, output, first[0])
-        return table.model_copy(update={"records": count, "seconds": seconds})
+        update: dict[str, Any] = {"records": count, "seconds": seconds}
+        pages, truncated_by = self._pages.end()
+        if pages:
+            self._keep_pages(archive, output, pages)
+        if truncated_by is not None:
+            update |= {"truncated": True, "truncated_by": truncated_by}
+            self._warn(output, _truncated(index, entry, output, truncated_by, len(pages)))
+        return table.model_copy(update=update)
+
+    def _keep_pages(self, archive: Path, output: str, pages: list[dict[str, Any]]) -> None:
+        """Keep a sealed table's page log beside it; an archive that cannot keep it cannot be
+        finished, as one that cannot keep its ``meta.yaml``."""
+        try:
+            self._archives.write_sidecar(archive, output, "pages", pages)
+        except OSError as exc:
+            self.finished = False
+            warning = Problem(
+                "",
+                f"{output}'s page log could not be written, so the archive reads incomplete: {exc}",
+                kind="archive_unfinished",
+                fix="free space in the archive's directory, or make it writable, then survey again",
+            )
+            self.warnings.append(warning)
+            self._emit({"kind": "archive_warning", "reason": warning.message, "fix": warning.fix})
 
     def _check_extract(
         self, index: int, entry: CollectorEntry, output: str, record: dict[str, Any]
@@ -428,6 +486,42 @@ def _keeping_first(
             yield record
     finally:
         records.close()
+
+
+def _truncated(
+    index: int, entry: CollectorEntry, output: str, by: TruncatedBy, pages: int
+) -> Problem:
+    """The warning for a table whose crawl ``by`` cut short after ``pages`` pages."""
+    at = f"collectors.{index}.paginate"
+    whole = "so it is not a whole snapshot of its source"
+    if by == "pages":
+        return Problem(
+            f"{at}.pages",
+            f"{output} read its cap of {pages} page(s) with more to read: the table is "
+            f"truncated, {whole}",
+            kind="page_cap",
+            fix=f"raise paginate.pages on collector {entry.name!r}, or narrow what it asks for",
+            got=pages,
+        )
+    if by == "loop":
+        return Problem(
+            at,
+            f"{output}'s page {pages - 1} named a next page it had read already, so the crawl "
+            f"stopped there: the table is truncated, {whole}",
+            kind="paginate_loop",
+            fix=f"check that paginate on collector {entry.name!r} reads the API's next token "
+            "(paginate.next, paginate.param), and that the API advances it",
+            got=pages,
+        )
+    return Problem(
+        at,
+        f"{output} read empty pages in a row that still named a next one, so the crawl "
+        f"stopped after {pages} page(s): the table is truncated, {whole}",
+        kind="paginate_empty",
+        fix=f"check that extract: on collector {entry.name!r} finds each page's records, and "
+        "that the API ends its pages; or narrow what it asks for",
+        got=pages,
+    )
 
 
 def _attributes(table: TableOutcome) -> dict[str, str | None]:
