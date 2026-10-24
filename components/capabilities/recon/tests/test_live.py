@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -23,6 +24,7 @@ from tests.recon_fakes import FixedClock, plugins_with, run_survey
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+    from recon.domain.archives import NewRecords
     from recon.domain.capture import CaptureLog
     from recon.domain.models import CollectorEntry, SourceEntry
 
@@ -156,6 +158,43 @@ class TestWholeLinesOnly:
         assert [r.record for r in first.records] == [{"n": 0}]
         assert [r.record for r in second.records] == [{"n": 1}, {"n": 2}]
         assert first.sealed == second.sealed == []
+
+    def test_a_short_write_taken_back_under_a_reader_is_a_retraction_not_its_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression (review, Dijkstra F2): a write the disk cut short is taken back to the
+        last whole line written before it; a reader that had read a whole line of the cut
+        write was then past the table's end, and was told its cursor was not this archive's.
+        It now waits, and is told the table retracted when it is."""
+        import types
+
+        store = ArchiveFiles(SystemClock())
+        archive = store.create(tmp_path, "2026-01-02-030405-000001")
+        reads: list[NewRecords] = []
+        stand_in = types.ModuleType("os")
+        stand_in.__dict__.update(os.__dict__)
+
+        def short(descriptor: int, data: bytes) -> int:
+            cut = data[: data.index(b"\n") + 3]  # a whole line, and part of the next
+            written: int = os.write(descriptor, cut)
+            reads.append(store.read_since(archive, None, limit=100))
+            return written
+
+        def truncate(descriptor: int, size: int) -> None:
+            os.ftruncate(descriptor, size)
+            reads.append(store.read_since(archive, reads[0].cursor, limit=100))
+
+        stand_in.__dict__.update(write=short, ftruncate=truncate)
+        monkeypatch.setattr("recon.adapters._out.archive_files.os", stand_in)
+        with pytest.raises(OSError, match="wrote"):
+            store.write_table(archive, "t", (r for r in [{"n": 0}, {"n": 1}]))
+        monkeypatch.undo()
+        after = store.read_since(archive, reads[1].cursor, limit=100)
+        store.release(archive)
+
+        assert [r.record for r in reads[0].records] == [{"n": 0}]
+        assert (reads[1].records, reads[1].retracted) == ([], [])
+        assert (after.records, after.retracted) == ([], ["t"])
 
 
 class TestACursorIsOpaque:

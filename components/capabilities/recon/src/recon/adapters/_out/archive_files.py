@@ -460,6 +460,10 @@ def _read_table(
         with f:
             sealed = not candidate.name.endswith(_LIVE)
             size = os.fstat(f.fileno()).st_size
+            if offset > size and not sealed:
+                # A write the disk cut short was taken back past what this reader read: the
+                # table is about to fail and be retracted. Read nothing of it until then.
+                return [], (offset, False), False
             if offset > size:
                 raise UsageError(
                     f"the cursor is past the end of table {output}: it is not this archive's",

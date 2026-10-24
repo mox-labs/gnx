@@ -261,7 +261,7 @@ the server sends can be their status message.
 A read of an archive being written takes back the `cursor` an earlier read gave, so the
 cursor is input from the caller, and may be anything. It is base64url JSON that only the
 archive store reads: one that does not decode, names another archive, holds an offset that
-is not a non-negative integer, or reaches past the end of a table is refused as a `usage`
+is not a non-negative integer, or reaches past the end of a sealed table is refused as a `usage`
 error, and the read returns nothing. A table the cursor names is only compared with the tables
 the store finds in the archive, never made into a path, so a cursor cannot make recon read
 a file outside the archive. Reading opens files read-only, and takes the writer's lock
