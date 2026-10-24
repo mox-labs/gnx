@@ -189,6 +189,38 @@ class TestWindowsEndOnTheClock:
         assert _rows(window) == [{"seq": 0}]
         assert source.closed.is_set(), "the source was closed once the stream had its window"
 
+    def test_each_quiet_window_is_sealed_when_its_time_comes(self, tmp_path: Path) -> None:
+        """The writer is woken at each window's close, not only at the stream's last: a
+        quiet stretch seals its windows one by one, as the clock reaches each."""
+        clock = VirtualClock()
+        store = ArchiveFiles(clock)
+        source = Script(clock, [(1.0, {"seq": 0})], then="quiet", quiet_to=15.0)
+        result: list[Any] = []
+        writer = threading.Thread(
+            target=lambda: result.append(
+                _run(
+                    tmp_path, clock, _plan(WindowSpec(seconds=10)), source, store=store, windows=3
+                )  # fmt: skip
+            )
+        )
+        writer.start()
+
+        def sealed(count: int) -> bool:
+            windows = store.archives(tmp_path, stream="s")
+            return sum(store.state(w) == "complete" for w in windows) >= count
+
+        _wait_for(lambda: sealed(1))  # at 15 s: window 0 is sealed, the clock no further
+        clock.set(25.0)
+        _wait_for(lambda: sealed(2))
+        clock.set(35.0)
+        writer.join(10)
+        _, outcomes, _ = result[0]
+        assert [(o.index, o.closed_by, o.table.records) for o in outcomes] == [
+            (0, "window", 1),
+            (1, "window", 0),
+            (2, "window", 0),
+        ]
+
     def test_a_window_that_ends_is_ok_not_transient(self, tmp_path: Path) -> None:
         """B10 #7: reaching a window's end is success; a deadline cut would be ``transient``."""
         clock = VirtualClock()

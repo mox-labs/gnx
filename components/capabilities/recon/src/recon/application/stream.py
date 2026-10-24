@@ -316,9 +316,10 @@ class Arrivals:
         """End each window whose time is up by now; whether the stream still admits."""
         if not self._admitting:
             return False
-        self._events.extend(self._windowing.advance(self._clock.monotonic()))
-        if self._windowing.ended:
-            self._admitting = False
+        ended = self._windowing.advance(self._clock.monotonic())
+        self._events.extend(ended)
+        self._admitting = not self._windowing.ended
+        if ended:  # the writer waits on events: each window's end wakes it
             self._cond.notify_all()
         return self._admitting
 
