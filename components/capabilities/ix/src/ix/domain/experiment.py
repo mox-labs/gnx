@@ -359,6 +359,10 @@ class Experiment(Record):
 
     repeats: int | None = Field(default=None, ge=1)
     seed: int | None = Field(default=None, ge=0)
+    #: How many trials a run carries out at once: 1, one at a time, unless written. A
+    #: condition of the run, so it is in the plan's digest; writing 1 digests as leaving it
+    #: out. Above 1 is refused where a kind, a deciding metric or the genre forbids overlap.
+    trials_in_flight: int = Field(default=1, ge=1)
 
     @field_validator("subjects", mode="before")
     @classmethod

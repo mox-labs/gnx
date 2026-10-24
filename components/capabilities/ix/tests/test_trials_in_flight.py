@@ -13,6 +13,8 @@ import asyncio
 import random
 from typing import TYPE_CHECKING, Any
 
+import matrix
+import pytest
 import yaml
 from ix_fakes import FakeSubject, FakeTiming, experiment, fake_registry
 from matrix import TASK, Executor, RunContext, Session, digest, record_session, wire
@@ -20,6 +22,7 @@ from matrix import TASK, Executor, RunContext, Session, digest, record_session, 
 import ix
 from ix.application import running
 from ix.composition import Root
+from ix.composition.settings import IxSettings
 from ix.domain import schema
 
 if TYPE_CHECKING:
@@ -133,3 +136,86 @@ class TestEachTrialNamesItsOwnSessions:
 
         asyncio.run(Executor().run(wire({"trials": _OneByOne()}, inputs=[TASK]), {TASK: "go"}))
         assert [i.sessions for i in landed] == [(0, 1), (2, 3), (4, 5), (6, 7)]
+
+
+# --- the width: where it is written and what it is held to -----------------------------
+
+
+def _canned(tmp_path: Path, **changes: Any) -> Path:
+    """An ``evaluate`` of an agent on matrix's mock runtime, every reply canned: it calls no
+    model, and every kind it uses is ``shared``."""
+    data: dict[str, Any] = {
+        "name": "canned",
+        "question": "Does the reply start with BANANA?",
+        "genre": "evaluate",
+        "subjects": {"agent": {"kind": "agent-session", "runtime": "mock"}},
+        "probes": [
+            {"id": "fruit", "kind": "prompt", "prompt": "Name a fruit.",
+             "mock_response": "BANANA bread", "truth": {"starts_with": "BANANA"}},
+            {"id": "colour", "kind": "prompt", "prompt": "Name a colour.",
+             "mock_response": "teal", "truth": {"starts_with": "BANANA"}},
+        ],
+        "primary": {"metric": "text_matched"},
+        "threshold": {"op": ">=", "value": 0.5},
+        "repeats": 5,
+        **changes,
+    }  # fmt: skip
+    folder = tmp_path / "canned"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "experiment.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+    return folder
+
+
+def _root() -> Root:
+    return Root(settings=matrix.Config[IxSettings](client=IxSettings()))
+
+
+class TestTheWidthIsAConditionOfTheRun:
+    """X1/X2: ``trials_in_flight`` is a value of the design, 1 unless the experiment says
+    otherwise, in the plan's digest and frozen by registration."""
+
+    def test_one_written_out_is_the_default_and_digests_as_omitting_it(
+        self, tmp_path: Path
+    ) -> None:
+        omitted = ix.plan(_canned(tmp_path / "a"))
+        written = ix.plan(_canned(tmp_path / "b", trials_in_flight=1))
+        assert omitted.digest == written.digest
+        assert omitted.experiment_digest == written.experiment_digest
+        (sourced,) = [v for v in omitted.provenance if v.path == "trials_in_flight"]
+        assert (sourced.value, sourced.source) == (1, "ix")
+        (sourced,) = [v for v in written.provenance if v.path == "trials_in_flight"]
+        assert (sourced.value, sourced.source) == (1, "experiment")
+        assert omitted.order.trials_in_flight == 1
+        assert "one at a time" in omitted.order.description
+
+    def test_a_width_is_in_the_digest_the_plan_and_the_registration(self, tmp_path: Path) -> None:
+        folder = _canned(tmp_path, trials_in_flight=4)
+        plan = ix.plan(folder)
+        assert plan.digest != ix.plan(_canned(tmp_path / "one")).digest
+        assert plan.order.trials_in_flight == 4
+        assert "4 trials in flight" in plan.order.description
+        ix.register(folder)
+        _canned(tmp_path, trials_in_flight=2)
+        (moved,) = [d for d in ix.deviations(folder).deviations if d.field.startswith("design")]
+        assert (moved.field, moved.registered, moved.current) == (
+            "design.trials_in_flight", 4, 2,
+        )  # fmt: skip
+
+    def test_a_width_below_one_is_refused(self, tmp_path: Path) -> None:
+        result = ix.validate(_canned(tmp_path, trials_in_flight=0))
+        assert not result.valid
+        assert [p.path for p in result.problems] == ["trials_in_flight"]
+
+    def test_the_command_line_width_is_an_override_a_verdict_refuses(self, tmp_path: Path) -> None:
+        folder = _canned(tmp_path)
+        report = _root().run(folder, exploratory=True, trials_in_flight=3)
+        assert report.trials_in_flight == 3
+        assert report.overridden == ("trials_in_flight: 3 in place of 1 (--trials-in-flight)",)
+        ix.register(folder)
+        with pytest.raises(ix.ConfigError, match="changed for this run") as refused:
+            _root().run(folder, trials_in_flight=3)
+        assert "exploratory" in (refused.value.fix or "")
+        assert _root().run(folder).trials_in_flight == 1
+        with pytest.raises(ix.UsageError) as below:
+            _root().run(folder, exploratory=True, trials_in_flight=0)
+        assert below.value.details == {"path": "--trials-in-flight", "value": 0}

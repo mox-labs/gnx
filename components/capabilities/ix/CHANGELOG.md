@@ -14,6 +14,13 @@
 
 ### Added
 
+- **`trials_in_flight`**: how many trials a run carries out at once, 1 when left out. It is
+  a value of the design (`Design.trials_in_flight`, with where it came from in the plan's
+  provenance), so it is in the plan's digest and frozen by registration; writing `1`
+  digests as leaving it out. The plan's `order` states it (`OrderPlan.trials_in_flight`,
+  and its description), and so does the report (`Report.trials_in_flight`, and its `Run`
+  line). `ix run --trials-in-flight N` (`ix.run(trials_in_flight=N)`) overrides it for one
+  run, noted under `Changed`; like `--repeats`, only with `--exploratory` or `--dry-run`.
 - **`isolation` on every kind, `contended` on every metric.** A kind says whether two trials
   may use it at once (`isolation: shared | exclusive`; a kind that says nothing, a third
   party's included, is `exclusive`), and a metric whether its reading moves with whatever

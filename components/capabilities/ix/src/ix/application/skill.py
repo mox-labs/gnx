@@ -708,7 +708,8 @@ metrics: [<metric>]                 # further metrics to measure and report
 sensors:                            # only to give a sensor options, or to choose between two
   - {{kind: <sensor>, <option>: <value>}}
 repeats: <n>
-seed: <n>"""
+seed: <n>
+trials_in_flight: 1                 # trials carried out at once; 1 when left out"""
     shapes = "\n".join(
         f"  - `{shape}`: statistic {', '.join(STATISTICS[shape])}; "
         f"estimator {', '.join(ESTIMATORS[shape])}"

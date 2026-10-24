@@ -105,6 +105,8 @@ class Design(Record):
     sensors: tuple[SelectedSensor, ...] = ()
     repeats: int
     seed: int
+    #: How many trials a run carries out at once (the experiment's ``trials_in_flight``).
+    trials_in_flight: int = 1
     order: Order
     calibration: Calibration
     analysis: AnalysisRef
@@ -721,6 +723,14 @@ def _settings(experiment: Experiment, genre: Genre, control: str | None) -> _Set
         note = "derived from the experiment's name; state seed: to pin it"
         sourced.append(_from("ix", path="seed", value=seed, note=note))
 
+    if "trials_in_flight" in experiment.model_fields_set:
+        sourced.append(
+            _from("experiment", path="trials_in_flight", value=experiment.trials_in_flight)
+        )
+    else:
+        note = "one trial at a time; state trials_in_flight: to carry more out at once"
+        sourced.append(_from("ix", path="trials_in_flight", value=1, note=note))
+
     sourced.append(_from("genre", path="order", value=genre.design.order))
     sourced.append(_from("genre", path="calibration", value=genre.design.calibration))
 
@@ -799,6 +809,7 @@ def resolve(
         sensors=instruments.sensors,
         repeats=settings.repeats,
         seed=settings.seed,
+        trials_in_flight=experiment.trials_in_flight,
         order=genre.design.order,
         calibration=genre.design.calibration,
         analysis=genre.analysis,
