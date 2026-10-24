@@ -319,6 +319,49 @@ class TestNoReceiverSlowsTheWrite:
         assert dropped["fix"]
         assert not [w for w in alone.warnings if w["kind"] == "events_dropped"]
 
+    def test_a_sink_that_never_returns_cannot_hold_the_survey(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression (review, Erlang): closing a sink waited for the delivery it was stuck
+        in, so an exporter that hung made the survey hang forever. The survey returns within
+        the drain bound, and says what was lost and what is stuck."""
+        released = threading.Event()
+
+        class Hangs:
+            def on_event(self, event: Any) -> None:
+                if event.name.endswith(".end"):
+                    released.wait()  # an exporter that never answers
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr("recon.composition.OtelEvents", lambda version: Hangs())
+        config = {"collectors": [{"name": "t", "type": "cli", "run": "echo '{\"n\": 1}'"}]}
+        mission = tmp_path / ".recon" / "m"
+        mission.mkdir(parents=True)
+        (mission / "config.yaml").write_text(yaml.safe_dump(config))
+        from recon.adapters._out.event_channel import ThreadChannel
+
+        done: list[recon.SurveyDocument] = []
+        surveying = threading.Thread(
+            target=lambda: done.append(
+                root({}, project=tmp_path, channel=lambda: ThreadChannel(drain_s=0.3)).survey(
+                    "m"
+                )  # fmt: skip
+            ),
+            daemon=True,
+        )
+        try:
+            surveying.start()
+            surveying.join(timeout=5)
+            assert done, "the survey returned within the drain bound and a margin"
+        finally:
+            released.set()
+        kinds = {w["kind"]: w for w in done[0].warnings}
+        assert done[0].status == "ok"
+        assert "events_dropped" in kinds
+        assert "Hangs" in kinds["telemetry_stuck"]["message"] and kinds["telemetry_stuck"]["fix"]
+
     def test_a_receiver_that_raises_is_reported_and_the_survey_goes_on(
         self, tmp_path: Path
     ) -> None:

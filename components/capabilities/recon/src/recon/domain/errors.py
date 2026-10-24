@@ -134,6 +134,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "result_empty",
     # events OpenTelemetry or on_event never got: a receiver was slower than the survey
     "events_dropped",
+    # a receiver of a survey's events had not returned from one when the survey ended
+    "telemetry_stuck",
 )
 
 

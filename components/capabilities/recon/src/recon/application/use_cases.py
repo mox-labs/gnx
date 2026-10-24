@@ -614,7 +614,8 @@ def _ending(telemetry: Telemetry, channel: Channel | None) -> Iterator[None]:
 
 
 def _undelivered(channel: Channel | None) -> list[Problem]:
-    """What the survey's channel did not deliver, and each callback that raised."""
+    """What the survey's channel did not deliver, each callback that raised, and each
+    receiver stuck in a delivery."""
     if channel is None:
         return []
     problems = [
@@ -625,6 +626,17 @@ def _undelivered(channel: Channel | None) -> list[Problem]:
             fix="the collected data is unaffected; fix the on_event callback",
         )
         for failure in channel.failed
+    ]
+    problems += [
+        Problem(
+            "",
+            f"{receiver} had not returned from an event when the survey ended, so it was not "
+            "closed and the thread delivering to it is left running until it returns",
+            kind="telemetry_stuck",
+            fix="the collected data is unaffected; give the receiver a timeout (an "
+            "OpenTelemetry exporter's), or replace it, so it cannot hang",
+        )
+        for receiver in channel.stuck
     ]
     if channel.dropped:
         problems.append(

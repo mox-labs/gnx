@@ -8,6 +8,11 @@ gives the receivers ``drain_s`` seconds to catch up, then counts what they did n
 dropped too, and nothing reaches them after that. The archive's own event log is not a
 receiver here: it is archive data, written inline.
 
+Nothing here waits past ``drain_s``. A receiver that does not return from an event holds
+the channel's thread: what is queued behind it is counted as dropped when the survey ends,
+the receiver is named in ``stuck``, and its ``close`` is not called, since the thread is
+still inside it. The thread is a daemon and stays until the receiver returns.
+
 A receiver that raises gets nothing more. A sink's error is raised to the survey at its next
 event, so :class:`~recon.domain.telemetry.Telemetry` drops it and names it, as it does a sink
 called inline; a callback's is kept in ``failed``. A sink's ``around`` and ``trace_headers``
@@ -36,12 +41,13 @@ QUEUE = 4096
 #: Seconds the survey's end waits for the receivers to catch up.
 DRAIN_S = 10.0
 
-_Delivery = tuple["Callable[[Any], None]", Any]
+_Delivery = tuple[str, "Callable[[Any], None]", Any]
 
 
 class ThreadChannel:
     """One survey's channel. ``dropped`` counts the events the receivers never got;
-    ``failed`` names each callback that raised, with its error."""
+    ``failed`` names each callback that raised, with its error; ``stuck`` each receiver
+    that had not returned from an event when the survey ended."""
 
     def __init__(self, *, queue: int = QUEUE, drain_s: float = DRAIN_S) -> None:
         if queue < 1 or drain_s < 0:
@@ -52,6 +58,9 @@ class ThreadChannel:
         self._stopped = threading.Event()
         self.dropped = 0
         self.failed: list[str] = []
+        self.stuck: list[str] = []
+        #: The receiver the thread is delivering to now, by name; None between deliveries.
+        self._delivering: str | None = None
         self._thread = threading.Thread(target=self._deliver, name="recon-events", daemon=True)
         self._thread.start()
 
@@ -72,19 +81,32 @@ class ThreadChannel:
         left = self._queue.wait_empty(self._drain_s)
         self.dropped += left
         self._stopped.set()
+        delivering = self._delivering
+        if left and delivering is not None:
+            self.note_stuck(delivering)
         # Wakes the thread, so it ends; when the queue is full, it ends at its next delivery.
         with contextlib.suppress(queue.Full):
             self._queue.put_nowait(None)
 
-    def send(self, deliver: Callable[[Any], None], item: Any) -> None:
-        """Queue ``deliver(item)`` for the channel's thread; never waits."""
+    def send(self, receiver: str, deliver: Callable[[Any], None], item: Any) -> None:
+        """Queue ``deliver(item)``, to the receiver named, for the channel's thread; never
+        waits."""
         if self._closed:
             self.dropped += 1
             return
         try:
-            self._queue.put_nowait((deliver, item))
+            self._queue.put_nowait((receiver, deliver, item))
         except queue.Full:
             self.dropped += 1
+
+    def note_stuck(self, receiver: str) -> None:
+        if receiver not in self.stuck:
+            self.stuck.append(receiver)
+
+    def close_wait_s(self) -> float:
+        """How long closing a receiver may wait for a delivery to it to end: the drain time
+        while the channel is open, nothing once it has closed, its drain spent."""
+        return 0.0 if self._closed else self._drain_s
 
     def _deliver(self) -> None:
         while True:
@@ -92,9 +114,11 @@ class ThreadChannel:
             try:
                 if got is None or self._stopped.is_set():
                     return
-                deliver, item = got
+                receiver, deliver, item = got
+                self._delivering = receiver
                 deliver(item)
             finally:
+                self._delivering = None
                 self._queue.task_done()
 
 
@@ -112,13 +136,14 @@ class _QueuedSink:
     def __init__(self, channel: ThreadChannel, sink: EventSink) -> None:
         self._channel = channel
         self._sink = sink
+        self._name = type(sink).__name__
         self._lock = threading.Lock()
         self._error: Exception | None = None
         self._closed = False
 
     def on_event(self, event: Event) -> None:
         self._raise_its_error()
-        self._channel.send(self._deliver, event)
+        self._channel.send(self._name, self._deliver, event)
 
     def around(self, event: Event) -> AbstractContextManager[Any] | None:
         around = getattr(self._sink, "around", None)
@@ -129,11 +154,18 @@ class _QueuedSink:
         return {} if given is None else dict(given(span_id))
 
     def close(self) -> None:
-        with self._lock:
+        """Close the sink, unless a delivery to it has not ended within the channel's wait:
+        then it is named stuck, and left alone."""
+        if not self._lock.acquire(timeout=self._channel.close_wait_s()):
+            self._channel.note_stuck(self._name)
+            return
+        try:
             self._closed = True
             close = getattr(self._sink, "close", None)
             if close is not None:
                 close()
+        finally:
+            self._lock.release()
         self._raise_its_error()
 
     def _deliver(self, event: Event) -> None:
@@ -160,7 +192,7 @@ class _QueuedCallback:
         self._failed = False
 
     def __call__(self, event: dict[str, Any]) -> None:
-        self._channel.send(self._deliver, event)
+        self._channel.send("on_event", self._deliver, event)
 
     def _deliver(self, event: dict[str, Any]) -> None:
         if self._failed:

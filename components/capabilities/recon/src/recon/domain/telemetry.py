@@ -120,10 +120,13 @@ class Channel(Protocol):
     """Where a survey's events go on to receivers that may be slow, without the survey
     waiting for them: a bounded queue a thread drains. ``dropped`` counts the events a
     receiver never got (the queue was full, or the survey's end could not wait for them);
-    ``failed`` names each callback that raised, which gets nothing more."""
+    ``failed`` names each callback that raised, which gets nothing more; ``stuck`` names each
+    receiver that had not returned from an event when the survey ended. Nothing waits
+    longer than a bounded drain time, however a receiver behaves."""
 
     dropped: int
     failed: list[str]
+    stuck: list[str]
 
     def sink(self, sink: EventSink) -> EventSink:
         """``sink``, its events delivered through the channel; its ``around`` and
