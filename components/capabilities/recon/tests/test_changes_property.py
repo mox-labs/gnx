@@ -1,12 +1,13 @@
-"""Change detection, property-based (ixian's round-4 C1-C9, rulings C2-C6): random histories of
-a small mailbox, checked against an oracle written independently of the code (sets of contents
-per key, where the code keeps one hash per key).
+"""Change detection, property-based (ixian's round-4 C1-C9, rulings C2-C6 and the owner's ruling
+of 2026-10-24 on what was told): random histories of a small mailbox, checked against an
+oracle written apart from the code. The oracle keeps what it has told as a map of key to
+content and folds its own ops into it; the code keeps a told index of hashes, joined with each
+table through a :class:`~recon.domain.changes.KeyJoin`.
 
 ``hypothesis`` is not a dev dependency, so each property runs over seeded ``random`` cases
-(500 for the pure diff, fewer end to end), and a failure names its seed. The history is what a
-mission's surveys see: each snapshot ``complete`` (sealed ok, its crawl whole), ``truncated``
-(sealed ok, its crawl cut short) or ``failed`` (no table): a baseline is the latest earlier
-snapshot that sealed ok.
+(500 for the comparisons, 25 histories end to end), and a failure names its seed. A history is
+what a mission's surveys see: each snapshot ``complete`` (sealed ok, its crawl whole),
+``truncated`` (sealed ok, its crawl cut short) or ``failed`` (no table, so nothing told).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import pytest
 import yaml
 
 from recon.adapters._out.archive_files import ArchiveFiles
-from recon.application.changes import Counts, Hasher, KeyIndex, canonical, diff, index_of
+from recon.application.changes import Comparison, Hasher, MemoryJoin, canonical, told_lines
 from recon.composition import root
 from recon.domain.changes import ChangesSpec
 from recon.domain.errors import CollectionError
@@ -28,13 +29,19 @@ from recon.domain.http import HttpResponse
 from tests.recon_fakes import FixedClock
 
 if TYPE_CHECKING:
+    from recon.domain.changes import KeyJoin
     from recon.domain.models import SourceEntry
 
 CASES = 500
 SECRET = b"k" * 32
 KEYS = [f"m{n}" for n in range(6)]  # a small pool, so keys collide across snapshots
 
-Snapshot = tuple[list[dict[str, Any]], str]  # records, and complete | truncated | failed
+Records = list[dict[str, Any]]
+Snapshot = tuple[Records, str]  # records, and complete | truncated | failed
+Ops = list[tuple[str, str]]
+
+#: The joins every comparison property runs over; the DuckDB one joins them when it exists.
+JOINS: list[KeyJoin] = [MemoryJoin()]
 
 
 def _snapshot(
@@ -73,7 +80,7 @@ def _content(record: dict[str, Any], volatile: set[str]) -> str:
     return json.dumps(kept, sort_keys=True)
 
 
-def _keyed(records: list[dict[str, Any]], spec: ChangesSpec) -> tuple[dict[str, set[str]], int]:
+def _keyed(records: Records, spec: ChangesSpec) -> tuple[dict[str, set[str]], int]:
     """Each key (in first appearance order) with the set of contents it has, and the keyless."""
     keyed: dict[str, set[str]] = {}
     keyless = 0
@@ -81,63 +88,73 @@ def _keyed(records: list[dict[str, Any]], spec: ChangesSpec) -> tuple[dict[str, 
         if any(record.get(f) is None for f in spec.key):
             keyless += 1
             continue
-        key = json.dumps([record[f] for f in spec.key])
+        key = json.dumps([record[f] for f in spec.key], separators=(",", ":"))
         keyed.setdefault(key, set()).add(_content(record, set(spec.volatile)))
     return keyed, keyless
 
 
-def oracle(
-    base: list[dict[str, Any]] | None, new: list[dict[str, Any]], whole: bool, spec: ChangesSpec
-) -> list[tuple[str, str]]:
-    """The ops the ruling gives, as (op, key), in order."""
-    now, keyless = _keyed(new, spec)
-    ambiguous = {k for k, contents in now.items() if len(contents) > 1}
-    before = _keyed(base, spec)[0] if base is not None else None
-    ops = []
-    for key, contents in now.items():
-        if key in ambiguous:
-            continue
-        if before is None or key not in before:
-            ops.append(("insert", key))
-        elif len(before[key]) > 1 or before[key] != contents:
-            ops.append(("update", key))
-    if spec.deletes and before is not None and whole and not keyless and not ambiguous:
-        ops += [("delete", k) for k, c in before.items() if k not in now and len(c) == 1]
-    return ops
+class Oracle:
+    """What the ruling tells, snapshot by snapshot: ``told`` is every key told, with the
+    content told last."""
+
+    def __init__(self, spec: ChangesSpec) -> None:
+        self.spec = spec
+        self.told: dict[str, str] | None = None  # None: nothing told yet
+
+    def tell(self, records: Records, whole: bool) -> Ops:
+        now, keyless = _keyed(records, self.spec)
+        ambiguous = {k for k, contents in now.items() if len(contents) > 1}
+        told = self.told if self.told is not None else {}
+        ops: Ops = []
+        for key, contents in now.items():
+            if key in ambiguous:
+                continue
+            [content] = contents
+            if key not in told:
+                ops.append(("insert", key))
+            elif told[key] != content:
+                ops.append(("update", key))
+            told[key] = content
+        deleting = (self.spec.deletes and self.told is not None and whole and not keyless
+                    and not ambiguous)  # fmt: skip
+        if deleting:
+            gone = sorted(k for k in told if k not in now)
+            ops += [("delete", k) for k in gone]
+            for key in gone:
+                del told[key]
+        self.told = told
+        return ops
 
 
 # --- the code, over a history ----------------------------------------------------------
 
 
-def _ops(rows: list[dict[str, Any]], spec: ChangesSpec) -> list[tuple[str, str]]:
-    return [(r["op"], json.dumps([r["key"][f] for f in spec.key])) for r in rows]
+def _ops(rows: list[dict[str, Any]], spec: ChangesSpec) -> Ops:
+    return [(r["op"], json.dumps([r["key"][f] for f in spec.key], separators=(",", ":")))
+            for r in rows]  # fmt: skip
 
 
 def run_history(
-    history: list[Snapshot], spec: ChangesSpec
-) -> list[tuple[list[dict[str, Any]] | None, list[tuple[str, str]] | None]]:
-    """Each snapshot's change rows (None for a failed one), and the oracle's ops for it."""
+    history: list[Snapshot], spec: ChangesSpec, join: KeyJoin
+) -> list[tuple[list[dict[str, Any]] | None, Ops | None]]:
+    """Each snapshot's change rows (None for a failed one) as the code tells them, chaining
+    each comparison's told index into the next, and the oracle's ops for it."""
     hasher = Hasher(spec, SECRET)
-    sealed: list[list[dict[str, Any]]] = []
-    out: list[tuple[list[dict[str, Any]] | None, list[tuple[str, str]] | None]] = []
+    oracle = Oracle(spec)
+    told: list[tuple[str, str]] | None = None
+    out: list[tuple[list[dict[str, Any]] | None, Ops | None]] = []
     for records, status in history:
         if status == "failed":
             out.append((None, None))
             continue
-        base = sealed[-1] if sealed else None
         whole = status == "complete"
-        new_index = index_of(records, hasher)
-        base_index = index_of(base, hasher) if base is not None else None
-        rows = list(diff(lambda r=records: r, new_index, base_index,  # type: ignore[misc]
-                         (lambda b=base: b) if base is not None else None,  # type: ignore[misc]
-                         hasher, Counts(), whole=whole))  # fmt: skip
-        out.append((rows, oracle(base, records, whole, spec)))
-        sealed.append(records)
+        comparison = Comparison(lambda r=records: r, told, hasher, join,  # type: ignore[misc]
+                                whole=whole)  # fmt: skip
+        rows = list(comparison.rows())
+        told = list(comparison.told())
+        comparison.close()
+        out.append((rows, oracle.tell(records, whole)))
     return out
-
-
-def _seeds(n: int = CASES) -> list[int]:
-    return list(range(n))
 
 
 SPECS = [
@@ -146,173 +163,10 @@ SPECS = [
 ]
 
 
-class TestTheDiffIsTheOracles:
-    @pytest.mark.parametrize("spec", SPECS, ids=["deletes", "no-deletes"])
-    def test_c1_the_ops_are_the_oracle_s(self, spec: ChangesSpec) -> None:
-        for seed in _seeds():
-            for step, (rows, expected) in enumerate(
-                run_history(_history(random.Random(seed)), spec)
-            ):
-                if rows is not None:
-                    assert _ops(rows, spec) == expected, f"seed {seed}, snapshot {step}"
-
-    def test_c2_folding_the_ops_gives_the_latest_whole_snapshot(self) -> None:
-        """The strongest: every snapshot complete or failed (no keyless or ambiguous record,
-        which withhold deletes), deletes told; folding every row from empty gives the latest
-        complete snapshot, key by key and content by content."""
-        spec = SPECS[0]
-        for seed in _seeds():
-            history = _history(random.Random(seed), keyless=False, ambiguous=False,
-                               statuses=("complete", "failed"))  # fmt: skip
-            state = _fold(run_history(history, spec), spec)
-            latest = [r for r, s in history if s == "complete"]
-            if latest:
-                assert state == _state(latest[-1], spec), f"seed {seed}"
-
-    def test_c2_check_of_the_checker_without_deletes_the_fold_keeps_what_went(self) -> None:
-        spec = SPECS[1]
-        history: list[Snapshot] = [([{"id": "a"}, {"id": "b"}], "complete"),
-                                   ([{"id": "a"}], "complete")]  # fmt: skip
-        assert _fold(run_history(history, spec), spec) != _state(history[-1][0], spec)
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="owner decision: a truncated table is a baseline (ruling C3: 'sealed ok'), so a "
-        "key gone while a truncated snapshot intervened is never deleted; ixian's C5 diffs "
-        "against the last complete snapshot instead",
-    )
-    def test_c2_holds_when_a_truncated_snapshot_intervenes(self) -> None:
-        spec = SPECS[0]
-        history: list[Snapshot] = [
-            ([{"id": "a"}, {"id": "b"}, {"id": "c"}], "complete"),
-            ([{"id": "a"}], "truncated"),
-            ([{"id": "a"}, {"id": "b"}], "complete"),
-        ]
-        assert _fold(run_history(history, spec), spec) == _state(history[-1][0], spec)
-
-    def test_c3_the_same_snapshot_twice_gives_no_ops(self) -> None:
-        for seed in _seeds():
-            rng = random.Random(seed)
-            records, _ = _snapshot(rng)
-            again = [dict(r) for r in records]
-            [_, (rows, _)] = run_history([(records, "complete"), (again, "complete")], SPECS[0])
-            assert rows == [], f"seed {seed}"
-
-    def test_c4_a_change_to_a_volatile_field_alone_is_no_change(self) -> None:
-        for seed in _seeds():
-            rng = random.Random(seed)
-            records, _ = _snapshot(rng, ambiguous=False)
-            touched = [{**r, "seen": rng.random()} for r in records]
-            [_, (rows, _)] = run_history([(records, "complete"), (touched, "complete")], SPECS[0])
-            assert rows == [], f"seed {seed}"
-
-    def test_c4_check_of_the_checker_undeclared_it_is_an_update(self) -> None:
-        spec = ChangesSpec(key=["id"])
-        records = [{"id": "a", "seen": 1}]
-        [_, (rows, _)] = run_history(
-            [(records, "complete"), ([{"id": "a", "seen": 2}], "complete")], spec
-        )
-        assert [r["op"] for r in rows or []] == ["update"]
-
-    def test_c5_a_truncated_or_failed_snapshot_never_deletes(self) -> None:
-        spec = SPECS[0]
-        for seed in _seeds():
-            history = _history(random.Random(seed))
-            for (rows, _), (_, status) in zip(run_history(history, spec), history, strict=True):
-                if status != "complete":
-                    assert not any(r["op"] == "delete" for r in rows or []), f"seed {seed}"
-
-    def test_c5_a_failed_snapshot_is_no_baseline(self) -> None:
-        """A page-3 failure must not mark every later message deleted, nor be compared with."""
-        spec = SPECS[0]
-        history: list[Snapshot] = [([{"id": "a"}, {"id": "b"}], "complete"),
-                                   ([{"id": "a"}], "failed"),
-                                   ([{"id": "a"}, {"id": "b"}], "complete")]  # fmt: skip
-        runs = run_history(history, spec)
-        assert runs[1] == (None, None) and runs[2][0] == []
-
-    def test_c6_the_order_of_fields_or_records_is_no_change(self) -> None:
-        for seed in _seeds():
-            rng = random.Random(seed)
-            records, _ = _snapshot(rng)
-            shuffled = [dict(rng.sample(list(r.items()), len(r))) for r in records]
-            rng.shuffle(shuffled)
-            [_, (rows, _)] = run_history([(records, "complete"), (shuffled, "complete")], SPECS[0])
-            assert rows == [], f"seed {seed}"
-
-    def test_c7_a_key_twice_is_one_record_or_ambiguous_and_ambiguity_holds_back_deletes(
-        self,
-    ) -> None:
-        spec = SPECS[0]
-        hasher = Hasher(spec, SECRET)
-        base = [{"id": "a", "s": 1}, {"id": "gone", "s": 1}]
-        same = [{"id": "a", "s": 2}, {"id": "a", "s": 2}]
-        index = index_of(same, hasher)
-        assert index.ambiguous == 0 and len(index.hashes) == 1
-        rows = list(diff(lambda: same, index, index_of(base, hasher), lambda: base, hasher,
-                         Counts(), whole=True))  # fmt: skip
-        assert _ops(rows, spec) == [("update", '["a"]'), ("delete", '["gone"]')]
-
-        twice = [{"id": "a", "s": 2}, {"id": "a", "s": 3}]
-        counts = Counts()
-        index = index_of(twice, hasher)
-        rows = list(diff(lambda: twice, index, index_of(base, hasher), lambda: base, hasher,
-                         counts, whole=True))  # fmt: skip
-        assert rows == [] and index.ambiguous == 1 and counts.withheld == "ambiguous"
-
-    def test_c7_a_key_ambiguous_in_the_baseline_blocks_its_own_delete(self) -> None:
-        spec = SPECS[0]
-        hasher = Hasher(spec, SECRET)
-        base = [{"id": "x", "s": 1}, {"id": "x", "s": 2}, {"id": "y", "s": 1}]
-        rows = list(diff(lambda: [], index_of([], hasher), index_of(base, hasher), lambda: base,
-                         hasher, Counts(), whole=True))  # fmt: skip
-        assert _ops(rows, spec) == [("delete", '["y"]')]
-
-    def test_c7_keyless_records_are_counted_and_hold_back_deletes(self) -> None:
-        spec = SPECS[0]
-        hasher = Hasher(spec, SECRET)
-        base: list[dict[str, Any]] = [{"id": "a"}, {"id": "b"}]
-        new: list[dict[str, Any]] = [{"id": "a"}, {"id": None}, {"subject": "no id at all"}]
-        counts = Counts()
-        index = index_of(new, hasher)
-        rows = list(diff(lambda: new, index, index_of(base, hasher), lambda: base, hasher, counts,
-                         whole=True))  # fmt: skip
-        assert rows == [] and index.keyless == 2 and counts.withheld == "keyless"
-
-    def test_c8_the_first_snapshot_is_all_inserts(self) -> None:
-        for seed in _seeds():
-            records, _ = _snapshot(random.Random(seed))
-            [(rows, expected)] = run_history([(records, "complete")], SPECS[0])
-            assert rows is not None and all(r["op"] == "insert" for r in rows)
-            assert _ops(rows, SPECS[0]) == expected, f"seed {seed}"
-
-    def test_c9_an_index_read_back_from_its_lines_is_the_index(self) -> None:
-        hasher = Hasher(SPECS[0], SECRET)
-        for seed in _seeds():
-            records, _ = _snapshot(random.Random(seed))
-            index = index_of(records, hasher)
-            back = KeyIndex.read(
-                index.lines(hasher.digest, hasher.spec.key), hasher.digest, index.records
-            )
-            assert back is not None and back.hashes == index.hashes, f"seed {seed}"
-            assert (back.records, back.keyless) == (index.records, index.keyless)
-            assert (
-                KeyIndex.read(index.lines(hasher.digest, hasher.spec.key), "another spec", None)
-                is None
-            )
-            assert (
-                KeyIndex.read(
-                    index.lines(hasher.digest, hasher.spec.key), hasher.digest, index.records + 1
-                )
-                is None
-            )
-
-
-def _fold(
-    runs: list[tuple[list[dict[str, Any]] | None, list[tuple[str, str]] | None]], spec: ChangesSpec
-) -> dict[str, str]:
+def _fold(runs: list[tuple[list[dict[str, Any]] | None, Ops | None]], spec: ChangesSpec,
+          until: int | None = None) -> dict[str, str]:  # fmt: skip
     state: dict[str, str] = {}
-    for rows, _ in runs:
+    for rows, _ in runs[: None if until is None else until + 1]:
         for row in rows or []:
             key = json.dumps([row["key"][f] for f in spec.key])
             if row["op"] in ("insert", "update"):
@@ -322,9 +176,163 @@ def _fold(
     return state
 
 
-def _state(records: list[dict[str, Any]], spec: ChangesSpec) -> dict[str, str]:
-    keyed = _keyed(records, spec)[0]
-    return {k: next(iter(c)) for k, c in keyed.items()}
+def _state(records: Records, spec: ChangesSpec) -> dict[str, str]:
+    return {json.dumps([r[f] for f in spec.key]): _content(r, set(spec.volatile)) for r in records}
+
+
+@pytest.mark.parametrize("join", JOINS, ids=lambda j: type(j).__name__)
+class TestTheComparisonIsTheOracles:
+    @pytest.mark.parametrize("spec", SPECS, ids=["deletes", "no-deletes"])
+    def test_c1_the_ops_are_the_oracle_s(self, join: KeyJoin, spec: ChangesSpec) -> None:
+        for seed in range(CASES):
+            history = _history(random.Random(seed))
+            for step, (rows, expected) in enumerate(run_history(history, spec, join)):
+                if rows is not None:
+                    assert _ops(rows, spec) == expected, f"seed {seed}, snapshot {step}"
+
+    def test_c2_after_each_whole_snapshot_the_fold_of_every_op_is_that_snapshot(
+        self, join: KeyJoin
+    ) -> None:
+        """The strongest: truncated and failed snapshots between, deletes told, no keyless or
+        ambiguous record (which hold deletes back): after each whole snapshot, folding every
+        row told so far from empty gives it, key by key and content by content."""
+        spec = SPECS[0]
+        for seed in range(CASES):
+            history = _history(random.Random(seed), keyless=False, ambiguous=False)
+            runs = run_history(history, spec, join)
+            for step, (records, status) in enumerate(history):
+                if status == "complete":
+                    assert _fold(runs, spec, step) == _state(records, spec), f"seed {seed}"
+
+    def test_c2_a_key_gone_while_a_truncated_snapshot_intervened_is_deleted(
+        self, join: KeyJoin
+    ) -> None:
+        """{a,b,c} whole, {a} truncated, {a,b} whole: c is told deleted (the case a truncated
+        baseline lost)."""
+        spec = SPECS[0]
+        history: list[Snapshot] = [
+            ([{"id": "a"}, {"id": "b"}, {"id": "c"}], "complete"),
+            ([{"id": "a"}], "truncated"),
+            ([{"id": "a"}, {"id": "b"}], "complete"),
+        ]
+        runs = run_history(history, spec, join)
+        assert [_ops(rows or [], spec) for rows, _ in runs] == [
+            [("insert", '["a"]'), ("insert", '["b"]'), ("insert", '["c"]')],
+            [],
+            [("delete", '["c"]')],
+        ]
+        assert _fold(runs, spec) == _state(history[-1][0], spec)
+
+    def test_an_update_a_truncated_run_told_is_not_told_again(self, join: KeyJoin) -> None:
+        spec = SPECS[0]
+        history: list[Snapshot] = [
+            ([{"id": "a", "s": 1}, {"id": "b", "s": 1}], "complete"),
+            ([{"id": "a", "s": 2}], "truncated"),
+            ([{"id": "a", "s": 2}, {"id": "b", "s": 1}], "complete"),
+        ]
+        runs = run_history(history, spec, join)
+        assert [_ops(rows or [], spec) for rows, _ in runs][1:] == [[("update", '["a"]')], []]
+
+    def test_c2_check_of_the_checker_without_deletes_the_fold_keeps_what_went(
+        self, join: KeyJoin
+    ) -> None:
+        spec = SPECS[1]
+        history: list[Snapshot] = [([{"id": "a"}, {"id": "b"}], "complete"),
+                                   ([{"id": "a"}], "complete")]  # fmt: skip
+        assert _fold(run_history(history, spec, join), spec) != _state(history[-1][0], spec)
+
+    def test_c3_the_same_snapshot_twice_gives_no_ops(self, join: KeyJoin) -> None:
+        for seed in range(CASES):
+            records, _ = _snapshot(random.Random(seed))
+            again = [dict(r) for r in records]
+            history: list[Snapshot] = [(records, "complete"), (again, "complete")]
+            assert run_history(history, SPECS[0], join)[1][0] == [], f"seed {seed}"
+
+    def test_c4_a_change_to_a_volatile_field_alone_is_no_change(self, join: KeyJoin) -> None:
+        for seed in range(CASES):
+            rng = random.Random(seed)
+            records, _ = _snapshot(rng, ambiguous=False)
+            touched = [{**r, "seen": rng.random()} for r in records]
+            history: list[Snapshot] = [(records, "complete"), (touched, "complete")]
+            assert run_history(history, SPECS[0], join)[1][0] == [], f"seed {seed}"
+
+    def test_c4_check_of_the_checker_undeclared_it_is_an_update(self, join: KeyJoin) -> None:
+        history: list[Snapshot] = [([{"id": "a", "seen": 1}], "complete"),
+                                   ([{"id": "a", "seen": 2}], "complete")]  # fmt: skip
+        rows = run_history(history, ChangesSpec(key=["id"]), join)[1][0]
+        assert [r["op"] for r in rows or []] == ["update"]
+
+    def test_c5_a_truncated_or_failed_snapshot_never_deletes(self, join: KeyJoin) -> None:
+        spec = SPECS[0]
+        for seed in range(CASES):
+            history = _history(random.Random(seed))
+            for (rows, _), (_, status) in zip(run_history(history, spec, join), history,
+                                              strict=True):  # fmt: skip
+                if status != "complete":
+                    assert not any(r["op"] == "delete" for r in rows or []), f"seed {seed}"
+
+    def test_c5_a_failed_snapshot_tells_nothing(self, join: KeyJoin) -> None:
+        """A page-3 failure must not mark every later message deleted."""
+        spec = SPECS[0]
+        history: list[Snapshot] = [([{"id": "a"}, {"id": "b"}], "complete"),
+                                   ([{"id": "a"}], "failed"),
+                                   ([{"id": "a"}, {"id": "b"}], "complete")]  # fmt: skip
+        runs = run_history(history, spec, join)
+        assert runs[1] == (None, None) and runs[2][0] == []
+
+    def test_c6_the_order_of_fields_or_records_is_no_change(self, join: KeyJoin) -> None:
+        for seed in range(CASES):
+            rng = random.Random(seed)
+            records, _ = _snapshot(rng)
+            shuffled = [dict(rng.sample(list(r.items()), len(r))) for r in records]
+            rng.shuffle(shuffled)
+            history: list[Snapshot] = [(records, "complete"), (shuffled, "complete")]
+            assert run_history(history, SPECS[0], join)[1][0] == [], f"seed {seed}"
+
+    def test_c7_duplicates_collapse_and_ambiguity_holds_deletes_back(self, join: KeyJoin) -> None:
+        spec = SPECS[0]
+        base: Records = [{"id": "a", "s": 1}, {"id": "gone", "s": 1}]
+        same: Records = [{"id": "a", "s": 2}, {"id": "a", "s": 2}]
+        runs = run_history([(base, "complete"), (same, "complete")], spec, join)
+        assert _ops(runs[1][0] or [], spec) == [("update", '["a"]'), ("delete", '["gone"]')]
+
+        twice: Records = [{"id": "a", "s": 2}, {"id": "a", "s": 3}]
+        hasher = Hasher(spec, SECRET)
+        told = Comparison(lambda: base, None, hasher, join, whole=True)
+        comparison = Comparison(lambda: twice, list(told.told()), hasher, join, whole=True)
+        assert list(comparison.rows()) == []
+        assert comparison.counts.ambiguous == 1 and comparison.counts.withheld == "ambiguous"
+        assert dict(comparison.told())[canonical(["a"])] == dict(told.told())[canonical(["a"])]
+
+    def test_c7_keyless_records_are_counted_and_hold_deletes_back(self, join: KeyJoin) -> None:
+        spec = SPECS[0]
+        hasher = Hasher(spec, SECRET)
+        base: Records = [{"id": "a"}, {"id": "b"}]
+        new: Records = [{"id": "a"}, {"id": None}, {"subject": "no id at all"}]
+        told = list(Comparison(lambda: base, None, hasher, join, whole=True).told())
+        comparison = Comparison(lambda: new, told, hasher, join, whole=True)
+        assert list(comparison.rows()) == []
+        assert comparison.counts.keyless == 2 and comparison.counts.withheld == "keyless"
+
+    def test_c8_the_first_snapshot_is_all_inserts(self, join: KeyJoin) -> None:
+        for seed in range(CASES):
+            records, _ = _snapshot(random.Random(seed))
+            [(rows, expected)] = run_history([(records, "complete")], SPECS[0], join)
+            assert rows is not None and all(r["op"] == "insert" for r in rows)
+            assert _ops(rows, SPECS[0]) == expected, f"seed {seed}"
+
+    def test_c9_a_told_index_read_back_from_its_lines_is_the_index(self, join: KeyJoin) -> None:
+        hasher = Hasher(SPECS[0], SECRET)
+        for seed in range(CASES):
+            records, _ = _snapshot(random.Random(seed))
+            comparison = Comparison(lambda r=records: r, None, hasher, join,  # type: ignore[misc]
+                                    whole=True)  # fmt: skip
+            lines = list(comparison.lines(len(records)))
+            read = told_lines(iter(lines), hasher.digest, len(records))
+            assert read is not None and read[0] == len(lines) - 1, f"seed {seed}"
+            assert list(read[1]) == list(comparison.told()), f"seed {seed}"
+            assert told_lines(iter(lines), "another spec", len(records)) is None
+            assert told_lines(iter(lines), hasher.digest, len(records) + 1) is None
 
 
 def test_the_hash_is_keyed_and_canonical() -> None:
@@ -374,13 +382,18 @@ def _mission(spec: ChangesSpec) -> dict[str, Any]:
     }  # fmt: skip
 
 
+def _lines(path: Path) -> list[dict[str, Any]]:
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    return [] if lines and lines[0].get("_empty") else lines
+
+
 @pytest.mark.parametrize("spec", SPECS, ids=["deletes", "no-deletes"])
 def test_end_to_end_each_survey_s_change_table_is_the_oracle_s(
     tmp_path: Path, spec: ChangesSpec
 ) -> None:
-    """C1, C5 and C9 through recon's root: the baseline each survey picks from its archives,
-    a truncated crawl and a failed table as the survey makes them, and each key index equal
-    to the one rebuilt from its table."""
+    """C1, C5 and C9 through recon's root: the previous table each survey picks from its
+    archives, a truncated crawl and a failed table as the survey makes them, and each told
+    index equal to the one computed again from the chain once the kept ones are gone."""
     for seed in range(25):
         project = tmp_path / str(seed)
         (project / ".recon" / "m").mkdir(parents=True)
@@ -389,9 +402,9 @@ def test_end_to_end_each_survey_s_change_table_is_the_oracle_s(
         clock = FixedClock()
         recon = root({}, project=project, clock=clock,
                      requester=lambda t, d, r, m=mailbox: m)  # type: ignore[misc]  # fmt: skip
-        secret = project / ".recon" / "m" / "changes.key"
+        oracle = Oracle(spec)
         history = _history(random.Random(seed))
-        sealed: list[list[dict[str, Any]]] = []
+        kept: list[tuple[Path, list[dict[str, Any]]]] = []
         for step, (records, status) in enumerate(history):
             clock.advance(1)
             mailbox.snapshot = (records, status)
@@ -403,21 +416,30 @@ def test_end_to_end_each_survey_s_change_table_is_the_oracle_s(
                 assert table.status == "error" and table.changes is None, where
                 assert not (archive / "inbox.changes.jsonl").exists(), where
                 continue
-            assert table.changes is not None, where
-            rows = [
-                json.loads(line)
-                for line in (archive / "inbox.changes.jsonl").read_text().splitlines()
-            ]
-            rows = [] if rows == [{"_empty": True, "_columns": ["op", "key", "record"]}] else rows
-            base = sealed[-1] if sealed else None
-            # the records as the table holds them, _position included
-            held = [json.loads(line) for line in (archive / "inbox.jsonl").read_text().splitlines()]
-            held = [] if held and held[0].get("_empty") else held
-            assert _ops(rows, spec) == oracle(base, held, status == "complete", spec), where
-            hasher = Hasher(spec, secret.read_bytes())
-            kept = ArchiveFiles(clock).read_sidecar(archive, "inbox", "keys")
-            assert kept is not None, where
-            assert list(kept) == list(
-                index_of(held, hasher).lines(hasher.digest, hasher.spec.key)
-            ), where
-            sealed.append(held)
+            held = _lines(archive / "inbox.jsonl")  # as the table holds them, _position too
+            expected = oracle.tell(held, status == "complete")
+            assert _ops(_lines(archive / "inbox.changes.jsonl"), spec) == expected, where
+            text = (archive / "inbox.keys.jsonl").read_text()
+            kept.append((archive, [json.loads(line) for line in text.splitlines()]))
+        # C9: every told index kept is the one the chain computes again without them
+        for archive, _ in kept:
+            (archive / "inbox.keys.jsonl").unlink()
+        if not kept:
+            continue
+        last, index = kept[-1]
+        # An empty truncated table tells nothing and keeps what was told, so its told index
+        # is the one computed again from the chain.
+        clock.advance(1)
+        mailbox.snapshot = ([], "truncated")
+        document = recon.survey("m")
+        archive = Path(document.path)
+        assert _lines(archive / "inbox.changes.jsonl") == [], f"seed {seed}"
+        again = [
+            json.loads(line) for line in (archive / "inbox.keys.jsonl").read_text().splitlines()
+        ]
+        assert again[1:] == index[1:], f"seed {seed}: computed again, it is the one kept"
+        assert again[0]["keys"] == index[0]["keys"] == len(index) - 1
+        store = ArchiveFiles(clock)
+        assert store.read_sidecar(last, "inbox", "keys") is None, (
+            "an earlier archive is not written"
+        )

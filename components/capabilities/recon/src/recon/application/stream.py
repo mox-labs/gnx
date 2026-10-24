@@ -898,7 +898,9 @@ class Stream:
         spec = plan.entry.changes
         if error is None and spec is not None and self._changes is not None:
             # Against what the chain has told, never a delete (ruling C7).
-            table = self._changes.window(window.archive, plan.name, window.previous, table, spec)
+            table = self._changes.window(
+                window.archive, plan.name, window.previous, table, spec, plan.entry.normalize
+            )
         reproducible = captures is not None and dropped == 0
         if captures is not None:
             captures.finalize_stream(

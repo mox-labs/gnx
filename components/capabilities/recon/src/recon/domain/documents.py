@@ -152,24 +152,24 @@ class TableError(Document):
 class ChangeSummary(Document):
     """What a table's change detection found (``changes:``, :mod:`recon.domain.changes`): its
     change table (``table``, an output of the same archive, whose records are ``type_url``'s
-    and hold untrusted content in ``record``), the baseline it was compared with (an archive's
-    id, or a window's; None: there was none, so every key is an insert), the digest of the
-    spec (``spec``: its key and volatile fields) and of the ``normalize:`` its records were
-    made with, the rows by op, the records it could not compare, and why its deletes were
-    withheld when they were asked for."""
+    and hold untrusted content in ``record``), the table compared before it, whose told index
+    it was compared with (``previous``: an archive's id, or a window's; None: nothing was told
+    before, so every key is an insert), the digest of the spec (``spec``: its key and volatile
+    fields) and of the ``normalize:`` its records were made with, the rows by op, the records
+    it could not compare, and why its deletes were withheld when they were asked for."""
 
     table: str
     type_url: str
-    baseline: str | None
+    previous: str | None
     spec: str
-    #: None for a stream's window, which is compared with its chain.
     normalize: str | None
     rows: int
     inserts: int = 0
     updates: int = 0
     deletes: int = 0
-    #: True: the baseline's records were made with another ``normalize:``, so the change
-    #: table holds one ``rebaselined`` row and no other.
+    #: True: the previous table's records were made with another ``normalize:`` (or it does
+    #: not say), so the change table holds one ``rebaselined`` row and no other, and the told
+    #: index starts again from this table.
     rebaselined: bool = False
     keyless: int = 0
     ambiguous: int = 0

@@ -1,7 +1,8 @@
-"""Change detection through recon's surveys and streams (rulings C1-C7): what a spec change
-does, the rebaseline, the key index as a cache, the mission's key, the change table as a
-table, the plan's refusals and reports, deletes withheld, and a stream's windows told against
-their chain. The diff's own properties are ``test_changes_property.py``'s."""
+"""Change detection through recon's surveys and streams (rulings C1-C7, and the owner's of
+2026-10-24 on what was told): what a spec change does, the rebaseline, the told index as a
+cache, the mission's key, the change table as a table, the plan's refusals and reports,
+deletes withheld, and a stream's windows told against their chain. The comparison's own
+properties are ``test_changes_property.py``'s."""
 
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import yaml
 
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.mission_files import MissionFiles
-from recon.application.changes import Hasher, index_of
+from recon.application.changes import Comparison, Hasher, MemoryJoin, canonical
 from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
 from recon.domain.changes import ChangesSpec
@@ -95,16 +96,16 @@ class TestTheChangeTable:
         surveys = Surveys(tmp_path)
         first, document = surveys.survey(A, B, C)
         assert _ops(first) == [("insert", "a"), ("insert", "b"), ("insert", "c")]
-        assert document.tables[0].changes.baseline is None
+        assert document.tables[0].changes.previous is None
 
         changed = {**C, "subject": "yo!"}
         new = {"id": "d", "subject": "new"}
         second, document = surveys.survey(changed, new, {**A, "seen": 9})
         assert _ops(second) == [("update", "c"), ("insert", "d"), ("delete", "b")]
         assert _rows(second)[0] == {"op": "update", "key": {"id": "c"}, "record": changed}
-        assert _rows(second)[2]["record"] == B, "a delete carries the baseline's record"
+        assert _rows(second)[2] == {"op": "delete", "key": {"id": "b"}, "record": None}
         summary = document.tables[0].changes
-        assert summary.baseline == first.name and summary.table == "inbox.changes"
+        assert summary.previous == first.name and summary.table == "inbox.changes"
         assert (summary.inserts, summary.updates, summary.deletes, summary.rows) == (1, 1, 1, 3)
         assert summary.type_url == "recon.v1.changes"
 
@@ -149,7 +150,7 @@ class TestTheChangeTable:
 
 
 class TestTheBaseline:
-    def test_a_failed_table_is_compared_with_nothing_and_is_no_baseline(
+    def test_a_failed_table_is_compared_with_nothing_and_tells_nothing(
         self, tmp_path: Path
     ) -> None:
         class Flaky(Inbox):
@@ -172,13 +173,11 @@ class TestTheBaseline:
         assert document.tables[0].changes is None and not (failed / "inbox.changes.jsonl").exists()
         flaky.fail = False
         third, document = surveys.survey(A, B)
-        assert _rows(third) == [] and document.tables[0].changes.baseline == first.name
+        assert _rows(third) == [] and document.tables[0].changes.previous == first.name
 
-    def test_a_table_surveyed_without_changes_is_a_baseline_that_rebaselines(
-        self, tmp_path: Path
-    ) -> None:
-        """C4: a baseline that does not say what normalize: its records were made with gives
-        one rebaselined row and no op, never every record as an insert."""
+    def test_a_table_surveyed_before_changes_was_set_rebaselines(self, tmp_path: Path) -> None:
+        """C4: an earlier table that does not say what normalize: its records were made with
+        gives one rebaselined row and no op, never every record as an insert."""
         _mission(tmp_path, None)
         surveys = Surveys(tmp_path)
         before, _ = surveys.survey(A, B)
@@ -186,7 +185,7 @@ class TestTheBaseline:
         archive, document = surveys.survey(A, B, C)
         assert _rows(archive) == [{"op": "rebaselined", "key": None, "record": None}]
         assert document.tables[0].changes.rebaselined is True
-        assert document.tables[0].changes.baseline == before.name
+        assert document.tables[0].changes.previous is None and before.name
 
     def test_a_new_normalize_rebaselines_once(self, tmp_path: Path) -> None:
         _mission(tmp_path, {"key": ["id"]}, normalize={"id": "id", "subject": "subject"})
@@ -196,13 +195,13 @@ class TestTheBaseline:
         reshaped, _ = surveys.survey(A, B)
         assert _ops(reshaped) == [("rebaselined", None)]
         again, _ = surveys.survey(A, B, C)
-        assert _ops(again) == [("insert", "c")], "the reshaped table is the next baseline"
+        assert _ops(again) == [("insert", "c")], "the told index starts again from it"
 
-    def test_a_new_volatile_field_rehashes_the_baseline_and_floods_nothing(
+    def test_a_new_volatile_field_computes_the_told_index_again_and_floods_nothing(
         self, tmp_path: Path
     ) -> None:
-        """C4: key or volatile changed, the baseline's records are hashed again under the new
-        spec: its kept index (made under the old) is stale, and is rebuilt."""
+        """C4: key or volatile changed, what was told is computed again under the new spec:
+        the kept index (made under the old) is stale."""
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
         first, _ = surveys.survey(A, B)
@@ -212,10 +211,9 @@ class TestTheBaseline:
         assert _rows(archive) == []
         assert (first / "inbox.keys.jsonl").read_bytes() == kept, "a sealed archive is unchanged"
 
-    def test_a_missing_or_stale_index_is_rebuilt_from_its_table(self, tmp_path: Path) -> None:
-        """C6: the index is a cache, never trusted over the table: one gone, or one whose
-        record count is not its table's, is rebuilt (in memory: the earlier archive is only
-        read)."""
+    def test_a_missing_or_stale_index_is_computed_again(self, tmp_path: Path) -> None:
+        """C6: the told index is a cache of a pure fold: one gone, or one whose record count is
+        not its table's, is computed again from the chain (the earlier archive only read)."""
         _mission(tmp_path, {"key": ["id"], "deletes": True})
         surveys = Surveys(tmp_path)
         first, _ = surveys.survey(A, B)
@@ -224,27 +222,95 @@ class TestTheBaseline:
         assert _ops(archive) == [("delete", "b")]
         assert not (first / "inbox.keys.jsonl").exists()
 
-        # An index whose count is not its table's, which, trusted, would hold a's delete
-        # back (it says a had two contents).
+        # An index whose count is not its table's, which, trusted, would tell zzz deleted.
         header = json.loads((archive / "inbox.keys.jsonl").read_text().splitlines()[0])
-        lying = [{**header, "records": 99}, {"key": {"id": "a"}, "hash": None}]
+        lying = [{**header, "records": 99, "keys": 2}, {"key": canonical(["a"]), "hash": "0"},
+                 {"key": canonical(["zzz"]), "hash": "0"}]  # fmt: skip
         (archive / "inbox.keys.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lying))
         third, _ = surveys.survey()
         assert _ops(third) == [("delete", "a")]
 
-    def test_the_kept_index_is_the_one_its_table_rebuilds(self, tmp_path: Path) -> None:
-        """C9, as the survey keeps it."""
+        # A kept index whose header holds is what the next comparison reads: one that says
+        # zzz was told makes zzz's delete told.
+        header = json.loads((third / "inbox.keys.jsonl").read_text().splitlines()[0])
+        kept = [{**header, "keys": 1}, {"key": canonical(["zzz"]), "hash": "0"}]
+        (third / "inbox.keys.jsonl").write_text("".join(json.dumps(x) + "\n" for x in kept))
+        fourth, _ = surveys.survey()
+        assert _ops(fourth) == [("delete", "zzz")]
+
+    def test_the_first_told_index_is_its_table_s_keys(self, tmp_path: Path) -> None:
+        """C9, as the survey keeps it: nothing told before, the told index is every unambiguous
+        key of the table, sorted, with its content."""
         _mission(tmp_path, {"key": ["id"], "volatile": ["seen"]})
         surveys = Surveys(tmp_path)
         archive, _ = surveys.survey(A, B, {**A}, {"subject": "keyless"})
         secret = MissionFiles(tmp_path, FixedClock()).change_key("m")
         hasher = Hasher(ChangesSpec(key=["id"], volatile=["seen"]), secret)
         records = [json.loads(line) for line in (archive / "inbox.jsonl").read_text().splitlines()]
-        rebuilt = [
-            json.dumps(line)
-            for line in index_of(records, hasher).lines(hasher.digest, hasher.spec.key)
-        ]
+        comparison = Comparison(lambda: records, None, hasher, MemoryJoin(), whole=True)
+        rebuilt = [json.dumps(line) for line in comparison.lines(len(records))]
         assert (archive / "inbox.keys.jsonl").read_text().splitlines() == rebuilt
+        assert json.loads(rebuilt[0])["keys"] == 2 and json.loads(rebuilt[0])["keyless"] == 1
+
+
+class _Capped(Inbox):
+    """The inbox read in one page, which names a next one when ``more`` is set, so a crawl
+    capped at one page is truncated."""
+
+    more = False
+
+    def request(self, source: SourceEntry, method: str, url: str, **kw: Any) -> HttpResponse:
+        text = json.dumps({"items": self.messages, "next": "p2" if self.more else None})
+        return HttpResponse(status_code=200, headers={}, body=text.encode(), text=text, url=url,
+                            content_type="application/json")  # fmt: skip
+
+
+class TestWhatWasTold:
+    """The owner's ruling of 2026-10-24: a truncated table is never a baseline; each table is
+    compared with what every table before it told."""
+
+    def _surveys(self, tmp_path: Path) -> tuple[Surveys, _Capped]:
+        capped = _Capped()
+        paginate = {"type": "cursor", "next": "next", "param": "cursor", "pages": 1}
+        _mission(tmp_path, {"key": ["id"], "deletes": True}, paginate=paginate)
+        surveys = Surveys(tmp_path, capped)
+        surveys.inbox = capped
+        return surveys, capped
+
+    def test_a_key_gone_while_a_truncated_table_intervened_is_deleted(self, tmp_path: Path) -> None:
+        surveys, capped = self._surveys(tmp_path)
+        surveys.survey(A, B, C)
+        capped.more = True
+        truncated, document = surveys.survey(A)
+        assert document.tables[0].truncated and _ops(truncated) == []
+        capped.more = False
+        whole, document = surveys.survey(A, B)
+        assert _ops(whole) == [("delete", "c")]
+        assert document.tables[0].changes.previous == truncated.name
+
+    def test_an_update_a_truncated_table_told_is_not_told_again(self, tmp_path: Path) -> None:
+        surveys, capped = self._surveys(tmp_path)
+        surveys.survey(A, B)
+        capped.more = True
+        changed = {**A, "subject": "changed"}
+        truncated, _ = surveys.survey(changed)
+        assert _ops(truncated) == [("update", "a")]
+        capped.more = False
+        whole, _ = surveys.survey(changed, B)
+        assert _ops(whole) == []
+
+    def test_a_survey_stopped_told_nothing(self, tmp_path: Path) -> None:
+        """An archive whose survey did not run to its end is skipped: what it wrote was never
+        to be read, so the next survey tells it again."""
+        _mission(tmp_path, {"key": ["id"]})
+        surveys = Surveys(tmp_path)
+        first, _ = surveys.survey(A)
+        stopped, _ = surveys.survey(A, B)
+        meta = yaml.safe_load((stopped / "meta.yaml").read_text())
+        (stopped / "meta.yaml").write_text(yaml.safe_dump({**meta, "ended": "stopped"}))
+        archive, document = surveys.survey(A, B)
+        assert _ops(archive) == [("insert", "b")]
+        assert document.tables[0].changes.previous == first.name
 
 
 class TestTheMissionKey:
@@ -270,7 +336,7 @@ class TestTheMissionKey:
         surveys.survey(A, B)
         (tmp_path / ".recon" / "m" / "changes.key").unlink()
         archive, _ = surveys.survey(A, B)
-        assert _rows(archive) == [], "the baseline is rehashed under the new key"
+        assert _rows(archive) == [], "what was told is computed again under the new key"
 
 
 class TestDeletesWithheld:
@@ -471,7 +537,7 @@ class TestStreams:
         assert _window_ops(second) == [("update", "a"), ("insert", "c")]
         assert _window_ops(third) == [("insert", "d")], "b is as the chain last told it"
         meta = ArchiveFiles(FixedClock()).read_meta(third)
-        assert meta["tables"][0]["changes"]["baseline"] == second.name
+        assert meta["tables"][0]["changes"]["previous"] == second.name
 
     def test_a_window_s_index_is_its_chain_s_fold_and_is_rebuilt_when_gone(
         self, tmp_path: Path
@@ -481,7 +547,7 @@ class TestStreams:
         recon = root({}, project=tmp_path, clock=VirtualClock(), plugins=plugins_with(feed=feed))
         recon.stream("m", "s", windows=2)
         first, second = _windows(tmp_path)
-        told = [json.loads(line)["key"]["id"]
+        told = [json.loads(json.loads(line)["key"])[0]
                 for line in (second / "s.keys.jsonl").read_text().splitlines()[1:]]  # fmt: skip
         assert told == ["a", "b", "c"], "every key the chain told, sorted"
 
