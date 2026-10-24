@@ -45,7 +45,7 @@ Every stop is recorded. The first that holds ends the crawl:
 |---|---|---|
 | a page names no next one (`next` absent, null or `""`; no `Link: rel="next"`) | the whole table | none |
 | an `offset` or `page` page with no records | the whole table | none |
-| `pages` pages read, and the last names a next one | `truncated`, `truncated_by: pages` | `page_cap`, at `collectors.<i>.paginate.pages` |
+| `pages` pages read, and the last names a next one | `truncated`, `truncated_by: pages` | `paginate_pages`, at `collectors.<i>.paginate.pages` |
 | a page names a next one the crawl already used (any earlier one, the first page's URL included) | `truncated`, `truncated_by: loop` | `paginate_loop`, at `collectors.<i>.paginate` |
 | three empty pages in a row (`link`, `header`, `cursor`) that each still name a next one | `truncated`, `truncated_by: empty` | `paginate_empty`, at `collectors.<i>.paginate` |
 
@@ -68,7 +68,7 @@ With `preserve_raw`, each page is one capture whose `request` names its `page`, 
 `recon survey <name> --dry-run --json`:
 
 - the run's `paginate`, as it will crawl;
-- in `provenance`, `collectors.<i>.paginate.pages` (`origin`: `mission`, or `recon` for the default) and, for each run, `collectors.<i>.paginate.floor_s`: the least seconds the crawl takes at its source's rate limit, `(pages - burst) / rps`, with a note comparing it to the deadline that bounds the table;
+- in `provenance`, `collectors.<i>.paginate.pages` (`origin`: `mission`, or `recon` for the default), its `note` saying, for each run, the least seconds the crawl takes at its source's rate limit, `(pages - burst) / rps`, against the deadline that bounds the table;
 - a `deadline_short` warning, at the `deadline:` that is shorter than that floor, with the values to raise or lower.
 
 It refuses, each a problem with a fix: `changes: {deletes: true}` on an `offset` or `page` crawl (a source that loses a record while it is read shifts the next onto a page already read, so it would be told deleted: page by `link`, `cursor` or `header`, or keep `deletes: false`), `paginate:` on a type that does not read pages (only `api` does, of recon's own; `unknown_key`), on a stream (a stream does not read its source page by page yet), a type's missing or extra key, a `next` path with two `*`, a `normalize:` column named `_position`, a `params:` key that `paginate.param` sends, an output named as a page log.

@@ -236,9 +236,9 @@ def test_the_pagination_page_is_the_skill_reference() -> None:
     assert page.read_text(encoding="utf-8") == REFERENCES["pagination"]
     assert "recon --skill -r pagination" in SKILL or "`pagination`" in SKILL
     for taught in ("`link`", "`header`", "`cursor`", "`offset`", "`page`", "`pages`", "`100`",
-                   "`next`", "`param`", "truncated_by", "page_cap", "paginate_loop",
+                   "`next`", "`param`", "truncated_by", "paginate_pages", "paginate_loop",
                    "paginate_empty",
-                   "_position", ".pages.jsonl", "floor_s", "deadline_short", "provenance",
+                   "_position", ".pages.jsonl", "least seconds", "deadline_short", "provenance",
                    "rate_limit", "origin", "preserve_raw", "crashed"):  # fmt: skip
         assert taught in REFERENCES["pagination"], taught
 

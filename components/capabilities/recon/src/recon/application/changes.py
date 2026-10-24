@@ -124,7 +124,7 @@ class Hasher:
     @property
     def digest(self) -> str:
         """The spec's digest: its key and volatile fields, and the identity of the key the
-        hashes are made with (never the key), so an index made under another reads stale."""
+        hashes are made with (never the key), so an index made under another is out of date."""
         identity = hashlib.blake2b(b"identity", digest_size=8, key=self.secret).hexdigest()
         spec = {"key": self.spec.key, "volatile": sorted(self.spec.volatile), "secret": identity}
         return hashlib.blake2b(canonical(spec).encode(), digest_size=HASH_BYTES).hexdigest()

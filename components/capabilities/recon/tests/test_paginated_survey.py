@@ -278,7 +278,8 @@ class TestEveryStopIsRecorded:
         assert _meta_table(archive)["truncated"] is True
         assert _meta_table(archive)["truncated_by"] == "pages"
         [warning] = document.warnings
-        assert warning["kind"] == "page_cap"
+        # Knuth S2: each crawl warning ends with its reason, as truncated_by names it.
+        assert warning["kind"] == "paginate_pages"
         assert warning["path"] == "collectors.0.paginate.pages"
         assert "paginate.pages" in warning["fix"] and warning["got"] == 4
         assert document.status == "complete", "a truncated table is sealed ok"
@@ -389,9 +390,10 @@ class TestThePlan:
         values = {v.path: v for v in plan.provenance}
         pages = values["collectors.0.paginate.pages"]
         assert (pages.value, pages.origin) == (100, "recon")
-        floor = values["collectors.0.paginate.floor_s"]
-        assert floor.value == pytest.approx(9.7) and floor.origin == "recon"
-        assert "deadline" in floor.note and "5" in floor.note
+        # Knuth S2: the floor is no key a mission can write, so it is no path of its own: it
+        # is said in the note on the key it follows from.
+        assert not any(path.endswith("floor_s") for path in values)
+        assert "at least 9.7s" in pages.note and "deadline" in pages.note and "5" in pages.note
         [warning] = [w for w in plan.warnings if w.kind == "deadline_short"]
         assert warning.path == "collectors.0.deadline"
 

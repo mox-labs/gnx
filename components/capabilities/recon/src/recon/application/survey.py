@@ -59,7 +59,7 @@ A table read page by page (``paginate:``) says each page and why its crawl stopp
 through the survey's page log (:class:`TablePages`, the collectors' ``CollectorContext.pages``).
 Once the table is sealed its page log is kept beside it (``<output>.pages.jsonl``); a crawl
 cut short seals the table ``ok`` and ``truncated``, with what cut it, and warns
-(``page_cap``, ``paginate_loop``, ``paginate_empty``). A table that fails keeps no page log.
+(``paginate_pages``, ``paginate_loop``, ``paginate_empty``). A table that fails keeps no page log.
 """
 
 from __future__ import annotations
@@ -596,7 +596,7 @@ def _truncated(
             f"{at}.pages",
             f"{output} read its cap of {pages} page(s) with more to read: the table is "
             f"truncated, {whole}",
-            kind="page_cap",
+            kind="paginate_pages",
             fix=f"raise paginate.pages on collector {entry.name!r}, or narrow what it asks for",
             got=pages,
         )

@@ -503,14 +503,16 @@ def _paginate(
     targets: list[tuple[SourceEntry | None, str]],
     deadline: Any,
 ) -> tuple[list[SourcedValue], list[Problem]]:
-    """A paginated entry's cap and where it came from; for each run, the least seconds its
-    crawl takes at its source's rate limit (``(pages - burst) / rps``), against the deadline
-    that bounds its table; and a warning for each run whose deadline is shorter than that."""
+    """A paginated entry's cap and where it came from, its note saying, for each run, the
+    least seconds its crawl takes at its source's rate limit (``(pages - burst) / rps``)
+    against the deadline that bounds its table: the floor is no key a mission writes, so it has
+    no path of its own (Knuth, round-4 review S2); and a warning for each run whose deadline is
+    shorter than that."""
     spec = entry.paginate
     assert spec is not None
     at = f"collectors.{i}.paginate"
     origin: Origin = "mission" if "pages" in spec.model_fields_set else "recon"
-    values = [SourcedValue(path=f"{at}.pages", value=spec.pages, origin=origin)]
+    notes: list[str] = []
     warnings: list[Problem] = []
     # The mission's deadline as written: one that is not a number is its own problem.
     numeric = isinstance(deadline, int | float) and not isinstance(deadline, bool)
@@ -526,11 +528,10 @@ def _paginate(
         floor = crawl_floor_s(spec.pages, burst=rate.burst, rps=rate.rps)
         bound = min(bounds, key=lambda bounded: bounded[0], default=None)
         against = f"the deadline ({bound[1]}: {bound[0]:g}s)" if bound else "no deadline: bounds it"
-        note = (
+        notes.append(
             f"{output}: {spec.pages} page(s) at source {source.name!r}'s rate_limit "
             f"({rate.rps:g} rps, burst {rate.burst}) take at least {floor:g}s; {against}"
         )
-        values.append(SourcedValue(path=f"{at}.floor_s", value=floor, origin="recon", note=note))
         if bound is not None and floor > bound[0]:
             warnings.append(
                 Problem(
@@ -545,7 +546,8 @@ def _paginate(
                     got=bound[0],
                 )
             )
-    return values, warnings
+    note = "; ".join(notes)
+    return [SourcedValue(path=f"{at}.pages", value=spec.pages, origin=origin, note=note)], warnings
 
 
 def _not_a_stream(i: int, entry: CollectorEntry) -> list[Problem]:
