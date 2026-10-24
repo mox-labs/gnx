@@ -76,7 +76,7 @@ recon stream <mission> --collector <name> [--windows N | --until TIME | --foreve
 | `-n`, `--dry-run` | off | print the plan and run nothing, refusing what the run would; `provenance` also says how long the run is and why (`stream.windows`, `stream.until`, `stream.forever`, `source` `command` or `recon`) |
 | `-c`, `--replace` | | as `recon survey`'s |
 
-It always returns unless told otherwise. Ctrl-C or SIGTERM is a stop, not a failure: the window being written is sealed `signal` once what waits in the buffer is written (a second one seals it at once, what waits dropped), and the command returns. One process runs one stream; a second writer of the same stream is refused with `conflict` (exit 7). Run again, a stream goes on from its last window.
+It always returns unless told otherwise. Ctrl-C or SIGTERM is a stop, not a failure: the window being written is sealed `signal` once what waits in the buffer is written, and the command returns. A second one, or one that lands while a record is being written rather than while the stream waits, seals it at once: what waits, and what later windows had counted, is counted dropped in it. One process runs one stream; a second writer of the same stream is refused with `conflict` (exit 7). Run again, a stream goes on from its last window.
 
 Refused with exit 2 (`usage`) and a fix: `--forever` with `--windows` or `--until`; `--windows` below 1; an `--until` that has passed. A collector that is no stream of the mission is `not_found` (exit 4), naming the mission's streams.
 

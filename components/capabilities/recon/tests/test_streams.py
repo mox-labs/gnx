@@ -365,6 +365,71 @@ class TestFlow:
         assert window.dropped == 1
 
 
+class TestEveryRecordIsCountedWhenTheStreamBreaks:
+    """Review (Dijkstra) of the window writer: when the stream ends early, each record it
+    took is still written or counted dropped, once, and the drops later windows held are
+    not lost with them."""
+
+    def test_a_record_a_transform_fails_on_is_counted_dropped(self, tmp_path: Path) -> None:
+        clock = VirtualClock()
+
+        def shaping(record: dict[str, Any]) -> dict[str, Any]:
+            if record["seq"] == 3:
+                raise ValueError("cannot shape it")
+            return record
+
+        run, [window], _ = _run(
+            tmp_path, clock, _plan(WindowSpec(seconds=60)), Script(clock, _seq(6)),
+            normalize=shaping,
+        )  # fmt: skip
+
+        assert (window.closed_by, window.table.records) == ("error", 3)
+        assert window.dropped == 3, "the one it failed on, and the two waiting behind it"
+        assert run.records + run.dropped == 6
+
+    def test_what_later_windows_held_is_counted_when_the_stream_breaks(
+        self, tmp_path: Path
+    ) -> None:
+        clock = VirtualClock()
+        store = StalledArchives(clock)
+        timeline = [(i * 0.5, {"seq": i}) for i in range(40)]
+        source = Script(clock, timeline)
+
+        def shaping(record: dict[str, Any]) -> dict[str, Any]:
+            if record["seq"] == 1:
+                raise ValueError("cannot shape it")
+            return record
+
+        plan = _plan(WindowSpec(seconds=5), buffer=BufferSpec(records=8), overflow="drop_newest")
+        result: list[Any] = []
+        writer = threading.Thread(
+            target=lambda: result.append(
+                _run(tmp_path, clock, plan, source, store=store, normalize=shaping)
+            )
+        )
+        writer.start()
+        assert source.done.wait(10)
+        store.go.set()
+        writer.join(10)
+        run, outcomes, _ = result[0]
+
+        assert [o.closed_by for o in outcomes] == ["error"]
+        assert run.records + run.dropped == 40, "the queued and the overflowed, all counted"
+
+    def test_a_source_that_dies_of_a_base_exception_ends_the_stream(self, tmp_path: Path) -> None:
+        clock = VirtualClock()
+
+        class Dies(Script):
+            def records(self, after: Any) -> Iterator[dict[str, Any]]:
+                yield {"seq": 0}
+                raise SystemExit("the source's thread was told to exit")
+
+        run, [window], _ = _run(tmp_path, clock, _plan(WindowSpec(records=10)), Dies(clock, []))
+
+        assert window.closed_by == "error", "no ticker, no until: still it ends"
+        assert run.records == 1
+
+
 class TestSealedIsSealed:
     def test_a_sealed_window_never_changes_and_reads_sealed_only_after_its_end(
         self, tmp_path: Path

@@ -263,17 +263,21 @@ class Arrivals:
                 self._cond.wait()
             return self._events[0]
 
-    def take(self) -> _Event:
-        """The next event; waits for one."""
+    def pop(self) -> None:
+        """Take out the event :meth:`peek` gave. The writer peeks (and may be interrupted
+        there, losing nothing), then pops what it holds."""
         with self._cond:
-            while not self._events:
-                self._cond.wait()
             event = self._events.popleft()
             if isinstance(event, _Arrival):
                 self._records -= 1
                 self._bytes -= len(event.line)
                 self._cond.notify_all()
-            return event
+
+    def holds(self, event: _Event) -> bool:
+        """Whether ``event`` still waits: an interrupt may have come before or after it was
+        popped, and only the buffer can say which."""
+        with self._cond:
+            return any(waiting is event for waiting in self._events)
 
     def stop(self) -> None:
         """Stop the stream, as a signal does: nothing more is admitted, and the stream ends
@@ -284,16 +288,25 @@ class Arrivals:
                 self._events.append(_End("signal", self._clock.monotonic()))
             self._cond.notify_all()
 
-    def abandon(self) -> int:
-        """Stop the stream at once, as a second signal does: nothing more is admitted or
-        written, and what waits is dropped. Returns how many records waited."""
+    def abandon(self, into: int | None = None) -> None:
+        """Stop the stream at once, as a second signal or a failure does: nothing more is
+        admitted or written, and what waits is dropped, its stream's end the one event left.
+        With ``into``, the window being written (or about to be), every record that waited
+        is counted dropped there, and so is what later windows that will never be written
+        counted (their drops, their gaps), so nothing admitted goes uncounted."""
         with self._cond:
             self._admitting = False
-            dropped = sum(1 for event in self._events if isinstance(event, _Arrival))
+            if into is not None:
+                ledger = self._ledger(into)
+                ledger.dropped += sum(1 for e in self._events if isinstance(e, _Arrival))
+                for later in sorted(w for w in self._ledgers if w > into):
+                    gone = self._ledgers.pop(later)
+                    ledger.dropped += gone.dropped
+                    ledger.gaps += gone.gaps
             self._events.clear()
+            self._events.append(_End("signal", self._clock.monotonic()))
             self._records = self._bytes = 0
             self._cond.notify_all()
-            return dropped
 
     def ledger(self, window: int) -> _Ledger:
         """What window ``window``'s arrivals came to, taken out: called once it is sealed."""
@@ -369,7 +382,9 @@ class _Window:
     last: Any = None
     end: WindowEnd | _End | None = None
     error: BaseException | None = None
-    signalled: bool = False
+    #: The arrival the writer holds between taking it from the buffer and handing it to the
+    #: store: dropped, if the window ends before it is handed on.
+    pending: _Arrival | None = None
     dropped_late: int = 0
     frames: bool = True
 
@@ -414,6 +429,8 @@ class Stream:
         self._stop_s = stop_s
         self.warnings: list[Problem] = []
         self._overflowed = (0, 0)  # windows that dropped records, and how many they dropped
+        #: A first interrupt was had in this run: a second one stops it at once.
+        self._signalled = False
 
     def run(
         self,
@@ -492,9 +509,10 @@ class Stream:
         outcome: WindowOutcome | None = None
         previous, carried = start.previous, start.after
         index, window_opened = start.index, opened
+        self._signalled = False
         try:
             while True:
-                event = self._next(arrivals)
+                event = self._next(arrivals, index)
                 ends_bare = isinstance(event, _End) and event.error is None
                 if ends_bare and sealed and not arrivals.noted(index):
                     break  # the source ended as a window opened: it has nothing to keep
@@ -533,14 +551,35 @@ class Stream:
                 self._warn_stuck(plan)
         return StreamRun(sealed, records, dropped, first, outcome)
 
-    def _next(self, arrivals: Arrivals) -> _Event:
-        """The next event, waiting for it; a first interrupt stops the stream, and the wait
-        goes on for what was admitted before it."""
+    def _next(self, arrivals: Arrivals, index: int) -> _Event:
+        """The next event, waiting for it, left in the buffer: a first interrupt stops the
+        stream, and the wait goes on for what was admitted before it; a second stops it at
+        once, what waits counted dropped in window ``index``, the one about to open."""
         while True:
             try:
                 return arrivals.peek()
             except KeyboardInterrupt:
-                arrivals.stop()
+                self._interrupted(arrivals, index)
+
+    def _interrupted(self, arrivals: Arrivals, index: int) -> bool:
+        """Answer an interrupt the writer had while waiting: the first stops the stream
+        once what waits is written; a second stops it now (True), what waits counted dropped
+        in window ``index``."""
+        if self._signalled:
+            arrivals.abandon(into=index)
+            return True
+        self._signalled = True
+        arrivals.stop()
+        return False
+
+    def _halt(self, window: _Window, arrivals: Arrivals) -> None:
+        """Stop the stream now, in ``window``: the arrival the writer held, if the buffer no
+        longer has it, and what waits are counted dropped in it."""
+        held = window.pending
+        if held is not None and not arrivals.holds(held):
+            window.dropped_late += 1
+        window.pending = None
+        arrivals.abandon(into=window.index)
 
     def _window(
         self,
@@ -581,13 +620,13 @@ class Stream:
                         window.archive, output, records, columns=plan.columns, keep_on_error=True
                     )
                 except KeyboardInterrupt:
-                    # Interrupted between two records: what was written is sealed, and the
-                    # stream ends here, what still waits dropped.
-                    window.dropped_late += arrivals.abandon()
+                    # Interrupted away from a wait (writing, shaping): what was written is
+                    # sealed, and the stream ends here, what it held or still waits dropped.
+                    self._halt(window, arrivals)
                     window.end = window.end or _End("signal", self._clock.monotonic())
                 except Exception as exc:  # the store failed: what was written is sealed
                     window.error = window.error or exc
-                    window.dropped_late += arrivals.abandon()
+                    self._halt(window, arrivals)
                     window.end = window.end or _End(None, self._clock.monotonic(), exc)
                 ledger = arrivals.ledger(window.index)
                 window_dropped = ledger.dropped + window.dropped_late
@@ -639,18 +678,18 @@ class Stream:
         reported = window.opened
         while True:
             try:
-                event = arrivals.take()
+                event = arrivals.peek()
             except KeyboardInterrupt:
-                if window.signalled:  # a second interrupt: seal now
-                    window.dropped_late += arrivals.abandon()
+                if self._interrupted(arrivals, window.index):  # a second: seal now
                     window.end = _End("signal", self._clock.monotonic())
                     return
-                window.signalled = True
-                arrivals.stop()
                 continue
             if not isinstance(event, _Arrival):
+                arrivals.pop()
                 window.end = event
                 return
+            window.pending = event  # before it is popped: an interrupt may come between
+            arrivals.pop()
             raw = json.loads(event.line)
             if captures is not None:
                 at = json.dumps(event.stamp - window.opened)
@@ -660,7 +699,7 @@ class Stream:
                 record = normalize(raw)
             except Exception as exc:  # a transform that failed: the stream ends here
                 window.error = exc
-                window.dropped_late += arrivals.abandon()
+                self._halt(window, arrivals)
                 window.end = _End(None, self._clock.monotonic(), exc)
                 return
             if POSITION_FIELD in raw:
@@ -668,6 +707,7 @@ class Stream:
                 window.first = raw[POSITION_FIELD] if window.records == 0 else window.first
                 window.last = raw[POSITION_FIELD]
             window.records += 1
+            window.pending = None  # handed to the store: written, from here on
             yield record
             if event.stamp - reported >= self._progress_s:
                 time.pin(event.stamp)
@@ -883,7 +923,7 @@ def _pump(
             close = getattr(records, "close", None)
             if close is not None:
                 close()
-    except Exception as exc:
+    except BaseException as exc:  # whatever ends the source's thread ends the stream
         arrivals.end(exc)
         return
     arrivals.end()
