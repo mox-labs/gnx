@@ -1400,9 +1400,9 @@ class TestWatch:
             {"table": "hello", "record": {"a": 1}},
             {"table": "hello", "record": {"a": 2}},
         ]
-        assert "hello sealed" in unstyle(human.stderr)
+        assert "hello: every record read" in unstyle(human.stderr)
         assert [r["schema"] for r in reads] == ["recon.v1.records-since"]
-        assert (reads[0]["state"], reads[0]["count"], reads[0]["sealed"]) == (
+        assert (reads[0]["state"], reads[0]["count"], reads[0]["exhausted"]) == (
             "complete",
             2,
             ["hello"],
@@ -1432,7 +1432,7 @@ class TestWatch:
         assert reads[0]["state"] == "writing" and reads[-1]["state"] == "complete"
         assert [r["record"]["n"] for read in reads for r in read["records"]] == [1, 2, 3]
         assert len([read for read in reads if read["records"]]) > 1, "seen as it was written"
-        assert [t for read in reads for t in read["sealed"]] == ["slow"]
+        assert [t for read in reads for t in read["exhausted"]] == ["slow"]
 
     def test_max_bytes_cuts_each_read_and_watch_reads_on_at_once(self, project: Path) -> None:
         _mission(project, "m", OK_CONFIG)

@@ -130,16 +130,19 @@ class NewRecords:
     """What :meth:`ArchiveStore.read_since` read: the records written since the cursor it
     was given, in whole, and the cursor to read on from.
 
-    ``cursor`` is opaque: only the store that gave it reads it. ``sealed`` names each table
-    whose last record is now read (it gains no more), and ``retracted`` each table this
-    cursor had read from that failed, so the records read from it are void. Each table is
-    told sealed or retracted once along a chain of cursors. ``more``: a bound (records or
-    bytes) ended the read before all that was written by then was read; read again at once.
+    ``cursor`` is opaque: only the store that gave it reads it. ``exhausted`` names each
+    table that is sealed and whose last record is now read, so this reader gets no more of it
+    and what it read of it stands; ``retracted`` each table this cursor had read from that
+    failed, so the records read from it are void. Each table is told exhausted or retracted
+    once along a chain of cursors. (``sealed`` is a table's own state, :class:`StoredTable`'s:
+    a table is exhausted for a reader once it is sealed and that reader has read it all.)
+    ``more``: a bound (records or bytes) ended the read before all that was written by then
+    was read; read again at once.
     """
 
     records: list[TableRecord]
     cursor: str
-    sealed: list[str] = field(default_factory=list)
+    exhausted: list[str] = field(default_factory=list)
     retracted: list[str] = field(default_factory=list)
     more: bool = False
 

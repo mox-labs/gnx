@@ -163,7 +163,7 @@ def test_the_live_reading_page_is_the_skill_reference() -> None:
     assert page.read_text(encoding="utf-8") == REFERENCES["live-reading"]
     assert "recon --skill -r live-reading" in SKILL
     for taught in ("--max-bytes", "--interval", "--once", "--cursor", "`ended`", "`more`",
-                   "retracted", "sealed", "usage"):  # fmt: skip
+                   "retracted", "sealed", "exhausted", "usage"):  # fmt: skip
         assert taught in REFERENCES["live-reading"], taught
 
 

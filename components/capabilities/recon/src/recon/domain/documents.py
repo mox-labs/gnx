@@ -345,13 +345,15 @@ class RecordsSince(Document):
     state: ArchiveState
     ended: Ended | None
     #: ``{"table", "record"}`` each, table by table in output-name order, each table's in the
-    #: order written. A table not yet ``sealed`` may still be retracted.
+    #: order written. A table not yet in ``exhausted`` may still be retracted.
     records: list[dict[str, Any]]
     count: int
     #: Opaque: pass it, unchanged, to the next read of the same archive.
     cursor: str
-    #: Tables whose last record is now read: they gain no more.
-    sealed: list[str]
+    #: Tables read to their end: sealed (renamed into place by their writer) and every
+    #: record of them read along this chain of cursors, so no more come and what was read
+    #: of them stands. Each is told once.
+    exhausted: list[str]
     #: Tables that failed after records of theirs were read: those records are void.
     retracted: list[str]
     #: A bound (``limit`` records, ``max_bytes`` bytes) cut this read before all that was

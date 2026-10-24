@@ -4,6 +4,7 @@ survey writes it, and that reading it changes nothing the survey writes."""
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import os
 import threading
@@ -18,13 +19,13 @@ import recon
 from recon.adapters._out.archive_files import ArchiveFiles
 from recon.adapters._out.system_clock import SystemClock
 from recon.composition import root
+from recon.domain.archives import NewRecords, StoredTable
 from recon.domain.models import ReconConfig
 from tests.recon_fakes import FixedClock, plugins_with, run_survey
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from recon.domain.archives import NewRecords
     from recon.domain.capture import CaptureLog
     from recon.domain.models import CollectorEntry, SourceEntry
 
@@ -67,7 +68,8 @@ class _Steps:
 
 class TestReadSince:
     """A4: ``read_since`` returns the whole records written since its cursor, from sealed and
-    live tables alike, and says which tables were sealed or retracted since."""
+    live tables alike, and says which tables were read to their end (``exhausted``) or
+    retracted since."""
 
     def _survey(
         self, project: Path, steps: list[list[dict[str, Any]]], fail: bool = False
@@ -98,16 +100,26 @@ class TestReadSince:
         assert {r["table"] for read in reads for r in read.records} == {"t"}
         assert [read.state for read in reads] == ["writing", "writing", "complete"]
         assert [read.ended for read in reads] == [None, None, "finished"]
-        assert [read.sealed for read in reads] == [[], [], ["t"]]
+        assert [read.exhausted for read in reads] == [[], [], ["t"]]
         assert reads[-1].retracted == []
         again = recon.read_since("m", reads[-1].cursor, root=tmp_path)
-        assert (again.records, again.sealed) == ([], []), "a seal is told once"
+        assert (again.records, again.exhausted) == ([], []), "a table's end is told once"
+
+    def test_sealed_has_one_meaning(self) -> None:
+        """Polish R8 (Karman 3): ``sealed`` means renamed into place by its writer, a
+        table's own state (``StoredTable.sealed``). A read's list of the tables it read to
+        their end is another thing, so it has another word: ``exhausted``."""
+        assert "sealed" in {f.name for f in dataclasses.fields(StoredTable)}
+        port = {f.name for f in dataclasses.fields(NewRecords)}
+        document = set(recon.RecordsSince.model_fields)
+        for names in (port, document):
+            assert "sealed" not in names and "exhausted" in names
 
     def test_a_table_that_fails_is_retracted_and_the_reader_told(self, tmp_path: Path) -> None:
         reads = self._survey(tmp_path, [[{"n": 0}, {"n": 1}]], fail=True)
 
         assert [r["record"] for r in reads[0].records] == [{"n": 0}, {"n": 1}]
-        assert (reads[-1].retracted, reads[-1].sealed) == (["t"], [])
+        assert (reads[-1].retracted, reads[-1].exhausted) == (["t"], [])
         assert (reads[-1].state, reads[-1].ended) == ("incomplete", "finished"), (
             "the survey ran to its end; a table failed"
         )
@@ -125,22 +137,22 @@ class TestReadSince:
             {"table": "a", "record": {"n": 1}},
             {"table": "a", "record": {"n": 2}},
         ], "an empty table's sentinel line is not a record"
-        assert (read.sealed, read.state, read.count) == (["a", "b"], "complete", 2)
+        assert (read.exhausted, read.state, read.count) == (["a", "b"], "complete", 2)
 
     def test_limit_bounds_a_read_and_the_cursor_goes_on_from_there(self, tmp_path: Path) -> None:
         lines = "".join(f'{{"n": {n}}}\\n' for n in range(5))
         run_survey({"collectors": [{"name": "t", "type": "cli", "run": f"printf '{lines}'"}]},
                    tmp_path)  # fmt: skip
         seen: list[list[int]] = []
-        sealed: list[list[str]] = []
+        exhausted: list[list[str]] = []
         cursor = None
         for _ in range(3):
             read = recon.read_since("m", cursor, limit=2, root=tmp_path)
             seen.append([r["record"]["n"] for r in read.records])
-            sealed.append(read.sealed)
+            exhausted.append(read.exhausted)
             cursor = read.cursor
         assert seen == [[0, 1], [2, 3], [4]]
-        assert sealed == [[], [], ["t"]], "sealed once its last line is read, not before"
+        assert exhausted == [[], [], ["t"]], "exhausted once its last line is read, not before"
 
 
 class TestAReadIsBoundedInBytes:
@@ -161,7 +173,7 @@ class TestAReadIsBoundedInBytes:
         second = recon.read_since("m", first.cursor, max_bytes=1000, root=project)
         assert ([r["record"]["n"] for r in first.records], first.more) == ([0, 1], True)
         assert ([r["record"]["n"] for r in second.records], second.more) == ([2], False)
-        assert (first.sealed, second.sealed) == ([], ["t"])
+        assert (first.exhausted, second.exhausted) == ([], ["t"])
 
     def test_a_record_larger_than_the_bound_is_returned_alone(self, tmp_path: Path) -> None:
         project = self._archive(tmp_path, [3000, 10])
@@ -225,7 +237,7 @@ class TestWholeLinesOnly:
 
         assert [r.record for r in first.records] == [{"n": 0}]
         assert [r.record for r in second.records] == [{"n": 1}, {"n": 2}]
-        assert first.sealed == second.sealed == []
+        assert first.exhausted == second.exhausted == []
 
     def test_a_short_write_taken_back_under_a_reader_is_a_retraction_not_its_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

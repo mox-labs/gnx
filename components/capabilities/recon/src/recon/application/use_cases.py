@@ -986,7 +986,7 @@ class Recon:
             records=[{"table": r.table, "record": r.record} for r in read.records],
             count=len(read.records),
             cursor=read.cursor,
-            sealed=read.sealed,
+            exhausted=read.exhausted,
             retracted=read.retracted,
             more=read.more,
         )

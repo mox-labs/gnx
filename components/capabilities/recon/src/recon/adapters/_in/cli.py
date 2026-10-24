@@ -835,8 +835,8 @@ def _print_read(read: recon.RecordsSince) -> None:
                   f"retired before they were read: going on from {read.archive_id}[/]")  # fmt: skip
     for record in read.records:
         click.echo(json.dumps(record, default=str))
-    for table in read.sealed:
-        err.print(f"[dim]  {escape(table)} sealed[/]")
+    for table in read.exhausted:
+        err.print(f"[dim]  {escape(table)}: every record read[/]")
     for table in read.retracted:
         err.print(f"[yellow]  {escape(table)} failed and was retracted: the records printed "
                   "from it are void[/]")  # fmt: skip

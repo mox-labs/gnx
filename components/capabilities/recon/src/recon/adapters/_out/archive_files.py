@@ -37,7 +37,7 @@ The stream is ``writing`` while that lock is held, and otherwise reads as its la
 
 **Reading as it is written.** :meth:`ArchiveFiles.read_since` reads each table's file from a
 byte offset to its last whole line, the live ``.tmp`` of a table being written included, and
-hands back a cursor: the offset reached in each table, and which tables it has told sealed,
+hands back a cursor: the offset reached in each table, and which tables it has told exhausted,
 as base64url JSON naming the archive. Only this store reads it; the ``.tmp`` path never
 leaves it. A table this cursor read from whose file is gone, with no sealed file in its
 place, failed and was retracted.
@@ -450,7 +450,7 @@ class ArchiveFiles:
         positions = _decode(cursor, archive)
         files = dict(_table_files(archive))
         records: list[TableRecord] = []
-        sealed: list[str] = []
+        exhausted: list[str] = []
         retracted = [n for n, (_, told) in positions.items() if not told and n not in files]
         budget = _Budget(limit, max_bytes)
         for name, path in files.items():
@@ -469,11 +469,11 @@ class ArchiveFiles:
             records += [TableRecord(name, json.loads(line)) for line in lines]
             if ended:
                 positions[name] = (positions[name][0], True)
-                sealed.append(name)
+                exhausted.append(name)
         for name in retracted:
             positions.pop(name, None)
         cursor = _encode(archive, positions)
-        return NewRecords(records, cursor, sealed, sorted(retracted), more=budget.cut)
+        return NewRecords(records, cursor, exhausted, sorted(retracted), more=budget.cut)
 
     def tables(self, archive: Path) -> list[StoredTable]:
         layout = self._table_layout(archive)
@@ -662,7 +662,7 @@ _CURSOR_FORMAT = 1
 
 
 def _encode(archive: Path, positions: dict[str, tuple[int, bool]]) -> str:
-    """The cursor at ``positions``: each table's offset, and whether it was told sealed."""
+    """The cursor at ``positions``: each table's offset, and whether it was told exhausted."""
     body = {
         "format": _CURSOR_FORMAT,
         "archive": archive.name,

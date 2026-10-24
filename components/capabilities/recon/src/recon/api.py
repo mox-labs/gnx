@@ -185,8 +185,9 @@ def read_since(
     their lines (1 MiB), at least one, from the tables sealed and the one being written
     alike, ``more`` when a bound cut it, and a ``cursor`` to pass to the next read of the
     same archive (name it with ``archive``: its ``archive_id``). The cursor is opaque.
-    ``state`` says whether a survey is still writing the archive; ``sealed`` and
-    ``retracted`` name the tables that ended since, a retracted table's records void. Reads
+    ``state`` says whether a survey is still writing the archive; ``exhausted`` names the
+    tables read to their end since (sealed, every record read: what was read of them
+    stands) and ``retracted`` those that failed, their records void. Reads
     write nothing, so a reader changes no byte of the archive. Raises UsageError for a
     cursor recon did not give for that archive, or a ``limit`` or ``max_bytes`` below 1.
 

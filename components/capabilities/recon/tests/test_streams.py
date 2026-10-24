@@ -834,11 +834,11 @@ class TestSealedIsSealed:
         _, outcomes, _ = _run(tmp_path, clock, _plan(WindowSpec(seconds=10)), source, store=store)
 
         assert gate.is_set()
-        assert seen["while"].sealed == [], "a table being written is not sealed"
+        assert seen["while"].exhausted == [], "a table being written is not read to its end"
         assert digests == [_digest(Path(outcomes[0].archive))]
         after = store.read_since(Path(outcomes[0].archive), seen["while"].cursor, limit=100,
                                  max_bytes=1 << 20)  # fmt: skip
-        assert after.sealed == ["s"]
+        assert after.exhausted == ["s"]
 
 
 class TestDeterminism:

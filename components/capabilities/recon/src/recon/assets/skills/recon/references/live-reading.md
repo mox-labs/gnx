@@ -59,7 +59,7 @@ recon watch <mission> [--archive <id>] [--cursor <cursor>] [--interval SECONDS] 
 
 **Polling, for an agent.** A tool call that must return reads once at a time: `recon watch <mission> --once --json` prints one read and returns, whatever the state; the next call passes its `cursor` as `--cursor`, with its `archive_id` as `--archive` (or the same `--stream`), and so on. Read again at once while a read says `more`; once one says `state` is no longer `writing` and has no `more`, the archive is read to its end. A stream's read says its window's `state`, so whether a writer still extends the stream is `recon status <mission> --json`'s to say (its `streams[].state`). Each call is bounded by `--max-bytes`.
 
-Without `--json`, each record is a JSON line on stdout, `{"table": ..., "record": ...}`, and stderr says each table sealed or retracted, and the archive's state at the end. It exits 0 whatever the archive's state: the state is in the output.
+Without `--json`, each record is a JSON line on stdout, `{"table": ..., "record": ...}`, and stderr says each table read to its end or retracted, and the archive's state at the end. It exits 0 whatever the archive's state: the state is in the output.
 
 Refused, with exit 2 (`usage`) and a fix:
 
@@ -76,12 +76,12 @@ Refused, with exit 2 (`usage`) and a fix:
 | `records` | `{"table", "record"}` each: the whole records written since the cursor, table by table in output-name order, each table's in the order written |
 | `count` | how many records |
 | `cursor` | opaque: pass it, unchanged, to the next read of the same archive |
-| `sealed` | the tables whose last record is now read |
+| `exhausted` | the tables read to their end: sealed, and every record of them read along this chain of cursors, so none come after and what was read of them stands |
 | `retracted` | the tables that failed after records of theirs were read: void those records |
 | `more` | a bound (`limit`, `max_bytes`) cut this read before all that was written was read: read again at once |
 | `stream`, `skipped` | a read of a stream (`--stream`): its name, and the windows `retain:` retired before the cursor reached them, `{first, last, count}`, or null; see `streaming` |
 
-Along a chain of cursors each table is told sealed, or retracted, once. Because `state` is read before the records, a read that says the archive is no longer `writing` and has no `more` holds the archive's last records.
+Along a chain of cursors each table is told exhausted, or retracted, once. `sealed` is a table's own state, that its writer renamed it into place; `exhausted` is a reader's, that it has read all of a sealed table. Because `state` is read before the records, a read that says the archive is no longer `writing` and has no `more` holds the archive's last records.
 
 ## In a program
 

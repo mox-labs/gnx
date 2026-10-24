@@ -18,7 +18,7 @@ recon watch my-scan
 
 Each record is a line on stdout, `{"table": "...", "record": {...}}`, as soon as it is written (at most a quarter of a second after the collector gives it). Stderr says when each table is sealed, and the archive's state when the survey ends. `recon watch` then returns.
 
-For an agent, `--json` prints each read as one `recon.v1.records-since` document a line, with its `state`, its `records`, the tables `sealed` and `retracted` since, and a `cursor`:
+For an agent, `--json` prints each read as one `recon.v1.records-since` document a line, with its `state`, its `records`, the tables `exhausted` (read to their end) and `retracted` since, and a `cursor`:
 
 ```bash
 recon watch my-scan --json
@@ -45,7 +45,7 @@ A table that fails is retracted: the records printed from it are void, and stder
 recon query my-scan "SELECT count(*) FROM first_table" --json
 ```
 
-The table being written is not a table yet: query it once `recon watch` says it is sealed.
+The table being written is not a table yet: query it once `recon watch` says every record of it is read (it is `exhausted`: sealed, and read to its end).
 
 ## 5. Follow a stream
 
