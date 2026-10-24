@@ -304,6 +304,36 @@ class TestOverlapIsRefusedWhereItWouldConfound:
         assert (warned.kind, warned.path) == ("trials_in_flight_contended", "trials_in_flight")
         assert "duration" in warned.message
 
+    def test_a_metric_declared_contended_after_registration_is_refused_at_run(
+        self, tmp_path: Path
+    ) -> None:
+        """``contended`` is in no digest and no registration, so leaving it out must fail
+        closed (review, ixian): an experiment registered at width 2 on a metric its sensor
+        then declares contended is refused when it is run, gated or not, though its
+        registration holds nothing that changed."""
+        sensor = {
+            "name": "lab.v1.sensor.waiting", "summary": "How long the reply took.",
+            "needs": ["response"], "overlap": "allowed",
+            "metrics": [{"name": "wait", "unit": "ms", "direction": "lower", "shape": "scalar"}],
+        }  # fmt: skip
+        folder = _canned(
+            tmp_path, primary={"metric": "wait"}, threshold={"op": "<=", "value": 1000},
+            metrics=["text_matched"], trials_in_flight=2,
+        )  # fmt: skip
+        (folder / "kinds").mkdir()
+        (folder / "kinds" / "waiting.yaml").write_text(yaml.safe_dump(sensor))
+        assert ix.validate(folder).valid
+        ix.register(folder)
+        sensor["metrics"][0]["contended"] = True  # type: ignore[index]
+        (folder / "kinds" / "waiting.yaml").write_text(yaml.safe_dump(sensor))
+        assert "contended" not in (folder / "experiment.registration.json").read_text()
+        for exploratory in (False, True):
+            with pytest.raises(ix.InvalidExperimentError) as refused:
+                _root().run(folder, exploratory=exploratory)
+            (problem,) = [p for p in refused.value.problems if p.kind != "kind_unimplemented"]
+            assert problem.kind == "trials_in_flight_refused"
+            assert "wait (primary) is contended" in problem.message
+
     def test_a_third_partys_kind_declares_both_as_a_built_in_does(self, tmp_path: Path) -> None:
         """ACES, extensible: a kind file of a lab (read as a package's ``ix.kind`` files
         are) declares ``overlap`` and ``contended`` and is held to them; one that says

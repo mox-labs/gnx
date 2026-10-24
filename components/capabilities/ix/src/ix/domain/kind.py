@@ -252,9 +252,11 @@ class Metric(Record):
         return self
 
 
-#: A metric's fields that are not what a run would do, so neither a plan's digest nor a
-#: registration holds them: its prose, and whether trials in flight contend for it, which
-#: validation holds each time it is asked.
+#: A metric's fields that neither a plan's digest nor a registration holds: its prose
+#: (``description``), and ``contended``, which is not prose but admission policy, a property
+#: of the instrument read where it is used: validation applies it to the width at every
+#: validate, plan, register and run, so a sensor that declares a metric contended after a
+#: registration refuses the run (it fails closed) rather than ungating it.
 UNFROZEN_METRIC_FIELDS: frozenset[str] = frozenset({"description", "contended"})
 
 

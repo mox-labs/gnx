@@ -741,10 +741,11 @@ class TestStoredRecordsTolerateChange:
     def test_whether_a_metric_is_contended_is_neither_digested_nor_frozen(
         self, compare_data: dict[str, Any], write_experiment: Write, vocabulary: Vocabulary
     ) -> None:
-        """``contended`` is the sensor's word on what trials in flight do to a reading, held
-        at validation each time (record §27); like a metric's description, it is not what a
-        run would do. Regression: declaring it moved every latency experiment's plan digest,
-        so each registration showed a deviation and its next run was ungated."""
+        """``contended`` is admission policy, the sensor's word on what trials in flight do
+        to a reading, re-checked at every validate and run (record §27), so it fails closed
+        without a digest (test_trials_in_flight.py). Regression: declaring it moved every
+        latency experiment's plan digest, so each registration showed a deviation and its
+        next run was ungated."""
         file: Path = write_experiment(compare_data)
         ix.register(file)
         stored = json.loads(_record(file).read_text())
