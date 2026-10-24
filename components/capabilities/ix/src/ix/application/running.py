@@ -801,10 +801,10 @@ class _Checker:
                 self.lost = found
                 self._halt.set()
                 self._asked, self._waiting = [*self._asked, *self._waiting], []
-            asked, self._asked = self._asked, []
-            for settled in asked:
+            for settled in self._asked:
                 if not settled.done():  # its trial may have been cancelled meanwhile
                     settled.set_result(found)
+            self._asked = []  # once settled: until then, a checker's end can still settle them
 
     async def _ask(self) -> str | None:
         liveness = self._liveness
