@@ -109,7 +109,7 @@ Act on the exit code, then on the error's `fix`:
 | 11 | `busy` | another recon is writing the stream, or surveying the mission | let it run, or stop it as the `fix` says (`kill -TERM <pid>`, the pid in `details`), then run the command again |
 | 130 | `interrupted` | Ctrl-C or SIGTERM stopped the command; a survey's archive reads `ended: stopped` (a stopped `recon stream` exits 0) | run the command again |
 
-A survey whose tables failed exits 6 if any failed on credentials, 5 if every failure was transient, else 8 (`run_failed`). One whose archive could not be finished (a full disk) exits 9 (`store`) whatever its tables did, an `archive_unfinished` warning saying why. The error is this envelope, on one line:
+A survey whose archive could not be finished (a full disk) exits 9 (`store`) whatever its tables did, an `archive_unfinished` warning saying why. The error is this envelope, on one line:
 
 ```json
 {"schema": "recon.v1.error", "error": {"kind": "config", "message": "<file>: 1 problem(s)", "fix": "fix each problem, then: recon survey m --dry-run", "complete": true, "problems": [{"path": "collectors.0.type", "kind": "name_unknown", "message": "unknown collector type 'ftp'; installed: api, capture, cli, mcp, sse, tail, web", "fix": "use one of: api, capture, cli, mcp, sse, tail, web", "allowed": ["api", "capture", "cli", "mcp", "sse", "tail", "web"], "got": "ftp", "source": ""}], "details": {}}}
@@ -124,7 +124,8 @@ Documents name their shape in `schema`: `recon.v1.plan`, `recon.v1.survey`, `rec
 ```yaml
 # Every key a mission file can hold, with its default; | separates the values allowed.
 preserve_raw: false            # true: keep every fetched body in the archive's capture log
-deadline: 600                  # optional: seconds the whole survey may take (> 0)
+deadline: 600                  # optional: seconds the survey may take (> 0); scheduled: 0.8 × every
+schedule: {every: 600, missed: once}   # optional: run by the OS scheduler; every in seconds
 catalog:                       # where to look; optional
   - name: <source>             # required, unique
     type: api                  # api | web | local | mcp, or a kind an installed type adds

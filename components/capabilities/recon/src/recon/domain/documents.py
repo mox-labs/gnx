@@ -132,8 +132,10 @@ class PlanDocument(Document):
     #: What this dry run did to check the requirements, by collector type (``mcp: started
     #: each stdio server a run names ...``); empty when it ran, fetched and wrote nothing.
     preflight: list[str] = []
-    #: Each setting of a stream the survey would use, with where it came from: what the
-    #: mission wrote, and every default recon filled in (a window, a buffer, retain).
+    #: Each setting of a stream the survey would use, and of a schedule (``schedule.every``,
+    #: ``schedule.missed``, and the ``deadline`` a scheduled mission has), with where it came
+    #: from: what the mission wrote, and every default recon filled in (a window, a buffer,
+    #: retain, a scheduled mission's deadline).
     provenance: list[SourcedValue] = []
 
 
