@@ -246,6 +246,13 @@ class Arrivals:
             if self._advance():
                 self._ledger(self._windowing.index).gaps.append(gap)
 
+    def dropped_early(self) -> None:
+        """Count a record its collector dropped before handing it on (one too large), in the
+        window open now, as one the buffer refused."""
+        with self._cond:
+            if self._advance():
+                self._refuse(self._windowing.index)
+
     def end(self, error: BaseException | None = None) -> None:
         """The source ended, or failed with ``error``: the stream ends after what waits. Said
         after the stream has ended (a source its closing broke off), it is not heard."""
@@ -396,6 +403,11 @@ class StreamGaps:
         to = self._to
         if to is not None:
             to.gap(gap)
+
+    def drop(self) -> None:
+        to = self._to
+        if to is not None:
+            to.dropped_early()
 
 
 def _listen(stop: StreamStop, arrivals: Arrivals) -> None:

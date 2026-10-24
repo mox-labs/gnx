@@ -150,17 +150,24 @@ class Gap:
 
 
 class GapLog(Protocol):
-    """Where a collector of a stream says its source was not read for a while (a dropped
-    connection, a file truncated under it): ``CollectorContext.gaps``. The gap is recorded in
-    the window being filled when it is said."""
+    """Where a collector of a stream says what of its source it could not give: a stretch it
+    was not read (a dropped connection, a file truncated under it: :meth:`gap`), or a record
+    it dropped before handing it on (one larger than the stream's ``max_record_bytes``:
+    :meth:`drop`). ``CollectorContext.gaps``; each is counted in the window being filled when
+    it is said."""
 
     def gap(self, gap: Gap) -> None: ...
+
+    def drop(self) -> None: ...
 
 
 class NoGaps:
     """The :class:`GapLog` of a survey's snapshot tables, which keep no gaps."""
 
     def gap(self, gap: Gap) -> None:
+        return None
+
+    def drop(self) -> None:
         return None
 
 

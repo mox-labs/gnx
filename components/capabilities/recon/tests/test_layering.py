@@ -275,8 +275,10 @@ def test_the_clock_is_read_only_through_its_port() -> None:
     """Determinism rests on this: the time of day and the passing of time reach recon only
     through ``Clock``, whose one real implementation is the system clock adapter. A unique
     id is drawn only for a capture, the contract's one stated exception. The ``sse``
-    collector draws its reconnect waits from a sequence seeded by its name, so the same
-    stream waits the same each time, which keeps the contract."""
+    collector draws its reconnect waits unseeded, so processes streaming from one server do
+    not reconnect in step, and waits them on a ``threading.Event`` a stop ends: when it
+    reconnected is in the gaps it records from the clock port, so the record of a stream
+    keeps the contract (review items 8 and 9, Erlang)."""
     reads_clock = {
         _relative(f)
         for f in _files()

@@ -289,7 +289,9 @@ A stream runs for as long as it is told to, so what it reaches, it reaches for t
   source's `auth`, to its origin only, a redirect elsewhere followed without it), the same
   rate limit (a token per connection), and a connect or a silence longer than the source's
   `timeout` ends the connection. A reconnect sends the last event id it got, which is the
-  server's own value. The body is read a line at a time, each line bounded by `max_bytes`.
+  server's own value. The body is read a line at a time, each line bounded by `max_bytes`,
+  and an event's data by `max_record_bytes`: a larger event is dropped and counted as its
+  lines arrive, never held.
 - **Memory is bounded by the config**: at most `buffer.bytes` + `buffer.max_record_bytes`
   of records wait between the source and the window being written; a record over
   `max_record_bytes` is dropped and counted, never buffered. A source that sends faster than

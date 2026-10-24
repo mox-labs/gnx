@@ -13,16 +13,23 @@ kept until the next one, ``retry:`` taken as the server's wait). The id is the r
 position: a stream resumed after it sends ``Last-Event-ID``, so a server that keeps its
 events sends each once. An event before any id has no position.
 
+An event's data is held to the stream's ``max_record_bytes`` (its ``buffer:``, or recon's
+default) as its lines arrive: one past it is dropped, its later lines read and let go, and
+counted dropped in the window being filled (``CollectorContext.gaps``).
+
 **Reconnecting.** When the connection ends or breaks off (the server closed it, the network
-failed, a ``transient`` status), the collector connects again with ``Last-Event-ID``, after a
-full-jitter wait on the clock port: a random time up to ``min(30, wait * 2 ** n)`` seconds,
-where ``wait`` is the server's ``retry`` (1 second until it says) and ``n`` the attempts so
-far. The random times are drawn from a sequence seeded by the collector's name, so two
-streams wait apart while the same stream, given the same answers, waits the same each time:
-recon's determinism contract holds for a stream too. Each such stretch is reported as a gap
-(``CollectorContext.gaps``), ``resumed`` when a ``Last-Event-ID`` was sent. ``reconnect`` (5
-by default) attempts in a row with no event between are allowed; one more fails the stream
-(``transient``). A status a retry cannot fix (401, 403: ``auth``; 404 and the rest:
+failed, a quiet source outlasted its ``timeout``, a ``transient`` status), the collector
+connects again with ``Last-Event-ID``, after a full-jitter wait: a random time up to
+``min(30, wait * 2 ** n)`` seconds, where ``wait`` is the server's ``retry`` (1 second until
+it says) and ``n`` the connections in a row that brought no event. The random times are not
+seeded, so processes streaming from one server do not reconnect in step; each stretch is
+reported as a gap from the clock port (``CollectorContext.gaps``), ``resumed`` when a
+``Last-Event-ID`` was sent, so the record of what happened needs no seed. The wait is on the
+real clock and ends at once when the collector is closed (a stream stopped while its server
+is down stops promptly): recon's one wait not on the clock port. ``reconnect`` (5 by default)
+connects in a row that fail are allowed; one more fails the stream (``transient``). A
+connection that is made and later ends spends none of it, so a healthy quiet stream runs for
+as long as it is asked. A status a retry cannot fix (401, 403: ``auth``; 404 and the rest:
 ``run_failed``) fails it at once.
 
 Registered as the built-in collector type ``sse`` (entry-point group ``recon.collectors``):
@@ -44,10 +51,10 @@ from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
 from recon.domain.http import REDACTED, reported_url
-from recon.domain.stream import POSITION_FIELD, Gap
+from recon.domain.stream import POSITION_FIELD, BufferSpec, Gap
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
     from datetime import datetime
 
     from recon.domain.capture import CaptureLog
@@ -62,8 +69,8 @@ _MOST_WAIT_S = 30.0
 
 class SseSettings(BaseModel):
     """An ``sse`` collector's own keys: ``endpoint``, appended to the source's url; ``params``,
-    the query parameters, sent as written; ``reconnect``, the attempts in a row allowed after
-    the connection ends before the stream fails (5; 0 fails it at the first)."""
+    the query parameters, sent as written; ``reconnect``, the connects in a row allowed to fail
+    before the stream fails (5; 0 fails it at the first)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -79,8 +86,18 @@ class _Event:
     data: str
 
 
+class _TooLarge:
+    """An event whose data passed the stream's ``max_record_bytes``: dropped."""
+
+
+_TOO_LARGE = _TooLarge()
+
+
 class SseCollector:
-    """Reads a server's events. ``close()``, from any thread, ends the read in progress."""
+    """Reads a server's events. ``close()``, from any thread, ends the read in progress and the
+    wait before a reconnect. ``jitter`` draws the waits (unseeded by default); ``pause(s)``
+    waits ``s`` seconds before a reconnect (by default on the real clock, ended by ``close()``):
+    a test hands its own of each."""
 
     def __init__(
         self,
@@ -90,6 +107,7 @@ class SseCollector:
         env: Mapping[str, str],
         user_agent: str,
         jitter: random.Random | None = None,
+        pause: Callable[[float], object] | None = None,
     ) -> None:
         if clock is None:
             raise CollectionError(
@@ -103,8 +121,9 @@ class SseCollector:
         self._gaps = gaps
         self._env = env
         self._user_agent = user_agent
-        self._jitter = jitter
+        self._jitter = jitter or random.Random()
         self._closed = threading.Event()
+        self._pause = pause or self._closed.wait
         self._body: LiveBody | None = None
 
     def close(self) -> None:
@@ -133,9 +152,10 @@ class SseCollector:
         url = build_url(source.url, settings.endpoint, {})
         params = {**settings.params, **auth_params(source, self._env)}
         last: str | None = None if after is None else str(after)
-        jitter = self._jitter or random.Random(f"recon.sse:{entry.name}")
+        cap = (entry.buffer or BufferSpec()).max_record_bytes
         wait_s = 1.0
-        attempts = 0
+        failed = 0  # connects in a row that failed: what reconnect: allows
+        quiet = 0  # connections in a row that brought no event: what the wait grows with
         lost: datetime | None = None
         self._closed.clear()
         while not self._closed.is_set():
@@ -143,19 +163,24 @@ class SseCollector:
                        "Accept": "text/event-stream", "Cache-Control": "no-cache"}  # fmt: skip
             if last is not None:
                 headers["Last-Event-ID"] = last
+            connected = False
             try:
                 with follow(source, url, params=params, headers=headers) as body:
                     self._body = body
+                    connected, failed = True, 0
                     if self._closed.is_set():
                         return
                     if lost is not None:
                         self._gaps.gap(Gap(lost, self._clock.now(), resumed=last is not None))
                         lost = None
-                    for item in _events(body):
+                    for item in _events(body, cap):
                         if isinstance(item, int):
                             wait_s = item / 1000
                             continue
-                        attempts = 0
+                        quiet = 0
+                        if isinstance(item, _TooLarge):
+                            self._gaps.drop()
+                            continue
                         last = item.id if item.id is not None else last
                         yield _record(item, last)
             except CollectionError as exc:
@@ -168,37 +193,47 @@ class SseCollector:
             if self._closed.is_set():
                 return
             lost = lost or self._clock.now()
-            attempts += 1
-            if attempts > settings.reconnect:
+            quiet += 1
+            failed += not connected
+            if failed > settings.reconnect:
                 raise CollectionError(
-                    f"{reported_url(url, source.auth.param)} did not stay connected: "
-                    f"{settings.reconnect} reconnect(s) in a row ended with no event",
+                    f"{reported_url(url, source.auth.param)} could not be reached: "
+                    f"{settings.reconnect} reconnect(s) in a row failed to connect",
                     kind="transient",
                     fix=f"raise reconnect: on collector {entry.name!r} to wait longer for the "
                     "server, or stream again later",
                 )
-            self._clock.sleep(jitter.uniform(0, min(_MOST_WAIT_S, wait_s * 2 ** (attempts - 1))))
+            self._pause(self._jitter.uniform(0, min(_MOST_WAIT_S, wait_s * 2 ** (quiet - 1))))
 
 
-def _events(lines: Iterable[str]) -> Iterator[_Event | int]:
+def _events(lines: Iterable[str], cap: int) -> Iterator[_Event | _TooLarge | int]:
     """The events of an event stream's lines, and each ``retry`` (milliseconds), as the
     format says to read them: a blank line ends an event, sent only when it has data; an id
-    holds until the next one; a line starting ``:`` is a comment."""
+    holds until the next one; a line starting ``:`` is a comment. An event whose data passes
+    ``cap`` bytes is :data:`_TOO_LARGE`, its data let go as it passes."""
     event_id: str | None = None
     kind = ""
     data: list[str] = []
+    size = 0
+    over = False
     for line in lines:
         if not line:
-            if data:
+            if over:
+                yield _TOO_LARGE
+            elif data:
                 yield _Event(event_id, kind or "message", "\n".join(data))
-            kind, data = "", []
+            kind, data, size, over = "", [], 0, False
             continue
         if line.startswith(":"):
             continue
         name, _, value = line.partition(":")
         value = value.removeprefix(" ")
-        if name == "data":
-            data.append(value)
+        if name == "data" and not over:
+            size += len(value.encode()) + (1 if data else 0)  # the newline that joins it
+            if size > cap:
+                over, data = True, []
+            else:
+                data.append(value)
         elif name == "event":
             kind = value
         elif name == "id" and "\0" not in value:

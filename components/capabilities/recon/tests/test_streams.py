@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from recon.adapters._out.archive_files import ArchiveFiles
-from recon.application.stream import Stream, StreamPlan, StreamRun
+from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
 from recon.domain.models import CollectorEntry
 from recon.domain.stream import (
     POSITION_FIELD,
@@ -120,6 +120,7 @@ def _run(
     normalize: Callable[[dict[str, Any]], dict[str, Any]] = dict,
     stop: StreamStop | None = None,
     on_window: Callable[[WindowOutcome], None] | None = None,
+    gaps: StreamGaps | None = None,
 ) -> tuple[StreamRun, list[WindowOutcome], list[dict[str, Any]]]:
     store = store or ArchiveFiles(clock)
     events: list[dict[str, Any]] = []
@@ -141,6 +142,7 @@ def _run(
         preserve_raw=preserve_raw,
         on_window=sealed,
         stop=stop,
+        gaps=gaps,
     )
     return run, outcomes, events
 
@@ -425,6 +427,27 @@ class TestEveryRecordIsCountedWhenTheStreamBreaks:
 
         assert [o.closed_by for o in outcomes] == ["error"]
         assert run.records + run.dropped == 40, "the queued and the overflowed, all counted"
+
+    def test_a_record_its_collector_drops_is_counted_in_its_window(self, tmp_path: Path) -> None:
+        """Review item 7: a collector that drops a record rather than hold it (an ``sse``
+        event over ``max_record_bytes``) says so, and the window counts it."""
+        clock = VirtualClock()
+        gaps = StreamGaps()
+
+        class Drops(Script):
+            def records(self, after: Any) -> Iterator[dict[str, Any]]:
+                yield {"seq": 0}
+                gaps.drop()
+                yield {"seq": 2}
+
+        run, [window], _ = _run(
+            tmp_path, clock, _plan(WindowSpec(seconds=60)), Drops(clock, []), gaps=gaps,
+            preserve_raw=True,
+        )  # fmt: skip
+
+        assert (window.table.records, window.dropped) == (2, 1)
+        assert _meta(window)["stream"]["reproducible"] is False
+        assert run.records + run.dropped == 3
 
     def test_a_source_that_dies_of_a_base_exception_ends_the_stream(self, tmp_path: Path) -> None:
         clock = VirtualClock()

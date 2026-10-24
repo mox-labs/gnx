@@ -5,6 +5,7 @@ budget; a refusal that a retry cannot fix ends the stream."""
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -26,9 +27,25 @@ if TYPE_CHECKING:
 class Gaps:
     def __init__(self) -> None:
         self.said: list[Gap] = []
+        self.drops = 0
 
     def gap(self, gap: Gap) -> None:
         self.said.append(gap)
+
+    def drop(self) -> None:
+        self.drops += 1
+
+
+class Longest(random.Random):
+    """Jitter that always waits the most it may, and more: a wait long enough to see that
+    ``close()`` cuts it short."""
+
+    def uniform(self, a: float, b: float) -> float:
+        return 60.0
+
+
+#: Unset: the collector's own default.
+DEFAULT: Any = object()
 
 
 class Listening:
@@ -42,17 +59,32 @@ class Listening:
         reconnect: int = 5,
         env: dict[str, str] | None = None,
         auth: dict[str, str] | None = None,
+        jitter: random.Random | None = DEFAULT,
+        pause: Any = DEFAULT,
+        timeout: float | None = None,
+        buffer: dict[str, int] | None = None,
     ) -> None:
+        """Waits before a reconnect are recorded on a :class:`HurriedClock` and skipped, from
+        a jitter seeded the same each time, unless ``jitter`` or ``pause`` says otherwise
+        (None: the collector's own)."""
         self.clock = HurriedClock()
         self.gaps = Gaps()
         requester = HttpRequester(RateLimiter(self.clock), self.clock)
-        self.collector = SseCollector(requester, self.clock, self.gaps, env or {}, "recon-test")
+        self.collector = SseCollector(
+            requester, self.clock, self.gaps, env or {}, "recon-test",
+            jitter=random.Random("a seed") if jitter is DEFAULT else jitter,
+            pause=self.clock.sleep if pause is DEFAULT else pause,
+        )  # fmt: skip
         self.records: list[dict[str, Any]] = []
         self.error: BaseException | None = None
         entry = CollectorEntry.model_validate(
-            {"name": "events", "type": "sse", "endpoint": "/events", "reconnect": reconnect}
+            {"name": "events", "type": "sse", "endpoint": "/events", "reconnect": reconnect,
+             **({"buffer": buffer} if buffer else {})}
+        )  # fmt: skip
+        given = {"timeout": timeout} if timeout is not None else {}
+        source = SourceEntry.model_validate(
+            {"name": "feed", "url": url, "auth": auth or {}, **given}
         )
-        source = SourceEntry.model_validate({"name": "feed", "url": url, "auth": auth or {}})
         resume = {} if after is None else {"after": after}
         records = self.collector.collect(entry, source, **resume)
 
@@ -164,7 +196,64 @@ class TestDisconnects:
         with SseServer([], status=503) as server:
             again = Listening(server.url, reconnect=3)
             again.failed()
-        assert again.clock.slept == waits, "the same stream waits the same: determinism"
+        assert again.clock.slept == waits, "the same jitter, the same waits"
+
+    def test_the_jitter_is_unseeded_so_streams_do_not_reconnect_in_step(self) -> None:
+        """Review item 8 (Erlang #5): a jitter seeded by the collector's name made every
+        process streaming the same collector reconnect at the same moments. Each wait is in
+        the gap it leaves, so nothing needs the seed."""
+        waits = []
+        for _ in range(2):
+            with SseServer([], status=503) as server:
+                listening = Listening(server.url, reconnect=3, jitter=None)
+                listening.failed()
+            waits.append(listening.clock.slept)
+
+        assert waits[0] != waits[1]
+
+    def test_close_cuts_a_reconnect_wait_short(self) -> None:
+        """Review item 9 (Erlang #6): the wait before a reconnect ends when the collector is
+        closed, so a stream stops promptly while its server is down."""
+        with SseServer([], status=503) as server:
+            listening = Listening(server.url, jitter=Longest(), pause=None)
+            started = time.monotonic()
+            while not server.asked:
+                assert time.monotonic() - started < 10
+                time.sleep(0.005)
+            took = listening.stop()
+
+        assert took < 2, "not the sixty seconds the jitter asked"
+        assert len(server.asked) == 1
+
+    def test_a_quiet_connection_spends_none_of_the_budget(self) -> None:
+        """Review item 18 (Erlang): only a connect that fails is spent; a healthy quiet
+        stream whose reads time out reconnects for as long as it runs."""
+        with SseServer([]) as server:
+            listening = Listening(server.url, reconnect=1, timeout=0.05)
+            started = time.monotonic()
+            while len(server.asked) < 4:
+                assert listening.error is None, listening.error
+                assert time.monotonic() - started < 10, "it never reconnected"
+                time.sleep(0.005)
+            listening.stop()
+
+        assert listening.error is None
+        assert len(listening.gaps.said) >= 3, "each quiet stretch is still a gap"
+
+
+class TestLargeEvents:
+    def test_an_event_over_max_record_bytes_is_dropped_and_counted(self) -> None:
+        """Review item 7 (Erlang #4): an event's data lines were joined however many came;
+        one past ``max_record_bytes`` is dropped as it arrives, and counted."""
+        big = "\n".join("x" * 50 for _ in range(5))
+        events = [("1", "small"), ("2", big), ("3", "after")]
+        with SseServer(events) as server:
+            listening = Listening(server.url, buffer={"max_record_bytes": 100})
+            records = listening.until(2)
+            listening.stop()
+
+        assert [r["id"] for r in records] == ["1", "3"]
+        assert listening.gaps.drops == 1
 
 
 class TestTheType:

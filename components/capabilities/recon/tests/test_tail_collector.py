@@ -31,6 +31,9 @@ class Gaps:
     def gap(self, gap: Gap) -> None:
         self.said.append(gap)
 
+    def drop(self) -> None:
+        raise AssertionError("a tail collector drops nothing")
+
 
 class Following:
     """A tail collector run on a thread of its own, as a stream's pump runs it, its records
