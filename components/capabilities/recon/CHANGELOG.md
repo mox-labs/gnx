@@ -14,6 +14,7 @@
 
 ### Changed
 
+- **The skill teaches telemetry through `recon --skill -r telemetry`**, one text with `docs/reference/telemetry.md`, so the skill stays within its budget.
 - **The `TelemetryFactory` a `Recon` is built with** takes the survey's channel as a second argument, None for an operation with none.
 - **No receiver slows a survey.** OpenTelemetry's sink and the `on_event` callback receive a survey's events through a bounded queue (`ThreadChannel(queue=4096, drain_s=10.0)`, `root(channel=)`) that a thread drains, so a slow one neither slows the writing of the archive nor changes it. An event the queue cannot hold, or that the survey's end could not wait for, is dropped and counted in an `events_dropped` warning, a new problem kind. **An `on_event` that raises no longer fails the survey**: it gets nothing more, and is a `telemetry_failed` warning. A receiver that never returns from an event cannot hold the survey past the drain time: it is named in a `telemetry_stuck` warning, a new problem kind, and is not closed. `on_event` is called on that thread, not the survey's, and every call is made before `survey` returns.
 - **A table's progress is in its telemetry.** While a table is written, its `recon.collect` span has a `recon.collect.progress` event at most once a second (`Survey(progress_s=)`, 1.0 by default, timed by the clock port), carrying `recon.records`, the records written so far: a line in the archive's `telemetry.jsonl`, and a span event in OpenTelemetry.

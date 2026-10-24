@@ -137,6 +137,21 @@ def test_the_capture_format_page_is_the_skill_reference() -> None:
     assert page.read_text(encoding="utf-8") == REFERENCES["capture-format"]
 
 
+def test_the_telemetry_page_is_the_skill_reference() -> None:
+    """Telemetry is taught in full by ``recon --skill -r telemetry``, and the skill points
+    there; one text with its docs page."""
+    page = PACKAGE / "docs" / "reference" / "telemetry.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["telemetry"]
+    assert "recon --skill -r telemetry" in SKILL
+    for taught in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                   "configure_telemetry", "traceparent", "recon.event.span", "REDACTED",
+                   "events_dropped", "telemetry_stuck", "otel_unavailable",
+                   "http.request.resend_count", "gen_ai.tool.name"):  # fmt: skip
+        assert taught in REFERENCES["telemetry"], taught
+
+
 def test_the_live_reading_page_is_the_skill_reference() -> None:
     """Watching a survey, ``read_since`` and an archive's states are taught in full by
     ``recon --skill -r live-reading``, and the skill points there (progressive disclosure:
