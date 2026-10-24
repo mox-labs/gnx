@@ -52,32 +52,44 @@ where they connect. The child inherits recon's environment, every variable of it
 no allowlist. Declared effects are what a collector type says about itself; recon reports
 them and does not enforce them.
 
-### 2. Source entries → outbound credentials (`api` collector)
+### 2. Source entries → outbound credentials (`api` and `sse` collectors)
 
-A source entry names an environment variable holding its secret (`auth.env`), read through
-an injected `Mapping` that defaults to `os.environ`. It is sent as a header (`auth.header`),
-a query parameter (`auth.param`), or both. Two consequences:
+A source entry names where its secret is, in the one grammar every source kind uses
+(ruling A1, `recon.domain.credentials`): `auth.token: env:NAME`, a variable, read through an
+injected `Mapping` that defaults to `os.environ`; or `auth.token: file:PATH`, a file. It is
+sent as a header (`auth.header`), a query parameter (`auth.param`), or both. Or
+`auth.headers_helper` names a command, run once a survey through the shell with the
+source's `timeout`, whose standard output is a JSON object of the headers to send (a
+keychain's `security find-generic-password -w`, a cloud CLI's token). So an unattended
+survey (one an OS scheduler runs) gets its credential without a secret written into the
+scheduler's files or its environment. A `file:` its group or others can read is refused
+before anything is sent (`config`, with the `chmod 600` that fixes it): a credential every
+account on the host can read is not kept as one. A helper runs with recon's rights and
+environment, as a `cli` command does (boundary 1): name it by an absolute path. Consequences:
 
 - The secret is attached to requests to **whatever URL that source declares**. A config
   that points a credentialed source at an attacker's host exfiltrates the credential. The
   URL and the credential are chosen by the same file. The dry-run plan shows each URL.
 - The secret goes only to the origin of the request a collector built. A redirect to
-  another host, port or scheme is followed without the source's `auth.header`, as httpx2
-  follows one without `Authorization`; an upgrade from http to https on the same host keeps
-  it (R-9). A key sent as `auth.param` is part of the URL: a redirect carries it on only
-  when the server writes it into the new location.
+  another host, port or scheme is followed without any header the collector gave but
+  `User-Agent`, `Accept`, `Cache-Control` and `Last-Event-ID`: the source's `auth.header`,
+  and every header its helper printed, whose names recon cannot know in advance; httpx2
+  itself drops `Authorization`. An upgrade from http to https on the same host keeps them
+  (R-9). A key sent as `auth.param` is part of the URL: a redirect carries it on only when
+  the server writes it into the new location. A paginated table's next page is followed
+  only at the source's origin (its scheme, host and port); a link elsewhere fails the table.
 - TLS certificates are verified against the operating system's trust store (httpx2's
   default, through `truststore`).
 - Secrets are never written to the JSONL output and never logged. Request headers are
   never persisted. In captures, response headers are persisted with credential-bearing
   values redacted (R-2), and an `auth.param` value is redacted from the captured URL (R-4).
 
-An unset `auth.env` variable sends the request without credentials; the plan warns about
-it before anything is sent.
+An unset `auth.token` variable sends the request without credentials; the plan warns
+about it before anything is sent.
 
 A collector type is not handed the process environment. Its `env` holds only the
-variables the mission declares for it: the `auth.env` names of the catalog sources its
-collectors run against, and the variables those sources name through their kind's own
+variables the mission declares for it: the `auth.token: env:NAME` variables of the catalog
+sources its collectors run against, and the variables those sources name through their kind's own
 settings (an `mcp` source's `env:NAME` references). A plugin type therefore sees the secrets the config granted its
 sources and no others, and reading any other name fails the table with a config error
 that says where to declare it, rather than returning nothing (R-5). This scopes what a
@@ -347,8 +359,8 @@ A `cli` capture records the fully-substituted commands in its `request`. That is
 (`run: curl -H 'Authorization: Bearer sk-...'`) puts that secret on disk.
 
 Not fixed, and not fixable by redaction without guessing at shell syntax and breaking
-reproducibility. **Keep credentials in environment variables referenced by a source's
-`auth.env`, never inline in a `run:` string.** If you must inline one, treat the archive
+reproducibility. **Keep credentials where a source's `auth.token` names them (a variable or
+a file only you can read), never inline in a `run:` string.** If you must inline one, treat the archive
 as secret material.
 
 ### R-4 — `auth.param` would have put the key in the captured URL (prevented, 0.9.0)
@@ -365,8 +377,8 @@ Regression: `test_param_key_never_reaches_the_capture_log` in
 
 The composition root passed `os.environ` to every collector type's factory, so installing
 a third-party collector type gave it every credential on the machine, whatever the
-mission's config named. Fixed by handing each type a mapping scoped to the `auth.env`
-names of the sources its collectors use (boundary 2). An undeclared read raises, because
+mission's config named. Fixed by handing each type a mapping scoped to the
+`auth.token: env:NAME` variables of the sources its collectors use (boundary 2). An undeclared read raises, because
 a silent "not set" would send the request without its key.
 
 Regression: `recon/tests/test_composition.py`, and
@@ -498,6 +510,19 @@ file outside the archive, against boundary 6's "nothing else". Fixed: the connec
 a query can read.
 
 Regression: `test_duckdb_s_spill_directory_is_not_readable` in `recon/tests/test_query.py`.
+
+### R-16 — an `api` source's credential could come only from the environment (fixed)
+
+An `mcp` source could take its credential from a file or a helper, an `api` source only
+from an environment variable (vector, round 4). A survey an OS scheduler runs has no
+secret-free place to get that variable from: it would go into the scheduler's file. Fixed
+by one credential grammar for every source kind, through one resolver
+(`recon.adapters._out.credentials`): `auth.token: env:NAME | file:PATH`, or
+`auth.headers_helper`, exactly as an `mcp` source has them. A `file:` its group or others
+can read is refused, for every kind. A helper's headers are each held to the request's
+origin by the requester, since it cannot know their names in advance.
+
+Regression: `recon/tests/test_credentials.py`.
 
 ## Not covered
 

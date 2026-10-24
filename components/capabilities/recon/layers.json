@@ -34,12 +34,13 @@
     {
       "name": "adapter_support",
       "files": ["src/recon/adapters/_out/parsing.py", "src/recon/adapters/_out/user_agent.py",
-                "src/recon/adapters/_out/http_source.py"],
-      "allow": ["*", "recon.domain"],
+                "src/recon/adapters/_out/http_source.py", "src/recon/adapters/_out/credentials.py"],
+      "allow": ["*", "recon.domain", "recon.adapters._out.credentials"],
       "forbid": ["yaml"],
       "why": {
-        "*": "body parsing (xmltodict, lazily), the distribution's version for the User-Agent, and how a request to an HTTP source is addressed and carries its credential (shared by api and sse)",
-        "recon.domain": "the errors a bad body raises; these helpers hold no port and reach no adapter"
+        "*": "body parsing (xmltodict, lazily), the distribution's version for the User-Agent, how a request to an HTTP source is addressed and carries its credential (shared by api and sse), and where every source kind's credential comes from (a variable, a file, a helper's headers: shared by api, sse and mcp, ruling A1)",
+        "recon.domain": "the errors a bad body raises; these helpers hold no port and reach no adapter",
+        "recon.adapters._out.credentials": "http_source sends the credential the shared resolver gives"
       }
     },
     {
@@ -61,7 +62,7 @@
                 "src/recon/adapters/_out/sse_collector.py"],
       "allow": ["*", "recon.domain", "recon.adapters._out.parsing",
                 "recon.adapters._out.user_agent", "recon.adapters._out.capture_files",
-                "recon.adapters._out.http_source"],
+                "recon.adapters._out.http_source", "recon.adapters._out.credentials"],
       "forbid": ["yaml"],
       "why": {
         "*": "each collector type's own technology: a child process for cli, the MCP client (fastmcp, the mcp SDK, jsonschema) for mcp, the local filesystem for tail, nothing beyond the requester port for api, web and sse",

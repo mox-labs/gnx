@@ -11,6 +11,14 @@
 - **A collector type of your own may paginate**: `CollectorType.paginates`, `CollectorContext.pages` (a `PageLog`), and `recon.domain.paginate` (`PaginateSpec`, `Crawl`, `position`), as `docs/reference/extending.md` says.
 - **The `ArchiveStore` port gains `write_sidecar` and `read_sidecar`**, what a table keeps beside it that is no table (its page log); a store of your own given to `root()` implements them, and leaves a sidecar out of `tables()`.
 
+### One credential grammar for every source
+
+- **Breaking: `auth.env: NAME` is `auth.token: env:NAME`.** An `api` or `sse` source names its credential as an `mcp` source does: `auth.token` is `env:NAME` (a variable) or `file:PATH` (a file, relative to the mission's directory), sent as `auth.header` and/or `auth.param` with `auth.prefix`; or `auth.headers_helper` names a command, run once a survey within the source's `timeout`, whose standard output is a JSON object of the headers to send. A token written as the secret itself, a token with a helper, and a helper with `header`, `param` or `prefix` are plan problems; `auth.env` is now an unknown key, and the problem's `allowed` names `token`. So a survey run unattended gets its credential without a secret in its environment. Removed before 1.0, with no alias.
+- **A `file:` its group or others can read is refused**, for every source kind (an `mcp` source's `token: file:` too): the table fails as `config`, before anything is sent, with the `chmod 600` that fixes it.
+- **One resolver**: `recon.adapters._out.credentials` (`resolve_reference`, `helper_headers`, `Credentials`) is what the `api`, `sse` and `mcp` collectors use, and what a type of your own may use. `ApiCollector` and `SseCollector` take a `Credentials` where they took the environment.
+- **Every header a collector gives, but `User-Agent`, `Accept`, `Cache-Control` and `Last-Event-ID`, stays at its request's origin**: a redirect to another host, port or scheme drops it, a helper's headers included, whose names recon cannot know in advance (it dropped only the source's `auth.header`).
+- The plan's `env_unset` warning for an `api` source is at `catalog.<i>.auth.token`, and the `auth` exit kind's next step names `auth.token` and `headers_helper`.
+
 ## 0.13.0 — 2026-10-24
 
 ### Changed (breaking)

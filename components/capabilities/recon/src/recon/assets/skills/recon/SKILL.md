@@ -100,7 +100,7 @@ Act on the exit code, then on the error's `fix`:
 | 3 | `config` | the mission config or another input is invalid | fix each problem at its `path` as its `fix` says, then plan again; when `complete` is false, more problems may follow the fix |
 | 4 | `not_found` | no such mission, archive or template | run the command the error's `fix` names |
 | 5 | `transient` | every failed table failed transiently (HTTP 429, 5xx, network, a deadline); the archive is kept, marked incomplete | if a table's error names a `deadline:` or `timeout:`, raise it (a retry fails too); else survey again later |
-| 6 | `auth` | a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete | set the variable the failing source's auth.env names to a valid key, then survey again |
+| 6 | `auth` | a table failed on credentials (HTTP 401, 403); the archive is kept, marked incomplete | give the failing source's auth.token (or headers_helper) a valid key, then survey again |
 | 7 | `conflict` | init, or survey -c, would overwrite a different mission config | add --replace to overwrite it, or choose another mission name |
 | 8 | `run_failed` | a table failed, and not only on credentials or transiently; the archive is kept, marked incomplete | read each failed table's error and fix its cause, then plan and survey again |
 | 9 | `store` | the survey could not finish its archive; it is kept, marked incomplete | free space where the archive is, or make it writable, then survey again |
@@ -128,13 +128,13 @@ catalog:                       # where to look; optional
   - name: <source>             # required, unique
     type: api                  # api | web | local | mcp, or a kind an installed type adds
     url: <base URL, or a directory for local>   # required, but by an mcp stdio source
-    auth: {env: <VAR>, header: <Header-Name>, param: <query param>, prefix: "Bearer "}
+    auth: {token: env:<VAR>, header: <Header-Name>, param: <query param>, prefix: "Bearer "}
+                               # or {headers_helper: <command>}
     rate_limit: {rps: 10.0, burst: 3}   # tokens a second (> 0), most held (>= 1)
     timeout: 60                # seconds a send may take, first byte to last (> 0)
     max_bytes: 50000000        # largest response body; a larger one fails the table
     user_agent: <string>       # default: recon/<version> (+https://github.com/mox-labs/gnx)
-    # mcp: command, args, env (each value as is, or env:NAME) for a stdio server; or url with
-    #      token (env:NAME | file:PATH) or headers_helper (a command printing JSON headers)
+    # mcp: command, args, env (as is, or env:NAME) for stdio; or url, token, headers_helper
 collectors:                    # what to ask; required, at least one
   - name: <output>             # required; names the table
     type: api                  # api | cli | web | capture | mcp, or an installed plugin type
@@ -160,7 +160,7 @@ These are all the keys there are: an unknown key at the top level, in a source, 
 
 **Placeholders.** A placeholder is `{name}`, the name a letter or `_` and then letters, digits or `_`, so a regular expression's `\w{3}` or `{2,5}` is not one; `{{` and `}}` are a literal brace (a GraphQL body's `{viewer{{login}}}`), except in `run:`. In an `api` collector, `{key}` in `endpoint` and in the string values of `body` is filled from `vars:`, which are sent nowhere else; `params:` are the query string, each value sent as written. A placeholder nothing fills is a plan problem (`unresolved`), and so is one in a `params:` value. In an `mcp` collector, `vars:` fill `{key}` in the string values of `arguments` and in `resource`. A `web` collector fills none, so a placeholder in its `endpoint` is a plan problem. In a `cli` collector recon fills `{url}`, the source's `url`, and `{pattern}`, each entry of `patterns:` in turn: `{pattern}` without `patterns:` is a plan problem, and so is `{url}` in a run with no source. Any other `{...}` in `run:` is the command's own (`cargo tree --format '{p}'`, `'{{.Name}}'`) and is passed as written.
 
-**Credentials.** `auth.env` names the environment variable holding the secret; the secret never appears in the file. `auth.header` sends it as that header, `auth.param` as that query parameter, with `auth.prefix` in front. An unset variable sends the request without it, and the plan warns. An `mcp` source names its variables as `env:NAME`: a remote's `token: env:NAME` (or `file:PATH`, relative to the mission's directory) is sent as `Authorization: Bearer`, and a stdio server's `env: {GITHUB_TOKEN: env:GITHUB_TOKEN}` gives it that variable, which it gets with `HOME`, `PATH`, `SHELL`, `TERM`, `USER` and `LOGNAME` and nothing else of recon's environment. A collector type sees only the variables the mission names this way.
+**Credentials.** A secret is never in the file. `auth.token` is `env:NAME` (a variable) or `file:PATH` (relative to the mission; a file its group or others can read is refused, `config`), sent as `auth.header` and/or `auth.param`, `auth.prefix` in front; or `auth.headers_helper`, a command printing a JSON object of headers, run once a survey. An unset variable sends the request without it, and the plan warns. An `mcp` remote's `token:` (as `Authorization: Bearer`) and `headers_helper:` are the same; a stdio server's `env: {GITHUB_TOKEN: env:GITHUB_TOKEN}` gives it that variable, with `HOME`, `PATH`, `SHELL`, `TERM`, `USER` and `LOGNAME` and nothing else of recon's environment. A collector type sees only the variables the mission names this way.
 
 ## Collector types
 

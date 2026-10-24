@@ -11,6 +11,7 @@ from typing import Any, NoReturn
 import pytest
 
 from recon.adapters._out.cli_collector import PopenRunner
+from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.application.collectors import (
@@ -236,7 +237,8 @@ PROCESS_ENV = {
 
 
 def _source(name: str, env: str) -> dict[str, Any]:
-    return {"name": name, "url": f"https://{name}.example.test", "auth": {"param": "k", "env": env}}
+    return {"name": name, "url": f"https://{name}.example.test",
+            "auth": {"param": "k", "token": f"env:{env}"}}  # fmt: skip
 
 
 CATALOG = [_source("s2", "S2_KEY"), _source("db", "DB_TOKEN"), _source("soon", "NOT_SET")]
@@ -306,7 +308,7 @@ def test_reading_an_undeclared_variable_fails_loudly_with_a_fix(
         read(env)
     assert excinfo.value.kind == "config"
     assert "probe" in str(excinfo.value)
-    assert "auth.env" in (excinfo.value.fix or "")
+    assert "auth.token: env:" in (excinfo.value.fix or "")
 
 
 def _reading_home(ctx: CollectorContext) -> Collector:
@@ -323,7 +325,7 @@ def test_a_factory_that_reads_an_undeclared_variable_is_reported_with_the_fix(
     built = build_collectors(registry, tmp_path, config, QUIET, env=PROCESS_ENV)
     assert "eager" not in built.collectors
     [broken] = [b for b in built.failed if b.name == "eager"]
-    assert "'HOME'" in broken.error and "auth.env" in broken.error
+    assert "'HOME'" in broken.error and "auth.token: env:HOME" in broken.error
 
 
 def test_the_api_collector_still_reads_its_source_s_key(tmp_path: Path) -> None:
@@ -356,7 +358,7 @@ def test_the_api_collector_still_reads_its_source_s_key(tmp_path: Path) -> None:
     entry = {"name": "p", "type": "api", "source": "s2", "endpoint": "/x"}
     config = _config(entry, catalog=CATALOG)
     collector = ApiCollector(
-        requester, ScopedEnv(PROCESS_ENV, {"S2_KEY"}, "api"), DEFAULT_USER_AGENT
+        requester, Credentials(ScopedEnv(PROCESS_ENV, {"S2_KEY"}, "api")), DEFAULT_USER_AGENT
     )
     list(collector.collect(config.collectors[0], SourceEntry.model_validate(CATALOG[0])))
     assert requester.params == {"k": "s2-secret"}

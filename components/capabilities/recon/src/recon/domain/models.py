@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from recon.domain.clock import LONGEST_WAIT
+from recon.domain.credentials import NOT_A_REFERENCE, REFERENCE_FIX, reference
 from recon.domain.paginate import PaginateSpec  # noqa: TC001
 from recon.domain.ratelimit import wait_for_token
 
@@ -34,24 +35,42 @@ DEFAULT_MAX_BYTES = 50_000_000
 
 
 class AuthConfig(BaseModel):
-    """How to authenticate with a source.
+    """How to authenticate with a source, in the credential grammar every source kind uses
+    (:mod:`recon.domain.credentials`); the secret itself never appears in the config.
 
-    `env` names the environment variable holding the secret; the secret itself never
-    appears in the config.
+    `token` says where the secret is: `env:NAME`, an environment variable, or `file:PATH`, a
+    file that only its owner can read (a relative path is the mission directory's).
 
     - `header`: send it as a request header (e.g. `x-api-key`, `Authorization`)
     - `param`: send it as a query-string parameter (e.g. OpenAlex `api_key`)
 
     Both may be set. `prefix` is prepended to the resolved value in either place (e.g.
     "Bearer " for `Authorization: Bearer <token>`).
+
+    Or `headers_helper`, in place of all four: a command, run once a survey, whose standard
+    output is a JSON object of the headers to send (a keychain, a cloud CLI's token).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    token: str = ""
     header: str = ""
     param: str = ""
-    env: str = ""
     prefix: str = ""
+    headers_helper: str | None = None
+
+    @model_validator(mode="after")
+    def _a_reference_or_a_helper(self) -> AuthConfig:
+        if self.token and reference(self.token) is None:
+            raise ValueError(f"{NOT_A_REFERENCE}: write {REFERENCE_FIX}")
+        if self.headers_helper is not None:
+            if self.token:
+                raise ValueError("a source takes token: or headers_helper:, not both")
+            for key in ("header", "param", "prefix"):
+                if getattr(self, key):
+                    raise ValueError(f"a headers_helper prints its own headers, so {key}: is not "
+                                     "the source's")  # fmt: skip
+        return self
 
 
 class RateLimitConfig(BaseModel):

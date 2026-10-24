@@ -29,6 +29,7 @@ from pydantic import BaseModel, ValidationError
 
 from recon.domain.archives import EVENT_LOG_NAME, SIDECARS, table_name
 from recon.domain.capture import CAPTURE_LOG_NAME
+from recon.domain.credentials import env_name
 from recon.domain.documents import SourcedValue
 from recon.domain.errors import Problem
 from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
@@ -1216,22 +1217,23 @@ def _credential_warnings(
     env: Mapping[str, str],
     plugins: Plugins,
 ) -> list[Problem]:
-    """A warning for each variable a used source names, as ``auth.env`` or through its kind's
-    own settings (``CollectorType.source_env``), that ``env`` does not set."""
+    """A warning for each variable a used source names, as ``auth.token: env:NAME`` or
+    through its kind's own settings (``CollectorType.source_env``), that ``env`` does not set."""
     adders = _kind_types(plugins)
     warnings = []
     for i, src in sources:
         if src.name not in used:
             continue
-        if src.auth.env and not env.get(src.auth.env):
+        named = env_name(src.auth.token)
+        if named is not None and not env.get(named):
             warnings.append(
                 Problem(
-                    f"catalog.{i}.auth.env",
-                    f"{src.auth.env} is not set; requests to {src.name!r} will be sent "
-                    "without credentials",
+                    f"catalog.{i}.auth.token",
+                    f"{named} is not set; requests to {src.name!r} will be sent without "
+                    "credentials",
                     kind="env_unset",
-                    fix=f"set {src.auth.env}, or leave it unset to send the requests without it",
-                    got=src.auth.env,
+                    fix=f"set {named}, or leave it unset to send the requests without it",
+                    got=named,
                 )
             )
         ctype = adders.get(src.type)

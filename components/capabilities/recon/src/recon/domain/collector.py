@@ -132,9 +132,9 @@ class CollectorContext:
     none.
 
     ``env`` is not the process environment. It holds only the variables the mission
-    declares for this type: the ``auth.env`` names of the catalog sources its collectors
-    run against, and the variables their kinds read (``CollectorType.source_env``). Reading
-    any other name raises a config error that says where to declare it.
+    declares for this type: the ``auth.token: env:NAME`` variables of the catalog sources its
+    collectors run against, and the variables their kinds read (``CollectorType.source_env``).
+    Reading any other name raises a config error that says where to declare it.
     """
 
     requester: Requester
@@ -199,7 +199,7 @@ class CollectorType:
       settings ``source_settings`` accepts, with paths relative to it (``command``,
       ``url``); the planner prefixes ``catalog.<i>.``. Pure: no I/O.
     - ``source_env`` names the environment variables such a source reads beyond
-      ``auth.env``, each with where the source names it (``{"GITHUB_TOKEN": "token"}``): the
+      ``auth.token``, each with where the source names it (``{"GITHUB_TOKEN": "token"}``): the
       mission declares them for every type whose collectors run against the source, and the
       plan warns when one is unset. Pure.
     - ``effects`` declares what a run can touch; ``None`` means unknown.

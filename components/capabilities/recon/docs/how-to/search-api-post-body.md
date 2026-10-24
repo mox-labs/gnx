@@ -49,7 +49,7 @@ catalog:
     url: https://api.exa.ai
     auth:
       header: x-api-key
-      env: EXA_API_KEY
+      token: env:EXA_API_KEY
       # no prefix — Exa uses raw x-api-key
     rate_limit: { rps: 1, burst: 2 }
     user_agent: "exa-discovery (you@example.com)"   # optional; default: recon/<version>
@@ -157,7 +157,7 @@ catalog:
     url: https://api.exa.ai
     auth:
       header: x-api-key
-      env: EXA_API_KEY
+      token: env:EXA_API_KEY
     rate_limit: { rps: 1, burst: 2 }
     user_agent: "exa-discovery (you@example.com)"
 
@@ -216,7 +216,7 @@ catalog:
     url: https://api.firecrawl.dev
     auth:
       header: Authorization
-      env: FIRECRAWL_API_KEY
+      token: env:FIRECRAWL_API_KEY
       prefix: "Bearer "          # ← Firecrawl needs Bearer
 
 collectors:
@@ -247,7 +247,7 @@ catalog:
     url: https://api.tavily.com
     auth:
       header: Authorization
-      env: TAVILY_API_KEY
+      token: env:TAVILY_API_KEY
       prefix: "Bearer "
 
 collectors:
@@ -281,7 +281,7 @@ catalog:
     url: https://google.serper.dev
     auth:
       header: X-API-KEY
-      env: SERPER_API_KEY
+      token: env:SERPER_API_KEY
       # no prefix — Serper uses raw X-API-KEY
 
 collectors:

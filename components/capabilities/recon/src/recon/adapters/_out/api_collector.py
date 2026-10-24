@@ -30,13 +30,19 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict
 
-from recon.adapters._out.http_source import auth_headers, auth_params, build_url
+from recon.adapters._out.credentials import Credentials
+from recon.adapters._out.http_source import (
+    auth_headers,
+    auth_params,
+    build_url,
+    described_credential,
+)
 from recon.adapters._out.parsing import parse_body
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.capture import redact_query_params
 from recon.domain.collector import CollectorType
 from recon.domain.errors import CollectionError, Problem
-from recon.domain.http import REDACTED, reported_url
+from recon.domain.http import reported_url
 from recon.domain.normalize import BUILTIN_TRANSFORMS, apply_normalize, resolve_path, to_records
 from recon.domain.paginate import Crawl, NoPages, Stop, next_link, position
 from recon.domain.stream import POSITION_FIELD
@@ -80,14 +86,14 @@ class ApiCollector:
     def __init__(
         self,
         requester: Requester,
-        env: Mapping[str, str],
+        credentials: Credentials,
         user_agent: str,
         transforms: Mapping[str, Transform] = BUILTIN_TRANSFORMS,
         *,
         pages: PageLog | None = None,
     ) -> None:
         self._requester = requester
-        self._env = env
+        self._credentials = credentials
         self._user_agent = user_agent
         self._transforms = transforms
         self._pages = pages if pages is not None else NoPages()
@@ -203,10 +209,10 @@ class ApiCollector:
         return apply_normalize(record, entry.normalize, self._transforms)
 
     def _build_headers(self, source: SourceEntry) -> dict[str, str]:
-        return auth_headers(source, self._env, self._user_agent)
+        return auth_headers(source, self._credentials, self._user_agent)
 
     def _auth_params(self, source: SourceEntry) -> dict[str, str]:
-        return auth_params(source, self._env)
+        return auth_params(source, self._credentials)
 
 
 def _found(spec: PaginateSpec, data: Any, resp: HttpResponse) -> Any:
@@ -351,18 +357,17 @@ def _describe(entry: CollectorEntry, source: SourceEntry | None) -> dict[str, An
     settings = _settings(entry)
     if source is None or not settings.endpoint:
         return {}
-    params = _params(settings)
-    if source.auth.param and source.auth.env:
-        params[source.auth.param] = REDACTED
+    secret_params, secret_headers = described_credential(source)
+    params = _params(settings) | secret_params
     url = _with_query(build_url(source.url, settings.endpoint, settings.vars), params)
-    headers = {"User-Agent": source.user_agent or DEFAULT_USER_AGENT}
-    if source.auth.header and source.auth.env:
-        headers[source.auth.header] = REDACTED
+    headers = {"User-Agent": source.user_agent or DEFAULT_USER_AGENT} | secret_headers
     request: dict[str, Any] = {
         "method": settings.method,
         "url": reported_url(url, source.auth.param),
         "headers": headers,
     }
+    if source.auth.headers_helper is not None:
+        request["headers_helper"] = source.auth.headers_helper
     if settings.body:
         request["body"] = substitute(settings.body, settings.vars)
     if entry.paginate is not None:
@@ -380,7 +385,11 @@ def _with_query(url: str, params: Mapping[str, str]) -> str:
 
 collector_type = CollectorType(
     create=lambda ctx: ApiCollector(
-        ctx.requester, ctx.env, ctx.user_agent, ctx.transforms, pages=ctx.pages
+        ctx.requester,
+        Credentials(ctx.env, ctx.mission_dir, ctx.shell, ctx.deadline),
+        ctx.user_agent,
+        ctx.transforms,
+        pages=ctx.pages,
     ),
     effects=frozenset({"network"}),
     summary="HTTP API request → JSON/XML → records",

@@ -11,6 +11,7 @@ import pytest
 
 from recon.adapters._out.api_collector import ApiCollector
 from recon.adapters._out.capture_files import FilesystemCaptureLog
+from recon.adapters._out.credentials import Credentials
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.domain.capture import REDACTED
@@ -154,37 +155,39 @@ class TestResolveAuth:
         req = _FakeRequester(_ok_response('{"data": []}'))
         src = SourceEntry(name="s", url="https://x", auth=auth)
         entry = collector_entry(name="t", type="api", source="s", endpoint="/q", params={"q": "a"})
-        list(ApiCollector(req, env=env, user_agent=DEFAULT_USER_AGENT).collect(entry, src))
+        list(ApiCollector(req, Credentials(env), user_agent=DEFAULT_USER_AGENT).collect(entry, src))
         return req.calls[0]
 
     def test_header_no_prefix(self) -> None:
-        sent = self._sent(AuthConfig(header="x-api-key", env="FAKE_KEY"), {"FAKE_KEY": "abc123"})
+        sent = self._sent(
+            AuthConfig(header="x-api-key", token="env:FAKE_KEY"), {"FAKE_KEY": "abc123"}
+        )
         assert sent["headers"]["x-api-key"] == "abc123"
 
     def test_header_with_prefix(self) -> None:
-        auth = AuthConfig(header="Authorization", env="FAKE_KEY", prefix="Bearer ")
+        auth = AuthConfig(header="Authorization", token="env:FAKE_KEY", prefix="Bearer ")
         sent = self._sent(auth, {"FAKE_KEY": "fc-xyz"})
         assert sent["headers"]["Authorization"] == "Bearer fc-xyz"
 
     def test_empty_env_returns_no_headers(self) -> None:
-        auth = AuthConfig(header="Authorization", env="FAKE_KEY", prefix="Bearer ")
+        auth = AuthConfig(header="Authorization", token="env:FAKE_KEY", prefix="Bearer ")
         sent = self._sent(auth, {})  # FAKE_KEY absent
         assert "Authorization" not in sent["headers"]
 
     def test_param_sends_the_key_as_a_query_parameter(self) -> None:
         """auth.param was declared and ignored before 0.9.0: OpenAlex-style api_key."""
-        sent = self._sent(AuthConfig(param="api_key", env="FAKE_KEY"), {"FAKE_KEY": "k-123"})
+        sent = self._sent(AuthConfig(param="api_key", token="env:FAKE_KEY"), {"FAKE_KEY": "k-123"})
         assert sent["params"] == {"q": "a", "api_key": "k-123"}
         assert "api_key" not in sent["headers"]
 
     def test_param_with_prefix_and_header_together(self) -> None:
-        auth = AuthConfig(header="x-api-key", param="key", env="FAKE_KEY", prefix="p-")
+        auth = AuthConfig(header="x-api-key", param="key", token="env:FAKE_KEY", prefix="p-")
         sent = self._sent(auth, {"FAKE_KEY": "v"})
         assert sent["params"]["key"] == "p-v"
         assert sent["headers"]["x-api-key"] == "p-v"
 
     def test_param_unset_env_sends_no_parameter(self) -> None:
-        sent = self._sent(AuthConfig(param="api_key", env="FAKE_KEY"), {})
+        sent = self._sent(AuthConfig(param="api_key", token="env:FAKE_KEY"), {})
         assert "api_key" not in sent["params"]
 
     def test_param_key_never_reaches_the_capture_log(self, tmp_path: Path) -> None:
@@ -198,13 +201,15 @@ class TestResolveAuth:
             content_type="application/json",
         )
         req = _FakeRequester(resp)
-        src = SourceEntry(name="s", url="https://x", auth=AuthConfig(param="api_key", env="K"))
+        src = SourceEntry(
+            name="s", url="https://x", auth=AuthConfig(param="api_key", token="env:K")
+        )
         entry = collector_entry(name="t", type="api", source="s", endpoint="/q")
         log = FilesystemCaptureLog(tmp_path, SystemClock())
         list(
-            ApiCollector(req, env={"K": "k-SECRET"}, user_agent=DEFAULT_USER_AGENT).collect(
-                entry, src, captures=log
-            )
+            ApiCollector(
+                req, Credentials({"K": "k-SECRET"}), user_agent=DEFAULT_USER_AGENT
+            ).collect(entry, src, captures=log)
         )
 
         import json
@@ -220,7 +225,7 @@ class TestCollectThroughRequester:
     def test_basic_get_yields_records(self) -> None:
         resp = _ok_response('{"data": [{"title": "A"}, {"title": "B"}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT)
+        col = ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT)
 
         source = SourceEntry(name="s", url="https://x")
         entry = collector_entry(name="t", type="api", source="s", endpoint="/q", extract="data")
@@ -235,7 +240,7 @@ class TestCollectThroughRequester:
     def test_post_with_body(self) -> None:
         resp = _ok_response('{"results": [{"ok": true}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT)
+        col = ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT)
 
         source = SourceEntry(name="exa", url="https://api.exa.ai")
         entry = collector_entry(
@@ -254,7 +259,7 @@ class TestCollectThroughRequester:
     def test_get_without_body(self) -> None:
         resp = _ok_response('{"data": [{"x": 1}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT)
+        col = ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT)
 
         source = SourceEntry(name="s", url="https://x")
         entry = collector_entry(name="g", type="api", source="s", endpoint="/q", extract="data")
@@ -264,7 +269,7 @@ class TestCollectThroughRequester:
     def test_templated_body_end_to_end(self) -> None:
         resp = _ok_response('{"results": [{"ok": true}]}')
         req = _FakeRequester(resp)
-        col = ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT)
+        col = ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT)
 
         source = SourceEntry(name="exa", url="https://api.exa.ai")
         entry = collector_entry(
@@ -289,7 +294,9 @@ class TestUserAgent:
         req = _FakeRequester(_ok_response("[]"))
         source = SourceEntry(name="s", url="https://x", **source_fields)
         entry = collector_entry(name="c", type="api", source="s", endpoint="/q")
-        list(ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT).collect(entry, source))
+        list(
+            ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT).collect(entry, source)
+        )
         return str(req.calls[0]["headers"]["User-Agent"])
 
     def test_the_default_names_recon_its_version_and_where_to_find_it(self) -> None:
@@ -319,7 +326,9 @@ class TestParams:
         req = _FakeRequester(_ok_response("[]"))
         source = SourceEntry(name="s", url="https://x")
         entry = collector_entry(name="c", type="api", source="s", endpoint="/q", params=params)
-        list(ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT).collect(entry, source))
+        list(
+            ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT).collect(entry, source)
+        )
         return req
 
     def test_a_value_containing_braces_is_sent(self) -> None:
@@ -400,7 +409,9 @@ class TestParamsAndVars:
         req = _FakeRequester(_ok_response("[]"))
         source = SourceEntry(name="s", url="https://x.test")
         entry = CollectorEntry(name="c", type="api", source="s", **settings)
-        list(ApiCollector(req, env={}, user_agent=DEFAULT_USER_AGENT).collect(entry, source))
+        list(
+            ApiCollector(req, Credentials({}), user_agent=DEFAULT_USER_AGENT).collect(entry, source)
+        )
         return req.calls[0]
 
     def test_vars_fill_the_endpoint_and_the_body_and_are_sent_nowhere_else(self) -> None:

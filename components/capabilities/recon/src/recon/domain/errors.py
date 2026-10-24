@@ -94,7 +94,7 @@ EXIT_NEXT: dict[str, str] = {
     "not_found": "run the command the error's `fix` names",
     "transient": "if a table's error names a `deadline:` or `timeout:`, raise it (a retry "
     "fails too); else survey again later",
-    "auth": "set the variable the failing source's auth.env names to a valid key, then "
+    "auth": "give the failing source's auth.token (or headers_helper) a valid key, then "
     "survey again",
     "conflict": "add --replace to overwrite it, or choose another mission name",
     "run_failed": "read each failed table's error and fix its cause, then plan and survey again",

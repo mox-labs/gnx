@@ -491,7 +491,8 @@ def failure_kind(tables: list[TableOutcome]) -> ErrorKind | None:
 
 
 _SURVEY_FAILURE_FIX = {
-    "auth": "check the credentials named by the failing sources' auth.env, then: recon survey {n}",
+    "auth": "check the credentials the failing sources' auth.token or headers_helper give, "
+    "then: recon survey {n}",
     "transient": "retry later: recon survey {n}",
     "run_failed": "read each failed table's error (meta.yaml, or --json), fix its cause, "
     "then: recon survey {n} --dry-run",

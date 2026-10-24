@@ -187,7 +187,7 @@ class TestEveryPageOnceInOrder:
     def test_a_link_s_token_is_its_url_with_the_key_redacted(self, tmp_path: Path) -> None:
         api = PagedApi("link", 2, 1)
         mission = _mission(PAGINATE["link"])
-        mission["catalog"][0]["auth"] = {"param": "api_key", "env": "KEY"}
+        mission["catalog"][0]["auth"] = {"param": "api_key", "token": "env:KEY"}
         recon = root({"KEY": "s3cret"}, project=tmp_path,
                      requester=lambda telemetry, deadline, limiter: api)  # fmt: skip
         (tmp_path / ".recon" / "m").mkdir(parents=True)

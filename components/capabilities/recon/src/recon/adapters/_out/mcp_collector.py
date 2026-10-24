@@ -17,8 +17,10 @@ A source names its server:
   environment the mission thereby declares (an unset one is left out). Its stderr goes to a
   temporary file, whose end an error quotes.
 * **remote** (Streamable HTTP): ``url``, with ``token`` (``env:NAME``, or ``file:PATH``
-  relative to the mission's directory), sent as ``Authorization: Bearer``, or
-  ``headers_helper``, a command run once per survey whose stdout is a JSON object of headers.
+  relative to the mission's directory, which only its owner may read), sent as
+  ``Authorization: Bearer``, or ``headers_helper``, a command run once per survey whose stdout
+  is a JSON object of headers. Each is resolved as every source kind's credential is
+  (``recon.adapters._out.credentials``).
   The client is the SDK's: it follows a redirect only within the server's origin, so no
   credential leaves it. An HTTP 401 or 403 makes the failure ``auth``.
 
@@ -53,14 +55,15 @@ import re
 import tempfile
 import threading
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict
 
+from recon.adapters._out.credentials import helper_headers, resolve_reference
 from recon.domain.capture import credential_values, redact_credentials
 from recon.domain.collector import CollectorType, Requirement
+from recon.domain.credentials import NOT_A_REFERENCE, REFERENCE_FIX, env_name, reference
 from recon.domain.errors import CollectionError, ErrorKind, NoRecordsError, Problem
 from recon.domain.http import REDACTED as REPORTED_REDACTED
 from recon.domain.http import reported_url
@@ -85,8 +88,6 @@ _MAX_ARGUMENT_PROBLEMS = 5
 
 #: How long ``close()`` waits for each server to stop, and for the loop's thread to end.
 _CLOSE_SECONDS = 10.0
-
-_REFERENCE = re.compile(r"^(env|file):(.+)$")
 
 
 class McpSourceSettings(BaseModel):
@@ -331,7 +332,7 @@ class McpCollector:
     def _stdio_env(self, settings: McpSourceSettings, server: _Server) -> dict[str, str]:
         env: dict[str, str] = {}
         for name, written in settings.env.items():
-            value = self._resolve(written, f"env.{name}") if _REFERENCE.match(written) else written
+            value = self._resolve(written, f"env.{name}") if reference(written) else written
             if value is None:
                 continue
             if written != value:
@@ -357,49 +358,12 @@ class McpCollector:
     def _resolve(self, written: str, where: str) -> str | None:
         """The value an ``env:NAME`` or ``file:PATH`` reference names; None for an unset
         variable (the plan warned about it)."""
-        match = _REFERENCE.match(written)
-        assert match is not None  # check_source holds the token to a reference
-        scheme, name = match.groups()
-        if scheme == "env":
-            return self._ctx.env.get(name)
-        path = Path(name).expanduser()
-        path = path if path.is_absolute() else self._ctx.mission_dir / path
-        try:
-            return path.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise CollectionError(
-                f"{where}: the file {path} could not be read: {type(exc).__name__}",
-                kind="config",
-                fix=f"put the credential in {path}, or correct the path (a relative one is "
-                "relative to the mission's directory)",
-            ) from exc
+        return resolve_reference(written, self._ctx.env, self._ctx.mission_dir, where)
 
     def _helper_headers(self, command: str, source: SourceEntry) -> dict[str, str]:
         """The headers the source's ``headers_helper`` prints, as a JSON object of strings."""
         limit = self._ctx.deadline.limit(source.timeout)
-        try:
-            lines = list(self._ctx.shell.run_lines(command, None, limit))
-        except CollectionError as exc:
-            raise CollectionError(
-                f"source {source.name!r}: its headers_helper failed, so no credential was "
-                f"sent: {exc}",
-                kind="auth",
-                fix="run the headers_helper by hand to see why it failed, then fix it",
-            ) from exc
-        try:
-            given = json.loads("\n".join(lines))
-        except json.JSONDecodeError:
-            given = None
-        if not isinstance(given, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) for k, v in given.items()
-        ):
-            raise CollectionError(
-                f"source {source.name!r}: its headers_helper did not print a JSON object of "
-                "header names to string values",
-                kind="config",
-                fix='make it print one object, e.g. {"Authorization": "Bearer ..."}',
-            )
-        return given
+        return helper_headers(command, self._ctx.shell, limit, source.name)
 
     def _client_factory(self, server: _Server) -> Callable[..., Any]:
         from mcp.shared._httpx_utils import create_mcp_http_client
@@ -879,14 +843,8 @@ def _check_source(source: SourceEntry) -> list[Problem]:
                     "headers_helper:, and a stdio server's under env:",
                 )  # fmt: skip
             )
-    if settings.token is not None and not _REFERENCE.match(settings.token):
-        problems.append(
-            Problem(
-                "token",
-                "a token is a reference, never the credential itself",
-                fix="token: env:NAME (a variable recon reads) or token: file:PATH",
-            )
-        )
+    if settings.token is not None and reference(settings.token) is None:
+        problems.append(Problem("token", NOT_A_REFERENCE, fix=REFERENCE_FIX))
     return problems
 
 
@@ -906,9 +864,8 @@ def _source_env(source: SourceEntry) -> dict[str, str]:
     named += [(f"env.{name}", value) for name, value in settings.env.items()]
     found: dict[str, str] = {}
     for where, written in named:
-        match = _REFERENCE.match(written)
-        if match is not None and match.group(1) == "env":
-            found.setdefault(match.group(2), where)
+        if (name := env_name(written)) is not None:
+            found.setdefault(name, where)
     return found
 
 
