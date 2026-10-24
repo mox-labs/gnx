@@ -5,7 +5,8 @@ An inbound adapter over the library API and nothing else: every call goes throug
 commands print. ``main(obj=...)`` runs the commands over the operations given instead, a
 root built with other ports: that is how a test drives the command line.
 
-Data goes to stdout and commentary to stderr. ``--json`` prints one versioned document. A
+Data goes to stdout and commentary to stderr. ``--json`` prints one versioned document
+(``watch --json``: one a line, a read each). A
 command that fails, a usage error, Ctrl-C and a defect in recon included, prints the
 ``recon.v1.error`` envelope on stderr (one JSON line under ``--json``) and exits with the
 code its kind maps to. A survey whose tables failed still prints its document on stdout,

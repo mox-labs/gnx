@@ -204,6 +204,14 @@ def test_the_skill_teaches_an_agent_to_poll_with_once_and_a_cursor() -> None:
         assert said in REFERENCES["live-reading"], said
 
 
+def test_what_json_prints_is_said_as_it_is() -> None:
+    """Polish R12: the loop said every ``--json`` prints one document, but ``recon watch
+    --json`` prints one a line, a read each; an agent parsing stdout as one document fails
+    on it. The sentence says which is which, and the command shows it."""
+    [said] = [line for line in SKILL.splitlines() if "Every command takes `--json`" in line]
+    assert "`recon watch --json`" in said and "a line" in said
+
+
 # --- frontmatter and budget ------------------------------------------------------------
 
 
