@@ -690,7 +690,17 @@ def _skill(genres: Genres, kinds: Kinds, version: str) -> str:
 # --- the references ------------------------------------------------------------------------
 
 
-def _experiment() -> str:
+def _overlap_forbidden(kinds: Kinds) -> str:
+    """The kinds that forbid overlap, family by family, as their declarations say."""
+    families = []
+    for family in KIND_FAMILIES:
+        names = [f"`{kind.label}`" for kind in kinds.of(family) if kind.overlap == "forbidden"]
+        if names:
+            families.append(f"{family} {', '.join(names)}")
+    return "; ".join(families) or "none installed"
+
+
+def _experiment(kinds: Kinds) -> str:
     template = f"""\
 {SHAPE_MARK}
 schema: ix.v1.experiment       # optional; absent means ix.v1.experiment
@@ -766,8 +776,8 @@ whether it came from the experiment, the genre or ix.
   changes is the load around each trial (a provider's rate limits, a timeout that a
   slowed session now meets), which is why the width is part of the design, digested by
   the plan and frozen by registration. Above 1 is refused (`trials_in_flight_refused`,
-  at `trials_in_flight`) where any kind in use is `overlap: forbidden` (a `process` or
-  `http` subject, `http-load`, `timing`, `memory`, a `process` or `compose` environment),
+  at `trials_in_flight`) where any kind in use is `overlap: forbidden`
+  ({_overlap_forbidden(kinds)}),
   where a deciding metric (`primary`, a guardrail) is contended (a time, a throughput, a
   memory peak, `usage`'s `duration`), or where the genre forbids overlap (`regress`).
   Its `fix` names each and says `trials_in_flight: 1`. A contended metric
@@ -1391,7 +1401,7 @@ def render(
         )
     match reference:
         case "experiment":
-            body = _experiment()
+            body = _experiment(kinds)
         case "genres":
             body = _genres(genres)
         case "kinds":
