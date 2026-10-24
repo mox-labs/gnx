@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import matrix
 import pytest
 import yaml
-from ix_fakes import FakeSubject, FakeTiming, experiment, fake_registry
+from ix_fakes import LOG, FakeSubject, FakeTiming, experiment, fake_registry
 from matrix import (
     TASK,
     Executor,
@@ -42,15 +42,17 @@ from ix.application import running
 from ix.composition import Root
 from ix.composition.settings import IxSettings
 from ix.domain import schema
-from ix.domain.run import HarnessError, Target
+from ix.domain.report import report as build_report
+from ix.domain.run import HarnessError, Interaction, Target
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
     from pathlib import Path
 
+    from ix.domain.kind import Kinds
     from ix.domain.ports import Environment, Probe
     from ix.domain.problem import Problem
-    from ix.domain.run import Interaction, Trial
+    from ix.domain.run import Reading, Trial
 
 Write = Any
 
@@ -669,3 +671,149 @@ class TestDispatch:
 
         asyncio.run(cancelled())
         assert run.subject.most == 4 and run.subject.holding == 0
+
+
+# --- sensing, and an analysis that does not depend on order (X7, X8) ---------------------
+
+
+class _Judging:
+    """A sensor whose every reading makes one fake model call, labelled by the trial, after
+    a wait drawn from it; it counts the readings under way."""
+
+    def __init__(self) -> None:
+        self.reading = 0
+        self.most = 0
+
+    def watch(self, target: Target, options: Mapping[str, Any]) -> None:
+        return None
+
+    async def sense(
+        self, interaction: Interaction, *, truth: Mapping[str, Any], options: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        self.reading += 1
+        self.most = max(self.most, self.reading)
+        try:
+            await asyncio.sleep(random.Random(interaction.seq).uniform(0, 0.01))
+            label = f"judge/{interaction.seq}"
+            record_session(Session(port="model-runtime", name=label, sent=digest(label)))
+            await asyncio.sleep(random.Random(-interaction.seq).uniform(0, 0.01))
+            return {"throughput": float(interaction.seq)}
+        finally:
+            self.reading -= 1
+
+
+def _sensed(
+    write: Write, width: int, isolation: str, builtin: Kinds
+) -> tuple[list[Reading], tuple[Session, ...], _Judging]:
+    """Sense eight interactions, given in reverse, at ``width``, inside a matrix run (so its
+    scope is Recorded), with the timing sensor's kind declared ``isolation``."""
+    prepared = _prepared(write(experiment()))
+    setup = running.setup_of(prepared.manifest)
+    setup = dataclasses.replace(
+        setup, design=setup.design.model_copy(update={"trials_in_flight": width})
+    )
+    trials = prepared.trials[:8]
+    interactions = [
+        Interaction(seq=t.seq, subject=t.subject, role=t.role, probe=t.probe, started_ns=0,
+                    duration_ns=0)
+        for t in reversed(trials)
+    ]  # fmt: skip
+    timing = builtin.kinds[schema.url("sensor", "timing")]
+    sensor = _Judging()
+    kit = dataclasses.replace(
+        _kit(_Answering()),
+        sensors={timing.name: sensor},
+        kinds={timing.name: timing.model_copy(update={"isolation": isolation})},
+    )
+    found: list[Reading] = []
+
+    class _Sense:
+        requires = frozenset({TASK})
+        provides = frozenset({schema.READING})
+
+        async def run(self, inputs: Any, ctx: RunContext) -> None:
+            found.extend(
+                await running.sense(setup, kit, trials=trials, interactions=interactions, scope=ctx)
+            )
+
+    run = asyncio.run(Executor().run(wire({"sense": _Sense()}, inputs=[TASK]), {TASK: "go"}))
+    return found, run.rows("matrix.v1.session"), sensor
+
+
+class TestSensing:
+    def test_readings_are_taken_side_by_side_each_naming_its_own_sessions(
+        self, write_experiment: Write, builtin_kinds: Kinds
+    ) -> None:
+        """X8: sensing runs at the same width as the trials, each reading in a task of its
+        own, so each names only its own model call; the readings come in seq order whatever
+        order the interactions were given in."""
+        readings, sessions, sensor = _sensed(write_experiment, 4, "shared", builtin_kinds)
+        assert sensor.most == 4
+        assert [r.seq for r in readings] == sorted(r.seq for r in readings)
+        assert {r.seq for r in readings} == set(range(8))
+        for reading in readings:
+            assert [sessions[row].name for row in reading.sessions] == [f"judge/{reading.seq}"]
+
+    def test_sensing_begins_once_every_trial_has_ended(self, write_experiment: Write) -> None:
+        """X8, confirmed: the sense component requires the interactions, so matrix starts it
+        once the trials component has ended; no reading overlaps a trial."""
+
+        class _Logging(FakeTiming):
+            async def sense(self, interaction: Any, *, truth: Any, options: Any) -> Any:
+                LOG.append("sense")
+                return await super().sense(interaction, truth=truth, options=options)
+
+        LOG.clear()
+        Root(registry=fake_registry(sensor=_Logging)).run(
+            write_experiment(experiment()), exploratory=True
+        )
+        first = LOG.index("sense")
+        assert LOG.count("sense") == 15
+        assert not [line for line in LOG[first:] if line != "sense"]
+
+    def test_an_exclusive_sensor_reads_one_trial_at_a_time(
+        self, write_experiment: Write, builtin_kinds: Kinds
+    ) -> None:
+        readings, _, sensor = _sensed(write_experiment, 4, "exclusive", builtin_kinds)
+        assert sensor.most == 1 and {r.seq for r in readings} == set(range(8))
+
+    def test_a_shuffled_record_gives_the_same_report_byte_for_byte(
+        self, tmp_path: Path, write_experiment: Write
+    ) -> None:
+        """The permutation invariant: every reduction sorts by key before it folds, so the
+        order rows were landed in (which at a width above one is the order trials finished
+        in) changes nothing in the analysis, the confusion table, the flags or the screen.
+        Regression: the confusion table was built in the order its readings came."""
+        routing = {
+            "name": "routing",
+            "question": "Does the right skill fire?",
+            "genre": "evaluate",
+            "subjects": {"catalog": {"kind": "agent-session", "runtime": "mock"}},
+            "probes": [
+                {"id": "ask", "kind": "prompt", "prompt": "Review this.", "mock_response": "ok",
+                 "truth": {"expectation": "must_trigger", "expected_skill": "review"}},
+                {"id": "decoy", "kind": "prompt", "prompt": "Rename it.", "mock_response": "ok",
+                 "truth": {"expectation": "should_not_trigger"}},
+            ],
+            "primary": {"metric": "activated_correctly"},
+            "threshold": {"op": ">=", "value": 0.5},
+            "metrics": ["tokens_total"],
+            "repeats": 5,
+        }  # fmt: skip
+        report = _root().run(write_experiment(routing), exploratory=True)
+        found = matrix_runs.Runs.at(report.location, JsonlConstructStore)
+        assert found is not None
+        records, run = found
+        record = records.record(run)
+        assert report.confusion, "the activation sensor tabulates expected against observed"
+        shuffle = random.Random(7)
+        for _ in range(5):
+            interactions, readings = list(record.interactions), list(record.readings)
+            shuffle.shuffle(interactions)
+            shuffle.shuffle(readings)
+            shuffled = dataclasses.replace(
+                record, interactions=tuple(interactions), readings=tuple(readings)
+            )
+            assert build_report(shuffled).model_dump_json() == (
+                build_report(record).model_dump_json()
+            )

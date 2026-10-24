@@ -35,6 +35,11 @@
   unconfirmed lands as `environment_lost`; on a stop nothing more starts and every trial in
   flight lands, its own outcome or `cancelled`. At 1 the run is the serial run it was.
   `invoke` takes the flag its probe races (`stopping=`; the scope's when not given).
+- **Sensing at the same width.** `sense` reads as many interactions at once as
+  `trials_in_flight`, each reading in a task of its own, naming only the sessions its
+  sensor made for that trial; a sensor whose kind is not `shared` reads one at a time. Its
+  readings come in `seq` order whatever order the interactions were landed in. It still
+  begins only once every trial has ended.
 - **`isolation` on every kind, `contended` on every metric.** A kind says whether two trials
   may use it at once (`isolation: shared | exclusive`; a kind that says nothing, a third
   party's included, is `exclusive`), and a metric whether its reading moves with whatever
@@ -51,6 +56,10 @@
   readings over at once, so matrix's ledger credited every reading with every judgement of
   the run; each reading is now handed over naming the sessions its sensor made reading that
   trial (`Reading.sessions`), and each interaction those of its own trial.
+- **A report does not depend on the order rows were landed in.** The confusion table was
+  built in the order its readings came, so the same run read with its rows in another order
+  gave another document; it is read in `seq` order now, and a shuffled record gives the
+  same report byte for byte.
 
 ## 0.6.0 — 2026-10-22
 

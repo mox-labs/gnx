@@ -80,14 +80,17 @@ def _measured(readings: Sequence[Reading]) -> list[Reading]:
 
 
 def confusion(design: Design, readings: Sequence[Reading]) -> tuple[ConfusionTable, ...]:
-    """A table per subject for each sensor whose kind declares a confusion."""
+    """A table per subject for each sensor whose kind declares a confusion: the subjects in
+    the order their first trial ran, each table's counts in the order of its trials. Read in
+    ``seq`` order, so the order the readings were landed in (which trials in flight make the
+    order they finished in) changes nothing."""
     tables: list[ConfusionTable] = []
     for sensor in design.sensors:
         declared = sensor.confusion
         if declared is None:
             continue
         seen: dict[str, dict[int, tuple[str, str]]] = {}
-        for reading in _measured(readings):
+        for reading in sorted(_measured(readings), key=lambda reading: reading.seq):
             expected = reading.detail.get(declared.expected)
             observed = reading.detail.get(declared.observed)
             if reading.sensor != sensor.kind or expected is None or observed is None:

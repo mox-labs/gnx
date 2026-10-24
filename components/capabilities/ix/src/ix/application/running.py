@@ -22,7 +22,13 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Mapping
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import (
+    AsyncExitStack,
+    asynccontextmanager,
+    contextmanager,
+    nullcontext,
+    suppress,
+)
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeGuard
 
@@ -54,6 +60,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 
     from ix.application.experiments import Examined, Vocabulary
+    from ix.domain.design import SelectedSensor
     from ix.domain.experiment import ProbeSet
     from ix.domain.kind import Kind, Metric
     from ix.domain.plan import Required
@@ -961,39 +968,79 @@ async def sense(
     the scope is :class:`Recorded`; hand each over naming those (``Reading.sessions``) and
     no more. It needs only the stored tables, so it can be run again over a run that ended
     before it got this far.
+
+    It reads as many interactions at once as the design's ``trials_in_flight``, each reading
+    in a task of its own; a sensor whose kind is not ``shared`` (or is not declared here)
+    reads one interaction at a time. The readings come in ``seq`` order, then the design's
+    order of sensors and metrics, whatever order the interactions were given in.
     """
     planned = {trial.seq: trial for trial in trials}
-    readings: list[Reading] = []
-    for interaction in interactions:
-        trial = planned.get(interaction.seq)
-        if interaction.failure is not None or trial is None:
-            continue
-        truth = setup.probes[trial.probe].truth if trial.probe in setup.probes else {}
-        for selected in setup.design.sensors:
-            declared = kit.kinds.get(selected.kind)
-            options = selected.options
-            if declared is not None:
-                options = placed(declared, options, setup.base)
-            with _span(
-                scope,
-                "ix.sensor",
-                **{"ix.run.id": setup.manifest.run, "ix.sensor": selected.kind},
-                **{"ix.trial.seq": interaction.seq, "ix.subject": interaction.subject},
-            ) as span:
-                async with _attributed(scope) as attribution:
-                    measured = await measure(
-                        kit.sensors[selected.kind], interaction, truth, options
-                    )
-                sessions = attribution.sessions()
-                for name in selected.metrics:
-                    metric = setup.design.metric(name)
-                    if metric is None:
-                        continue
-                    given = measured if isinstance(measured, Failure) else measured.values.get(name)
-                    detail = {} if isinstance(measured, Failure) else measured.detail
-                    _evaluated(span, name, given)
-                    reading = as_reading(interaction, selected.kind, metric, given, detail)
-                    readings.append(reading.model_copy(update={"sessions": sessions}))
+    carried = sorted(
+        (i for i in interactions if i.failure is None and i.seq in planned), key=lambda i: i.seq
+    )
+    slots = asyncio.Semaphore(setup.design.trials_in_flight)
+    alone = {
+        selected.kind: asyncio.Lock()
+        for selected in setup.design.sensors
+        if (declared := kit.kinds.get(selected.kind)) is None or declared.isolation != "shared"
+    }
+    found: dict[tuple[int, int], list[Reading]] = {}
+
+    async def read(at: int, interaction: Interaction, index: int, selected: SelectedSensor) -> None:
+        try:
+            lock = alone.get(selected.kind)
+            async with lock if lock is not None else nullcontext():
+                probe = planned[interaction.seq].probe
+                truth = setup.probes[probe].truth if probe in setup.probes else {}
+                found[at, index] = await _read(setup, kit, interaction, selected, truth, scope)
+        finally:
+            slots.release()
+
+    try:
+        async with asyncio.TaskGroup() as group:
+            for at, interaction in enumerate(carried):
+                for index, selected in enumerate(setup.design.sensors):
+                    await slots.acquire()
+                    group.create_task(read(at, interaction, index, selected))
+    except BaseExceptionGroup as failed:
+        raise failed.exceptions[0] from failed  # a defect in ix, as it would raise alone
+    readings = [reading for key in sorted(found) for reading in found[key]]
     if scope is not None:
         scope.emit(SENSE_END, readings=len(readings), interactions=len(interactions))
+    return readings
+
+
+async def _read(
+    setup: Setup,
+    kit: Kit,
+    interaction: Interaction,
+    selected: SelectedSensor,
+    truth: Mapping[str, Any],
+    scope: Scope | None,
+) -> list[Reading]:
+    """What one sensor reads of one interaction: a reading per metric the design has it
+    read, each naming the sessions the sensor made in this task."""
+    declared = kit.kinds.get(selected.kind)
+    options = selected.options
+    if declared is not None:
+        options = placed(declared, options, setup.base)
+    readings: list[Reading] = []
+    with _span(
+        scope,
+        "ix.sensor",
+        **{"ix.run.id": setup.manifest.run, "ix.sensor": selected.kind},
+        **{"ix.trial.seq": interaction.seq, "ix.subject": interaction.subject},
+    ) as span:
+        async with _attributed(scope) as attribution:
+            measured = await measure(kit.sensors[selected.kind], interaction, truth, options)
+        sessions = attribution.sessions()
+        for name in selected.metrics:
+            metric = setup.design.metric(name)
+            if metric is None:
+                continue
+            given = measured if isinstance(measured, Failure) else measured.values.get(name)
+            detail = {} if isinstance(measured, Failure) else measured.detail
+            _evaluated(span, name, given)
+            reading = as_reading(interaction, selected.kind, metric, given, detail)
+            readings.append(reading.model_copy(update={"sessions": sessions}))
     return readings
