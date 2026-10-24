@@ -1,0 +1,64 @@
+# The live validation slice for trials in flight: does a real provider measure the same
+# thing when four trials run at once as when they run one at a time?
+#
+#   ix validate examples/trials-in-flight
+#   ix plan examples/trials-in-flight
+#
+# It is never run in CI: every trial is a real claude-sdk session, which calls a model and
+# costs money. README.md beside this file is the protocol: eight exploratory runs of this
+# file in the order S P P S P S S P (S one at a time, P `--trials-in-flight 4`), then an
+# equivalence test (TOST) of P against S on each metric below, with k6-control.yaml as the
+# negative control.
+#
+# The file writes no trials_in_flight: S and P are the same file, the width given on the
+# command line (`--exploratory --trials-in-flight 4`), so the two arms differ in nothing
+# else. Every kind here is shared and no deciding metric is contended, so ix accepts the
+# width; `ix plan` shows it as 1, from ix.
+name: trials-in-flight
+question: Does a claude-sdk agent answer as it does alone when four of its sessions run at once?
+rationale: >-
+  A fresh session per trial shares nothing with its neighbours but the provider. If the
+  provider serves concurrent sessions as it serves one, a pass rate and a token count read
+  at width 4 match those read at width 1 within the margins; if rate limits or load change
+  the answers, they do not.
+genre: evaluate
+
+subjects:
+  agent:
+    kind: agent-session
+    runtime: claude-sdk
+    # One turn: each trial is one answer, so a trial's cost and length are the model's.
+    max_turns: 1
+    runtime_options:
+      # Hermetic: nothing from ~/.claude loads, so both arms run the same agent.
+      setting_sources: []
+
+probes:
+  - id: word
+    kind: prompt
+    prompt: Reply with the single word BANANA and nothing else.
+    truth: {starts_with: BANANA}
+  - id: sum
+    kind: prompt
+    prompt: What is 17 + 25? Reply with the number only.
+    truth: {starts_with: "42"}
+  - id: capital
+    kind: prompt
+    prompt: What is the capital of Australia? Reply with the city's name only.
+    truth: {starts_with: Canberra}
+  - id: list
+    kind: prompt
+    prompt: Name three primary colours, comma-separated, starting with red.
+    truth: {starts_with: red}
+
+# The pass rate is what the slice holds to 5 percentage points (a session that a rate
+# limit or a timeout fails is a failed trial, which lowers it); tokens_total to 5%.
+primary: {metric: text_matched}
+threshold: {op: ">=", value: 0.5}
+metrics: [tokens_total, tokens_output]
+sensors:
+  - {kind: text-match, ignore_case: true}
+
+# 4 probes x 10 repeats = 40 sessions a run, 320 over the eight runs.
+repeats: 10
+seed: 20261024

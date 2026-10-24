@@ -46,6 +46,10 @@
   runs beside the trial (`contended: true`; false when unsaid). The built-in kinds and
   metrics declare theirs; `--skill` shows both. Neither enters a plan's digest or a
   registration: they are checked each time an experiment is.
+- **`examples/trials-in-flight/`**: the live validation slice, run by hand and never in CI.
+  An agent experiment, a k6 negative control and the protocol (eight exploratory runs, S P
+  P S P S S P, then an equivalence test with margins of 5pp and 5%) that decides whether
+  `regress` may let its trials overlap.
 - **`isolation` on a genre's `design`** (`shared` when unsaid): whether its trials may
   overlap at all. A genre that extends another may tighten it to `exclusive`, never loosen
   it (`genre_narrowing`). `regress` is `exclusive`; the other built-ins are `shared`.

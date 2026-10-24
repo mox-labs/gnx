@@ -742,7 +742,9 @@ def _lab() -> Path:
 
 
 class TestExamplesAndLab:
-    @pytest.mark.parametrize("example", ["proxy-streaming", "harness-integrity"])
+    @pytest.mark.parametrize(
+        "example", ["proxy-streaming", "harness-integrity", "trials-in-flight"]
+    )
     def test_each_example_validates_and_plans_clean(self, example: str) -> None:
         path = str(EXAMPLES_DIR / example)
         validated = _run("validate", path, "--json")

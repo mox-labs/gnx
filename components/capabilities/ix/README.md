@@ -8,8 +8,8 @@ to be relied on. For a service: is the new build no slower than the old one, doe
 
 You write the question, the systems and the measurement that decides it in one YAML file.
 ix checks the file, shows what a run would do, freezes the design before anything
-runs, runs it one trial at a time and reports a verdict: `holds`, `fails` or
-`inconclusive`. The exit code is the verdict, so a run can gate a merge or a release.
+runs, runs its trials (one at a time, or several at once where nothing they measure is
+disturbed by it) and reports a verdict: `holds`, `fails` or `inconclusive`. The exit code is the verdict, so a run can gate a merge or a release.
 
 ```bash
 # the ix command
@@ -437,10 +437,26 @@ env/a.yaml]` the program and its config. A program found on PATH is not the expe
 A run brings the environment up once, binds each service it brought up with how to reach
 it (a subject's or a probe's option names `{<service>.url}`, `.host`, `.port`; a run whose
 environment comes up without a service the experiment names fails before any trial), then
-carries out the trials one at a time in the order the plan fixed (`plan` and `run` compute the same list, and the plan's digest covers
-it). For each trial: start the subject, let the sensors that must watch begin, apply the
-probe, stop the watchers, stop the subject. The sensors then read every trial that was
-carried out. Progress goes to stderr (a bar on a terminal, one line per trial otherwise,
+carries out the trials, starting them in the order the plan fixed (`plan` and `run` compute the same list, and the plan's digest covers
+it), one at a time unless the experiment writes `trials_in_flight` (below). For each
+trial: start the subject, let the sensors that must watch begin, apply the probe, stop the
+watchers, stop the subject. The sensors then read every trial that was carried out.
+
+**Trials in flight.** `trials_in_flight: 4` carries four trials out at once: each trial
+starts in the plan's order as another lands, and each row carries its `seq`, which every
+reader orders by. It is 1 when left out. The trials, and the n each estimate rests on, are
+the same at any width; what changes is the load around each trial: a provider's rate
+limits, and a session slowed by its neighbours that now meets its `timeout`. So the width
+is part of the design: the plan states it (`Order:`), its digest covers it, and
+registration freezes it, so a gate is never passed at a width nobody registered.
+`ix run --trials-in-flight N` tries a width with `--exploratory` or `--dry-run` only, and is
+listed under `Changed`. A width above 1 is refused (`trials_in_flight_refused`, its fix
+`trials_in_flight: 1`) where any kind in use is `exclusive`, a deciding metric is contended
+or the genre is `exclusive` ([Kinds](#kinds)); in practice, agent sessions and model calls
+judged on what they said or did. With an environment, a trial counts as carried out only
+once a check that began after it ended finds the environment still up; on the first that
+does not, nothing more starts and every trial not yet confirmed is `environment_lost`. The
+sensors read at the same width, one at a time for a kind that is not `shared`. Progress goes to stderr (a bar on a terminal, one line per trial otherwise,
 nothing under `--json`); the report goes to stdout.
 
 - **Register first.** `ix run` refuses an unregistered experiment (exit 15).
@@ -664,7 +680,9 @@ between two samples is missed.
 
 ### Not built
 
-Trials run one at a time; there is no concurrency. A subject left running by a run that was
+Trials of a `process` or `http` subject, of `http-load`, or under `timing` or `memory`
+cannot run in flight: those kinds are `exclusive`, and no measurement says yet what
+several at once would do to them. A subject left running by a run that was
 killed outright is not found and stopped later: in the next run, each trial of a subject
 whose address already answers is recorded as a harness failure (`address_in_use`) instead
 of being measured. The sensors cannot be run again over a stored run and written back.

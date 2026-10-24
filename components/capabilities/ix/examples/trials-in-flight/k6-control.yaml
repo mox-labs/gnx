@@ -1,0 +1,35 @@
+# The negative control of the trials-in-flight slice: a measurement that load is known to
+# move, run through the same protocol, so the equivalence test is shown able to fail.
+#
+#   python3 ../delay-server/server.py --port 18474 --delay-ms 40 &
+#   ix validate examples/trials-in-flight/k6-control.yaml
+#
+# Its kinds are exclusive (an http subject, http-load, timing), so ix refuses to run it with
+# trials in flight: in its P runs the load comes from four `ix run`s of this file started at
+# once against the one server (README.md beside this file). Its latency should move by more
+# than 5% between S and P. If the test calls S and P equivalent here, it cannot tell them
+# apart anywhere, and the agent slice says nothing.
+name: trials-in-flight-k6-control
+question: Does a server's latency read the same when other load runs against it at once?
+genre: evaluate
+
+subjects:
+  server:
+    kind: http
+    url: "http://127.0.0.1:18474"
+
+probes:
+  - id: get
+    kind: http-load
+    target: "{url}/work"
+    load_model: closed
+    concurrency: 4
+    duration: 5s
+    warmup: 1s
+
+primary: {metric: latency, statistic: p50}
+# The slice reads the latencies, not this verdict.
+threshold: {op: "<", value: 200ms}
+
+repeats: 10
+seed: 20261024

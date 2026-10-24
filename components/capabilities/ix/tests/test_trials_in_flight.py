@@ -245,8 +245,12 @@ class TestTheWidthIsAConditionOfTheRun:
 
 
 def _refusal(found: ix.Validation) -> Problem:
+    return _refusal_at(found, 2)
+
+
+def _refusal_at(found: ix.Validation, width: int) -> Problem:
     (refused,) = [p for p in found.problems if p.kind == "trials_in_flight_refused"]
-    assert (refused.path, refused.got) == ("trials_in_flight", 2)
+    assert (refused.path, refused.got) == ("trials_in_flight", width)
     assert refused.fix.startswith("trials_in_flight: 1")
     return refused
 
@@ -297,6 +301,32 @@ class TestOverlapIsRefusedWhereItWouldConfound:
         (warned,) = found.warnings
         assert (warned.kind, warned.path) == ("trials_in_flight_contended", "trials_in_flight")
         assert "duration" in warned.message
+
+    def test_a_third_partys_kind_declares_both_as_a_built_in_does(self, tmp_path: Path) -> None:
+        """ACES, extensible: a kind file of a lab (read as a package's ``ix.kind`` files
+        are) declares ``isolation`` and ``contended`` and is held to them; one that says
+        nothing of its isolation is ``exclusive``."""
+        sensor = {
+            "name": "lab.v1.sensor.waiting", "summary": "How long the reply took.",
+            "needs": ["response"], "isolation": "shared",
+            "metrics": [{"name": "wait", "unit": "ms", "direction": "lower",
+                         "shape": "scalar", "contended": True}],
+        }  # fmt: skip
+        silent = {**sensor, "name": "lab.v1.sensor.silent", "isolation": None}
+        silent = {key: value for key, value in silent.items() if value is not None}
+        silent["metrics"] = [{"name": "quiet", "direction": "lower", "shape": "scalar"}]
+        folder = _canned(tmp_path, metrics=["wait"], trials_in_flight=2)
+        (folder / "kinds").mkdir()
+        (folder / "kinds" / "waiting.yaml").write_text(yaml.safe_dump(sensor))
+        (folder / "kinds" / "silent.yaml").write_text(yaml.safe_dump(silent))
+        found = ix.validate(folder)
+        assert found.valid
+        warned = [w for w in found.warnings if w.kind.startswith("trials_in_flight")]
+        assert [(w.kind, "wait" in w.message) for w in warned] == [
+            ("trials_in_flight_contended", True)
+        ]  # and kind_unimplemented: a declaration with no adapter here
+        _canned(tmp_path, metrics=["wait", "quiet"], trials_in_flight=2)
+        assert "sensor lab.v1.sensor.silent" in _refusal(ix.validate(folder)).message
 
     def test_the_command_lines_width_is_held_to_the_same_rule(
         self, write_experiment: Write
@@ -943,3 +973,27 @@ def _crowding(write: Write, width: int, crowded: bool) -> dict[tuple[int, str, s
         return await running.sense(setup, kit, trials=trials, interactions=run.landed)
 
     return _per_seq(asyncio.run(both()))
+
+
+SLICE = Path(__file__).resolve().parents[1] / "examples" / "trials-in-flight"
+
+
+def test_the_live_slice_is_what_its_protocol_says(tmp_path: Path) -> None:
+    """X10's live slice is never run here; what is checked is that it can be run as its
+    README says: the agent experiment writes no width and takes 4 (every kind shared, its
+    decision uncontended), and the control is refused one, so its load must come from
+    separate runs."""
+    agent = yaml.safe_load((SLICE / "experiment.yaml").read_text())
+    assert "trials_in_flight" not in agent
+    assert ix.plan(SLICE).order.trials_in_flight == 1
+    wide = tmp_path / "wide"
+    wide.mkdir()
+    (wide / "experiment.yaml").write_text(yaml.safe_dump({**agent, "trials_in_flight": 4}))
+    found = ix.validate(wide)
+    assert found.valid and found.warnings == ()
+    control = yaml.safe_load((SLICE / "k6-control.yaml").read_text())
+    assert ix.validate(SLICE / "k6-control.yaml").valid
+    (wide / "experiment.yaml").write_text(yaml.safe_dump({**control, "trials_in_flight": 4}))
+    _refusal_at(ix.validate(wide), 4)
+    readme = (SLICE / "README.md").read_text()
+    assert "S P P S P S S P" in readme and "5 percentage points" in readme and "5%" in readme
