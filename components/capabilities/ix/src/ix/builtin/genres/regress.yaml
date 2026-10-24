@@ -10,6 +10,10 @@ must_set: [primary, comparison, margin]
 comparisons:
   non-inferiority: "{variant} is at most {margin} worse than {control} on {metric}"
 default_comparison: non-inferiority
+# A gate is taken up mechanically, so its trials do not overlap until the live validation
+# slice shows trials in flight measure what one at a time does (ix design record §27).
+design:
+  isolation: exclusive
 report: [question, design, gate, estimates, calibration, baseline, failures, warrant, raw]
 guidance: |
   Use regress to gate a change: the candidate must be no worse than the baseline.
@@ -27,7 +31,6 @@ guidance: |
   comparison is not yours to change here.
   Register the experiment before any run (`ix register`), so the margin cannot move
   once the numbers are in. A run of an experiment that changed since its registration
-  gives no gate result until the registration is amended with a reason.
-  What would falsify it: the interval of the difference lies wholly beyond the margin on
+  gives no gate result until the registration is amended with a reason.  What would falsify it: the interval of the difference lies wholly beyond the margin on
   the worse side. An interval that crosses the margin is inconclusive, and inconclusive
   does not pass a gate.

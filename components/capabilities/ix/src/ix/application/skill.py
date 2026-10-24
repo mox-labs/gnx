@@ -817,6 +817,8 @@ def _genre_section(genre: Genre) -> str:
     ]
     if design.calibration != "none":
         supplied.append(f"calibration {design.calibration} (the control against itself)")
+    if design.isolation == "exclusive":
+        supplied.append("isolation exclusive (its trials never overlap)")
     if genre.default_comparison is not None:
         supplied.append(f"comparison {genre.default_comparison}")
     lines = [

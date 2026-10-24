@@ -222,7 +222,19 @@ class TestBuiltInGenres:
         assert compare is not None and regress is not None
         assert regress.factors == compare.factors
         assert regress.verdict_form == compare.verdict_form
-        assert regress.design == compare.design
+        # Its one design choice of its own: its trials do not overlap (the next test).
+        assert regress.design == compare.design.model_copy(update={"isolation": "exclusive"})
+
+    def test_only_a_gates_trials_may_not_overlap(self, builtin_genres: Genres) -> None:
+        """Ruling X4 (record §27): regress is ``exclusive`` until the live validation slice
+        passes, since a gate is taken up mechanically and a confound it missed would ship;
+        the other genres are ``shared`` and leave it to their kinds."""
+        isolation = {g.label: g.design.isolation for g in builtin_genres.genres.values()}
+        assert isolation == {
+            "characterize": "shared", "compare": "shared", "evaluate": "shared",
+            "regress": "exclusive",
+        }  # fmt: skip
+        assert Genre.model_validate(_genre()).design.isolation == "shared"
 
     def test_compare_has_one_control_and_one_or_more_variants(self, builtin_genres: Genres) -> None:
         compare = builtin_genres.get("compare")
@@ -383,6 +395,17 @@ class TestExtension:
         parent["design"]["calibration"] = "aa"
         found = _genres(parent, _child(design={"calibration": "none"}))
         assert _paths(found) == ["design.calibration"]
+
+    def test_a_child_may_keep_its_trials_apart_and_may_not_let_them_overlap(self) -> None:
+        """Ruling X4: a genre's ``isolation`` only tightens, shared to exclusive, as order and
+        calibration do: a finding under the child is still one under the parent."""
+        assert _genres(_genre(), _child(design={"isolation": "exclusive"})).rejected == {}
+        parent = _genre()
+        parent["design"]["isolation"] = "exclusive"
+        found = _genres(parent, _child(design={"isolation": "shared"}))
+        assert _paths(found) == ["design.isolation"]
+        (refused,) = found.rejected[CHILD]
+        assert refused.fix == "isolation: exclusive"
 
     @pytest.mark.parametrize(
         ("parent", "child"),

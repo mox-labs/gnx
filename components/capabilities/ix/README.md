@@ -234,7 +234,10 @@ add report sections. It may not loosen its parent, change the analysis or add a 
 it, change the estimator or the verdict form, or add a role. A genre file that breaks this is
 refused with a `genre_narrowing` problem for each place it does.
 
-A genre's `design` (repeats, order, calibration, estimator) carries a note on its standing.
+A genre's `design` (repeats, order, calibration, estimator, isolation) carries a note on its
+standing. Its `isolation` (`shared` when unsaid) says whether its trials may overlap at all:
+`regress` is `exclusive`, so a gate's trials run one at a time whatever its kinds allow; a
+genre that extends another may make it `exclusive`, never `shared` again.
 The built-in genres need at least 5 repeats to decide (3 for `characterize`) and default to
 10 (5); their methods are checked by simulation at those counts (see
 [the method](#the-verdict-and-the-method-behind-it)). A genre that decides cannot use `min`

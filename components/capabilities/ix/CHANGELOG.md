@@ -20,6 +20,9 @@
   runs beside the trial (`contended: true`; false when unsaid). The built-in kinds and
   metrics declare theirs; `--skill` shows both. Neither enters a plan's digest or a
   registration: they are checked each time an experiment is.
+- **`isolation` on a genre's `design`** (`shared` when unsaid): whether its trials may
+  overlap at all. A genre that extends another may tighten it to `exclusive`, never loosen
+  it (`genre_narrowing`). `regress` is `exclusive`; the other built-ins are `shared`.
 
 ### Fixed
 
