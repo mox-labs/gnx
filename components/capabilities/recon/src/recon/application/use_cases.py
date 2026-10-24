@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from recon.application.captures import record_hook_payload
 from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
+from recon.application.schedules import Schedules
 from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
 from recon.application.survey import CollectorError, Survey
 from recon.domain.archives import (
@@ -75,9 +76,10 @@ if TYPE_CHECKING:
     from recon.domain.archives import ArchiveQuery, ArchiveState, ArchiveStore, Ended
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector, Plugins
-    from recon.domain.documents import Capture
+    from recon.domain.documents import Capture, ScheduleDocument, SchedulesDocument
     from recon.domain.missions import ConfigFile, MissionStore
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
+    from recon.domain.schedule import Platform, ScheduleHost, Scheduler, ScheduleStore
     from recon.domain.stream import GapLog, Stop, WindowSpec
     from recon.domain.telemetry import Channel, EventCallback, Telemetry
 
@@ -139,12 +141,20 @@ class Recon:
         version: str,
         root_found_by: str = "argument",
         channel: ChannelFactory | None = None,
+        schedulers: Callable[[Platform | None], Scheduler] | None = None,
+        schedule_store: ScheduleStore | None = None,
+        schedule_host: ScheduleHost | None = None,
+        local: Callable[[datetime], datetime] | None = None,
     ) -> None:
         """``root_found_by`` is how the composition root found the project root:
         ``argument`` (the caller named it), ``repository`` (the nearest ancestor holding
         ``.git``) or ``working_directory``. Each survey records it. ``channel`` makes each
         survey's channel, through which OpenTelemetry and ``on_event`` receive; without
-        one they receive at once, on the survey's thread."""
+        one they receive at once, on the survey's thread. ``schedulers`` makes the operating
+        system's scheduler of a platform (None: the host's own), which ``schedule_*`` run
+        through, with the ``schedule_store`` beside each mission, the ``schedule_host``'s
+        recon command and PATH, and ``local``, the clock's time as the host's local time;
+        without them, the ``schedule_*`` operations are refused."""
         self._missions = missions
         self._archives = archives
         self._query = query
@@ -156,6 +166,19 @@ class Recon:
         self._version = version
         self._root_found_by = root_found_by
         self._channel = channel
+        self._schedules = (
+            None
+            if schedulers is None or schedule_store is None or schedule_host is None
+            else Schedules(
+                missions=missions,
+                store=schedule_store,
+                schedulers=schedulers,
+                host=schedule_host,
+                clock=clock,
+                local=local or (lambda at: at),
+                prepare=lambda name: self._prepare(name, None, False)[:2],
+            )
+        )
 
     # --- init ---------------------------------------------------------------------------
 
@@ -668,6 +691,38 @@ class Recon:
                 fix=f"recon survey {name} -c {config} --replace",
             )
         return source, plan, mission_config
+
+    # --- schedules ---------------------------------------------------------------------
+
+    def _scheduling(self) -> Schedules:
+        if self._schedules is None:
+            raise UsageError(
+                "this recon was built with no scheduler",
+                fix="build it with recon.composition.root(), which gives it the host's",
+            )
+        return self._schedules
+
+    def schedule_install(self, name: str, *, platform: Platform | None = None) -> ScheduleDocument:
+        """Project the mission's ``schedule:`` onto the scheduler (the host's, or
+        ``platform``'s) and have it load the files; again with the same config it changes
+        nothing (``unchanged``). Raises ConfigError for a mission with no ``schedule:``."""
+        return self._scheduling().install(name, platform)
+
+    def schedule_remove(self, name: str, *, platform: Platform | None = None) -> ScheduleDocument:
+        """Unload and remove the mission's schedule (``removed``), or say there was none
+        (``absent``)."""
+        return self._scheduling().remove(name, platform)
+
+    def schedule_list(self, *, platform: Platform | None = None) -> SchedulesDocument:
+        """The schedules installed for this project's missions."""
+        return self._scheduling().list(platform)
+
+    def schedule_status(
+        self, mission: str | None = None, *, platform: Platform | None = None
+    ) -> SchedulesDocument:
+        """Each schedule of the project, or the mission's: installed or not, its config
+        changed since or not, and when the next tick is due."""
+        return self._scheduling().status(mission, platform)
 
     # --- status, query, templates, capture ----------------------------------------------
 

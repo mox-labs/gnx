@@ -311,15 +311,17 @@ class TestLibrarySurface:
 
         Changed requirement: the operations return typed documents, so their types are
         declared names too. Changed again (review item 6): a control an operation takes to be
-        steered while it runs, ``StreamStop``, is declared too."""
+        steered while it runs, ``StreamStop``, is declared too. Changed (ruling S3): the
+        ``schedule_*`` operations and the two documents they return."""
         operations = {"init", "plan", "survey", "status", "query", "templates", "capture",
                       "survey_failure", "error_document", "skill", "skill_references",
                       "configure_telemetry", "read_since", "watch", "stream",
-                      "stream_failure"}  # fmt: skip
+                      "stream_failure", "schedule_install", "schedule_list",
+                      "schedule_remove", "schedule_status"}  # fmt: skip
         documents = {"MissionDocument", "PlanDocument", "SurveyDocument", "TableOutcome",
                      "StatusDocument", "QueryRows", "TemplatesDocument", "Capture",
                      "ErrorDocument", "RecordsSince", "StreamDocument",
-                     "WindowOutcome"}  # fmt: skip
+                     "WindowOutcome", "ScheduleDocument", "SchedulesDocument"}  # fmt: skip
         errors = {"ReconError", "UsageError", "ConfigError", "ConflictError", "NotFoundError",
                   "QueryError", "CollectionError", "Problem"}  # fmt: skip
         tables = {"ERROR_KINDS", "EXIT_CODES", "EXIT_MEANINGS", "EXIT_NEXT", "PROBLEM_KINDS",
@@ -478,4 +480,6 @@ def test_the_public_names_are_the_ones_callers_use() -> None:
         "templates",
         "stream", "stream_failure", "StreamDocument", "WindowOutcome",
         "StreamStop",
+        "schedule_install", "schedule_list", "schedule_remove", "schedule_status",
+        "ScheduleDocument", "SchedulesDocument",
     }  # fmt: skip

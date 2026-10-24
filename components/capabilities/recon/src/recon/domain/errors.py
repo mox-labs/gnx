@@ -153,6 +153,10 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "retain_unset",
     # a query of a stream that read more windows than it is cheap to open
     "windows_many",
+    # a mission's config changed since its schedule was installed: its ticks are refused
+    "config_changed",
+    # a scheduler that cannot keep the schedule's missed: (cron runs no missed tick)
+    "missed_ignored",
 )
 
 

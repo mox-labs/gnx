@@ -18,12 +18,17 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
-from typing import Literal
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from recon.domain.errors import UsageError
 from recon.domain.missions import MISSION_NAME
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
 
 #: What a tick the host missed (asleep, off) becomes: one run once it is back, or none.
 Missed = Literal["once", "skip"]
@@ -311,3 +316,68 @@ def _cron(run: ScheduledRun) -> str:
         hour = "*" if _every_hour(hours) else ",".join(str(h) for h in hours)
         lines += f"{','.join(str(m) for m in minutes)} {hour} * * * {command}\n"
     return lines
+
+
+def due(every: int, offset_s: int, at: datetime) -> datetime:
+    """The latest tick at or before the wall-clock time ``at`` (naive, local): the grid of
+    :func:`fire_times`, which a tick just after midnight finds on the day before."""
+    midnight = at.replace(hour=0, minute=0, second=0, microsecond=0)
+    k = int(((at - midnight).total_seconds() - offset_s) // every)
+    return midnight + timedelta(seconds=offset_s + k * every)
+
+
+# --- ports --------------------------------------------------------------------------------
+
+
+class Scheduler(Protocol):
+    """The operating system's scheduler, which starts each tick: where a schedule's files go,
+    and how it is made to load them, is the adapter's. A label names one schedule."""
+
+    @property
+    def platform(self) -> Platform: ...
+
+    def install(self, label: str, files: Sequence[ProjectedFile]) -> None:
+        """Put ``files`` in place of any the scheduler has under ``label``, each readable by
+        its owner alone, and have the scheduler load them. Raises ReconError (``run_failed``)
+        when the scheduler refuses."""
+        ...
+
+    def locations(self, label: str) -> list[str]:
+        """Where the schedule ``label``'s files are, or go: absolute paths, or ``crontab`` for
+        an entry of the user's crontab."""
+        ...
+
+    def remove(self, label: str) -> bool:
+        """Unload and remove the schedule ``label``; False when there was none."""
+        ...
+
+    def installed(self, prefix: str) -> list[str]:
+        """The labels of the schedules installed whose label starts with ``prefix``, sorted."""
+        ...
+
+    def files(self, label: str) -> tuple[ProjectedFile, ...]:
+        """The schedule's files as they are installed now; none when it is not."""
+        ...
+
+
+class ScheduleStore(Protocol):
+    """What recon keeps of a mission's schedule beside the mission: what ``install`` put in
+    place, so ``status`` can tell an installed schedule from one changed or gone since."""
+
+    def record(self, mission_dir: Path, installed: dict[str, Any] | None) -> None:
+        """Keep ``installed`` as the mission's install record; None forgets it."""
+        ...
+
+    def recorded(self, mission_dir: Path) -> dict[str, Any] | None:
+        """The mission's install record; None when it has none."""
+        ...
+
+
+@dataclass(frozen=True)
+class ScheduleHost:
+    """What the host gives every tick: the absolute ``recon`` command it runs (None when this
+    recon is not installed as one), and the ``path`` it runs with: absolute directories no
+    other user can write."""
+
+    recon: str | None
+    path: tuple[str, ...]

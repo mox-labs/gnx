@@ -28,12 +28,15 @@ if TYPE_CHECKING:
         PlanDocument,
         QueryRows,
         RecordsSince,
+        ScheduleDocument,
+        SchedulesDocument,
         StatusDocument,
         StreamDocument,
         SurveyDocument,
         TemplatesDocument,
     )
     from recon.domain.errors import Problem
+    from recon.domain.schedule import Platform
     from recon.domain.stream import Stop
 
 
@@ -248,3 +251,41 @@ def capture(name: str, payload: Any, *, root: Path | None = None) -> Capture:
     """Append a Claude Code ``PostToolUse`` hook payload to the mission's capture log.
     ``recon.v1.capture``: the line as written."""
     return _root(root).capture(name, payload)
+
+
+def schedule_install(
+    name: str, *, platform: Platform | None = None, root: Path | None = None
+) -> ScheduleDocument:
+    """Run the mission ``name`` by the operating system's scheduler: project its
+    ``schedule:`` onto the host's (launchd, systemd's user timers, or cron), or onto
+    ``platform``'s, and have it load the files. ``recon.v1.schedule``.
+
+    Idempotent: again with the same config it changes nothing (``outcome: unchanged``); with
+    another it replaces the schedule (``replaced``), and each tick holds the config to the
+    digest installed. Raises ConfigError for a mission with no ``schedule:``, NotFoundError for
+    no mission, ReconError (``run_failed``) when the scheduler refuses."""
+    return _root(root).schedule_install(name, platform=platform)
+
+
+def schedule_remove(
+    name: str, *, platform: Platform | None = None, root: Path | None = None
+) -> ScheduleDocument:
+    """Unload and remove the mission's schedule: ``removed``, or ``absent`` when there was
+    none. ``recon.v1.schedule``."""
+    return _root(root).schedule_remove(name, platform=platform)
+
+
+def schedule_list(
+    *, platform: Platform | None = None, root: Path | None = None
+) -> SchedulesDocument:
+    """The schedules installed for the project's missions. ``recon.v1.schedules``."""
+    return _root(root).schedule_list(platform=platform)
+
+
+def schedule_status(
+    mission: str | None = None, *, platform: Platform | None = None, root: Path | None = None
+) -> SchedulesDocument:
+    """Each schedule of the project, or the mission's: whether it is installed, whether its
+    config changed since (a ``config_changed`` warning: its ticks are refused until it is
+    installed again), and when its next tick is due. ``recon.v1.schedules``."""
+    return _root(root).schedule_status(mission, platform=platform)

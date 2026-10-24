@@ -71,6 +71,16 @@
       }
     },
     {
+      "name": "scheduler",
+      "files": ["src/recon/adapters/_out/schedulers.py", "src/recon/adapters/_out/schedule_files.py"],
+      "allow": ["*", "recon.domain", "recon.adapters._out.private_files"],
+      "forbid": ["yaml"],
+      "why": {
+        "*": "the operating system's schedulers, each by its own command run as an argument list (launchctl, systemctl --user, crontab), and the mission's install record as JSON",
+        "private_files": "a projected file and the install record are written readable by their owner alone, as every file of a mission is (ruling A2)"
+      }
+    },
+    {
       "name": "query",
       "files": ["src/recon/adapters/_out/duckdb_query.py"],
       "allow": ["*", "recon.domain"],

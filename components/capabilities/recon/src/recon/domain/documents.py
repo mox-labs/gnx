@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
 from recon.domain.errors import ERROR_KINDS, ErrorKind, ReconError
+from recon.domain.schedule import Missed, Platform  # noqa: TC001
 from recon.domain.stream import ClosedBy  # noqa: TC001
 
 #: Whether a survey's archive holds every table it was asked for: :data:`ArchiveState`
@@ -545,3 +546,61 @@ def stream_failure(document: StreamDocument) -> ReconError | None:
         f"--stream {document.stream}",
         details={"archive": last.id, "path": last.path, "window": last.id},
     )
+
+
+# --- schedules ------------------------------------------------------------------------------
+
+#: What ``recon schedule install`` or ``remove`` did: put a schedule in place where there was
+#: none, found the same one there and left it, put a different one in its place; took one
+#: out, or found none to take.
+ScheduleOutcome = Literal["installed", "unchanged", "replaced", "removed", "absent"]
+
+
+class ScheduleDocument(Document):
+    """A mission's schedule as ``install`` or ``remove`` left it: on which scheduler and under
+    which ``label``, what each tick runs (``argv``), and the ``files`` it is in (``crontab``
+    for cron's entry); empty after a remove."""
+
+    schema_: Literal["recon.v1.schedule"] = Field(default="recon.v1.schedule", alias="schema")
+    mission: str
+    platform: Platform
+    label: str
+    outcome: ScheduleOutcome
+    every: int | None
+    missed: Missed | None
+    #: Where in each ``every`` the ticks fall, in seconds: the mission's own, which spreads
+    #: missions due at the same moment.
+    offset_s: int | None
+    #: The digest of the config the schedule was installed for: a tick refuses another.
+    config_sha256: str | None
+    argv: list[str]
+    files: list[str]
+    warnings: list[dict[str, Any]]
+
+
+class ScheduleStatus(Document):
+    """One schedule of the project: whether it is ``installed`` (its files in place as
+    ``install`` wrote them), whether the config has changed since (its ticks are then
+    refused until it is installed again), and when the next tick is due."""
+
+    mission: str
+    label: str
+    platform: Platform
+    installed: bool
+    #: None when no install of the mission is recorded.
+    config_changed: bool | None
+    every: int | None
+    missed: Missed | None
+    #: ISO 8601, local time: the next tick of the mission's ``schedule:``; None without one.
+    next_at: str | None
+
+
+class SchedulesDocument(Document):
+    """The project's schedules: what ``list`` finds installed, or what ``status`` says of
+    each mission with a schedule, on one scheduler."""
+
+    schema_: Literal["recon.v1.schedules"] = Field(default="recon.v1.schedules", alias="schema")
+    root: str
+    platform: Platform
+    schedules: list[ScheduleStatus]
+    warnings: list[dict[str, Any]] = []

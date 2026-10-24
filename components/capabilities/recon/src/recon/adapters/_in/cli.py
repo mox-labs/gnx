@@ -1,4 +1,5 @@
-"""The ``recon`` command line: init, survey, stream, status, query, watch, templates, capture.
+"""The ``recon`` command line: init, survey, stream, status, query, watch, schedule, templates,
+capture.
 
 An inbound adapter over the library API and nothing else: every call goes through
 ``recon``'s declared names, so a program importing ``recon`` gets exactly what these
@@ -196,6 +197,7 @@ def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     recon query my-scan "SELECT ..."      SQL over the latest archive
     recon watch my-scan                   follow an archive as a survey writes it
     recon stream my-feed --stream ev      collect a source that does not end, in windows
+    recon schedule install my-scan        run it by the OS scheduler, as schedule: says
     recon status                          missions, archives, installed plugins
     """
     if reference is not None and not skill:
@@ -844,6 +846,127 @@ def _print_read(read: recon.RecordsSince) -> None:
     if read.state != "writing":
         shown = "[yellow]incomplete[/]" if read.state == "incomplete" else read.state
         err.print(f"[dim]archive {read.archive}:[/] {shown}")
+
+
+# --- schedule ----------------------------------------------------------------------------
+
+
+_platform_option = click.option(
+    "--platform",
+    type=click.Choice(["launchd", "systemd", "cron"]),
+    default=None,
+    help="The scheduler (default: the host's: launchd on macOS, systemd's user timers on "
+    "Linux where they run, else cron)",
+)
+
+
+@main.group(epilog=EXIT_CODES)
+def schedule() -> None:
+    """Run missions by the operating system's own scheduler, as each mission's schedule: says.
+
+    install projects the mission's schedule: {every, missed} onto launchd's user agents,
+    systemd's user timers or the user's crontab, and has it load them; list, remove and
+    status say and undo what is installed. There is no recon daemon: the scheduler starts
+    each tick (`recon schedule tick`), one survey. A tick refuses a config changed since
+    install, so read the change, then install again.
+
+    \b
+    recon schedule install my-scan --json
+    recon schedule status --json
+    recon schedule remove my-scan
+    """
+
+
+def _print_schedule(document: recon.ScheduleDocument) -> None:
+    _print_warnings(document.warnings)
+    said = {"installed": "Installed", "unchanged": "Unchanged", "replaced": "Replaced",
+            "removed": "Removed", "absent": "No schedule to remove"}  # fmt: skip
+    err.print(f"[green]{said[document.outcome]}:[/] {escape(document.mission)} on "
+              f"{document.platform} ({escape(document.label)})")  # fmt: skip
+    for file in document.files:
+        click.echo(file)
+
+
+def _print_schedules(document: recon.SchedulesDocument) -> None:
+    _print_warnings(document.warnings)
+    if not document.schedules:
+        err.print(f"[dim]No schedules on {document.platform} for {escape(document.root)}[/]")
+        return
+    table = Table(show_header=True, header_style="dim")
+    for column in ("Mission", "Every", "Installed", "Config changed", "Next"):
+        table.add_column(column)
+    for listed in document.schedules:
+        table.add_row(
+            listed.mission,
+            f"{listed.every} s" if listed.every is not None else "-",
+            "yes" if listed.installed else "[yellow]no[/]",
+            {True: "[yellow]yes[/]", False: "no", None: "-"}[listed.config_changed],
+            listed.next_at or "-",
+        )
+    _print_table(table)
+
+
+@schedule.command(epilog=EXIT_CODES)
+@click.argument("name")
+@_platform_option
+@_json_option
+def install(name: str, platform: str | None, as_json: bool) -> None:
+    """Install the mission's schedule: write the scheduler's files (owner-only) and load them.
+
+    Again with the same config, it changes nothing (outcome: unchanged); with another, it
+    replaces the schedule. Each tick runs `recon schedule tick` with the digest of the
+    config installed, and refuses another. Exit 3 for a mission with no schedule:.
+
+    \b
+    recon schedule install my-scan --json
+    recon schedule install my-scan --platform cron
+    """
+    document = _operations().schedule_install(name, platform=platform)
+    if as_json:
+        _emit(document.document())
+    else:
+        _print_schedule(document)
+
+
+@schedule.command(name="list", epilog=EXIT_CODES)
+@_platform_option
+@_json_option
+def list_(platform: str | None, as_json: bool) -> None:
+    """List the schedules installed for this project's missions."""
+    document = _operations().schedule_list(platform=platform)
+    if as_json:
+        _emit(document.document())
+    else:
+        _print_schedules(document)
+
+
+@schedule.command(epilog=EXIT_CODES)
+@click.argument("name")
+@_platform_option
+@_json_option
+def remove(name: str, platform: str | None, as_json: bool) -> None:
+    """Unload and remove the mission's schedule (outcome: removed, or absent when there was
+    none). The mission and its archives stay."""
+    document = _operations().schedule_remove(name, platform=platform)
+    if as_json:
+        _emit(document.document())
+    else:
+        _print_schedule(document)
+
+
+@schedule.command(name="status", epilog=EXIT_CODES)
+@click.argument("mission", required=False)
+@_platform_option
+@_json_option
+def schedule_status(mission: str | None, platform: str | None, as_json: bool) -> None:
+    """Each schedule of the project, or MISSION's: whether it is installed, whether its
+    config changed since (then its ticks are refused: install it again), and when its next
+    tick is due."""
+    document = _operations().schedule_status(mission, platform=platform)
+    if as_json:
+        _emit(document.document())
+    else:
+        _print_schedules(document)
 
 
 # --- templates and capture ---------------------------------------------------------------

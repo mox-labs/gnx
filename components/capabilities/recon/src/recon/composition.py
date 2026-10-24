@@ -40,16 +40,27 @@ from recon.adapters._out.event_channel import ThreadChannel
 from recon.adapters._out.markitdown_converter import MarkitdownConverter
 from recon.adapters._out.mission_files import MissionFiles, find_project
 from recon.adapters._out.otel_telemetry import OtelEvents, export_from_env
+from recon.adapters._out.schedule_files import ScheduleFiles
+from recon.adapters._out.schedulers import (
+    host_platform,
+    make_scheduler,
+    run_command,
+    safe_path,
+    scheduler_commands,
+    this_recon,
+)
 from recon.adapters._out.system_clock import SystemClock
 from recon.adapters._out.user_agent import DEFAULT_USER_AGENT
 from recon.application.collectors import COLLECTORS_GROUP, CollectorPorts, build_collectors
 from recon.application.stream import StreamStop as StreamStop
 from recon.application.use_cases import Recon as Recon
 from recon.domain.collector import BrokenPlugin, CollectorType, Plugins
+from recon.domain.schedule import ScheduleHost
 from recon.domain.telemetry import Telemetry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
+    from datetime import datetime
 
     from recon.application.use_cases import ChannelFactory
     from recon.domain.archives import ArchiveStore
@@ -60,6 +71,7 @@ if TYPE_CHECKING:
     from recon.domain.errors import Problem
     from recon.domain.http import Requester
     from recon.domain.ratelimit import RateLimiter
+    from recon.domain.schedule import Platform, Scheduler
     from recon.domain.shell import ShellRunner
     from recon.domain.telemetry import Channel, EventSink
 
@@ -166,6 +178,8 @@ def root(
     shell: ShellRunner | None = None,
     converter: DocumentConverter | None = None,
     channel: ChannelFactory | None = None,
+    schedulers: Callable[[Platform | None], Scheduler] | None = None,
+    schedule_host: ScheduleHost | None = None,
 ) -> Recon:
     """recon wired to this process: missions under ``project`` (default: the project root of
     the working directory), and the environment ``env`` (default: the process environment).
@@ -174,7 +188,11 @@ def root(
     Each port the rest names is bound to its real adapter unless one is given: the clock,
     the installed plugins, the archive store, the survey's Requester (built per survey by
     ``requester`` from the survey's telemetry), the shell, the document converter, and each
-    survey's event channel (``channel``, default a :class:`ThreadChannel` with its defaults).
+    survey's event channel (``channel``, default a :class:`ThreadChannel` with its defaults),
+    the operating system's scheduler of each platform (``schedulers``: the user's own
+    launchd, systemd or crontab, run by their commands), and what a scheduled tick runs
+    (``schedule_host``: this installation's ``recon`` command, and the ``PATH`` of ``env``
+    kept to absolute directories no other user can write).
     A test's root is this one with fakes given for the ports it stands in for."""
     clock = clock or SystemClock()
     process_env = os.environ if env is None else env
@@ -199,6 +217,7 @@ def root(
 
     found, found_by = (project.resolve(), "argument") if project else find_project(Path.cwd())
     missions = MissionFiles(found, clock)
+    host = schedule_host or ScheduleHost(this_recon(), safe_path(process_env.get("PATH", "")))
     return Recon(
         missions=missions,
         archives=archives,
@@ -213,7 +232,27 @@ def root(
         version=__version__,
         root_found_by=found_by,
         channel=channel or ThreadChannel,
+        schedulers=schedulers or partial(_scheduler, process_env),
+        schedule_store=ScheduleFiles(),
+        schedule_host=host,
+        local=_local,
     )
+
+
+def _scheduler(env: Mapping[str, str], platform: Platform | None) -> Scheduler:
+    """The user's own scheduler of ``platform`` (None: this host's), run by its commands."""
+    home = Path(env.get("HOME") or Path.home())
+    configured = env.get("XDG_CONFIG_HOME", "")
+    config_home = Path(configured) if configured.startswith("/") else home / ".config"
+    return make_scheduler(
+        platform or host_platform(env), home=home, config_home=config_home, uid=os.getuid(),
+        run=run_command, commands=scheduler_commands(),
+    )  # fmt: skip
+
+
+def _local(at: datetime) -> datetime:
+    """``at`` in the host's local time, which every scheduler keeps its calendar in."""
+    return at.astimezone()
 
 
 def _http_requester(
