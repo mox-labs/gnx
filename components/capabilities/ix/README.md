@@ -254,9 +254,10 @@ and for an environment the keys each service it brings up is bound with (`servic
 Every kind also says whether two trials may use it at once (`overlap: allowed`, or
 `forbidden`, which a kind that says nothing is), and each metric whether what it reads moves
 with whatever runs beside the trial (`contended: true`: a time, a throughput, a memory
-peak). Of the built-ins, `agent-session`, `model-call`, `prompt`, `inspect-task`, `none` and
-every sensor that reads what a trial stored allow overlap; `process` and `http` subjects,
-`http-load`, `timing`, `memory` and the `process` and `compose` environments forbid it.
+peak). Of the built-ins, `agent-session`, `model-call`, `prompt`, `none` and every sensor
+that reads what a trial stored allow overlap; `process` and `http` subjects, `http-load`,
+`inspect-task` (an Inspect task may bring up sandboxes its samples share), `timing`,
+`memory` and the `process` and `compose` environments forbid it.
 Every metric of `timing` and `memory` is contended, and `usage`'s `duration` and the
 evaluator's `eval_duration_held`.
 

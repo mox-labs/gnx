@@ -207,14 +207,14 @@ class TestBuiltInKinds:
         brings its environment up once for every trial."""
         allowed = {
             "subject": {"agent-session", "model-call"},
-            "probe": {"prompt", "inspect-task"},
+            "probe": {"prompt"},
             "environment": {"none"},
             "sensor": {"judge", "evaluator", "text-match", "tool-usage", "outcome",
                        "activation", "usage", "function-test"},
         }  # fmt: skip
         forbidden = {
             "subject": {"process", "http"},
-            "probe": {"http-load"},
+            "probe": {"http-load", "inspect-task"},
             "environment": {"process", "compose"},
             "sensor": {"timing", "memory"},
         }
