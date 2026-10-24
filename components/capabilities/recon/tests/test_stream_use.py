@@ -366,7 +366,7 @@ class TestTheCommandLine:
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 100))
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "events", "--json"], obj=recon_
+            main, ["stream", "m", "--stream", "events", "--json"], obj=recon_
         )
 
         assert result.exit_code == 0, result.output
@@ -383,7 +383,7 @@ class TestTheCommandLine:
         recon_ = root({}, project=tmp_path, clock=clock, plugins=plugins)
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "events", "--dry-run", "--json"], obj=recon_
+            main, ["stream", "m", "--stream", "events", "--dry-run", "--json"], obj=recon_
         )
 
         assert result.exit_code == 0, result.output
@@ -411,7 +411,7 @@ class TestTheCommandLine:
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 3))
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "events", "--dry-run", "--json", *flags],
+            main, ["stream", "m", "--stream", "events", "--dry-run", "--json", *flags],
             obj=recon_,
         )  # fmt: skip
 
@@ -434,7 +434,7 @@ class TestTheCommandLine:
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 3))
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "events", "--dry-run", "--json", *flags],
+            main, ["stream", "m", "--stream", "events", "--dry-run", "--json", *flags],
             obj=recon_,
         )  # fmt: skip
 
@@ -451,7 +451,7 @@ class TestTheCommandLine:
         again = VirtualClock()
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "events"],
+            main, ["stream", "m", "--stream", "events"],
             obj=_root(tmp_path, again, Feed(again, 1.0, 30)),
         )  # fmt: skip
 
@@ -491,16 +491,21 @@ class TestTheCommandLine:
         self, tmp_path: Path
     ) -> None:
         """Review item 22 (Knuth 3): one thing, one word: ``--stream`` names the stream on
-        ``recon stream`` as it does on ``watch`` and ``query``; ``--collector`` stays."""
+        ``recon stream`` as it does on ``watch`` and ``query``. Polish R11 (Karman 9): the
+        ``--collector`` alias is gone, so the stream has one name on the command line."""
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 30))
 
         result = CliRunner().invoke(main, ["stream", "m", "--stream", "events", "--json"],
                                     obj=recon_)  # fmt: skip
+        alias = CliRunner().invoke(main, ["stream", "m", "--collector", "events", "--json"],
+                                   obj=recon_)  # fmt: skip
 
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["stream"] == "events"
+        assert alias.exit_code == recon.EXIT_CODES["usage"], "no alias: --collector is unknown"
+        assert "--collector" not in CliRunner().invoke(main, ["stream", "--help"]).output
 
     def test_recon_stream_dry_run_refuses_what_the_run_would(self, tmp_path: Path) -> None:
         clock = VirtualClock()
@@ -508,7 +513,7 @@ class TestTheCommandLine:
         recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 3))
 
         result = CliRunner().invoke(
-            main, ["stream", "m", "--collector", "nope", "--dry-run", "--json"], obj=recon_
+            main, ["stream", "m", "--stream", "nope", "--dry-run", "--json"], obj=recon_
         )
 
         assert result.exit_code == 4, "no stream nope: not_found, before anything runs"
@@ -520,7 +525,7 @@ class TestTheCommandLine:
 
         result = CliRunner().invoke(
             main,
-            ["stream", "m", "--collector", "events", "--forever", "--windows", "2", "--json"],
+            ["stream", "m", "--stream", "events", "--forever", "--windows", "2", "--json"],
             obj=recon_,
         )
 

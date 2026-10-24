@@ -150,7 +150,7 @@ class TestKilledThenResumed:
              "interval": 0.02, "window": {"records": K}, "retain": "all"},
             [{"name": "app", "type": "file", "url": "app.log"}],
         )  # fmt: skip
-        command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "log", "--forever"]
+        command = [sys.executable, "-c", CLI, "stream", "m", "--stream", "log", "--forever"]
 
         _killed_at(stream, "log", kill_at, command, tmp_path)
 
@@ -204,7 +204,7 @@ class TestKilledThenResumed:
              "interval": 0.02, "window": {"records": K}, "retain": "all"},
             [{"name": "app", "type": "file", "url": "app.log"}],
         )  # fmt: skip
-        command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "log", "--forever"]
+        command = [sys.executable, "-c", CLI, "stream", "m", "--stream", "log", "--forever"]
         appender = _Appender(log)
         appender.start()
         try:
@@ -248,7 +248,7 @@ class TestKilledThenResumed:
              "run": f"{sys.executable} {script}", "window": {"records": K}, "retain": "all"},
             [{"name": "here", "type": "local", "url": ".", "timeout": 3600}],
         )  # fmt: skip
-        command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "count", "--forever"]
+        command = [sys.executable, "-c", CLI, "stream", "m", "--stream", "count", "--forever"]
         kill_at = random.Random(20261025).randint(2 * K, 5 * K)
 
         killed = _killed_at(stream, "count", kill_at, command, tmp_path)
@@ -288,7 +288,7 @@ def test_a_signal_seals_the_window_with_every_record_it_had(
          "interval": 0.02, "window": {"seconds": 300}, "retain": "all"},
         [{"name": "app", "type": "file", "url": "app.log"}],
     )  # fmt: skip
-    command = [sys.executable, "-c", CLI, "stream", "m", "--collector", "log", "--forever",
+    command = [sys.executable, "-c", CLI, "stream", "m", "--stream", "log", "--forever",
                "--json"]  # fmt: skip
     process = subprocess.Popen(command, cwd=tmp_path, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)  # fmt: skip

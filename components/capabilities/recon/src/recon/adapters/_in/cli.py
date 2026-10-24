@@ -326,12 +326,11 @@ def _instant(ctx: click.Context, param: click.Parameter, value: str | None) -> d
 @click.argument("name")
 @click.option(
     "--stream",
-    "--collector",
     "collector",
     required=True,
     metavar="NAME",
     help="The stream to run: a collector of the mission with window:, or of a type whose "
-    "records do not end (--stream, as watch and query name it; --collector is the same)",
+    "records do not end (--stream, as watch and query name it)",
 )
 @click.option(
     "--windows",
