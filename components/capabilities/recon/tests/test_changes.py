@@ -347,6 +347,60 @@ class TestWhatWasTold:
         assert document.tables[0].changes.previous == first.name
 
 
+class TestHostileContent:
+    """Vector F6: a record's text is a stranger's. A lone surrogate (JSON ``"\\ud800"``, which a
+    mail subject can carry) cannot be encoded as UTF-8; it must not stop the change table, in
+    memory or on DuckDB, and nothing else that goes wrong in the change phase fails the survey:
+    it is a classified failure of that table's changes."""
+
+    LONE = {"id": "\ud800", "subject": "hi \udfff there"}
+
+    @pytest.mark.parametrize("memory_keys", [200_000, 0], ids=["memory", "duckdb"])
+    def test_a_lone_surrogate_is_told_like_any_text(self, tmp_path: Path, memory_keys: int) -> None:
+        _mission(tmp_path, {"key": ["id"], "deletes": True})
+        surveys = Surveys(tmp_path)
+        surveys.recon = root({}, project=tmp_path, clock=surveys.clock, memory_keys=memory_keys,
+                             requester=lambda t, d, r: surveys.inbox)  # fmt: skip
+        first, document = surveys.survey(self.LONE, A)
+        assert document.status == "complete", document.warnings
+        assert _ops(first) == [("insert", "\ud800"), ("insert", "a")]
+        second, document = surveys.survey({**self.LONE, "subject": "changed"})
+        assert document.status == "complete"
+        assert _ops(second) == [("update", "\ud800"), ("delete", "a")]
+
+    def test_any_other_failure_is_the_table_s_changes_not_the_survey_s(
+        self, tmp_path: Path
+    ) -> None:
+        class Broken:
+            def join(self, told: Any, new: Any) -> Any:
+                raise RuntimeError("the join broke")
+
+        _mission(tmp_path, {"key": ["id"]})
+        surveys = Surveys(tmp_path)
+        surveys.recon = root(
+            {},
+            project=tmp_path,
+            clock=surveys.clock,
+            memory_keys=0,
+            key_join=Broken(),
+            requester=lambda t, d, r: surveys.inbox,
+        )
+        # fmt: skip
+        failed, document = surveys.survey(A)
+        assert document.status == "complete" and document.tables[0].status == "ok"
+        summary = document.tables[0].changes
+        assert summary is not None and summary.error is not None and summary.rows == 0
+        assert summary.error.kind == "unknown" and "the join broke" in summary.error.message
+        assert not (failed / "inbox.changes.jsonl").exists(), "no change table half told"
+        [warning] = [w for w in document.warnings if w["kind"] == "changes_failed"]
+        assert warning["path"] == "collectors.0.changes" and "the join broke" in warning["message"]
+        assert warning["fix"]
+        surveys.recon = root({}, project=tmp_path, clock=surveys.clock,
+                             requester=lambda t, d, r: surveys.inbox)  # fmt: skip
+        again, _ = surveys.survey(A)
+        assert _ops(again) == [("insert", "a")], "told by the next survey, once"
+
+
 class _Counting:
     """A KeyJoin that counts its joins and makes them on DuckDB."""
 
@@ -662,6 +716,23 @@ class TestStreams:
         meta = ArchiveFiles(FixedClock()).read_meta(ambiguous)
         assert meta["tables"][0]["changes"]["ambiguous"] == 1
         assert _window_ops(third) == []
+
+    def test_a_window_whose_changes_fail_is_sealed_and_says_so(self, tmp_path: Path) -> None:
+        """F6 for a stream: the change phase never fails a window."""
+
+        class Broken:
+            def join(self, told: Any, new: Any) -> Any:
+                raise RuntimeError("the join broke")
+
+        _stream_mission(tmp_path)
+        recon = root({}, project=tmp_path, clock=VirtualClock(), memory_keys=0, key_join=Broken(),
+                     plugins=plugins_with(feed=_Feed(self.RECORDS[:2])))  # fmt: skip
+        document = recon.stream("m", "s", windows=1)
+        [window] = _windows(tmp_path)
+        meta = ArchiveFiles(FixedClock()).read_meta(window)
+        assert meta["tables"][0]["status"] == "ok" and meta["tables"][0]["records"] == 2
+        assert meta["tables"][0]["changes"]["error"]["kind"] == "unknown"
+        assert [w["kind"] for w in document.warnings] == ["changes_failed"]
 
     def test_retain_takes_a_window_s_key_index_with_it(self, tmp_path: Path) -> None:
         """Vector: a retired window's keys and hashes go with it."""

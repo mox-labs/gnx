@@ -332,8 +332,9 @@ def _fix(exc: Exception, archive: Path, tables: list[str], sql: str) -> str:
 # and DuckDB at most ``memory_limit``, spilling the rest into the same directory, which
 # ``close`` removes. The connection is confined before it reads anything, as the query's is:
 # it reads and spills only under its directory, loads no extension and reaches no network.
-# Keys are compared as DuckDB compares text, byte by byte in UTF-8, which is the order of code
-# points the in-memory join sorts by.
+# A key goes to DuckDB as the hex of its UTF-8 bytes (a lone surrogate passed through as its
+# code point's bytes, which DuckDB's text would refuse) and comes back decoded: hex orders as
+# its bytes do, and UTF-8's bytes as the code points the in-memory join sorts by.
 
 #: By default, the most memory the join's DuckDB holds before it spills to disk.
 MEMORY_LIMIT = "96MB"
@@ -378,8 +379,8 @@ class _DuckdbJoined:
         self._directory = tempfile.TemporaryDirectory(prefix="recon-join-")
         home = Path(self._directory.name)
         try:
-            _write_csv(home / "told.csv", ((k, *_halves(h)) for k, h in told))
-            _write_csv(home / "new.csv", ((i, k, *_halves(h)) for i, k, h in new))
+            _write_csv(home / "told.csv", ((_hex(k), *_halves(h)) for k, h in told))
+            _write_csv(home / "new.csv", ((i, _hex(k), *_halves(h)) for i, k, h in new))
             # A database file of the join's own, so its tables page to disk as its memory fills.
             self._conn: Any = duckdb.connect(str(home / "join.duckdb"))
             _confine_join(self._conn, home, memory_limit, threads)
@@ -402,12 +403,13 @@ class _DuckdbJoined:
 
     def gone(self) -> Iterator[str]:
         return (
-            row[0] for row in self._rows("SELECT k FROM told ANTI JOIN nk USING (k) ORDER BY k")
+            _key(row[0])
+            for row in self._rows("SELECT k FROM told ANTI JOIN nk USING (k) ORDER BY k")
         )
 
     def told(self, *, deletes: bool) -> Iterator[tuple[str, str]]:
         rows = self._rows(f"SELECT k, a, b FROM ({self._folded(deletes)}) ORDER BY k")
-        return ((k, f"{a:016x}{b:016x}") for k, a, b in rows)
+        return ((_key(k), f"{a:016x}{b:016x}") for k, a, b in rows)
 
     def told_count(self, *, deletes: bool) -> int:
         return self._count(f"SELECT count(*) FROM ({self._folded(deletes)})")
@@ -437,6 +439,16 @@ class _DuckdbJoined:
         cursor = self._conn.execute(sql)
         while rows := cursor.fetchmany(_BATCH):
             yield from (tuple(row) for row in rows)
+
+
+def _hex(key: str) -> str:
+    """A key as DuckDB holds it: the hex of its UTF-8 bytes, a lone surrogate passed through."""
+    return key.encode("utf-8", "surrogatepass").hex()
+
+
+def _key(held: str) -> str:
+    """A key as DuckDB held it, back as its text."""
+    return bytes.fromhex(held).decode("utf-8", "surrogatepass")
 
 
 def _halves(content: str) -> tuple[int, int]:

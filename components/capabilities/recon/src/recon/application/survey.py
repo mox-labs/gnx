@@ -67,6 +67,7 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING, Any, Literal
 
+from recon.application.changes import changes_failed, failed
 from recon.application.plan import fan_out
 from recon.domain.archives import META_FORMAT_VERSION
 from recon.domain.deadline import Deadline, DeadlineExceededError
@@ -261,6 +262,9 @@ class Survey:
                 table = self._changes.snapshot(archive, table, entry.changes, entry.normalize)
             except OSError as exc:
                 self._unfinished(f"{table.name}'s change table could not be written", exc)
+            except Exception as exc:  # the table's changes fail, never the survey (Vector F6)
+                self._warn(table.name, changes_failed(f"collectors.{index}", table.name, exc))
+                table = failed(table, exc)
             compared.append(table)
             withheld = table.changes.deletes_withheld if table.changes else None
             if withheld is not None:

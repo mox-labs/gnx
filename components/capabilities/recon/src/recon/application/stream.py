@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from recon.application.changes import changes_failed, failed
 from recon.application.survey import PROGRESS_S
 from recon.domain.archives import META_FORMAT_VERSION
 from recon.domain.documents import TableError, TableOutcome, WindowOutcome
@@ -898,9 +899,14 @@ class Stream:
         spec = plan.entry.changes
         if error is None and spec is not None and self._changes is not None:
             # Against what the chain has told, never a delete (ruling C7).
-            table = self._changes.window(
-                window.archive, plan.name, window.previous, table, spec, plan.entry.normalize
-            )
+            try:
+                table = self._changes.window(
+                    window.archive, plan.name, window.previous, table, spec, plan.entry.normalize
+                )
+            except Exception as exc:  # the window's changes fail, never the window (F6)
+                warning = changes_failed(plan.at, table.name, exc)
+                self.warnings = [w for w in self.warnings if w.kind != warning.kind] + [warning]
+                table = failed(table, exc)
         reproducible = captures is not None and dropped == 0
         if captures is not None:
             captures.finalize_stream(

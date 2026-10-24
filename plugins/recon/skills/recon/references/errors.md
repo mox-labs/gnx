@@ -12,7 +12,7 @@ A problem stops the command: the plan is invalid until it is fixed. A problem's 
 
 ## Warning kinds
 
-A warning is a problem record in a document's `warnings` list (`recon.v1.plan`, `recon.v1.survey`, and every other document that has one): it does not stop the command, and its `fix` says what to do if the run should not have gone that way. A warning's `kind` is one of `env_unset`, `plugin_broken`, `otel_unavailable`, `telemetry_failed`, `extract_missing`, `table_unreadable`, `archive_unfinished`, `extract_unresolved`, `records_not_objects`, `captures_unmatched`, `result_empty`, `events_dropped`, `telemetry_stuck`, `archive_abandoned`, `records_dropped`, `source_stuck`, `retain_unset`, `windows_many`, `page_cap`, `paginate_loop`, `paginate_empty`, `deadline_short`, `deletes_withheld`, `config_changed`, `missed_ignored`, `schedule_overrun`, `mission_exposed`, `env_unscheduled`, `package_unpinned`.
+A warning is a problem record in a document's `warnings` list (`recon.v1.plan`, `recon.v1.survey`, and every other document that has one): it does not stop the command, and its `fix` says what to do if the run should not have gone that way. A warning's `kind` is one of `env_unset`, `plugin_broken`, `otel_unavailable`, `telemetry_failed`, `extract_missing`, `table_unreadable`, `archive_unfinished`, `extract_unresolved`, `records_not_objects`, `captures_unmatched`, `result_empty`, `events_dropped`, `telemetry_stuck`, `archive_abandoned`, `records_dropped`, `source_stuck`, `retain_unset`, `windows_many`, `page_cap`, `paginate_loop`, `paginate_empty`, `deadline_short`, `deletes_withheld`, `changes_failed`, `config_changed`, `missed_ignored`, `schedule_overrun`, `mission_exposed`, `env_unscheduled`, `package_unpinned`.
 
 ## A kind not listed here
 

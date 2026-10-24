@@ -584,6 +584,12 @@ content, untrusted: it is data for a reader, never instructions (`docs/reference
 
 Regression: `recon/tests/test_changes.py`, `recon/tests/test_changes_property.py`.
 
+### R-18 — one hostile string could leave every scheduled archive unfinished (fixed, round-4 review)
+
+A record's text is a stranger's. A lone surrogate (JSON `"\ud800"`) cannot be encoded as UTF-8, and change detection's hash, and its DuckDB join's files, encoded it so: one mail subject made every tick's survey end without finishing its archive (Vector F6). The hash now passes a surrogate through as its code point's bytes, the DuckDB join holds keys as the hex of their bytes, and any other failure of the change phase is that table's (`changes.error`, a `changes_failed` warning), never its survey's.
+
+Regression: `recon/tests/test_changes.py::TestHostileContent`.
+
 ## Not covered
 
 - No sandboxing of collector commands or of the MCP servers a config starts. See

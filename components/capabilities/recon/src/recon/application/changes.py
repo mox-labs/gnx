@@ -38,7 +38,8 @@ from functools import cached_property, partial
 from typing import TYPE_CHECKING, Any
 
 from recon.domain.changes import CHANGE_COLUMNS, CHANGES_TYPE_URL, changes_output
-from recon.domain.documents import ChangeSummary
+from recon.domain.documents import ChangeSummary, TableError
+from recon.domain.errors import Problem, ReconError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
@@ -96,7 +97,9 @@ class Hasher:
         volatile = self._volatile
         kept = {k: v for k, v in record.items() if not k.startswith("_") and k not in volatile}
         digest = self._keyed.copy()  # keyed once: a copy costs less than a new key schedule
-        digest.update(canonical(kept).encode())
+        # A lone surrogate (JSON "\ud800", which a stranger's text can carry) is not UTF-8:
+        # passed through as its code point's bytes, so it hashes, and never stops the table.
+        digest.update(canonical(kept).encode("utf-8", "surrogatepass"))
         return digest.hexdigest()
 
     @cached_property
@@ -530,11 +533,17 @@ class ChangeDetector:
 
     def _sealed_before(self, earlier: Sequence[Path], table: TableOutcome) -> bool:
         """Whether an earlier survey that ran to its end sealed the table ``ok`` without
-        comparing it (``changes:`` was set since): its records' shape is not known."""
-        return any(
-            self._ended(candidate) == "finished" and self._entry(candidate, table) is not None
-            for candidate in earlier
-        )
+        comparing it (``changes:`` was set since): its records' shape is not known. One whose
+        changes failed was under ``changes:``, and is not such a table."""
+        for candidate in earlier:
+            entry = self._entry(candidate, table)
+            if (
+                self._ended(candidate) == "finished"
+                and entry is not None
+                and not entry.get("changes")
+            ):
+                return True
+        return False
 
     def _entry(self, archive: Path, table: TableOutcome) -> dict[str, Any] | None:
         for entry in self._archives.read_meta(archive).get("tables") or []:
@@ -549,8 +558,8 @@ class ChangeDetector:
     def _compared(self, archive: Path, table: TableOutcome) -> _Compared | None:
         entry = self._entry(archive, table)
         changes = entry.get("changes") if entry is not None else None
-        if entry is None or not isinstance(changes, dict):
-            return None
+        if entry is None or not isinstance(changes, dict) or changes.get("error"):
+            return None  # never compared, or its changes failed: it told nothing
         return _Compared(archive, int(entry.get("records") or 0),
                          changes.get("deletes_told") is True, bool(changes.get("rebaselined")),
                          changes.get("previous"), changes.get("normalize"))  # fmt: skip
@@ -564,6 +573,36 @@ class ChangeDetector:
             return records if records is not None else ()
 
         return read
+
+
+def failed(table: TableOutcome, exc: Exception) -> TableOutcome:
+    """``table``, its changes not told for ``exc``: its outcome says so, classified."""
+    kind = exc.kind if isinstance(exc, ReconError) else "unknown"
+    fix = exc.fix if isinstance(exc, ReconError) and exc.fix else None
+    summary = ChangeSummary(
+        table=changes_output(table.name), type_url=CHANGES_TYPE_URL, previous=None, spec="",
+        normalize=None, rows=0, error=TableError(kind=kind, message=f"{type(exc).__name__}: "
+                                                 f"{exc}", fix=fix),
+    )  # fmt: skip
+    return table.model_copy(update={"changes": summary})
+
+
+def changes_failed(at: str, output: str, exc: Exception) -> Problem:
+    """The warning for a table whose changes could not be told (``at``: its entry's path):
+    the table is kept, tells nothing and is no told index, so the next table of its output
+    is compared with what was told before it, and tells this one's changes too (Vector F6:
+    nothing in the change phase fails a survey or a window)."""
+    fix = exc.fix if isinstance(exc, ReconError) and exc.fix else (
+        "nothing to do for this table: it is kept, and the next survey or window tells its "
+        "changes; if this repeats, report it as a bug in recon, with this message"
+    )  # fmt: skip
+    return Problem(
+        f"{at}.changes",
+        f"{output}'s changes could not be told, so it tells none this time: "
+        f"{type(exc).__name__}: {exc}",
+        kind="changes_failed",
+        fix=fix,
+    )
 
 
 def _generator(rows: Iterable[dict[str, Any]]) -> Generator[dict[str, Any], None, None]:

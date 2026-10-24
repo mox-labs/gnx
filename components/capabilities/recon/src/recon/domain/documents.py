@@ -183,6 +183,10 @@ class ChangeSummary(Document):
     #: holds no key the table lacks. A told index computed again folds the table as it was
     #: told then, whatever ``deletes:`` says now.
     deletes_told: bool = False
+    #: Set when the table's changes could not be told (a classified failure of its change
+    #: table, never of its survey): it has no change table, tells nothing and is no told
+    #: index, so the next table of its output tells its changes too.
+    error: TableError | None = None
 
 
 class TableOutcome(Document):

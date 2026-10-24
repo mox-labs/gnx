@@ -167,6 +167,8 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "deadline_short",
     # a table's deletes asked for and not told: its crawl cut short, keyless or ambiguous records
     "deletes_withheld",
+    # a table's changes that could not be told: the table kept, compared again next time
+    "changes_failed",
     # a mission's config changed since its schedule was installed: its ticks are refused
     "config_changed",
     # a scheduler that cannot keep the schedule's missed: (cron runs no missed tick)
