@@ -149,6 +149,43 @@ class TestOneSurveyAtATime:
         assert first[0].archive == archive.name and first[0].status == "complete"
         assert _root(tmp_path, slow).survey("m").status == "complete", "free once it returned"
 
+    def test_two_overlapping_surveys_with_changes_tell_each_change_once(
+        self, tmp_path: Path
+    ) -> None:
+        """Erlang's round-4 case, across the slices: a mission with ``changes:`` surveyed twice
+        at once (two ticks that overlap) would compare both tables with the same baseline and
+        tell the same insert twice. The second is refused ``busy`` before it collects; the
+        record is told once, and a later survey of the same answer tells nothing."""
+        mission = tmp_path / ".recon" / "m"
+        mission.mkdir(parents=True)
+        config = {"collectors": [{"name": "inbox", "type": "slow", "changes": {"key": ["seq"]}}]}
+        (mission / "config.yaml").write_text(yaml.safe_dump(config))
+        slow, second = Slow(), Slow()
+        second.go.set()  # were it let in, it would run to its end at once
+        first: list[Any] = []
+        running = threading.Thread(target=lambda: first.append(_root(tmp_path, slow).survey("m")))
+        running.start()
+        try:
+            assert slow.inside.wait(10)
+            with pytest.raises(ReconError) as raised:
+                _root(tmp_path, second).survey("m")
+        finally:
+            slow.go.set()
+            running.join(10)
+        later = Slow()
+        later.go.set()
+        again = _root(tmp_path, later).survey("m")
+
+        assert raised.value.kind == "busy" and not second.inside.is_set(), "refused before it ran"
+        assert first[0].status == "complete" and again.status == "complete"
+        told = [
+            (archive.name, json.loads(line))
+            for archive in sorted((mission / "archive").iterdir())
+            for line in (archive / "inbox.changes.jsonl").read_text().splitlines()
+        ]
+        rows = [(archive, row["op"], row["key"]) for archive, row in told if "op" in row]
+        assert rows == [(first[0].archive, "insert", {"seq": 1})], "each change told once"
+
     def test_the_command_line_exits_11_with_the_envelope(self, tmp_path: Path) -> None:
         _mission(tmp_path)
         slow = Slow()
