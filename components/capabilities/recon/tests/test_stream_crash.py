@@ -258,7 +258,7 @@ class TestKilledThenResumed:
         document = root({}, project=tmp_path).stream("m", "count", windows=1)
 
         assert document.last is not None
-        meta = yaml.safe_load((Path(document.last.archive) / "meta.yaml").read_text())
+        meta = yaml.safe_load((Path(document.last.path) / "meta.yaml").read_text())
         [gap] = meta["stream"]["sources"][0]["gaps"]
         assert gap["resumed"] is False, "the source could not go on from where it was"
         # Since when is known when the last window was sealed (the kill came between two
@@ -309,7 +309,7 @@ def test_a_signal_seals_the_window_with_every_record_it_had(
     assert (document["windows"], document["records"], document["dropped"]) == (1, lines, 0)
     assert document["last"]["closed_by"] == "stopped"
     assert document["state"] == "complete"
-    meta = yaml.safe_load((Path(document["last"]["archive"]) / "meta.yaml").read_text())
+    meta = yaml.safe_load((Path(document["last"]["path"]) / "meta.yaml").read_text())
     assert (meta["stream"]["closed_by"], meta["ended"]) == ("stopped", "stopped")
     [listed] = recon.status("m", root=tmp_path).missions[0].streams
     assert listed.latest is not None and listed.latest.ended == "stopped", (
@@ -401,7 +401,7 @@ def test_a_stream_of_a_quiet_command_leaves_no_process_behind(tmp_path: Path) ->
     document = root({}, project=tmp_path).stream("m", "quiet", windows=1)
 
     assert document.last is not None
-    [row] = _rows(Path(document.last.archive), "quiet")
+    [row] = _rows(Path(document.last.path), "quiet")
     started = time.monotonic()
     while _running(row["pid"]):
         assert time.monotonic() - started < 5, "the command outlived the stream"

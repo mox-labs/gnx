@@ -300,7 +300,7 @@ def survey(name: str, config: Path | None, replace: bool, dry_run: bool, as_json
     if as_json:
         _emit(document.document())
     else:
-        click.echo(document.archive)
+        click.echo(document.path)
     failure = recon.survey_failure(document)
     if failure is not None:
         _fail(failure, as_json=as_json)
@@ -710,7 +710,7 @@ def query(
     if as_json:
         _emit(document.document())
         return
-    err.print(f"[dim]archive {document.archive_id} ({escape(document.archive)})[/]")
+    err.print(f"[dim]archive {document.archive} ({escape(document.path)})[/]")
     _print_warnings(document.warnings)
     if document.state == "incomplete":
         err.print(
@@ -832,8 +832,8 @@ def _print_read(read: recon.RecordsSince) -> None:
     if read.skipped is not None:
         jumped = read.skipped
         err.print(f"[yellow]  {jumped.count} window(s) from {escape(str(jumped.first))} were "
-                  f"retired before they were read: going on from {read.archive_id}[/]")  # fmt: skip
-    for record in read.records:
+                  f"retired before they were read: going on from {read.archive}[/]")  # fmt: skip
+    for record in read.table_records:
         click.echo(json.dumps(record, default=str))
     for table in read.exhausted:
         err.print(f"[dim]  {escape(table)}: every record read[/]")
@@ -842,7 +842,7 @@ def _print_read(read: recon.RecordsSince) -> None:
                   "from it are void[/]")  # fmt: skip
     if read.state != "writing":
         shown = "[yellow]incomplete[/]" if read.state == "incomplete" else read.state
-        err.print(f"[dim]archive {read.archive_id}:[/] {shown}")
+        err.print(f"[dim]archive {read.archive}:[/] {shown}")
 
 
 # --- templates and capture ---------------------------------------------------------------

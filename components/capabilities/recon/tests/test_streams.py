@@ -163,13 +163,13 @@ def _run(
 
 
 def _rows(outcome: WindowOutcome) -> list[dict[str, Any]]:
-    table = Path(outcome.archive) / outcome.table.file
+    table = Path(outcome.path) / outcome.table.file
     rows = [json.loads(line) for line in table.read_text().splitlines()]
     return [] if rows == [{"_empty": True}] else rows
 
 
 def _meta(outcome: WindowOutcome) -> dict[str, Any]:
-    meta = yaml.safe_load((Path(outcome.archive) / "meta.yaml").read_text())
+    meta = yaml.safe_load((Path(outcome.path) / "meta.yaml").read_text())
     assert isinstance(meta, dict)
     return meta
 
@@ -262,7 +262,7 @@ class TestWindowsEndOnTheClock:
             ("ok", "seconds", None),
         ]
         store = ArchiveFiles(clock)
-        assert [store.state(Path(o.archive)) for o in outcomes] == ["complete", "complete"]
+        assert [store.state(Path(o.path)) for o in outcomes] == ["complete", "complete"]
         assert [_meta(o)["tables"][0]["status"] for o in outcomes] == ["ok", "ok"]
 
 
@@ -296,7 +296,7 @@ class TestTheChain:
         assert window.table.error.kind == "run_failed"
         assert "broke off" in window.table.error.message
         assert _rows(window) == [{"seq": 0}, {"seq": 1}, {"seq": 2}], "push records are kept"
-        assert ArchiveFiles(clock).state(Path(window.archive)) == "incomplete"
+        assert ArchiveFiles(clock).state(Path(window.path)) == "incomplete"
         assert run.last is not None and run.last.closed_by == "error"
 
 
@@ -835,8 +835,8 @@ class TestSealedIsSealed:
 
         assert gate.is_set()
         assert seen["while"].exhausted == [], "a table being written is not read to its end"
-        assert digests == [_digest(Path(outcomes[0].archive))]
-        after = store.read_since(Path(outcomes[0].archive), seen["while"].cursor, limit=100,
+        assert digests == [_digest(Path(outcomes[0].path))]
+        after = store.read_since(Path(outcomes[0].path), seen["while"].cursor, limit=100,
                                  max_bytes=1 << 20)  # fmt: skip
         assert after.exhausted == ["s"]
 
@@ -882,7 +882,7 @@ class TestDeterminism:
 
         assert burst.dropped == 4
         assert _meta(burst)["stream"]["reproducible"] is False
-        assert (Path(burst.archive) / "captures.jsonl").exists(), "captured, yet not replayable"
+        assert (Path(burst.path) / "captures.jsonl").exists(), "captured, yet not replayable"
 
     def test_a_window_kept_without_captures_is_not_reproducible(self, tmp_path: Path) -> None:
         clock = VirtualClock()
@@ -894,7 +894,7 @@ class TestDeterminism:
 
         assert window.dropped == 0
         assert _meta(window)["stream"]["reproducible"] is False
-        assert not (Path(window.archive) / "captures.jsonl").exists()
+        assert not (Path(window.path) / "captures.jsonl").exists()
 
     def test_a_sealed_window_replays_exactly_from_its_capture_under_another_clock(
         self, tmp_path: Path
@@ -919,7 +919,7 @@ class TestDeterminism:
         sealed = [o for o in outcomes if o.closed_by == "seconds"]
         assert len(sealed) >= 2
         for window in sealed:
-            archive = Path(window.archive)
+            archive = Path(window.path)
             table = (archive / window.table.file).read_bytes()
             assert _meta(window)["stream"]["reproducible"] is True
             assert table.count(b"\n") >= 7, "the window holds records to replay"
@@ -927,7 +927,7 @@ class TestDeterminism:
             assert _members(_frames(archive), spec, window.index)
 
         # Check the checker: one arrival moved across the boundary leaves the window.
-        frames = _frames(Path(sealed[0].archive))
+        frames = _frames(Path(sealed[0].path))
         frames[-1] = {**frames[-1], "at": spec.seconds}
         assert not _members(frames, spec, sealed[0].index)
 
@@ -998,4 +998,4 @@ def _replayed(project: Path, window: Path) -> bytes:
 
     assert document.status == "complete", document.warnings
     [table] = document.tables
-    return (Path(document.archive) / table.file).read_bytes()
+    return (Path(document.path) / table.file).read_bytes()

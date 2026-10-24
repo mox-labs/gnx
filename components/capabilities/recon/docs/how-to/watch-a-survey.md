@@ -18,7 +18,7 @@ recon watch my-scan
 
 Each record is a line on stdout, `{"table": "...", "record": {...}}`, as soon as it is written (at most a quarter of a second after the collector gives it). Stderr says when each table is sealed, and the archive's state when the survey ends. `recon watch` then returns.
 
-For an agent, `--json` prints each read as one `recon.v1.records-since` document a line, with its `state`, its `records`, the tables `exhausted` (read to their end) and `retracted` since, and a `cursor`:
+For an agent, `--json` prints each read as one `recon.v1.records-since` document a line, with its `state`, its `table_records`, the tables `exhausted` (read to their end) and `retracted` since, and a `cursor`:
 
 ```bash
 recon watch my-scan --json
@@ -27,8 +27,8 @@ recon watch my-scan --json
 To look once and come back later, read once and keep the cursor:
 
 ```bash
-recon watch my-scan --once --json          # note "archive_id" and "cursor"
-recon watch my-scan --archive <archive_id> --cursor <cursor> --json
+recon watch my-scan --once --json          # note "archive" and "cursor"
+recon watch my-scan --archive <archive> --cursor <cursor> --json
 ```
 
 The cursor is recon's: pass it on unchanged. One recon did not give for that archive exits 2, and its fix says to read without it.

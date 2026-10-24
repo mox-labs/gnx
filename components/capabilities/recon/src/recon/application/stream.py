@@ -944,7 +944,7 @@ class Stream:
             stream=plan.name,
             index=window.index,
             id=window.id,
-            archive=str(window.archive),
+            path=str(window.archive),
             opened_at=opened_at,
             closed_at=closed_at,
             closed_by=closed_by,

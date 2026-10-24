@@ -158,11 +158,12 @@ def query(
     root: Path | None = None,
 ) -> QueryRows:
     """Rows from the latest archive of ``name``, or the archive named (an id ``status(name)``
-    lists). ``recon.v1.query-rows``, naming the archive as ``archive_id``.
+    lists). ``recon.v1.query-rows``, naming the archive by its id, ``archive``, and its
+    directory, ``path``.
 
     With ``stream``, rows from that stream's windows, each table the union of its windows':
     every window, the one ``archive`` names, or those meeting ``[since, until)`` (times with
-    their zones), which ``windows`` lists. Windows collected under different configs are
+    their zones), which ``window_range`` says. Windows collected under different configs are
     refused (QueryError), with the ranges to narrow to."""
     return _root(root).query(name, sql, archive=archive, stream=stream, since=since,
                              until=until)  # fmt: skip
@@ -184,7 +185,7 @@ def read_since(
     Each read returns whole records only, at most ``limit`` of them and ``max_bytes`` of
     their lines (1 MiB), at least one, from the tables sealed and the one being written
     alike, ``more`` when a bound cut it, and a ``cursor`` to pass to the next read of the
-    same archive (name it with ``archive``: its ``archive_id``). The cursor is opaque.
+    same archive (name it with ``archive``: the read's ``archive``). The cursor is opaque.
     ``state`` says whether a survey is still writing the archive; ``exhausted`` names the
     tables read to their end since (sealed, every record read: what was read of them
     stands) and ``retracted`` those that failed, their records void. Reads
@@ -192,7 +193,7 @@ def read_since(
     cursor recon did not give for that archive, or a ``limit`` or ``max_bytes`` below 1.
 
     With ``stream``, a read of that stream's latest window (or the window ``archive`` names,
-    or where ``cursor`` left off): ``archive_id`` is the window read, and a read that ends a
+    or where ``cursor`` left off): ``archive`` is the window read, and a read that ends a
     sealed window with a later one there returns that one's cursor and ``more``."""
     return _root(root).read_since(name, cursor, archive=archive, stream=stream, limit=limit,
                                   max_bytes=max_bytes)  # fmt: skip

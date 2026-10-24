@@ -8,6 +8,7 @@ A survey's archive can be read while the survey writes it: `recon watch` on the 
 - [A table while it is written](#a-table-while-it-is-written)
 - [`recon watch`](#recon-watch), and polling, for an agent
 - [`recon.v1.records-since`](#reconv1records-since)
+- [Field names](#field-names)
 - [In a program](#in-a-program)
 - [The survey's side](#the-surveys-side)
 
@@ -57,7 +58,7 @@ recon watch <mission> [--archive <id>] [--cursor <cursor>] [--interval SECONDS] 
 
 `recon watch` returns after the read that finds the archive no longer `writing` with nothing left to read: at once, after printing it whole, for a finished archive. Until then it holds the command, as long as the survey runs, and `recon watch --stream` of a stream run `--forever` never returns.
 
-**Polling, for an agent.** A tool call that must return reads once at a time: `recon watch <mission> --once --json` prints one read and returns, whatever the state; the next call passes its `cursor` as `--cursor`, with its `archive_id` as `--archive` (or the same `--stream`), and so on. Read again at once while a read says `more`; once one says `state` is no longer `writing` and has no `more`, the archive is read to its end. A stream's read says its window's `state`, so whether a writer still extends the stream is `recon status <mission> --json`'s to say (its `streams[].state`). Each call is bounded by `--max-bytes`.
+**Polling, for an agent.** A tool call that must return reads once at a time: `recon watch <mission> --once --json` prints one read and returns, whatever the state; the next call passes its `cursor` as `--cursor`, with its `archive` as `--archive` (or the same `--stream`), and so on. Read again at once while a read says `more`; once one says `state` is no longer `writing` and has no `more`, the archive is read to its end. A stream's read says its window's `state`, so whether a writer still extends the stream is `recon status <mission> --json`'s to say (its `streams[].state`). Each call is bounded by `--max-bytes`.
 
 Without `--json`, each record is a JSON line on stdout, `{"table": ..., "record": ...}`, and stderr says each table read to its end or retracted, and the archive's state at the end. It exits 0 whatever the archive's state: the state is in the output.
 
@@ -70,10 +71,10 @@ Refused, with exit 2 (`usage`) and a fix:
 
 | Field | Holds |
 |---|---|
-| `mission`, `archive`, `archive_id` | the archive read: its directory, and its id |
+| `mission`, `archive`, `path` | the archive read: its id (what `--archive` takes), and its directory |
 | `state` | `writing`, `complete` or `incomplete`, read before the records |
 | `ended` | `finished`, `stopped`, `crashed`, or null while `writing` |
-| `records` | `{"table", "record"}` each: the whole records written since the cursor, table by table in output-name order, each table's in the order written |
+| `table_records` | `{"table", "record"}` each: the whole records written since the cursor, table by table in output-name order, each table's in the order written |
 | `count` | how many records |
 | `cursor` | opaque: pass it, unchanged, to the next read of the same archive |
 | `exhausted` | the tables read to their end: sealed, and every record of them read along this chain of cursors, so none come after and what was read of them stands |
@@ -83,16 +84,20 @@ Refused, with exit 2 (`usage`) and a fix:
 
 Along a chain of cursors each table is told exhausted, or retracted, once. `sealed` is a table's own state, that its writer renamed it into place; `exhausted` is a reader's, that it has read all of a sealed table. Because `state` is read before the records, a read that says the archive is no longer `writing` and has no `more` holds the archive's last records.
 
+## Field names
+
+A field name has one shape in every recon document. `archive` is an archive's id (a stream window's is its id), what `--archive` takes; `path` is the directory of what the document is about (`archive_path`, in a plan, the directory a survey would write). `records` and `windows` are counts, as in `meta.yaml`; a list of records read is `table_records`, a survey's windows of its streams are `stream_windows`, and a run of windows a query read is `window_range`, `{first, last, count}`.
+
 ## In a program
 
 ```python
 import recon
 
 read = recon.read_since("my-scan")  # from the first record
-read = recon.read_since("my-scan", read.cursor, archive=read.archive_id)
+read = recon.read_since("my-scan", read.cursor, archive=read.archive)
 
 for read in recon.watch("my-scan", interval_s=0.5):  # returns when the survey ends
-    for row in read.records:
+    for row in read.table_records:
         print(row["table"], row["record"])
 ```
 

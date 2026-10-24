@@ -161,7 +161,7 @@ class ArchiveFiles:
                 "never written twice",
                 kind="store",
                 fix="survey again: a new survey's archive is named for the moment it starts",
-                details={"archive": str(archive)},
+                details={"archive": archive_id, "path": str(archive)},
             )
             if archive.exists():
                 raise taken
@@ -482,7 +482,11 @@ class ArchiveFiles:
                 f"archive {archive.name} holds its tables in table layout {layout}, which this "
                 f"recon does not read (it reads layout {TABLE_LAYOUT})",
                 fix="upgrade recon to the version that surveyed this archive, or later",
-                details={"archive": str(archive), "table_layout": layout},
+                details={
+                    "archive": archive.name,
+                    "path": str(archive),
+                    "table_layout": layout,
+                },
             )
         tables = []
         for output, file in _table_files(archive):

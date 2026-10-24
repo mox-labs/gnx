@@ -268,7 +268,7 @@ class Recon:
             effects=plan.effects(),
             writes=PlanWrites(
                 config=str(copy_to) if copy_to else None,
-                archive=str(mission / "archive" / "<archive id>"),
+                archive_path=str(mission / "archive" / "<archive id>"),
                 captures=bool(plan.config and plan.config.preserve_raw),
                 streams=[str(mission / "streams" / stream.name) for stream in plan.streams],
             ),
@@ -425,21 +425,22 @@ class Recon:
             warnings += _dropped(telemetry) + _undelivered(channel)
         finally:
             self._archives.release(archive)
-        windows: list[WindowOutcome] = []
+        stream_windows: list[WindowOutcome] = []
         for stream in plan.streams:
             run, found = self._run_stream(
                 mission, plan.config, stream, sha256, windows=1, until=None, on_event=caller
             )
             warnings += found
-            windows += [run.last] if run.last is not None else []
-        failed = failed_tables or any(w.table.status == "error" for w in windows)
+            stream_windows += [run.last] if run.last is not None else []
+        failed = failed_tables or any(w.table.status == "error" for w in stream_windows)
         return SurveyDocument(
             mission=name,
-            archive=str(archive),
+            archive=archive.name,
+            path=str(archive),
             status="incomplete" if failed or not survey.finished else "complete",
             tables=tables,
             warnings=[w.document() for w in warnings],
-            windows=windows,
+            stream_windows=stream_windows,
         )
 
     def stream(
@@ -782,8 +783,8 @@ class Recon:
         rows = [dict(zip(columns, row, strict=True)) for row in result.rows]
         return QueryRows(
             mission=name,
-            archive=str(path),
-            archive_id=path.name,
+            archive=path.name,
+            path=str(path),
             state=(state := self._archives.state(path)),
             ended=self._ended(path, state),
             columns=columns,
@@ -858,8 +859,8 @@ class Recon:
             )
         return QueryRows(
             mission=name,
-            archive=str(mission / "streams" / stream),
-            archive_id=last.name,
+            archive=last.name,
+            path=str(mission / "streams" / stream),
             state=state,
             ended=self._ended(last, state),
             columns=columns,
@@ -867,7 +868,7 @@ class Recon:
             count=len(rows),
             warnings=[w.document() for w in result.warnings + _dropped(telemetry) + wide],
             stream=stream,
-            windows=WindowRange(first=selected[0].name, last=last.name, count=len(selected)),
+            window_range=WindowRange(first=selected[0].name, last=last.name, count=len(selected)),
         )
 
     def _windows(self, name: str, stream: str) -> list[Path]:
@@ -979,11 +980,11 @@ class Recon:
         read = self._archives.read_since(path, cursor, limit=limit, max_bytes=max_bytes)
         return RecordsSince(
             mission=name,
-            archive=str(path),
-            archive_id=path.name,
+            archive=path.name,
+            path=str(path),
             state=state,
             ended=self._ended(path, state),
-            records=[{"table": r.table, "record": r.record} for r in read.records],
+            table_records=[{"table": r.table, "record": r.record} for r in read.records],
             count=len(read.records),
             cursor=read.cursor,
             exhausted=read.exhausted,

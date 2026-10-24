@@ -4,6 +4,12 @@ Each operation returns one of these, and ``--json`` prints its :meth:`Document.d
 They are the one definition of each shape: ``meta.yaml`` holds :class:`TableOutcome`s and
 the error envelope is :class:`ErrorDocument`. A field whose value is the description a
 plugin wrote, or a row SQL returned, is plain JSON data; everything else is typed here.
+
+A field name has one shape in every document. ``archive`` is an archive's id (a window's is
+its id too), what ``--archive`` takes; ``path`` is the directory of what the record is
+about, and ``<what>_path`` another's. ``records`` and ``windows`` are counts, as they are in
+``meta.yaml``; a list of them is named for what it holds (``table_records``,
+``stream_windows``), and a range of windows is ``window_range``.
 """
 
 from __future__ import annotations
@@ -55,7 +61,8 @@ class MissionDocument(Document):
 class PlanWrites(Document):
     #: Where ``-c`` would copy the config; None when the mission's own config is planned.
     config: str | None
-    archive: str
+    #: The directory the survey's archive would be (its id the moment it starts).
+    archive_path: str
     captures: bool
     #: The directory of each stream the mission has, where its windows are written.
     streams: list[str] = []
@@ -152,9 +159,10 @@ class WindowOutcome(Document):
 
     stream: str
     index: int
-    #: The window's archive id, as ``recon status`` lists it, and its directory.
+    #: The window's archive id, as ``recon status`` lists it (what ``--archive`` takes),
+    #: and its directory.
     id: str
-    archive: str
+    path: str
     #: ISO 8601, from the clock port: the window covers ``[opened_at, closed_at)``.
     opened_at: str
     closed_at: str
@@ -170,21 +178,23 @@ class WindowOutcome(Document):
 
 
 class SurveyDocument(Document):
-    """A survey: its archive of snapshot tables and, for each entry that is a stream, the one
-    window it ran of it (``windows``), in config order. ``status`` is ``incomplete`` when a
-    table or a window failed."""
+    """A survey: its archive of snapshot tables, by id (``archive``) and directory
+    (``path``), and, for each entry that is a stream, the one window it ran of it
+    (``stream_windows``), in config order. ``status`` is ``incomplete`` when a table or a
+    window failed."""
 
     schema_: Literal["recon.v1.survey"] = Field(default="recon.v1.survey", alias="schema")
     mission: str
     archive: str
+    path: str
     status: SurveyStatus
     tables: list[TableOutcome]
     warnings: list[dict[str, Any]]
-    windows: list[WindowOutcome] = []
+    stream_windows: list[WindowOutcome] = []
 
     @property
     def failed(self) -> list[TableOutcome]:
-        every = self.tables + [window.table for window in self.windows]
+        every = self.tables + [window.table for window in self.stream_windows]
         return [table for table in every if table.status == "error"]
 
 
@@ -313,19 +323,19 @@ class WindowRange(Document):
 class QueryRows(Document):
     schema_: Literal["recon.v1.query-rows"] = Field(default="recon.v1.query-rows", alias="schema")
     mission: str
-    #: The archive the rows came from: its directory, and its id (``query --archive``).
+    #: The archive the rows came from: its id (``query --archive``), and its directory.
     archive: str
-    archive_id: str
+    path: str
     state: ArchiveState
     ended: Ended | None
     columns: list[str]
     rows: list[dict[str, Any]]
     count: int
     warnings: list[dict[str, Any]]
-    #: A query of a stream: its name, and the range of windows read (``archive`` is then the
-    #: stream's directory, ``archive_id`` its last window read, and ``state`` the stream's).
+    #: A query of a stream: its name, and the range of windows read (``archive`` is then its
+    #: last window read, ``path`` the stream's directory, and ``state`` the stream's).
     stream: str | None = None
-    windows: WindowRange | None = None
+    window_range: WindowRange | None = None
 
 
 class RecordsSince(Document):
@@ -338,15 +348,16 @@ class RecordsSince(Document):
         default="recon.v1.records-since", alias="schema"
     )
     mission: str
-    #: The archive read: its directory, and its id (``--archive``), which a later read with
-    #: ``cursor`` names again.
+    #: The archive read: its id (``--archive``), which a later read with ``cursor`` names
+    #: again, and its directory.
     archive: str
-    archive_id: str
+    path: str
     state: ArchiveState
     ended: Ended | None
-    #: ``{"table", "record"}`` each, table by table in output-name order, each table's in the
-    #: order written. A table not yet in ``exhausted`` may still be retracted.
-    records: list[dict[str, Any]]
+    #: The records read, ``{"table", "record"}`` each, table by table in output-name order,
+    #: each table's in the order written; ``count`` says how many. A table not yet in
+    #: ``exhausted`` may still be retracted.
+    table_records: list[dict[str, Any]]
     count: int
     #: Opaque: pass it, unchanged, to the next read of the same archive.
     cursor: str
@@ -359,12 +370,12 @@ class RecordsSince(Document):
     #: A bound (``limit`` records, ``max_bytes`` bytes) cut this read before all that was
     #: written by then was read: read again at once.
     more: bool
-    #: A read of a stream: its name. ``archive`` and ``archive_id`` are then the window read,
+    #: A read of a stream: its name. ``archive`` and ``path`` are then the window read,
     #: ``state`` that window's, and ``cursor`` carries the window, so the next read goes on
     #: into the next window once this one is read to its end.
     stream: str | None = None
     #: A read of a stream whose cursor's window was retired since: the windows it jumped,
-    #: from the cursor's to the one before ``archive_id`` (``last`` is None when no
+    #: from the cursor's to the one before ``archive`` (``last`` is None when no
     #: tombstone names it). Their records, and the rest of the cursor's window, are gone.
     skipped: WindowRange | None = None
 
@@ -476,7 +487,7 @@ def survey_failure(document: SurveyDocument) -> ReconError | None:
     its ``archive_unfinished`` warning says why. Otherwise the kind is ``auth``,
     ``transient`` or ``run_failed``. The details name the archive and the failed tables. A
     stream's window that failed counts as a failed table."""
-    every = document.tables + [window.table for window in document.windows]
+    every = document.tables + [window.table for window in document.stream_windows]
     kind = failure_kind(every)
     failed = [t.name for t in document.failed]
     if any(w.get("kind") == "archive_unfinished" for w in document.warnings):
@@ -486,12 +497,11 @@ def survey_failure(document: SurveyDocument) -> ReconError | None:
             else "every table succeeded, but "
         )
         return ReconError(
-            f"{tables}the archive could not be finished, so it reads incomplete: "
-            f"{document.archive}",
+            f"{tables}the archive could not be finished, so it reads incomplete: {document.path}",
             kind="store",
             fix="read the survey's archive_unfinished warning, free space in the archive's "
             f"directory or make it writable, then: recon survey {document.mission}",
-            details={"archive": document.archive, "failed": failed},
+            details={"archive": document.archive, "path": document.path, "failed": failed},
         )
     if kind is None:
         return None
@@ -499,7 +509,7 @@ def survey_failure(document: SurveyDocument) -> ReconError | None:
         f"{len(failed)} of {len(every)} table(s) failed; the archive is incomplete",
         kind=kind,
         fix=_SURVEY_FAILURE_FIX[kind].format(n=document.mission),
-        details={"archive": document.archive, "failed": failed},
+        details={"archive": document.archive, "path": document.path, "failed": failed},
     )
 
 
@@ -519,5 +529,5 @@ def stream_failure(document: StreamDocument) -> ReconError | None:
         fix=error.fix
         or f"read the window's error, fix its cause, then: recon stream {document.mission} "
         f"--stream {document.stream}",
-        details={"archive": last.archive, "window": last.id},
+        details={"archive": last.id, "path": last.path, "window": last.id},
     )

@@ -82,11 +82,11 @@ Refused with exit 2 (`usage`) and a fix: `--forever` with `--windows` or `--unti
 
 Under `--json`, one `recon.v1.stream` document: `mission`, `stream`, `path`, `returns_s` and `returns` (when the run was to return at the latest, as it said when it started), `state` (the stream's, after the run), `windows` (sealed by this run), `records`, `dropped`, `first` (the first window's id), `last` (the last window sealed, a window outcome) and `warnings`. Without it, each window is a line on stderr as it is sealed. A window whose source failed exits with that failure's kind.
 
-`recon survey <mission>` runs **one** window of each stream entry, in turn, after the snapshot tables, and lists each in the survey document's `windows`: a stream run from cron. A window that failed makes the survey `incomplete`. Two streams of 300 s hold the survey ten minutes past its tables, so `recon survey <mission> --dry-run` says when it returns at the latest as `survey.returns`: the mission's `deadline:` (which bounds the snapshot tables) plus each stream's window `seconds`, or null, with a note of what is unbounded, when there is no `deadline:` beside snapshot tables or a window has no `seconds`.
+`recon survey <mission>` runs **one** window of each stream entry, in turn, after the snapshot tables, and lists each in the survey document's `stream_windows`: a stream run from cron. A window that failed makes the survey `incomplete`. Two streams of 300 s hold the survey ten minutes past its tables, so `recon survey <mission> --dry-run` says when it returns at the latest as `survey.returns`: the mission's `deadline:` (which bounds the snapshot tables) plus each stream's window `seconds`, or null, with a note of what is unbounded, when there is no `deadline:` beside snapshot tables or a window has no `seconds`.
 
 ## How a window ends
 
-A window outcome (in `recon.v1.stream`'s `last` and `recon.v1.survey`'s `windows`) holds `stream`, `index`, `id`, `archive`, `opened_at`, `closed_at`, `closed_by`, `dropped`, `high_water` (the most records that waited) and `table` (its one table: `status`, `records`, `error`).
+A window outcome (in `recon.v1.stream`'s `last` and `recon.v1.survey`'s `stream_windows`) holds `stream`, `index`, `id` (its archive id, what `--archive` takes), `path` (its directory), `opened_at`, `closed_at`, `closed_by`, `dropped`, `high_water` (the most records that waited) and `table` (its one table: `status`, `records`, `error`).
 
 | `closed_by` | Means | `status` |
 |---|---|---|
@@ -111,7 +111,7 @@ A stream killed mid-window (SIGKILL, a crash) leaves that window unsealed: it re
 | | Does |
 |---|---|
 | `recon watch <mission> --stream <name>` | follows the stream from its latest window (or `--archive <window id>`) into each window after it, exactly as an archive is followed; returns once nothing extends the stream and its last window is read. The cursor carries the window; one whose window `retain:` removed since goes on from the next window kept, and that read's `skipped` (`{first, last, count}`) names the windows it jumped |
-| `recon query <mission> "<SQL>" --stream <name>` | each table is the union of its windows' records, by column name; `--since` and `--until` choose the windows that meet `[since, until)` from their ids alone; `--archive` names one window. Windows collected under different configs are refused (`query`, exit 10) with the ranges to narrow to. `recon.v1.query-rows` gains `stream` and `windows`: `{first, last, count}`, the windows it read. Past 300 windows it warns `windows_many`, with how to narrow |
+| `recon query <mission> "<SQL>" --stream <name>` | each table is the union of its windows' records, by column name; `--since` and `--until` choose the windows that meet `[since, until)` from their ids alone; `--archive` names one window. Windows collected under different configs are refused (`query`, exit 10) with the ranges to narrow to. `recon.v1.query-rows` gains `stream` and `window_range`: `{first, last, count}`, the windows it read; its `archive` is the last window read, and `path` the stream's directory. Past 300 windows it warns `windows_many`, with how to narrow |
 | `recon status <mission> --json` | each mission's `streams`: `name`, `path`, `state` (`writing` while a stream runs, else its last window's), `windows`, `first`, `latest`, `retired` |
 
 A window's id is its index, then when it opened (`00000003-2026-10-24-010203-456789`), so ids sort by order and say when each window began.
@@ -139,8 +139,8 @@ done = recon.stream("my-feed", "log", windows=12)  # one window unless told othe
 failure = recon.stream_failure(done)  # None, or the error its last window ended on
 
 for read in recon.watch("my-feed", stream="log"):
-    for row in read.records:
-        print(read.archive_id, row["record"])
+    for row in read.table_records:
+        print(read.archive, row["record"])
 
 rows = recon.query("my-feed", "SELECT count(*) AS n FROM log", stream="log")
 ```

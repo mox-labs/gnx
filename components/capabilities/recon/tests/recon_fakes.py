@@ -272,4 +272,4 @@ def run_survey(
         converter=converter,
     )
     document = recon.survey(name, on_event=on_event)
-    return Path(document.archive), document.tables
+    return Path(document.path), document.tables

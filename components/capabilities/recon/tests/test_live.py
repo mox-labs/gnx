@@ -92,18 +92,18 @@ class TestReadSince:
     def test_a_reader_follows_a_table_as_it_is_written_and_sealed(self, tmp_path: Path) -> None:
         reads = self._survey(tmp_path, [[{"n": 0}, {"n": 1}], [{"n": 2}]])
 
-        assert [[r["record"] for r in read.records] for read in reads] == [
+        assert [[r["record"] for r in read.table_records] for read in reads] == [
             [{"n": 0}, {"n": 1}],
             [{"n": 2}],
             [],
         ]
-        assert {r["table"] for read in reads for r in read.records} == {"t"}
+        assert {r["table"] for read in reads for r in read.table_records} == {"t"}
         assert [read.state for read in reads] == ["writing", "writing", "complete"]
         assert [read.ended for read in reads] == [None, None, "finished"]
         assert [read.exhausted for read in reads] == [[], [], ["t"]]
         assert reads[-1].retracted == []
         again = recon.read_since("m", reads[-1].cursor, root=tmp_path)
-        assert (again.records, again.exhausted) == ([], []), "a table's end is told once"
+        assert (again.table_records, again.exhausted) == ([], []), "a table's end is told once"
 
     def test_sealed_has_one_meaning(self) -> None:
         """Polish R8 (Karman 3): ``sealed`` means renamed into place by its writer, a
@@ -118,7 +118,7 @@ class TestReadSince:
     def test_a_table_that_fails_is_retracted_and_the_reader_told(self, tmp_path: Path) -> None:
         reads = self._survey(tmp_path, [[{"n": 0}, {"n": 1}]], fail=True)
 
-        assert [r["record"] for r in reads[0].records] == [{"n": 0}, {"n": 1}]
+        assert [r["record"] for r in reads[0].table_records] == [{"n": 0}, {"n": 1}]
         assert (reads[-1].retracted, reads[-1].exhausted) == (["t"], [])
         assert (reads[-1].state, reads[-1].ended) == ("incomplete", "finished"), (
             "the survey ran to its end; a table failed"
@@ -133,7 +133,7 @@ class TestReadSince:
         }
         run_survey(config, tmp_path)
         read = recon.read_since("m", root=tmp_path)
-        assert read.records == [
+        assert read.table_records == [
             {"table": "a", "record": {"n": 1}},
             {"table": "a", "record": {"n": 2}},
         ], "an empty table's sentinel line is not a record"
@@ -148,7 +148,7 @@ class TestReadSince:
         cursor = None
         for _ in range(3):
             read = recon.read_since("m", cursor, limit=2, root=tmp_path)
-            seen.append([r["record"]["n"] for r in read.records])
+            seen.append([r["record"]["n"] for r in read.table_records])
             exhausted.append(read.exhausted)
             cursor = read.cursor
         assert seen == [[0, 1], [2, 3], [4]]
@@ -171,16 +171,16 @@ class TestAReadIsBoundedInBytes:
         project = self._archive(tmp_path, [400, 400, 400])
         first = recon.read_since("m", max_bytes=1000, root=project)
         second = recon.read_since("m", first.cursor, max_bytes=1000, root=project)
-        assert ([r["record"]["n"] for r in first.records], first.more) == ([0, 1], True)
-        assert ([r["record"]["n"] for r in second.records], second.more) == ([2], False)
+        assert ([r["record"]["n"] for r in first.table_records], first.more) == ([0, 1], True)
+        assert ([r["record"]["n"] for r in second.table_records], second.more) == ([2], False)
         assert (first.exhausted, second.exhausted) == ([], ["t"])
 
     def test_a_record_larger_than_the_bound_is_returned_alone(self, tmp_path: Path) -> None:
         project = self._archive(tmp_path, [3000, 10])
         first = recon.read_since("m", max_bytes=1000, root=project)
         second = recon.read_since("m", first.cursor, max_bytes=1000, root=project)
-        assert [r["record"]["n"] for r in first.records] == [0]
-        assert [r["record"]["n"] for r in second.records] == [1]
+        assert [r["record"]["n"] for r in first.table_records] == [0]
+        assert [r["record"]["n"] for r in second.table_records] == [1]
 
     def test_the_record_limit_cuts_a_read_too_and_says_so(self, tmp_path: Path) -> None:
         project = self._archive(tmp_path, [1, 1, 1])
@@ -314,7 +314,7 @@ class TestACursorIsOpaque:
             recon.read_since("m", cursor, root=surveyed)
         assert f"--archive {first[0].id}" in (raised.value.fix or "")
         again = recon.read_since("m", cursor, archive=first[0].id, root=surveyed)
-        assert again.records == [] and again.archive_id == first[0].id
+        assert again.table_records == [] and again.archive == first[0].id
 
     def test_a_limit_below_one_is_refused(self, surveyed: Path) -> None:
         with pytest.raises(recon.UsageError):
@@ -420,7 +420,7 @@ class TestNoReceiverSlowsTheWrite:
             archives=Timed(clock),
             channel=lambda: ThreadChannel(queue=2, drain_s=0.2),
         ).survey("m", on_event=on_event)
-        archive = Path(surveyed.archive)
+        archive = Path(surveyed.path)
         files = {p.name: p.read_bytes() for p in sorted(archive.iterdir()) if p.is_file()}
         return surveyed, files, written[1] - written[0]
 

@@ -121,7 +121,7 @@ class TestReconStream:
         assert (first.windows, first.records) == (2, 10)
         assert feed.started == [None, 9], "the second run went on after the last kept"
         assert second.last is not None and second.last.index == 2
-        meta = yaml.safe_load((Path(second.last.archive) / "meta.yaml").read_text())
+        meta = yaml.safe_load((Path(second.last.path) / "meta.yaml").read_text())
         assert first.last is not None and meta["stream"]["previous"] == first.last.id
         # Every restart is in the chain (review item 3): the stretch no process read, here
         # resumed from a position, so a source that does not honour it shows where.
@@ -129,7 +129,7 @@ class TestReconStream:
         assert (gap["from"], gap["resumed"]) == (first.last.closed_at, True)
         rows = [
             json.loads(line)["seq"]
-            for line in (Path(second.last.archive) / "events.jsonl").read_text().splitlines()
+            for line in (Path(second.last.path) / "events.jsonl").read_text().splitlines()
         ]
         assert rows == [10, 11, 12, 13, 14], "exactly once across the two runs"
 
@@ -185,7 +185,7 @@ class TestASurveyRunsOneWindow:
 
         assert document.status == "complete"
         assert [t.name for t in document.tables] == ["now"]
-        [window] = document.windows
+        [window] = document.stream_windows
         assert (window.stream, window.closed_by, window.table.status) == ("events", "seconds", "ok")
         assert window.table.records == 9
 
@@ -237,9 +237,9 @@ class TestWatchAcrossWindows:
 
         reads = list(recon_.watch("m", stream="events", archive=first, limit=4))
 
-        seqs = [r["record"]["seq"] for read in reads for r in read.records]
+        seqs = [r["record"]["seq"] for read in reads for r in read.table_records]
         assert seqs == list(range(25))
-        assert len({read.archive_id for read in reads}) == 3
+        assert len({read.archive for read in reads}) == 3
         assert all(read.stream == "events" for read in reads)
 
     def test_a_cursor_into_a_retired_window_goes_on_from_the_next_one(self, tmp_path: Path) -> None:
@@ -253,11 +253,11 @@ class TestWatchAcrossWindows:
 
         after = recon_.read_since("m", read.cursor, stream="events")
 
-        assert after.archive_id != read.archive_id
-        assert [r["record"]["seq"] for r in after.records][:1] == [18], "window 2's first"
+        assert after.archive != read.archive
+        assert [r["record"]["seq"] for r in after.table_records][:1] == [18], "window 2's first"
         stones = [stone["id"] for stone in _retired(tmp_path)]
         assert after.skipped is not None, "a read that jumps windows says which it jumped"
-        assert (after.skipped.first, after.skipped.count) == (read.archive_id, 2)
+        assert (after.skipped.first, after.skipped.count) == (read.archive, 2)
         assert after.skipped.last == stones[-1]
         assert recon_.read_since("m", after.cursor, stream="events").skipped is None
 
@@ -305,15 +305,15 @@ class TestQueryAcrossWindows:
 
         assert every.rows == [{"n": 35}]
         status = recon_.status("m").missions[0].streams[0]
-        assert every.windows is not None and status.latest is not None
-        assert (every.windows.first, every.windows.last, every.windows.count) == (
+        assert every.window_range is not None and status.latest is not None
+        assert (every.window_range.first, every.window_range.last, every.window_range.count) == (
             status.first,
             status.latest.id,
             4,
         ), "the range read, not every id (review item 11)"
         assert later.rows == [{"lo": 19, "n": 16}]
-        assert later.windows is not None
-        assert later.windows.count == 2, "windows that ended before since are not read"
+        assert later.window_range is not None
+        assert later.window_range.count == 2, "windows that ended before since are not read"
         assert not [w for w in every.warnings if w["kind"] == "windows_many"]
 
     def test_a_query_of_many_windows_warns_how_to_narrow_it(
