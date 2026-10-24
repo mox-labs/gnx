@@ -183,6 +183,24 @@ def test_the_streaming_page_is_the_skill_reference() -> None:
         assert taught in REFERENCES["streaming"], taught
 
 
+def test_the_changes_page_is_the_skill_reference() -> None:
+    """Change detection is taught in full by ``recon --skill -r changes``, and the skill points
+    there in one line; one text with its docs page. An agent reading it learns each key and its
+    default, every op and when, what holds deletes back, that ``record`` is untrusted, and every
+    refusal."""
+    page = PACKAGE / "docs" / "reference" / "changes.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["changes"]
+    assert "`changes`" in SKILL
+    for taught in ("`key`", "`volatile`", "`deletes`", "`false`", "`insert`", "`update`",
+                   "`delete`", "`rebaselined`", "ambiguous", "keyless", "untrusted",
+                   "deletes_withheld", "deletes_unsafe", "changes.key", "0600", ".keys.jsonl",
+                   "_changes", "baseline", "provenance", "never tells a delete",
+                   "retain:"):  # fmt: skip
+        assert taught in REFERENCES["changes"], taught
+
+
 def test_the_pagination_page_is_the_skill_reference() -> None:
     """Pagination is taught in full by ``recon --skill -r pagination``, and the skill points
     there in one line; one text with its docs page. An agent reading it learns each key, its

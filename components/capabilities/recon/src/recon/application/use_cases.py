@@ -17,6 +17,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol
 
 from recon.application.captures import record_hook_payload
+from recon.application.changes import ChangeDetector
 from recon.application.collectors import confined_transforms, declared_env
 from recon.application.plan import Plan, PlannedStream, build_plan, fan_out, plugin_warning
 from recon.application.stream import Stream, StreamGaps, StreamPlan, StreamRun
@@ -396,6 +397,7 @@ class Recon:
                     survey = Survey(
                         self._archives, self._clock, self._version, telemetry, on_event,
                         extracts=extracts, kinds=kinds, deadline=deadline, pages=pages,
+                        changes=self._changes(name, snapshot),
                     )  # fmt: skip
                     tables = survey.run(
                         plan.config,
@@ -432,8 +434,9 @@ class Recon:
         stream_windows: list[WindowOutcome] = []
         for stream in plan.streams:
             run, found = self._run_stream(
-                mission, plan.config, stream, sha256, windows=1, until=None, on_event=caller
-            )
+                mission, plan.config, stream, sha256, windows=1, until=None, on_event=caller,
+                name=name,
+            )  # fmt: skip
             warnings += found
             stream_windows += [run.last] if run.last is not None else []
         failed = failed_tables or any(w.table.status == "error" for w in stream_windows)
@@ -497,7 +500,7 @@ class Recon:
                 on_event = None
         run, found = self._run_stream(
             mission, plan.config, planned, sha256, windows=windows, until=until,
-            on_event=on_event, stop=stop,
+            on_event=on_event, stop=stop, name=name,
         )  # fmt: skip
         found = started + found
         return StreamDocument(
@@ -526,10 +529,11 @@ class Recon:
         until: datetime | None,
         on_event: EventCallback | None,
         stop: Stop | None = None,
+        name: str,
     ) -> tuple[StreamRun, list[Problem]]:
         """Run one stream of ``config`` through the window writer, over a collector built for
         it alone (its ``close()`` is what stops a source that would not); the run, and what it
-        found worth saying, one problem of each kind."""
+        found worth saying, one problem of each kind. ``name`` is the mission's."""
         entry = config.collectors[planned.index]
         ctype = self._plugins.collector_types[entry.type]
         catalog = {source.name: source for source in config.catalog}
@@ -561,6 +565,7 @@ class Recon:
             engine = Stream(
                 self._archives, self._clock, self._version,
                 telemetry=partial(self._window_telemetry, on_event=on_event, warnings=warnings),
+                changes=self._changes(name, subset),
             )  # fmt: skip
             plan = StreamPlan(
                 name=planned.name,
@@ -593,6 +598,14 @@ class Recon:
             telemetry.close()
         warnings += engine.warnings
         return run, _once_each(warnings)
+
+    def _changes(self, name: str, config: ReconConfig) -> ChangeDetector | None:
+        """The detector of what changed in the mission's tables, under its key, made on first
+        use; None when no entry of ``config`` asks for it, so such a mission has no key."""
+        if not any(entry.changes is not None for entry in config.collectors):
+            return None
+        mission = self._missions.mission_dir(name)
+        return ChangeDetector(self._archives, mission, self._missions.change_key(name))
 
     @contextlib.contextmanager
     def _window_telemetry(

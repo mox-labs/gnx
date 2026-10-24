@@ -74,6 +74,12 @@ class MissionStore(Protocol):
 
     def capture_count(self, name: str) -> int: ...
 
+    def change_key(self, name: str) -> bytes:
+        """The key the mission's change detection hashes records with (``recon.domain.
+        changes``): random, made on first use where only its owner can read it, and the same
+        on every later call, so the same tables give the same change rows."""
+        ...
+
     def is_directory(self, path: Path) -> bool:
         """Whether ``path`` is a directory: a ``local`` source must name one."""
         ...

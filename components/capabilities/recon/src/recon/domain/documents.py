@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Pydantic reads the field types when the models are built, so they are imported to run.
 from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
+from recon.domain.changes import DeletesWithheld  # noqa: TC001
 from recon.domain.errors import ERROR_KINDS, ErrorKind, ReconError
 from recon.domain.paginate import TruncatedBy  # noqa: TC001
 from recon.domain.stream import ClosedBy  # noqa: TC001
@@ -148,6 +149,33 @@ class TableError(Document):
     fix: str | None = None
 
 
+class ChangeSummary(Document):
+    """What a table's change detection found (``changes:``, :mod:`recon.domain.changes`): its
+    change table (``table``, an output of the same archive, whose records are ``type_url``'s
+    and hold untrusted content in ``record``), the baseline it was compared with (an archive's
+    id, or a window's; None: there was none, so every key is an insert), the digest of the
+    spec (``spec``: its key and volatile fields) and of the ``normalize:`` its records were
+    made with, the rows by op, the records it could not compare, and why its deletes were
+    withheld when they were asked for."""
+
+    table: str
+    type_url: str
+    baseline: str | None
+    spec: str
+    #: None for a stream's window, which is compared with its chain.
+    normalize: str | None
+    rows: int
+    inserts: int = 0
+    updates: int = 0
+    deletes: int = 0
+    #: True: the baseline's records were made with another ``normalize:``, so the change
+    #: table holds one ``rebaselined`` row and no other.
+    rebaselined: bool = False
+    keyless: int = 0
+    ambiguous: int = 0
+    deletes_withheld: DeletesWithheld | None = None
+
+
 class TableOutcome(Document):
     """One table of a survey: what produced it and how it ended. ``truncated``: its crawl
     stopped short of its source's end (``paginate:``), so it is sealed ``ok`` and is not a
@@ -167,6 +195,8 @@ class TableOutcome(Document):
     error: TableError | None = None
     truncated: bool = False
     truncated_by: TruncatedBy | None = None
+    #: What its change detection found, for an entry with ``changes:``; None otherwise.
+    changes: ChangeSummary | None = None
 
 
 class WindowOutcome(Document):

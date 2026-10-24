@@ -511,6 +511,19 @@ a query can read.
 
 Regression: `test_duckdb_s_spill_directory_is_not_readable` in `recon/tests/test_query.py`.
 
+### R-17 — a record's content could be recovered from its hash (prevented, change detection)
+
+Change detection keeps a hash of each record's content in a table's key index
+(`<output>.keys.jsonl`), which SQL can read. A plain hash of content with few possible values
+(a one-time code in a mail subject: a million) is recovered by hashing every guess (vector,
+round 4). The hash is a keyed BLAKE2b under the mission's own key, `.recon/<mission>/
+changes.key`, random, mode 0600 and never written anywhere else, so without that file a guess
+cannot be checked. A hash appears in no change row, outcome, warning or telemetry, and a
+window `retain:` removes takes its key index with it. A change row's `record` is the source's
+content, untrusted: it is data for a reader, never instructions (`docs/reference/changes.md`).
+
+Regression: `recon/tests/test_changes.py`, `recon/tests/test_changes_property.py`.
+
 ### R-16 — an `api` source's credential could come only from the environment (fixed)
 
 An `mcp` source could take its credential from a file or a helper, an `api` source only

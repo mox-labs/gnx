@@ -74,12 +74,13 @@ ArchiveState = Literal["writing", "complete", "incomplete"]
 Ended = Literal["finished", "stopped", "crashed"]
 
 #: What a table may keep beside it that is no table: ``pages``, its page log (each page's
-#: token, once a page: :mod:`recon.domain.paginate`). Written with the table once it is
-#: sealed, and gone with its archive.
-Sidecar = Literal["pages"]
+#: token, once a page: :mod:`recon.domain.paginate`); ``keys``, its key index (each key's
+#: content hash: :mod:`recon.domain.changes`). Written with the table once it is sealed, and
+#: gone with its archive.
+Sidecar = Literal["pages", "keys"]
 
 #: Each sidecar's suffix to its table's output name: an output named so would be one.
-SIDECARS: tuple[Sidecar, ...] = ("pages",)
+SIDECARS: tuple[Sidecar, ...] = ("pages", "keys")
 
 _NOT_IDENTIFIER = re.compile(r"[^a-zA-Z0-9_]")
 
@@ -266,6 +267,11 @@ class ArchiveStore(Protocol):
     ) -> Iterator[dict[str, Any]] | None:
         """The lines of the table ``output``'s ``sidecar``, in the order written; None when it
         has none."""
+        ...
+
+    def read_table(self, archive: Path, output: str) -> Iterator[dict[str, Any]] | None:
+        """The records of the sealed table ``output``, in the order written (none for a table
+        that collected nothing); None when ``archive`` has no such sealed table."""
         ...
 
     def capture_log(self, archive: Path) -> CaptureLog: ...

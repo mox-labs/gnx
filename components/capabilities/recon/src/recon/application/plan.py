@@ -29,6 +29,7 @@ from pydantic import BaseModel, ValidationError
 
 from recon.domain.archives import EVENT_LOG_NAME, SIDECARS, table_name
 from recon.domain.capture import CAPTURE_LOG_NAME
+from recon.domain.changes import CHANGES_SUFFIX, changes_output
 from recon.domain.credentials import env_name
 from recon.domain.documents import SourcedValue
 from recon.domain.errors import Problem
@@ -63,6 +64,11 @@ RESERVED_OUTPUT_NAMES = frozenset(
 
 #: What an output name may not hold: it is the stem of one file in the archive.
 _NOT_IN_A_FILE_NAME = ("/", "\\", "..")
+
+#: The suffixes recon gives the files it writes beside a table, each with what it holds: an
+#: output named so would be one of them.
+_BESIDE = {"pages": "page log", "keys": "key index", CHANGES_SUFFIX: "change table"}
+assert set(SIDECARS) < set(_BESIDE)
 
 #: pydantic's error types, as problem kinds; a type error not listed is ``wrong_shape`` when
 #: its name says the value had the wrong type, else ``invalid_value``.
@@ -267,10 +273,19 @@ def build_plan(
                 values, short = _paginate(i, entry, targets, raw.get("deadline"))
                 provenance += values
                 warnings += short
+        if entry.changes is not None:
+            problems.extend(_changes_problems(i, entry, is_stream))
+            values, unsafe = _changes(i, entry)
+            provenance += values
+            warnings += unsafe
         for source, output in targets:
             problems.extend(_output_problems(i, output, produced_by))
             for key in _table_keys(output):
                 produced_by.setdefault(key, (i, output))
+            if entry.changes is not None:
+                problems.extend(_change_table_problems(i, output, produced_by))
+                for key in _table_keys(changes_output(output)):
+                    produced_by.setdefault(key, (i, changes_output(output)))
             if source is not None:
                 used_sources.add(source.name)
             # A type's describe sees only a source whose own settings were accepted.
@@ -1113,12 +1128,12 @@ def _output_problems(
                 got=output,
             )
         )
-    elif suffix := next((s for s in SIDECARS if output.casefold().endswith(f".{s}")), None):
+    elif suffix := next((s for s in _BESIDE if output.casefold().endswith(f".{s}")), None):
         problems.append(
             Problem(
                 at,
-                f"output {output!r} is named as recon names a table's {suffix} file, which it "
-                f"writes beside the table (<table>.{suffix}.jsonl)",
+                f"output {output!r} is named as recon names a file of its own beside a table "
+                f"(<table>.{suffix}.jsonl: its {_BESIDE[suffix]})",
                 kind="name_taken",
                 fix="rename the collector",
                 got=output,
@@ -1149,6 +1164,89 @@ def _output_problems(
             )
         )
     return problems
+
+
+def _change_table_problems(
+    i: int, output: str, produced_by: Mapping[str, tuple[int, str]]
+) -> list[Problem]:
+    """A problem when ``output``'s change table would be one table with an output already
+    named: SQL knows it as ``<output>_changes``."""
+    changes = changes_output(output)
+    taken = next((produced_by[key] for key in _table_keys(changes) if key in produced_by), None)
+    if taken is None:
+        return []
+    return [
+        Problem(
+            f"collectors.{i}.changes",
+            f"{output}'s change table, {changes} (SQL: {table_name(changes)}), would be one "
+            f"table with the output of collectors.{taken[0]} ({taken[1]!r})",
+            kind="name_taken",
+            fix="rename one of the two collectors",
+            got=taken[1],
+        )
+    ]
+
+
+def _changes_problems(i: int, entry: CollectorEntry, is_stream: bool) -> list[Problem]:
+    """What ``changes:`` may not say: a key or volatile field ``normalize:`` does not make,
+    and deletes of a stream, whose windows never yield one."""
+    spec = entry.changes
+    assert spec is not None
+    at = f"collectors.{i}.changes"
+    problems = []
+    columns = tuple(entry.normalize or ())
+    if columns:
+        for name in ("key", "volatile"):
+            for position, field in enumerate(getattr(spec, name)):
+                if field not in columns:
+                    problems.append(
+                        Problem(
+                            f"{at}.{name}.{position}",
+                            f"{field} is not a column normalize: makes, so no record has it",
+                            kind="name_unknown",
+                            fix=f"name a column of normalize: in changes.{name}",
+                            got=field,
+                            allowed=columns,
+                        )
+                    )
+    if is_stream and spec.deletes:
+        problems.append(
+            Problem(
+                f"{at}.deletes",
+                "a stream's window never yields a delete: a window holds what arrived in it, "
+                "not all its source holds",
+                fix="remove deletes: (a stream's change tables tell inserts and updates)",
+                got=True,
+            )
+        )
+    return problems
+
+
+def _changes(i: int, entry: CollectorEntry) -> tuple[list[SourcedValue], list[Problem]]:
+    """``changes:``'s effective volatile fields and deletes, with where each came from; and a
+    warning when deletes are told of a table an offset crawl reads, whose records shift
+    under it when the source changes during the crawl."""
+    spec = entry.changes
+    assert spec is not None
+    at = f"collectors.{i}.changes"
+    values = [
+        SourcedValue(path=f"{at}.{key}", value=getattr(spec, key),
+                     origin="mission" if key in spec.model_fields_set else "recon")
+        for key in ("key", "volatile", "deletes")
+    ]  # fmt: skip
+    warnings = []
+    if spec.deletes and entry.paginate is not None and entry.paginate.type == "offset":
+        warnings.append(
+            Problem(
+                f"{at}.deletes",
+                "an offset crawl of a source that loses a record while it is read skips the "
+                "record after it, which then reads as deleted",
+                kind="deletes_unsafe",
+                fix="page by cursor, link or header if the API offers one; or deletes: false",
+                got=True,
+            )
+        )
+    return values, warnings
 
 
 def plugin_warning(broken: BrokenPlugin) -> Problem:

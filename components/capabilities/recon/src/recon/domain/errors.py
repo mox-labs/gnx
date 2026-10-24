@@ -160,6 +160,10 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "paginate_empty",
     # a deadline shorter than the least time a crawl takes at its source's rate limit
     "deadline_short",
+    # a table's deletes asked for and not told (its crawl cut short, keyless or ambiguous
+    # records), and deletes told of a crawl whose records can shift under it
+    "deletes_withheld",
+    "deletes_unsafe",
 )
 
 

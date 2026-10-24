@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
     from pathlib import Path
 
+    from recon.application.changes import ChangeDetector
     from recon.domain.archives import ArchiveStore
     from recon.domain.capture import CaptureLog
     from recon.domain.clock import Clock
@@ -565,8 +566,10 @@ class Stream:
         telemetry: WindowTelemetry,
         progress_s: float = PROGRESS_S,
         stop_s: float = STOP_S,
+        changes: ChangeDetector | None = None,
     ) -> None:
         self._archives = archives
+        self._changes = changes
         self._clock = clock
         self._recon_version = recon_version
         self._telemetry = telemetry
@@ -892,6 +895,10 @@ class Stream:
         table = table.model_copy(
             update={"records": window.records, "seconds": round(closed - window.opened, 2)}
         )
+        spec = plan.entry.changes
+        if error is None and spec is not None and self._changes is not None:
+            # Against what the chain has told, never a delete (ruling C7).
+            table = self._changes.window(window.archive, plan.name, window.previous, table, spec)
         reproducible = captures is not None and dropped == 0
         if captures is not None:
             captures.finalize_stream(

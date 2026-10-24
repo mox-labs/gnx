@@ -385,6 +385,12 @@ class ArchiveFiles:
             return None
         return _sidecar_lines(path)
 
+    def read_table(self, archive: Path, output: str) -> Iterator[dict[str, Any]] | None:
+        path = archive / f"{output}.jsonl"
+        if not path.is_file():
+            return None
+        return _table_records(path)
+
     def capture_log(self, archive: Path) -> FilesystemCaptureLog:
         return FilesystemCaptureLog(archive, self._clock)
 
@@ -678,6 +684,17 @@ def _sidecar_lines(path: Path) -> Iterator[dict[str, Any]]:
     with path.open(encoding="utf-8") as f:
         for line in f:
             yield json.loads(line)
+
+
+def _table_records(path: Path) -> Iterator[dict[str, Any]]:
+    """A sealed table's records: each line, but a table's that collected nothing, whose one
+    line is the empty sentinel."""
+    with path.open("rb") as f:
+        for line in f:
+            record = json.loads(line)
+            if isinstance(record, dict) and record.get("_empty") is True:
+                continue
+            yield record
 
 
 def _is_sidecar(name: str) -> bool:

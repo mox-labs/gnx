@@ -6,6 +6,8 @@
       config.yaml
       captures/captures.jsonl, captures/raw/    the external capture log (`recon capture`)
       archive/<archive id>/                     one per survey
+      changes.key                               the key change detection hashes with, mode
+                                                0600, made by the first survey that needs it
 
 The project root is the one the caller names, or else the nearest ancestor of the working
 directory holding ``.git`` (a directory, or a worktree's file); outside a repository it is
@@ -16,7 +18,9 @@ are the YAML files of the ``recon.configs`` package.
 from __future__ import annotations
 
 import importlib.resources
+import os
 import re
+import secrets
 import sys
 from typing import TYPE_CHECKING
 
@@ -33,6 +37,10 @@ if TYPE_CHECKING:
     from recon.domain.clock import Clock
 
 _MISSION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+#: The mission's change-detection key (``MissionStore.change_key``), mode 0600, and its size.
+CHANGE_KEY = "changes.key"
+CHANGE_KEY_BYTES = 32
 
 
 def find_project(start: Path) -> tuple[Path, str]:
@@ -122,6 +130,30 @@ class MissionFiles:
                 return sum(1 for line in f if line.strip())
         except OSError:
             return 0
+
+    def change_key(self, name: str) -> bytes:
+        path = self.mission_dir(name) / CHANGE_KEY
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            pass
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Made whole under another name and linked into place, which fails when another
+        # process linked its key first: the key is one, and never read half written.
+        made = path.with_name(f".{CHANGE_KEY}.{os.getpid()}")
+        descriptor = os.open(made, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(descriptor, secrets.token_bytes(CHANGE_KEY_BYTES))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(made, path)
+        except FileExistsError:
+            pass
+        finally:
+            made.unlink(missing_ok=True)
+        return path.read_bytes()
 
     def is_directory(self, path: Path) -> bool:
         return path.is_dir()

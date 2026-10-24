@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from recon.domain.changes import ChangesSpec  # noqa: TC001
 from recon.domain.clock import LONGEST_WAIT
 from recon.domain.credentials import NOT_A_REFERENCE, REFERENCE_FIX, reference
 from recon.domain.paginate import PaginateSpec  # noqa: TC001
@@ -167,7 +168,9 @@ class CollectorEntry(BaseModel):
     `window` makes the entry a stream, collected into windows that each end at the first of
     its bounds; `buffer` and `retain` are a stream's too (:mod:`recon.domain.stream`); left
     out, the plan fills in their defaults and says so. `paginate` reads the source page by
-    page, for a type that declares ``paginates`` (:mod:`recon.domain.paginate`).
+    page, for a type that declares ``paginates`` (:mod:`recon.domain.paginate`). `changes`
+    compares each of its tables with the same table of an earlier archive and writes what
+    changed beside it (:mod:`recon.domain.changes`).
     Every other key is the type's own setting (`run:` for `cli`, `endpoint:` for `api`),
     kept in :attr:`settings` and validated by the type's own schema at plan time.
     """
@@ -185,6 +188,7 @@ class CollectorEntry(BaseModel):
     buffer: BufferSpec | None = None
     retain: Retain | None = None
     paginate: PaginateSpec | None = None
+    changes: ChangesSpec | None = None
 
     @property
     def settings(self) -> dict[str, Any]:

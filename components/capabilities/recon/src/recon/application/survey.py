@@ -9,6 +9,9 @@ Determinism (the contract the tests in ``test_determinism.py`` hold):
     The time enters only through the ``Clock`` port. With the clock fixed too, the whole
     archive is the same: its name, every table, and ``meta.yaml``. The one exception is the
     capture log a mission with ``preserve_raw`` keeps: each capture has a unique ``id``.
+    An entry with ``changes:`` adds its baseline (the earlier archive its tables are compared
+    with) and the mission's change key to the inputs: the same baseline, tables, spec and key
+    give the same change tables and key indexes.
 
     A stream's window keeps the same contract, window by window (``stream.py``): given the
     same records arriving at the same stamps on the clock port, each window holds the same
@@ -45,6 +48,11 @@ empty, items that are not objects, captures no filter kept): the survey keeps th
 empty, and warns with the reason, so an empty table never reads as a source that had
 nothing.
 
+Once every table has run, each table sealed ``ok`` of an entry with ``changes:`` is compared
+with its baseline (:mod:`recon.application.changes`): its change table (``<output>.changes``)
+and its key index are written, and its outcome says what was found. A stop during that is
+recorded as ``ended: stopped``, and what it wrote is then not to be read.
+
 A table read page by page (``paginate:``) says each page and why its crawl stopped short
 through the survey's page log (:class:`TablePages`, the collectors' ``CollectorContext.pages``).
 Once the table is sealed its page log is kept beside it (``<output>.pages.jsonl``); a crawl
@@ -70,8 +78,10 @@ if TYPE_CHECKING:
     from datetime import datetime
     from pathlib import Path
 
+    from recon.application.changes import ChangeDetector
     from recon.domain.archives import ArchiveStore
     from recon.domain.capture import CaptureLog
+    from recon.domain.changes import DeletesWithheld
     from recon.domain.clock import Clock
     from recon.domain.collector import Collector
     from recon.domain.models import CollectorEntry, ReconConfig, SourceEntry
@@ -148,9 +158,11 @@ class Survey:
         deadline: Deadline | None = None,
         progress_s: float = PROGRESS_S,
         pages: TablePages | None = None,
+        changes: ChangeDetector | None = None,
     ) -> None:
         self._archives = archives
         self._pages = pages if pages is not None else TablePages()
+        self._changes = changes
         self._progress_s = progress_s
         self._clock = clock
         self._deadline = deadline if deadline is not None else Deadline(clock)
@@ -198,6 +210,8 @@ class Survey:
                     if index in streams:
                         continue
                     tables += self._run_entry(index, entry, config, collectors, archive, captures)
+            # Every table has run, so the survey reaches its end: what changed is told now.
+            tables = self._compare(config, tables, archive)
         except KeyboardInterrupt:
             # Stopped on request (Ctrl-C, SIGTERM): the tables that ended are recorded, and
             # that it was stopped, so it never reads as a survey that died. One that cannot
@@ -221,6 +235,44 @@ class Survey:
             self.warnings.append(warning)
             self._emit({"kind": "archive_warning", "reason": warning.message, "fix": warning.fix})
         return tables
+
+    def _compare(
+        self, config: ReconConfig, tables: list[TableOutcome], archive: Path
+    ) -> list[TableOutcome]:
+        """Each table sealed ``ok`` of an entry with ``changes:``, compared with its baseline:
+        its change table and key index written, and its outcome saying what was found. A
+        table that failed is compared with nothing and is no baseline."""
+        if self._changes is None:
+            return tables
+        at = {entry.name: (i, entry) for i, entry in enumerate(config.collectors)}
+        compared = []
+        for table in tables:
+            index, entry = at[table.collector]
+            if entry.changes is None or table.status != "ok":
+                compared.append(table)
+                continue
+            try:
+                table = self._changes.snapshot(archive, table, entry.changes, entry.normalize)
+            except OSError as exc:
+                self._unfinished(f"{table.name}'s change table could not be written", exc)
+            compared.append(table)
+            withheld = table.changes.deletes_withheld if table.changes else None
+            if withheld is not None:
+                self._warn(table.name, _withheld(index, entry, table.name, withheld))
+        return compared
+
+    def _unfinished(self, what: str, exc: OSError) -> None:
+        """An archive that cannot keep what it was to keep cannot be finished: it reads
+        incomplete, and a warning says why."""
+        self.finished = False
+        warning = Problem(
+            "",
+            f"{what}, so the archive reads incomplete: {exc}",
+            kind="archive_unfinished",
+            fix="free space in the archive's directory, or make it writable, then survey again",
+        )
+        self.warnings.append(warning)
+        self._emit({"kind": "archive_warning", "reason": warning.message, "fix": warning.fix})
 
     def _meta(
         self,
@@ -347,15 +399,7 @@ class Survey:
         try:
             self._archives.write_sidecar(archive, output, "pages", pages)
         except OSError as exc:
-            self.finished = False
-            warning = Problem(
-                "",
-                f"{output}'s page log could not be written, so the archive reads incomplete: {exc}",
-                kind="archive_unfinished",
-                fix="free space in the archive's directory, or make it writable, then survey again",
-            )
-            self.warnings.append(warning)
-            self._emit({"kind": "archive_warning", "reason": warning.message, "fix": warning.fix})
+            self._unfinished(f"{output}'s page log could not be written", exc)
 
     def _check_extract(
         self, index: int, entry: CollectorEntry, output: str, record: dict[str, Any]
@@ -486,6 +530,30 @@ def _keeping_first(
             yield record
     finally:
         records.close()
+
+
+#: Why a table's deletes were withheld, and what to do about it.
+_WITHHELD: dict[str, tuple[str, str]] = {
+    "truncated": ("its crawl was cut short, so a key it lacks may only be past where it "
+                  "stopped", "read every page: raise paginate.pages, or narrow the request"),
+    "keyless": ("it holds records with no key, which may be the ones that went",
+                "name key fields every record has (changes.key), or shape the records so they "
+                "have them"),
+    "ambiguous": ("it holds a key with two contents, so which one went is not known",
+                  "name key fields that tell its records apart (changes.key)"),
+}  # fmt: skip
+
+
+def _withheld(index: int, entry: CollectorEntry, output: str, why: DeletesWithheld) -> Problem:
+    """The warning for a table whose deletes were asked for and withheld."""
+    reason, fix = _WITHHELD[why]
+    return Problem(
+        f"collectors.{index}.changes.deletes",
+        f"{output}'s deletes were not told: {reason}",
+        kind="deletes_withheld",
+        fix=f"{fix} on collector {entry.name!r}",
+        got=why,
+    )
 
 
 def _truncated(
