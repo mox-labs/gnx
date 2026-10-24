@@ -50,10 +50,12 @@
   metrics declare theirs; `--skill` shows both. Neither enters a plan's digest or a
   registration: they are checked each time an experiment is.
 - **`examples/trials-in-flight/`**: the live validation slice, run by hand and never in CI.
-  An agent experiment, a k6 negative control and the protocol (eight exploratory runs, S P
-  P S P S S P, then an equivalence test on the run means at 95%, margins of 5pp and 5%) that
-  decides whether `regress` may let its trials overlap, for the sessions it tested. The
-  delay server takes `--capacity N`, so load beside a run queues at it.
+  Ten deterministic probes (five that read a fixture with tools), screened by a pilot;
+  six S and six P runs paired by run, probe and repeat; the decision in `analysis.py`
+  (non-inferiority of the pass rate by Newcombe's paired interval, one-sided 2.5%, 5pp;
+  tokens and turns by TOST at 5%; registered inconclusive rules), which CI tests and
+  simulates; a k6 negative control on a delay server that takes `--capacity N`. A pass
+  lets `regress` allow overlap only for what it tested.
 - **`overlap` on a genre's `design`** (`allowed` when unsaid): whether its trials may
   overlap at all. A genre that extends another may tighten it to `forbidden`, never loosen
   it (`genre_narrowing`). `regress` forbids it; the other built-ins allow it.

@@ -1,0 +1,23 @@
+# The slice's own genre: runs short enough to pair across arms (two repeats), estimates
+# only. The decision is analysis.py's, over many runs, not one run's verdict.
+schema: ix.v1.genre
+name: slice.v1.genre.paired-runs
+question: How does this subject behave in one short run, to be paired with another?
+hypothesis_form: "{subject} is measured on {metric}"
+roles:
+  - {name: subject, min: 1, max: 1}
+factors: allowed
+must_set: [primary]
+design:
+  repeats: {default: 2, min: 2}
+  order: interleaved
+  calibration: none
+  estimator: mean
+  note: "estimates only: one run of a paired design, decided across runs by analysis.py (ix design record §27)"
+analysis: {id: ix.v1.analysis.characterize}
+verdict_form: none
+report: [question, design, estimates, failures, raw]
+guidance: |
+  Use paired-runs for a run that is one of many, decided together outside ix: the
+  trials-in-flight slice's S and P runs, paired by run, probe and repeat. One run decides
+  nothing; analysis.py beside it reads them all.

@@ -15,6 +15,7 @@ import itertools
 import json
 import random
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -1254,7 +1255,7 @@ def test_the_live_slice_is_what_its_protocol_says(tmp_path: Path) -> None:
     assert "trials_in_flight" not in agent
     assert ix.plan(SLICE).order.trials_in_flight == 1
     wide = tmp_path / "wide"
-    wide.mkdir()
+    shutil.copytree(SLICE, wide)  # its genre and fixtures with it
     (wide / "experiment.yaml").write_text(yaml.safe_dump({**agent, "trials_in_flight": 4}))
     found = ix.validate(wide)
     assert found.valid and found.warnings == ()
@@ -1262,9 +1263,13 @@ def test_the_live_slice_is_what_its_protocol_says(tmp_path: Path) -> None:
     assert ix.validate(SLICE / "k6-control.yaml").valid
     (wide / "experiment.yaml").write_text(yaml.safe_dump({**control, "trials_in_flight": 4}))
     _refusal_at(ix.validate(wide), 4)
-    readme = (SLICE / "README.md").read_text()
-    assert "S P P S P S S P" in readme and "5 percentage points" in readme and "5%" in readme
-    assert "95% interval" in readme and "Wald" in readme  # no Wald: named to be refused
+    probes = agent["probes"]
+    assert len(probes) == 10 and sum("fixtures/" in p["prompt"] for p in probes) == 5
+    assert agent["subjects"]["agent"]["max_turns"] == 4 and agent["repeats"] == 2
+    readme = " ".join((SLICE / "README.md").read_text().split())
+    for registered in ("S P P S S P P S S P P S", "-5pp", "one-sided at 2.5%", "Newcombe",
+                       "below 0.97", "up to 4 turns", "about 290 sessions"):  # fmt: skip
+        assert registered in readme, registered
 
 
 def _slice_query(after: str, files: list[Path]) -> str:
@@ -1276,7 +1281,7 @@ def _slice_query(after: str, files: list[Path]) -> str:
 
 
 def test_the_slices_queries_read_what_they_say(tmp_path: Path) -> None:
-    """The overlap and the per-run means the protocol records, run over two small runs
+    """The overlap the protocol records for each control P, run over two small runs
     written as ix writes its tables."""
     duckdb = pytest.importorskip("duckdb")
     first, second = tmp_path / "first", tmp_path / "second"
@@ -1295,7 +1300,3 @@ def test_the_slices_queries_read_what_they_say(tmp_path: Path) -> None:
     most, share = duckdb.sql(_slice_query("Record how much", interactions)).fetchone()
     # Busy over [0, 15), [20, 30) and [40, 50); two at once over [5, 10): 5 of 35.
     assert most == 2 and share == pytest.approx(5 / 35)
-    means = duckdb.sql(
-        _slice_query("The unit is the run, not", [run / "ix.v1.reading.jsonl" for run in spans])
-    ).fetchall()
-    assert sorted(row[3] for row in means) == [0.5, 0.5]

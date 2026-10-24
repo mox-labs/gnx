@@ -4,9 +4,10 @@ The slice (``examples/trials-in-flight/``) is run by hand and never here; its an
 code (``analysis.py`` beside it), and this file holds that code to what the slice's README
 states, then simulates the slice at its own n (six runs a side, 20 trials a run: 120 pairs)
 through that same code, seeded. The cases are the ones the slice's design was set to meet
-(record §27): with no difference it holds, with a difference of twice the margin it does
-not, at the margin it holds at most at the one-sided level; and its inconclusive rules trip
-on what they are there for.
+(record §27): with a difference of twice the margin it does not hold, at the margin it holds
+at about the one-sided level, and its inconclusive rules trip on what they are there for.
+With no difference it holds only about 60% of the time at this n, short of the 80% the
+design asked; that case is reported in the record, not asserted.
 
 The cases run 2,000 replicates each, the design's number; they take a few seconds.
 """

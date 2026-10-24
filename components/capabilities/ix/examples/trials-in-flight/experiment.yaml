@@ -1,64 +1,80 @@
-# The live validation slice for trials in flight: does a real provider measure the same
-# thing when four trials run at once as when they run one at a time?
+# The live validation slice for trials in flight: does a real provider answer the same when
+# four trials run at once as when they run one at a time?
 #
 #   ix validate examples/trials-in-flight
 #   ix plan examples/trials-in-flight
 #
 # It is never run in CI: every trial is a real claude-sdk session, which calls a model and
-# costs money. README.md beside this file is the protocol: eight exploratory runs of this
-# file in the order S P P S P S S P (S one at a time, P `--trials-in-flight 4`), then an
-# equivalence test (TOST) of P against S on each metric below, with k6-control.yaml as the
-# negative control.
+# costs money. README.md beside this file is the protocol, registered before any run: a
+# pilot that screens the probes, then twelve exploratory runs of this file in the order
+# S P P S S P P S S P P S (S one at a time, P `--trials-in-flight 4`), decided by
+# analysis.py beside it, with k6-control.yaml as the negative control.
 #
 # The file writes no trials_in_flight: S and P are the same file, the width given on the
-# command line (`--exploratory --trials-in-flight 4`), so the two arms differ in nothing
-# else. Every kind here allows overlap and no deciding metric is contended, so ix accepts the
-# width; `ix plan` shows it as 1, from ix.
+# command line, so the two arms differ in nothing else. Every kind here allows overlap and
+# no metric is contended, so ix accepts the width; `ix plan` shows it as 1, from ix. Its
+# genre is the slice's own (genres/ beside this file): runs of two repeats, estimates only.
 name: trials-in-flight
 question: Does a claude-sdk agent answer as it does alone when four of its sessions run at once?
 rationale: >-
   A fresh session per trial shares nothing with its neighbours but the provider. If the
-  provider serves concurrent sessions as it serves one, a pass rate and a token count read
-  at width 4 match those read at width 1 within the margins; if rate limits or load change
-  the answers, they do not.
-genre: evaluate
+  provider serves concurrent sessions as it serves one, the pass rate, the tokens and the
+  turns read at width 4 match those read at width 1 within the margins; if rate limits or
+  load change the sessions, they do not.
+genre: slice.v1.genre.paired-runs
 
 subjects:
   agent:
     kind: agent-session
     runtime: claude-sdk
-    # One turn: each trial is one answer, so a trial's cost and length are the model's.
-    max_turns: 1
+    # The model every session must be answered by (analysis.py checks the session table).
+    model: claude-sonnet-4-5
+    # Up to four turns: a probe that reads a file takes two (the read, then the answer).
+    max_turns: 4
+    tools: [Read]
+    # Each trial's working directory holds fixtures/line-1.txt .. line-5.txt.
+    fixtures: [fixtures]
     runtime_options:
       # Hermetic: nothing from ~/.claude loads, so both arms run the same agent.
       setting_sources: []
 
+# Ten deterministic probes: five answered in one turn, five that read a fixture file with
+# the Read tool and answer its fixed line. The pilot keeps those that pass 5 of 5.
 probes:
-  - id: word
-    kind: prompt
-    prompt: Reply with the single word BANANA and nothing else.
-    truth: {starts_with: BANANA}
-  - id: sum
-    kind: prompt
-    prompt: What is 17 + 25? Reply with the number only.
-    truth: {starts_with: "42"}
-  - id: capital
-    kind: prompt
-    prompt: What is the capital of Australia? Reply with the city's name only.
-    truth: {starts_with: Canberra}
-  - id: list
-    kind: prompt
-    prompt: Name three primary colours, comma-separated, starting with red.
-    truth: {starts_with: red}
+  - {id: word, kind: prompt, prompt: "Reply with the single word BANANA and nothing else.",
+     truth: {starts_with: BANANA}}
+  - {id: sum, kind: prompt, prompt: "What is 17 + 25? Reply with the number only.",
+     truth: {starts_with: "42"}}
+  - {id: product, kind: prompt, prompt: "What is 9 times 7? Reply with the number only.",
+     truth: {starts_with: "63"}}
+  - {id: capital, kind: prompt,
+     prompt: "What is the capital of Australia? Reply with the city's name only.",
+     truth: {starts_with: Canberra}}
+  - {id: colours, kind: prompt,
+     prompt: "Name three primary colours, comma-separated, starting with red.",
+     truth: {starts_with: red}}
+  - {id: read-1, kind: prompt,
+     prompt: "Read fixtures/line-1.txt in your working directory and reply with the code word it names, and nothing else.",
+     truth: {starts_with: AMBER}}
+  - {id: read-2, kind: prompt,
+     prompt: "Read fixtures/line-2.txt in your working directory and reply with the code word it names, and nothing else.",
+     truth: {starts_with: BIRCH}}
+  - {id: read-3, kind: prompt,
+     prompt: "Read fixtures/line-3.txt in your working directory and reply with the code word it names, and nothing else.",
+     truth: {starts_with: COBALT}}
+  - {id: read-4, kind: prompt,
+     prompt: "Read fixtures/line-4.txt in your working directory and reply with the code word it names, and nothing else.",
+     truth: {starts_with: DELTA}}
+  - {id: read-5, kind: prompt,
+     prompt: "Read fixtures/line-5.txt in your working directory and reply with the code word it names, and nothing else.",
+     truth: {starts_with: EMBER}}
 
-# The pass rate is what the slice holds to 5 percentage points (a session that a rate
-# limit or a timeout fails is a failed trial, which lowers it); tokens_total to 5%.
+# A pass is the check holding; a failed session is a failed trial (analysis.py).
 primary: {metric: text_matched}
-threshold: {op: ">=", value: 0.5}
-metrics: [tokens_total, tokens_output]
+metrics: [tokens_total, turns]
 sensors:
   - {kind: text-match, ignore_case: true}
 
-# 4 probes x 10 repeats = 40 sessions a run, 320 over the eight runs.
-repeats: 10
+# One run: 10 probes x 2 repeats = 20 sessions. The pilot runs 5 (`--repeats 5`).
+repeats: 2
 seed: 20261024
