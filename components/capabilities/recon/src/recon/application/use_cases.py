@@ -489,7 +489,12 @@ class Recon:
         ``cursor`` (None: from its first), at most ``limit`` and ``max_bytes`` of them. The
         archive's state is read before its records, so a read that finds it no longer
         ``writing`` and has no ``more`` holds its last records."""
-        path = self._archive(name, archive)
+        return self._read(name, self._archive(name, archive), cursor, limit, max_bytes)
+
+    def _read(
+        self, name: str, path: Path, cursor: str | None, limit: int, max_bytes: int
+    ) -> RecordsSince:
+        """One read of the archive at ``path``, its state read first."""
         state = self._archives.state(path)
         read = self._archives.read_since(path, cursor, limit=limit, max_bytes=max_bytes)
         return RecordsSince(
@@ -527,13 +532,13 @@ class Recon:
                 f"the watch's interval is the seconds between two reads, above 0; got {interval_s}",
                 fix="leave the interval at its default (1 second), or give a number above 0",
             )
-        bounds = {"limit": limit, "max_bytes": max_bytes}
-        read = self.read_since(name, cursor, archive=archive, **bounds)
+        path = self._archive(name, archive)  # once: the archive followed does not change
+        read = self._read(name, path, cursor, limit, max_bytes)
         yield read
         while read.state == "writing" or read.more:
             if not read.more:
                 self._clock.sleep(interval_s)
-            read = self.read_since(name, read.cursor, archive=read.archive_id, **bounds)
+            read = self._read(name, path, read.cursor, limit, max_bytes)
             yield read
 
     def _ended(self, archive: Path, state: ArchiveState) -> Ended | None:

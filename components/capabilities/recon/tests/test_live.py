@@ -189,6 +189,25 @@ class TestAReadIsBoundedInBytes:
         assert clock.slept == [], "a cut read is followed at once, not after the interval"
 
 
+def test_watch_finds_its_archive_once_not_at_every_read(tmp_path: Path) -> None:
+    """Review (Knuth): watch listed the mission's archives at every read to find the one it
+    follows, a cost that grows with the mission's history at every poll."""
+    lines = "".join(f'{{"n": {n}}}\\n' for n in range(3))
+    run_survey({"collectors": [{"name": "t", "type": "cli", "run": f"printf '{lines}'"}]},
+               tmp_path)  # fmt: skip
+    listed: list[Path] = []
+
+    class Counting(ArchiveFiles):
+        def archives(self, mission_dir: Path) -> list[Path]:
+            listed.append(mission_dir)
+            return super().archives(mission_dir)
+
+    clock = FixedClock()
+    watching = root({}, project=tmp_path, clock=clock, archives=Counting(clock))
+    reads = list(watching.watch("m", limit=1))
+    assert len(reads) == 3 and len(listed) == 1
+
+
 class TestWholeLinesOnly:
     """A line the writer has not finished is not read, and a cursor resumes after the last
     whole line it gave."""
