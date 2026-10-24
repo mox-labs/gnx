@@ -29,6 +29,7 @@ installs its own provider keeps it: recon's spans or metrics go there.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 from recon.domain.errors import Problem
@@ -95,21 +96,23 @@ class OtelEvents:
             "recon.collect.failures", unit="{table}", description="Tables that failed"
         )
         self._open: dict[str, Any] = {}
+        # A span is started by whichever comes first, its start event or its ``around``: in a
+        # survey its events come on the channel's thread, and ``around`` at once.
+        self._starting = threading.Lock()
 
     def on_event(self, event: Event) -> None:
         if event.name.endswith(".start"):
-            parent = self._open.get(event.parent or "")
-            context = self._trace.set_span_in_context(parent) if parent is not None else None
-            kinds = self._trace.SpanKind
-            self._open[event.span] = self._tracer.start_span(
-                _span_name(event),
-                context=context,
-                kind=kinds.CLIENT if event.kind == "client" else kinds.INTERNAL,
-                attributes={**event.attributes, EVENT_SPAN: event.span},
-                start_time=_nanoseconds(event.time),
-            )
+            self._start(event)
             return
-        span = self._open.pop(event.span, None)
+        if event.name.endswith(".progress"):
+            open_span = self._open.get(event.span)
+            if open_span is not None:
+                open_span.add_event(
+                    event.name, event.attributes, timestamp=_nanoseconds(event.time)
+                )
+            return
+        with self._starting:
+            span = self._open.pop(event.span, None)
         if span is None:
             return
         span.set_attributes(event.attributes)
@@ -121,13 +124,28 @@ class OtelEvents:
 
     def around(self, event: Event) -> AbstractContextManager[Any] | None:
         """The span ``event`` started, current for the work inside it."""
-        span = self._open.get(event.span)
-        if span is None:
-            return None
+        span = self._start(event)
         manager: AbstractContextManager[Any] = self._trace.use_span(
             span, end_on_exit=False, record_exception=False, set_status_on_exception=False
         )
         return manager
+
+    def _start(self, event: Event) -> Any:
+        """The span the start ``event`` begins, started now unless it already was."""
+        with self._starting:
+            span = self._open.get(event.span)
+            if span is None:
+                parent = self._open.get(event.parent or "")
+                context = self._trace.set_span_in_context(parent) if parent is not None else None
+                kinds = self._trace.SpanKind
+                span = self._open[event.span] = self._tracer.start_span(
+                    _span_name(event),
+                    context=context,
+                    kind=kinds.CLIENT if event.kind == "client" else kinds.INTERNAL,
+                    attributes={**event.attributes, EVENT_SPAN: event.span},
+                    start_time=_nanoseconds(event.time),
+                )
+            return span
 
     def trace_headers(self, span_id: str) -> dict[str, str]:
         """``traceparent`` (and ``tracestate``) naming the open span ``span_id``; none when
@@ -141,12 +159,13 @@ class OtelEvents:
 
     def close(self) -> None:
         """End every span still open, as failed: recon sends this sink nothing more."""
-        for span in reversed(list(self._open.values())):
+        with self._starting:
+            spans, self._open = list(self._open.values()), {}
+        for span in reversed(spans):
             span.set_status(
                 self._trace.StatusCode.ERROR, "recon stopped sending telemetry to this sink"
             )
             span.end()
-        self._open.clear()
 
     def _measure(self, event: Event) -> None:
         about = {"recon.collector.type": str(event.attributes.get("recon.collector.type"))}

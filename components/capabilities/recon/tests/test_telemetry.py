@@ -168,6 +168,74 @@ def test_every_survey_keeps_its_events_in_its_archive(project: Path) -> None:
     assert {e["parent"] for e in events if e["name"].startswith("recon.collect")} == {"1"}
 
 
+def test_the_event_log_keeps_its_file_open_and_each_event_is_on_disk_as_it_happens(
+    tmp_path: Path,
+) -> None:
+    """A5: the event log opened its file once per event. It opens it once for the operation,
+    so a file moved away mid-operation goes on receiving the events, each a whole line a
+    reader sees as soon as it is emitted; the operation's end closes it."""
+    from recon.adapters._out.event_log import EventLog
+
+    path, moved = tmp_path / "telemetry.jsonl", tmp_path / "moved.jsonl"
+    telemetry = Telemetry([EventLog(path)], FixedClock())
+    lines: list[int] = []
+    with telemetry.span("recon.survey"):
+        lines.append(len(path.read_text().splitlines()))
+        path.rename(moved)
+        with telemetry.span("recon.collect"):
+            lines.append(len(moved.read_text().splitlines()))
+
+    assert not path.exists(), "one open for the operation, not one per event"
+    assert lines == [1, 2], "each event is in the file once it is emitted"
+    telemetry.close()
+    assert len(moved.read_text().splitlines()) == 4
+
+
+def test_a_table_s_progress_is_an_event_at_most_once_a_second(tmp_path: Path) -> None:
+    """A5: while a table is written, ``recon.collect.progress`` says how many of its records
+    are written, at most once a second by the clock port, inside the table's span."""
+    from recon.domain.models import ReconConfig
+    from tests.recon_fakes import plugins_with, run_survey
+
+    clock = FixedClock()
+
+    class Slow:
+        def collect(self, entry: Any, source: Any, *, captures: Any = None) -> Any:
+            for n in range(5):
+                if n:
+                    clock.sleep(0.6)
+                yield {"n": n}
+
+    config = ReconConfig.model_validate({"collectors": [{"name": "t", "type": "x"}]})
+    archive, _ = run_survey(config, tmp_path, plugins=plugins_with(x=Slow()), clock=clock)
+    events = [json.loads(line) for line in (archive / "telemetry.jsonl").read_text().splitlines()]
+    collect = [e for e in events if e["name"].startswith("recon.collect")]
+
+    assert [e["name"] for e in collect] == [
+        "recon.collect.start",
+        "recon.collect.progress",
+        "recon.collect.progress",
+        "recon.collect.end",
+    ]
+    assert [e["attributes"] for e in collect[1:3]] == [{"recon.records": 3}, {"recon.records": 5}]
+    assert {e["span"] for e in collect} == {collect[0]["span"]}
+    assert {e["parent"] for e in collect} == {collect[0]["parent"]}
+
+
+def test_progress_is_a_span_event_in_opentelemetry_and_ends_nothing() -> None:
+    provider, exporter = _sdk()
+    telemetry = Telemetry([OtelEvents("9.9", tracer_provider=provider)], FixedClock())
+    with telemetry.span("recon.collect") as span:
+        telemetry.progress(span, {"recon.records": 7})
+        assert exporter.get_finished_spans() == ()
+    [exported] = exporter.get_finished_spans()
+    [event] = exported.events
+    assert (event.name, dict(event.attributes or {})) == (
+        "recon.collect.progress",
+        {"recon.records": 7},
+    )
+
+
 def test_the_event_log_is_not_a_table(project: Path) -> None:
     config = project / ".recon" / "m" / "config.yaml"
     config.parent.mkdir(parents=True)
@@ -527,7 +595,7 @@ def test_the_library_installs_no_provider_whatever_otel_says(
     recon.init("m", config=cfg)
     assert recon.plan("m").warnings == []
     survey = recon.survey("m")
-    assert survey.status == "ok" and survey.warnings == []
+    assert survey.status == "complete" and survey.warnings == []
     assert recon.query("m", "SELECT 1 AS one").warnings == []
     assert installed == []
     assert recon.configure_telemetry() == [] and installed == ["OTEL_EXPORTER_OTLP_ENDPOINT"]
@@ -783,7 +851,7 @@ def test_a_query_span_ends_with_the_count_of_its_rows(tmp_path: Path) -> None:
         clock=clock,
         plugins=load_plugins(),
         build_collectors=no_survey,
-        telemetry=lambda archive: Telemetry([sink], clock),
+        telemetry=lambda archive, channel: Telemetry([sink], clock),
         env={},
         version="0",
     )

@@ -256,6 +256,20 @@ calls: a failed one carries the tool's error text as its status. The MCP SDK's s
 method name and a request id) nest under recon's when an SDK is installed; a JSON-RPC error
 the server sends can be their status message.
 
+### 9. A cursor → the archive store (`recon watch`, `recon.read_since`)
+
+A read of an archive being written takes back the `cursor` an earlier read gave, so the
+cursor is input from the caller, and may be anything. It is base64url JSON that only the
+archive store reads: one that does not decode, names another archive, holds an offset that
+is not a non-negative integer, or reaches past the end of a sealed table is refused as a `usage`
+error, and the read returns nothing. A table the cursor names is only compared with the tables
+the store finds in the archive, never made into a path, so a cursor cannot make recon read
+a file outside the archive. Reading opens files read-only, and takes the writer's lock
+only to test it, so a reader changes no byte of the archive.
+
+What this does **not** do: anything about the records themselves, which are the same
+untrusted text as a query's (boundary 6).
+
 ## Findings
 
 ### R-1 — generator cleanup silenced to satisfy the type checker (fixed 2026-08-17)

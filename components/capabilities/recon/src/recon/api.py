@@ -14,8 +14,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from recon.domain.archives import READ_LIMIT, READ_MAX_BYTES, WATCH_INTERVAL_S
+
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from recon.composition import Recon
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
         MissionDocument,
         PlanDocument,
         QueryRows,
+        RecordsSince,
         StatusDocument,
         SurveyDocument,
         TemplatesDocument,
@@ -99,6 +102,50 @@ def query(
     """Rows from the latest archive of ``name``, or the archive named (an id ``status(name)``
     lists). ``recon.v1.query-rows``, naming the archive as ``archive_id``."""
     return _root(root).query(name, sql, archive=archive)
+
+
+def read_since(
+    name: str,
+    cursor: str | None = None,
+    *,
+    archive: str | None = None,
+    limit: int = READ_LIMIT,
+    max_bytes: int = READ_MAX_BYTES,
+    root: Path | None = None,
+) -> RecordsSince:
+    """The records of the latest archive of ``name``, or the archive named, written since
+    ``cursor``: every record from the first when there is none. ``recon.v1.records-since``.
+
+    Each read returns whole records only, at most ``limit`` of them and ``max_bytes`` of
+    their lines (1 MiB), at least one, from the tables sealed and the one being written
+    alike, ``more`` when a bound cut it, and a ``cursor`` to pass to the next read of the
+    same archive (name it with ``archive``: its ``archive_id``). The cursor is opaque.
+    ``state`` says whether a survey is still writing the archive; ``sealed`` and
+    ``retracted`` name the tables that ended since, a retracted table's records void. Reads
+    write nothing, so a reader changes no byte of the archive. Raises UsageError for a
+    cursor recon did not give for that archive, or a ``limit`` or ``max_bytes`` below 1."""
+    return _root(root).read_since(name, cursor, archive=archive, limit=limit, max_bytes=max_bytes)
+
+
+def watch(
+    name: str,
+    cursor: str | None = None,
+    *,
+    archive: str | None = None,
+    interval_s: float = WATCH_INTERVAL_S,
+    limit: int = READ_LIMIT,
+    max_bytes: int = READ_MAX_BYTES,
+    root: Path | None = None,
+) -> Iterator[RecordsSince]:
+    """Follow the latest archive of ``name``, or the archive named, from ``cursor``: each
+    :func:`read_since` in turn, waiting ``interval_s`` seconds whenever a read has caught up
+    with a survey still writing it. Ends after the read that finds the archive no longer
+    ``writing`` with nothing left to read, so it returns: at once, after reading it whole,
+    for a finished archive. Raises UsageError for an ``interval_s`` not above 0, and as
+    :func:`read_since` does."""
+    return _root(root).watch(
+        name, cursor, archive=archive, interval_s=interval_s, limit=limit, max_bytes=max_bytes
+    )
 
 
 def configure_telemetry() -> list[Problem]:

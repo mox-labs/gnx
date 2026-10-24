@@ -118,7 +118,7 @@ class TestSurvey:
         assert result.exit_code == 0, result.stderr
         doc = _doc(result)
         assert doc["schema"] == "recon.v1.survey"
-        assert doc["status"] == "ok"
+        assert doc["status"] == "complete"
         assert [(t["name"], t["status"], t["records"]) for t in doc["tables"]] == [
             ("hello", "ok", 2)
         ]
@@ -451,7 +451,7 @@ class TestStatus:
         assert doc["schema"] == "recon.v1.status"
         [mission] = doc["missions"]
         assert mission["name"] == "m" and mission["archives"] == 1
-        assert mission["latest"]["state"] == "ok"
+        assert mission["latest"]["state"] == "complete"
         assert mission["latest"]["format_version"] == 2
         assert mission["latest"]["tables"][0]["type_url"] == "recon.v1.records"
         types = {c["type"] for c in doc["plugins"]["collectors"]}
@@ -749,7 +749,7 @@ class TestArchiveHistory:
         assert mission["name"] == "m" and mission["archives"] == 2
         first, second = mission["history"]
         assert first["id"] < second["id"] == mission["latest"]["id"]
-        assert (first["state"], second["state"]) == ("incomplete", "ok")
+        assert (first["state"], second["state"]) == ("incomplete", "complete")
         assert first["started_at"] and first["finished_at"]
         assert [t["status"] for t in first["tables"]] == ["ok", "error"]
         rows = _doc(_invoke("query", "m", "SELECT * FROM ok", "--archive", first["id"], "--json"))
@@ -1277,7 +1277,7 @@ def test_a_query_on_an_incomplete_archive_says_so_in_its_document(project: Path)
     assert document["state"] == "incomplete" and document["rows"] == [{"a": 1}]
     _mission(project, "n", OK_CONFIG)
     _invoke("survey", "n")
-    assert _doc(_invoke("query", "n", "SELECT a FROM hello", "--json"))["state"] == "ok"
+    assert _doc(_invoke("query", "n", "SELECT a FROM hello", "--json"))["state"] == "complete"
 
 
 def test_a_plan_problem_carries_its_kind_fix_and_the_value_written(project: Path) -> None:
@@ -1355,6 +1355,131 @@ def test_a_terminated_survey_reads_incomplete_and_leaves_no_command_running(proj
     assert not list(archive.glob("*.tmp")), "a half-written table was left behind"
 
 
+def test_a_running_survey_reads_writing_and_queries_only_its_sealed_tables(project: Path) -> None:
+    """A3, A7: while a survey runs, another process's status and query say ``writing``, and
+    a query reads the tables already sealed; the table being written is not a table yet."""
+    survey, command_group = _survey_process(project, f"recon-writing-{uuid.uuid4().hex}")
+    try:
+        latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
+        query = _doc(_invoke("query", "m", "SELECT * FROM first", "--json"))
+        unsealed = _error(_invoke("query", "m", "SELECT * FROM slow", "--json"))
+        human = unstyle(_invoke("status").stdout)
+    finally:
+        survey.kill()
+        survey.communicate(timeout=10)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(command_group, signal.SIGKILL)
+
+    assert (latest["state"], latest["ended"]) == ("writing", None)
+    assert query["state"] == "writing" and len(query["rows"]) == 2
+    assert unsealed["kind"] == "query" and "first" in unsealed["message"]
+    assert "writing" in human
+    assert _doc(_invoke("status", "--json"))["missions"][0]["latest"]["state"] == "incomplete"
+
+
+class TestWatch:
+    """A7: ``recon watch`` follows an archive as a survey writes it, over ``read_since``, and
+    returns: on a finished archive once it has printed it, on a live one once the survey ends
+    (or after one read, with ``--once``)."""
+
+    def test_a_finished_archive_is_printed_and_watch_returns(self, project: Path) -> None:
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        human = _invoke("watch", "m")
+        reads = [json.loads(line) for line in _invoke("watch", "m", "--json").stdout.splitlines()]
+
+        assert human.exit_code == 0
+        assert [json.loads(line) for line in human.stdout.splitlines()] == [
+            {"table": "hello", "record": {"a": 1}},
+            {"table": "hello", "record": {"a": 2}},
+        ]
+        assert "hello sealed" in unstyle(human.stderr)
+        assert [r["schema"] for r in reads] == ["recon.v1.records-since"]
+        assert (reads[0]["state"], reads[0]["count"], reads[0]["sealed"]) == (
+            "complete",
+            2,
+            ["hello"],
+        )
+
+    def test_a_running_survey_is_followed_until_it_ends(self, project: Path) -> None:
+        _mission(project, "m", {"collectors": [
+            {"name": "slow", "type": "cli",
+             "run": "echo '{\"n\": 1}'; sleep 1; echo '{\"n\": 2}'; sleep 1; echo '{\"n\": 3}'"},
+        ]})  # fmt: skip
+        survey = subprocess.Popen(
+            [str(Path(sys.executable).with_name("recon")), "survey", "m", "--json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )  # fmt: skip
+        try:
+            archives = project / ".recon" / "m" / "archive"
+            for _ in range(100):
+                if archives.exists() and any(archives.iterdir()):
+                    break
+                time.sleep(0.05)
+            result = _invoke("watch", "m", "--json", "--interval", "0.1")
+        finally:
+            survey.communicate(timeout=30)
+
+        reads = [json.loads(line) for line in result.stdout.splitlines()]
+        assert result.exit_code == 0
+        assert reads[0]["state"] == "writing" and reads[-1]["state"] == "complete"
+        assert [r["record"]["n"] for read in reads for r in read["records"]] == [1, 2, 3]
+        assert len([read for read in reads if read["records"]]) > 1, "seen as it was written"
+        assert [t for read in reads for t in read["sealed"]] == ["slow"]
+
+    def test_max_bytes_cuts_each_read_and_watch_reads_on_at_once(self, project: Path) -> None:
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        result = _invoke("watch", "m", "--max-bytes", "1", "--json")
+        reads = [json.loads(line) for line in result.stdout.splitlines()]
+        assert [(r["count"], r["more"]) for r in reads] == [(1, True), (1, False)]
+        refused = _invoke("watch", "m", "--max-bytes", "0", "--json")
+        assert refused.exit_code == recon.EXIT_CODES["usage"] and _error(refused)["fix"]
+
+    def test_once_reads_once_and_a_cursor_reads_on_from_it(self, project: Path) -> None:
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        first = json.loads(_invoke("watch", "m", "--once", "--json").stdout)
+        again = _invoke("watch", "m", "--cursor", first["cursor"], "--json")
+        assert first["count"] == 2
+        assert json.loads(again.stdout)["records"] == []
+
+    def test_a_bad_cursor_or_interval_is_a_usage_error_with_a_fix(self, project: Path) -> None:
+        _mission(project, "m", OK_CONFIG)
+        _invoke("survey", "m")
+        bad_cursor = _invoke("watch", "m", "--cursor", "nonsense", "--json")
+        bad_interval = _invoke("watch", "m", "--interval", "0", "--json")
+        assert bad_cursor.exit_code == bad_interval.exit_code == recon.EXIT_CODES["usage"]
+        assert "without a cursor" in _error(bad_cursor)["fix"]
+        assert _error(bad_interval)["kind"] == "usage"
+
+
+def test_status_reports_an_archive_a_dead_survey_left_half_made(project: Path) -> None:
+    """Review (Dijkstra): a survey killed while making its archive leaves the hidden
+    directory it was making; no listing shows it and nothing removes it. status names each
+    whose survey is gone, with how to remove it, and removes nothing itself."""
+    _mission(project, "m", OK_CONFIG)
+    _invoke("survey", "m")
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    archives = project / ".recon" / "m" / "archive"
+    dead = archives / f".2026-01-02-030405-000001.{gone.pid}.making"
+    alive = archives / f".2026-01-02-030405-000002.{os.getpid()}.making"
+    for left in (dead, alive):
+        left.mkdir()
+        (left / ".incomplete").write_text("")
+
+    document = _doc(_invoke("status", "m", "--json"))
+    human = unstyle(_invoke("status").stderr)
+
+    [warning] = document["warnings"]
+    assert warning["kind"] == "archive_abandoned" and str(dead) in warning["message"]
+    assert str(dead) in warning["fix"]
+    assert str(dead) in human
+    assert dead.is_dir() and alive.is_dir(), "status removes nothing"
+    assert len(document["missions"][0]["history"]) == 1
+
+
 def test_a_killed_survey_reads_incomplete(project: Path) -> None:
     """SIGKILL runs no handler, so the archive is incomplete from the moment it is made."""
     survey, command_group = _survey_process(project, f"recon-sigkill-{uuid.uuid4().hex}")
@@ -1365,6 +1490,7 @@ def test_a_killed_survey_reads_incomplete(project: Path) -> None:
 
     latest = _doc(_invoke("status", "--json"))["missions"][0]["latest"]
     assert latest["state"] == "incomplete" and latest["format_version"] is None
+    assert latest["ended"] == "stopped", "killed before it finished, not a failed table"
 
 
 def test_ctrl_c_under_json_prints_the_envelope_and_nothing_before_it(project: Path) -> None:
@@ -1487,7 +1613,7 @@ class TestTheDirectoryACommandRunsIn:
         human = unstyle(_invoke("survey", "m", "-n").stdout)
         assert f"pwd (in {project / 'src'})" in human
         rows = _doc(_invoke("survey", "m", "--json"))
-        assert rows["status"] == "ok"
+        assert rows["status"] == "complete"
         lines = recon.query("m", 'SELECT line FROM "where"', root=project).rows
         assert [Path(row["line"]).resolve() for row in lines] == [(project / "src").resolve()]
 
@@ -1526,7 +1652,7 @@ def test_the_library_works_on_a_project_without_changing_directory(
     plan = recon.plan("m", root=root)
     assert plan.runs[0]["cwd"] == str(root)
     survey = recon.survey("m", root=root)
-    assert survey.status == "ok"
+    assert survey.status == "complete"
     rows = recon.query("m", "SELECT line FROM files", root=root).rows
     assert {"line": "only-here.txt"} in rows
     assert [m.name for m in recon.status(root=root).missions] == ["m"]

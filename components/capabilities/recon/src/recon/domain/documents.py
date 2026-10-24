@@ -12,12 +12,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Pydantic reads the field types when the models are built, so they are imported to run.
+from recon.domain.archives import ArchiveState, Ended  # noqa: TC001
 from recon.domain.capture import CAPTURE_SCHEMA, CaptureKind
 from recon.domain.errors import ErrorKind, ReconError
 
-#: Whether an archive holds every table it was asked for. ``incomplete``: a table failed,
-#: the survey was stopped, or ``meta.yaml`` could not be written.
-ArchiveState = Literal["ok", "incomplete"]
+#: Whether a survey's archive holds every table it was asked for: :data:`ArchiveState`
+#: once the survey has ended, so never ``writing``. ``incomplete``: a table failed, the
+#: survey was stopped, or ``meta.yaml`` could not be written.
+SurveyStatus = Literal["complete", "incomplete"]
 
 #: What ``init`` did to the mission's config: wrote the first one, found this one already
 #: there byte for byte and left it, or overwrote a different one (``--replace``).
@@ -124,7 +127,7 @@ class SurveyDocument(Document):
     schema_: Literal["recon.v1.survey"] = Field(default="recon.v1.survey", alias="schema")
     mission: str
     archive: str
-    status: ArchiveState
+    status: SurveyStatus
     tables: list[TableOutcome]
     warnings: list[dict[str, Any]]
 
@@ -148,6 +151,8 @@ class ArchiveStatus(Document):
     id: str
     path: str
     state: ArchiveState
+    #: Whether its survey ran to its end; None while ``writing``.
+    ended: Ended | None
     #: ISO 8601, from ``meta.yaml``; None when it is missing or does not say (format 1 has
     #: only the finish). ``finished_at`` None: the survey did not finish.
     started_at: str | None
@@ -195,6 +200,9 @@ class StatusDocument(Document):
     root: str
     missions: list[MissionStatus]
     plugins: InstalledPlugins
+    #: Problem records that do not stop the command: ``archive_abandoned``, each half-made
+    #: archive a dead survey left, with how to remove it.
+    warnings: list[dict[str, Any]] = []
 
 
 class QueryRows(Document):
@@ -204,10 +212,42 @@ class QueryRows(Document):
     archive: str
     archive_id: str
     state: ArchiveState
+    ended: Ended | None
     columns: list[str]
     rows: list[dict[str, Any]]
     count: int
     warnings: list[dict[str, Any]]
+
+
+class RecordsSince(Document):
+    """What one read of an archive found: the records written since the cursor it was given,
+    and the cursor to read on from. A survey writing the archive is followed by reading again
+    with ``cursor`` until ``state`` is no longer ``writing`` and a read has no ``more``:
+    ``state`` is read before the records, so such a read holds the last of them."""
+
+    schema_: Literal["recon.v1.records-since"] = Field(
+        default="recon.v1.records-since", alias="schema"
+    )
+    mission: str
+    #: The archive read: its directory, and its id (``--archive``), which a later read with
+    #: ``cursor`` names again.
+    archive: str
+    archive_id: str
+    state: ArchiveState
+    ended: Ended | None
+    #: ``{"table", "record"}`` each, table by table in output-name order, each table's in the
+    #: order written. A table not yet ``sealed`` may still be retracted.
+    records: list[dict[str, Any]]
+    count: int
+    #: Opaque: pass it, unchanged, to the next read of the same archive.
+    cursor: str
+    #: Tables whose last record is now read: they gain no more.
+    sealed: list[str]
+    #: Tables that failed after records of theirs were read: those records are void.
+    retracted: list[str]
+    #: A bound (``limit`` records, ``max_bytes`` bytes) cut this read before all that was
+    #: written by then was read: read again at once.
+    more: bool
 
 
 class TemplateInfo(Document):

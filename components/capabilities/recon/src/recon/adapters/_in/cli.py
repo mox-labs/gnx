@@ -1,4 +1,4 @@
-"""The ``recon`` command line: init, survey, status, query, templates, capture.
+"""The ``recon`` command line: init, survey, status, query, watch, templates, capture.
 
 An inbound adapter over the library API and nothing else: every call goes through
 ``recon``'s declared names, so a program importing ``recon`` gets exactly what these
@@ -188,6 +188,7 @@ def main(ctx: click.Context, skill: bool, reference: str | None) -> None:
     recon survey my-scan --dry-run        every problem, every run and its effects
     recon survey my-scan                  collect into a new archive
     recon query my-scan "SELECT ..."      SQL over the latest archive
+    recon watch my-scan                   follow an archive as a survey writes it
     recon status                          missions, archives, installed plugins
     """
     if reference is not None and not skill:
@@ -401,6 +402,7 @@ def status(mission: str | None, as_json: bool) -> None:
     if as_json:
         _emit(document.document())
         return
+    _print_warnings(document.warnings)
     plugins = document.plugins
     for broken in plugins.broken:
         err.print(
@@ -501,6 +503,12 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
             "[yellow]warning: this archive is incomplete (a table failed or the survey was "
             "stopped), so rows may be missing; `recon status` shows which tables failed[/]"
         )
+    elif document.state == "writing":
+        err.print(
+            "[yellow]warning: a survey is writing this archive now, so only its tables "
+            "already sealed were queried; query it again once `recon status` no longer says "
+            "writing[/]"
+        )
     if not document.rows:
         err.print("[yellow]No rows.[/]")
         return
@@ -510,6 +518,100 @@ def query(name: str, sql: str, archive: str | None, as_json: bool) -> None:
     for row in document.rows:
         table.add_row(*(escape(str(value)) for value in row.values()))
     _print_table(table)
+
+
+# --- watch -------------------------------------------------------------------------------
+
+
+@main.command(epilog=EXIT_CODES)
+@click.argument("name")
+@click.option(
+    "--archive",
+    default=None,
+    help="An archive id, as `recon status <mission>` lists them (default: the latest)",
+)
+@click.option(
+    "--cursor",
+    default=None,
+    help="Read on from where a read left off: the `cursor` a --json line gave (default: from "
+    "the archive's first record)",
+)
+@click.option(
+    "--interval",
+    "interval_s",
+    type=float,
+    default=None,
+    metavar="SECONDS",
+    help="Seconds between two reads once caught up with a survey still writing (default: 1)",
+)
+@click.option(
+    "--max-bytes",
+    "max_bytes",
+    type=int,
+    default=None,
+    metavar="BYTES",
+    help="The most bytes of records one read prints, cut at a whole record and at least one "
+    "(default: 1 MiB); a read it cuts is followed at once",
+)
+@click.option("--once", is_flag=True, help="Read once, print it, and return, finished or not")
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Each read as one JSON document a line on stdout; errors as JSON on stderr",
+)
+def watch(
+    name: str,
+    archive: str | None,
+    cursor: str | None,
+    interval_s: float | None,
+    max_bytes: int | None,
+    once: bool,
+    as_json: bool,
+) -> None:
+    """Follow a mission's latest archive, or the one --archive names, as a survey writes it.
+
+    Prints each record as it is written, from the tables already sealed and the one being
+    written, and returns when the archive is no longer being written and all of it has
+    been printed: at once for a finished archive. A record is printed as
+    {"table", "record"}, a JSON line on stdout; under --json each read is one
+    recon.v1.records-since document a line instead, with the `cursor` to read on from.
+    A table that fails while it is watched is retracted: the records printed from it are
+    void, and stderr (or `retracted`) says so. Reading writes nothing.
+
+    \b
+    recon watch my-scan
+    recon watch my-scan --json --once
+    recon watch my-scan --json --max-bytes 65536
+    recon watch my-scan --archive 2026-04-01-143022-000000 --cursor <cursor> --json
+    """
+    given: dict[str, Any] = {} if interval_s is None else {"interval_s": interval_s}
+    if max_bytes is not None:
+        given["max_bytes"] = max_bytes
+    if not as_json:
+        every = f"{interval_s:g}s (--interval)" if interval_s is not None else "1s (default)"
+        err.print(f"[dim]watching {escape(name)}; reading again every {every} while it is "
+                  "written[/]")  # fmt: skip
+    for read in _operations().watch(name, cursor, archive=archive, **given):
+        if as_json:
+            click.echo(json.dumps(read.document(), default=str))
+        else:
+            _print_read(read)
+        if once:
+            return
+
+
+def _print_read(read: recon.RecordsSince) -> None:
+    for record in read.records:
+        click.echo(json.dumps(record, default=str))
+    for table in read.sealed:
+        err.print(f"[dim]  {escape(table)} sealed[/]")
+    for table in read.retracted:
+        err.print(f"[yellow]  {escape(table)} failed and was retracted: the records printed "
+                  "from it are void[/]")  # fmt: skip
+    if read.state != "writing":
+        shown = "[yellow]incomplete[/]" if read.state == "incomplete" else read.state
+        err.print(f"[dim]archive {read.archive_id}:[/] {shown}")
 
 
 # --- templates and capture ---------------------------------------------------------------

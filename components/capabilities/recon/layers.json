@@ -77,7 +77,7 @@
     {
       "name": "other_driven",
       "files": ["src/recon/adapters/__init__.py", "src/recon/adapters/_out/__init__.py",
-                "src/recon/adapters/_out/http_requester.py",
+                "src/recon/adapters/_out/event_channel.py", "src/recon/adapters/_out/http_requester.py",
                 "src/recon/adapters/_out/markitdown_converter.py",
                 "src/recon/adapters/_out/otel_telemetry.py", "src/recon/adapters/_out/system_clock.py"],
       "allow": ["*", "recon.domain"],

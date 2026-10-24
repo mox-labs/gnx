@@ -132,6 +132,12 @@ PROBLEM_KINDS: tuple[str, ...] = (
     "captures_unmatched",
     # a table kept empty because the MCP tool or resource it reads answered with no content
     "result_empty",
+    # events OpenTelemetry or on_event never got: a receiver was slower than the survey
+    "events_dropped",
+    # a receiver of a survey's events had not returned from one when the survey ended
+    "telemetry_stuck",
+    # what a survey that died while making its archive left behind, unlisted
+    "archive_abandoned",
 )
 
 
