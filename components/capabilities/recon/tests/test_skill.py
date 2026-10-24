@@ -320,13 +320,27 @@ def test_the_exit_code_table_is_the_code_s() -> None:
 
 
 def test_the_kinds_and_schemas_listed_are_the_code_s() -> None:
-    assert "`error.kind` is one of " + ", ".join(f"`{k}`" for k in recon.ERROR_KINDS) in SKILL
-    assert (
-        "A problem's `kind` is one of " + ", ".join(f"`{k}`" for k in recon.PROBLEM_KINDS) in SKILL
-    )
+    """Every kind is listed, in the code's order, by ``recon --skill -r errors``; the skill
+    lists the error kinds in its exit-code table and points to the reference in one line."""
+    taught = REFERENCES["errors"]
+    assert "`error.kind` is one of " + ", ".join(f"`{k}`" for k in recon.ERROR_KINDS) in taught
+    first_warning = recon.PROBLEM_KINDS.index("env_unset")
+    stopping, warning = recon.PROBLEM_KINDS[:first_warning], recon.PROBLEM_KINDS[first_warning:]
+    assert "A problem's `kind` is one of " + ", ".join(f"`{k}`" for k in stopping) in taught
+    assert "A warning's `kind` is one of " + ", ".join(f"`{k}`" for k in warning) in taught
+    assert "recon --skill -r errors" in SKILL and "| `errors` |" in SKILL
     for schema in ("plan", "survey", "status", "query-rows", "templates", "mission", "capture",
                    "error", "event"):  # fmt: skip
         assert f"`recon.v1.{schema}`" in SKILL
+
+
+def test_the_errors_page_is_the_skill_reference() -> None:
+    """The kinds are taught in full by ``recon --skill -r errors``, one text with its docs
+    page, so the list an agent reads and the one a person reads cannot drift."""
+    page = PACKAGE / "docs" / "reference" / "errors.md"
+    if not page.is_file():
+        pytest.skip("not run from the repository")
+    assert page.read_text(encoding="utf-8") == REFERENCES["errors"]
 
 
 def test_the_error_envelope_shown_is_the_one_printed(tmp_path: Path, monkeypatch: Any) -> None:

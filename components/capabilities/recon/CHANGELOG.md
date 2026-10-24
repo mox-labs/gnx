@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### The skill
+
+- **Every kind is listed by `recon --skill -r errors`** (`docs/reference/errors.md`, the same text): the error kinds, the problem kinds and the warning kinds, each list in the code's order. `recon --skill` keeps the exit-code table (every error kind, what it means, what to do next), what a problem record holds, and one line pointing to the reference, so the skill stays within its 30,000-character budget with this round's keys.
+
 ### Pagination
 
 - **`paginate:` on an `api` collector reads its source page by page** into one table: `{type: link | header | cursor | offset | page, pages: 100, next, param}`. `link` follows the URL at the body path `next`, `header` the `Link` header's `rel="next"`, `cursor` sends the value at `next` as the query parameter `param`, `offset` sends the records read so far as `param`, `page` the page's number from 1 (the first page's too); each type needs the keys it reads and takes no other. Every page is a request through the requester, so it draws a rate-limit token, is retried as any request is, and is captured with `preserve_raw`. A next page off the source's origin (scheme, host, port) fails the table, `run_failed`: the source's credential would go with it. The contract: `docs/reference/pagination.md`, which `recon --skill -r pagination` prints.
