@@ -756,23 +756,27 @@ class Root:
 
         Refuses before anything starts when the experiment is invalid, names a kind with no
         adapter, or is unregistered and the run is neither ``exploratory`` nor a
-        ``dry_run``; and ``repeats`` on a run that is neither, since a gated run is held to
-        the design its registration froze. ``trials_in_flight`` in place of the file's is
-        an override too, refused by a run that gives a verdict (:class:`ConfigError`) and
-        where the experiment's kinds, metrics or genre refuse overlap (its validation
-        problem). Once it has started, whatever happens is in the
-        record: a run that was stopped or that failed still returns its report, which says
-        so.
+        ``dry_run``; and ``repeats`` or ``trials_in_flight`` on a run that is neither
+        (:class:`UsageError`), since a gated run is held to the design its registration
+        froze. ``trials_in_flight`` is refused too where the experiment's kinds, metrics or
+        genre refuse overlap (its validation problem). Once it has started, whatever happens
+        is in the record: a run that was stopped or that failed still returns its report,
+        which says so.
         """
-        if repeats is not None and not (exploratory or dry_run):
-            raise UsageError(
-                f"--repeats {repeats} changes the design, and a run that gives a verdict is "
-                "held to the design its registration froze",
-                fix="pilot with --exploratory --repeats N (or --dry-run --repeats N); to "
-                "change the repeats a verdict rests on, edit the file and "
-                '`ix register <path> --amend --reason "<why>"`',
-                details={"path": "--repeats", "value": repeats},
-            )
+        if not (exploratory or dry_run):
+            for flag, key, value in (
+                ("--repeats", "repeats", repeats),
+                ("--trials-in-flight", "trials_in_flight", trials_in_flight),
+            ):
+                if value is not None:
+                    raise UsageError(
+                        f"{flag} {value} changes the design, and a run that gives a verdict "
+                        "is held to the design its registration froze",
+                        fix=f"pilot with --exploratory {flag} N (or --dry-run {flag} N); to "
+                        f"change the {key} a verdict rests on, edit the file and "
+                        '`ix register <path> --amend --reason "<why>"`',
+                        details={"path": flag, "value": value},
+                    )
         if trials_in_flight is not None and trials_in_flight < 1:
             raise UsageError(
                 f"--trials-in-flight {trials_in_flight}: a run carries out at least one trial "

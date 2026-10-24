@@ -874,7 +874,7 @@ model and gives no verdict. `--repeats N` pilots either with N repeats in place 
 file's (never below the genre's minimum); a run that gives a verdict refuses it (exit
 {_CODE["usage"]}). `--trials-in-flight N` carries N trials out at once in place of the
 file's width, with `--exploratory` or `--dry-run` only (a run that gives a verdict refuses
-it, exit {_CODE["config"]}), and only where every kind in use allows overlap, no deciding
+it, exit {_CODE["usage"]}), and only where every kind in use allows overlap, no deciding
 metric is contended and the genre allows it (`trials_in_flight_refused` names what blocks it).
 PATH may be - for an experiment on standard input, which
 runs only with `--exploratory` or `--dry-run` and keeps its runs under the current

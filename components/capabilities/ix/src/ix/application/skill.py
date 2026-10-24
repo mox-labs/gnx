@@ -1030,7 +1030,7 @@ experiment writes `trials_in_flight`. It prints progress on stderr and then the 
   `Best case`, as the plan does under `Sensitivity`.
 - **A width to try.** `--exploratory --trials-in-flight N` (or `--dry-run`) carries N trials
   out at once in place of the file's `trials_in_flight`, listed under `Changed`; a run that
-  gives a verdict refuses it (exit {EXIT_CODES["config"]}): write `trials_in_flight:` in the
+  gives a verdict refuses it (exit {EXIT_CODES["usage"]}): write `trials_in_flight:` in the
   file and register it. Where the kinds, a deciding metric or the genre forbid overlap it is
   refused before anything starts, `trials_in_flight_refused`, whose `fix` names each and
   says `trials_in_flight: 1`. The report's `Run` line says the width.

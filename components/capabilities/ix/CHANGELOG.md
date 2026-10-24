@@ -20,7 +20,9 @@
   digests as leaving it out. The plan's `order` states it (`OrderPlan.trials_in_flight`,
   and its description), and so does the report (`Report.trials_in_flight`, and its `Run`
   line). `ix run --trials-in-flight N` (`ix.run(trials_in_flight=N)`) overrides it for one
-  run, noted under `Changed`; like `--repeats`, only with `--exploratory` or `--dry-run`.
+  run, noted under `Changed`; like `--repeats`, only with `--exploratory` or `--dry-run`,
+  and a run that gives a verdict refuses either flag as `usage` (exit 2), its
+  `details.path` the flag.
 - **The problems `trials_in_flight_refused` and `trials_in_flight_contended`.** A width
   above 1 is refused, never lowered on its own, where a kind in use or the genre forbids
   overlap, or a deciding metric (`primary`, a guardrail) is contended: the

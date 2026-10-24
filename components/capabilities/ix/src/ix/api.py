@@ -139,8 +139,8 @@ def run(
     never below the genre's minimum (:class:`InvalidExperimentError`).
     ``trials_in_flight`` carries that many trials out at once in place of the file's width,
     noted in ``Report.overridden``; only with ``exploratory`` or ``dry_run`` (else
-    :class:`ConfigError`), at least 1 (else :class:`UsageError`), and refused where the
-    experiment's kinds, deciding metrics or genre forbid overlap
+    :class:`UsageError`, as ``repeats`` is), at least 1 (else :class:`UsageError`), and
+    refused where the experiment's kinds, deciding metrics or genre forbid overlap
     (:class:`InvalidExperimentError`, problem ``trials_in_flight_refused``).
     ``Report.best_case`` says when the run is too small for even every trial passing to
     show a pass rate's threshold.
