@@ -259,8 +259,9 @@ ix run lab/parse-duration --exploratory --repeats 5
 `--repeats` pilots with that many repeats in place of the file's, and leaves the file as it
 will be registered; the report lists the change under `Changed`. A pilot gives no verdict.
 One too small for even every trial passing to show a pass rate's threshold says so under
-`Best case`: that is its size, not the agent. To try several trials at once, add
-`--trials-in-flight 4`: agent sessions judged on what they said and did may overlap, and the
+`Best case`: that is its size, not the agent. To try several trials at once, plan it first
+(`ix plan <path> --trials-in-flight 4` says whether the width is refused, and why), then add
+`--trials-in-flight 4` to the pilot: agent sessions judged on what they said and did may overlap, and the
 report's `Run` line says the width. If the pilot behaves as it did one at a time, write
 `trials_in_flight: 4` in the file before you register it: the width is part of the design
 a verdict rests on, so `ix run` without `--exploratory` refuses the flag. A metric of time

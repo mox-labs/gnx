@@ -61,6 +61,10 @@ COMMANDS: tuple[tuple[str, str], ...] = (
         "a pilot with N repeats, the file unchanged: no verdict",
     ),
     (
+        "ix plan <path> --trials-in-flight N",
+        "the plan at N trials at once, its refusal or warnings included; runs nothing",
+    ),
+    (
         "ix run <path> --exploratory --trials-in-flight N",
         "N trials at once, the file unchanged: no verdict; refused where overlap confounds",
     ),
@@ -783,7 +787,8 @@ whether it came from the experiment, the genre or ix.
   Its `fix` names each and says `trials_in_flight: 1`. A contended metric
   that is only reported is a warning (`trials_in_flight_contended`): its readings were
   taken under that load. `ix run --trials-in-flight N` tries a width without editing the
-  file, with `--exploratory` or `--dry-run` only.
+  file, with `--exploratory` or `--dry-run` only; `ix plan --trials-in-flight N` shows that
+  run's plan first, its refusal or warnings included, and runs nothing.
 - **Two reductions.** `statistic` reduces one trial's reading to a number; `estimator`
   combines the trials. By the shape of a reading:
 {shapes}
@@ -1041,7 +1046,9 @@ experiment writes `trials_in_flight`. It prints progress on stderr and then the 
   `Changed`; a run that gives a verdict refuses `--repeats` (exit {EXIT_CODES["usage"]}). A
   run too small for even every trial passing to show a pass rate's threshold says so under
   `Best case`, as the plan does under `Sensitivity`.
-- **A width to try.** `--exploratory --trials-in-flight N` (or `--dry-run`) carries N trials
+- **A width to try.** `ix plan <path> --trials-in-flight N` shows the plan at that width,
+  and its refusal if overlap would confound, before anything runs; then
+  `--exploratory --trials-in-flight N` (or `--dry-run`) carries N trials
   out at once in place of the file's `trials_in_flight`, listed under `Changed`; a run that
   gives a verdict refuses it (exit {EXIT_CODES["usage"]}): write `trials_in_flight:` in the
   file and register it. Where the kinds, a deciding metric or the genre forbid overlap it is

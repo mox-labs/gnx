@@ -304,6 +304,8 @@ def _print_plan_work(plan: ix.Plan) -> None:
     _field("Trials", plan.trials.text())
     _field("Duration", plan.duration.text())
     _field("Order", f"{plan.order.scheme}, seed {plan.order.seed}", plan.order.description)
+    if plan.overridden:
+        _field("Changed", *plan.overridden)
     if plan.sensors:
         _field(
             "Sensors",
@@ -350,6 +352,8 @@ def _print_plan_design(plan: ix.Plan, path: str) -> None:
         "matches": f"ix run {path}",
         "deviations": f"ix deviations {path}",
     }[plan.registration.status]
+    if plan.overridden:  # a width to try: a run that gives a verdict refuses it
+        next_step = f"ix run {path} --exploratory --trials-in-flight {plan.order.trials_in_flight}"
     err.print(f"[dim]Next: {escape(next_step)}[/dim]", soft_wrap=True)
 
 
@@ -365,8 +369,16 @@ def _print_plan(plan: ix.Plan, path: str) -> None:
 
 @main.command(epilog=EXIT_CODES)
 @_path_argument
+@click.option(
+    "--trials-in-flight",
+    type=click.IntRange(min=1),
+    metavar="N",
+    help="Plan the run `ix run --exploratory --trials-in-flight N` would carry out: N trials "
+    "at once in place of the file's trials_in_flight (1 when it writes none), refused "
+    "where a kind in use or the genre forbids overlap, or a deciding metric is contended",
+)
 @_json_option
-def plan(path: str, as_json: bool) -> None:
+def plan(path: str, trials_in_flight: int | None, as_json: bool) -> None:
     """Show the decision a run would inform and how many trials it takes. Runs nothing.
 
     States the question, the hypothesis rendered from the genre, the guardrails and the form
@@ -375,11 +387,17 @@ def plan(path: str, as_json: bool) -> None:
     where the experiment stands against its registration. The plan's digest changes when a
     value a run would use changes.
 
+    `--trials-in-flight N` previews a width without editing the file: the plan at that width,
+    the change listed under `Changed` (`overridden`), and the refusal or warnings the run
+    would meet. A run that gives a verdict refuses the flag, so it is tried with
+    `ix run --exploratory` or `--dry-run`; to decide on a width, write `trials_in_flight:`
+    in the file and register it.
+
     PATH is the experiment file, a directory that holds experiment.yaml, or - for standard
     input (which has no registration).
     """
     try:
-        result = ix.plan(path)
+        result = ix.plan(path, trials_in_flight=trials_in_flight)
     except ix.IxError as error:
         _fail(error, as_json=as_json)
     if as_json:

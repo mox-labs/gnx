@@ -455,7 +455,8 @@ limits, and a session slowed by its neighbours that now meets its `timeout`. So 
 is part of the design: the plan states it (`Order:`), its digest covers it, and
 registration freezes it, so a gate is never passed at a width nobody registered.
 `ix run --trials-in-flight N` tries a width with `--exploratory` or `--dry-run` only, and is
-listed under `Changed`. A width above 1 is refused (`trials_in_flight_refused`, its fix
+listed under `Changed`; `ix plan --trials-in-flight N` shows that run's plan first, with the
+refusal or warnings it would meet, and runs nothing. A width above 1 is refused (`trials_in_flight_refused`, its fix
 `trials_in_flight: 1`) where any kind in use or the genre forbids overlap, or a deciding
 metric is contended ([Kinds](#kinds)); in practice, agent sessions and model calls judged on
 what they said or did. With an environment, a trial counts as carried out only once a check

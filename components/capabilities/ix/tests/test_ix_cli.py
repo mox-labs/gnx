@@ -376,10 +376,10 @@ class TestPlanCommand:
             "question", "decides", "comparison", "guardrails", "verdict_form", "subjects",
             "control", "factors", "probes", "calibration", "trials", "schedule_digest", "duration",
             "order", "sensors", "requirements", "registration", "sensitivity",
-            "provenance", "unimplemented", "notes", "warnings", "runnable",
+            "provenance", "unimplemented", "notes", "overridden", "warnings", "runnable",
         ]  # fmt: skip
         assert re.fullmatch(r"[0-9a-f]{64}", document["schedule_digest"])
-        assert document["unimplemented"] == []
+        assert document["unimplemented"] == [] and document["overridden"] == []
         # Its subjects run ./proxy, which is not there: the plan only shows, so it exits 0,
         # and says in the document as on the terminal that a run here would not start.
         (proxy,) = [r for r in document["requirements"] if not r["holds"]][:1]

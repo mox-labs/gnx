@@ -62,7 +62,11 @@ def resolve(source: Source, *, base: PathLike | None = None) -> Design:
 
 
 def plan(
-    source: Source, *, base: PathLike | None = None, registration: PathLike | None = None
+    source: Source,
+    *,
+    base: PathLike | None = None,
+    registration: PathLike | None = None,
+    trials_in_flight: int | None = None,
 ) -> Plan:
     """What a run would do. Runs nothing and writes nothing.
 
@@ -73,8 +77,18 @@ def plan(
     ``registration`` names the registration file to compare with; for a path source it
     defaults to the file beside the experiment. Raises :class:`InvalidExperimentError` when
     the experiment is invalid.
+
+    ``trials_in_flight`` plans the run :func:`run` would carry out given the same width in
+    place of the file's: the plan's ``order`` and digest are at that width, and
+    ``Plan.overridden`` notes the change. It is refused as that run would refuse it: below 1
+    (:class:`UsageError`), and where the experiment's kinds, deciding metrics or genre
+    forbid overlap (:class:`InvalidExperimentError`, problem ``trials_in_flight_refused``).
+    A run that gives a verdict refuses the width as an override, so the run to try it is
+    ``exploratory`` or ``dry_run``.
     """
-    return _root().plan(source, base=base, registration=registration)
+    return _root().plan(
+        source, base=base, registration=registration, trials_in_flight=trials_in_flight
+    )
 
 
 def register(

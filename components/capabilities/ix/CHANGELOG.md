@@ -23,6 +23,10 @@
   run, noted under `Changed`; like `--repeats`, only with `--exploratory` or `--dry-run`,
   and a run that gives a verdict refuses either flag as `usage` (exit 2), its
   `details.path` the flag.
+- **`ix plan --trials-in-flight N`** (`ix.plan(trials_in_flight=N)`): the plan of the run
+  `ix run --exploratory --trials-in-flight N` would carry out, at that width, with the
+  change in `Plan.overridden` (`Changed`), as the run's report words it, and the refusal or
+  warnings that run would meet. It runs nothing and writes nothing.
 - **The problems `trials_in_flight_refused` and `trials_in_flight_contended`.** A width
   above 1 is refused, never lowered on its own, where a kind in use or the genre forbids
   overlap, or a deciding metric (`primary`, a guardrail) is contended: the
