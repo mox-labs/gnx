@@ -25,7 +25,7 @@ from recon.application.changes import Comparison, Hasher, MemoryJoin, canonical
 from recon.application.plan import build_plan
 from recon.composition import load_plugins, root
 from recon.domain.changes import ChangesSpec
-from recon.domain.errors import CollectionError
+from recon.domain.errors import CollectionError, ReconError
 from recon.domain.http import HttpResponse
 from recon.domain.stream import window_id
 from tests.recon_fakes import FixedClock, VirtualClock, plugins_with
@@ -620,6 +620,25 @@ class TestTheMissionKey:
         _mission(tmp_path, None)
         Surveys(tmp_path).survey(A)
         assert not (tmp_path / ".recon" / "m" / "changes.key").exists()
+
+    @pytest.mark.parametrize("held", [b"", b"short", b"k" * 33], ids=["empty", "short", "long"])
+    def test_a_key_not_32_bytes_is_refused_and_never_made_again(
+        self, tmp_path: Path, held: bytes
+    ) -> None:
+        """Vector S4: an empty key would unkey every hash, silently, and a short one weaken
+        it. A key file that does not hold exactly 32 bytes is refused, classified with a fix,
+        and left as it is: never made again behind the owner's back."""
+        _mission(tmp_path, {"key": ["id"]})
+        key = tmp_path / ".recon" / "m" / "changes.key"
+        key.write_bytes(held)
+        key.chmod(0o600)
+        with pytest.raises(ReconError) as raised:
+            Surveys(tmp_path).survey(A)
+        assert raised.value.kind == "config" and raised.value.exit_code == 3
+        assert str(key) in raised.value.message and "32" in raised.value.message
+        assert "remove" in (raised.value.fix or "")
+        assert key.read_bytes() == held
+        assert not (tmp_path / ".recon" / "m" / "archive").exists(), "refused before it began"
 
     def test_another_key_reads_every_kept_index_as_stale(self, tmp_path: Path) -> None:
         _mission(tmp_path, {"key": ["id"]})

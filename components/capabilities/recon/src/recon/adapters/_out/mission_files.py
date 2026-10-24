@@ -30,7 +30,7 @@ import yaml
 from recon.adapters._out.capture_files import FilesystemCaptureLog
 from recon.adapters._out.private_files import make_dirs, open_file, write_file
 from recon.domain.capture import CAPTURE_LOG_NAME
-from recon.domain.errors import ConfigError, NotFoundError, Problem, UsageError
+from recon.domain.errors import ConfigError, NotFoundError, Problem, ReconError, UsageError
 from recon.domain.missions import MISSION_NAME, ConfigFile, Template
 
 if TYPE_CHECKING:
@@ -144,7 +144,7 @@ class MissionFiles:
     def change_key(self, name: str) -> bytes:
         path = self.mission_dir(name) / CHANGE_KEY
         try:
-            return path.read_bytes()
+            return _whole_key(path, path.read_bytes())
         except FileNotFoundError:
             pass
         make_dirs(path.parent)
@@ -163,7 +163,7 @@ class MissionFiles:
             pass
         finally:
             made.unlink(missing_ok=True)
-        return path.read_bytes()
+        return _whole_key(path, path.read_bytes())
 
     def is_directory(self, path: Path) -> bool:
         return path.is_dir()
@@ -176,6 +176,23 @@ class MissionFiles:
                 text = file.read_text(encoding="utf-8")
                 found.append(Template(file.name.removesuffix(".yaml"), _description(text), text))
         return sorted(found, key=lambda t: t.name)
+
+
+def _whole_key(path: Path, held: bytes) -> bytes:
+    """``held``, the key ``path`` holds, when it is a whole key; else refused, the file left as
+    it is: an empty key would unkey every hash, a short one weaken it, and a key made again
+    behind the owner's back would hide that the file was changed (Vector, round-4 review S4)."""
+    if len(held) == CHANGE_KEY_BYTES:
+        return held
+    raise ReconError(
+        f"{path} holds {len(held)} bytes, and a mission's change key is {CHANGE_KEY_BYTES}: it "
+        "was cut short, emptied or replaced, so recon does not hash with it",
+        kind="config",
+        fix=f"put back the key it held, if you kept a copy; or remove {path}, and the next survey "
+        "makes a new one and computes every told index again from the archives kept (no change "
+        "is told twice)",
+        details={"path": str(path), "got": len(held), "allowed": [CHANGE_KEY_BYTES]},
+    )
 
 
 def _reachable(path: Path) -> bool:

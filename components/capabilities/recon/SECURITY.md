@@ -578,7 +578,9 @@ Change detection keeps a hash of each record's content in a table's key index
 (a one-time code in a mail subject: a million) is recovered by hashing every guess (vector,
 round 4). The hash is a keyed BLAKE2b under the mission's own key, `.recon/<mission>/
 changes.key`, random, mode 0600 and never written anywhere else, so without that file a guess
-cannot be checked. A hash appears in no change row, outcome, warning or telemetry, and a
+cannot be checked. A key file that does not hold exactly 32 bytes is refused (`config`) and
+left as it is: an empty one would unkey every hash, and one made again silently would hide that
+the file was changed. A hash appears in no change row, outcome, warning or telemetry, and a
 window `retain:` removes takes its key index with it. A large comparison joins on DuckDB in a
 directory of its own under the mission's `.joins` (0700, as every directory of a mission is),
 holding keys and hashes while it runs and removed when it ends, its spill capped at 4 GiB by

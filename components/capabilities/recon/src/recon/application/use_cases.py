@@ -430,6 +430,9 @@ class Recon:
         if copy_to is not None:
             self._missions.write_config(name, source.text)
         mission = self._missions.mission_dir(name)
+        # Its key read before anything is written: a key file that does not hold is refused
+        # with no archive begun.
+        changes = self._changes(name, snapshot)
         started = self._clock.now()
         archive = self._archives.create(mission, started.strftime(ARCHIVE_ID_FORMAT))
         # Held from here until released, so a reader of the archive sees it is being
@@ -467,7 +470,7 @@ class Recon:
                     survey = Survey(
                         self._archives, self._clock, self._version, telemetry, on_event,
                         extracts=extracts, kinds=kinds, deadline=deadline, pages=pages,
-                        changes=self._changes(name, snapshot),
+                        changes=changes,
                     )  # fmt: skip
                     tables = survey.run(
                         plan.config,

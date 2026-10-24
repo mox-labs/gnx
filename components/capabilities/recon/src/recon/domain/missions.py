@@ -89,7 +89,8 @@ class MissionStore(Protocol):
     def change_key(self, name: str) -> bytes:
         """The key the mission's change detection hashes records with (``recon.domain.
         changes``): random, made on first use where only its owner can read it, and the same
-        on every later call, so the same tables give the same change rows."""
+        on every later call, so the same tables give the same change rows. Raises ReconError
+        (``config``) for a key file that does not hold a whole key, which it never replaces."""
         ...
 
     def is_directory(self, path: Path) -> bool:
