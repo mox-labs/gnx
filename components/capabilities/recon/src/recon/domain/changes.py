@@ -10,9 +10,10 @@ is *keyless*. A record's content is a keyed hash of the record as written (after
 **What has been told.** Every table of the same output and source compared before is folded
 into one *told index*: each key a change row has told, with its content as last told, and
 none a delete has removed. A table is compared with the told index of the *previous* one:
-the latest earlier table of the same output and source that was compared, in an archive whose
-survey ran to its end (a table that failed, or one in a survey stopped, told nothing and is
-skipped). The table ``N`` gives rows ``{op, key, record}``:
+the latest earlier table of the same output and source that was compared, however its survey
+then ended: a survey compares its tables once all have run, and every row a reader can see was
+told (a table that failed, or whose changes failed, told nothing and is skipped). The table
+``N`` gives rows ``{op, key, record}``:
 
 - ``insert``: a key in N the told index lacks (every key, when nothing was told before);
 - ``update``: a key in both whose content differs from the one told;

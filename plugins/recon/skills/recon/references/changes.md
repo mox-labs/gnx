@@ -29,7 +29,7 @@ collectors:
 
 ## What a survey tells
 
-Every change row told for an output and source folds into one **told index**: each key an `insert` or `update` told, with its content as told last, and none a `delete` removed. Each table of the entry that seals `ok` is compared with the told index of the **previous** table: the latest earlier one of the same output and source that was compared, in an archive whose survey ran to its end (`ended: finished`). A truncated table is compared and tells its inserts and updates; a table that failed, or one in a survey that was stopped, told nothing and is skipped. Its change table, `<output>.changes`, which SQL knows as `<output>_changes`, holds a row per change, `{op, key, record}`:
+Every change row told for an output and source folds into one **told index**: each key an `insert` or `update` told, with its content as told last, and none a `delete` removed. Each table of the entry that seals `ok` is compared with the told index of the **previous** table: the latest earlier one of the same output and source that was compared. A survey compares its tables once every table has run, so a table compared is one of a survey that reached its end, and it told its rows however the survey then ended: stopped, or dead, in its change phase. Every row a reader can see is folded, since a table's summary is in `meta.yaml` before its change table is written, and its told index before that. A truncated table is compared and tells its inserts and updates; a table that failed, or one whose changes failed, told nothing and is skipped. Its change table, `<output>.changes`, which SQL knows as `<output>_changes`, holds a row per change, `{op, key, record}`:
 
 | `op` | When |
 |---|---|

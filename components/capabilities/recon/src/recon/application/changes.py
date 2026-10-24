@@ -387,14 +387,18 @@ class ChangeDetector:
         table: TableOutcome,
         spec: ChangesSpec,
         normalize: dict[str, str] | None,
+        *,
+        pending: Callable[[TableOutcome], object] | None = None,
     ) -> TableOutcome:
         """``table`` of ``archive``, sealed ``ok``, compared with the told index of the
-        previous table compared: the latest earlier one of the same name and source, in an
-        archive whose survey ran to its end. Run once every table of the survey has run, so
-        the survey reaches its end."""
+        previous table compared: the latest earlier one of the same name and source. Run once
+        every table of the survey has run, so the survey reaches its end. ``pending`` is
+        given the table with its summary (its rows not yet counted) once its told index is
+        written and before its change table is, so the summary is in ``meta.yaml`` before any
+        row can be read (Dijkstra F3)."""
         archives = [a for a in self._archives.archives(self._mission_dir) if a.name < archive.name]
         return self._compare(archive, table, spec, normalize_digest(normalize), archives,
-                             None, whole=not table.truncated)  # fmt: skip
+                             None, whole=not table.truncated, pending=pending)  # fmt: skip
 
     def window(
         self,
@@ -404,13 +408,15 @@ class ChangeDetector:
         table: TableOutcome,
         spec: ChangesSpec,
         normalize: dict[str, str] | None,
+        *,
+        pending: Callable[[TableOutcome], object] | None = None,
     ) -> TableOutcome:
         """A stream's window, sealed ``ok``, compared with the told index of its chain up to
-        the window ``previous``. Never a delete."""
+        the window ``previous``. Never a delete. ``pending`` as :meth:`snapshot`'s."""
         windows = self._archives.archives(self._mission_dir, stream=stream)
         windowed = spec.model_copy(update={"deletes": False})
         return self._compare(archive, table, windowed, normalize_digest(normalize), windows,
-                             previous or "", whole=True)  # fmt: skip
+                             previous or "", whole=True, pending=pending)  # fmt: skip
 
     def _compare(
         self,
@@ -422,10 +428,12 @@ class ChangeDetector:
         chain: str | None,
         *,
         whole: bool,
+        pending: Callable[[TableOutcome], object] | None,
     ) -> TableOutcome:
         """Compare ``table`` with the told index of the previous table compared among
         ``earlier``: the one ``chain`` names (a stream's previous window; "" for none), or
-        else the latest of a survey that ran to its end."""
+        else the latest. Written in the order that keeps every row a reader can see folded:
+        the told index, then the summary (``pending``), then the change table."""
         hasher = Hasher(spec, self._secret)
         by_name = {a.name: a for a in earlier}
         if chain is None:
@@ -445,7 +453,32 @@ class ChangeDetector:
                                     whole=whole)  # fmt: skip
         finally:
             told.close()
+        counts = comparison.counts
+
+        def summary(written: int) -> ChangeSummary:
+            return ChangeSummary(
+                table=changes_output(table.name),
+                type_url=CHANGES_TYPE_URL,
+                previous=previous.archive.name if previous is not None else None,
+                spec=hasher.digest,
+                normalize=shape,
+                rows=written,
+                inserts=counts.inserts,
+                updates=counts.updates,
+                deletes=counts.deletes,
+                rebaselined=rebaselined,
+                keyless=counts.keyless,
+                ambiguous=counts.ambiguous,
+                deletes_withheld=None if rebaselined else counts.withheld,
+                deletes_told=comparison.deletes,
+            )
+
         try:
+            self._archives.write_sidecar(
+                archive, table.name, "keys", comparison.lines(table.records)
+            )
+            if pending is not None:
+                pending(table.model_copy(update={"changes": summary(0)}))
             rows = (
                 iter([{"op": "rebaselined", "key": None, "record": None}])
                 if rebaselined
@@ -454,29 +487,9 @@ class ChangeDetector:
             written = self._archives.write_table(
                 archive, changes_output(table.name), _generator(rows), columns=CHANGE_COLUMNS
             )
-            self._archives.write_sidecar(
-                archive, table.name, "keys", comparison.lines(table.records)
-            )
         finally:
             comparison.close()
-        counts = comparison.counts
-        summary = ChangeSummary(
-            table=changes_output(table.name),
-            type_url=CHANGES_TYPE_URL,
-            previous=previous.archive.name if previous is not None else None,
-            spec=hasher.digest,
-            normalize=shape,
-            rows=written,
-            inserts=counts.inserts,
-            updates=counts.updates,
-            deletes=counts.deletes,
-            rebaselined=rebaselined,
-            keyless=counts.keyless,
-            ambiguous=counts.ambiguous,
-            deletes_withheld=None if rebaselined else counts.withheld,
-            deletes_told=comparison.deletes,
-        )
-        return table.model_copy(update={"changes": summary})
+        return table.model_copy(update={"changes": summary(written)})
 
     def _join(self, *sizes: int) -> KeyJoin:
         if self._large is not None and max(sizes) > self._memory_keys:
@@ -523,11 +536,12 @@ class ChangeDetector:
         return told
 
     def _previous_snapshot(self, earlier: Sequence[Path], table: TableOutcome) -> _Compared | None:
-        """The latest earlier table of the same name and source that was compared, in an
-        archive whose survey ran to its end."""
+        """The latest earlier table of the same name and source that was compared, however
+        its survey then ended: every table is compared once all have run, so one compared
+        was whole when it was, and what it told a reader could read (Dijkstra F3)."""
         for candidate in reversed(earlier):
             compared = self._compared(candidate, table)
-            if compared is not None and self._ended(candidate) == "finished":
+            if compared is not None:
                 return compared
         return None
 
@@ -560,6 +574,8 @@ class ChangeDetector:
         changes = entry.get("changes") if entry is not None else None
         if entry is None or not isinstance(changes, dict) or changes.get("error"):
             return None  # never compared, or its changes failed: it told nothing
+        if self._archives.read_table(archive, changes_output(table.name)) is None:
+            return None  # its summary was written, and it died before its rows were
         return _Compared(archive, int(entry.get("records") or 0),
                          changes.get("deletes_told") is True, bool(changes.get("rebaselined")),
                          changes.get("previous"), changes.get("normalize"))  # fmt: skip
@@ -576,8 +592,11 @@ class ChangeDetector:
 
 
 def failed(table: TableOutcome, exc: Exception) -> TableOutcome:
-    """``table``, its changes not told for ``exc``: its outcome says so, classified."""
-    kind = exc.kind if isinstance(exc, ReconError) else "unknown"
+    """``table``, its changes not told for ``exc``: its outcome says so, classified (a store
+    that could not write, ``store``; one recon did not classify, ``unknown``)."""
+    kind = exc.kind if isinstance(exc, ReconError) else "store" if isinstance(exc, OSError) else (
+        "unknown"
+    )  # fmt: skip
     fix = exc.fix if isinstance(exc, ReconError) and exc.fix else None
     summary = ChangeSummary(
         table=changes_output(table.name), type_url=CHANGES_TYPE_URL, previous=None, spec="",

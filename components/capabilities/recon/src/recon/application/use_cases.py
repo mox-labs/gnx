@@ -1458,10 +1458,11 @@ def _meeting(windows: list[Path], since: datetime | None, until: datetime | None
 def _ended(state: ArchiveState, meta: Mapping[str, Any]) -> Ended | None:
     """How the writer of an archive in ``state``, whose ``meta.yaml`` reads ``meta``, ended:
     as its ``meta.yaml`` says (``finished`` when one an older recon wrote does not say), or
-    ``crashed`` when it wrote none. None while it is being written."""
+    ``crashed`` when it wrote none, or wrote one while it compared its tables (``ended``
+    null) and never wrote how it ended. None while it is being written."""
     if state == "writing":
         return None
-    if meta.get("format_version") is None:
+    if meta.get("format_version") is None or ("ended" in meta and meta["ended"] is None):
         return "crashed"
     return "stopped" if meta.get("ended") == "stopped" else "finished"
 

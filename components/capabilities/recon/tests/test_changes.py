@@ -333,18 +333,108 @@ class TestWhatWasTold:
         whole, _ = surveys.survey(changed, B)
         assert _ops(whole) == []
 
-    def test_a_survey_stopped_told_nothing(self, tmp_path: Path) -> None:
-        """An archive whose survey did not run to its end is skipped: what it wrote was never
-        to be read, so the next survey tells it again."""
+    def test_a_table_compared_before_its_survey_stopped_told_what_it_holds(
+        self, tmp_path: Path
+    ) -> None:
+        """Dijkstra F3, the fix built of the two it offered: every change row a reader can see is
+        folded. A table compared (its change table sealed, its summary in ``meta.yaml``)
+        told its rows, whether its survey then finished, was stopped or died, so the next
+        table is compared with what it told, and nothing is told twice."""
         _mission(tmp_path, {"key": ["id"]})
         surveys = Surveys(tmp_path)
-        first, _ = surveys.survey(A)
+        surveys.survey(A)
         stopped, _ = surveys.survey(A, B)
         meta = yaml.safe_load((stopped / "meta.yaml").read_text())
         (stopped / "meta.yaml").write_text(yaml.safe_dump({**meta, "ended": "stopped"}))
         archive, document = surveys.survey(A, B)
-        assert _ops(archive) == [("insert", "b")]
-        assert document.tables[0].changes.previous == first.name
+        assert _ops(archive) == []
+        assert document.tables[0].changes.previous == stopped.name
+
+    def _two(self, tmp_path: Path) -> None:
+        collectors = [{"name": name, "type": "api", "source": "mail", "endpoint": "/m",
+                       "extract": "items", "changes": {"key": ["id"]}}
+                      for name in ("inbox", "other")]  # fmt: skip
+        mission = {"catalog": [{"name": "mail", "url": "https://mail.test"}],
+                   "collectors": collectors}  # fmt: skip
+        (tmp_path / ".recon" / "m").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".recon" / "m" / "config.yaml").write_text(yaml.safe_dump(mission))
+
+    def _told_once(self, tmp_path: Path, output: str) -> None:
+        """Across every archive, each key of ``output`` told inserted once."""
+        archives = sorted((tmp_path / ".recon" / "m" / "archive").iterdir())
+        told = [(r["op"], r["key"]["id"]) for a in archives if (a / f"{output}.changes.jsonl")
+                .exists() for r in _rows(a, output)]  # fmt: skip
+        assert sorted(told) == [("insert", "a"), ("insert", "b")], (output, told)
+
+    @pytest.mark.parametrize("how", [KeyboardInterrupt, SystemExit], ids=["stopped", "died"])
+    def test_a_survey_ended_in_its_change_phase_tells_each_row_once(
+        self, tmp_path: Path, how: type[BaseException]
+    ) -> None:
+        """F3: stopped (Ctrl-C) or dead (anything else that ends the process) while comparing
+        its second table, the survey's first change table is sealed and its summary is in
+        ``meta.yaml`` already, so the next survey tells the first table nothing again and the
+        second its rows."""
+
+        class EndsOnSecond:
+            joins = 0
+
+            def join(self, told: Any, new: Any) -> Any:
+                self.joins += 1
+                if self.joins == 2:
+                    raise how()
+                return MemoryJoin().join(told, new)
+
+        self._two(tmp_path)
+        surveys = Surveys(tmp_path)
+        surveys.recon = root(
+            {},
+            project=tmp_path,
+            clock=surveys.clock,
+            memory_keys=0,
+            key_join=EndsOnSecond(),
+            requester=lambda t, d, r: surveys.inbox,
+        )
+        # fmt: skip
+        with pytest.raises(how):
+            surveys.survey(A, B)
+        [ended] = sorted((tmp_path / ".recon" / "m" / "archive").iterdir())
+        meta = yaml.safe_load((ended / "meta.yaml").read_text())
+        first = meta["tables"][0]["changes"]
+        assert first["previous"] is None and (ended / "inbox.changes.jsonl").exists()
+        if how is SystemExit:
+            assert meta["ended"] is None, "written while it compared: it never said it ended"
+            history = surveys.recon.status("m").missions[0].history
+            assert history is not None and [a.ended for a in history] == ["crashed"]
+        surveys.recon = root({}, project=tmp_path, clock=surveys.clock,
+                             requester=lambda t, d, r: surveys.inbox)  # fmt: skip
+        again, _ = surveys.survey(A, B)
+        assert _rows(again, "inbox") == []
+        self._told_once(tmp_path, "inbox")
+        self._told_once(tmp_path, "other")
+
+    def test_a_key_index_that_cannot_be_written_leaves_no_change_table(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F3: the told index is written before the change table, so one that cannot be
+        written leaves no row a reader sees and the next survey would not fold."""
+        write_sidecar = ArchiveFiles.write_sidecar
+        failing = {"left": 1}
+
+        def fails_once(self: ArchiveFiles, archive: Path, output: str, sidecar: Any,
+                       lines: Any) -> None:  # fmt: skip
+            if sidecar == "keys" and failing["left"]:
+                failing["left"] -= 1
+                raise OSError(28, "No space left on device")
+            write_sidecar(self, archive, output, sidecar, lines)
+
+        monkeypatch.setattr(ArchiveFiles, "write_sidecar", fails_once)
+        _mission(tmp_path, {"key": ["id"]})
+        surveys = Surveys(tmp_path)
+        failed, document = surveys.survey(A, B)
+        assert document.status == "incomplete"
+        assert not (failed / "inbox.changes.jsonl").exists()
+        surveys.survey(A, B)
+        self._told_once(tmp_path, "inbox")
 
 
 class TestHostileContent:

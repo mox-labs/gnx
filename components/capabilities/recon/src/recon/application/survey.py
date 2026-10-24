@@ -65,6 +65,7 @@ cut short seals the table ``ok`` and ``truncated``, with what cut it, and warns
 from __future__ import annotations
 
 import contextlib
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
 from recon.application.changes import changes_failed, failed
@@ -217,8 +218,9 @@ class Survey:
                     if index in streams:
                         continue
                     tables += self._run_entry(index, entry, config, collectors, archive, captures)
-            # Every table has run, so the survey reaches its end: what changed is told now.
-            tables = self._compare(config, tables, archive)
+            # Every table has run, so the survey reaches its end: what changed is told now,
+            # each table's summary in meta.yaml before its rows can be read.
+            self._compare(config, tables, archive, meta)
         except KeyboardInterrupt:
             # Stopped on request (Ctrl-C, SIGTERM): the tables that ended are recorded, and
             # that it was stopped, so it never reads as a survey that died. One that cannot
@@ -244,32 +246,48 @@ class Survey:
         return tables
 
     def _compare(
-        self, config: ReconConfig, tables: list[TableOutcome], archive: Path
-    ) -> list[TableOutcome]:
+        self,
+        config: ReconConfig,
+        tables: list[TableOutcome],
+        archive: Path,
+        head: dict[str, Any],
+    ) -> None:
         """Each table sealed ``ok`` of an entry with ``changes:``, compared with its baseline:
-        its change table and key index written, and its outcome saying what was found. A
-        table that failed is compared with nothing and is no baseline."""
+        its key index and change table written, and its outcome (in ``tables``, in place)
+        saying what was found. A table that failed is compared with nothing and is no
+        baseline. ``meta.yaml`` is written as each table is compared, ``ended`` null until
+        the survey writes how it ended: a table's summary is there before its first row can
+        be read, so a survey stopped, or one that dies, here has told what a reader saw
+        (Dijkstra F3)."""
         if self._changes is None:
-            return tables
+            return
         at = {entry.name: (i, entry) for i, entry in enumerate(config.collectors)}
-        compared = []
-        for table in tables:
+
+        def progress(position: int, table: TableOutcome) -> None:
+            tables[position] = table
+            self._archives.write_meta(archive, self._meta(head, tables, None))
+
+        for position, table in enumerate(tables):
             index, entry = at[table.collector]
             if entry.changes is None or table.status != "ok":
-                compared.append(table)
                 continue
             try:
-                table = self._changes.snapshot(archive, table, entry.changes, entry.normalize)
-            except OSError as exc:
+                compared = self._changes.snapshot(archive, table, entry.changes, entry.normalize,
+                                                  pending=partial(progress, position))  # fmt: skip
+            except OSError as exc:  # its changes failed, and the archive cannot be finished
+                tables[position] = failed(table, exc)
                 self._unfinished(f"{table.name}'s change table could not be written", exc)
+                continue
             except Exception as exc:  # the table's changes fail, never the survey (Vector F6)
+                tables[position] = failed(table, exc)
                 self._warn(table.name, changes_failed(f"collectors.{index}", table.name, exc))
-                table = failed(table, exc)
-            compared.append(table)
-            withheld = table.changes.deletes_withheld if table.changes else None
+                continue
+            with contextlib.suppress(OSError):  # its counts; the survey's end writes them too
+                progress(position, compared)
+            tables[position] = compared
+            withheld = compared.changes.deletes_withheld if compared.changes else None
             if withheld is not None:
                 self._warn(table.name, _withheld(index, entry, table.name, withheld))
-        return compared
 
     def _unfinished(self, what: str, exc: OSError) -> None:
         """An archive that cannot keep what it was to keep cannot be finished: it reads
@@ -288,11 +306,12 @@ class Survey:
         self,
         head: dict[str, Any],
         tables: list[TableOutcome],
-        ended: Literal["finished", "stopped"],
+        ended: Literal["finished", "stopped"] | None,
     ) -> dict[str, Any]:
         """The archive's ``meta.yaml``: ``head``, when the survey ended, how (``ended``, the
-        :data:`~recon.domain.archives.Ended` its writer can know: ``crashed`` is a reader's),
-        and its tables."""
+        :data:`~recon.domain.archives.Ended` its writer can know: ``crashed`` is a reader's;
+        None while it compares its tables, which a reader reads as ``crashed`` should it
+        never be written again), and its tables."""
         return {
             **head,
             "timestamp": self._clock.now().isoformat(),
