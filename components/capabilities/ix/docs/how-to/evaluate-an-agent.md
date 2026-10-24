@@ -513,8 +513,9 @@ primary: {metric: eval_passed}
 What it gives becomes these metrics:
 
 - `eval_passed` is true when every assertion the evaluator gave held: `Equals`, `Contains`,
-  `IsInstance`, `MaxDuration`, `ToolCorrectness`, `MaxToolCalls` and `ArgumentCorrectness`
-  give one each.
+  `IsInstance`, `ToolCorrectness`, `MaxToolCalls` and `ArgumentCorrectness` give one each.
+- `eval_duration_held` is `MaxDuration`'s: whether the probe took no longer than its
+  `seconds`. It is a time, so it is contended: it cannot decide a run with trials in flight.
 - `eval_score` is its score, on its own scale: `TrajectoryMatch` gives an F1 from 0 to 1.
   When an evaluator gives more than one score, `result` names the one to read.
 - Labels, and every result with its reason, are kept in the reading's detail.

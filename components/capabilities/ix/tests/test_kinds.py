@@ -239,6 +239,7 @@ class TestBuiltInKinds:
         assert contended == {
             ("timing", "latency"), ("timing", "ttfb"), ("timing", "throughput"),
             ("timing", "error_rate"), ("memory", "memory_peak"), ("usage", "duration"),
+            ("evaluator", "eval_duration_held"),
         }  # fmt: skip
 
     def test_a_declaration_is_data_and_holds_no_code(self) -> None:

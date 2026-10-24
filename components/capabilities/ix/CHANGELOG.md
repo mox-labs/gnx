@@ -57,6 +57,14 @@
   overlap at all. A genre that extends another may tighten it to `forbidden`, never loosen
   it (`genre_narrowing`). `regress` forbids it; the other built-ins allow it.
 
+### Changed (breaking)
+
+- **`MaxDuration` gives `eval_duration_held`, not `eval_passed`.** The evaluator sensor
+  reads how long the probe took into a metric of its own, declared contended, so a
+  decision on it is refused with trials in flight. An experiment that decided `eval_passed`
+  on a `MaxDuration` entry is refused (`metric_unprovided`, its fix naming
+  `eval_duration_held`): rename the metric and amend the registration.
+
 ### Fixed
 
 - **Each row's ledger entry names its own sessions.** The `sense` component handed its
