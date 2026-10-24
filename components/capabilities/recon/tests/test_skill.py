@@ -193,6 +193,17 @@ def test_the_skill_says_how_long_a_stream_holds_the_command() -> None:
         assert said in streams, said
 
 
+def test_the_skill_teaches_an_agent_to_poll_with_once_and_a_cursor() -> None:
+    """Polish R5 (Ace 4): ``watch --stream`` of a ``--forever`` writer never returns, so an
+    agent that follows a stream polls: one bounded read a call, ``--once``, then the next
+    from the ``--cursor`` the last printed. The skill says so, and the reference in full."""
+    [watch] = [p for p in SKILL.split("\n\n") if p.startswith("**Watch.**")]
+    for said in ("--once", "--cursor", "--forever", "never returns"):
+        assert said in watch, said
+    for said in ("--once --json", "--cursor", "never returns", "`more`"):
+        assert said in REFERENCES["live-reading"], said
+
+
 # --- frontmatter and budget ------------------------------------------------------------
 
 

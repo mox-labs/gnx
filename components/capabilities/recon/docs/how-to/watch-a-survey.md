@@ -57,6 +57,13 @@ recon watch my-feed --stream events --json
 recon query my-feed "SELECT count(*) FROM events" --stream events --json
 ```
 
+A stream run `--forever` is never done, so that watch never returns. An agent, whose tool call must return, polls instead: one read a call, each from the cursor the last printed.
+
+```bash
+recon watch my-feed --stream events --once --json                    # note "cursor"
+recon watch my-feed --stream events --once --cursor <cursor> --json  # and again
+```
+
 A window whose source failed keeps the records it got: nothing printed from a stream is ever void.
 
 The flags, the defaults and the library calls are in [docs/reference/live-reading.md](../reference/live-reading.md), and a stream's in [docs/reference/streaming.md](../reference/streaming.md).

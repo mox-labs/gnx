@@ -2,6 +2,15 @@
 
 A survey's archive can be read while the survey writes it: `recon watch` on the command line, `recon.read_since` and `recon.watch` in a program. This page is the contract of each, with every default and every refusal.
 
+## Contents
+
+- [An archive's state](#an-archives-state)
+- [A table while it is written](#a-table-while-it-is-written)
+- [`recon watch`](#recon-watch), and polling, for an agent
+- [`recon.v1.records-since`](#reconv1records-since)
+- [In a program](#in-a-program)
+- [The survey's side](#the-surveys-side)
+
 ## An archive's state
 
 `recon status`, `recon query`, `recon watch` and `recon.read_since` report an archive's `state`:
@@ -46,7 +55,11 @@ recon watch <mission> [--archive <id>] [--cursor <cursor>] [--interval SECONDS] 
 | `--once` | off | read once, print it, and return, whatever the state |
 | `--json` | off | each read as one `recon.v1.records-since` document a line |
 
-`recon watch` returns after the read that finds the archive no longer `writing` with nothing left to read: at once, after printing it whole, for a finished archive. Without `--json`, each record is a JSON line on stdout, `{"table": ..., "record": ...}`, and stderr says each table sealed or retracted, and the archive's state at the end. It exits 0 whatever the archive's state: the state is in the output.
+`recon watch` returns after the read that finds the archive no longer `writing` with nothing left to read: at once, after printing it whole, for a finished archive. Until then it holds the command, as long as the survey runs, and `recon watch --stream` of a stream run `--forever` never returns.
+
+**Polling, for an agent.** A tool call that must return reads once at a time: `recon watch <mission> --once --json` prints one read and returns, whatever the state; the next call passes its `cursor` as `--cursor`, with its `archive_id` as `--archive` (or the same `--stream`), and so on. Read again at once while a read says `more`; once one says `state` is no longer `writing` and has no `more`, the archive is read to its end. A stream's read says its window's `state`, so whether a writer still extends the stream is `recon status <mission> --json`'s to say (its `streams[].state`). Each call is bounded by `--max-bytes`.
+
+Without `--json`, each record is a JSON line on stdout, `{"table": ..., "record": ...}`, and stderr says each table sealed or retracted, and the archive's state at the end. It exits 0 whatever the archive's state: the state is in the output.
 
 Refused, with exit 2 (`usage`) and a fix:
 

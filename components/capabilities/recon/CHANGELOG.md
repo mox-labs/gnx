@@ -35,6 +35,7 @@
 - **recon is no longer only a snapshot collector**: the documented non-goal "Not a stream processor" is reversed (owner ruling 2026-10-24); a source that does not end is collected as a stream. recon still pushes nothing to subscribers: a reader follows the archives.
 - **A problem under a union field has a plain path**: pydantic's member labels (`literal['all']`, `RetainSpec`) are left out of `path`, and a value gets only the errors of the shape it has.
 - **The skill points to streams in one line**, the rest in `recon --skill -r streaming`, one text with `docs/reference/streaming.md`.
+- **The skill and `recon --skill -r live-reading` teach an agent to poll**: `recon watch --once --json`, then the next read with `--cursor`, since a watch holds its command while the writer runs and one of a `--forever` stream never returns. The skill's telemetry and capture paragraphs point to their references for what those already hold.
 - **The hook that captures MCP results moved from the skill to `recon --skill -r config-patterns`** (MCP Results Captured by a Hook), so the skill keeps within its budget; the skill points there.
 - **The skill teaches telemetry through `recon --skill -r telemetry`**, one text with `docs/reference/telemetry.md`, so the skill stays within its budget.
 - **The `TelemetryFactory` a `Recon` is built with** takes the survey's channel as a second argument, None for an operation with none.

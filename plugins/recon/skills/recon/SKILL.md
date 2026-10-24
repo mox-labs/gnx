@@ -85,7 +85,7 @@ Do these in order. Every command takes `--json`: it then prints one JSON documen
 
 A survey with failed tables still writes its archive, marked incomplete, and lists every table's status; its exit code says what to do about the failures. `recon status --json` lists missions, their latest archive, and the installed collector types and transforms; `recon status <name> --json` lists every archive of that mission, oldest first, as `missions[0].history`: each archive's `id`, `path`, `started_at`, `finished_at`, `state` and `tables`. `state`: `complete`, `incomplete` or `writing`; for an incomplete one, `ended` says whether its survey `finished` (a table failed), was `stopped` on request, or `crashed`.
 
-**Watch.** `recon watch <name> --json` follows an archive as a survey writes it, a `recon.v1.records-since` line per read, and returns when the survey ends; `--once` reads once. Records of a table later `retracted` are void. Flags, defaults, refusals, `state`, `ended` and the library calls: `recon --skill -r live-reading`.
+**Watch.** `recon watch <name> --json` follows an archive as a survey writes it, a `recon.v1.records-since` line per read, and returns when the survey ends: `--stream` of a `--forever` stream never returns. To follow, poll: `--once` reads once and returns, and the next call passes the `cursor` it printed as `--cursor` (with `--archive`, or `--stream`). Records of a table later `retracted` are void. Flags, defaults, refusals, `state`, `ended` and the library calls: `recon --skill -r live-reading`.
 
 **Streams.** A source that never ends (`tail` a file, `sse` events) is a stream, sealed in windows: `recon stream <name> --stream <c>` runs one window and blocks until it ends, 300 s by default, which can outlast a tool call: run it with `--dry-run --json` first and read `stream.returns` (seconds), then set a shorter `window:` or run it in the background. `--windows N`, `--until`, `--forever` run more. A survey runs one window of each stream, in turn, after its tables: its dry run says `survey.returns`. All: `recon --skill -r streaming`.
 
@@ -208,11 +208,11 @@ The same mission and the same answers from its sources give the same records: re
 
 ## Telemetry
 
-Every survey writes its event log, `telemetry.jsonl`, into its archive, a `recon.v1.event` line per span start and end: a failed span says why in `error.type`, and a start with no end is where a killed survey stopped. No secret or body is logged. Spans, attributes, exporting through OpenTelemetry and its warnings: `recon --skill -r telemetry`.
+Every survey writes its event log, `telemetry.jsonl`, into its archive, a `recon.v1.event` line per span start and end; no secret or body is logged. A failed span's `error.type`, the spans, their attributes, exporting through OpenTelemetry: `recon --skill -r telemetry`.
 
 ## Captures
 
-`preserve_raw: true` keeps every fetched body (an HTTP response, a command's stdout, an MCP tool's or resource's result) in the archive's capture log, content-addressed, with credential headers, the `auth.param` value and every credential an `mcp` source resolved redacted. A `capture` collector reads such logs back with a new `normalize:`, so an archive can be reshaped without fetching again; in its spec, `_capture.*` reaches the capture line itself (`_capture.request.tool_input.query`).
+`preserve_raw: true` keeps every fetched body (an HTTP response, a command's stdout, an MCP tool's or resource's result) in the archive's capture log, content-addressed, with credential headers, the `auth.param` value and every credential an `mcp` source resolved redacted. A `capture` collector reads such logs back with a new `normalize:`, so an archive can be reshaped without fetching again.
 
 Two ways to make an MCP server's answers a table. An `mcp` collector calls the server itself, the same way every survey (`recon init files -t mcp-server` shows one): use it for a stdio server, or a remote one that takes a token or a header. A server behind OAuth that signs in through a browser is reached the second way: the agent calls its tools, and a `PostToolUse` hook running `recon capture <mission>` captures the results; the hook and the mission: `recon --skill -r config-patterns`.
 
