@@ -376,7 +376,10 @@ def stream(
     """
     setup = _telemetry_warnings()
     if dry_run:
-        plan = _operations().plan(name, config=config, replace=replace)
+        plan = _operations().plan(
+            name, config=config, replace=replace, stream=collector, windows=windows,
+            until=until, forever=forever,
+        )  # fmt: skip
         plan = plan.model_copy(update={"warnings": setup + plan.warnings})
         if as_json:
             _emit(plan.document())

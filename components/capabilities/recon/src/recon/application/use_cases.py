@@ -40,6 +40,7 @@ from recon.domain.documents import (
     QueryRows,
     RecordsSince,
     Required,
+    SourcedValue,
     StatusDocument,
     StreamDocument,
     StreamStatus,
@@ -211,7 +212,17 @@ class Recon:
 
     # --- plan and survey ----------------------------------------------------------------
 
-    def plan(self, name: str, *, config: Path | None = None, replace: bool = False) -> PlanDocument:
+    def plan(
+        self,
+        name: str,
+        *,
+        config: Path | None = None,
+        replace: bool = False,
+        stream: str | None = None,
+        windows: int | None = None,
+        until: datetime | None = None,
+        forever: bool = False,
+    ) -> PlanDocument:
         """What a survey would do: every run with its effects, the files it would write, and
         what the runs need of this host. Raises ConfigError listing every problem.
 
@@ -219,10 +230,22 @@ class Recon:
         declares a ``preflight``: that type's collector is then built, asked what each of its
         runs needs (an ``mcp`` type starts each stdio server a run names, and connects to each
         remote one, to list its tools), and closed; ``preflight`` says what was done, and
-        ``requirements`` what was found."""
+        ``requirements`` what was found.
+
+        With ``stream``, what :meth:`stream` would do with ``windows``, ``until`` and
+        ``forever``: it refuses what that refuses, and ``provenance`` also says how long the
+        run is and why (``stream.windows``, one by default; ``stream.until``;
+        ``stream.forever``)."""
+        bound = None if stream is None else _stream_bound(
+            windows, until, forever, self._clock.now(), name, stream
+        )  # fmt: skip
         _, plan, copy_to = self._prepare(name, config, replace)
         mission = self._missions.mission_dir(name)
         assert plan.config is not None  # _prepare raises on an invalid plan
+        provenance = list(plan.provenance)
+        if stream is not None:
+            _planned_stream(plan, name, stream)
+            provenance += _run_bound(bound, windows, until, forever)
         requirements, said, broken = self._preflight(mission, plan.config)
         return PlanDocument(
             mission=name,
@@ -241,7 +264,7 @@ class Recon:
             requirements=requirements,
             runnable=all(required.holds for required in requirements),
             preflight=said,
-            provenance=plan.provenance,
+            provenance=provenance,
         )
 
     def _preflight(
@@ -429,23 +452,13 @@ class Recon:
         windows = _stream_bound(windows, until, forever, self._clock.now(), name, collector)
         source, plan, copy_to = self._prepare(name, config, replace)
         assert plan.config is not None  # _prepare raises on an invalid plan
-        planned = {stream.name: stream for stream in plan.streams}
-        if collector not in planned:
-            known = sorted(planned)
-            raise NotFoundError(
-                f"no stream {collector!r} in mission {name!r}; its streams: "
-                f"{', '.join(known) or '(none)'}",
-                fix=f"recon stream {name} --collector <one of: {', '.join(known)}>"
-                if known
-                else "give a collector window: to make it a stream (recon --skill -r streaming)",
-                details={"value": collector, "allowed": known},
-            )
+        planned = _planned_stream(plan, name, collector)
         if copy_to is not None:
             self._missions.write_config(name, source.text)
         mission = self._missions.mission_dir(name)
         sha256 = hashlib.sha256(source.text).hexdigest()
         run, found = self._run_stream(
-            mission, plan.config, planned[collector], sha256, windows=windows, until=until,
+            mission, plan.config, planned, sha256, windows=windows, until=until,
             on_event=on_event,
         )  # fmt: skip
         return StreamDocument(
@@ -1028,6 +1041,55 @@ def _stream_bound(
             fix=f"{run} --until <a time still to come>",
         )
     return 1 if windows is None and until is None and not forever else windows
+
+
+def _planned_stream(plan: Plan, mission: str, collector: str) -> PlannedStream:
+    """The mission's stream ``collector``; NotFoundError naming its streams when it has no
+    such stream."""
+    planned = {stream.name: stream for stream in plan.streams}
+    if collector in planned:
+        return planned[collector]
+    known = sorted(planned)
+    raise NotFoundError(
+        f"no stream {collector!r} in mission {mission!r}; its streams: "
+        f"{', '.join(known) or '(none)'}",
+        fix=f"recon stream {mission} --collector <one of: {', '.join(known)}>"
+        if known
+        else "give a collector window: to make it a stream (recon --skill -r streaming)",
+        details={"value": collector, "allowed": known},
+    )
+
+
+def _run_bound(
+    bound: int | None, windows: int | None, until: datetime | None, forever: bool
+) -> list[SourcedValue]:
+    """How long a stream's run is, and why: the plan's say of ``--windows``, ``--until`` and
+    ``--forever``."""
+    said: list[SourcedValue] = []
+    if bound is not None:
+        given = windows is not None
+        said.append(
+            SourcedValue(
+                path="stream.windows",
+                value=bound,
+                source="command" if given else "recon",
+                note=""
+                if given
+                else "no --windows, --until or --forever: one window, so the run returns",
+            )
+        )
+    if until is not None:
+        said.append(SourcedValue(path="stream.until", value=until.isoformat(), source="command"))
+    if forever:
+        said.append(
+            SourcedValue(
+                path="stream.forever",
+                value=True,
+                source="command",
+                note="runs until stopped: Ctrl-C or SIGTERM seals the window being written",
+            )
+        )
+    return said
 
 
 def _collect(

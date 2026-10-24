@@ -60,7 +60,15 @@ def init(
 
 
 def plan(
-    name: str, *, config: Path | None = None, replace: bool = False, root: Path | None = None
+    name: str,
+    *,
+    config: Path | None = None,
+    replace: bool = False,
+    stream: str | None = None,
+    windows: int | None = None,
+    until: datetime | None = None,
+    forever: bool = False,
+    root: Path | None = None,
 ) -> PlanDocument:
     """What ``survey`` would do, without doing it. ``recon.v1.plan``.
 
@@ -69,8 +77,14 @@ def plan(
     started (or connected to) and asked for its tools, and ``requirements`` says what was
     found. ``config`` is a file to plan instead of the mission's own; ``replace`` allows it to
     differ from the mission's config. Raises ConfigError listing every problem; its
-    ``complete`` is false when more may follow their fixes."""
-    return _root(root).plan(name, config=config, replace=replace)
+    ``complete`` is false when more may follow their fixes. ``provenance`` says where each
+    stream setting came from. With ``stream``, what :func:`stream` would do with
+    ``windows``, ``until`` and ``forever``: refused as it would be, and ``provenance`` says
+    how long the run is (``stream.windows``, one by default)."""
+    return _root(root).plan(
+        name, config=config, replace=replace, stream=stream, windows=windows, until=until,
+        forever=forever,
+    )  # fmt: skip
 
 
 def survey(

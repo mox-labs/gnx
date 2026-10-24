@@ -62,8 +62,9 @@ class PlanWrites(Document):
 
 
 #: Where an effective setting came from: the mission's config, its collector type's
-#: declaration (a stream's overflow, from the type's ``paced_by``), or recon's default.
-Origin = Literal["mission", "type", "recon"]
+#: declaration (a stream's overflow, from the type's ``paced_by``), the command's own flag
+#: (or the call's argument: ``recon stream --windows``), or recon's default.
+Origin = Literal["mission", "type", "command", "recon"]
 
 
 class SourcedValue(Document):

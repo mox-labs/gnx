@@ -327,6 +327,43 @@ class TestTheCommandLine:
         assert said["collectors.0.buffer.overflow"] == ("block", "type")
         assert "retain_unset" in {w["kind"] for w in document["warnings"]}
 
+    @pytest.mark.parametrize(
+        ("flags", "said"),
+        [
+            ([], ("stream.windows", 1, "recon")),
+            (["--windows", "4"], ("stream.windows", 4, "command")),
+            (["--forever"], ("stream.forever", True, "command")),
+        ],
+    )
+    def test_recon_stream_dry_run_says_how_long_the_run_is_and_why(
+        self, tmp_path: Path, flags: list[str], said: tuple[str, Any, str]
+    ) -> None:
+        clock = VirtualClock()
+        _mission(tmp_path, {"window": {"seconds": 10}, "retain": "all"})
+        recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 3))
+
+        result = CliRunner().invoke(
+            main, ["stream", "m", "--collector", "events", "--dry-run", "--json", *flags],
+            obj=recon_,
+        )  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        provenance = json.loads(result.stdout)["provenance"]
+        path, value, source = said
+        assert {(v["path"], v["value"], v["source"]) for v in provenance} >= {said}
+        assert path.startswith("stream.")
+
+    def test_recon_stream_dry_run_refuses_what_the_run_would(self, tmp_path: Path) -> None:
+        clock = VirtualClock()
+        _mission(tmp_path, {"window": {"seconds": 10}})
+        recon_ = _root(tmp_path, clock, Feed(clock, 1.0, 3))
+
+        result = CliRunner().invoke(
+            main, ["stream", "m", "--collector", "nope", "--dry-run", "--json"], obj=recon_
+        )
+
+        assert result.exit_code == 4, "no stream nope: not_found, before anything runs"
+
     def test_recon_stream_refuses_two_bounds_with_usage(self, tmp_path: Path) -> None:
         clock = VirtualClock()
         _mission(tmp_path, {"window": {"seconds": 10}})

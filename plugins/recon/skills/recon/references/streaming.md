@@ -73,7 +73,7 @@ recon stream <mission> --collector <name> [--windows N | --until TIME | --foreve
 | `--windows` | 1, when neither `--until` nor `--forever` is given | stop after sealing N windows |
 | `--until` | none | stop at TIME (ISO 8601, UTC unless it names its offset): the window it cuts is sealed `until` |
 | `--forever` | off | run until stopped |
-| `-n`, `--dry-run` | off | print the plan, with `provenance`, and run nothing |
+| `-n`, `--dry-run` | off | print the plan and run nothing, refusing what the run would; `provenance` also says how long the run is and why (`stream.windows`, `stream.until`, `stream.forever`, `source` `command` or `recon`) |
 | `-c`, `--replace` | | as `recon survey`'s |
 
 It always returns unless told otherwise. Ctrl-C or SIGTERM is a stop, not a failure: the window being written is sealed `signal` once what waits in the buffer is written (a second one seals it at once, what waits dropped), and the command returns. One process runs one stream; a second writer of the same stream is refused with `conflict` (exit 7). Run again, a stream goes on from its last window.
